@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import httpx
 import pandas as pd
 import yfinance as yf
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 from common.jwt_auth import get_current_username
 from pydantic import BaseModel
@@ -39,6 +39,7 @@ def _sanitise_symbol(raw: str) -> str:
 
 # Simple in-memory cache: symbol → (report_dict, timestamp)
 _cache: dict[str, tuple[dict, datetime]] = {}
+_inflight_research: dict[str, asyncio.Event] = {}  # in-flight events; waiters pause until event fires
 CACHE_TTL_SEC = 86_400       # 24 h — full quality reports
 CACHE_TTL_PARTIAL_SEC = 1_800  # 30 min — partial (missing services)
 CACHE_TTL_FALLBACK_SEC = 300   # 5 min — fallback (AI timeout/error)
@@ -56,9 +57,44 @@ class ResearchRequest(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-async def _get(client: httpx.AsyncClient, url: str) -> dict | list | None:
+_REDIS_CLAUDE_KEY   = "stockai:admin:claude_api_key"
+_REDIS_DEEPSEEK_KEY = "stockai:admin:deepseek_api_key"
+
+
+def _get_admin_ai_key(provider: str = "claude") -> str:
+    """Return the admin-stored AI API key from Redis, or '' if unavailable."""
+    rkey = _REDIS_CLAUDE_KEY if provider == "claude" else _REDIS_DEEPSEEK_KEY
     try:
-        r = await client.get(url, timeout=20)
+        import redis as redis_lib
+        r = redis_lib.from_url(_s.redis_url, decode_responses=True, socket_connect_timeout=1)
+        return r.get(rkey) or ""
+    except Exception:
+        return ""
+
+
+import time as _time
+
+_svc_token_cache: str = ""
+
+def _svc_token() -> str:
+    """Cached long-lived service JWT for inter-service calls."""
+    global _svc_token_cache
+    if _svc_token_cache:
+        return _svc_token_cache
+    from jose import jwt as _jwt
+    payload = {
+        "sub": "research-engine",
+        "jti": str(__import__("uuid").uuid4()),
+        "exp": int(_time.time()) + 365 * 86400,
+    }
+    _svc_token_cache = _jwt.encode(payload, _s.jwt_secret, algorithm="HS256")
+    return _svc_token_cache
+
+
+async def _get(client: httpx.AsyncClient, url: str, auth: str = "") -> dict | list | None:
+    try:
+        headers = {"Authorization": auth} if auth else {}
+        r = await client.get(url, timeout=20, headers=headers)
         if r.status_code == 200:
             return r.json()
     except Exception as exc:
@@ -144,7 +180,7 @@ def _score_technical(stock: dict, prices: list, indicators: dict, levels: dict, 
     vols = [p.get("volume") or 0 for p in (prices or [])]
     cur_vol = vols[-1] if vols else 0
     avg20 = sum(vols[-20:]) / len(vols[-20:]) if len(vols) >= 20 else 0
-    rvol = round(cur_vol / avg20, 2) if avg20 > 0 else 1.0
+    rvol = round(cur_vol / avg20, 2) if avg20 > 0 else 0.0
 
     # ATR
     atr_val = _atr(prices or [])
@@ -465,9 +501,9 @@ def _sector_bench(sector: str) -> dict:
 
 # ── Fundamental scoring ───────────────────────────────────────────────────────
 
-def _score_fundamental(fund: dict, sector: str = "Unknown") -> dict:
+def _score_fundamental(fund: dict, sector: str = "Unknown", price: float = 0.0) -> dict:
     if not fund:
-        return {"score": 50, "revenue": {}, "eps": {}, "margins": {}, "balance_sheet": {},
+        return {"score": 35, "revenue": {}, "eps": {}, "margins": {}, "balance_sheet": {},
                 "cash_flow": {}, "valuation": {}, "profitability": {}}
 
     bench = _sector_bench(sector)
@@ -533,10 +569,11 @@ def _score_fundamental(fund: dict, sector: str = "Unknown") -> dict:
             return None
         return round(v * 100, 1) if abs(v) <= 1 else round(v, 1)
 
-    # Balance sheet
+    # Balance sheet — D/E uses book equity (book_value per share × shares outstanding)
     cash = fund.get("total_cash") or 0
     debt = fund.get("total_debt") or 0
-    de_ratio = round(debt / cash, 2) if cash > 0 else None
+    book_equity = (fund.get("book_value") or 0) * (fund.get("shares_outstanding") or 0)
+    de_ratio = round(debt / book_equity, 2) if book_equity > 0 else None
     bs_assess = "Strong Balance Sheet"
     if de_ratio is not None:
         if de_ratio < 0.5:
@@ -550,9 +587,11 @@ def _score_fundamental(fund: dict, sector: str = "Unknown") -> dict:
     ocf = fund.get("operating_cashflow")
     fcf = fund.get("free_cashflow")
     fcf_assess = "Unknown"
-    revenue = fund.get("total_revenue") or 1
+    revenue = fund.get("total_revenue")
     if fcf is not None:
-        fcf_margin = fcf / revenue * 100 if revenue else None
+        # Guard against revenue=0 (holding companies, early-stage biotech): treating 0 as 1
+        # makes fcf_margin equal the raw FCF dollar value in percent — astronomically wrong.
+        fcf_margin = (fcf / revenue * 100) if (revenue and revenue != 0) else None
         if fcf > 0 and fcf_margin and fcf_margin >= 20:
             fcf_assess = "Excellent"; score += 10
         elif fcf and fcf > 0:
@@ -582,9 +621,21 @@ def _score_fundamental(fund: dict, sector: str = "Unknown") -> dict:
             val_assess = "Overvalued"; score -= 5
 
     peg = None
-    if pe and rev_growth and rev_growth > 0:
-        g = rev_growth * 100  # yfinance returns decimal fraction
+    peg_growth_source = None
+    _eps_g = fund.get("earnings_growth")
+    if pe and _eps_g and _eps_g > 0:
+        g = _eps_g * 100
         peg = round(pe / g, 2) if g > 0 else None
+        peg_growth_source = "earnings_growth"
+    elif pe and rev_growth and rev_growth > 0:
+        g = rev_growth * 100
+        peg = round(pe / g, 2) if g > 0 else None
+        peg_growth_source = "revenue_growth"  # substitution — less reliable for asset-heavy stocks
+    if peg is not None:
+        if peg < 1.0:
+            score += 5
+        elif peg > 3.0:
+            score -= 4
 
     # Profitability
     roe = fund.get("return_on_equity")
@@ -609,6 +660,22 @@ def _score_fundamental(fund: dict, sector: str = "Unknown") -> dict:
             eps_surprise_bonus = 5; score += 5
         elif beat_rate >= 0.50:
             eps_surprise_bonus = 2; score += 2
+
+    # EPS surprise trend — improving momentum signals re-rating potential
+    eps_trend = fund.get("eps_surprise_trend")
+    if eps_trend == "improving":
+        score += 3
+    elif eps_trend == "declining":
+        score -= 3
+
+    # Analyst target premium — consensus significantly above/below price
+    target_price = fund.get("target_price")
+    if price > 0 and target_price and target_price > 0:
+        target_upside = (target_price - price) / price
+        if target_upside >= 0.25:
+            score += 5
+        elif target_upside <= -0.10:
+            score -= 3
 
     score = max(0, min(100, score))
 
@@ -650,6 +717,7 @@ def _score_fundamental(fund: dict, sector: str = "Unknown") -> dict:
             "pe": round(pe, 1) if pe else None,
             "forward_pe": round(fpe, 1) if fpe else None,
             "peg": peg,
+            "peg_growth_source": peg_growth_source,
             "price_sales": round(ps, 1) if ps else None,
             "ev_ebitda": round(ev_ebitda, 1) if ev_ebitda else None,
             "assessment": val_assess,
@@ -658,6 +726,10 @@ def _score_fundamental(fund: dict, sector: str = "Unknown") -> dict:
             "roe": pct(roe),
             "roa": pct(roa),
             "grade": prof_grade,
+        },
+        "analyst_target": {
+            "price": round(target_price, 2) if target_price else None,
+            "upside_pct": round(target_upside * 100, 1) if (price > 0 and target_price and target_price > 0) else None,
         },
     }
 
@@ -861,9 +933,12 @@ def _dcf_fair_value(fund: dict, price: float, sector: str = "Unknown") -> dict |
 # ── Claude integration ────────────────────────────────────────────────────────
 
 async def _call_claude(req: ResearchRequest, symbol: str, stock: dict, fund: dict,
-                       tech: dict, fund_scores: dict, live_price: float = 0.0) -> dict:
-    if not req.api_key.strip():
+                       tech: dict, fund_scores: dict, live_price: float = 0.0,
+                       catalyst: dict | None = None) -> dict:
+    api_key = req.api_key.strip() or _get_admin_ai_key(req.provider)
+    if not api_key:
         return _fallback_ai()
+    req = req.model_copy(update={"api_key": api_key})
     price = live_price or stock.get("price") or stock.get("last_price") or "N/A"
     name = stock.get("name", symbol)
     sector = stock.get("sector", "Unknown")
@@ -914,6 +989,20 @@ async def _call_claude(req: ResearchRequest, symbol: str, stock: dict, fund: dic
         "Always respond with valid JSON only — no markdown, no extra text."
     )
 
+    catalyst_summary = {
+        "catalyst_score": (catalyst or {}).get("catalyst_score"),
+        "insider_score": (catalyst or {}).get("insider_score"),
+        "congress_score": (catalyst or {}).get("congress_score"),
+        "institutional_score": (catalyst or {}).get("institutional_score"),
+        "earnings_score": (catalyst or {}).get("earnings_score"),
+        "composite_score": (catalyst or {}).get("composite_score"),
+    }
+    catalyst_note = (
+        "Scores are 0-100 (positive) or negative (bearish). "
+        "insider_score >50 = cluster of executive purchases; congress_score >30 = recent congressional buys; "
+        "catalyst_score >60 = strong positive catalyst; <0 = adverse events or net selling."
+    )
+
     user_prompt = f"""Analyze {symbol} ({name}) for investment suitability. Current price: ${price}. Market cap: {market_cap}. Sector: {sector}.
 
 TECHNICAL DATA:
@@ -921,6 +1010,9 @@ TECHNICAL DATA:
 
 FUNDAMENTAL DATA:
 {json.dumps(fund_summary, indent=2)}
+
+CATALYST & EVENT INTELLIGENCE ({catalyst_note}):
+{json.dumps(catalyst_summary, indent=2)}
 
 Return a JSON object with EXACTLY this structure (fill in all fields based on your knowledge of {symbol} and the data above):
 
@@ -1059,12 +1151,17 @@ Use your knowledge of {symbol} to fill in qualitative sections accurately. Base 
     }
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        # 90s limit: the gateway allows 240s for research POST requests; keeping AI under 90s
+        # leaves buffer for data-gather (25s) and response serialisation.
+        async with httpx.AsyncClient(timeout=90) as client:
             r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=body)
     except Exception as exc:
         log.warning("claude.call.failed", error=str(exc))
         return _fallback_ai()
 
+    if r.status_code == 429:
+        log.warning("claude.rate_limited", status=r.status_code, body=r.text[:200])
+        return _fallback_ai()
     if r.status_code != 200:
         log.warning("claude.error", status=r.status_code, body=r.text[:200])
         return _fallback_ai()
@@ -1120,13 +1217,13 @@ def _fallback_ai() -> dict:
         "key_opportunities": ["Retry analysis when AI is available"],
         "trade_invalidation": ["Break below key support", "Earnings miss", "Macro deterioration"],
         "ai_verdict": {
-            "can_buy_today": "WAIT",
+            "can_buy_today": "INSUFFICIENT_DATA",
             "why": "AI analysis failed. Please check your API key and retry.",
             "biggest_risks": ["AI analysis unavailable"],
             "must_improve": ["Resolve AI connection"],
             "strong_buy_catalysts": ["Retry with valid API key"],
             "confidence_pct": 0,
-            "final_recommendation": "WATCH",
+            "final_recommendation": "INSUFFICIENT DATA",
         },
         "insider_status_checklist": "warning",
         "institutional_pct": 0,
@@ -1214,10 +1311,94 @@ def _yf_sync_fetch(sym: str):
         return {}, [], {"values": {}}, 0.0
 
 
+def _yf_fundamentals(sym: str) -> dict:
+    """Direct yfinance fundamentals fallback — used when market-data cache is cold."""
+    try:
+        info = yf.Ticker(sym).info or {}
+        if not info:
+            return {}
+        return {
+            "revenue_growth":    info.get("revenueGrowth"),
+            "earnings_growth":   info.get("earningsGrowth"),
+            "profit_margin":     info.get("profitMargins"),
+            "gross_margin":      info.get("grossMargins"),
+            "operating_margin":  info.get("operatingMargins"),
+            "total_revenue":     info.get("totalRevenue"),
+            "total_cash":        info.get("totalCash"),
+            "total_debt":        info.get("totalDebt"),
+            "free_cashflow":     info.get("freeCashflow"),
+            "trailing_pe":       info.get("trailingPE"),
+            "ev_to_ebitda":      info.get("enterpriseToEbitda"),
+            "ev_to_revenue":     info.get("enterpriseToRevenue"),
+        }
+    except Exception:
+        return {}
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+@router.get("/batch")
+async def get_research_batch(symbols: str, _: str = Depends(get_current_username)):
+    """Return lightweight research summaries for multiple symbols (comma-separated).
+    INT-10: Used by Opportunities page to show research chips on signal cards.
+    Returns only: recommendation, overall_score, confidence, generated_at per symbol.
+    Symbols with no cached report are omitted (no 404, just absent from response).
+    """
+    results = {}
+    for raw in symbols.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            sym = _sanitise_symbol(raw)
+        except ValueError:
+            continue
+        entry = _cache.get(sym)
+        if not entry:
+            continue
+        report, ts = entry
+        quality = report.get("report_quality", "full")
+        ttl = CACHE_TTL_FALLBACK_SEC if quality == "fallback" else CACHE_TTL_PARTIAL_SEC if quality == "partial" else CACHE_TTL_SEC
+        if (datetime.now(timezone.utc) - ts).total_seconds() >= ttl:
+            _cache.pop(sym, None)
+            continue
+        results[sym] = {
+            "recommendation": report.get("recommendation"),
+            "overall_score": report.get("overall_score"),
+            "confidence": report.get("confidence"),
+            "generated_at": report.get("generated_at"),
+        }
+    return results
+
+
+@router.get("/{symbol}/summary")
+async def get_research_summary(symbol: str, _: str = Depends(get_current_username)):
+    """Return lightweight cached research summary (INT-1: research badge on stock detail page).
+    Returns: recommendation, overall_score, confidence, generated_at.
+    404 if no cached report exists.
+    """
+    try:
+        sym = _sanitise_symbol(symbol)
+    except ValueError:
+        raise HTTPException(400, f"Invalid symbol: {symbol!r}")
+    entry = _cache.get(sym)
+    if entry:
+        report, ts = entry
+        quality = report.get("report_quality", "full")
+        ttl = CACHE_TTL_FALLBACK_SEC if quality == "fallback" else CACHE_TTL_PARTIAL_SEC if quality == "partial" else CACHE_TTL_SEC
+        if (datetime.now(timezone.utc) - ts).total_seconds() < ttl:
+            return {
+                "recommendation": report.get("recommendation"),
+                "overall_score": report.get("overall_score"),
+                "confidence": report.get("confidence"),
+                "generated_at": report.get("generated_at"),
+            }
+        _cache.pop(sym, None)
+    raise HTTPException(404, "No cached research report.")
+
+
 @router.get("/{symbol}")
-async def get_research(symbol: str):
+async def get_research(symbol: str, _: str = Depends(get_current_username)):
     """Return cached research report (generated within last 24h)."""
     try:
         sym = _sanitise_symbol(symbol)
@@ -1246,39 +1427,120 @@ async def clear_research(symbol: str, _: str = Depends(get_current_username)):
     return {"status": "cleared", "symbol": sym}
 
 
+@router.post("/{symbol}/trigger", status_code=202)
+async def trigger_research(symbol: str, background_tasks: BackgroundTasks):
+    """INT-4: Auto-trigger background research if no fresh report exists.
+    No auth required — only reachable from internal Docker network.
+    Cooldown: skips if a report younger than 6 hours is cached.
+    """
+    try:
+        sym = _sanitise_symbol(symbol)
+    except ValueError:
+        return {"status": "skipped", "reason": "invalid symbol"}
+    entry = _cache.get(sym)
+    if entry:
+        _, ts = entry
+        age = (datetime.now(timezone.utc) - ts).total_seconds()
+        if age < 21_600:  # 6 hours
+            return {"status": "fresh", "symbol": sym, "age_hours": round(age / 3600, 1)}
+    background_tasks.add_task(_generate_with_service_token, sym)
+    return {"status": "triggered", "symbol": sym}
+
+
+async def _generate_with_service_token(sym: str) -> None:
+    """Generate research in background using a short-lived service JWT (no user context)."""
+    try:
+        import uuid as _uuid
+        from jose import jwt as _jwt
+        from datetime import timedelta
+        expire = datetime.now(timezone.utc) + timedelta(hours=1)
+        token = _jwt.encode(
+            {"sub": "service", "role": "admin", "exp": expire, "jti": str(_uuid.uuid4())},
+            _s.jwt_secret, algorithm="HS256",
+        )
+        async with httpx.AsyncClient(timeout=35) as client:
+            await client.post(
+                f"{_s.research_engine_url}/research/{sym}",
+                json={"provider": "claude", "model": "claude-sonnet-4-6", "api_key": ""},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        log.info("research.auto_trigger.done", symbol=sym)
+    except Exception as exc:
+        log.warning("research.auto_trigger.failed", symbol=sym, error=str(exc))
+
+
 @router.post("/{symbol}")
-async def generate_research(symbol: str, req: ResearchRequest, _: str = Depends(get_current_username)):
+async def generate_research(symbol: str, req: ResearchRequest, request: Request, _: str = Depends(get_current_username)):
     """Generate a full Planning Stage Research Report for the given symbol."""
     try:
         sym = _sanitise_symbol(symbol)
     except ValueError:
         raise HTTPException(400, f"Invalid symbol: {symbol!r}")
 
+    # Cache check (fast path — no waiting)
+    entry = _cache.get(sym)
+    if entry:
+        report, ts = entry
+        quality = report.get("report_quality", "full")
+        ttl = CACHE_TTL_FALLBACK_SEC if quality == "fallback" else CACHE_TTL_PARTIAL_SEC if quality == "partial" else CACHE_TTL_SEC
+        if (datetime.now(timezone.utc) - ts).total_seconds() < ttl:
+            return report
+
+    # Deduplicate concurrent AI calls for the same symbol using asyncio.Event.
+    # If a request is already in-flight, wait for it to finish, then return from cache.
+    if sym in _inflight_research:
+        try:
+            await asyncio.wait_for(_inflight_research[sym].wait(), timeout=60.0)
+        except asyncio.TimeoutError:
+            # Original caller died without cleaning up — remove stale event and compute ourselves
+            _inflight_research.pop(sym, None)
+        else:
+            entry = _cache.get(sym)
+            if entry:
+                report, ts = entry
+                # Use the same quality-based TTL as the main cache path, not a hardcoded value.
+                # A fallback-quality report has TTL=300s; returning it for 6h would be stale.
+                _q = report.get("report_quality", "full")
+                _waiter_ttl = CACHE_TTL_FALLBACK_SEC if _q == "fallback" else CACHE_TTL_PARTIAL_SEC if _q == "partial" else CACHE_TTL_SEC
+                if (datetime.now(timezone.utc) - ts).total_seconds() < _waiter_ttl:
+                    return report
+            # Fell through (first caller had an error) — proceed to compute ourselves
+    else:
+        _inflight_research[sym] = asyncio.Event()
+
+    svc_auth = f"Bearer {_svc_token()}"
+
     # Gather data from all services in parallel
     async with httpx.AsyncClient(timeout=25) as client:
-        stock_t, fund_t, prices_t, ind_t, levels_t, signal_t, rank_t, live_t = await asyncio.gather(
+        stock_t, fund_t, prices_t, ind_t, levels_t, signal_t, rank_t, live_t, catalyst_t = await asyncio.gather(
             _get(client, f"{_s.market_data_url}/stocks/{sym}"),
             _get(client, f"{_s.market_data_url}/stocks/{sym}/fundamentals"),
             _get(client, f"{_s.market_data_url}/stocks/{sym}/prices?timeframe=1d&limit=260"),
             _get(client, f"{_s.technical_analysis_url}/ta/{sym}/indicators?days=400"),
             _get(client, f"{_s.technical_analysis_url}/ta/{sym}/levels"),
-            _get(client, f"{_s.signal_engine_url}/signals/{sym}"),
+            _get(client, f"{_s.signal_engine_url}/signals/{sym}", svc_auth),
             _get(client, f"{_s.ranking_engine_url}/rankings/{sym}"),
             _get(client, f"{_s.market_data_url}/stocks/latest_prices?symbols={sym}"),
+            _get(client, f"{_s.event_intelligence_url}/catalyst/{sym}", svc_auth),
         )
 
     stock = stock_t or {}
     fund = fund_t or {}
+    # RES-FIX-1: when market-data fundamentals cache is cold, fall back to direct yfinance fetch
+    if not fund:
+        loop = asyncio.get_running_loop()
+        fund = await loop.run_in_executor(None, _yf_fundamentals, sym)
     prices = prices_t or []
     indicators = ind_t or {"ts": [], "values": {}}
     levels = levels_t or {}
     signal = signal_t or {}
     ranking = rank_t or {}
     live = (live_t or [{}])[0] if isinstance(live_t, list) else {}
+    catalyst = catalyst_t or {}
 
     if not stock:
         # Symbol not in DB — fetch directly from yfinance
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         yf_stock, yf_prices, yf_indicators, yf_price = await loop.run_in_executor(
             None, _yf_sync_fetch, sym
         )
@@ -1296,11 +1558,11 @@ async def generate_research(symbol: str, req: ResearchRequest, _: str = Depends(
 
     # Compute scores
     tech = _score_technical(stock, prices, indicators, levels, live_price=price)
-    fund_scores = _score_fundamental(fund, sector=stock.get("sector", "Unknown"))
+    fund_scores = _score_fundamental(fund, sector=stock.get("sector", "Unknown"), price=price)
     dcf = _dcf_fair_value(fund, price, sector=stock.get("sector", "Unknown"))
 
     # Call Claude for qualitative analysis
-    ai = await _call_claude(req, sym, stock, fund, tech, fund_scores, live_price=price)
+    ai = await _call_claude(req, sym, stock, fund, tech, fund_scores, live_price=price, catalyst=catalyst)
 
     # Determine report quality
     missing_services = sum([not fund_t, not signal_t, not rank_t, not ind_t])
@@ -1343,13 +1605,17 @@ async def generate_research(symbol: str, req: ResearchRequest, _: str = Depends(
     if claude_rec in ("STRONG BUY", "BUY", "WATCH", "AVOID", "SELL") and abs(overall - 65) < 10:
         recommendation = claude_rec
 
+    # Fallback reports must never show a real-looking verdict
+    if report_quality == "fallback":
+        recommendation = "INSUFFICIENT DATA"
+
     checklist = _build_checklist(tech, fund_scores, ai)
     position = _position_size(tech, req.portfolio_size, req.max_risk_pct, price)
 
     report = {
         "symbol": sym,
         "company_name": stock.get("name", sym),
-        "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "report_quality": report_quality,
         "current_price": price,
         "market_cap": fund.get("market_cap"),
@@ -1357,7 +1623,7 @@ async def generate_research(symbol: str, req: ResearchRequest, _: str = Depends(
         "industry": stock.get("industry") or stock.get("sector"),
         "recommendation": recommendation,
         "overall_score": overall,
-        "confidence": min(100, max(0, ai.get("confidence", 65))),
+        "confidence": 0 if report_quality == "fallback" else min(100, max(0, ai.get("confidence", 65))),
         "scores": scores,
         "executive_summary": {
             "bullish_factors": ai.get("bullish_factors", []),
@@ -1408,6 +1674,10 @@ async def generate_research(symbol: str, req: ResearchRequest, _: str = Depends(
     ttl = CACHE_TTL_FALLBACK_SEC if report_quality == "fallback" else CACHE_TTL_PARTIAL_SEC if report_quality == "partial" else CACHE_TTL_SEC
     log.info("research.generated", symbol=sym, overall=overall, recommendation=recommendation,
              quality=report_quality, cache_ttl_s=ttl)
+    # Signal any waiters that the report is now cached, then remove the in-flight marker.
+    ev = _inflight_research.pop(sym, None)
+    if ev:
+        ev.set()
     return report
 
 
@@ -1435,8 +1705,9 @@ async def chat_research(symbol: str, req: ChatRequest, _: str = Depends(get_curr
     if not entry:
         raise HTTPException(404, "No research report found. Generate a report first.")
 
-    if not req.api_key.strip():
-        raise HTTPException(400, "API key required for chat.")
+    chat_api_key = req.api_key.strip() or _get_admin_ai_key(req.provider)
+    if not chat_api_key:
+        raise HTTPException(400, "No AI API key configured. Ask the admin to set a shared key in Settings → AI Assistant, or add your own key in Settings.")
 
     report, _ = entry
     sc = report.get("scores", {})
@@ -1492,7 +1763,7 @@ Answer questions concisely and directly. Use the data above. Be honest about unc
 
     if req.provider == "deepseek":
         url = "https://api.deepseek.com/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {req.api_key}", "content-type": "application/json"}
+        headers = {"Authorization": f"Bearer {chat_api_key}", "content-type": "application/json"}
         body = {"model": req.model, "max_tokens": 1024, "temperature": 0.3,
                 "messages": [{"role": "system", "content": system_prompt}] + messages}
         try:
@@ -1507,7 +1778,7 @@ Answer questions concisely and directly. Use the data above. Be honest about unc
             raise HTTPException(500, f"Chat error: {exc}")
     else:
         url = "https://api.anthropic.com/v1/messages"
-        headers = {"x-api-key": req.api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+        headers = {"x-api-key": chat_api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
         body = {"model": req.model, "max_tokens": 1024, "temperature": 0.3,
                 "system": system_prompt, "messages": messages}
         try:

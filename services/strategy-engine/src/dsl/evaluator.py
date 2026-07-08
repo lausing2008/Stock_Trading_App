@@ -101,13 +101,20 @@ def _cmp(left: pd.Series | float, op: str, right: pd.Series | float) -> pd.Serie
 def evaluate_rule(rule: dict, df: pd.DataFrame) -> pd.Series:
     op = rule.get("op")
     if op in ("and", "or"):
-        sub = [evaluate_rule(n, df) for n in rule["nodes"]]
+        nodes = rule.get("nodes")
+        if not nodes:
+            raise ValueError(f"'{op}' node requires a non-empty 'nodes' list")
+        sub = [evaluate_rule(n, df) for n in nodes]
         result = sub[0]
         for s in sub[1:]:
             result = (result & s) if op == "and" else (result | s)
         return result.fillna(False)
     if op == "not":
+        if "node" not in rule:
+            raise ValueError("'not' node requires a 'node' child")
         return ~evaluate_rule(rule["node"], df)
+    if "left" not in rule or "right" not in rule:
+        raise ValueError(f"Comparison node op='{op}' requires 'left' and 'right'")
     left = _resolve(rule["left"], df)
     right = _resolve(rule["right"], df)
     if isinstance(left, float):

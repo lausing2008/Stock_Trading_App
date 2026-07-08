@@ -13,7 +13,7 @@ const SIGNAL_OPTS = ['ALL', 'BUY', 'HOLD', 'WAIT', 'SELL'] as const;
 type CondKey = keyof SuppressedSignalRow['conditions'];
 
 const CONDITIONS: { key: CondKey; label: string; short: string; color: string; tip: string }[] = [
-  { key: 'weekly_gate',          label: 'Weekly Gate',         short: 'Gate',    color: '#ef4444', tip: 'RSI(14w) < 40 AND weekly trend down — hard 0.40× block after cap' },
+  { key: 'weekly_gate',          label: 'Weekly Gate',         short: 'Gate',    color: '#ef4444', tip: 'RSI(14w) ≤ 38 AND weekly trend down (SWING/LONG only) — graduated 0.40–0.65× compress after cap' },
   { key: 'stale_data',           label: 'Stale Data',          short: 'Stale',   color: '#ef4444', tip: 'Last price bar > 3 days old — signal unreliable (0.60×)' },
   { key: 'insufficient_history', label: 'Insufficient History',short: 'History', color: '#f87171', tip: '< 50 daily bars — indicators unreliable (0.50×)' },
   { key: 'weekly_misalignment',  label: 'Weekly Misalign',     short: 'W.Align', color: '#f97316', tip: 'Daily and weekly momentum directions conflict (0.85× SWING)' },
@@ -22,14 +22,17 @@ const CONDITIONS: { key: CondKey; label: string; short: string; color: string; t
   { key: 'negative_news',        label: 'Negative News',       short: 'News',    color: '#fb923c', tip: 'News sentiment < 35/100 (0.75–0.85×)' },
   { key: 'adx_choppy',          label: 'ADX Choppy',          short: 'ADX',     color: '#eab308', tip: 'ADX below minimum — directionless market (0.90× SWING)' },
   { key: 'low_breadth',         label: 'Low Breadth',         short: 'Breadth', color: '#eab308', tip: '< 40% of stocks above 200-day SMA (0.90× SWING)' },
-  { key: 'rs_lagging',          label: 'RS Lagging',          short: 'RS',      color: '#eab308', tip: 'Stock lagging sector ETF by > 20% on 20d basis (0.85× SWING)' },
+  { key: 'rs_lagging',          label: 'RS Lagging',          short: 'RS',      color: '#eab308', tip: 'RS rank < 0.70 vs sector ETF, unless stock itself is up > 5% in 20d (0.85× SWING; 0.90× SHORT, 0.80× LONG, no compression for GROWTH)' },
   { key: 'bearish_options',     label: 'Bearish Options',     short: 'Options', color: '#a3a3a3', tip: 'Elevated put volume or bearish C/P ratio (0.92–0.96×)' },
   { key: 'compression_cap',     label: 'Cap Applied',         short: 'Cap',     color: '#818cf8', tip: 'Stacked filters hit the max_compress_ratio floor' },
 ];
 
 type SortKey =
   | 'symbol' | 'signal' | 'bullish_probability' | 'suppression_count'
-  | 'weekly_rsi' | 'rsi' | 'adx' | 'days_to_earnings' | 'news_sentiment' | 'rs_score' | 'breadth_pct';
+  | 'weekly_rsi' | 'rsi' | 'adx' | 'days_to_earnings' | 'news_sentiment' | 'rs_score' | 'breadth_pct'
+  | 'vol_ratio';
+
+type PresetState = { style: string; market: string; sigFilter: string; sortKey?: string; sortDir?: string };
 
 // Tooltip text for every sortable column header
 const COL_TIPS: Record<SortKey, string> = {
@@ -44,13 +47,14 @@ const COL_TIPS: Record<SortKey, string> = {
   news_sentiment:     'Aggregate news sentiment score 0–100 (50 = neutral). Claude Haiku when API key set, otherwise enhanced VADER. Below 25 = strong negative (0.75×). Below 35 = negative (0.85×). SWING only.',
   rs_score:           'Relative Strength score vs sector ETF (XLK, XLV, etc.) on a 20-day return basis. 50 = in-line. Below 40 = lagging (compresses 15%). Above 60 = outperforming.',
   breadth_pct:        'Percentage of all tracked US stocks currently trading above their 200-day SMA. Below 40% = broad market weakness — signal compressed 10% even in a nominally-bull SPY regime.',
+  vol_ratio:          'Volume ratio: today\'s volume vs 20-day average. >2.0x = unusual surge (green). >1.5x = elevated (yellow). Sourced from rankings data.',
 };
 
 const SORT_LABELS: Record<SortKey, string> = {
   symbol: 'Symbol', signal: 'Signal', bullish_probability: 'Bull%',
   suppression_count: 'Filters', weekly_rsi: 'W.RSI', rsi: 'RSI',
   adx: 'ADX', days_to_earnings: 'Earn.d', news_sentiment: 'News',
-  rs_score: 'RS', breadth_pct: 'Breadth',
+  rs_score: 'RS', breadth_pct: 'Breadth', vol_ratio: 'Vol',
 };
 
 const SIGNAL_COLORS: Record<string, string> = {
@@ -76,7 +80,7 @@ function fmtTs(ts: string | null | undefined): string {
   } catch { return ''; }
 }
 
-function numVal(row: SuppressedSignalRow, key: SortKey): number {
+function numVal(row: SuppressedSignalRow, key: SortKey, volRatioMap?: Record<string, number>): number {
   if (key === 'symbol') return 0;
   if (key === 'signal') return ['BUY', 'HOLD', 'WAIT', 'SELL'].indexOf(row.signal);
   if (key === 'bullish_probability') return row.bullish_probability ?? 0;
@@ -88,6 +92,7 @@ function numVal(row: SuppressedSignalRow, key: SortKey): number {
   if (key === 'news_sentiment') return row.news_sentiment ?? 50;
   if (key === 'rs_score') return row.rs_score ?? 50;
   if (key === 'breadth_pct') return row.breadth_pct ?? 50;
+  if (key === 'vol_ratio') return volRatioMap?.[row.symbol] ?? -1;
   return 0;
 }
 
@@ -210,18 +215,40 @@ export default function SignalFiltersPage() {
   }, [router]);
 
   const [style, setStyle] = useState<string>('SWING');
+  const [market, setMarket] = useState<string>('ALL');
   const [sigFilter, setSigFilter] = useState<string>('ALL');
   const [condFilters, setCondFilters] = useState<Set<CondKey>>(new Set());
   const [onlySuppressed, setOnlySuppressed] = useState(false);
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('suppression_count');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [savedPresets, setSavedPresets] = useState<Record<string, PresetState>>(() => {
+    try { return JSON.parse(localStorage.getItem('signal_filter_presets') ?? '{}'); } catch { return {}; }
+  });
 
   const { data, isLoading, error, mutate } = useSWR(
-    authed ? ['suppressed', style] : null,
-    () => api.suppressedSignals(style),
+    // T232: market is now part of the cache key and passed through to the API — the row
+    // type never carried a `market` field, so the old client-side filter (`x.market === market`)
+    // always compared against `undefined` and silently returned zero rows for US/HK.
+    authed ? ['suppressed', style, market] : null,
+    () => api.suppressedSignals(style, market !== 'ALL' ? market : undefined),
     { revalidateOnFocus: false },
   );
+
+  const { data: rankData } = useSWR(
+    authed ? 'rankings-all' : null,
+    () => api.rankings(),
+    { revalidateOnFocus: false },
+  );
+
+  const volRatioMap = useMemo(() => {
+    const m: Record<string, number> = {};
+    (rankData?.rankings ?? []).forEach(r => {
+      const vr = r.vol_ratio;
+      if (vr != null) m[r.symbol] = vr;
+    });
+    return m;
+  }, [rankData]);
 
   function handleSort(key: SortKey) {
     if (key === sortKey) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -236,8 +263,60 @@ export default function SignalFiltersPage() {
     });
   }
 
+  function applyPreset(p: Partial<PresetState>) {
+    if (p.style !== undefined) setStyle(p.style);
+    if (p.market !== undefined) setMarket(p.market);
+    if (p.sigFilter !== undefined) setSigFilter(p.sigFilter);
+    if (p.sortKey !== undefined) setSortKey(p.sortKey as SortKey);
+    if (p.sortDir !== undefined) setSortDir(p.sortDir as 'asc' | 'desc');
+  }
+
+  function saveCurrentPreset() {
+    const name = window.prompt('Name this preset:');
+    if (!name?.trim()) return;
+    const preset: PresetState = { style, market, sigFilter, sortKey, sortDir };
+    const next = { ...savedPresets, [name.trim()]: preset };
+    setSavedPresets(next);
+    localStorage.setItem('signal_filter_presets', JSON.stringify(next));
+  }
+
+  function deleteSavedPreset(name: string) {
+    const next = { ...savedPresets };
+    delete next[name];
+    setSavedPresets(next);
+    localStorage.setItem('signal_filter_presets', JSON.stringify(next));
+  }
+
+  // Built-in presets
+  const BUILT_IN_PRESETS: { label: string; state: Partial<PresetState> }[] = [
+    { label: 'All BUY',      state: { sigFilter: 'BUY',  style: 'SWING',  market: 'ALL' } },
+    { label: 'US BUY',       state: { sigFilter: 'BUY',  style: 'SWING',  market: 'US'  } },
+    { label: 'HK BUY',       state: { sigFilter: 'BUY',  style: 'SWING',  market: 'HK'  } },
+    { label: 'Short Setup',  state: { sigFilter: 'BUY',  style: 'SHORT',  market: 'US'  } },
+    { label: 'Long Value',   state: { sigFilter: 'BUY',  style: 'LONG',   market: 'ALL' } },
+    { label: 'Momentum',     state: { sigFilter: 'BUY',  style: 'GROWTH', market: 'ALL' } },
+    { label: 'Near Earnings',state: { sigFilter: 'ALL',  sortKey: 'days_to_earnings', sortDir: 'asc' } },
+    { label: 'Watch Sells',  state: { sigFilter: 'SELL', style: 'SWING',  market: 'ALL' } },
+  ];
+
+  function isBuiltInActive(p: Partial<PresetState>): boolean {
+    if (p.sigFilter !== undefined && p.sigFilter !== sigFilter) return false;
+    if (p.style !== undefined && p.style !== style) return false;
+    if (p.market !== undefined && p.market !== market) return false;
+    if (p.sortKey !== undefined && p.sortKey !== sortKey) return false;
+    if (p.sortDir !== undefined && p.sortDir !== sortDir) return false;
+    return true;
+  }
+
+  function isSavedActive(p: PresetState): boolean {
+    return p.sigFilter === sigFilter && p.style === style && p.market === market;
+  }
+
   const rows = useMemo(() => {
     let r = data ?? [];
+
+    // Market filtering now happens server-side (see useSWR fetch above) — `data` already
+    // contains only the requested market's rows.
 
     // Signal type filter
     if (sigFilter !== 'ALL') r = r.filter(x => x.signal === sigFilter);
@@ -258,8 +337,8 @@ export default function SignalFiltersPage() {
 
     // Sort
     r = [...r].sort((a, b) => {
-      let av: number | string = sortKey === 'symbol' ? a.symbol : numVal(a, sortKey);
-      let bv: number | string = sortKey === 'symbol' ? b.symbol : numVal(b, sortKey);
+      let av: number | string = sortKey === 'symbol' ? a.symbol : numVal(a, sortKey, volRatioMap);
+      let bv: number | string = sortKey === 'symbol' ? b.symbol : numVal(b, sortKey, volRatioMap);
       if (typeof av === 'string' && typeof bv === 'string') {
         return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
       }
@@ -267,7 +346,7 @@ export default function SignalFiltersPage() {
     });
 
     return r;
-  }, [data, sigFilter, onlySuppressed, condFilters, search, sortKey, sortDir]);
+  }, [data, market, sigFilter, onlySuppressed, condFilters, search, sortKey, sortDir, volRatioMap]);
 
   const total = data?.length ?? 0;
   const buyCount = data?.filter(r => r.signal === 'BUY').length ?? 0;
@@ -318,6 +397,71 @@ export default function SignalFiltersPage() {
         ))}
       </div>
 
+      {/* ── Preset toolbar ───────────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10, alignItems: 'center' }}>
+        <span style={{ fontSize: 11, color: '#475569', alignSelf: 'center', marginRight: 2, fontWeight: 600 }}>Presets:</span>
+        {BUILT_IN_PRESETS.map(p => {
+          const active = isBuiltInActive(p.state);
+          return (
+            <button
+              key={p.label}
+              onClick={() => applyPreset(p.state)}
+              style={{
+                padding: '5px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                background: active ? '#3b82f620' : '#1e293b',
+                border: active ? '1px solid #3b82f6' : '1px solid #334155',
+                color: active ? '#3b82f6' : '#94a3b8',
+                fontWeight: active ? 700 : 400,
+              }}
+            >
+              {p.label}
+            </button>
+          );
+        })}
+        {/* Saved presets */}
+        {Object.entries(savedPresets).map(([name, preset]) => {
+          const active = isSavedActive(preset);
+          return (
+            <span key={name} style={{ display: 'inline-flex', alignItems: 'center', gap: 0 }}>
+              <button
+                onClick={() => applyPreset(preset)}
+                style={{
+                  padding: '5px 8px', borderRadius: '6px 0 0 6px', fontSize: 12, cursor: 'pointer',
+                  background: active ? '#7c3aed20' : '#1e293b',
+                  border: active ? '1px solid #7c3aed' : '1px solid #7c3aed66',
+                  borderRight: 'none',
+                  color: active ? '#a78bfa' : '#94a3b8',
+                  fontWeight: active ? 700 : 400,
+                }}
+              >
+                {name}
+              </button>
+              <button
+                onClick={() => deleteSavedPreset(name)}
+                title="Delete preset"
+                style={{
+                  padding: '5px 6px', borderRadius: '0 6px 6px 0', fontSize: 11, cursor: 'pointer',
+                  background: active ? '#7c3aed20' : '#1e293b',
+                  border: active ? '1px solid #7c3aed' : '1px solid #7c3aed66',
+                  color: '#64748b',
+                }}
+              >
+                ×
+              </button>
+            </span>
+          );
+        })}
+        <button
+          onClick={saveCurrentPreset}
+          style={{
+            padding: '5px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+            background: '#1e293b', border: '1px solid #334155', color: '#64748b',
+          }}
+        >
+          + Save
+        </button>
+      </div>
+
       {/* ── Controls ─────────────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         {/* Style */}
@@ -328,6 +472,17 @@ export default function SignalFiltersPage() {
               background: style === s ? '#6366f1' : 'transparent',
               color: style === s ? '#fff' : '#64748b',
             }}>{s}</button>
+          ))}
+        </div>
+
+        {/* Market */}
+        <div style={{ display: 'flex', gap: 2, background: '#0b1420', padding: 3, borderRadius: 8, border: '1px solid #1e293b' }}>
+          {(['ALL', 'US', 'HK'] as const).map(m => (
+            <button key={m} onClick={() => setMarket(m)} style={{
+              padding: '5px 12px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+              background: market === m ? '#0ea5e9' : 'transparent',
+              color: market === m ? '#fff' : '#64748b',
+            }}>{m}</button>
           ))}
         </div>
 
@@ -435,6 +590,7 @@ export default function SignalFiltersPage() {
                   </span>
                 </th>
                 <SortTh col="bullish_probability" label="Bull%"   sortKey={sortKey} dir={sortDir} onSort={handleSort} />
+                <SortTh col="vol_ratio"           label="Vol"      sortKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <SortTh col="suppression_count"  label="Filters"  sortKey={sortKey} dir={sortDir} onSort={handleSort} />
 
                 {/* Condition columns — coloured, not sortable, each has ! tooltip */}
@@ -560,6 +716,17 @@ export default function SignalFiltersPage() {
                     <td style={{ ...TD, color: (row.bullish_probability ?? 0) >= 0.5 ? '#22c55e' : '#f87171', fontWeight: 600 }}>
                       {row.bullish_probability != null ? `${(row.bullish_probability * 100).toFixed(1)}%` : '—'}
                     </td>
+
+                    {/* Vol ratio */}
+                    {(() => {
+                      const v = volRatioMap[row.symbol];
+                      const color = v == null ? '#475569' : v > 2.0 ? '#22c55e' : v > 1.5 ? '#eab308' : '#94a3b8';
+                      return (
+                        <td style={{ ...TD, color, fontWeight: v != null && v > 2.0 ? 700 : 400 }}>
+                          {v != null ? `${v.toFixed(1)}x` : '—'}
+                        </td>
+                      );
+                    })()}
 
                     {/* Filter count badge */}
                     <td style={{ ...TD, textAlign: 'center' }}>

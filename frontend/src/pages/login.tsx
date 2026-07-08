@@ -10,15 +10,15 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
-  const [rConfirm, setRConfirm] = useState('');
-  const [resetMsg, setResetMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
+    if (!router.isReady) return;
     if (getSession()) {
-      const next = (router.query.next as string) || '/';
+      const raw = router.query.next as string | undefined;
+      const next = raw && raw.startsWith('/') && raw !== '/login' && raw !== '/gate' ? raw : '/';
       router.replace(next);
     }
-  }, [router.isReady]);
+  }, [router.isReady, router.query]);
 
   async function handleLogin(e: FormEvent) {
     e.preventDefault();
@@ -26,7 +26,8 @@ export default function LoginPage() {
     setLoginError('');
     const ok = await login(username, password);
     if (ok) {
-      const next = (router.query.next as string) || '/';
+      const raw = router.query.next as string | undefined;
+      const next = raw && raw.startsWith('/') && raw !== '/login' && raw !== '/gate' ? raw : '/';
       window.location.href = next;
     } else {
       setLoginError('Incorrect username or password.');

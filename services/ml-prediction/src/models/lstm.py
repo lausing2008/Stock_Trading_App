@@ -45,7 +45,7 @@ class LSTMModel(BaseModel):
         self.net: _LSTMNet | None = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> None:
+    def fit(self, X: np.ndarray, y: np.ndarray, **kwargs) -> None:
         Xs, ys = _windowed(X, y, self.seq_len)
         if len(Xs) == 0:
             raise ValueError("Insufficient data for LSTM training")
@@ -54,7 +54,7 @@ class LSTMModel(BaseModel):
         loss_fn = nn.BCELoss()
 
         ds = TensorDataset(torch.from_numpy(Xs), torch.from_numpy(ys))
-        dl = DataLoader(ds, batch_size=64, shuffle=True)
+        dl = DataLoader(ds, batch_size=64, shuffle=False)
         self.net.train()
         for _ in range(self.epochs):
             for xb, yb in dl:

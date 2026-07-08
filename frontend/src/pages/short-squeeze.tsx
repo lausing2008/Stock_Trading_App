@@ -181,7 +181,16 @@ export default function ShortSqueezePage() {
                         {r.short_ratio != null ? `${r.short_ratio.toFixed(1)}d` : '—'}
                       </td>
                       <td style={{ padding: '10px 14px', textAlign: 'right', color: '#64748b', fontVariantNumeric: 'tabular-nums' }}>
-                        {fmtShares(r.shares_short)}
+                        <div>{fmtShares(r.shares_short)}</div>
+                        {r.shares_short != null && r.shares_short_prior_month != null && (() => {
+                          const rising = r.shares_short > r.shares_short_prior_month!;
+                          const pctChg = Math.abs((r.shares_short - r.shares_short_prior_month!) / r.shares_short_prior_month! * 100);
+                          return (
+                            <div style={{ fontSize: '9px', color: rising ? '#f87171' : '#4ade80', fontWeight: 700 }}>
+                              {rising ? '↑' : '↓'} {pctChg.toFixed(0)}% MoM
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td style={{ padding: '10px 14px', textAlign: 'right', color: '#e2e8f0', fontVariantNumeric: 'tabular-nums' }}>
                         {r.price != null ? (r.price >= 100 ? r.price.toFixed(2) : r.price.toPrecision(4)) : '—'}

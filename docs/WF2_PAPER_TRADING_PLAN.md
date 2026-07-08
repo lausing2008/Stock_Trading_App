@@ -122,7 +122,7 @@ CREATE TABLE paper_trades (
     shares                  FLOAT NOT NULL,
     stop_loss               FLOAT NOT NULL,                  -- initial stop from game plan
     take_profit             FLOAT,
-    horizon                 VARCHAR(16),                     -- SHORT / SWING / LONG
+    horizon                 VARCHAR(16),                     -- SHORT / SWING / LONG / GROWTH
     -- Decision quality at entry
     entry_score             INT,                             -- score from _should_enter()
     entry_decision_notes    JSONB,                          -- list of reasoning strings

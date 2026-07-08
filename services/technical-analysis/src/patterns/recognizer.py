@@ -52,22 +52,126 @@ def detect_head_and_shoulders(df: pd.DataFrame) -> list[PatternHit]:
 
 
 def detect_double_top_bottom(df: pd.DataFrame) -> list[PatternHit]:
+    """Detect double-top and double-bottom reversal patterns with neckline, target, and volume confirmation.
+
+    Double Bottom (BUY reversal):
+      - Two troughs within ±1.5% of each other separated by 5-40 bars
+      - Volume on 2nd trough <= 1.1× volume on 1st trough (buyers less panicked = exhaustion)
+      - Neckline = highest close between the two troughs
+      - Entry trigger = current price > neckline (breakout confirmation)
+      - Target = neckline + (neckline - trough_avg)  [measured move]
+      - Confidence boosted if breakout bar volume > 1.2× 20-bar avg (institutional buying)
+
+    Double Top (SELL / avoid signal):
+      - Two peaks within ±1.5% of each other separated by 5-40 bars
+      - Volume on 2nd peak <= 0.9× volume on 1st peak (bulls losing conviction = distribution)
+      - Neckline = lowest close between the two peaks
+      - Entry trigger = current price < neckline (breakdown confirmation)
+      - Target = neckline - (peak_avg - neckline)  [measured move down]
+    """
     hits: list[PatternHit] = []
-    highs_idx, lows_idx = _find_pivots(df["close"], order=5)
-    if len(highs_idx) >= 2:
-        a, b = highs_idx[-2], highs_idx[-1]
-        if _pct(df["high"].iloc[a], df["high"].iloc[b]) < 0.02:
-            hits.append(PatternHit("double_top", int(a), int(b), 0.7, {}))
+    if len(df) < 30:
+        return hits
+
+    close  = df["close"].astype(float)
+    high   = df["high"].astype(float)
+    low    = df["low"].astype(float)
+    volume = df["volume"].astype(float) if "volume" in df.columns else None
+    current_price = float(close.iloc[-1])
+    vol20_avg = float(volume.rolling(20).mean().iloc[-1]) if volume is not None else None
+
+    highs_idx, lows_idx = _find_pivots(close, order=5)
+
+    # ── Double Bottom ─────────────────────────────────────────────────────────
     if len(lows_idx) >= 2:
-        a, b = lows_idx[-2], lows_idx[-1]
-        if _pct(df["low"].iloc[a], df["low"].iloc[b]) < 0.02:
-            hits.append(PatternHit("double_bottom", int(a), int(b), 0.7, {}))
+        for i in range(len(lows_idx) - 1, 0, -1):
+            b_idx = int(lows_idx[i])
+            a_idx = int(lows_idx[i - 1])
+            gap = b_idx - a_idx
+            if gap < 5 or gap > 60:
+                continue
+            trough_a = float(low.iloc[a_idx])
+            trough_b = float(low.iloc[b_idx])
+            if _pct(trough_a, trough_b) > 0.015:  # troughs must be within 1.5%
+                continue
+            # Neckline = highest close between the two troughs
+            neckline = float(close.iloc[a_idx:b_idx + 1].max())
+            trough_avg = (trough_a + trough_b) / 2
+            target = round(neckline + (neckline - trough_avg), 2)
+            stop   = round(min(trough_a, trough_b) * 0.995, 2)
+
+            # Volume confirmation: 2nd trough volume <= 1.1x 1st trough (exhaustion)
+            vol_confirmed = True
+            vol_boost = False
+            if volume is not None:
+                vol_a = float(volume.iloc[a_idx])
+                vol_b = float(volume.iloc[b_idx])
+                vol_confirmed = vol_b <= vol_a * 1.10  # second trough should not be higher volume
+                # Breakout on high volume = institutional buying
+                if current_price > neckline and vol20_avg and float(volume.iloc[-1]) > vol20_avg * 1.20:
+                    vol_boost = True
+
+            # Entry trigger: has price broken out above neckline?
+            neckline_broken = current_price > neckline * 1.002  # small buffer
+            base_conf = 0.70 if vol_confirmed else 0.55
+            conf = min(0.92, base_conf + (0.10 if neckline_broken else 0.0) + (0.08 if vol_boost else 0.0))
+
+            hits.append(PatternHit(
+                "double_bottom", a_idx, b_idx, round(conf, 2),
+                {
+                    "trough_a": trough_a, "trough_b": trough_b,
+                    "neckline": neckline, "target": target, "stop": stop,
+                    "neckline_broken": neckline_broken, "vol_confirmed": vol_confirmed,
+                }
+            ))
+            break  # use most recent valid pair only
+
+    # ── Double Top ────────────────────────────────────────────────────────────
+    if len(highs_idx) >= 2:
+        for i in range(len(highs_idx) - 1, 0, -1):
+            b_idx = int(highs_idx[i])
+            a_idx = int(highs_idx[i - 1])
+            gap = b_idx - a_idx
+            if gap < 5 or gap > 60:
+                continue
+            peak_a = float(high.iloc[a_idx])
+            peak_b = float(high.iloc[b_idx])
+            if _pct(peak_a, peak_b) > 0.015:
+                continue
+            neckline = float(close.iloc[a_idx:b_idx + 1].min())
+            peak_avg = (peak_a + peak_b) / 2
+            target = round(neckline - (peak_avg - neckline), 2)
+
+            # Volume confirmation: 2nd peak volume <= 0.9x 1st peak (distribution, bulls fading)
+            vol_confirmed = True
+            if volume is not None:
+                vol_a = float(volume.iloc[a_idx])
+                vol_b = float(volume.iloc[b_idx])
+                vol_confirmed = vol_b <= vol_a * 0.90
+
+            neckline_broken = current_price < neckline * 0.998
+            base_conf = 0.70 if vol_confirmed else 0.55
+            conf = min(0.92, base_conf + (0.10 if neckline_broken else 0.0))
+
+            hits.append(PatternHit(
+                "double_top", a_idx, b_idx, round(conf, 2),
+                {
+                    "peak_a": peak_a, "peak_b": peak_b,
+                    "neckline": neckline, "target": target,
+                    "neckline_broken": neckline_broken, "vol_confirmed": vol_confirmed,
+                }
+            ))
+            break
+
     return hits
 
 
 def detect_triangle(df: pd.DataFrame, window: int = 60) -> list[PatternHit]:
     """Ascending/descending/symmetric triangles via converging pivot slopes."""
     sub = df.tail(window)
+    # _find_pivots returns 0-based indices within the sub-window slice; convert
+    # to absolute df positions by adding the slice offset.
+    offset = len(df) - len(sub)
     highs_idx, lows_idx = _find_pivots(sub["close"], order=3)
     if len(highs_idx) < 2 or len(lows_idx) < 2:
         return []
@@ -81,7 +185,9 @@ def detect_triangle(df: pd.DataFrame, window: int = 60) -> list[PatternHit]:
         kind = "descending_triangle"
     else:
         return []
-    return [PatternHit(kind, int(highs_idx[0]), int(lows_idx[-1]), 0.6, {"high_slope": float(hs), "low_slope": float(ls)})]
+    start = offset + int(min(highs_idx[0], lows_idx[0]))
+    end   = offset + int(max(highs_idx[-1], lows_idx[-1]))
+    return [PatternHit(kind, start, end, 0.6, {"high_slope": float(hs), "low_slope": float(ls)})]
 
 
 def detect_flag_pennant(df: pd.DataFrame, pole_window: int = 10, flag_window: int = 20) -> list[PatternHit]:

@@ -1,4 +1,5 @@
 import type { RankingRow, LatestPrice, SignalSummary } from '@/lib/api';
+type SymbolWR = Record<string, { wr: number; n: number }>;
 import { confluenceScore, confluenceGrade } from '@/lib/confluence';
 
 type PriceMap = Record<string, LatestPrice>;
@@ -18,6 +19,7 @@ export default function RankingsTable({
   selectedSymbols,
   onToggleCompare,
   boardSet,
+  symbolWR,
 }: {
   rows: RankingRow[];
   prices?: PriceMap;
@@ -25,6 +27,7 @@ export default function RankingsTable({
   selectedSymbols?: Set<string>;
   onToggleCompare?: (symbol: string) => void;
   boardSet?: Set<string>;
+  symbolWR?: SymbolWR;
 }) {
   return (
     <div className="overflow-x-auto rounded-md border border-slate-800">
@@ -42,6 +45,9 @@ export default function RankingsTable({
             <th className="px-3 py-2 text-right">Volume</th>
             <th className="px-3 py-2 text-right">vs Avg</th>
             <th className="px-3 py-2 text-right">K-Score</th>
+            <th className="px-3 py-2 text-center">Signal</th>
+            <th className="px-3 py-2 text-right" title="Fused ML bullish probability (0–100%). >65% = BUY threshold">Bull%</th>
+            <th className="px-3 py-2 text-right" title="Signal confidence 0–100: composite measure of signal strength and indicator alignment">Conf%</th>
             <th className="px-3 py-2 text-right" title="Relative Strength vs sector ETF (0-100). >60 = leading sector, <40 = lagging">RS</th>
             <th className="px-3 py-2 text-right">Confluence</th>
             <th className="px-3 py-2 text-right">Fair Price</th>
@@ -62,8 +68,14 @@ export default function RankingsTable({
             const sig = signals?.[r.symbol];
             const cs = pending ? null : confluenceScore(r, sig);
             const grade = cs != null ? confluenceGrade(cs) : null;
+            const signal = sig?.signal ?? null;
+            const divergeBg = !pending && r.score != null && signal != null
+              ? r.score >= 65 && signal === 'SELL' ? 'rgba(239,68,68,0.07)'
+              : r.score >= 65 && signal === 'HOLD' ? 'rgba(251,191,36,0.06)'
+              : r.score < 40 && signal === 'BUY' ? 'rgba(251,191,36,0.06)'
+              : undefined : undefined;
             return (
-              <tr key={r.symbol} className={`border-t border-slate-800 hover:bg-slate-900${pending ? ' opacity-50' : ''}`}>
+              <tr key={r.symbol} className={`border-t border-slate-800 hover:bg-slate-900${pending ? ' opacity-50' : ''}`} style={divergeBg ? { background: divergeBg } : undefined}>
                 {onToggleCompare && (
                   <td className="px-2 py-2">
                     <button
@@ -85,6 +97,17 @@ export default function RankingsTable({
                 <td className="px-3 py-2 font-medium">
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <a href={`/stock/${r.symbol}`} className="text-indigo-400 hover:underline">{r.symbol}</a>
+                    {symbolWR?.[r.symbol] && (() => {
+                      const { wr, n } = symbolWR[r.symbol];
+                      const wrPct = Math.round(wr * 100);
+                      const col = wrPct >= 55 ? '#22c55e' : wrPct >= 45 ? '#f59e0b' : '#ef4444';
+                      return (
+                        <span style={{ fontSize: '9px', fontWeight: 700, color: col, background: `${col}18`, border: `1px solid ${col}44`, padding: '1px 4px', borderRadius: '3px', whiteSpace: 'nowrap' }}
+                              title={`90d win rate: ${wrPct}% (${n} outcomes)`}>
+                          {wrPct}%WR
+                        </span>
+                      );
+                    })()}
                     {boardSet?.has(r.symbol) && (
                       <span style={{ fontSize: '9px', fontWeight: 700, padding: '1px 6px', borderRadius: '4px', color: '#34d399', background: 'rgba(52,211,153,0.12)', border: '1px solid rgba(52,211,153,0.3)', whiteSpace: 'nowrap' }}>
                         ✓ On Board
@@ -114,6 +137,43 @@ export default function RankingsTable({
                 </td>
                 <td className="px-3 py-2 text-right font-semibold">
                   {pending ? <span className="text-xs text-slate-600">Pending data</span> : r.score != null ? r.score.toFixed(1) : '—'}
+                </td>
+                <td className="px-3 py-2 text-center">
+                  {signal ? (
+                    <span style={{
+                      fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
+                      color: signal === 'BUY' ? '#4ade80' : signal === 'SELL' ? '#f87171' : '#64748b',
+                      background: signal === 'BUY' ? 'rgba(74,222,128,0.12)' : signal === 'SELL' ? 'rgba(248,113,113,0.12)' : 'rgba(100,116,139,0.12)',
+                    }}>{signal}</span>
+                  ) : <span className="text-slate-700">—</span>}
+                  {signal === 'HOLD' && sig?.bullish_probability != null && sig.bullish_probability >= 0.55 && sig.bullish_probability < 0.65 && (
+                    <span style={{ fontSize: '9px', fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', padding: '1px 4px', borderRadius: 3, marginLeft: 4, whiteSpace: 'nowrap' }}
+                          title={`Near BUY — ${(sig.bullish_probability * 100).toFixed(1)}% bullish probability (threshold: 65%)`}>
+                      ~BUY
+                    </span>
+                  )}
+                  {(signal === 'HOLD' || signal === 'WAIT') && sig?.bullish_probability != null && sig.bullish_probability > 0.35 && sig.bullish_probability <= 0.45 && (
+                    <span style={{ fontSize: '9px', fontWeight: 700, color: '#f87171', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)', padding: '1px 4px', borderRadius: 3, marginLeft: 4, whiteSpace: 'nowrap' }}
+                          title={`Near SELL — ${(sig.bullish_probability * 100).toFixed(1)}% bullish probability (approaching sell zone: ≤35%)`}>
+                      ~SELL
+                    </span>
+                  )}
+                </td>
+                <td className="px-3 py-2 text-right text-xs font-semibold" style={{
+                  color: sig?.bullish_probability == null ? '#475569'
+                    : sig.bullish_probability >= 0.65 ? '#4ade80'
+                    : sig.bullish_probability >= 0.5 ? '#94a3b8'
+                    : '#f87171',
+                }}>
+                  {sig?.bullish_probability != null ? `${(sig.bullish_probability * 100).toFixed(1)}%` : '—'}
+                </td>
+                <td className="px-3 py-2 text-right text-xs font-semibold" style={{
+                  color: sig?.confidence == null ? '#475569'
+                    : sig.confidence >= 70 ? '#22c55e'
+                    : sig.confidence >= 55 ? '#f59e0b'
+                    : '#f87171',
+                }}>
+                  {sig?.confidence != null ? sig.confidence.toFixed(0) : '—'}
                 </td>
                 <td className="px-3 py-2 text-right text-xs font-semibold" style={{
                   color: r.relative_strength == null ? '#475569'

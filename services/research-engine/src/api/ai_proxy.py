@@ -5,13 +5,21 @@ the gateway falls back to the admin-configured shared key stored in Redis
 (set via POST /admin/config in market-data with claude_api_key / deepseek_api_key).
 
 This means regular users get full AI features without needing their own API keys.
+
+T233-ARCH-AIPROXY-EXTRACT: moved here from api-gateway 2026-07-04. api-gateway is
+meant to be a pure reverse proxy; this is a business feature (LLM chat) that only
+lived there because the gateway happened to be the one service with outbound
+internet access. research-engine already reads the same admin-configured
+stockai:admin:claude_api_key/deepseek_api_key Redis keys for its own report-chat
+feature, so this consolidates onto a service that already depends on the same
+config rather than duplicating it a third time.
 """
 from __future__ import annotations
 
 import httpx
 import redis as redis_lib
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from common.config import get_settings
 from common.jwt_auth import get_current_username
@@ -58,7 +66,7 @@ class AiChatRequest(BaseModel):
     api_key: str = ""   # optional — falls back to admin shared key in Redis
     messages: list[AiMessage]
     system: str | None = None
-    max_tokens: int = 2048
+    max_tokens: int = Field(default=2048, ge=1, le=4096)
     temperature: float = 0.2
 
 
@@ -115,7 +123,7 @@ async def _claude(req: AiChatRequest, api_key: str, model: str) -> AiChatRespons
             detail = r.json().get("error", {}).get("message", r.text)
         except Exception:
             detail = r.text
-        raise HTTPException(r.status_code, f"Claude error: {detail}")
+        raise HTTPException(502, f"Claude error: {detail}")
 
     try:
         data = r.json()
@@ -155,7 +163,7 @@ async def _deepseek(req: AiChatRequest, api_key: str, model: str) -> AiChatRespo
             detail = r.json().get("error", {}).get("message", r.text)
         except Exception:
             detail = r.text
-        raise HTTPException(r.status_code, f"DeepSeek error: {detail}")
+        raise HTTPException(502, f"DeepSeek error: {detail}")
 
     try:
         data = r.json()

@@ -12,6 +12,7 @@ For each symbol the tuner:
 from __future__ import annotations
 
 import json
+import os
 
 import numpy as np
 import optuna
@@ -23,8 +24,8 @@ from xgboost import XGBClassifier
 
 from common.logging import get_logger
 
-from ..features import build_features, compute_label_threshold, fetch_macro_features
-from .trainer import _blend_weights, _load_prices, _params_path, _recency_weights, train_model
+from ..features import build_features, compute_label_threshold, fetch_macro_features, fetch_sector_features, fetch_signal_outcome_features
+from .trainer import _blend_weights, _load_earnings_features, _load_fund_snapshots, _load_fundamentals, _load_hk_flow_features, _load_prices, _params_path, _recency_weights, train_model
 
 log = get_logger("tuner")
 
@@ -70,18 +71,74 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
         log.warning("tune.skipped", symbol=symbol, reason=str(exc))
         return {"symbol": symbol, "skipped": True, "reason": str(exc)}
 
-    # Fetch macro features (same as train_model for consistency)
+    # Fetch macro features (same as train_model for consistency; HSI included for HK symbols)
     macro_df = None
+    start_date = None
     try:
         start_date = pd.to_datetime(df["ts"]).min().date()
-        macro_df = fetch_macro_features(start_date, date.today() + timedelta(days=1))
+        end_date = date.today() + timedelta(days=1)
+        macro_df = fetch_macro_features(start_date, end_date, symbol=symbol)
+    except Exception:
+        end_date = date.today() + timedelta(days=1)
+
+    # TIER90: sector relative strength vs SPY (same as train_model)
+    sector_df = None
+    if start_date is not None:
+        try:
+            sector_df = fetch_sector_features(symbol, start_date, end_date)
+        except Exception:
+            pass
+
+    # T206: rolling signal accuracy features (same as train_model)
+    outcome_df = None
+    if start_date is not None:
+        try:
+            outcome_df = fetch_signal_outcome_features(symbol, start_date, end_date)
+        except Exception:
+            pass
+
+    # Use only the first 70% of data to compute the label threshold,
+    # matching the training split and preventing test-set leakage.
+    # HK stocks use a wider ceiling (5%) to accommodate their higher volatility.
+    _thresh_cutoff = max(int(len(df) * 0.70), 60)
+    label_threshold = compute_label_threshold(df.iloc[:_thresh_cutoff], horizon, symbol=symbol)
+
+    fund_data: dict = {}
+    try:
+        fund_data = _load_fundamentals(symbol) or {}
+    except Exception:
+        pass
+    # T220-F: store symbol so build_features can look up earnings revision direction
+    fund_data["_symbol"] = symbol
+    try:
+        fund_data.update(_load_earnings_features(symbol))
+    except Exception:
+        pass
+    try:
+        fund_data.update(_load_hk_flow_features(symbol))
     except Exception:
         pass
 
-    label_threshold = compute_label_threshold(df, horizon)
+    # T234-ML-TUNER-MISSING-PIT: this call was never passing fund_snapshots, so the tuner
+    # always fell through to build_features' plain broadcast-from-today's-snapshot path for
+    # ALL fundamentals columns — including the 4 original T228-protected ones (revenue_growth,
+    # earnings_growth, return_on_equity, recommendation_mean) — meaning Optuna was tuning
+    # hyperparameters against lookahead-biased features even though train_model() (trainer.py)
+    # already does this correctly for the same symbol. Matches trainer.py's own wiring exactly.
+    fund_snapshots: list[dict] = []
+    try:
+        fund_snapshots = _load_fund_snapshots(symbol)
+    except Exception:
+        pass
+
     X, y_dir, _ = build_features(
-        df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold
+        df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold,
+        fund_data=fund_data, sector_df=sector_df, outcome_df=outcome_df,
+        fund_snapshots=fund_snapshots,
     )
+    # Restrict tuner to first 85% of data to avoid leaking the test period
+    cutoff = int(len(X) * 0.85)
+    X, y_dir = X.iloc[:cutoff], y_dir.iloc[:cutoff]
     if len(X) < 300:
         reason = f"only {len(X)} clean samples (need ≥300 for tuning)"
         log.warning("tune.skipped", symbol=symbol, reason=reason)
@@ -99,12 +156,17 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
             random_state=42,
             tree_method="hist",
         )
-        tscv = TimeSeriesSplit(n_splits=5)
+        # T232-ML4: purge/embargo gap of `horizon` bars between train and validation folds —
+        # without it, training rows within `horizon` bars of a validation fold's start have
+        # forward-return labels computed from prices that overlap the validation window.
+        tscv = TimeSeriesSplit(n_splits=5, gap=horizon)
         aucs: list[float] = []
         for fold, (tr_idx, val_idx) in enumerate(tscv.split(X_arr)):
             X_tr, X_val = X_arr[tr_idx], X_arr[val_idx]
             y_tr, y_val = y_arr[tr_idx], y_arr[val_idx]
             sc = StandardScaler()
+            if len(np.unique(y_tr)) < 2:
+                continue
             # ML-FIX-2 + ML-FIX-3: blended weights (recency × balanced class) in tuner too
             recency_w = _recency_weights(len(tr_idx), newest_to_oldest_ratio=5.0)
             w = _blend_weights(y_tr, recency_w)
@@ -127,17 +189,23 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
     # ML-FIX-3: MedianPruner kills trials that are below the median after 10 startup trials.
     # n_warmup_steps=2 means the first 2 folds are never pruned (not enough data for the pruner).
     pruner = MedianPruner(n_startup_trials=10, n_warmup_steps=2)
-    study = optuna.create_study(direction="minimize", pruner=pruner)
+    study = optuna.create_study(
+        direction="minimize",
+        pruner=pruner,
+        sampler=optuna.samplers.TPESampler(seed=42),
+    )
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
 
     best_params = study.best_params
     best_cv_auc = -study.best_value
 
-    # Persist best params
+    # Persist best params — atomic write to avoid partial-read race with _load_best_params
     p = _params_path(symbol)
     p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "w") as f:
+    tmp = p.with_suffix(".tmp")
+    with open(tmp, "w") as f:
         json.dump(best_params, f, indent=2)
+    os.replace(tmp, p)
     log.info("tune.best_params", symbol=symbol, cv_auc=round(best_cv_auc, 4), **best_params)
 
     # Retrain final model using best params (train_model will pick them up via _load_best_params)

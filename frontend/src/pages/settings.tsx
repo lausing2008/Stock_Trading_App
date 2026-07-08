@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { loadSettings, saveSettings, type AppSettings } from '@/lib/settings';
 import { getSession, changePassword, startImpersonation } from '@/lib/auth';
-import { api, type AppUser } from '@/lib/api';
+import { api, type AppUser, type BrokerConnection, type BrokerType } from '@/lib/api';
 import { storage } from '@/lib/storage';
 
 const inp: React.CSSProperties = {
@@ -97,10 +97,29 @@ export default function SettingsPage() {
   const session = getSession();
   const isAdmin = session?.role === 'admin';
 
+  // Feature flags (admin-controlled)
+  const [brokerEnabled, setBrokerEnabled] = useState(false);
+  const [featureFlagSaving, setFeatureFlagSaving] = useState(false);
+
+  useEffect(() => {
+    api.getFeatureFlags().then(f => setBrokerEnabled(f.broker_enabled)).catch(() => {});
+  }, []);
+
+  async function handleToggleBroker(val: boolean) {
+    setFeatureFlagSaving(true);
+    try {
+      await api.pushConfig({ broker_enabled: val });
+      setBrokerEnabled(val);
+    } catch { /* ignore */ } finally {
+      setFeatureFlagSaving(false);
+    }
+  }
+
   // Profile email
   const [profileEmail, setProfileEmail] = useState('');
   const [emailMsg, setEmailMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [emailSaving, setEmailSaving] = useState(false);
+  const [syncingEmail, setSyncingEmail] = useState(false);
 
   useEffect(() => {
     api.getMe().then(u => { if (u.email) setProfileEmail(u.email); }).catch(() => {});
@@ -113,12 +132,30 @@ export default function SettingsPage() {
     try {
       await api.updateProfile({ email: profileEmail.trim() || undefined });
       if (profileEmail.trim()) localStorage.setItem('stockai_alert_email', profileEmail.trim());
-      setEmailMsg({ ok: true, text: 'Email saved.' });
+      // Auto-sync to all alerts after saving
+      if (profileEmail.trim()) {
+        try { await api.syncAlertEmail(); } catch {}
+      }
+      setEmailMsg({ ok: true, text: 'Email saved and synced to all alerts.' });
       setTimeout(() => setEmailMsg(null), 3000);
     } catch {
       setEmailMsg({ ok: false, text: 'Failed to save email.' });
     } finally {
       setEmailSaving(false);
+    }
+  }
+
+  async function handleSyncEmail() {
+    setSyncingEmail(true);
+    setEmailMsg(null);
+    try {
+      const r = await api.syncAlertEmail();
+      setEmailMsg({ ok: true, text: `Synced to ${r.price_alerts_updated} price alert${r.price_alerts_updated !== 1 ? 's' : ''} and ${r.signal_alerts_updated} signal alert${r.signal_alerts_updated !== 1 ? 's' : ''}.` });
+      setTimeout(() => setEmailMsg(null), 4000);
+    } catch (err: any) {
+      setEmailMsg({ ok: false, text: err?.message || 'Sync failed — make sure you have an email saved.' });
+    } finally {
+      setSyncingEmail(false);
     }
   }
 
@@ -138,6 +175,95 @@ export default function SettingsPage() {
   const [resetTarget, setResetTarget] = useState('');
   const [resetPwd, setResetPwd] = useState('');
   const [resetMsg, setResetMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // Broker accounts
+  const [brokers, setBrokers] = useState<BrokerConnection[]>([]);
+  const [brokerLoading, setBrokerLoading] = useState(false);
+  const [brokerMsg, setBrokerMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [newBrokerType, setNewBrokerType] = useState<BrokerType>('etrade_sandbox');
+  const [newBrokerName, setNewBrokerName] = useState('');
+  const [newBrokerKey, setNewBrokerKey] = useState('');
+  const [newBrokerSecret, setNewBrokerSecret] = useState('');
+  const [newBrokerAcctNum, setNewBrokerAcctNum] = useState('');
+  const [oauthUrl, setOauthUrl] = useState<Record<number, string>>({});
+  const [oauthVerifier, setOauthVerifier] = useState<Record<number, string>>({});
+  const [brokerAccount, setBrokerAccount] = useState<Record<number, { equity: number; cash: number; buying_power: number } | null>>({});
+
+  useEffect(() => {
+    if (!session) return;
+    api.brokerList().then(setBrokers).catch(() => {});
+  }, []);
+
+  async function handleCreateBroker(e: React.FormEvent) {
+    e.preventDefault();
+    setBrokerLoading(true);
+    setBrokerMsg(null);
+    try {
+      const payload: Parameters<typeof api.brokerCreate>[0] = {
+        name: newBrokerName.trim(),
+        broker_type: newBrokerType,
+      };
+      if (newBrokerType === 'etrade' || newBrokerType === 'etrade_sandbox') {
+        payload.consumer_key    = newBrokerKey.trim();
+        payload.consumer_secret = newBrokerSecret.trim();
+      } else {
+        payload.account_number = newBrokerAcctNum.trim();
+      }
+      const conn = await api.brokerCreate(payload);
+      setBrokers(prev => [...prev, conn]);
+      setNewBrokerName(''); setNewBrokerKey(''); setNewBrokerSecret(''); setNewBrokerAcctNum('');
+      setBrokerMsg({ ok: true, text: 'Broker connection added.' });
+      setTimeout(() => setBrokerMsg(null), 3000);
+    } catch (err: unknown) {
+      setBrokerMsg({ ok: false, text: err instanceof Error ? err.message : 'Failed to add broker.' });
+    } finally {
+      setBrokerLoading(false);
+    }
+  }
+
+  async function handleDeleteBroker(id: number) {
+    if (!confirm('Remove this broker connection?')) return;
+    try {
+      await api.brokerDelete(id);
+      setBrokers(prev => prev.filter(b => b.id !== id));
+    } catch {
+      setBrokerMsg({ ok: false, text: 'Failed to remove broker.' });
+    }
+  }
+
+  async function handleOAuthStart(id: number) {
+    try {
+      const res = await api.brokerOAuthStart(id);
+      setOauthUrl(prev => ({ ...prev, [id]: res.authorize_url }));
+    } catch (err: unknown) {
+      setBrokerMsg({ ok: false, text: err instanceof Error ? err.message : 'OAuth start failed.' });
+    }
+  }
+
+  async function handleOAuthComplete(id: number) {
+    const verifier = (oauthVerifier[id] || '').trim();
+    if (!verifier) return;
+    try {
+      await api.brokerOAuthComplete(id, verifier);
+      const updated = await api.brokerList();
+      setBrokers(updated);
+      setOauthUrl(prev => { const n = { ...prev }; delete n[id]; return n; });
+      setOauthVerifier(prev => { const n = { ...prev }; delete n[id]; return n; });
+      setBrokerMsg({ ok: true, text: 'E*Trade authorized successfully.' });
+      setTimeout(() => setBrokerMsg(null), 3000);
+    } catch (err: unknown) {
+      setBrokerMsg({ ok: false, text: err instanceof Error ? err.message : 'OAuth failed.' });
+    }
+  }
+
+  async function handleLoadAccount(id: number) {
+    try {
+      const acct = await api.brokerAccount(id);
+      setBrokerAccount(prev => ({ ...prev, [id]: { equity: acct.equity, cash: acct.cash_available, buying_power: acct.buying_power } }));
+    } catch (err: unknown) {
+      setBrokerMsg({ ok: false, text: err instanceof Error ? err.message : 'Failed to load account.' });
+    }
+  }
 
   // Admin shared AI key
   const [sharedKeyMsg, setSharedKeyMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -380,9 +506,13 @@ export default function SettingsPage() {
     setAiTestMsg('');
     try {
       const base = process.env.NEXT_PUBLIC_API_URL ?? '/api';
+      const token = typeof window !== 'undefined' ? localStorage.getItem('stockai_jwt')?.trim() : null;
       const res = await fetch(`${base}/ai/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           provider: s.aiProvider,
           model: s.aiProvider === 'claude' ? s.claudeModel : s.deepseekModel,
@@ -968,7 +1098,7 @@ export default function SettingsPage() {
               placeholder="you@example.com"
               style={inp}
             />
-            <div style={hint}>Price alert emails are sent here. Set it once — no need to type it per alert.</div>
+            <div style={hint}>Price &amp; signal alert emails are sent here. Saving auto-syncs to all your existing alerts.</div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingBottom: '2px' }}>
             {emailMsg && (
@@ -976,10 +1106,18 @@ export default function SettingsPage() {
             )}
             <button
               type="submit"
-              disabled={emailSaving}
-              style={{ padding: '8px 18px', borderRadius: '8px', border: 'none', background: '#f59e0b', color: '#0f172a', fontSize: '13px', fontWeight: 700, cursor: emailSaving ? 'not-allowed' : 'pointer', opacity: emailSaving ? 0.6 : 1 }}
+              disabled={emailSaving || syncingEmail}
+              style={{ padding: '8px 18px', borderRadius: '8px', border: 'none', background: '#f59e0b', color: '#0f172a', fontSize: '13px', fontWeight: 700, cursor: (emailSaving || syncingEmail) ? 'not-allowed' : 'pointer', opacity: (emailSaving || syncingEmail) ? 0.6 : 1 }}
             >
               {emailSaving ? 'Saving…' : 'Save Email'}
+            </button>
+            <button
+              type="button"
+              onClick={handleSyncEmail}
+              disabled={syncingEmail || emailSaving}
+              style={{ padding: '8px 18px', borderRadius: '8px', border: '1px solid #334155', background: 'transparent', color: '#94a3b8', fontSize: '13px', fontWeight: 600, cursor: (syncingEmail || emailSaving) ? 'not-allowed' : 'pointer', opacity: (syncingEmail || emailSaving) ? 0.6 : 1 }}
+            >
+              {syncingEmail ? 'Syncing…' : 'Sync to all alerts'}
             </button>
           </div>
         </form>
@@ -1018,6 +1156,154 @@ export default function SettingsPage() {
           </div>
         </form>
       </div>
+
+      {/* ── Broker Accounts (only when feature enabled) ───────────── */}
+      {brokerEnabled && <div style={section('#22d3ee')}>
+        <div style={sectionBar('linear-gradient(90deg,#22d3ee,#67e8f9,#22d3ee)')} />
+        <div style={sectionHead}>Broker Accounts</div>
+
+        {/* Existing connections */}
+        {brokers.length > 0 && (
+          <div style={{ padding: '0 20px 8px' }}>
+            {brokers.map(b => {
+              const isEtrade = b.broker_type === 'etrade' || b.broker_type === 'etrade_sandbox';
+              const typeLabel: Record<string, string> = {
+                etrade:          'E*Trade Live',
+                etrade_sandbox:  'E*Trade Sandbox',
+                fidelity_manual: 'Fidelity (Manual)',
+              };
+              const acct = brokerAccount[b.id];
+              return (
+                <div key={b.id} style={{ background: '#0f172a', borderRadius: 8, padding: '12px 14px', marginBottom: 10, border: '1px solid #1e293b' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>{b.name}</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4, background: 'rgba(34,211,238,0.1)', border: '1px solid rgba(34,211,238,0.25)', color: '#22d3ee' }}>
+                      {typeLabel[b.broker_type] ?? b.broker_type}
+                    </span>
+                    {b.is_authorized
+                      ? <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4, background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.25)', color: '#4ade80' }}>✓ Authorized</span>
+                      : <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4, background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.25)', color: '#fbbf24' }}>⚠ Not authorized</span>
+                    }
+                    {b.account_id && <span style={{ fontSize: 11, color: '#475569' }}>#{b.account_id}</span>}
+                  </div>
+
+                  {/* E*Trade OAuth flow */}
+                  {isEtrade && !b.is_authorized && (
+                    <div style={{ marginBottom: 8 }}>
+                      {!oauthUrl[b.id] ? (
+                        <button onClick={() => handleOAuthStart(b.id)} style={{ padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: 'pointer', background: 'rgba(34,211,238,0.1)', border: '1px solid rgba(34,211,238,0.3)', color: '#22d3ee' }}>
+                          Authorize with E*Trade →
+                        </button>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          <a href={oauthUrl[b.id]} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: '#22d3ee', wordBreak: 'break-all' }}>
+                            1. Click here to authorize on E*Trade ↗
+                          </a>
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            <input
+                              placeholder="2. Enter the PIN/verifier E*Trade showed you"
+                              value={oauthVerifier[b.id] || ''}
+                              onChange={e => setOauthVerifier(prev => ({ ...prev, [b.id]: e.target.value }))}
+                              style={{ ...inpKey, maxWidth: 300 }}
+                            />
+                            <button onClick={() => handleOAuthComplete(b.id)} style={{ padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: 'pointer', background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.3)', color: '#4ade80', whiteSpace: 'nowrap' }}>
+                              Complete
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Reconnect (renew token, once per trading day) */}
+                  {isEtrade && b.is_authorized && (
+                    <button onClick={() => api.brokerReconnect(b.id).then(() => setBrokerMsg({ ok: true, text: 'Session renewed.' })).catch(err => setBrokerMsg({ ok: false, text: String(err) }))}
+                      style={{ padding: '5px 12px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer', background: 'rgba(34,211,238,0.08)', border: '1px solid rgba(34,211,238,0.2)', color: '#67e8f9', marginRight: 6 }}>
+                      Renew Today&apos;s Session
+                    </button>
+                  )}
+
+                  {/* Load account balance */}
+                  {b.is_authorized && (
+                    <button onClick={() => handleLoadAccount(b.id)} style={{ padding: '5px 12px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer', background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)', color: '#818cf8', marginRight: 6 }}>
+                      Load Balance
+                    </button>
+                  )}
+                  <button onClick={() => handleDeleteBroker(b.id)} style={{ padding: '5px 12px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171' }}>
+                    Remove
+                  </button>
+
+                  {acct && (
+                    <div style={{ display: 'flex', gap: 16, marginTop: 8, fontSize: 12, color: '#94a3b8' }}>
+                      <span>Equity: <strong style={{ color: '#e2e8f0' }}>${acct.equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong></span>
+                      <span>Cash: <strong style={{ color: '#e2e8f0' }}>${acct.cash.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong></span>
+                      <span>Buying power: <strong style={{ color: '#e2e8f0' }}>${acct.buying_power.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong></span>
+                    </div>
+                  )}
+
+                  {b.broker_type === 'fidelity_manual' && (
+                    <p style={{ fontSize: 11, color: '#475569', marginTop: 6, marginBottom: 0 }}>
+                      Fidelity does not provide a public trading API. The app will show trade instructions that you execute manually in Fidelity&apos;s platform.
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Add new connection */}
+        <form onSubmit={handleCreateBroker} style={{ padding: '4px 20px 16px' }}>
+          <label style={lbl}>Add Broker Connection</label>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+            <div style={{ flex: '0 0 auto' }}>
+              <label style={{ ...lbl, marginBottom: 4 }}>Broker</label>
+              <select value={newBrokerType} onChange={e => setNewBrokerType(e.target.value as BrokerType)} style={{ ...inp, width: 'auto', minWidth: 180 }}>
+                <option value="etrade_sandbox">E*Trade Sandbox (paper)</option>
+                <option value="etrade">E*Trade Live</option>
+                <option value="fidelity_manual">Fidelity (Manual)</option>
+              </select>
+            </div>
+            <div style={{ flex: '1 1 160px' }}>
+              <label style={{ ...lbl, marginBottom: 4 }}>Display Name</label>
+              <input value={newBrokerName} onChange={e => setNewBrokerName(e.target.value)} required placeholder="e.g. My E*Trade" style={inp} />
+            </div>
+          </div>
+          {(newBrokerType === 'etrade' || newBrokerType === 'etrade_sandbox') && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+              <div style={{ flex: '1 1 200px' }}>
+                <label style={{ ...lbl, marginBottom: 4 }}>Consumer Key</label>
+                <input value={newBrokerKey} onChange={e => setNewBrokerKey(e.target.value)} required placeholder="From E*Trade developer portal" style={inpKey} />
+              </div>
+              <div style={{ flex: '1 1 200px' }}>
+                <label style={{ ...lbl, marginBottom: 4 }}>Consumer Secret</label>
+                <input type="password" value={newBrokerSecret} onChange={e => setNewBrokerSecret(e.target.value)} required placeholder="Consumer secret" style={inpKey} />
+              </div>
+            </div>
+          )}
+          {newBrokerType === 'fidelity_manual' && (
+            <div style={{ flex: '1 1 200px', marginBottom: 8 }}>
+              <label style={{ ...lbl, marginBottom: 4 }}>Account Number</label>
+              <input value={newBrokerAcctNum} onChange={e => setNewBrokerAcctNum(e.target.value)} placeholder="e.g. Z12345678" style={inp} />
+            </div>
+          )}
+          <p style={hint}>
+            {newBrokerType === 'etrade_sandbox'
+              ? 'Register at developer.etrade.com → Create a sandbox app → copy Consumer Key + Secret here. After saving, click "Authorize" to complete OAuth.'
+              : newBrokerType === 'etrade'
+              ? 'Use production Consumer Key + Secret from developer.etrade.com. Tokens expire daily — click "Renew Today\'s Session" each trading morning.'
+              : 'No API credentials needed. Trade instructions will be shown for manual execution in Fidelity\'s platform.'}
+          </p>
+          <button type="submit" disabled={brokerLoading} style={{ padding: '8px 18px', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer', background: 'rgba(34,211,238,0.1)', border: '1px solid rgba(34,211,238,0.3)', color: '#22d3ee' }}>
+            {brokerLoading ? 'Saving…' : '+ Add Broker'}
+          </button>
+          {brokerMsg && (
+            <span style={{ marginLeft: 12, fontSize: 12, color: brokerMsg.ok ? '#4ade80' : '#f87171' }}>
+              {brokerMsg.text}
+            </span>
+          )}
+        </form>
+      </div>}
 
       {/* ── User Management (admin only) ───────────────────────────── */}
       {/* ── Import / Export ── */}
@@ -1068,6 +1354,32 @@ export default function SettingsPage() {
           </div>
         </div>
       </div>
+
+      {/* ── Feature Flags (admin only) ─────────────────────────────── */}
+      {isAdmin && (
+        <div style={section('#6366f1')}>
+          <div style={sectionBar('linear-gradient(90deg,#6366f1,#818cf8,#6366f1)')} />
+          <div style={sectionHead}>
+            Feature Flags
+            <span style={{ fontSize: '10px', color: '#818cf8', fontWeight: 400, marginLeft: '8px', padding: '2px 8px', border: '1px solid rgba(129,140,248,0.3)', borderRadius: '4px', background: 'rgba(99,102,241,0.1)' }}>Admin only</span>
+          </div>
+          <div style={{ padding: '14px 20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0' }}>Broker Integration</div>
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                  Show E*Trade / Fidelity broker connection UI in Settings and Paper Portfolio pages.
+                  Turn off to hide from all users until ready for production use.
+                </div>
+              </div>
+              <Toggle on={brokerEnabled} onChange={val => handleToggleBroker(val)} disabled={featureFlagSaving} />
+              <span style={{ fontSize: 11, color: brokerEnabled ? '#4ade80' : '#475569', fontWeight: 600 }}>
+                {brokerEnabled ? 'On' : 'Off'}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {isAdmin && (
         <div style={section('#e11d48')}>

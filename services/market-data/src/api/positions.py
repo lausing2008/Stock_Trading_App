@@ -1,6 +1,6 @@
 """Positions — per-user portfolio positions with embedded trade history."""
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -43,8 +43,8 @@ class TradeIn(BaseModel):
 
 
 class CashIn(BaseModel):
-    USD: float = 0.0
-    HKD: float = 0.0
+    USD: float = Field(default=0.0, ge=0.0)
+    HKD: float = Field(default=0.0, ge=0.0)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -159,6 +159,8 @@ def buy_more(
     current: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
+    if body.shares <= 0 or body.price <= 0:
+        raise HTTPException(status_code=400, detail="shares and price must be positive")
     pos = _fetch_pos(position_id, current.id, session)
     total = pos.shares + body.shares
     pos.avg_cost = (pos.shares * pos.avg_cost + body.shares * body.price) / total
@@ -182,6 +184,8 @@ def sell_shares(
     session: Session = Depends(get_session),
 ):
     pos = _fetch_pos(position_id, current.id, session)
+    if body.shares > pos.shares:
+        raise HTTPException(status_code=400, detail=f"Cannot sell {body.shares} shares — only {pos.shares} owned")
     remaining = pos.shares - body.shares
     if remaining <= 0:
         session.delete(pos)

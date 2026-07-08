@@ -8,7 +8,9 @@ export interface Session {
 
 function decodeJWT(token: string): Session | null {
   try {
-    const payload = JSON.parse(atob(token.split('.')[1]));
+    // JWT uses base64url (- and _ instead of + and /); atob requires standard base64
+    const b64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const payload = JSON.parse(atob(b64));
     if (payload.exp < Date.now() / 1000) return null;
     return { username: payload.sub as string, role: payload.role as 'admin' | 'user' };
   } catch {
@@ -24,8 +26,12 @@ export async function login(username: string, password: string): Promise<boolean
       body: JSON.stringify({ username, password }),
     });
     if (!res.ok) return false;
-    const { token } = await res.json();
+    const data = await res.json();
+    const token: string | undefined = data.token;
+    if (!token || typeof token !== 'string') return false;
     localStorage.setItem(JWT_KEY, token);
+    // Verify the token is actually decodable before reporting success
+    if (!decodeJWT(token)) return false;
     return true;
   } catch {
     return false;
@@ -82,6 +88,11 @@ export function getSession(): Session | null {
 
 export function isLoggedIn(): boolean {
   return getSession() !== null;
+}
+
+/** Returns the current username, used to namespace SWR cache keys per user. */
+export function getUsername(): string {
+  return getSession()?.username ?? '';
 }
 
 export async function resetPassword(

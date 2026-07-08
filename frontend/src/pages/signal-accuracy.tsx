@@ -47,7 +47,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type SignalAccuracyRow, type FactorRow, type MLWeightCurvePoint, type WalkForwardReport, type WalkForwardWindow, type OutcomesSummary, type SignalAccuracyReport } from '@/lib/api';
+import { api, type SignalAccuracyRow, type FactorRow, type MLWeightCurvePoint, type WalkForwardReport, type WalkForwardWindow, type OutcomesSummary, type OutcomesCalibration, type SignalAccuracyReport, type AlphaDecayReport, type AlphaDecayCurvePoint } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 type RollingPoint = { date: string; accuracy: number; signal_count: number };
@@ -454,7 +454,7 @@ function WalkForwardSection() {
                       <td style={{ padding: '5px 8px' }}>
                         <span style={{ fontWeight: 700, color: s.signal === 'BUY' ? '#4ade80' : '#f87171' }}>{s.signal}</span>
                       </td>
-                      <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{s.confidence != null ? `${(s.confidence * 100).toFixed(0)}%` : '—'}</td>
+                      <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{s.confidence != null ? `${s.confidence.toFixed(0)}%` : '—'}</td>
                       <td style={{ padding: '5px 8px', color: '#64748b' }}>{s.entry_price.toFixed(2)}</td>
                       <td style={{ padding: '5px 8px', color: '#64748b' }}>{s.exit_price.toFixed(2)}</td>
                       <td style={{ padding: '5px 8px', fontWeight: 600, color: s.pct_change > 0 ? '#4ade80' : '#f87171' }}>
@@ -535,6 +535,257 @@ function WalkForwardSection() {
   );
 }
 
+const DECAY_HORIZONS = ['SWING', 'SHORT', 'LONG', 'GROWTH'] as const;
+const DECAY_LOOKBACKS = [
+  { label: '90d', value: 90 },
+  { label: '180d', value: 180 },
+  { label: '365d', value: 365 },
+];
+
+function AlphaDecaySection() {
+  const [horizon, setHorizon] = useState<typeof DECAY_HORIZONS[number]>('SWING');
+  const [lookbackDays, setLookbackDays] = useState(180);
+
+  const { data, isLoading, error } = useSWR<AlphaDecayReport>(
+    ['alpha-decay', horizon, lookbackDays],
+    () => api.alphaDecay(horizon, lookbackDays),
+    { revalidateOnFocus: false },
+  );
+
+  const curve: AlphaDecayCurvePoint[] = data?.curve ?? [];
+  const hasData = curve.length > 0 && curve.some(p => p.avg_return_pct != null);
+
+  // SVG chart setup
+  const chartW = 560;
+  const chartH = 120;
+  const padL = 36;
+  const padR = 10;
+  const padT = 10;
+  const padB = 24;
+  const innerW = chartW - padL - padR;
+  const innerH = chartH - padT - padB;
+
+  const returns = curve.map(p => p.avg_return_pct ?? 0);
+  const p25s = curve.map(p => p.p25 ?? 0);
+  const p75s = curve.map(p => p.p75 ?? 0);
+  const allVals = [...returns, ...p25s, ...p75s, 0];
+  const minV = Math.min(...allVals) - 0.5;
+  const maxV = Math.max(...allVals) + 0.5;
+  const range = maxV - minV || 1;
+
+  function toX(i: number) {
+    return padL + (i / Math.max(curve.length - 1, 1)) * innerW;
+  }
+  function toY(v: number) {
+    return padT + ((maxV - v) / range) * innerH;
+  }
+
+  const zeroY = toY(0);
+  const avgPoints = curve.map((p, i) => `${toX(i)},${toY(p.avg_return_pct ?? 0)}`).join(' ');
+  const bandPoints = [
+    ...curve.map((p, i) => `${toX(i)},${toY(p.p75 ?? (p.avg_return_pct ?? 0))}`),
+    ...[...curve].reverse().map((p, i) => `${toX(curve.length - 1 - i)},${toY(p.p25 ?? (p.avg_return_pct ?? 0))}`),
+  ].join(' ');
+
+  return (
+    <div>
+      {/* Controls */}
+      <div style={{ display: 'flex', gap: 20, marginBottom: 20, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>Horizon</div>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {DECAY_HORIZONS.map(h => (
+              <button key={h} onClick={() => setHorizon(h)}
+                style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
+                  borderColor: horizon === h ? '#6366f1' : '#1e293b',
+                  background: horizon === h ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: horizon === h ? '#818cf8' : '#64748b' }}>
+                {h}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>Lookback</div>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {DECAY_LOOKBACKS.map(o => (
+              <button key={o.value} onClick={() => setLookbackDays(o.value)}
+                style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
+                  borderColor: lookbackDays === o.value ? '#6366f1' : '#1e293b',
+                  background: lookbackDays === o.value ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: lookbackDays === o.value ? '#818cf8' : '#64748b' }}>
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {isLoading && <div style={{ color: '#64748b', textAlign: 'center', padding: 60 }}>Computing alpha decay curve…</div>}
+      {error && <div style={{ color: '#f87171', padding: 16 }}>Failed to load decay data.</div>}
+
+      {!isLoading && !error && !hasData && (
+        <div style={{ textAlign: 'center', padding: '60px 0', color: '#475569' }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>📉</div>
+          <div>Not enough signal history for {horizon} decay analysis.</div>
+          <div style={{ fontSize: 12, marginTop: 4 }}>Need BUY signals with settled outcomes in the {lookbackDays}d window. Try a longer lookback.</div>
+        </div>
+      )}
+
+      {!isLoading && !error && hasData && data && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Optimal hold chip */}
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 16px' }}>
+              <div style={{ fontSize: 11, color: '#64748b' }}>Signal count ({lookbackDays}d)</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: '#e2e8f0', marginTop: 2 }}>{data.signal_count}</div>
+            </div>
+            {data.optimal_hold_days != null && (
+              <div style={{ background: '#0f172a', border: '1px solid rgba(74,222,128,0.3)', borderRadius: 8, padding: '10px 16px' }}>
+                <div style={{ fontSize: 11, color: '#64748b' }}>Optimal hold — {horizon}</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: '#4ade80', marginTop: 2 }}>
+                  {data.optimal_hold_days}d
+                  {data.optimal_return_pct != null && (
+                    <span style={{ fontSize: 13, color: '#86efac', marginLeft: 8 }}>
+                      (peak α = {data.optimal_return_pct >= 0 ? '+' : ''}{data.optimal_return_pct.toFixed(2)}%)
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>
+                  Based on {data.signal_count} {horizon} BUY signals
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* SVG line chart */}
+          <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 4 }}>
+              Cumulative return after BUY signal — {horizon} ({lookbackDays}d lookback)
+            </div>
+            <div style={{ fontSize: 11, color: '#475569', marginBottom: 12 }}>
+              Avg return at each day post-entry. Band = 25th–75th percentile range.
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <svg width={chartW} height={chartH} style={{ display: 'block' }}>
+                {/* Zero line */}
+                <line x1={padL} y1={zeroY} x2={chartW - padR} y2={zeroY}
+                  stroke="#334155" strokeWidth={1} strokeDasharray="4,3" />
+
+                {/* p25–p75 band */}
+                {curve.length >= 2 && (
+                  <polygon points={bandPoints} fill="rgba(99,102,241,0.12)" />
+                )}
+
+                {/* Optimal day marker */}
+                {data.optimal_hold_days != null && (() => {
+                  const optIdx = curve.findIndex(p => p.day === data.optimal_hold_days);
+                  if (optIdx < 0) return null;
+                  const ox = toX(optIdx);
+                  return (
+                    <line x1={ox} y1={padT} x2={ox} y2={chartH - padB}
+                      stroke="rgba(74,222,128,0.4)" strokeWidth={1} strokeDasharray="3,3" />
+                  );
+                })()}
+
+                {/* Avg return line */}
+                {curve.length >= 2 && (
+                  <polyline
+                    fill="none"
+                    stroke="#818cf8"
+                    strokeWidth={2}
+                    strokeLinejoin="round"
+                    points={avgPoints}
+                  />
+                )}
+
+                {/* Data point dots */}
+                {curve.map((p, i) => {
+                  if (p.avg_return_pct == null) return null;
+                  const isOptimal = p.day === data.optimal_hold_days;
+                  return (
+                    <circle key={p.day}
+                      cx={toX(i)} cy={toY(p.avg_return_pct)}
+                      r={isOptimal ? 5 : 3}
+                      fill={isOptimal ? '#4ade80' : '#818cf8'}
+                    >
+                      <title>{`Day ${p.day}: ${p.avg_return_pct >= 0 ? '+' : ''}${p.avg_return_pct.toFixed(2)}% (n=${p.n})`}</title>
+                    </circle>
+                  );
+                })}
+
+                {/* Y-axis labels */}
+                {[minV, 0, maxV].map(v => (
+                  <text key={v} x={padL - 4} y={toY(v) + 4}
+                    textAnchor="end" fontSize={9} fill="#475569">
+                    {v >= 0 ? '+' : ''}{v.toFixed(1)}%
+                  </text>
+                ))}
+
+                {/* X-axis day labels */}
+                {curve.map((p, i) => (
+                  <text key={p.day} x={toX(i)} y={chartH - 4}
+                    textAnchor="middle" fontSize={9} fill="#475569">
+                    {p.day}d
+                  </text>
+                ))}
+              </svg>
+            </div>
+            <div style={{ display: 'flex', gap: 14, marginTop: 8, fontSize: 10, color: '#475569' }}>
+              <span><span style={{ color: '#818cf8' }}>—</span> Avg return</span>
+              <span><span style={{ color: 'rgba(99,102,241,0.4)' }}>■</span> p25–p75 band</span>
+              <span><span style={{ color: 'rgba(74,222,128,0.5)' }}>|</span> Optimal hold day</span>
+            </div>
+          </div>
+
+          {/* Per-day table */}
+          <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>Per-day breakdown</div>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                    {['Hold Day', 'Avg Return', 'p25', 'p75', 'N signals'].map(h => (
+                      <th key={h} style={{ padding: '4px 10px', textAlign: 'left', color: '#475569', fontWeight: 600 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {curve.map(p => {
+                    const isOpt = p.day === data.optimal_hold_days;
+                    const r = p.avg_return_pct;
+                    return (
+                      <tr key={p.day} style={{ borderBottom: '1px solid #0f172a', background: isOpt ? 'rgba(74,222,128,0.05)' : 'transparent' }}>
+                        <td style={{ padding: '5px 10px', color: isOpt ? '#4ade80' : '#94a3b8', fontWeight: isOpt ? 700 : 400 }}>
+                          {p.day}d {isOpt && <span style={{ fontSize: 10, color: '#4ade80' }}>★ optimal</span>}
+                        </td>
+                        <td style={{ padding: '5px 10px', fontWeight: 600, color: r == null ? '#334155' : r >= 0 ? '#4ade80' : '#f87171' }}>
+                          {r == null ? '—' : `${r >= 0 ? '+' : ''}${r.toFixed(2)}%`}
+                        </td>
+                        <td style={{ padding: '5px 10px', color: p.p25 == null ? '#334155' : p.p25 >= 0 ? '#86efac' : '#fca5a5' }}>
+                          {p.p25 == null ? '—' : `${p.p25 >= 0 ? '+' : ''}${p.p25.toFixed(2)}%`}
+                        </td>
+                        <td style={{ padding: '5px 10px', color: p.p75 == null ? '#334155' : p.p75 >= 0 ? '#86efac' : '#fca5a5' }}>
+                          {p.p75 == null ? '—' : `${p.p75 >= 0 ? '+' : ''}${p.p75.toFixed(2)}%`}
+                        </td>
+                        <td style={{ padding: '5px 10px', color: '#64748b' }}>{p.n ?? '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 11, color: '#334155', padding: '8px 12px', background: '#0a0f1a', borderRadius: 6 }}>
+            ℹ️ Entry = first daily close on or after BUY signal date. Return = (close at day N − entry) / entry. Up to 5 calendar-day slippage allowed for weekends/holidays.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SignalAccuracyPage() {
   const router = useRouter();
   const [authed, setAuthed] = useState(false);
@@ -546,7 +797,7 @@ export default function SignalAccuracyPage() {
     setAuthed(true);
   }, [router]);
 
-  const [activeTab, setActiveTab] = useState<'overview' | 'walkforward' | 'outcomes'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'walkforward' | 'outcomes' | 'decay' | 'ic' | 'attribution' | 'filter-audit'>('overview');
   const [lookback, setLookback] = useState(90);
   const [filterSymbol, setFilterSymbol] = useState('');
   const [signalFilter, setSignalFilter] = useState<'ALL' | 'BUY' | 'SELL'>('ALL');
@@ -554,17 +805,20 @@ export default function SignalAccuracyPage() {
   const [sortBy, setSortBy] = useState<'date' | 'confidence' | 'pct_change'>('date');
   const [resetting, setResetting] = useState(false);
   const [resetMsg, setResetMsg] = useState('');
+  const [evaluating, setEvaluating] = useState(false);
+  const [evaluateMsg, setEvaluateMsg] = useState('');
   const [calibrating, setCalibrating] = useState(false);
   const [calibrateResult, setCalibrateResult] = useState<{ optimal_weight: number | null; optimal_accuracy: number; applied: boolean } | null>(null);
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [page, setPage] = useState(1);
+  const [accuracyMarket, setAccuracyMarket] = useState<'ALL' | 'US' | 'HK'>('ALL');
 
   const useDateRange = fromDate !== '' && toDate !== '';
 
   const { data, isLoading, error, mutate } = useSWR(
-    authed ? ['signal-accuracy', lookback, fromDate, toDate, page] : null,
-    () => api.signalAccuracy(lookback, undefined, fromDate || undefined, toDate || undefined, page),
+    authed ? ['signal-accuracy', lookback, fromDate, toDate, page, accuracyMarket] : null,
+    () => api.signalAccuracy(lookback, undefined, fromDate || undefined, toDate || undefined, page, 200, accuracyMarket === 'ALL' ? undefined : accuracyMarket),
     { revalidateOnFocus: false },
   );
 
@@ -580,15 +834,43 @@ export default function SignalAccuracyPage() {
     { revalidateOnFocus: false },
   );
 
-  const { data: outcomesData } = useSWR<OutcomesSummary>(
-    authed ? ['outcomes-summary', lookback] : null,
-    () => api.outcomesSummary(undefined, lookback),
+  const [outcomesMarket, setOutcomesMarket] = useState<'ALL' | 'US' | 'HK'>('ALL');
+  const { data: outcomesData, mutate: mutateOutcomes } = useSWR<OutcomesSummary>(
+    authed ? ['outcomes-summary', lookback, outcomesMarket] : null,
+    () => api.outcomesSummary(undefined, lookback, outcomesMarket === 'ALL' ? undefined : outcomesMarket),
+    { revalidateOnFocus: false },
+  );
+  const { data: calibrationData } = useSWR<OutcomesCalibration>(
+    authed ? 'outcomes-calibrate' : null,
+    () => api.calibrateOutcomes(180, 15),
     { revalidateOnFocus: false },
   );
 
   const { data: rollingData } = useSWR(
     authed ? 'rolling-accuracy' : null,
     () => api.rollingAccuracy(30, 180),
+    { revalidateOnFocus: false },
+  );
+
+  const [icHorizon, setIcHorizon] = useState('SWING');
+  const { data: icData } = useSWR(
+    authed && activeTab === 'ic' ? ['ic', icHorizon] : null,
+    () => api.informationCoefficient(icHorizon, 365),
+    { revalidateOnFocus: false },
+  );
+
+  const [attrHorizon, setAttrHorizon] = useState('SWING');
+  const { data: attrData } = useSWR(
+    authed && activeTab === 'attribution' ? ['factor-attribution', attrHorizon] : null,
+    () => api.factorAttribution(attrHorizon, 365, 10),
+    { revalidateOnFocus: false },
+  );
+
+  const [faStyle, setFaStyle] = useState('SWING');
+  const [faHold, setFaHold] = useState(10);
+  const { data: filterAuditData } = useSWR(
+    authed && activeTab === 'filter-audit' ? ['filter-audit', faStyle, faHold, lookback] : null,
+    () => api.filterAudit(lookback, faStyle, faHold),
     { revalidateOnFocus: false },
   );
 
@@ -661,7 +943,7 @@ export default function SignalAccuracyPage() {
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid #1e293b', paddingBottom: 0 }}>
-        {([['overview', 'Overview'], ['walkforward', 'Walk-Forward'], ['outcomes', 'Outcomes']] as const).map(([tab, label]) => (
+        {([['overview', 'Overview'], ['walkforward', 'Walk-Forward'], ['outcomes', 'Outcomes'], ['decay', 'Alpha Decay'], ['ic', 'IC Score'], ['attribution', 'Factor Attribution'], ['filter-audit', 'Filter Audit']] as const).map(([tab, label]) => (
           <button key={tab} onClick={() => setActiveTab(tab)}
             style={{ padding: '7px 18px', borderRadius: '6px 6px 0 0', fontSize: 13, fontWeight: 500, cursor: 'pointer',
               border: '1px solid', borderBottom: activeTab === tab ? '1px solid #0f172a' : '1px solid transparent',
@@ -675,9 +957,23 @@ export default function SignalAccuracyPage() {
       </div>
 
       {activeTab === 'walkforward' && <WalkForwardSection />}
+      {activeTab === 'decay' && <AlphaDecaySection />}
 
       {activeTab === 'outcomes' && (
         <div>
+          {/* Market filter */}
+          <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
+            {(['ALL', 'US', 'HK'] as const).map(m => (
+              <button key={m} onClick={() => setOutcomesMarket(m)}
+                style={{ padding: '5px 14px', borderRadius: 6, border: '1px solid',
+                  borderColor: outcomesMarket === m ? '#60a5fa' : '#334155',
+                  background: outcomesMarket === m ? 'rgba(96,165,250,0.12)' : 'transparent',
+                  color: outcomesMarket === m ? '#60a5fa' : '#64748b', fontSize: 12, cursor: 'pointer' }}>
+                {m}
+              </button>
+            ))}
+            <span style={{ fontSize: 11, color: '#475569', alignSelf: 'center', marginLeft: 4 }}>market</span>
+          </div>
           {!outcomesData || outcomesData.total === 0 ? (
             <div style={{ textAlign: 'center', padding: '60px 0', color: '#475569' }}>
               <div style={{ fontSize: 36, marginBottom: 8 }}>📊</div>
@@ -689,6 +985,35 @@ export default function SignalAccuracyPage() {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {/* Data coverage note + Evaluate Now button */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                {outcomesData.date_range?.oldest && (
+                  <div style={{ flex: 1, background: 'rgba(15,23,42,0.8)', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px', fontSize: 11, color: '#64748b', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ color: '#475569' }}>📅</span>
+                    <span>
+                      <strong style={{ color: '#94a3b8' }}>Evaluated signals:</strong>{' '}
+                      {outcomesData.date_range.oldest} → {outcomesData.date_range.newest}.{' '}
+                      SWING/LONG outcomes take 14–28 days to mature — post-SA-31 data (buy_threshold raised Jun 17) will appear as signals from Jun 3+ mature.
+                    </span>
+                  </div>
+                )}
+                <button
+                  disabled={evaluating}
+                  onClick={async () => {
+                    setEvaluating(true); setEvaluateMsg('');
+                    try {
+                      const r = await api.evaluateOutcomes();
+                      setEvaluateMsg(`✓ ${r.evaluated} new, ${r.updated_windows} windows updated`);
+                      mutateOutcomes();
+                    } catch { setEvaluateMsg('Failed — check signal-engine logs'); }
+                    finally { setEvaluating(false); }
+                  }}
+                  style={{ padding: '8px 14px', background: evaluating ? '#1e293b' : 'rgba(96,165,250,0.1)', border: '1px solid #3b82f6', borderRadius: 6, color: '#60a5fa', fontSize: 12, cursor: evaluating ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}
+                >
+                  {evaluating ? 'Evaluating…' : 'Evaluate Now'}
+                </button>
+                {evaluateMsg && <span style={{ fontSize: 11, color: evaluateMsg.startsWith('✓') ? '#4ade80' : '#f87171' }}>{evaluateMsg}</span>}
+              </div>
               {/* Overall */}
               {outcomesData.overall && (
                 <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
@@ -786,6 +1111,38 @@ export default function SignalAccuracyPage() {
                     ))}
                   </div>
                 )}
+                {outcomesData.by_direction && Object.keys(outcomesData.by_direction).length > 0 && (
+                  <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>Win Rate by Direction</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'auto auto auto auto auto', gap: '4px 12px', fontSize: 11, marginBottom: 6 }}>
+                      <span style={{ color: '#475569', fontWeight: 600 }}>Style</span>
+                      <span style={{ color: '#475569', fontWeight: 600 }}>Dir</span>
+                      <span style={{ color: '#475569', fontWeight: 600, textAlign: 'right' }}>n</span>
+                      <span style={{ color: '#475569', fontWeight: 600, textAlign: 'right' }}>Win %</span>
+                      <span style={{ color: '#475569', fontWeight: 600, textAlign: 'right' }}>Avg Ret</span>
+                    </div>
+                    {Object.entries(outcomesData.by_direction).map(([key, v]) => {
+                      const [h, dir] = key.split('/');
+                      const wr = v.win_rate * 100;
+                      return (
+                        <div key={key} style={{ display: 'grid', gridTemplateColumns: 'auto auto auto auto auto', gap: '4px 12px', fontSize: 12, padding: '4px 0', borderTop: '1px solid #1e293b', alignItems: 'center' }}>
+                          <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{h}</span>
+                          <span style={{ color: dir === 'BUY' ? '#4ade80' : '#f87171', fontWeight: 700, fontSize: 11 }}>{dir}</span>
+                          <span style={{ color: '#64748b', textAlign: 'right' }}>{v.count}</span>
+                          <span style={{ color: wr >= 55 ? '#4ade80' : wr >= 50 ? '#facc15' : '#f87171', fontWeight: 700, textAlign: 'right' }}>
+                            {wr.toFixed(1)}%
+                          </span>
+                          <span style={{ color: v.avg_return_pct != null ? (v.avg_return_pct >= 0 ? '#4ade80' : '#f87171') : '#475569', textAlign: 'right' }}>
+                            {v.avg_return_pct != null ? `${v.avg_return_pct >= 0 ? '+' : ''}${v.avg_return_pct.toFixed(2)}%` : '—'}
+                          </span>
+                        </div>
+                      );
+                    })}
+                    <div style={{ fontSize: 10, color: '#334155', marginTop: 8 }}>
+                      Large BUY/SELL gap = directional bias. BUY accuracy below 40% = signal too bullish; consider raising buy_threshold.
+                    </div>
+                  </div>
+                )}
                 {outcomesData.by_market_regime && Object.keys(outcomesData.by_market_regime).length > 0 && (
                   <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
                     <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>Win Rate by Market Regime</div>
@@ -805,9 +1162,405 @@ export default function SignalAccuracyPage() {
                 )}
               </div>
 
+              {/* Paper Trade Writeback — PT-J1 actual realized results by hold window */}
+              {outcomesData.by_window && Object.values(outcomesData.by_window).some(v => v !== null) && (
+                <div style={{ marginTop: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8', marginBottom: 8, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                    Paper Trade Results <span style={{ fontWeight: 400, fontSize: 11, color: '#475569' }}>· actual closed trades written back by PT-J1</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    {(['5d', '10d', '20d'] as const).map(w => {
+                      const v = outcomesData.by_window?.[w];
+                      if (!v) return null;
+                      const wrColor = v.win_rate >= 0.6 ? '#4ade80' : v.win_rate >= 0.5 ? '#facc15' : '#f87171';
+                      return (
+                        <div key={w} style={{ flex: '1 1 120px', minWidth: 110, background: '#0a0f1a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px' }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: '#475569', letterSpacing: '0.06em', marginBottom: 6 }}>HOLD ≤{w.toUpperCase()}</div>
+                          <div style={{ fontSize: 20, fontWeight: 800, color: wrColor }}>{(v.win_rate * 100).toFixed(1)}%</div>
+                          <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>win rate · {v.count} trade{v.count !== 1 ? 's' : ''}</div>
+                          {v.avg_return_pct != null && (
+                            <div style={{ fontSize: 13, fontWeight: 700, color: v.avg_return_pct >= 0 ? '#4ade80' : '#f87171', marginTop: 4 }}>
+                              {v.avg_return_pct >= 0 ? '+' : ''}{v.avg_return_pct.toFixed(2)}% avg
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <div style={{ fontSize: 11, color: '#334155', padding: '8px 12px', background: '#0a0f1a', borderRadius: 6 }}>
                 ℹ️ Outcomes use fixed hold windows: SHORT=7d, SWING=14d, LONG=28d. Entry = first close ≥ signal date. Exit = first close ≥ entry + hold days.
+                Paper trade results (above) reflect actual closes from the paper trading engine — written back on position close.
                 Once SWING outcomes exceed 500, run Optuna on signal parameters — see SIGNAL_ACCURACY.md for the tuning workflow.
+              </div>
+
+              {/* Per-symbol breakdown */}
+              {outcomesData.by_symbol && outcomesData.by_symbol.length > 0 && (
+                <div style={{ marginTop: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8', marginBottom: 8, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                    Per-Symbol Breakdown <span style={{ fontWeight: 400, fontSize: 11, color: '#475569' }}>· ≥2 signals · sorted by avg return</span>
+                  </div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                          {['Symbol', 'Signals', 'Win Rate', 'W', 'L', 'Avg Return'].map(h => (
+                            <th key={h} style={{ padding: '4px 10px', textAlign: h === 'Symbol' ? 'left' : 'right', color: '#475569', fontWeight: 600, fontSize: 11 }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {outcomesData.by_symbol.map(r => {
+                          const wrColor = r.win_rate >= 0.6 ? '#4ade80' : r.win_rate >= 0.5 ? '#facc15' : '#f87171';
+                          const retColor = r.avg_return_pct == null ? '#475569' : r.avg_return_pct >= 0 ? '#4ade80' : '#f87171';
+                          return (
+                            <tr key={r.symbol} style={{ borderBottom: '1px solid #0f172a' }}>
+                              <td style={{ padding: '5px 10px', color: '#60a5fa', fontWeight: 600 }}>{r.symbol}</td>
+                              <td style={{ padding: '5px 10px', textAlign: 'right', color: '#94a3b8' }}>{r.count}</td>
+                              <td style={{ padding: '5px 10px', textAlign: 'right', color: wrColor, fontWeight: 600 }}>{(r.win_rate * 100).toFixed(0)}%</td>
+                              <td style={{ padding: '5px 10px', textAlign: 'right', color: '#4ade80' }}>{r.wins}</td>
+                              <td style={{ padding: '5px 10px', textAlign: 'right', color: '#f87171' }}>{r.losses}</td>
+                              <td style={{ padding: '5px 10px', textAlign: 'right', color: retColor, fontWeight: 600 }}>
+                                {r.avg_return_pct != null ? `${r.avg_return_pct >= 0 ? '+' : ''}${r.avg_return_pct.toFixed(2)}%` : '—'}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Threshold Calibration */}
+          {calibrationData && calibrationData.calibrations.length > 0 && (
+            <div style={{ marginTop: 24 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', marginBottom: 4 }}>
+                Threshold Calibration
+                <span style={{ fontSize: 11, color: '#475569', fontWeight: 400, marginLeft: 8 }}>
+                  last {calibrationData.days}d · min {calibrationData.min_samples} samples · BUY signals only
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: '#64748b', marginBottom: 12 }}>
+                Sweeps confidence thresholds to find the cut that maximises expected value (win rate × avg return).
+                A green suggested threshold means raising the bar improves edge. Apply via SA-XX signal tuning.
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                      {['Style', 'Current Threshold', 'Suggested', 'Change', 'N Signals', 'Win Rate', 'Avg Return', 'Exp. Value', 'EV Lift'].map(h => (
+                        <th key={h} style={{ padding: '6px 10px', textAlign: 'left', fontSize: 11, color: '#64748b', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {calibrationData.calibrations.map(row => {
+                      const hasSuggestion = row.suggested_threshold != null && row.at_suggested_threshold != null;
+                      const diff = hasSuggestion ? row.suggested_threshold! - row.current_threshold : null;
+                      const lift = row.ev_lift_pct;
+                      const liftColor = lift == null ? '#475569' : lift > 0.1 ? '#4ade80' : lift < -0.1 ? '#f87171' : '#facc15';
+                      const diffColor = diff == null ? '#475569' : diff > 0 ? '#f87171' : diff < 0 ? '#4ade80' : '#475569';
+                      return (
+                        <tr key={row.horizon} style={{ borderBottom: '1px solid #0f172a' }}>
+                          <td style={{ padding: '8px 10px', fontWeight: 700, color: '#818cf8' }}>{row.horizon}</td>
+                          <td style={{ padding: '8px 10px', color: '#94a3b8', fontFamily: 'monospace' }}>
+                            {(row.current_threshold * 100).toFixed(0)}%
+                            {row.at_current_threshold && (
+                              <div style={{ fontSize: 10, color: '#475569' }}>
+                                n={row.at_current_threshold.n} · {(row.at_current_threshold.win_rate * 100).toFixed(0)}% wr
+                              </div>
+                            )}
+                          </td>
+                          <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: hasSuggestion ? '#e2e8f0' : '#334155' }}>
+                            {hasSuggestion ? `${(row.suggested_threshold! * 100).toFixed(0)}%` : '—'}
+                            {row.at_suggested_threshold && (
+                              <div style={{ fontSize: 10, color: '#475569' }}>
+                                n={row.at_suggested_threshold.n} · {(row.at_suggested_threshold.win_rate * 100).toFixed(0)}% wr
+                              </div>
+                            )}
+                          </td>
+                          <td style={{ padding: '8px 10px', color: diffColor, fontFamily: 'monospace', fontWeight: 700 }}>
+                            {diff == null ? '—' : diff === 0 ? '→ same' : `${diff > 0 ? '+' : ''}${(diff * 100).toFixed(0)}pp`}
+                          </td>
+                          <td style={{ padding: '8px 10px', color: '#64748b' }}>{row.n_total}</td>
+                          <td style={{ padding: '8px 10px', color: '#94a3b8' }}>
+                            {row.at_suggested_threshold ? `${(row.at_suggested_threshold.win_rate * 100).toFixed(1)}%` : '—'}
+                          </td>
+                          <td style={{ padding: '8px 10px', color: row.at_suggested_threshold?.avg_return_pct != null && row.at_suggested_threshold.avg_return_pct > 0 ? '#4ade80' : '#f87171' }}>
+                            {row.at_suggested_threshold?.avg_return_pct != null ? `${row.at_suggested_threshold.avg_return_pct > 0 ? '+' : ''}${row.at_suggested_threshold.avg_return_pct.toFixed(2)}%` : '—'}
+                          </td>
+                          <td style={{ padding: '8px 10px', color: '#94a3b8' }}>
+                            {row.at_suggested_threshold?.expected_value_pct != null ? `${row.at_suggested_threshold.expected_value_pct.toFixed(3)}%` : '—'}
+                          </td>
+                          <td style={{ padding: '8px 10px', color: liftColor, fontWeight: 700 }}>
+                            {lift != null ? `${lift > 0 ? '+' : ''}${lift.toFixed(3)}%` : row.note ?? '—'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'ic' && (
+        <div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center' }}>
+            <span style={{ fontSize: 12, color: '#64748b' }}>Horizon:</span>
+            {(['SHORT', 'SWING', 'LONG'] as const).map(h => (
+              <button key={h} onClick={() => setIcHorizon(h)}
+                style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                  border: '1px solid', borderColor: icHorizon === h ? '#6366f1' : '#1e293b',
+                  background: icHorizon === h ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: icHorizon === h ? '#818cf8' : '#64748b' }}>{h}</button>
+            ))}
+          </div>
+          {!icData ? (
+            <div style={{ color: '#475569', textAlign: 'center', padding: 40 }}>Loading IC data…</div>
+          ) : icData.message || !icData.monthly_ic?.length ? (
+            <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: 24, textAlign: 'center' }}>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>📈</div>
+              <div style={{ color: '#64748b', fontSize: 13 }}>{icData.message || 'Not enough data yet'}</div>
+              <div style={{ color: '#334155', fontSize: 11, marginTop: 8 }}>IC requires at least 5 BUY signals with evaluated outcomes per month.</div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                {[
+                  { label: 'IC Mean', value: icData.ic_mean?.toFixed(4), target: '> 0.05 = good', color: (icData.ic_mean ?? 0) > 0.05 ? '#4ade80' : (icData.ic_mean ?? 0) > 0.02 ? '#facc15' : '#f87171' },
+                  { label: 'IC Std Dev', value: icData.ic_std?.toFixed(4), color: '#94a3b8' },
+                  { label: 'IC IR (mean/std)', value: icData.ic_ir?.toFixed(3) ?? '—', target: '> 0.5 = excellent', color: (icData.ic_ir ?? 0) > 0.5 ? '#4ade80' : '#94a3b8' },
+                  { label: 'Months', value: String(icData.total_periods), color: '#94a3b8' },
+                ].map(stat => (
+                  <div key={stat.label} style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '12px 18px', minWidth: 130 }}>
+                    <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', marginBottom: 4 }}>{stat.label}</div>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: stat.color }}>{stat.value ?? '—'}</div>
+                    {stat.target && <div style={{ fontSize: 10, color: '#334155', marginTop: 2 }}>{stat.target}</div>}
+                  </div>
+                ))}
+              </div>
+              <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 12 }}>Monthly IC — {icHorizon}</div>
+                <div style={{ display: 'flex', gap: 4, alignItems: 'flex-end', height: 80 }}>
+                  {icData.monthly_ic.map(m => {
+                    const height = Math.abs(m.ic) * 800;
+                    const color = m.ic > 0.05 ? '#4ade80' : m.ic > 0 ? '#86efac' : '#f87171';
+                    return (
+                      <div key={m.month} title={`${m.month}: IC=${m.ic.toFixed(3)}, n=${m.n}`}
+                        style={{ flex: 1, background: color, height: `${Math.min(80, height)}px`, borderRadius: '2px 2px 0 0',
+                          opacity: 0.85, transition: 'height 0.3s', minWidth: 8 }} />
+                    );
+                  })}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#334155', marginTop: 4 }}>
+                  <span>{icData.monthly_ic[0]?.month}</span>
+                  <span>{icData.monthly_ic[icData.monthly_ic.length - 1]?.month}</span>
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: '#334155', padding: '8px 12px', background: '#0a0f1a', borderRadius: 6 }}>
+                ℹ️ IC = Spearman rank correlation between predicted probability rank and actual return rank. IC &gt; 0.05 is considered good in quant finance. IC_IR (mean÷std) &gt; 0.5 indicates a consistent signal.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'attribution' && (
+        <div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center' }}>
+            <span style={{ fontSize: 12, color: '#64748b' }}>Horizon:</span>
+            {(['SHORT', 'SWING', 'LONG'] as const).map(h => (
+              <button key={h} onClick={() => setAttrHorizon(h)}
+                style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                  border: '1px solid', borderColor: attrHorizon === h ? '#6366f1' : '#1e293b',
+                  background: attrHorizon === h ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: attrHorizon === h ? '#818cf8' : '#64748b' }}>{h}</button>
+            ))}
+          </div>
+          {!attrData ? (
+            <div style={{ color: '#475569', textAlign: 'center', padding: 40 }}>Loading factor attribution…</div>
+          ) : attrData.message || !attrData.factors?.length ? (
+            <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: 24, textAlign: 'center' }}>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>🔬</div>
+              <div style={{ color: '#64748b', fontSize: 13 }}>{attrData.message || 'No factor data yet'}</div>
+              <div style={{ color: '#334155', fontSize: 11, marginTop: 8 }}>Requires at least 10 evaluated outcomes per reason flag.</div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 16px' }}>
+                  <div style={{ fontSize: 10, color: '#475569' }}>WINNERS</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: '#4ade80' }}>{attrData.total_winners}</div>
+                </div>
+                <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 16px' }}>
+                  <div style={{ fontSize: 10, color: '#475569' }}>LOSERS</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: '#f87171' }}>{attrData.total_losers}</div>
+                </div>
+                <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 16px' }}>
+                  <div style={{ fontSize: 10, color: '#475569' }}>FACTORS ANALYSED</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: '#94a3b8' }}>{attrData.factors.length}</div>
+                </div>
+              </div>
+              <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 12 }}>
+                  Factor Edge — Win% minus Loss% (green = more common in winners, red = more common in losers)
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {attrData.factors.map(f => {
+                    const maxEdge = Math.max(...attrData.factors.map(x => Math.abs(x.edge)));
+                    const barWidth = maxEdge > 0 ? Math.abs(f.edge) / maxEdge * 100 : 0;
+                    const color = f.edge > 0 ? '#4ade80' : '#f87171';
+                    return (
+                      <div key={f.factor} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div style={{ width: 200, fontSize: 11, color: '#94a3b8', textAlign: 'right', flexShrink: 0, textTransform: 'capitalize' }}>
+                          {f.factor.replace(/_/g, ' ')}
+                        </div>
+                        <div style={{ flex: 1, position: 'relative', height: 18, background: '#1e293b', borderRadius: 3 }}>
+                          <div style={{ position: 'absolute', left: f.edge >= 0 ? 0 : `${100 - barWidth}%`, width: `${barWidth}%`,
+                            height: '100%', background: color, borderRadius: 3, opacity: 0.8 }} />
+                        </div>
+                        <div style={{ width: 50, fontSize: 11, fontWeight: 600, color, textAlign: 'right', flexShrink: 0 }}>
+                          {f.edge > 0 ? '+' : ''}{f.edge.toFixed(1)}%
+                        </div>
+                        <div style={{ width: 120, fontSize: 10, color: '#475569', flexShrink: 0 }}>
+                          W:{f.win_pct.toFixed(0)}% L:{f.los_pct.toFixed(0)}% (n={f.win_count + f.los_count})
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: '#334155', padding: '8px 12px', background: '#0a0f1a', borderRadius: 6 }}>
+                ℹ️ Edge = win_pct − loss_pct. Positive edge means the factor appears more often in winning trades. Factors with near-zero edge are noise.
+                Feed high-edge factors into SA-13 conviction gate weights.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'filter-audit' && (
+        <div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, color: '#64748b' }}>Style:</span>
+            {(['SHORT', 'SWING', 'LONG', 'GROWTH'] as const).map(h => (
+              <button key={h} onClick={() => setFaStyle(h)}
+                style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                  border: '1px solid', borderColor: faStyle === h ? '#6366f1' : '#1e293b',
+                  background: faStyle === h ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: faStyle === h ? '#818cf8' : '#64748b' }}>{h}</button>
+            ))}
+            <span style={{ fontSize: 12, color: '#64748b', marginLeft: 8 }}>Hold days:</span>
+            {([7, 10, 14, 20] as const).map(d => (
+              <button key={d} onClick={() => setFaHold(d)}
+                style={{ padding: '4px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                  border: '1px solid', borderColor: faHold === d ? '#6366f1' : '#1e293b',
+                  background: faHold === d ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: faHold === d ? '#818cf8' : '#64748b' }}>{d}d</button>
+            ))}
+          </div>
+          {!filterAuditData ? (
+            <div style={{ color: '#475569', textAlign: 'center', padding: 40 }}>Loading filter audit…</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                {[
+                  ['Signals Analysed', filterAuditData.n_buy_signals_found, '#94a3b8'],
+                  ['With Return Data', filterAuditData.n_with_return_data, '#94a3b8'],
+                  ['Overall Win Rate', filterAuditData.overall_win_rate_pct != null ? `${filterAuditData.overall_win_rate_pct}%` : '—', (filterAuditData.overall_win_rate_pct ?? 0) >= 55 ? '#4ade80' : '#f87171'],
+                ].map(([label, val, color]) => (
+                  <div key={String(label)} style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 16px' }}>
+                    <div style={{ fontSize: 10, color: '#475569' }}>{label}</div>
+                    <div style={{ fontSize: 20, fontWeight: 700, color: String(color) }}>{String(val)}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Per-filter breakdown */}
+              {filterAuditData.by_filter_name?.length > 0 && (
+                <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 4 }}>
+                    Per-Filter Win Rate Analysis
+                  </div>
+                  <div style={{ fontSize: 11, color: '#475569', marginBottom: 12 }}>
+                    Edge = win_rate_active − win_rate_inactive. Negative = filter correctly blocks weaker signals. Positive = filter is harmful (blocking better signals than it passes).
+                  </div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                      <thead>
+                        <tr>
+                          {['Filter', 'N Active', 'WR Active', 'N Inactive', 'WR Inactive', 'Edge', 'Verdict'].map(h => (
+                            <th key={h} style={{ padding: '6px 10px', textAlign: 'left', color: '#475569', fontWeight: 600, borderBottom: '1px solid #1e293b', whiteSpace: 'nowrap' }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filterAuditData.by_filter_name.map(f => {
+                          const verdictColor = f.verdict === 'predictive' ? '#4ade80' : f.verdict === 'harmful' ? '#f87171' : '#facc15';
+                          const edgeColor = f.edge_pct < -3 ? '#4ade80' : f.edge_pct > 3 ? '#f87171' : '#94a3b8';
+                          return (
+                            <tr key={f.filter} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                              <td style={{ padding: '6px 10px', color: '#e2e8f0', fontFamily: 'monospace', fontSize: 10 }}>{f.filter}</td>
+                              <td style={{ padding: '6px 10px', color: '#64748b' }}>{f.n_active}</td>
+                              <td style={{ padding: '6px 10px', color: '#94a3b8', fontWeight: 600 }}>{f.win_rate_active != null ? `${f.win_rate_active}%` : '—'}</td>
+                              <td style={{ padding: '6px 10px', color: '#64748b' }}>{f.n_inactive}</td>
+                              <td style={{ padding: '6px 10px', color: '#94a3b8', fontWeight: 600 }}>{f.win_rate_inactive != null ? `${f.win_rate_inactive}%` : '—'}</td>
+                              <td style={{ padding: '6px 10px', color: edgeColor, fontWeight: 700 }}>{f.edge_pct > 0 ? '+' : ''}{f.edge_pct}%</td>
+                              <td style={{ padding: '6px 10px' }}>
+                                <span style={{ padding: '2px 8px', borderRadius: 4, background: `${verdictColor}22`, color: verdictColor, fontSize: 10, fontWeight: 700, textTransform: 'uppercase' }}>{f.verdict}</span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* By filter count */}
+              {filterAuditData.by_filter_count?.length > 0 && (
+                <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 12 }}>
+                    Win Rate by Filter Count (0 = no suppressions active)
+                  </div>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                    <thead>
+                      <tr>
+                        {['Filters Active', 'N Trades', 'Win Rate', 'Avg Return'].map(h => (
+                          <th key={h} style={{ padding: '6px 10px', textAlign: 'left', color: '#475569', fontWeight: 600, borderBottom: '1px solid #1e293b' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filterAuditData.by_filter_count.map(row => (
+                        <tr key={row.filter_count} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                          <td style={{ padding: '6px 10px', color: '#94a3b8', fontWeight: 700 }}>{row.filter_count}</td>
+                          <td style={{ padding: '6px 10px', color: '#64748b' }}>{row.trade_count}</td>
+                          <td style={{ padding: '6px 10px', color: (row.win_rate_pct ?? 0) >= 55 ? '#4ade80' : '#f87171', fontWeight: 600 }}>
+                            {row.win_rate_pct != null ? `${row.win_rate_pct}%` : '—'}
+                          </td>
+                          <td style={{ padding: '6px 10px', color: (row.avg_return_pct ?? 0) >= 0 ? '#4ade80' : '#f87171' }}>
+                            {row.avg_return_pct != null ? `${row.avg_return_pct > 0 ? '+' : ''}${row.avg_return_pct}%` : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div style={{ fontSize: 11, color: '#334155', padding: '8px 12px', background: '#0a0f1a', borderRadius: 6 }}>
+                ℹ️ Run this analysis once you have 200+ evaluated BUY signals. Filters with positive edge (harmful) should be disabled or inverted in signals.py.
+                Filters with negative edge ≤ −5% are strongly predictive. Use SA-6 findings to inform TA weight calibration.
               </div>
             </div>
           )}
@@ -817,6 +1570,17 @@ export default function SignalAccuracyPage() {
       {activeTab === 'overview' && <>
       {/* Controls */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 4 }}>
+          {(['ALL', 'US', 'HK'] as const).map(m => (
+            <button key={m} onClick={() => { setAccuracyMarket(m); setPage(1); }}
+              style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
+                borderColor: accuracyMarket === m ? '#60a5fa' : '#1e293b',
+                background: accuracyMarket === m ? 'rgba(96,165,250,0.12)' : 'transparent',
+                color: accuracyMarket === m ? '#60a5fa' : '#64748b' }}>
+              {m}
+            </button>
+          ))}
+        </div>
         <div style={{ display: 'flex', gap: 4 }}>
           {LOOKBACK_OPTIONS.map(o => (
             <button key={o.value} onClick={() => { setLookback(o.value); setFromDate(''); setToDate(''); setPage(1); }}
@@ -1077,7 +1841,7 @@ export default function SignalAccuracyPage() {
                       </span>
                     </td>
                     <td style={{ padding: '7px 10px', color: '#94a3b8' }}>
-                      {r.confidence.toFixed(0)}
+                      {r.confidence.toFixed(0)}%
                       <div style={{ fontSize: 10, color: '#475569' }}>
                         {r.bullish_probability != null ? `${(r.bullish_probability * 100).toFixed(0)}% bull` : ''}
                       </div>

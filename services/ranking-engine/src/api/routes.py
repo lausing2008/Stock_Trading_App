@@ -2,6 +2,8 @@
 from collections import defaultdict
 from dataclasses import asdict
 from datetime import date, timedelta
+import threading
+import time as _time
 
 import httpx
 import numpy as np
@@ -17,12 +19,49 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from db import Price, Ranking, Stock, TimeFrame, get_session
+from common.jwt_auth import get_current_username
+from common.logging import get_logger
+from db import Fundamental, Price, Ranking, Signal, SignalType, Stock, TimeFrame, get_session
 
 from ..scoring import compute_kscore
 
+log = get_logger("ranking-engine")
+
 import os
 _MARKET_DATA_URL = os.environ.get("MARKET_DATA_URL", "http://market-data:8001")
+# T232-KS1: technical-analysis listens on 8002 (verified port map, CLAUDE.md); 8006 is
+# strategy-engine. This wrong default meant every bulk-patterns fetch connection-refused,
+# silently swallowed below, so the leaderboard pattern column was always empty.
+_TA_URL = os.environ.get("TA_URL", "http://technical-analysis:8002")
+
+_patterns_cache_ts: float = 0.0
+_patterns_cache_data: dict = {}
+
+# T232-DL8: stocks skipped for insufficient history (<60 daily bars) during the most recent
+# _persist_rankings run. Previously this was invisible beyond an aggregate "skipped" counter
+# in the batch log line — a stock with 55 bars silently had zero ranking row, no persisted
+# reason, indistinguishable from "something is broken" without grepping container logs for
+# the day it happened. Keyed by stock_id; overwritten wholesale on each refresh run (not
+# accumulated across runs) so it always reflects only the most recent batch.
+_skipped_insufficient_history: dict[int, dict] = {}
+
+
+def _fetch_patterns_bulk() -> dict[str, list[str]]:
+    """Fetch pre-computed patterns from TA service. Module-level 6h cache."""
+    global _patterns_cache_ts, _patterns_cache_data
+    if _time.time() - _patterns_cache_ts < 21600:
+        return _patterns_cache_data
+    try:
+        with httpx.Client(timeout=90) as c:
+            r = c.get(f"{_TA_URL}/ta/patterns/bulk", timeout=90)
+            if r.status_code == 200:
+                _patterns_cache_data = r.json().get("patterns") or {}
+                _patterns_cache_ts = _time.time()
+            else:
+                log.warning("ranking.patterns_bulk_fetch_failed", status=r.status_code)
+    except Exception as exc:
+        log.warning("ranking.patterns_bulk_fetch_error", error=str(exc))
+    return _patterns_cache_data
 
 # ── Sector → ETF mapping ──────────────────────────────────────────────────────
 _SECTOR_ETF: dict[str, str] = {
@@ -45,13 +84,17 @@ _HK_BENCHMARK = "^HSI"   # Hang Seng Index for HK stocks
 _US_FALLBACK  = "SPY"
 
 
-_ETF_CACHE: dict[str, float | None] = {}
+_ETF_CACHE_TTL = 3600  # 1 hour
+_ETF_CACHE: dict[str, tuple[float | None, float]] = {}  # ticker → (return, timestamp)
+_ETF_CACHE_LOCK = threading.Lock()
 
 
 def _etf_20d_return(ticker: str, session: "Session | None" = None) -> float | None:
     """Return 20-day price return for an ETF/index. Reads from DB when session provided."""
-    if ticker in _ETF_CACHE:
-        return _ETF_CACHE[ticker]
+    with _ETF_CACHE_LOCK:
+        cached = _ETF_CACHE.get(ticker)
+        if cached is not None and _time.time() - cached[1] < _ETF_CACHE_TTL:
+            return cached[0]
     # DB path — ETFs are seeded as inactive stocks with full price history
     if session is not None and not ticker.startswith("^"):
         from sqlalchemy import select as sa_select
@@ -62,22 +105,27 @@ def _etf_20d_return(ticker: str, session: "Session | None" = None) -> float | No
             df = _load_prices(session, stock.id, lookback=60)
             if not df.empty and len(df) >= 21:
                 ret = float(df["close"].iloc[-1] / df["close"].iloc[-21] - 1)
-                _ETF_CACHE[ticker] = ret
+                with _ETF_CACHE_LOCK:
+                    _ETF_CACHE[ticker] = (ret, _time.time())
                 return ret
     # Fallback: yfinance (for ^HSI index and any ETF not yet in DB)
     if not _HAS_YF:
-        _ETF_CACHE[ticker] = None
+        with _ETF_CACHE_LOCK:
+            _ETF_CACHE[ticker] = (None, _time.time())
         return None
     try:
         hist = yf.Ticker(ticker).history(period="2mo")
         if hist.empty or len(hist) < 21:
-            _ETF_CACHE[ticker] = None
+            with _ETF_CACHE_LOCK:
+                _ETF_CACHE[ticker] = (None, _time.time())
             return None
         ret = float(hist["Close"].iloc[-1] / hist["Close"].iloc[-21] - 1)
-        _ETF_CACHE[ticker] = ret
+        with _ETF_CACHE_LOCK:
+            _ETF_CACHE[ticker] = (ret, _time.time())
         return ret
     except Exception:
-        _ETF_CACHE[ticker] = None
+        with _ETF_CACHE_LOCK:
+            _ETF_CACHE[ticker] = (None, _time.time())
         return None
 
 
@@ -97,6 +145,12 @@ def _rs_score(stock_ret: float, etf_ret: float | None) -> tuple[float, float]:
     denom = 1 + etf_ret if abs(etf_ret + 1) > 1e-6 else 1e-6
     rs_rank = (1 + stock_ret) / denom
     score = float(np.clip(50 + (rs_rank - 1.0) * 100, 0, 100))
+    # T234-RANK-RS-UNBOUNDED: only `score` was clipped — rs_rank itself was returned raw and
+    # could blow up arbitrarily as etf_ret approaches -100% (denom -> the 1e-6 floor above).
+    # Bounded to [-20, 20], comfortably outside any realistic stock/sector return ratio, so a
+    # genuine benchmark near-total-loss scenario degrades to a large-but-sane number instead
+    # of an unbounded one reaching any consumer that reads rs_rank directly instead of score.
+    rs_rank = float(np.clip(rs_rank, -20.0, 20.0))
     return round(score, 2), round(rs_rank, 4)
 
 router = APIRouter(prefix="/rankings", tags=["rankings"])
@@ -171,35 +225,42 @@ def _sector_relative_scores(
         earn_g_map = _any("earnings_growth")
         roe_map    = _any("return_on_equity")
 
+        # T234-RANK-SECTOR-PEER-OFFBYONE: each *_map above includes the subject stock itself
+        # (built from the full sector `symbols` list before any exclusion). The gate below used
+        # to check `len(map) >= 3` and only exclude the subject stock on the NEXT line when
+        # building `peers` — so a sector nominally satisfying "≥3" always supplied exactly one
+        # fewer real comparison peer than the gate implied. Gate raised to >= 4 (subject stock +
+        # 3 real peers) so the peer LIST — not the pre-exclusion map — actually has >= 3 entries.
+        _MIN_PEER_GROUP = 4
         for symbol in symbols:
             val_parts: list[float] = []
             grow_parts: list[float] = []
 
             # Value: invert percentile (lower ratio → higher score)
-            if symbol in pe_map and len(pe_map) >= 3:
-                peers = list(pe_map.values())
+            if symbol in pe_map and len(pe_map) >= _MIN_PEER_GROUP:
+                peers = [v for s2, v in pe_map.items() if s2 != symbol]
                 rank  = _percentile_rank(pe_map[symbol], peers)
                 val_parts.append(100 - rank)  # invert
 
-            if symbol in pb_map and len(pb_map) >= 3:
-                peers = list(pb_map.values())
+            if symbol in pb_map and len(pb_map) >= _MIN_PEER_GROUP:
+                peers = [v for s2, v in pb_map.items() if s2 != symbol]
                 rank  = _percentile_rank(pb_map[symbol], peers)
                 val_parts.append(100 - rank)
 
-            if symbol in ev_map and len(ev_map) >= 3:
-                peers = list(ev_map.values())
+            if symbol in ev_map and len(ev_map) >= _MIN_PEER_GROUP:
+                peers = [v for s2, v in ev_map.items() if s2 != symbol]
                 rank  = _percentile_rank(ev_map[symbol], peers)
                 val_parts.append(100 - rank)
 
             # Growth: direct percentile (higher growth → higher score)
-            if symbol in earn_g_map and len(earn_g_map) >= 3:
-                grow_parts.append(_percentile_rank(earn_g_map[symbol], list(earn_g_map.values())))
+            if symbol in earn_g_map and len(earn_g_map) >= _MIN_PEER_GROUP:
+                grow_parts.append(_percentile_rank(earn_g_map[symbol], [v for s2, v in earn_g_map.items() if s2 != symbol]))
 
-            if symbol in rev_g_map and len(rev_g_map) >= 3:
-                grow_parts.append(_percentile_rank(rev_g_map[symbol], list(rev_g_map.values())))
+            if symbol in rev_g_map and len(rev_g_map) >= _MIN_PEER_GROUP:
+                grow_parts.append(_percentile_rank(rev_g_map[symbol], [v for s2, v in rev_g_map.items() if s2 != symbol]))
 
-            if symbol in roe_map and len(roe_map) >= 3:
-                grow_parts.append(_percentile_rank(roe_map[symbol], list(roe_map.values())))
+            if symbol in roe_map and len(roe_map) >= _MIN_PEER_GROUP:
+                grow_parts.append(_percentile_rank(roe_map[symbol], [v for s2, v in roe_map.items() if s2 != symbol]))
 
             entry: dict[str, float] = {}
             if val_parts:
@@ -266,8 +327,10 @@ def sector_rotation(
     Includes RS momentum (change vs 5-7 days ago) and top/bottom stocks per sector.
     """
     # ── Current rankings ──────────────────────────────────────────────────────
+    _cutoff = date.today() - timedelta(days=60)
     latest_subq = (
         select(Ranking.stock_id, func.max(Ranking.as_of).label("max_as_of"))
+        .where(Ranking.as_of >= _cutoff)
         .group_by(Ranking.stock_id)
         .subquery()
     )
@@ -353,6 +416,147 @@ def sector_rotation(
     return {"as_of": as_of, "sectors": sectors}
 
 
+@router.get("/screen")
+def screen(
+    market: str | None = Query(None),
+    sector: str | None = Query(None, max_length=100),
+    signal: str | None = Query(None, description="BUY | HOLD | WAIT | SELL"),
+    min_confidence: float | None = Query(None, ge=0, le=100),
+    min_score: float | None = Query(None, ge=0, le=100),
+    max_score: float | None = Query(None, ge=0, le=100),
+    min_momentum: float | None = Query(None, ge=0, le=100),
+    min_technical: float | None = Query(None, ge=0, le=100),
+    min_rs: float | None = Query(None, ge=0, le=100),
+    min_growth: float | None = Query(None, ge=0, le=100),
+    sort_by: str = Query("score", description="score | momentum | technical | rs_score | confidence"),
+    limit: int = Query(50, ge=1, le=200),
+    session: Session = Depends(get_session),
+):
+    """SCR-1: Multi-factor screener — filter stocks by K-Score, signal, and sub-scores.
+
+    All filter params are optional. Results sorted by `sort_by` descending.
+    Returns matching stocks with ranking sub-scores, latest signal, and confidence.
+    """
+    # Latest ranking per stock — bounded to recent history for performance (PERF-5)
+    _screen_cutoff = date.today() - timedelta(days=60)
+    latest_subq = (
+        select(Ranking.stock_id, func.max(Ranking.as_of).label("max_as_of"))
+        .where(Ranking.as_of >= _screen_cutoff)
+        .group_by(Ranking.stock_id)
+        .subquery()
+    )
+    stmt = (
+        select(Stock, Ranking)
+        .join(Ranking, Stock.id == Ranking.stock_id)
+        .join(latest_subq,
+              (Ranking.stock_id == latest_subq.c.stock_id)
+              & (Ranking.as_of == latest_subq.c.max_as_of))
+        .where(Stock.active.is_(True))
+    )
+
+    if market:
+        stmt = stmt.where(Stock.market == market.upper())
+    if sector:
+        stmt = stmt.where(Stock.sector.ilike(f"%{sector}%"))
+    if min_score is not None:
+        stmt = stmt.where(Ranking.score >= min_score)
+    if max_score is not None:
+        stmt = stmt.where(Ranking.score <= max_score)
+    if min_momentum is not None:
+        stmt = stmt.where(Ranking.momentum >= min_momentum)
+    if min_technical is not None:
+        stmt = stmt.where(Ranking.technical >= min_technical)
+    if min_rs is not None:
+        stmt = stmt.where(Ranking.rs_score >= min_rs)
+    if min_growth is not None:
+        stmt = stmt.where(Ranking.growth >= min_growth)
+
+    rows = session.execute(stmt).all()
+
+    # Latest SWING signal per stock — pin to SWING so multiple horizons written in the
+    # same second don't produce arbitrary signal values in the screener display.
+    sig_subq = (
+        select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+        .where(Signal.horizon == "SWING")
+        .group_by(Signal.stock_id)
+        .subquery()
+    )
+    sig_rows = session.execute(
+        select(Signal.stock_id, Signal.signal, Signal.confidence, Signal.horizon)
+        .join(sig_subq,
+              (Signal.stock_id == sig_subq.c.stock_id)
+              & (Signal.ts == sig_subq.c.max_ts))
+        .where(Signal.horizon == "SWING")
+    ).all()
+    sig_map: dict[int, dict] = {
+        r.stock_id: {"signal": r.signal.value, "confidence": float(r.confidence), "horizon": r.horizon.value}
+        for r in sig_rows
+    }
+
+    results = []
+    for stock, ranking in rows:
+        sig = sig_map.get(stock.id, {})
+        sig_value = sig.get("signal")
+        confidence = sig.get("confidence", 0.0)
+
+        if signal and sig_value != signal.upper():
+            continue
+        if min_confidence is not None and confidence < min_confidence:
+            continue
+
+        def _f(v):
+            if v is None:
+                return None
+            try:
+                f = float(v)
+                return None if (f != f or f == float("inf") or f == float("-inf")) else round(f, 1)
+            except (TypeError, ValueError):
+                return None
+
+        results.append({
+            "symbol": stock.symbol,
+            "name": stock.name,
+            "sector": stock.sector,
+            "market": stock.market.value if hasattr(stock.market, "value") else str(stock.market),
+            "score": _f(ranking.score),
+            "technical": _f(ranking.technical),
+            "momentum": _f(ranking.momentum),
+            "value": _f(ranking.value),
+            "growth": _f(ranking.growth),
+            "rs_score": _f(ranking.rs_score),
+            "signal": sig_value,
+            "confidence": _f(confidence) if confidence is not None else None,
+            "horizon": sig.get("horizon"),
+        })
+
+    sort_fields = {
+        "score": lambda x: x["score"] or 0,
+        "momentum": lambda x: x["momentum"] or 0,
+        "technical": lambda x: x["technical"] or 0,
+        "rs_score": lambda x: x["rs_score"] or 0,
+        "confidence": lambda x: x["confidence"] or 0,
+    }
+    key_fn = sort_fields.get(sort_by, sort_fields["score"])
+    results.sort(key=key_fn, reverse=True)
+    return {"total": len(results), "items": results[:limit]}
+
+
+@router.get("/skipped")
+def skipped_stocks():
+    """T232-DL8: stocks excluded from the most recent ranking refresh for insufficient
+    history (<60 daily bars), with the exact bar count seen — was previously only visible
+    as an aggregate counter in container logs. Registered ABOVE /{symbol} below: FastAPI
+    matches routes in registration order and a bare /{symbol} would otherwise swallow this
+    path (the exact bug found and fixed in signal-engine's router the same day — see
+    T232-OC5's fix notes).
+    """
+    return {
+        "count": len(_skipped_insufficient_history),
+        "min_bars_required": 60,
+        "stocks": list(_skipped_insufficient_history.values()),
+    }
+
+
 @router.get("/{symbol}")
 def rank_symbol(symbol: str, session: Session = Depends(get_session)):
     stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
@@ -362,9 +566,15 @@ def rank_symbol(symbol: str, session: Session = Depends(get_session)):
     if df.empty:
         raise HTTPException(404, f"No price data for {symbol}")
     rs_score_val, rs_rank = _stock_rs(stock, df, session=session)
-    # Sector-relative scores for single-symbol live endpoint
+    # Sector-relative scores for single-symbol live endpoint.
+    # T232-KS2: must rank against the full active universe, not a one-entry map — otherwise
+    # every peer-count gate in _sector_relative_scores (len(pe_map) >= 3, etc.) always fails
+    # and this endpoint silently falls back to price proxies, diverging from the leaderboard's
+    # K-Score for the same stock on the same day.
     fundamentals = _fetch_fundamentals_bulk()
-    stock_sectors = {symbol: (stock.sector or "Unknown")}
+    universe = list(session.execute(select(Stock).where(Stock.active.is_(True))).scalars())
+    stock_sectors = {s.symbol: (s.sector or "Unknown") for s in universe}
+    stock_sectors.setdefault(symbol, stock.sector or "Unknown")
     sc = _sector_relative_scores(fundamentals, stock_sectors).get(symbol, {})
     comp = compute_kscore(
         df,
@@ -389,19 +599,36 @@ def leaderboard(
     page load, which would otherwise be O(N_stocks × price_history) per request.
     Falls back to live computation only when no cached data exists (first run).
     """
-    # Latest ranking date per stock
+    # PERF-5: Bound GROUP BY to recent history so it doesn't scan the entire rankings table.
+    _rank_cutoff = date.today() - timedelta(days=60)
     latest_subq = (
         select(Ranking.stock_id, func.max(Ranking.as_of).label("max_as_of"))
+        .where(Ranking.as_of >= _rank_cutoff)
         .group_by(Ranking.stock_id)
         .subquery()
     )
+    # Latest fundamentals date per stock
+    latest_fund_subq = (
+        select(Fundamental.stock_id, func.max(Fundamental.as_of).label("max_date"))
+        .group_by(Fundamental.stock_id)
+        .subquery()
+    )
     stmt = (
-        select(Stock, Ranking)
+        select(Stock, Ranking, Fundamental)
         .join(Ranking, Stock.id == Ranking.stock_id)
         .join(
             latest_subq,
             (Ranking.stock_id == latest_subq.c.stock_id)
             & (Ranking.as_of == latest_subq.c.max_as_of),
+        )
+        .outerjoin(
+            latest_fund_subq,
+            Stock.id == latest_fund_subq.c.stock_id,
+        )
+        .outerjoin(
+            Fundamental,
+            (Fundamental.stock_id == latest_fund_subq.c.stock_id)
+            & (Fundamental.as_of == latest_fund_subq.c.max_date),
         )
         .where(Stock.active.is_(True))
     )
@@ -414,6 +641,41 @@ def leaderboard(
         # No persisted rankings yet — compute live on first run
         return _leaderboard_live(market, limit, session)
 
+    def _cf(v: float | None) -> float | None:
+        """Clean a raw fundamental float."""
+        if v is None:
+            return None
+        try:
+            return None if (v != v or v == float("inf") or v == float("-inf")) else round(v, 4)
+        except (TypeError, ValueError):
+            return None
+
+    # Compute vol_ratio (avg5d / avg20d) for all stocks in one Price query
+    _stock_ids = [row[0].id for row in rows]
+    _vol_cutoff = date.today() - timedelta(days=35)
+    _vol_rows = session.execute(
+        select(Price.stock_id, Price.volume)
+        .where(
+            Price.stock_id.in_(_stock_ids),
+            Price.timeframe == TimeFrame.D1,
+            Price.ts >= str(_vol_cutoff),
+        )
+        .order_by(Price.stock_id, Price.ts.desc())
+    ).all()
+    from collections import defaultdict as _dd
+    _vols_by_stock: dict[int, list[float]] = _dd(list)
+    for _vr in _vol_rows:
+        _vols_by_stock[_vr.stock_id].append(float(_vr.volume or 0))
+    _vol_ratio_map: dict[int, float | None] = {}
+    for _sid, _vols in _vols_by_stock.items():
+        _valid = [v for v in _vols if v > 0]
+        if len(_valid) < 5:
+            _vol_ratio_map[_sid] = None
+            continue
+        _avg5  = sum(_valid[:5]) / 5
+        _avg20 = sum(_valid[:min(len(_valid), 20)]) / min(len(_valid), 20)
+        _vol_ratio_map[_sid] = round(_avg5 / _avg20, 2) if _avg20 > 0 else None
+
     results = [
         {
             "symbol":            stock.symbol,
@@ -421,6 +683,7 @@ def leaderboard(
             "name_zh":           stock.name_zh,
             "market":            stock.market.value,
             "sector":            stock.sector,
+            "index_membership":  stock.index_membership,
             "score":             _clean(ranking.score),
             "technical":         _clean(ranking.technical),
             "momentum":          _clean(ranking.momentum),
@@ -429,9 +692,28 @@ def leaderboard(
             "volatility":        _clean(ranking.volatility),
             "fair_price":        _clean(ranking.fair_price),
             "relative_strength": _clean(ranking.rs_score),
+            "vol_ratio":         _vol_ratio_map.get(stock.id),
+            # Raw fundamental fields for screener filtering
+            "trailing_pe":       _cf(fund.trailing_pe) if fund else None,
+            "forward_pe":        _cf(fund.forward_pe) if fund else None,
+            "peg_ratio":         _cf(fund.peg_ratio) if fund else None,
+            "revenue_growth":    _cf(fund.revenue_growth) if fund else None,
+            "earnings_growth":   _cf(fund.earnings_growth) if fund else None,
+            "debt_to_equity":    _cf(fund.debt_to_equity) if fund else None,
+            "price_to_book":     _cf(fund.price_to_book) if fund else None,
+            "market_cap":        int(_cf(fund.market_cap)) if fund and _cf(fund.market_cap) is not None else None,
         }
-        for stock, ranking in rows
+        for stock, ranking, fund in rows
     ]
+    # Merge institutional ownership from Redis (not in DB Fundamental table)
+    bulk_fund = _fetch_fundamentals_bulk()
+    patterns  = _fetch_patterns_bulk()
+    for r in results:
+        fd = bulk_fund.get(r["symbol"]) or {}
+        r["held_percent_institutions"] = fd.get("held_percent_institutions")
+        r["held_percent_insiders"]     = fd.get("held_percent_insiders")
+        r["patterns"] = patterns.get(r["symbol"], [])
+
     results.sort(key=lambda r: r["score"] or 0, reverse=True)
     as_of = str(max((row[1].as_of for row in rows), default=date.today()))
     return {"as_of": as_of, "rankings": results[:limit]}
@@ -487,6 +769,7 @@ def refresh(
     tasks: BackgroundTasks,
     market: str | None = None,
     session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
 ):
     """Compute + persist rankings for the whole universe."""
     stmt = select(Stock).where(Stock.active.is_(True))
@@ -499,59 +782,105 @@ def refresh(
 
 
 def _persist_rankings(stock_ids: list[int]) -> None:
+    # T232-RANKSTALE: this function runs inside a FastAPI BackgroundTasks callback, whose
+    # exceptions are NOT surfaced anywhere by default — no response to fail, no automatic
+    # log. It previously had zero logging, so a silent stall or an unhandled exception on
+    # any single stock (killing the whole per-stock loop below) was completely invisible:
+    # rankings.as_of sat 10+ days stale while POST /rankings/refresh kept returning 200
+    # "scheduled" (that response is sent before this function even starts). Wrapped the
+    # whole run in try/except and added explicit start/done/error logging so a stall or
+    # crash is now visible in container logs instead of just an aging as_of column.
     from db import SessionLocal, Stock as StockModel
 
     today = date.today()
-    with SessionLocal() as session:
-        _prewarm_etf_cache(session)  # load all sector ETF returns from DB once
+    log.info("ranking.persist_rankings_started", count=len(stock_ids))
+    t0 = _time.time()
+    try:
+        with SessionLocal() as session:
+            _prewarm_etf_cache(session)  # load all sector ETF returns from DB once
 
-        # Fetch fundamentals + build sector map for all stocks in this batch
-        all_stocks = {
-            s.id: s for s in session.execute(
-                select(StockModel).where(StockModel.id.in_(stock_ids))
-            ).scalars()
-        }
-        fundamentals = _fetch_fundamentals_bulk()
-        stock_sectors = {s.symbol: (s.sector or "Unknown") for s in all_stocks.values()}
-        sector_scores = _sector_relative_scores(fundamentals, stock_sectors)
+            # Fetch fundamentals + build sector map for all stocks in this batch
+            all_stocks = {
+                s.id: s for s in session.execute(
+                    select(StockModel).where(StockModel.id.in_(stock_ids))
+                ).scalars()
+            }
+            fundamentals = _fetch_fundamentals_bulk()
+            stock_sectors = {s.symbol: (s.sector or "Unknown") for s in all_stocks.values()}
+            sector_scores = _sector_relative_scores(fundamentals, stock_sectors)
 
-        rows = []
-        for sid in stock_ids:
-            stock = all_stocks.get(sid)
-            if not stock:
-                continue
-            df = _load_prices(session, sid)
-            if df.empty or len(df) < 60:
-                continue
-            rs_score_val, _ = _stock_rs(stock, df, session=session)
-            sc = sector_scores.get(stock.symbol, {})
-            c = compute_kscore(
-                df,
-                rs_score=rs_score_val,
-                value_score=sc.get("value"),
-                growth_score=sc.get("growth"),
-            )
-            rows.append(
-                {
-                    "stock_id": sid,
-                    "as_of": today,
-                    "score":     _clean(c.score),
-                    "technical": _clean(c.technical),
-                    "momentum":  _clean(c.momentum),
-                    "value":     _clean(c.value),
-                    "growth":    _clean(c.growth),
-                    "volatility":_clean(c.volatility),
-                    "fair_price":_clean(c.fair_price),
-                    "rs_score":  _clean(c.relative_strength),
-                }
-            )
-        if rows:
-            stmt = pg_insert(Ranking).values(rows)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["stock_id", "as_of"],
-                set_={col: stmt.excluded[col] for col in (
-                    "score", "technical", "momentum", "value", "growth", "volatility", "fair_price", "rs_score"
-                )},
-            )
-            session.execute(stmt)
-            session.commit()
+            rows = []
+            skipped = 0
+            errored = 0
+            # T232-DL8: rebuilt wholesale each run, not accumulated — a stock that had
+            # enough history last run and doesn't need re-flagging just isn't in this dict.
+            skipped_this_run: dict[int, dict] = {}
+            for sid in stock_ids:
+                # T232-RANKSTALE: isolate each stock — one bad symbol (bad price data,
+                # a compute_kscore edge case, etc.) must not silently abort the entire
+                # batch the way it could before this try/except existed.
+                try:
+                    stock = all_stocks.get(sid)
+                    if not stock:
+                        continue
+                    df = _load_prices(session, sid)
+                    if df.empty or len(df) < 60:
+                        skipped += 1
+                        skipped_this_run[sid] = {
+                            "symbol": stock.symbol,
+                            "bars_available": int(len(df)),
+                            "bars_required": 60,
+                            "as_of": today.isoformat(),
+                        }
+                        continue
+                    rs_score_val, _ = _stock_rs(stock, df, session=session)
+                    sc = sector_scores.get(stock.symbol, {})
+                    c = compute_kscore(
+                        df,
+                        rs_score=rs_score_val,
+                        value_score=sc.get("value"),
+                        growth_score=sc.get("growth"),
+                    )
+                    rows.append(
+                        {
+                            "stock_id": sid,
+                            "as_of": today,
+                            "score":     _clean(c.score),
+                            "technical": _clean(c.technical),
+                            "momentum":  _clean(c.momentum),
+                            "value":     _clean(c.value),
+                            "growth":    _clean(c.growth),
+                            "volatility":_clean(c.volatility),
+                            "fair_price":_clean(c.fair_price),
+                            "rs_score":  _clean(c.relative_strength),
+                        }
+                    )
+                except Exception as _stock_exc:
+                    errored += 1
+                    log.warning("ranking.persist_rankings_stock_failed",
+                                stock_id=sid, error=str(_stock_exc))
+            global _skipped_insufficient_history
+            _skipped_insufficient_history = skipped_this_run
+            # T232-RANKSTALE: session.execute(stmt)/commit() were previously OUTSIDE this
+            # `if rows:` block (same indentation as the `if`, not nested under it) — if
+            # every stock in the batch was skipped or errored (e.g. a yfinance rate-limit
+            # cascading into skip_low_volume-style skips upstream), `rows` was empty,
+            # `stmt` was never assigned, and this raised NameError, killing the whole
+            # background task with no caller to see the exception. Silent ranking
+            # staleness with zero log output was the exact symptom this produced.
+            if rows:
+                stmt = pg_insert(Ranking).values(rows)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["stock_id", "as_of"],
+                    set_={col: stmt.excluded[col] for col in (
+                        "score", "technical", "momentum", "value", "growth", "volatility", "fair_price", "rs_score"
+                    )},
+                )
+                session.execute(stmt)
+                session.commit()
+            log.info("ranking.persist_rankings_done",
+                     requested=len(stock_ids), written=len(rows),
+                     skipped_insufficient_history=skipped, errored=errored,
+                     elapsed_s=round(_time.time() - t0, 1))
+    except Exception as exc:
+        log.error("ranking.persist_rankings_failed", error=str(exc), exc_info=True)

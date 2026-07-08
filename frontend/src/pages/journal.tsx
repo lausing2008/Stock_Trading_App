@@ -1,22 +1,421 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import useSWR from 'swr';
-import { api, type JournalTrade, type JournalTradeIn } from '@/lib/api';
+import { api, type PaperDecisionItem, type JournalTrade, type JournalTradeIn, type TradePlan } from '@/lib/api';
 
-// ─── P&L helpers ─────────────────────────────────────────────────────────────
+// ─── Exit reason badges ───────────────────────────────────────────────────────
+
+const EXIT_META: Record<string, { label: string; bg: string; color: string }> = {
+  stop_hit:           { label: 'Stop Hit',    bg: 'rgba(239,68,68,0.15)',   color: '#f87171' },
+  target_reached:     { label: 'Target',      bg: 'rgba(34,197,94,0.15)',   color: '#4ade80' },
+  signal_exit:        { label: 'Signal Exit', bg: 'rgba(251,191,36,0.15)',  color: '#fbbf24' },
+  time_stop:          { label: 'Time Stop',   bg: 'rgba(100,116,139,0.2)',  color: '#94a3b8' },
+  hold_stall_timeout: { label: 'Stall',       bg: 'rgba(249,115,22,0.15)', color: '#fb923c' },
+  momentum_exit:      { label: 'Mom. Exit',   bg: 'rgba(167,139,250,0.15)', color: '#a78bfa' },
+  manual_reset:       { label: 'Reset',       bg: 'rgba(71,85,105,0.2)',   color: '#64748b' },
+};
+
+function ExitBadge({ reason }: { reason: string | null }) {
+  if (!reason) return <span style={{ color: '#475569' }}>Open</span>;
+  const m = EXIT_META[reason] ?? { label: reason, bg: 'rgba(99,102,241,0.15)', color: '#818cf8' };
+  return (
+    <span style={{ padding: '2px 7px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+      background: m.bg, color: m.color }}>{m.label}</span>
+  );
+}
+
+function ScoreDots({ score }: { score: number | null }) {
+  if (score == null) return <span style={{ color: '#475569' }}>—</span>;
+  return (
+    <span>
+      {[1,2,3,4,5].map(i => (
+        <span key={i} style={{ color: i <= score ? '#f59e0b' : '#1e293b', fontSize: 13 }}>●</span>
+      ))}
+    </span>
+  );
+}
+
+const STYLE_COLOR: Record<string, string> = {
+  GROWTH: '#22c55e', SWING: '#3b82f6', LONG: '#a78bfa', SHORT: '#f87171',
+};
+
+function fmtTime(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) +
+    ' ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function fmtDate(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+}
+
+// ─── Key entry indicators to surface from reasons dict ────────────────────────
+
+const REASON_LABELS: Record<string, string> = {
+  market_regime: 'Regime', rs_score: 'RS Score', ml_probability: 'ML Prob',
+  rsi: 'RSI', ma_trend: 'MA Trend', sr_context: 'S/R', vol_spike: 'Vol Spike',
+  macd_hist: 'MACD Hist', days_to_earnings: 'DTE', bb_position: 'BB Pos',
+};
+
+function EntryReasonsDetail({ reasons }: { reasons: Record<string, unknown> }) {
+  const keys = Object.keys(REASON_LABELS).filter(k => reasons[k] != null);
+  if (!keys.length) return null;
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 14px', marginTop: 6 }}>
+      {keys.map(k => {
+        const v = reasons[k];
+        const display = typeof v === 'number'
+          ? (k === 'ml_probability' ? `${(Number(v)*100).toFixed(0)}%` : k === 'rs_score' ? Number(v).toFixed(1) : String(Math.round(Number(v) * 100) / 100))
+          : String(v);
+        return (
+          <span key={k} style={{ fontSize: 11, color: '#64748b' }}>
+            <span style={{ color: '#475569' }}>{REASON_LABELS[k]}: </span>
+            <span style={{ color: '#94a3b8' }}>{display}</span>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function ExitReasonsDetail({ reasons }: { reasons: Record<string, unknown> }) {
+  const entries = Object.entries(reasons).filter(([, v]) => v != null && v !== '');
+  if (!entries.length) return null;
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 14px', marginTop: 4 }}>
+      {entries.map(([k, v]) => (
+        <span key={k} style={{ fontSize: 11, color: '#64748b' }}>
+          <span style={{ color: '#475569' }}>{k.replace(/_/g, ' ')}: </span>
+          <span style={{ color: '#94a3b8' }}>{typeof v === 'number' ? String(Math.round(Number(v) * 100) / 100) : String(v)}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// ─── AI Trades tab ────────────────────────────────────────────────────────────
+
+const DAYS_OPTIONS = [30, 60, 90, 180] as const;
+
+function AITradesTab() {
+  const [daysBack, setDaysBack] = useState<30 | 60 | 90 | 180>(90);
+  const [filterStage, setFilterStage] = useState<'all' | 'open' | 'closed'>('all');
+  const [filterExit, setFilterExit] = useState<string | null>(null);
+  const [filterStyle, setFilterStyle] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<'date' | 'pnl' | 'symbol'>('date');
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [page, setPage] = useState(1);
+
+  const { data, isLoading } = useSWR(
+    ['paper-decisions', daysBack, page],
+    () => api.paperDecisions({ days_back: daysBack, limit: 50, page }),
+    { revalidateOnFocus: false },
+  );
+
+  const items = data?.items ?? [];
+  const total = data?.total ?? 0;
+  const pages = data?.pages ?? 1;
+
+  const exitReasons = [...new Set(items.map(i => i.exit_reason).filter(Boolean))];
+  const styles = [...new Set(items.map(i => (i.entry_reasons as any)?.horizon || '').filter(Boolean))];
+
+  const filtered = items
+    .filter(i => filterStage === 'all' || (filterStage === 'open' ? i.stage === 'open' : i.stage === 'closed'))
+    .filter(i => !filterExit || i.exit_reason === filterExit)
+    .filter(i => !filterStyle || ((i.entry_reasons as any)?.horizon || '') === filterStyle)
+    .sort((a, b) => {
+      if (sortBy === 'date') return (b.entry_time ?? '').localeCompare(a.entry_time ?? '');
+      if (sortBy === 'symbol') return a.symbol.localeCompare(b.symbol);
+      return (b.pnl ?? -Infinity) - (a.pnl ?? -Infinity);
+    });
+
+  const closed = items.filter(i => i.stage === 'closed');
+  const wins = closed.filter(i => (i.pnl ?? 0) > 0);
+  const totalPnl = closed.reduce((s, i) => s + (i.pnl ?? 0), 0);
+  const winRate = closed.length ? (wins.length / closed.length * 100) : null;
+  const avgHold = closed.length ? (closed.reduce((s, i) => s + i.hold_days, 0) / closed.length) : null;
+
+  function toggleExpand(id: number) {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <div>
+      {/* Stats bar */}
+      {closed.length > 0 && (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 20 }}>
+          {[
+            ['Total P&L', `${totalPnl >= 0 ? '+' : ''}$${Math.abs(totalPnl).toFixed(0)}`, totalPnl >= 0 ? '#4ade80' : '#f87171', `${closed.length} closed`],
+            ['Win Rate', winRate != null ? `${winRate.toFixed(0)}%` : '—', winRate != null && winRate >= 50 ? '#4ade80' : '#f87171', `${wins.length}W / ${closed.length - wins.length}L`],
+            ['Avg Hold', avgHold != null ? `${avgHold.toFixed(1)}d` : '—', '#94a3b8', 'trading days'],
+            ['Open', String(items.filter(i => i.stage === 'open').length), '#818cf8', 'positions'],
+          ].map(([label, value, color, sub]) => (
+            <div key={label as string} style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px', minWidth: 100 }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: color as string }}>{value}</div>
+              <div style={{ fontSize: 10, color: '#64748b', marginTop: 1 }}>{label}</div>
+              <div style={{ fontSize: 10, color: '#334155', marginTop: 1 }}>{sub}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Exit reason breakdown (47-B) */}
+      {closed.length > 0 && exitReasons.length > 0 && (
+        <div style={{ marginBottom: 20, background: '#0a1628', border: '1px solid #1e293b', borderRadius: 8, padding: '12px 14px' }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Exit Breakdown</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {exitReasons.map(reason => {
+              const group = closed.filter(i => i.exit_reason === reason);
+              const gWins = group.filter(i => (i.pnl ?? 0) > 0);
+              const gAvgPnl = group.length ? group.reduce((s, i) => s + (i.pnl ?? 0), 0) / group.length : 0;
+              const gAvgHold = group.length ? group.reduce((s, i) => s + i.hold_days, 0) / group.length : 0;
+              const gWr = group.length ? (gWins.length / group.length * 100) : 0;
+              const meta = EXIT_META[reason!] ?? { label: reason, bg: 'rgba(99,102,241,0.15)', color: '#818cf8' };
+              return (
+                <div key={reason} style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 6, padding: '8px 12px', minWidth: 110 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: meta.color, marginBottom: 4 }}>{meta.label}</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: gAvgPnl >= 0 ? '#4ade80' : '#f87171' }}>{gAvgPnl >= 0 ? '+' : ''}${Math.abs(gAvgPnl).toFixed(0)} avg</div>
+                  <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>{group.length} trade{group.length !== 1 ? 's' : ''} · {gWr.toFixed(0)}% WR</div>
+                  <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>avg {gAvgHold.toFixed(1)}d hold</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Filters */}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
+        {(['all', 'open', 'closed'] as const).map(v => (
+          <button key={v} onClick={() => setFilterStage(v)}
+            style={{ padding: '3px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
+              borderColor: filterStage === v ? '#6366f1' : '#1e293b',
+              background: filterStage === v ? 'rgba(99,102,241,0.15)' : 'transparent',
+              color: filterStage === v ? '#818cf8' : '#64748b' }}>
+            {v.charAt(0).toUpperCase() + v.slice(1)}
+          </button>
+        ))}
+
+        {exitReasons.map(r => (
+          <button key={r} onClick={() => setFilterExit(filterExit === r ? null : r)}
+            style={{ padding: '3px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer', border: '1px solid',
+              borderColor: filterExit === r ? '#334155' : '#1e293b',
+              background: filterExit === r ? 'rgba(51,65,85,0.4)' : 'transparent',
+              color: filterExit === r ? '#94a3b8' : '#475569' }}>
+            {EXIT_META[r!]?.label ?? r}
+          </button>
+        ))}
+
+        <div style={{ flex: 1 }} />
+
+        <span style={{ fontSize: 11, color: '#475569' }}>Days:</span>
+        {DAYS_OPTIONS.map(d => (
+          <button key={d} onClick={() => { setDaysBack(d); setPage(1); }}
+            style={{ padding: '3px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid',
+              borderColor: daysBack === d ? '#475569' : '#1e293b',
+              background: daysBack === d ? 'rgba(71,85,105,0.2)' : 'transparent',
+              color: daysBack === d ? '#94a3b8' : '#475569' }}>
+            {d}d
+          </button>
+        ))}
+        <span style={{ fontSize: 11, color: '#475569', marginLeft: 8 }}>Sort:</span>
+        {([['date', 'Date'], ['symbol', 'Symbol'], ['pnl', 'P&L']] as const).map(([k, label]) => (
+          <button key={k} onClick={() => setSortBy(k)}
+            style={{ padding: '3px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid',
+              borderColor: sortBy === k ? '#475569' : '#1e293b',
+              background: sortBy === k ? 'rgba(71,85,105,0.2)' : 'transparent',
+              color: sortBy === k ? '#94a3b8' : '#475569' }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {isLoading ? (
+        <div style={{ textAlign: 'center', padding: '40px 0', color: '#475569' }}>Loading…</div>
+      ) : filtered.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '40px 0', color: '#475569' }}>
+          No trades in the last {daysBack} days.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {filtered.map(item => {
+            const isOpen = item.stage === 'open';
+            const isExpanded = expanded.has(item.id);
+            const pnlColor = (item.pnl ?? 0) >= 0 ? '#4ade80' : '#f87171';
+            const horizonStyle = (item.entry_reasons as any)?.horizon as string | undefined;
+            const styleColor = horizonStyle ? STYLE_COLOR[horizonStyle] ?? '#94a3b8' : '#94a3b8';
+            const scaleIn = (item.decision_notes || []).some(n => n.includes('SCALE_IN'));
+            const partials = (item.decision_notes || []).filter(n =>
+              n.startsWith('Scale-out') || n.startsWith('Partial'),
+            );
+
+            return (
+              <div key={item.id} style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, overflow: 'hidden' }}>
+                {/* Main row */}
+                <div
+                  onClick={() => toggleExpand(item.id)}
+                  style={{ display: 'grid', gridTemplateColumns: '130px 60px 80px 110px 110px 90px 60px 70px 50px', gap: 8,
+                    alignItems: 'center', padding: '10px 14px', cursor: 'pointer', userSelect: 'none' }}>
+                  <div>
+                    <Link href={`/stock/${item.symbol}`} onClick={e => e.stopPropagation()}
+                      style={{ color: '#818cf8', fontWeight: 700, fontSize: 13 }}>{item.symbol}</Link>
+                    {horizonStyle && (
+                      <span style={{ marginLeft: 6, fontSize: 10, color: styleColor, fontWeight: 600 }}>{horizonStyle}</span>
+                    )}
+                    {scaleIn && (
+                      <span style={{ marginLeft: 4, fontSize: 9, color: '#fb923c', fontWeight: 600 }}>+SI</span>
+                    )}
+                  </div>
+                  <div><ScoreDots score={item.entry_score} /></div>
+                  <div style={{ fontSize: 11, color: '#64748b' }}>
+                    <div>{fmtDate(item.entry_time)}</div>
+                    {!isOpen && item.exit_time && <div style={{ color: '#475569', fontSize: 10 }}>{fmtDate(item.exit_time)}</div>}
+                  </div>
+                  <div style={{ fontSize: 12, color: '#94a3b8' }}>
+                    <span style={{ color: '#64748b' }}>In: </span>${item.entry_price.toFixed(2)}
+                    {!isOpen && item.exit_price != null && (
+                      <div><span style={{ color: '#64748b' }}>Out: </span>${item.exit_price.toFixed(2)}</div>
+                    )}
+                  </div>
+                  <div>
+                    {isOpen ? (
+                      <span style={{ fontSize: 11, color: '#facc15' }}>Open</span>
+                    ) : (
+                      item.pnl != null ? (
+                        <>
+                          <span style={{ fontSize: 13, fontWeight: 700, color: pnlColor }}>
+                            {item.pnl >= 0 ? '+' : ''}${Math.abs(item.pnl).toFixed(0)}
+                          </span>
+                          {item.pct_return != null && (
+                            <span style={{ fontSize: 11, color: pnlColor, marginLeft: 4 }}>
+                              ({item.pct_return >= 0 ? '+' : ''}{item.pct_return.toFixed(1)}%)
+                            </span>
+                          )}
+                        </>
+                      ) : '—'
+                    )}
+                  </div>
+                  <div><ExitBadge reason={item.exit_reason} /></div>
+                  <div style={{ fontSize: 11, color: '#64748b' }}>
+                    {item.hold_days > 0 ? `${item.hold_days}d` : isOpen ? 'holding' : '—'}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#64748b' }}>
+                    {item.confidence_at_entry != null ? `${item.confidence_at_entry.toFixed(0)}%` : '—'}
+                  </div>
+                  <div style={{ fontSize: 12, color: '#334155' }}>{isExpanded ? '▲' : '▼'}</div>
+                </div>
+
+                {/* Expanded detail */}
+                {isExpanded && (
+                  <div style={{ padding: '12px 14px 14px', borderTop: '1px solid #1e293b', background: '#020617' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                      {/* Left: entry context */}
+                      <div>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', marginBottom: 6 }}>ENTRY CONTEXT</div>
+                        <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>
+                          {item.market_regime_at_entry && (
+                            <span style={{ marginRight: 10 }}>Regime: <span style={{ color: '#94a3b8' }}>{item.market_regime_at_entry}</span></span>
+                          )}
+                          {item.rr_ratio_at_entry != null && (
+                            <span style={{ marginRight: 10 }}>R:R: <span style={{ color: '#94a3b8' }}>{item.rr_ratio_at_entry.toFixed(1)}:1</span></span>
+                          )}
+                          {item.kscore_at_entry != null && (
+                            <span>K-Score: <span style={{ color: '#94a3b8' }}>{item.kscore_at_entry.toFixed(0)}</span></span>
+                          )}
+                        </div>
+                        <EntryReasonsDetail reasons={item.entry_reasons} />
+                      </div>
+
+                      {/* Right: stop/target + partial notes */}
+                      <div>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', marginBottom: 6 }}>TRADE PLAN</div>
+                        <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>
+                          <span style={{ marginRight: 10 }}>Stop: <span style={{ color: '#f87171' }}>${item.stop_loss.toFixed(2)}</span></span>
+                          {item.take_profit != null && (
+                            <span>Target: <span style={{ color: '#4ade80' }}>${item.take_profit.toFixed(2)}</span></span>
+                          )}
+                          <span style={{ marginLeft: 10 }}>{item.shares.toFixed(2)}sh</span>
+                        </div>
+                        {partials.length > 0 && (
+                          <div style={{ fontSize: 10, color: '#fb923c', marginBottom: 4 }}>
+                            {partials.map((n, i) => <div key={i}>{n}</div>)}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* AI entry decision notes */}
+                    {item.decision_notes.length > 0 && (
+                      <div style={{ marginTop: 10 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', marginBottom: 4 }}>AI ENTRY NOTES</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          {item.decision_notes
+                            .filter(n => !n.startsWith('PARTIAL') && !n.startsWith('Scale-out') && n !== 'SCALE_IN' && !n.startsWith('Scale-in:'))
+                            .map((note, i) => (
+                              <div key={i} style={{ fontSize: 11, color: '#64748b', padding: '2px 0', borderLeft: '2px solid #1e293b', paddingLeft: 8 }}>
+                                {note}
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Exit reasoning */}
+                    {!isOpen && Object.keys(item.exit_reasons).length > 0 && (
+                      <div style={{ marginTop: 10 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', marginBottom: 4 }}>EXIT REASONING</div>
+                        <ExitReasonsDetail reasons={item.exit_reasons} />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {pages > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 16 }}>
+          <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+            style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: page === 1 ? 'not-allowed' : 'pointer',
+              border: '1px solid #1e293b', background: 'transparent', color: page === 1 ? '#334155' : '#64748b' }}>
+            ← Prev
+          </button>
+          <span style={{ fontSize: 12, color: '#475569', display: 'flex', alignItems: 'center' }}>
+            {page} / {pages} ({total} trades)
+          </span>
+          <button onClick={() => setPage(p => Math.min(pages, p + 1))} disabled={page === pages}
+            style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: page === pages ? 'not-allowed' : 'pointer',
+              border: '1px solid #1e293b', background: 'transparent', color: page === pages ? '#334155' : '#64748b' }}>
+            Next →
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Manual Log tab (unchanged) ───────────────────────────────────────────────
 
 function calcPnl(t: JournalTrade): number | null {
   if (t.exit_price == null) return null;
   const dir = t.action === 'BUY' ? 1 : -1;
   return dir * (t.exit_price - t.entry_price) * t.shares;
 }
-
 function calcPnlPct(t: JournalTrade): number | null {
   if (t.exit_price == null) return null;
   const dir = t.action === 'BUY' ? 1 : -1;
   return dir * (t.exit_price - t.entry_price) / t.entry_price * 100;
 }
-
 function calcRR(t: JournalTrade): number | null {
   if (t.stop_loss == null || t.take_profit == null) return null;
   const risk = Math.abs(t.entry_price - t.stop_loss);
@@ -24,19 +423,14 @@ function calcRR(t: JournalTrade): number | null {
   return risk > 0 ? reward / risk : null;
 }
 
-// ─── Blank form ───────────────────────────────────────────────────────────────
-
 const BLANK: JournalTradeIn = {
   symbol: '', action: 'BUY', shares: 0, entry_price: 0, exit_price: null,
   entry_date: new Date().toISOString().slice(0, 10), exit_date: null,
   stop_loss: null, take_profit: null, notes: null, strategy: null, signal_confidence: null,
 };
 
-// ─── Component ────────────────────────────────────────────────────────────────
-
-export default function JournalPage() {
+function ManualLogTab() {
   const { data: trades = [], mutate, isLoading } = useSWR<JournalTrade[]>('journal', () => api.listJournal());
-
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<JournalTradeIn>({ ...BLANK });
@@ -50,7 +444,6 @@ export default function JournalPage() {
     setForm({ ...BLANK, entry_date: new Date().toISOString().slice(0, 10) });
     setShowForm(true);
   }
-
   function openEdit(t: JournalTrade) {
     setEditingId(t.id);
     setForm({
@@ -62,23 +455,16 @@ export default function JournalPage() {
     });
     setShowForm(true);
   }
-
   async function handleSave() {
     if (!form.symbol || form.entry_price <= 0 || form.shares <= 0) return;
     setSaving(true);
     try {
-      if (editingId != null) {
-        await api.updateJournalTrade(editingId, form);
-      } else {
-        await api.createJournalTrade(form);
-      }
+      if (editingId != null) { await api.updateJournalTrade(editingId, form); }
+      else { await api.createJournalTrade(form); }
       await mutate();
       setShowForm(false);
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   }
-
   async function handleDelete(id: number) {
     await api.deleteJournalTrade(id);
     await mutate();
@@ -106,41 +492,35 @@ export default function JournalPage() {
       return pb - pa;
     });
 
-  const statCard = (label: string, value: string, color?: string, sub?: string) => (
-    <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '12px 16px', minWidth: 110 }}>
-      <div style={{ fontSize: 20, fontWeight: 700, color: color ?? '#e2e8f0' }}>{value}</div>
-      <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{label}</div>
-      {sub && <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>{sub}</div>}
-    </div>
-  );
-
   return (
-    <div style={{ padding: '24px 0' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#e2e8f0', marginBottom: 4 }}>Trade Journal</h1>
-          <p style={{ fontSize: 13, color: '#64748b' }}>Track every trade — review what works, cut what doesn&apos;t.</p>
-        </div>
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <p style={{ fontSize: 13, color: '#64748b' }}>Manually log your own trades outside the AI engine.</p>
         <button onClick={openAdd}
-          style={{ padding: '8px 18px', borderRadius: 8, background: '#6366f1', color: '#fff', fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer' }}>
+          style={{ padding: '7px 16px', borderRadius: 8, background: '#6366f1', color: '#fff', fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer' }}>
           + Log Trade
         </button>
       </div>
 
-      {/* Stats */}
       {closed.length > 0 && (
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 24 }}>
-          {statCard('Total P&L', `${totalPnl >= 0 ? '+' : '-'}$${Math.abs(totalPnl).toFixed(2)}`, totalPnl >= 0 ? '#4ade80' : '#f87171', `${closed.length} closed trades`)}
-          {statCard('Win Rate', winRate != null ? `${winRate.toFixed(0)}%` : '—', winRate != null && winRate >= 50 ? '#4ade80' : '#f87171', `${wins.length}W / ${losses.length}L`)}
-          {statCard('Avg Win', avgWin != null ? `+$${avgWin.toFixed(2)}` : '—', '#4ade80')}
-          {statCard('Avg Loss', avgLoss != null ? `-$${Math.abs(avgLoss).toFixed(2)}` : '—', '#f87171')}
-          {statCard('Profit Factor', profitFactor != null ? profitFactor.toFixed(2) : '—', profitFactor != null && profitFactor >= 1.5 ? '#4ade80' : '#facc15', 'reward / risk ratio')}
-          {statCard('Open Positions', String(open.length), '#818cf8')}
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 20 }}>
+          {[
+            ['Total P&L', `${totalPnl >= 0 ? '+' : '-'}$${Math.abs(totalPnl).toFixed(2)}`, totalPnl >= 0 ? '#4ade80' : '#f87171', `${closed.length} closed`],
+            ['Win Rate', winRate != null ? `${winRate.toFixed(0)}%` : '—', winRate != null && winRate >= 50 ? '#4ade80' : '#f87171', `${wins.length}W / ${losses.length}L`],
+            ['Avg Win', avgWin != null ? `+$${avgWin.toFixed(2)}` : '—', '#4ade80', ''],
+            ['Avg Loss', avgLoss != null ? `-$${Math.abs(avgLoss).toFixed(2)}` : '—', '#f87171', ''],
+            ['Profit Factor', profitFactor != null ? profitFactor.toFixed(2) : '—', profitFactor != null && profitFactor >= 1.5 ? '#4ade80' : '#facc15', 'reward/risk'],
+            ['Open', String(open.length), '#818cf8', 'positions'],
+          ].map(([label, value, color, sub]) => (
+            <div key={label as string} style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px', minWidth: 100 }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: color as string }}>{value}</div>
+              <div style={{ fontSize: 10, color: '#64748b', marginTop: 1 }}>{label}</div>
+              {sub && <div style={{ fontSize: 10, color: '#334155' }}>{sub}</div>}
+            </div>
+          ))}
         </div>
       )}
 
-      {/* Filters */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 14, alignItems: 'center' }}>
         {([null, true, false] as (boolean | null)[]).map((v, i) => {
           const label = v === null ? 'All' : v ? 'Open' : 'Closed';
@@ -156,7 +536,6 @@ export default function JournalPage() {
           );
         })}
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 11, color: '#475569' }}>Sort:</span>
         {([['date', 'Date'], ['symbol', 'Symbol'], ['pnl', 'P&L']] as const).map(([k, label]) => (
           <button key={k} onClick={() => setSortBy(k)}
             style={{ padding: '3px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid',
@@ -168,21 +547,19 @@ export default function JournalPage() {
         ))}
       </div>
 
-      {/* Trade table */}
       {isLoading ? (
-        <div style={{ textAlign: 'center', padding: '60px 0', color: '#475569' }}>Loading…</div>
+        <div style={{ textAlign: 'center', padding: '40px 0', color: '#475569' }}>Loading…</div>
       ) : displayTrades.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '60px 0', color: '#475569' }}>
-          <div style={{ fontSize: 40, marginBottom: 10 }}>📓</div>
-          <div style={{ fontWeight: 600, color: '#64748b', marginBottom: 4 }}>No trades yet</div>
-          <div style={{ fontSize: 12 }}>Click &quot;Log Trade&quot; to record your first entry.</div>
+        <div style={{ textAlign: 'center', padding: '40px 0', color: '#475569' }}>
+          <div style={{ fontSize: 36, marginBottom: 8 }}>📓</div>
+          <div style={{ color: '#64748b' }}>No trades logged. Click &quot;Log Trade&quot; to start.</div>
         </div>
       ) : (
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ borderBottom: '1px solid #1e293b' }}>
-                {['Symbol', 'Action', 'Shares', 'Entry', 'Exit', 'P&L', 'R:R', 'Strategy', 'Notes', ''].map(h => (
+                {['Symbol', 'Dir', 'Shares', 'Entry', 'Exit', 'P&L', 'R:R', 'Strategy', 'Notes', ''].map(h => (
                   <th key={h} style={{ padding: '6px 10px', textAlign: 'left', color: '#64748b', fontWeight: 500 }}>{h}</th>
                 ))}
               </tr>
@@ -203,11 +580,8 @@ export default function JournalPage() {
                       <span style={{ padding: '2px 6px', borderRadius: 4, fontSize: 11, fontWeight: 700,
                         background: t.action === 'BUY' ? 'rgba(22,101,52,0.3)' : 'rgba(153,27,27,0.3)',
                         color: t.action === 'BUY' ? '#4ade80' : '#f87171' }}>
-                        {t.action === 'BUY' ? 'LONG' : 'SHORT'}
+                        {t.action === 'BUY' ? 'L' : 'S'}
                       </span>
-                      {t.signal_confidence != null && (
-                        <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>{t.signal_confidence}% conf.</div>
-                      )}
                     </td>
                     <td style={{ padding: '8px 10px', color: '#94a3b8' }}>{t.shares}</td>
                     <td style={{ padding: '8px 10px', color: '#94a3b8' }}>
@@ -218,10 +592,7 @@ export default function JournalPage() {
                       {isOpen ? (
                         <span style={{ color: '#facc15', fontSize: 11 }}>Open</span>
                       ) : (
-                        <>
-                          <span style={{ color: '#94a3b8' }}>${t.exit_price!.toFixed(2)}</span>
-                          {t.exit_date && <div style={{ fontSize: 10, color: '#475569' }}>{t.exit_date}</div>}
-                        </>
+                        <span style={{ color: '#94a3b8' }}>${t.exit_price!.toFixed(2)}</span>
                       )}
                     </td>
                     <td style={{ padding: '8px 10px' }}>
@@ -242,29 +613,29 @@ export default function JournalPage() {
                       {rr != null ? `${rr.toFixed(1)}:1` : '—'}
                     </td>
                     <td style={{ padding: '8px 10px', color: '#64748b', maxWidth: 100 }}>{t.strategy || '—'}</td>
-                    <td style={{ padding: '8px 10px', color: '#475569', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <td style={{ padding: '8px 10px', color: '#475569', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {t.notes || '—'}
                     </td>
                     <td style={{ padding: '8px 10px' }}>
-                      <div style={{ display: 'flex', gap: 6 }}>
+                      <div style={{ display: 'flex', gap: 4 }}>
                         <button onClick={() => openEdit(t)}
-                          style={{ padding: '3px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid #1e293b', background: 'transparent', color: '#64748b' }}>
+                          style={{ padding: '3px 7px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid #1e293b', background: 'transparent', color: '#64748b' }}>
                           Edit
                         </button>
                         {deleteConfirm === t.id ? (
                           <>
                             <button onClick={() => handleDelete(t.id)}
-                              style={{ padding: '3px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid #991b1b', background: 'rgba(153,27,27,0.2)', color: '#f87171' }}>
-                              Confirm
+                              style={{ padding: '3px 7px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid #991b1b', background: 'rgba(153,27,27,0.2)', color: '#f87171' }}>
+                              Yes
                             </button>
                             <button onClick={() => setDeleteConfirm(null)}
-                              style={{ padding: '3px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid #1e293b', background: 'transparent', color: '#64748b' }}>
-                              Cancel
+                              style={{ padding: '3px 7px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid #1e293b', background: 'transparent', color: '#64748b' }}>
+                              No
                             </button>
                           </>
                         ) : (
                           <button onClick={() => setDeleteConfirm(t.id)}
-                            style={{ padding: '3px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid #1e293b', background: 'transparent', color: '#475569' }}>
+                            style={{ padding: '3px 7px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid #1e293b', background: 'transparent', color: '#475569' }}>
                             ✕
                           </button>
                         )}
@@ -285,7 +656,6 @@ export default function JournalPage() {
             <h2 style={{ fontSize: 16, fontWeight: 700, color: '#e2e8f0', marginBottom: 20 }}>
               {editingId ? 'Edit Trade' : 'Log New Trade'}
             </h2>
-
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div>
                 <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 4 }}>Symbol *</label>
@@ -293,7 +663,6 @@ export default function JournalPage() {
                   placeholder="e.g. AAPL"
                   style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #1e293b', background: '#020617', color: '#e2e8f0', fontSize: 13 }} />
               </div>
-
               <div>
                 <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 4 }}>Direction *</label>
                 <div style={{ display: 'flex', gap: 6 }}>
@@ -308,78 +677,42 @@ export default function JournalPage() {
                   ))}
                 </div>
               </div>
-
-              <div>
-                <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 4 }}>Shares *</label>
-                <input type="number" value={form.shares || ''} onChange={e => setForm(f => ({ ...f, shares: Number(e.target.value) }))}
-                  style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #1e293b', background: '#020617', color: '#e2e8f0', fontSize: 13 }} />
-              </div>
-
-              <div>
-                <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 4 }}>Entry Price *</label>
-                <input type="number" step="0.01" value={form.entry_price || ''} onChange={e => setForm(f => ({ ...f, entry_price: Number(e.target.value) }))}
-                  style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #1e293b', background: '#020617', color: '#e2e8f0', fontSize: 13 }} />
-              </div>
-
-              <div>
-                <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 4 }}>Exit Price <span style={{ color: '#475569' }}>(leave blank if open)</span></label>
-                <input type="number" step="0.01" value={form.exit_price ?? ''} onChange={e => setForm(f => ({ ...f, exit_price: e.target.value ? Number(e.target.value) : null }))}
-                  style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #1e293b', background: '#020617', color: '#e2e8f0', fontSize: 13 }} />
-              </div>
-
-              <div>
-                <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 4 }}>Entry Date *</label>
-                <input type="date" value={form.entry_date} onChange={e => setForm(f => ({ ...f, entry_date: e.target.value }))}
-                  style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #1e293b', background: '#020617', color: '#e2e8f0', fontSize: 13 }} />
-              </div>
-
-              <div>
-                <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 4 }}>Exit Date</label>
-                <input type="date" value={form.exit_date ?? ''} onChange={e => setForm(f => ({ ...f, exit_date: e.target.value || null }))}
-                  style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #1e293b', background: '#020617', color: '#e2e8f0', fontSize: 13 }} />
-              </div>
-
-              <div>
-                <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 4 }}>Stop Loss</label>
-                <input type="number" step="0.01" value={form.stop_loss ?? ''} onChange={e => setForm(f => ({ ...f, stop_loss: e.target.value ? Number(e.target.value) : null }))}
-                  style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #1e293b', background: '#020617', color: '#e2e8f0', fontSize: 13 }} />
-              </div>
-
-              <div>
-                <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 4 }}>Take Profit</label>
-                <input type="number" step="0.01" value={form.take_profit ?? ''} onChange={e => setForm(f => ({ ...f, take_profit: e.target.value ? Number(e.target.value) : null }))}
-                  style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #1e293b', background: '#020617', color: '#e2e8f0', fontSize: 13 }} />
-              </div>
-
-              <div>
-                <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 4 }}>AI Signal Confidence %</label>
-                <input type="number" min="0" max="100" value={form.signal_confidence ?? ''} onChange={e => setForm(f => ({ ...f, signal_confidence: e.target.value ? Number(e.target.value) : null }))}
-                  style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #1e293b', background: '#020617', color: '#e2e8f0', fontSize: 13 }} />
-              </div>
-
-              <div>
+              {[
+                ['Shares *', 'shares', 'number', ''],
+                ['Entry Price *', 'entry_price', 'number', '0.01'],
+                ['Exit Price', 'exit_price', 'number', '0.01'],
+                ['Entry Date *', 'entry_date', 'date', ''],
+                ['Exit Date', 'exit_date', 'date', ''],
+                ['Stop Loss', 'stop_loss', 'number', '0.01'],
+                ['Take Profit', 'take_profit', 'number', '0.01'],
+                ['Signal Confidence %', 'signal_confidence', 'number', ''],
+              ].map(([label, key, type, step]) => (
+                <div key={key as string}>
+                  <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 4 }}>{label}</label>
+                  <input type={type as string} step={step || undefined}
+                    value={(form as any)[key as string] ?? ''}
+                    onChange={e => setForm(f => ({
+                      ...f,
+                      [key as string]: e.target.value
+                        ? (type === 'date' ? e.target.value : Number(e.target.value))
+                        : (type === 'date' ? '' : null),
+                    }))}
+                    style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #1e293b', background: '#020617', color: '#e2e8f0', fontSize: 13 }} />
+                </div>
+              ))}
+              <div style={{ gridColumn: '1 / -1' }}>
                 <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 4 }}>Strategy / Setup</label>
                 <input value={form.strategy ?? ''} onChange={e => setForm(f => ({ ...f, strategy: e.target.value || null }))}
                   placeholder="e.g. Bull flag breakout"
                   style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #1e293b', background: '#020617', color: '#e2e8f0', fontSize: 13 }} />
               </div>
-            </div>
-
-            <div style={{ marginTop: 12 }}>
-              <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 4 }}>Notes / Rationale</label>
-              <textarea value={form.notes ?? ''} onChange={e => setForm(f => ({ ...f, notes: e.target.value || null }))}
-                rows={3} placeholder="Why you entered, what you observed…"
-                style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #1e293b', background: '#020617', color: '#e2e8f0', fontSize: 13, resize: 'vertical' }} />
-            </div>
-
-            {form.stop_loss != null && form.take_profit != null && form.entry_price > 0 && (
-              <div style={{ marginTop: 12, padding: '8px 12px', borderRadius: 6, background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.2)', fontSize: 12, color: '#818cf8' }}>
-                Risk: ${Math.abs(form.entry_price - form.stop_loss).toFixed(2)} per share ·
-                Reward: ${Math.abs(form.take_profit - form.entry_price).toFixed(2)} per share ·
-                R:R = {(Math.abs(form.take_profit - form.entry_price) / Math.abs(form.entry_price - form.stop_loss)).toFixed(1)}:1
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 4 }}>Notes / Rationale</label>
+                <textarea value={form.notes ?? ''} onChange={e => setForm(f => ({ ...f, notes: e.target.value || null }))}
+                  rows={3} placeholder="Why you entered, what you observed…"
+                  style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #1e293b', background: '#020617', color: '#e2e8f0', fontSize: 13, resize: 'vertical' }} />
               </div>
-            )}
-
+            </div>
             <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
               <button onClick={handleSave} disabled={saving || !form.symbol || form.entry_price <= 0 || form.shares <= 0}
                 style={{ flex: 1, padding: '9px 0', borderRadius: 8, background: '#6366f1', color: '#fff', fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer', opacity: (saving || !form.symbol || form.entry_price <= 0 || form.shares <= 0) ? 0.5 : 1 }}>
@@ -393,6 +726,220 @@ export default function JournalPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Trade Board tab ─────────────────────────────────────────────────────────
+
+function TradeBoardTab() {
+  const { data: plans = [], isLoading } = useSWR<TradePlan[]>('board', () => api.listBoard(), { revalidateOnFocus: false });
+  const closed = plans.filter(p => p.stage === 'closed').sort((a, b) =>
+    (b.closed_at ?? b.updated_at).localeCompare(a.closed_at ?? a.updated_at),
+  );
+  const [sortBy, setSortBy] = useState<'date' | 'pnl' | 'symbol'>('date');
+
+  function planPnlDollar(p: TradePlan): number | null {
+    const eff = p.actual_entry_price ?? p.entry_price;
+    if (p.exit_price == null || eff == null || p.shares == null) return null;
+    return (p.exit_price - eff) * p.shares;
+  }
+  function planPnlPct(p: TradePlan): number | null {
+    const eff = p.actual_entry_price ?? p.entry_price;
+    if (p.exit_price == null || eff == null || eff === 0) return null;
+    return (p.exit_price - eff) / eff * 100;
+  }
+
+  const sorted = [...closed].sort((a, b) => {
+    if (sortBy === 'symbol') return a.symbol.localeCompare(b.symbol);
+    if (sortBy === 'pnl') return (planPnlDollar(b) ?? -Infinity) - (planPnlDollar(a) ?? -Infinity);
+    return (b.closed_at ?? b.updated_at).localeCompare(a.closed_at ?? a.updated_at);
+  });
+
+  const withPnl = closed.filter(p => planPnlDollar(p) != null);
+  const wins = withPnl.filter(p => (planPnlDollar(p) ?? 0) > 0);
+  const totalPnl = withPnl.reduce((s, p) => s + (planPnlDollar(p) ?? 0), 0);
+  const winRate = withPnl.length ? wins.length / withPnl.length * 100 : null;
+
+  return (
+    <div>
+      {withPnl.length > 0 && (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 20 }}>
+          {[
+            ['Total P&L', `${totalPnl >= 0 ? '+' : ''}$${Math.abs(totalPnl).toFixed(0)}`, totalPnl >= 0 ? '#4ade80' : '#f87171', `${withPnl.length} with P&L`],
+            ['Win Rate', winRate != null ? `${winRate.toFixed(0)}%` : '—', winRate != null && winRate >= 50 ? '#4ade80' : '#f87171', `${wins.length}W / ${withPnl.length - wins.length}L`],
+            ['Closed', String(closed.length), '#94a3b8', 'total trades'],
+          ].map(([label, value, color, sub]) => (
+            <div key={label} style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px', minWidth: 100 }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: color as string }}>{value}</div>
+              <div style={{ fontSize: 10, color: '#64748b', marginTop: 1 }}>{label}</div>
+              <div style={{ fontSize: 10, color: '#334155', marginTop: 1 }}>{sub}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
+        <span style={{ fontSize: 11, color: '#475569' }}>Sort:</span>
+        {([['date', 'Date'], ['symbol', 'Symbol'], ['pnl', 'P&L']] as const).map(([k, label]) => (
+          <button key={k} onClick={() => setSortBy(k)}
+            style={{ padding: '3px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid',
+              borderColor: sortBy === k ? '#475569' : '#1e293b',
+              background: sortBy === k ? 'rgba(71,85,105,0.2)' : 'transparent',
+              color: sortBy === k ? '#94a3b8' : '#475569' }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {isLoading ? (
+        <div style={{ textAlign: 'center', padding: '40px 0', color: '#475569' }}>Loading…</div>
+      ) : sorted.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '40px 0', color: '#475569' }}>No closed Trade Board entries yet.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {sorted.map(p => {
+            const eff = p.actual_entry_price ?? p.entry_price;
+            const pnlD = planPnlDollar(p);
+            const pnlP = planPnlPct(p);
+            const pnlColor = pnlD == null ? '#64748b' : pnlD >= 0 ? '#4ade80' : '#f87171';
+            const style = p.trading_style ?? (p.game_plan as any)?.style ?? null;
+            const closedDate = p.closed_at ? fmtDate(p.closed_at) : fmtDate(p.updated_at);
+            return (
+              <div key={p.id} style={{ background: '#0b1220', border: '1px solid #1e293b', borderRadius: 6, padding: '10px 14px', display: 'flex', flexWrap: 'wrap', gap: '8px 18px', alignItems: 'center' }}>
+                <div style={{ minWidth: 70 }}>
+                  <Link href={`/stock/${p.symbol}`} style={{ fontSize: 14, fontWeight: 700, color: '#e2e8f0', textDecoration: 'none' }}>{p.symbol}</Link>
+                  {style && (
+                    <span style={{ marginLeft: 6, fontSize: 10, padding: '1px 5px', borderRadius: 3, background: 'rgba(99,102,241,0.15)', color: STYLE_COLOR[style] ?? '#818cf8' }}>{style}</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: '#64748b' }}>{closedDate}</div>
+                {eff != null && (
+                  <div style={{ fontSize: 12 }}>
+                    <span style={{ color: '#475569' }}>In: </span>
+                    <span style={{ color: p.actual_entry_price != null ? '#4ade80' : '#94a3b8', fontFamily: 'monospace' }}>${eff.toFixed(2)}</span>
+                    {p.actual_entry_price != null && p.entry_price != null && Math.abs(p.actual_entry_price - p.entry_price) > 0.01 && (
+                      <span style={{ color: '#334155', fontFamily: 'monospace', fontSize: 10 }}> (plan ${p.entry_price.toFixed(2)})</span>
+                    )}
+                  </div>
+                )}
+                {p.exit_price != null && (
+                  <div style={{ fontSize: 12 }}>
+                    <span style={{ color: '#475569' }}>Out: </span>
+                    <span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>${p.exit_price.toFixed(2)}</span>
+                  </div>
+                )}
+                {p.shares != null && (
+                  <div style={{ fontSize: 11, color: '#475569' }}>{p.shares} sh</div>
+                )}
+                <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+                  {pnlP != null && (
+                    <div style={{ fontSize: 15, fontWeight: 700, fontFamily: 'monospace', color: pnlColor }}>
+                      {pnlP >= 0 ? '+' : ''}{pnlP.toFixed(2)}%
+                    </div>
+                  )}
+                  {pnlD != null && (
+                    <div style={{ fontSize: 11, color: pnlColor }}>
+                      {pnlD >= 0 ? '+' : ''}${Math.abs(pnlD).toFixed(0)}
+                    </div>
+                  )}
+                  {pnlD == null && <div style={{ fontSize: 12, color: '#334155' }}>No P&L data</div>}
+                </div>
+                {p.notes && (
+                  <div style={{ width: '100%', fontSize: 11, color: '#475569', marginTop: 2, borderTop: '1px solid #1e293b', paddingTop: 4 }}>{p.notes}</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
+export default function JournalPage() {
+  const [tab, setTab] = useState<'ai' | 'manual' | 'board'>('ai');
+  const { data: aiData } = useSWR(['paper-decisions', 90, 1], () => api.paperDecisions({ days_back: 90, limit: 50, page: 1 }), { revalidateOnFocus: false });
+  const { data: manualTrades = [] } = useSWR<JournalTrade[]>('journal', () => api.listJournal());
+  const { data: boardPlans = [] } = useSWR<TradePlan[]>('board', () => api.listBoard(), { revalidateOnFocus: false });
+
+  const aiClosed = (aiData?.items ?? []).filter(i => i.stage === 'closed');
+  const aiWins = aiClosed.filter(i => (i.pnl ?? 0) > 0);
+  const aiWr = aiClosed.length > 0 ? aiWins.length / aiClosed.length * 100 : null;
+  const aiTotalPnl = aiClosed.reduce((s, i) => s + (i.pnl ?? 0), 0);
+
+  const manClosed = manualTrades.filter(t => t.exit_price != null);
+  const manWins = manClosed.filter(t => (calcPnl(t) ?? 0) > 0);
+  const manWr = manClosed.length > 0 ? manWins.length / manClosed.length * 100 : null;
+  const manTotalPnl = manClosed.reduce((s, t) => s + (calcPnl(t) ?? 0), 0);
+
+  function boardPnlD(p: TradePlan): number | null {
+    const eff = p.actual_entry_price ?? p.entry_price;
+    if (p.exit_price == null || eff == null || p.shares == null) return null;
+    return (p.exit_price - eff) * p.shares;
+  }
+  const boardClosed = boardPlans.filter(p => p.stage === 'closed' && boardPnlD(p) != null);
+  const boardWins = boardClosed.filter(p => (boardPnlD(p) ?? 0) > 0);
+  const boardWr = boardClosed.length > 0 ? boardWins.length / boardClosed.length * 100 : null;
+  const boardTotalPnl = boardClosed.reduce((s, p) => s + (boardPnlD(p) ?? 0), 0);
+
+  return (
+    <div style={{ padding: '24px 0' }}>
+      <div style={{ marginBottom: 20 }}>
+        <h1 style={{ fontSize: 22, fontWeight: 700, color: '#e2e8f0', marginBottom: 4 }}>Trade Journal</h1>
+        <p style={{ fontSize: 13, color: '#64748b' }}>Review every AI paper trade — entry score, indicators, exit reasoning, and scaling events.</p>
+      </div>
+
+      {/* Win rate comparison bar */}
+      {(aiClosed.length > 0 || manClosed.length > 0 || boardClosed.length > 0) && (
+        <div style={{ display: 'flex', gap: 10, marginBottom: 20, background: '#0a1628', border: '1px solid #1e293b', borderRadius: 8, padding: '12px 16px', alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em', marginRight: 4 }}>Win Rate</div>
+          {[
+            { label: 'AI Paper', wr: aiWr, pnl: aiTotalPnl, n: aiClosed.length },
+            { label: 'Trade Board', wr: boardWr, pnl: boardTotalPnl, n: boardClosed.length },
+            { label: 'Manual Log', wr: manWr, pnl: manTotalPnl, n: manClosed.length },
+          ].map(({ label, wr, pnl, n }) => (
+            <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#0f172a', border: '1px solid #1e293b', borderRadius: 6, padding: '8px 14px' }}>
+              <div>
+                <div style={{ fontSize: 10, color: '#475569', marginBottom: 2 }}>{label}</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: wr != null && wr >= 50 ? '#4ade80' : wr != null ? '#f87171' : '#334155' }}>
+                  {wr != null ? `${wr.toFixed(0)}%` : '—'}
+                </div>
+                <div style={{ fontSize: 10, color: '#334155', marginTop: 1 }}>{n} closed · {pnl >= 0 ? '+' : ''}${Math.abs(pnl).toFixed(0)} P&L</div>
+              </div>
+            </div>
+          ))}
+          {aiWr != null && boardWr != null && (
+            <div style={{ fontSize: 11, color: '#475569', marginLeft: 4 }}>
+              {aiWr > boardWr
+                ? <span style={{ color: '#818cf8' }}>AI leads board by {(aiWr - boardWr).toFixed(0)}pp</span>
+                : aiWr < boardWr
+                ? <span style={{ color: '#4ade80' }}>Board leads AI by {(boardWr - aiWr).toFixed(0)}pp</span>
+                : <span style={{ color: '#64748b' }}>AI and Board tied</span>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid #1e293b', paddingBottom: 0 }}>
+        {([['ai', 'AI Paper Trades'], ['board', 'Trade Board'], ['manual', 'Manual Log']] as const).map(([key, label]) => (
+          <button key={key} onClick={() => setTab(key)}
+            style={{ padding: '8px 16px', borderRadius: '6px 6px 0 0', fontSize: 13, fontWeight: 600,
+              cursor: 'pointer', border: '1px solid',
+              borderColor: tab === key ? '#1e293b' : 'transparent',
+              borderBottom: tab === key ? '1px solid #0f172a' : '1px solid transparent',
+              background: tab === key ? '#0f172a' : 'transparent',
+              color: tab === key ? '#e2e8f0' : '#64748b',
+              marginBottom: -1 }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'ai' ? <AITradesTab /> : tab === 'board' ? <TradeBoardTab /> : <ManualLogTab />}
     </div>
   );
 }

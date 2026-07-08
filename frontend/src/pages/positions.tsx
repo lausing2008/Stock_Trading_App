@@ -99,6 +99,10 @@ export default function Positions() {
   const [sortAsc, setSortAsc]             = useState(true);
   const [toast, setToast]                 = useState<string | null>(null);
   const [confirmRemoveId, setConfirmRemoveId] = useState<number | null>(null);
+  const [showCsvImport, setShowCsvImport]     = useState(false);
+  const [csvText, setCsvText]                 = useState('');
+  const [csvResults, setCsvResults]           = useState<{ imported: number; errors: { row: string; reason: string }[] } | null>(null);
+  const [csvImporting, setCsvImporting]       = useState(false);
 
   const { data: positions = [], mutate: mutatePositions } = useSWR<UserPosition[]>('positions', () => api.listPositions());
   const { data: cash = { USD: 0, HKD: 0 }, mutate: mutateCash } = useSWR<CashByMarket>('positions/cash', () => api.getCash());
@@ -168,6 +172,49 @@ export default function Positions() {
     api.updateCash(next).catch(console.error);
   }
 
+  /* ── T230: CSV import ── */
+  async function handleCsvImport() {
+    const lines = csvText.trim().split('\n').filter(l => l.trim());
+    if (lines.length === 0) return;
+    // Detect and skip header row
+    const headerRe = /symbol|ticker|shares|quantity|price|cost/i;
+    const dataLines = headerRe.test(lines[0]) ? lines.slice(1) : lines;
+    // Parse column names from header (if present)
+    const rawHeader = headerRe.test(lines[0]) ? lines[0].toLowerCase().split(',').map(s => s.trim()) : null;
+    const colIdx = (candidates: string[]) => {
+      if (!rawHeader) return -1;
+      for (const c of candidates) { const i = rawHeader.indexOf(c); if (i !== -1) return i; }
+      return -1;
+    };
+    const symIdx   = rawHeader ? colIdx(['symbol','ticker']) : 0;
+    const sharesIdx = rawHeader ? colIdx(['shares','quantity','qty']) : 1;
+    const priceIdx  = rawHeader ? colIdx(['avg_cost','avgcost','cost','price']) : 2;
+
+    let imported = 0;
+    const errors: { row: string; reason: string }[] = [];
+    setCsvImporting(true);
+    for (const line of dataLines) {
+      const parts = line.split(',').map(s => s.trim().replace(/^"|"$/g, ''));
+      const sym    = parts[symIdx  !== -1 ? symIdx   : 0]?.toUpperCase();
+      const sharesRaw = parts[sharesIdx !== -1 ? sharesIdx : 1];
+      const priceRaw  = parts[priceIdx  !== -1 ? priceIdx  : 2];
+      if (!sym) { errors.push({ row: line, reason: 'missing symbol' }); continue; }
+      const shares = parseFloat(sharesRaw);
+      const price  = parseFloat(priceRaw);
+      if (!shares || shares <= 0) { errors.push({ row: line, reason: 'invalid shares' }); continue; }
+      if (!price  || price  <= 0) { errors.push({ row: line, reason: 'invalid price'  }); continue; }
+      try {
+        await api.addPosition({ symbol: sym, shares, price });
+        imported++;
+      } catch (e) {
+        errors.push({ row: line, reason: e instanceof Error ? e.message : 'API error' });
+      }
+    }
+    setCsvImporting(false);
+    setCsvResults({ imported, errors });
+    if (imported > 0) mutatePositions();
+  }
+
   /* ── Enriched rows ── */
   const rows = useMemo(() => positions.map(p => {
     const lp  = priceMap[p.symbol];
@@ -213,6 +260,29 @@ export default function Positions() {
     return { invested, currentVal, pnl: currentVal - invested, pnlPct: invested > 0 ? ((currentVal - invested) / invested) * 100 : 0, dayPnl: dayPnlTotal };
   }, [activeRows]);
 
+  /* ── T230: Sector & market allocation maps ── */
+  const SECTOR_COLORS: Record<string, string> = {
+    Technology: '#6366f1', Healthcare: '#22c55e', Financials: '#f59e0b',
+    Energy: '#ef4444', Industrials: '#3b82f6', Consumer: '#ec4899', Other: '#64748b',
+  };
+  const sectorMap = useMemo(() => {
+    const m: Record<string, number> = {};
+    activeRows.forEach(r => {
+      const rank = (rankingsData?.rankings ?? []).find(rk => rk.symbol === r.symbol);
+      const sector = rank?.sector ?? 'Other';
+      m[sector] = (m[sector] ?? 0) + (r.mktVal ?? r.cost ?? 0);
+    });
+    return m;
+  }, [activeRows, rankingsData]);
+  const marketMap = useMemo(() => {
+    const m: Record<string, number> = { US: 0, HK: 0 };
+    rows.forEach(r => {
+      const key = isHK(r.symbol) ? 'HK' : 'US';
+      m[key] = (m[key] ?? 0) + (r.mktVal ?? r.cost ?? 0);
+    });
+    return m;
+  }, [rows]);
+
   function sortBtn(key: SortKey, label: string) {
     const active = sortKey === key;
     return (
@@ -245,6 +315,10 @@ export default function Positions() {
               ⬇ CSV
             </button>
           )}
+          <button onClick={() => { setShowCsvImport(true); setCsvText(''); setCsvResults(null); }}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 13px', borderRadius: '6px', border: '1px solid rgba(148,163,184,0.15)', background: 'rgba(255,255,255,0.03)', color: '#64748b', cursor: 'pointer', fontSize: '13px' }}>
+            ⬆ Import CSV
+          </button>
           <button onClick={() => setModal({ mode: 'add' })} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 16px', borderRadius: '6px', background: 'linear-gradient(135deg,#4f46e5,#6366f1)', border: 'none', color: '#fff', fontSize: '13px', fontWeight: 600, cursor: 'pointer', boxShadow: '0 4px 12px rgba(99,102,241,0.3)' }}>
             + Add Position
           </button>
@@ -352,6 +426,30 @@ export default function Positions() {
                 </div>
               );
             })()}
+
+            {/* T230: Sector & Market allocation donuts */}
+            {activeRows.length > 1 && Object.keys(sectorMap).length > 0 && (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0f172a', padding: '14px 16px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>By Sector</div>
+                  <DonutChart
+                    labels={Object.keys(sectorMap)}
+                    values={Object.values(sectorMap)}
+                    colors={Object.keys(sectorMap).map(s => SECTOR_COLORS[s] ?? SECTOR_COLORS.Other)}
+                    height={180}
+                  />
+                </div>
+                <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0f172a', padding: '14px 16px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>By Market</div>
+                  <DonutChart
+                    labels={Object.keys(marketMap).filter(k => marketMap[k] > 0)}
+                    values={Object.keys(marketMap).filter(k => marketMap[k] > 0).map(k => marketMap[k])}
+                    colors={['#6366f1', '#f59e0b']}
+                    height={180}
+                  />
+                </div>
+              </div>
+            )}
 
             {/* Chart + highlights */}
             {activeRows.length > 1 && (
@@ -490,6 +588,66 @@ export default function Positions() {
         </div>
       )}
       {modal && <TradeModal mode={modal.mode} position={modalPos} currentPrice={modalCurrentPrice} onConfirm={handleModalConfirm} onClose={() => setModal(null)} />}
+
+      {/* T230: CSV Import modal */}
+      {showCsvImport && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
+          <div onClick={() => setShowCsvImport(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(6,8,20,0.85)', backdropFilter: 'blur(4px)' }} />
+          <div style={{ position: 'relative', zIndex: 10, width: '100%', maxWidth: '500px', borderRadius: '14px', background: 'linear-gradient(160deg,#0d1424,#090e1a)', border: '1px solid rgba(99,102,241,0.3)', boxShadow: '0 24px 48px rgba(0,0,0,0.5)', overflow: 'hidden' }}>
+            <div style={{ height: '3px', background: 'linear-gradient(90deg,#4f46e5,#818cf8,#4f46e5)' }} />
+            <div style={{ padding: '20px 22px 22px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: '#f1f5f9' }}>Import Positions from CSV</h3>
+                <button onClick={() => setShowCsvImport(false)} style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '14px' }}>✕</button>
+              </div>
+              <div style={{ fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>
+                Paste your broker&apos;s CSV export. Expected columns (any order, flexible names):<br />
+                <code style={{ color: '#818cf8', fontSize: '11px' }}>symbol, shares, avg_cost</code><br />
+                Column name aliases accepted: <code style={{ color: '#94a3b8', fontSize: '11px' }}>Ticker/Symbol, Quantity/Shares/Qty, Price/Cost/AvgCost</code>
+              </div>
+              {!csvResults ? (
+                <>
+                  <textarea
+                    value={csvText}
+                    onChange={e => setCsvText(e.target.value)}
+                    placeholder={'Symbol,Shares,AvgCost\nNVDA,10,850.00\n0700.HK,100,350.00'}
+                    rows={8}
+                    style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(148,163,184,0.12)', borderRadius: '8px', padding: '10px 12px', fontSize: '12px', color: '#e2e8f0', fontFamily: 'monospace', outline: 'none', resize: 'vertical' }}
+                  />
+                  <button
+                    onClick={handleCsvImport}
+                    disabled={csvImporting || !csvText.trim()}
+                    style={{ padding: '10px', borderRadius: '8px', border: 'none', background: csvImporting ? '#334155' : 'linear-gradient(135deg,#4f46e5,#6366f1)', color: '#fff', fontSize: '13px', fontWeight: 700, cursor: csvImporting ? 'default' : 'pointer' }}>
+                    {csvImporting ? 'Importing…' : 'Import'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div style={{ padding: '12px 14px', borderRadius: '8px', background: csvResults.imported > 0 ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)', border: `1px solid ${csvResults.imported > 0 ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)'}` }}>
+                    <div style={{ fontSize: '13px', fontWeight: 700, color: csvResults.imported > 0 ? '#4ade80' : '#f87171', marginBottom: '4px' }}>
+                      {csvResults.imported} position{csvResults.imported !== 1 ? 's' : ''} imported
+                      {csvResults.errors.length > 0 && `, ${csvResults.errors.length} error${csvResults.errors.length !== 1 ? 's' : ''}`}
+                    </div>
+                    {csvResults.errors.length > 0 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '8px' }}>
+                        {csvResults.errors.map((e, i) => (
+                          <div key={i} style={{ fontSize: '11px', color: '#f87171', fontFamily: 'monospace' }}>
+                            <span style={{ color: '#64748b' }}>{e.row.slice(0, 40)}{e.row.length > 40 ? '…' : ''}</span> — {e.reason}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button onClick={() => { setCsvResults(null); setCsvText(''); }} style={{ flex: 1, padding: '9px', borderRadius: '8px', border: '1px solid rgba(148,163,184,0.15)', background: 'rgba(255,255,255,0.03)', color: '#94a3b8', fontSize: '13px', cursor: 'pointer' }}>Import More</button>
+                    <button onClick={() => setShowCsvImport(false)} style={{ flex: 1, padding: '9px', borderRadius: '8px', border: 'none', background: 'linear-gradient(135deg,#4f46e5,#6366f1)', color: '#fff', fontSize: '13px', fontWeight: 700, cursor: 'pointer' }}>Done</button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }

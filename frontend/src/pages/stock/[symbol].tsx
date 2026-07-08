@@ -37,11 +37,12 @@ import SignalCard from '@/components/SignalCard';
 import PositionSizer from '@/components/PositionSizer';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
-import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint } from '@/lib/api';
+import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult, type OutcomesSummary, type QuarterlyRow } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
 import { activeNewsSources, loadSettings } from '@/lib/settings';
+import { getUsername } from '@/lib/auth';
 
 function RefreshButton({ onClick, loading }: { onClick: () => void; loading: boolean }) {
   return (
@@ -130,6 +131,7 @@ export default function StockDetail() {
   const r = useRouter();
   const symbol = (r.query.symbol as string) ?? '';
   const pageStyle = ((r.query.style as string) ?? '').toUpperCase() || null;
+  const u = getUsername();
 
   const { data, error, isLoading, mutate: mutateOverview } = useSWR<Overview>(
     symbol ? `overview-${symbol}` : null,
@@ -161,6 +163,13 @@ export default function StockDetail() {
   const [mlLoading, setMlLoading] = useState(false);
   const [mlError, setMlError] = useState('');
   const [mlTrainOpen, setMlTrainOpen] = useState(false);
+  const [featureImportance, setFeatureImportance] = useState<FeatureImportanceResult | null>(null);
+  const [fiLoading, setFiLoading] = useState(false);
+
+  // Research summary (INT-1, INT-2, INT-6)
+  const [researchSummary, setResearchSummary] = useState<ResearchSummary | null>(null);
+  const [researchRefreshing, setResearchRefreshing] = useState(false);
+  const [researchTriggerMsg, setResearchTriggerMsg] = useState<string | null>(null);
 
   // AI chat state
   const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
@@ -170,13 +179,47 @@ export default function StockDetail() {
   const [aiOpen, setAiOpen] = useState(false);
   const aiBottomRef = useRef<HTMLDivElement>(null);
 
-  const { data: watchlists } = useSWR<WatchlistMeta[]>('watchlists', () => api.listWatchlists());
+  const { data: watchlists } = useSWR<WatchlistMeta[]>(`${u}:watchlists`, () => api.listWatchlists());
   const { data: fearGreed } = useSWR<FearGreed>('fear-greed', () => api.fearGreed(), { refreshInterval: 3_600_000 });
   const { data: signalAlerts, mutate: mutateSignalAlerts } = useSWR<SignalAlertItem[]>(
-    'signal-alerts', () => api.listSignalAlerts(),
+    `${u}:signal-alerts`, () => api.listSignalAlerts(),
   );
+  // All-horizon signals for the consensus indicator
+  // live=false → reads stored DB signal (matches signal filter); Refresh button uses live=true
+  const { data: sigShort,  mutate: mutateSigShort }  = useSWR(symbol ? `sig-${symbol}-SHORT`  : null, () => api.signal(symbol, 'SHORT',  false), { revalidateOnFocus: false });
+  const { data: sigSwing,  mutate: mutateSigSwing }  = useSWR(symbol ? `sig-${symbol}-SWING`  : null, () => api.signal(symbol, 'SWING',  false), { revalidateOnFocus: false });
+  const { data: tuneStatus } = useSWR('tune-status', () => api.signalTuneStatus(), { refreshInterval: 5 * 60_000, revalidateOnFocus: false });
+  const { data: sigLong,   mutate: mutateSigLong }   = useSWR(symbol ? `sig-${symbol}-LONG`   : null, () => api.signal(symbol, 'LONG',   false), { revalidateOnFocus: false });
+  const { data: sigGrowth, mutate: mutateSigGrowth } = useSWR(symbol ? `sig-${symbol}-GROWTH` : null, () => api.signal(symbol, 'GROWTH', false), { revalidateOnFocus: false });
+  const allHorizonSignals: { label: string; horizon: string; sig: typeof sigShort }[] = [
+    { label: 'SHORT', horizon: 'SHORT', sig: sigShort },
+    { label: 'SWING', horizon: 'SWING', sig: sigSwing },
+    { label: 'LONG',  horizon: 'LONG',  sig: sigLong  },
+    { label: 'GROWTH',horizon: 'GROWTH',sig: sigGrowth },
+  ];
   const [signalAlertSaving, setSignalAlertSaving] = useState(false);
   const [signalAlertError, setSignalAlertError] = useState('');
+  const [selectedHorizon, setSelectedHorizon] = useState<string>('SWING');
+  // Sync to watchlist style when page loads (pageStyle comes from router.query, may arrive late)
+  useEffect(() => { if (pageStyle) setSelectedHorizon(pageStyle); }, [pageStyle]);
+
+  // T230-CHARTING-TIMEFRAMES: chart timeframe selector state
+  const [chartTf, setChartTf] = useState<'5m' | '15m' | '1h' | '4h' | '1d'>('1d');
+  const { data: tfPrices } = useSWR(
+    symbol && chartTf !== '1d' && chartTf !== '5m' ? `prices-tf-${symbol}-${chartTf}` : null,
+    () => api.pricesTf(symbol!, chartTf as '15m' | '1h' | '4h'),
+    { revalidateOnFocus: false },
+  );
+
+  // T230-CHARTING-COMPARE-OVERLAY: comparison overlay state
+  const [compareSymbol, setCompareSymbol] = useState<string | null>(null);
+  const [compareInputOpen, setCompareInputOpen] = useState(false);
+  const [compareCustomInput, setCompareCustomInput] = useState('');
+  const { data: comparePrices } = useSWR(
+    compareSymbol ? `compare-prices-${compareSymbol}` : null,
+    () => api.getPrices(compareSymbol!, '1d', 400),
+    { revalidateOnFocus: false },
+  );
 
   // Game plan state
   type GamePlanEntry = { label: string; price: number; rationale: string };
@@ -210,7 +253,7 @@ export default function StockDetail() {
         source: 'gameplan',
       });
       setSavedToBoard(true);
-      globalMutate('board');
+      globalMutate(`${u}:board`);
     } catch { /* silently ignore */ }
     setSavingToBoard(false);
   }
@@ -238,11 +281,17 @@ export default function StockDetail() {
   }
 
   const { data: allAlerts, mutate: mutateAlerts } = useSWR<PriceAlert[]>(
-    'alerts',
+    `${u}:alerts`,
     () => api.listAlerts(),
     { refreshInterval: 30_000 },
   );
   const alerts = (allAlerts ?? []).filter(a => a.symbol === symbol);
+
+  const { data: livePatterns } = useSWR<{ symbol: string; patterns: PatternSignal[]; as_of: string }>(
+    symbol ? `patterns-${symbol}` : null,
+    () => api.getPatterns(symbol as string),
+    { revalidateOnFocus: false, dedupingInterval: 300_000 },
+  );
 
   const [divOpen, setDivOpen] = useState(false);
   const [instOpen, setInstOpen] = useState(false);
@@ -291,9 +340,22 @@ export default function StockDetail() {
     { revalidateOnFocus: false },
   );
 
+  const activeHorizon = selectedHorizon || 'SWING';
+
   const { data: signalHistory } = useSWR<SignalHistoryPoint[]>(
-    symbol ? `signal-history-${symbol}-${pageStyle || 'SWING'}` : null,
-    () => api.signalHistory(symbol, pageStyle || 'SWING', 60),
+    symbol ? `signal-history-${symbol}-${activeHorizon}` : null,
+    () => api.signalHistory(symbol, activeHorizon, 60),
+    { revalidateOnFocus: false },
+  );
+  const { data: symbolOutcomes } = useSWR(
+    symbol ? `symbol-outcomes-${symbol}-${activeHorizon}` : null,
+    () => api.symbolOutcomes(symbol, activeHorizon),
+    { revalidateOnFocus: false },
+  );
+
+  const { data: quarterly } = useSWR<QuarterlyRow[]>(
+    symbol ? `quarterly-${symbol}` : null,
+    () => api.quarterlyFinancials(symbol!),
     { revalidateOnFocus: false },
   );
 
@@ -306,6 +368,7 @@ export default function StockDetail() {
   const [alertEmaPeriod, setAlertEmaPeriod] = useState<string>('20');
   const [alertEmail, setAlertEmail] = useState<string>('');
   const [alertNote, setAlertNote] = useState<string>('');
+  const [alertRecurring, setAlertRecurring] = useState<boolean>(false);
   const [alertSaving, setAlertSaving] = useState<boolean>(false);
   const [alertMsg, setAlertMsg] = useState<string>('');
 
@@ -316,7 +379,7 @@ export default function StockDetail() {
   }, []);
 
   const isEmaCondition = alertCondition === 'cross_above_ema' || alertCondition === 'cross_below_ema';
-  const isNoThreshold = ['new_52wk_high', 'new_52wk_low', 'golden_cross', 'death_cross'].includes(alertCondition);
+  const isNoThreshold = ['new_52wk_high', 'new_52wk_low', 'golden_cross', 'death_cross', 'macd_bullish_cross', 'rsi_oversold_bounce', 'double_bottom', 'breakout'].includes(alertCondition);
 
   async function createAlert() {
     if (!alertEmail) return;
@@ -325,7 +388,7 @@ export default function StockDetail() {
     setAlertSaving(true);
     setAlertMsg('');
     try {
-      await api.createAlert({ symbol, condition: alertCondition, threshold, email: alertEmail, note: alertNote || undefined });
+      await api.createAlert({ symbol, condition: alertCondition, threshold, email: alertEmail, note: alertNote || undefined, recurring: alertRecurring });
       localStorage.setItem('stockai_alert_email', alertEmail);
       setAlertMsg('Alert set!');
       setAlertThreshold('');
@@ -356,6 +419,12 @@ export default function StockDetail() {
     setSavedToBoard(false);
     setAiMessages([]);
     setMlResult(null);
+    setResearchSummary(null);
+  }, [symbol]);
+
+  useEffect(() => {
+    if (!symbol) return;
+    api.getResearchSummary(symbol).then(setResearchSummary).catch(() => setResearchSummary(null));
   }, [symbol]);
 
 
@@ -414,8 +483,12 @@ export default function StockDetail() {
   async function handleRefreshSignal() {
     setSigRefreshing(true);
     try {
+      // Recompute live + persist to DB, then reload all stored signals
       await api.refreshSignal(symbol);
-      await mutateOverview();
+      await Promise.all([
+        mutateOverview(),
+        mutateSigShort(), mutateSigSwing(), mutateSigLong(), mutateSigGrowth(),
+      ]);
     } catch { /* non-fatal */ }
     setSigRefreshing(false);
   }
@@ -446,16 +519,19 @@ export default function StockDetail() {
 
     const lp = allPrices?.find(p => p.symbol === symbol);
     const currentPrice = lp?.price ?? (data.prices?.at(-1)?.close ?? null);
-    const sig = data.signal;
+    // Use the signal for the active horizon tab, not just the default SWING signal
+    const sig = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig
+      ?? (selectedHorizon === 'SWING' ? data.signal : data.signal);
     const rank = data.ranking;
     const fund = data.fundamentals;
     const levels = data.levels;
 
-    const tradeStyle = (sig?.horizon ?? 'SWING').toUpperCase() as 'SHORT' | 'SWING' | 'LONG';
+    const tradeStyle = (sig?.horizon ?? 'SWING').toUpperCase() as 'SHORT' | 'SWING' | 'LONG' | 'GROWTH';
     const styleLabels: Record<string, string> = {
       SHORT: 'Short-Term (1–5 Days)',
       SWING: 'Swing (5–30 Days)',
       LONG: 'Position (1–12 Months)',
+      GROWTH: 'Growth Momentum (10–20 Days)',
     };
     const styleRules: Record<string, string> = {
       SHORT: `TRADING STYLE: SHORT-TERM (1–5 days)
@@ -478,6 +554,13 @@ export default function StockDetail() {
 - Stop loss: 10% below current — wide stop allows for normal volatility; weekly close below invalidates thesis
 - Take profit: analyst mean/high target or +25% from current (position trade requires large reward/risk)
 - Note this is a multi-month hold; size for volatility and manage around earnings`,
+      GROWTH: `TRADING STYLE: GROWTH MOMENTUM (10–20 days)
+- Entry 1: at or just above nearest support below current price (typically 1.5–2.5% below)
+- Entry 2: at a deeper support level for averaging down (typically 4–5% below)
+- Breakout entry: above nearest resistance — take 60% size on confirmed momentum
+- Stop loss: just below the lowest entry support (typically 6% below) — wider than SWING to tolerate momentum volatility
+- Take profit: +15–20% from current or nearest resistance; consider partial exit at +10%
+- Note this is a higher-volatility momentum style; size accordingly and trail stop after +8% gain`,
     };
     const planLabel = styleLabels[tradeStyle] ?? tradeStyle;
     const styleInstruction = styleRules[tradeStyle] ?? styleRules['SWING'];
@@ -519,10 +602,11 @@ ${Object.entries(fib).map(([k, v]) => `  ${k}%: $${(v as number).toFixed(2)}`).j
 
 TECHNICAL INDICATORS:
   RSI(14): ${reasons.rsi != null ? Number(reasons.rsi).toFixed(1) : '?'}
-  MACD hist: ${reasons.macd_hist != null ? Number(reasons.macd_hist).toFixed(3) : '?'} (${reasons.macd_rising ? 'rising' : 'falling'})
+  MACD hist: ${reasons.macd_hist != null ? Number(reasons.macd_hist).toFixed(3) : '?'} (${reasons.macd_momentum_fading ? 'fading ⚠ — momentum exhausting' : reasons.macd_hist_expanding !== undefined ? (reasons.macd_hist_expanding ? 'expanding' : 'contracting') : (reasons.macd_rising ? 'rising' : 'falling')})${reasons.macd_hist_slope != null ? ` slope: ${Number(reasons.macd_hist_slope).toFixed(4)}` : ''}
+  GC spread: ${reasons.gc_spread_pct != null ? `${(Number(reasons.gc_spread_pct)*100).toFixed(1)}%` : '?'} (${reasons.gc_spread_expanding === true ? 'expanding' : reasons.gc_spread_expanding === false ? 'narrowing ⚠' : 'unknown'})
   Above SMA50: ${reasons.trend_above_sma50 ? 'Yes' : 'No'} | SMA50>SMA200: ${reasons.sma50_above_sma200 ? 'Yes' : 'No'}
   ADX: ${reasons.adx != null ? Number(reasons.adx).toFixed(1) : '?'} | Stoch RSI %K: ${reasons.stoch_rsi_k != null ? (Number(reasons.stoch_rsi_k) * 100).toFixed(0) : '?'}%
-  VWAP(20d): ${reasons.price_above_vwap === true ? 'Price ABOVE VWAP' : reasons.price_above_vwap === false ? 'Price BELOW VWAP' : 'N/A'}${reasons.vwap_20 != null ? ` ($${Number(reasons.vwap_20).toFixed(2)})` : ''}
+  VWMA(20d): ${reasons.price_above_vwap === true ? 'Price ABOVE VWMA' : reasons.price_above_vwap === false ? 'Price BELOW VWMA' : 'N/A'}${reasons.vwma_20 != null ? ` ($${Number(reasons.vwma_20).toFixed(2)})` : ''}
   Weekly alignment: ${reasons.weekly_alignment === true ? 'CONFIRMED (daily+weekly agree)' : reasons.weekly_alignment === false ? 'CONFLICT (timeframes diverge)' : 'N/A'} | Weekly TA score: ${reasons.weekly_ta_score != null ? (Number(reasons.weekly_ta_score) * 100).toFixed(0) : '?'}
   Active chart patterns: ${(reasons.active_patterns as string[] | undefined)?.length ? (reasons.active_patterns as string[]).join(', ') : 'none'}
   Earnings warning: ${reasons.earnings_warning ?? 'none'}${reasons.days_to_earnings != null ? ` (${reasons.days_to_earnings}d to earnings)` : ''}
@@ -587,6 +671,18 @@ Return ONLY valid JSON — no markdown, no prose:
     } finally {
       setFundRefreshing(false);
     }
+  }
+
+  async function handleResearchRefresh() {
+    setResearchRefreshing(true);
+    setResearchTriggerMsg(null);
+    try {
+      const res = await api.triggerResearch(symbol);
+      setResearchTriggerMsg(res?.status === 'triggered' ? 'Refresh queued — report updates in ~30s' : 'Refresh queued');
+    } catch {
+      setResearchTriggerMsg('Trigger failed');
+    }
+    setResearchRefreshing(false);
   }
 
   async function runML() {
@@ -693,6 +789,42 @@ Return ONLY valid JSON — no markdown, no prose:
     ? ((ranking.fair_price - curPrice) / curPrice) * 100
     : null;
 
+  // Risk metrics (annualised, 1-year rolling) — calculated from existing price data
+  const riskMetrics1y: { sharpe: number; sortino: number; maxDrawdown: number } | null = (() => {
+    const prices = data.prices;
+    if (!prices || prices.length < 30) return null;
+    const closes = prices.map((p: { close: number }) => p.close);
+    const cutoff = closes.length - 252;
+    const window = closes.slice(Math.max(0, cutoff));
+    if (window.length < 20) return null;
+    const returns: number[] = [];
+    for (let i = 1; i < window.length; i++) {
+      returns.push((window[i] - window[i - 1]) / window[i - 1]);
+    }
+    const n = returns.length;
+    const mean = returns.reduce((a, b) => a + b, 0) / n;
+    const std = Math.sqrt(returns.reduce((a, b) => a + (b - mean) ** 2, 0) / n);
+    // Sortino: downside std (returns below 0 only)
+    const downside = returns.filter(r => r < 0);
+    const downsideStd = downside.length > 1
+      ? Math.sqrt(downside.reduce((a, b) => a + b ** 2, 0) / n)
+      : std;
+    // Max drawdown over the window
+    let peak = window[0], maxDD = 0;
+    for (const p of window) {
+      if (p > peak) peak = p;
+      const dd = (peak - p) / peak;
+      if (dd > maxDD) maxDD = dd;
+    }
+    if (std === 0) return null;
+    return {
+      sharpe:      parseFloat(((mean / std) * Math.sqrt(252)).toFixed(2)),
+      sortino:     parseFloat(((mean / downsideStd) * Math.sqrt(252)).toFixed(2)),
+      maxDrawdown: parseFloat((maxDD * 100).toFixed(1)),
+    };
+  })();
+  const sharpeRatio1y = riskMetrics1y?.sharpe ?? null;
+
   const levels = data.levels;
   const srLevels = levels?.support_resistance ?? [];
   const fibLevels = levels?.fibonacci ?? {};
@@ -750,6 +882,29 @@ Return ONLY valid JSON — no markdown, no prose:
             )}
           </div>
 
+          {/* RVOL chip (T220-I) — derived from liveQuote volume vs avg_volume */}
+          {liveQuote?.volume != null && liveQuote?.avg_volume != null && liveQuote.avg_volume > 0 && (() => {
+            const rvol = liveQuote.volume! / liveQuote.avg_volume!;
+            if (rvol < 1.5) return null;
+            const isHigh = rvol >= 2.0;
+            return (
+              <div
+                title={`Relative volume ${rvol.toFixed(2)}× 20-day avg — ${isHigh ? 'unusual institutional activity detected' : 'above-average volume'}`}
+                style={{
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                  padding: '6px 12px', borderRadius: 8,
+                  border: `1px solid ${isHigh ? 'rgba(239,68,68,0.4)' : 'rgba(251,191,36,0.35)'}`,
+                  background: isHigh ? 'rgba(239,68,68,0.08)' : 'rgba(251,191,36,0.08)',
+                  minWidth: 72,
+                }}
+              >
+                <span style={{ fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>RVOL</span>
+                <span style={{ fontSize: 18, fontWeight: 800, color: isHigh ? '#f87171' : '#fbbf24', lineHeight: 1.1 }}>{rvol.toFixed(1)}×</span>
+                <span style={{ fontSize: 9, color: isHigh ? '#f87171' : '#fbbf24', marginTop: 1 }}>{isHigh ? 'Unusual vol' : 'Elevated'}</span>
+              </div>
+            );
+          })()}
+
           {ranking?.fair_price != null && (
             <div className="rounded-md border border-indigo-800 bg-indigo-950/40 px-4 py-2 text-center" style={{ minWidth: 120 }}>
               <div className="text-xs text-indigo-400 font-medium mb-0.5">Fair Value</div>
@@ -771,19 +926,75 @@ Return ONLY valid JSON — no markdown, no prose:
               )}
             </div>
           )}
-          {data.signal && (() => {
-            const s = data.signal.signal;
+          {(() => {
+            // FE-A1: was hardcoded to sigSwing regardless of the active horizon tab — switching
+            // to LONG/SHORT/GROWTH left the header badge still showing the SWING signal, visibly
+            // contradicting the tab content below it. Same lookup pattern already used by the
+            // sidebar's tabbed horizon switcher (see allHorizonSignals.find below, ~line 1904).
+            const badgeSig = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig
+              ?? (selectedHorizon === 'SWING' ? data.signal : null);
+            if (!badgeSig) return null;
+            const s = badgeSig.signal;
             const borderCls = s === 'BUY' ? 'border-green-800 bg-green-950/40' : s === 'SELL' ? 'border-red-800 bg-red-950/40' : s === 'WAIT' ? 'border-orange-800 bg-orange-950/40' : 'border-yellow-800 bg-yellow-950/40';
             const labelCls  = s === 'BUY' ? 'text-green-400'  : s === 'SELL' ? 'text-red-400'  : s === 'WAIT' ? 'text-orange-400'  : 'text-yellow-400';
             const valueCls  = s === 'BUY' ? 'text-green-300'  : s === 'SELL' ? 'text-red-300'  : s === 'WAIT' ? 'text-orange-300'  : 'text-yellow-300';
             return (
               <div className={`rounded-md border px-4 py-2 text-center ${borderCls}`}>
                 <div className={`text-xs font-medium mb-0.5 ${labelCls}`}>AI Signal</div>
-                <div className={`text-xl font-bold ${valueCls}`}>{s}</div>
-                <div className="text-xs text-slate-500 mt-0.5">{((data.signal.bullish_probability ?? 0) * 100).toFixed(0)}% bullish</div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                  <div className={`text-xl font-bold ${valueCls}`}>{s}</div>
+                  {(s === 'HOLD' || s === 'WAIT') && badgeSig.bullish_probability != null && (() => {
+                    const bp = badgeSig.bullish_probability;
+                    if (bp >= 0.55 && bp < 0.65) return (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.35)', padding: '2px 6px', borderRadius: 4 }}
+                            title={`Near BUY — ${(bp * 100).toFixed(1)}% bullish probability`}>~BUY</span>
+                    );
+                    if (bp > 0.35 && bp <= 0.45) return (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: '#f87171', background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.35)', padding: '2px 6px', borderRadius: 4 }}
+                            title={`Near SELL — ${(bp * 100).toFixed(1)}% bullish probability`}>~SELL</span>
+                    );
+                    return null;
+                  })()}
+                </div>
+                <div className="text-xs text-slate-500 mt-0.5">{((badgeSig.bullish_probability ?? 0) * 100).toFixed(0)}% bullish · stored {selectedHorizon}</div>
               </div>
             );
           })()}
+          {/* Risk Metrics — Sharpe / Sortino / Max Drawdown */}
+          {riskMetrics1y !== null && (
+            <div style={{ display: 'flex', gap: 6 }}>
+              {(() => {
+                const sr = riskMetrics1y.sharpe;
+                const color = sr >= 1.5 ? '#4ade80' : sr >= 1.0 ? '#86efac' : sr >= 0.5 ? '#fbbf24' : '#f87171';
+                return (
+                  <div style={{ padding: '8px 12px', borderRadius: '8px', border: `1px solid ${color}33`, background: `${color}08`, textAlign: 'center', minWidth: '72px' }}>
+                    <div style={{ fontSize: '9px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Sharpe 1Y</div>
+                    <div style={{ fontSize: '16px', fontWeight: 800, color, marginTop: '2px' }}>{sr.toFixed(2)}</div>
+                  </div>
+                );
+              })()}
+              {(() => {
+                const so = riskMetrics1y.sortino;
+                const color = so >= 2.0 ? '#4ade80' : so >= 1.2 ? '#86efac' : so >= 0.6 ? '#fbbf24' : '#f87171';
+                return (
+                  <div style={{ padding: '8px 12px', borderRadius: '8px', border: `1px solid ${color}33`, background: `${color}08`, textAlign: 'center', minWidth: '72px' }}>
+                    <div style={{ fontSize: '9px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Sortino 1Y</div>
+                    <div style={{ fontSize: '16px', fontWeight: 800, color, marginTop: '2px' }}>{so.toFixed(2)}</div>
+                  </div>
+                );
+              })()}
+              {(() => {
+                const dd = riskMetrics1y.maxDrawdown;
+                const color = dd <= 10 ? '#4ade80' : dd <= 20 ? '#fbbf24' : dd <= 35 ? '#fb923c' : '#f87171';
+                return (
+                  <div style={{ padding: '8px 12px', borderRadius: '8px', border: `1px solid ${color}33`, background: `${color}08`, textAlign: 'center', minWidth: '72px' }}>
+                    <div style={{ fontSize: '9px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Max DD 1Y</div>
+                    <div style={{ fontSize: '16px', fontWeight: 800, color, marginTop: '2px' }}>-{dd.toFixed(1)}%</div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
           {/* Earnings warning badge */}
           {data.fundamentals?.next_earnings_date && (() => {
             const d = data.fundamentals!.days_to_earnings;
@@ -931,14 +1142,247 @@ Return ONLY valid JSON — no markdown, no prose:
         {/* Left column: chart + analysis panels */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
-          {/* Chart */}
-          {data.prices && data.prices.length > 0 ? (
-            <PriceChart symbol={symbol as string} prices={data.prices} indicators={data.indicators} levels={data.levels} />
-          ) : (
+          {/* T230-CHARTING-TIMEFRAMES: Timeframe selector + Compare overlay controls */}
+          {data.prices && data.prices.length > 0 && (() => {
+            // Compute compare stat for the badge (% change over the shared visible period)
+            let compareStat: string | null = null;
+            if (compareSymbol && comparePrices && comparePrices.length > 1 && data.prices && data.prices.length > 0) {
+              const mainStart = data.prices[0].ts.slice(0, 10);
+              const mainEnd = data.prices[data.prices.length - 1].ts.slice(0, 10);
+              const cAligned = comparePrices.filter(p => {
+                const d = p.ts.slice(0, 10);
+                return d >= mainStart && d <= mainEnd;
+              });
+              if (cAligned.length > 1) {
+                const cRet = ((+cAligned[cAligned.length - 1].close / +cAligned[0].close) - 1) * 100;
+                const sRet = ((+data.prices[data.prices.length - 1].close / +data.prices[0].close) - 1) * 100;
+                compareStat = `${symbol} ${sRet >= 0 ? '+' : ''}${sRet.toFixed(1)}%  vs  ${compareSymbol} ${cRet >= 0 ? '+' : ''}${cRet.toFixed(1)}%`;
+              }
+            }
+
+            return (
+              <div>
+                {/* Timeframe + Compare toolbar */}
+                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '6px' }}>
+                  <span style={{ fontSize: '11px', color: '#475569', fontWeight: 600, marginRight: '2px' }}>TF</span>
+                  {(['5m', '15m', '1h', '4h', '1d'] as const).map(tf => (
+                    <button
+                      key={tf}
+                      onClick={() => setChartTf(tf)}
+                      style={{
+                        padding: '3px 10px',
+                        borderRadius: '12px',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        border: chartTf === tf ? 'none' : '1px solid #1e293b',
+                        background: chartTf === tf ? '#4f46e5' : 'rgba(255,255,255,0.03)',
+                        color: chartTf === tf ? '#fff' : '#64748b',
+                        cursor: 'pointer',
+                        transition: 'all 0.12s',
+                      }}
+                    >
+                      {tf}
+                    </button>
+                  ))}
+                  <span style={{ margin: '0 4px', width: '1px', height: '14px', background: '#1e293b', display: 'inline-block' }} />
+                  {/* Compare button */}
+                  <div style={{ position: 'relative' }}>
+                    <button
+                      onClick={() => {
+                        if (compareSymbol) { setCompareSymbol(null); setCompareCustomInput(''); setCompareInputOpen(false); }
+                        else setCompareInputOpen(v => !v);
+                      }}
+                      style={{
+                        padding: '3px 10px',
+                        borderRadius: '12px',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        border: compareSymbol ? 'none' : '1px solid #1e293b',
+                        background: compareSymbol ? '#78350f' : 'rgba(255,255,255,0.03)',
+                        color: compareSymbol ? '#fbbf24' : '#64748b',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {compareSymbol ? `vs ${compareSymbol} x` : 'Compare'}
+                    </button>
+                    {compareInputOpen && !compareSymbol && (
+                      <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 50, marginTop: '4px', background: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px', padding: '10px', minWidth: '200px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                          {['SPY', 'QQQ', '^HSI'].map(preset => (
+                            <button
+                              key={preset}
+                              onClick={() => { setCompareSymbol(preset); setCompareInputOpen(false); }}
+                              style={{ padding: '3px 10px', borderRadius: '8px', fontSize: '11px', fontWeight: 600, border: '1px solid #334155', background: 'transparent', color: '#94a3b8', cursor: 'pointer' }}
+                            >
+                              {preset === '^HSI' ? 'HSI' : preset}
+                            </button>
+                          ))}
+                        </div>
+                        <div style={{ display: 'flex', gap: '4px' }}>
+                          <input
+                            value={compareCustomInput}
+                            onChange={e => setCompareCustomInput(e.target.value.toUpperCase())}
+                            onKeyDown={e => { if (e.key === 'Enter' && compareCustomInput.trim()) { setCompareSymbol(compareCustomInput.trim()); setCompareInputOpen(false); } }}
+                            placeholder="e.g. NVDA"
+                            style={{ flex: 1, padding: '4px 8px', borderRadius: '6px', border: '1px solid #334155', background: '#1e293b', color: '#e2e8f0', fontSize: '11px', outline: 'none' }}
+                          />
+                          <button
+                            onClick={() => { if (compareCustomInput.trim()) { setCompareSymbol(compareCustomInput.trim()); setCompareInputOpen(false); } }}
+                            style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '11px', background: '#4f46e5', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+                          >
+                            Go
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {/* Compare stat badge */}
+                  {compareStat && (
+                    <span style={{ fontSize: '11px', color: '#94a3b8', marginLeft: '4px', fontFamily: 'monospace' }}>
+                      {compareStat}
+                    </span>
+                  )}
+                  {/* Loading indicator for tf prices */}
+                  {chartTf !== '1d' && chartTf !== '5m' && !tfPrices && (
+                    <span style={{ fontSize: '11px', color: '#475569' }}>loading…</span>
+                  )}
+                </div>
+
+                {/* Chart */}
+                <PriceChart
+                  symbol={symbol as string}
+                  prices={data.prices}
+                  indicators={chartTf === '1d' ? data.indicators : undefined}
+                  levels={chartTf === '1d' ? data.levels : undefined}
+                  signalMarkers={chartTf === '1d' ? signalHistory : undefined}
+                  patterns={livePatterns?.patterns}
+                  gamePlanLevels={gamePlan && chartTf === '1d' ? {
+                    entryLow: gamePlan.entries[0]?.price ?? null,
+                    entryHigh: gamePlan.entries[1]?.price ?? gamePlan.entries[0]?.price ?? null,
+                    stopLoss: gamePlan.stop_loss?.price ?? null,
+                    target1: gamePlan.take_profit?.price ?? null,
+                  } : null}
+                  intradayOverride={
+                    chartTf !== '1d' && chartTf !== '5m'
+                      ? (tfPrices ?? null)
+                      : null
+                  }
+                  compareData={
+                    compareSymbol && comparePrices && comparePrices.length > 1
+                      ? { symbol: compareSymbol, prices: comparePrices }
+                      : null
+                  }
+                />
+              </div>
+            );
+          })()}
+          {data.prices && data.prices.length === 0 && (
             <div className="rounded-md border border-slate-800 bg-slate-900 p-4 text-slate-400">
               No price data available for {symbol}. Try clicking Full Refresh above to ingest history.
             </div>
           )}
+
+          {/* Volume Bar Chart */}
+          {data.prices && data.prices.length >= 5 && (() => {
+            const dailyBars = [...data.prices!]
+              .filter(p => p.volume > 0)
+              .sort((a, b) => a.ts.localeCompare(b.ts))
+              .slice(-60);
+            if (dailyBars.length < 5) return null;
+            // 20-day moving average volume per bar
+            const avgVols = dailyBars.map((_, i) => {
+              const window = dailyBars.slice(Math.max(0, i - 19), i + 1);
+              return window.reduce((s, p) => s + p.volume, 0) / window.length;
+            });
+            const maxVol = Math.max(...dailyBars.map(p => p.volume));
+            const latestVol = dailyBars[dailyBars.length - 1].volume;
+            const latestAvg = avgVols[avgVols.length - 1];
+            const latestRatio = latestAvg > 0 ? latestVol / latestAvg : null;
+            const isSpike = latestRatio != null && latestRatio >= 2;
+            const padL = 44, padR = 8, padT = 12, padB = 24;
+            const W = 600, H = 100;
+            const chartW = W - padL - padR;
+            const chartH = H - padT - padB;
+            const barW = Math.max(1, chartW / dailyBars.length - 1);
+            function xPos(i: number) { return padL + (i / (dailyBars.length - 1)) * chartW; }
+            function yPos(v: number) { return padT + chartH - (v / maxVol) * chartH; }
+            function barColor(vol: number, avg: number) {
+              if (avg <= 0) return '#334155';
+              const r = vol / avg;
+              if (r >= 2) return '#f59e0b';
+              if (r >= 1.5) return '#4ade80';
+              if (r >= 1) return '#6366f1';
+              return '#334155';
+            }
+            const tickVols = [0, maxVol * 0.5, maxVol];
+            function fmtVolShort(v: number) {
+              if (v >= 1e9) return `${(v/1e9).toFixed(1)}B`;
+              if (v >= 1e6) return `${(v/1e6).toFixed(0)}M`;
+              if (v >= 1e3) return `${(v/1e3).toFixed(0)}K`;
+              return String(Math.round(v));
+            }
+            const xLabels: { i: number; label: string }[] = [];
+            const step = Math.max(1, Math.floor(dailyBars.length / 5));
+            dailyBars.forEach((p, i) => {
+              if (i % step === 0 || i === dailyBars.length - 1) {
+                xLabels.push({ i, label: p.ts.slice(5, 10) });
+              }
+            });
+            return (
+              <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: '12px', padding: '14px 16px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Volume</span>
+                  {isSpike && (
+                    <span style={{ fontSize: '10px', fontWeight: 800, background: 'rgba(245,158,11,0.15)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.4)', borderRadius: '4px', padding: '1px 6px', letterSpacing: '0.06em' }}>
+                      ⚡ VOLUME SPIKE {latestRatio!.toFixed(1)}× AVG
+                    </span>
+                  )}
+                  {latestRatio != null && !isSpike && (
+                    <span style={{ fontSize: '11px', color: latestRatio >= 1 ? '#4ade80' : '#64748b' }}>
+                      {latestRatio.toFixed(2)}× avg today
+                    </span>
+                  )}
+                  <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#475569' }}>20d avg — dashed</span>
+                </div>
+                <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
+                  {/* Y-axis gridlines + labels */}
+                  {tickVols.map((tv, ti) => (
+                    <g key={ti}>
+                      <line x1={padL} y1={yPos(tv)} x2={W - padR} y2={yPos(tv)} stroke="#1e293b" strokeWidth={1} />
+                      <text x={padL - 4} y={yPos(tv) + 4} fill="#475569" fontSize={9} textAnchor="end">{fmtVolShort(tv)}</text>
+                    </g>
+                  ))}
+                  {/* Volume bars */}
+                  {dailyBars.map((p, i) => {
+                    const bx = xPos(i);
+                    return (
+                      <rect key={i}
+                        x={bx - barW / 2} y={padT + chartH - (p.volume / maxVol) * chartH}
+                        width={barW} height={(p.volume / maxVol) * chartH}
+                        fill={barColor(p.volume, avgVols[i])}
+                        opacity={0.85}
+                      />
+                    );
+                  })}
+                  {/* 20d avg line */}
+                  <polyline
+                    points={avgVols.map((av, i) => `${xPos(i).toFixed(1)},${yPos(av).toFixed(1)}`).join(' ')}
+                    fill="none" stroke="#60a5fa" strokeWidth={1.5} strokeDasharray="4,3" opacity={0.7}
+                  />
+                  {/* X-axis labels */}
+                  {xLabels.map(({ i, label }) => (
+                    <text key={i} x={xPos(i)} y={H - 4} fill="#475569" fontSize={9} textAnchor="middle">{label}</text>
+                  ))}
+                </svg>
+                <div style={{ display: 'flex', gap: '16px', marginTop: '6px', fontSize: '10px', color: '#475569' }}>
+                  <span><span style={{ color: '#f59e0b' }}>■</span> Spike (≥2× avg)</span>
+                  <span><span style={{ color: '#4ade80' }}>■</span> High (≥1.5×)</span>
+                  <span><span style={{ color: '#6366f1' }}>■</span> Normal (≥1×)</span>
+                  <span><span style={{ color: '#60a5fa' }}>— —</span> 20d Avg</span>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* K-Score + Fear & Greed side by side */}
           {(ranking || fearGreed) && (
@@ -959,22 +1403,36 @@ Return ONLY valid JSON — no markdown, no prose:
                   <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
                       <h3 className="text-sm font-semibold text-slate-300">K-Score Breakdown</h3>
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-                        <span style={{ fontSize: 26, fontWeight: 800, color: scoreColor, lineHeight: 1 }}>{s.toFixed(0)}</span>
-                        <span style={{ fontSize: 11, color: '#475569' }}>/100</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {(() => {
+                          const og = s >= 90 ? 'A+' : s >= 80 ? 'A' : s >= 65 ? 'B' : s >= 50 ? 'C' : s >= 35 ? 'D' : 'F';
+                          const ogc = s >= 80 ? '#4ade80' : s >= 65 ? '#86efac' : s >= 50 ? '#facc15' : s >= 35 ? '#fb923c' : '#f87171';
+                          return <span style={{ fontSize: 15, fontWeight: 800, color: ogc, background: `${ogc}18`, border: `1px solid ${ogc}50`, borderRadius: 4, padding: '2px 7px', lineHeight: '20px' }}>{og}</span>;
+                        })()}
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                          <span style={{ fontSize: 26, fontWeight: 800, color: scoreColor, lineHeight: 1 }}>{s.toFixed(0)}</span>
+                          <span style={{ fontSize: 11, color: '#475569' }}>/100</span>
+                        </div>
                       </div>
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
                       {bars.map(([label, value, weight]) => {
                         const pct = typeof value === 'number' ? value : 0;
                         const bc = pct >= 70 ? '#4ade80' : pct >= 50 ? '#facc15' : '#f87171';
+                        const grade = typeof value !== 'number' ? null : pct >= 90 ? 'A+' : pct >= 80 ? 'A' : pct >= 65 ? 'B' : pct >= 50 ? 'C' : pct >= 35 ? 'D' : 'F';
+                        const gradeColor = !grade ? '#475569' : pct >= 80 ? '#4ade80' : pct >= 65 ? '#86efac' : pct >= 50 ? '#facc15' : pct >= 35 ? '#fb923c' : '#f87171';
                         return (
                           <div key={label}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                               <span style={{ fontSize: 11, color: '#94a3b8' }}>
                                 {label} <span style={{ color: '#334155', fontSize: 10 }}>{weight}</span>
                               </span>
-                              <span style={{ fontSize: 11, fontWeight: 700, color: bc }}>{typeof value === 'number' ? value.toFixed(0) : '—'}</span>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                {grade && (
+                                  <span style={{ fontSize: 10, fontWeight: 800, color: gradeColor, background: `${gradeColor}18`, border: `1px solid ${gradeColor}40`, borderRadius: 3, padding: '0px 5px', lineHeight: '16px' }}>{grade}</span>
+                                )}
+                                <span style={{ fontSize: 11, fontWeight: 700, color: bc }}>{typeof value === 'number' ? value.toFixed(0) : '—'}</span>
+                              </div>
                             </div>
                             <div style={{ height: 4, borderRadius: 2, background: '#1e293b' }}>
                               <div style={{ height: '100%', width: `${pct}%`, background: bc, borderRadius: 2, transition: 'width 0.5s' }} />
@@ -1003,6 +1461,83 @@ Return ONLY valid JSON — no markdown, no prose:
                         })()}
                       </div>
                     )}
+                  </div>
+                );
+              })()}
+
+              {/* Snowflake Radar */}
+              {ranking && (() => {
+                const axes = [
+                  { label: 'Technical', value: ranking.technical ?? 0, color: '#38bdf8' },
+                  { label: 'Momentum',  value: ranking.momentum  ?? 0, color: '#fb923c' },
+                  { label: 'Value',     value: ranking.value     ?? 0, color: '#a78bfa' },
+                  { label: 'Growth',    value: ranking.growth    ?? 0, color: '#34d399' },
+                  { label: 'Strength',  value: Math.min(100, ranking.relative_strength ?? 50), color: '#facc15' },
+                ];
+                const n = axes.length;
+                const cx = 80; const cy = 80; const R = 60;
+                const step = (2 * Math.PI) / n;
+                const angle = (i: number) => -Math.PI / 2 + i * step;
+                const pt = (i: number, r: number) => ({
+                  x: cx + r * Math.cos(angle(i)),
+                  y: cy + r * Math.sin(angle(i)),
+                });
+                // Polygon points for filled area
+                const polyPts = axes.map((a, i) => {
+                  const { x, y } = pt(i, (a.value / 100) * R);
+                  return `${x.toFixed(1)},${y.toFixed(1)}`;
+                }).join(' ');
+                // Grid rings at 25, 50, 75, 100
+                const rings = [0.25, 0.5, 0.75, 1.0];
+                return (
+                  <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
+                    <h3 className="text-sm font-semibold text-slate-300 mb-3">Score Profile</h3>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+                      <svg viewBox="0 0 160 160" style={{ width: 160, height: 160, flexShrink: 0 }}>
+                        {/* Grid rings */}
+                        {rings.map(r => (
+                          <polygon key={r}
+                            points={axes.map((_, i) => { const p = pt(i, r * R); return `${p.x.toFixed(1)},${p.y.toFixed(1)}`; }).join(' ')}
+                            fill="none" stroke="#1e293b" strokeWidth={1} />
+                        ))}
+                        {/* Axis lines */}
+                        {axes.map((_, i) => {
+                          const p = pt(i, R);
+                          return <line key={i} x1={cx} y1={cy} x2={p.x} y2={p.y} stroke="#1e293b" strokeWidth={1} />;
+                        })}
+                        {/* Filled polygon */}
+                        <polygon points={polyPts} fill="#4f46e540" stroke="#6366f1" strokeWidth={1.5} strokeLinejoin="round" />
+                        {/* Dots */}
+                        {axes.map((a, i) => {
+                          const { x, y } = pt(i, (a.value / 100) * R);
+                          return <circle key={i} cx={x} cy={y} r={3} fill={a.color} />;
+                        })}
+                        {/* Labels */}
+                        {axes.map((a, i) => {
+                          const { x, y } = pt(i, R + 14);
+                          return (
+                            <text key={i} x={x} y={y} textAnchor="middle" dominantBaseline="middle"
+                              fontSize={8} fill="#64748b" fontWeight={600}>
+                              {a.label}
+                            </text>
+                          );
+                        })}
+                      </svg>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1 }}>
+                        {axes.map(a => (
+                          <div key={a.label} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <div style={{ width: '8px', height: '8px', borderRadius: '2px', background: a.color, flexShrink: 0 }} />
+                            <span style={{ fontSize: '11px', color: '#94a3b8', width: '68px' }}>{a.label}</span>
+                            <div style={{ flex: 1, height: '3px', background: '#1e293b', borderRadius: '2px' }}>
+                              <div style={{ width: `${a.value}%`, height: '100%', background: a.color, borderRadius: '2px', transition: 'width 0.4s' }} />
+                            </div>
+                            <span style={{ fontSize: '11px', fontWeight: 700, color: a.color, width: '28px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                              {a.value.toFixed(0)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 );
               })()}
@@ -1201,6 +1736,29 @@ Return ONLY valid JSON — no markdown, no prose:
                     {isFresh ? '↻ Fresh model run · may differ from AI Signal' : 'From AI Signal — same value used by the dashboard'}
                   </div>
                   {mlError && <div style={{ fontSize: 11, color: '#fbbf24', marginTop: 4 }}>{mlError}</div>}
+                  {/* Kelly Criterion position sizing hint */}
+                  {(() => {
+                    const p = displayResult.bullish_probability;
+                    const b = 2.5; // standard SWING R:R
+                    const f = (p * b - (1 - p)) / b;
+                    if (f <= 0) return (
+                      <div style={{ marginTop: 8, fontSize: 10, color: '#475569', borderTop: '1px solid #1e293b', paddingTop: 6 }}>
+                        Kelly sizing: negative edge at 2.5:1 R:R — below breakeven probability ({((1/(1+b))*100).toFixed(0)}%)
+                      </div>
+                    );
+                    const fullK = Math.min(f * 100, 25);
+                    const halfK = fullK / 2;
+                    const kColor = fullK > 15 ? '#4ade80' : fullK > 7 ? '#fbbf24' : '#94a3b8';
+                    return (
+                      <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10, borderTop: '1px solid #1e293b', paddingTop: 6, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 10, color: '#475569' }}>Kelly (2.5:1 R:R):</span>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: kColor }}>{fullK.toFixed(1)}% full</span>
+                        <span style={{ fontSize: 10, color: '#334155' }}>·</span>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: kColor }}>{halfK.toFixed(1)}% half-Kelly</span>
+                        <span style={{ fontSize: 9, color: '#334155' }}>(half-Kelly recommended)</span>
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })()}
@@ -1220,10 +1778,59 @@ Return ONLY valid JSON — no markdown, no prose:
                 </div>
               )}
             </div>
+            {/* ML-FUND-3: Feature importance — collapsed, loaded on demand */}
+            <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #1e293b' }}>
+              <button
+                onClick={async () => {
+                  if (featureImportance) { setFeatureImportance(null); return; }
+                  setFiLoading(true);
+                  try {
+                    const fi = await api.mlFeatureImportance(symbol, mlModel);
+                    setFeatureImportance(fi);
+                  } catch { /* no model yet */ }
+                  setFiLoading(false);
+                }}
+                style={{ fontSize: 11, color: '#334155', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, padding: 0 }}
+              >
+                <span style={{ fontSize: 9 }}>{featureImportance ? '▾' : '▸'}</span> {fiLoading ? 'Loading…' : 'Top model drivers'}
+              </button>
+              {featureImportance && (
+                <div style={{ marginTop: 8 }}>
+                  {featureImportance.features.slice(0, 8).map((f, i) => {
+                    const catColor = f.category === 'fundamental' ? '#a78bfa' : f.category === 'macro' ? '#60a5fa' : '#4ade80';
+                    const barPct = Math.round((f.importance / (featureImportance.features[0]?.importance || 1)) * 100);
+                    return (
+                      <div key={f.name} style={{ marginBottom: 5 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: catColor, background: `${catColor}22`, borderRadius: 3, padding: '1px 4px', textTransform: 'uppercase' }}>{f.category.slice(0, 4)}</span>
+                            <span style={{ fontSize: 11, color: '#cbd5e1' }}>{f.name}</span>
+                          </div>
+                          <span style={{ fontSize: 10, color: '#475569' }}>{(f.importance * 100).toFixed(1)}%</span>
+                        </div>
+                        <div style={{ height: 4, borderRadius: 2, background: '#1e293b', overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: `${barPct}%`, background: catColor, borderRadius: 2 }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div style={{ fontSize: 9, color: '#334155', marginTop: 6, display: 'flex', gap: 10 }}>
+                    <span style={{ color: '#4ade80' }}>■ technical</span>
+                    <span style={{ color: '#60a5fa' }}>■ macro</span>
+                    <span style={{ color: '#a78bfa' }}>■ fundamental</span>
+                  </div>
+                  {featureImportance.trained_at && (
+                    <div style={{ fontSize: 9, color: '#334155', marginTop: 4 }}>
+                      Trained {new Date(featureImportance.trained_at).toLocaleDateString()}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* S/R + Fibonacci + Patterns */}
-          {(srLevels.length > 0 || Object.keys(fibLevels).length > 0 || (data.patterns?.patterns && data.patterns.patterns.length > 0)) && (
+          {(srLevels.length > 0 || Object.keys(fibLevels).length > 0 || (data.patterns?.patterns && data.patterns.patterns.length > 0) || (livePatterns && livePatterns.patterns.length > 0)) && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', alignItems: 'start' }}>
 
               {srLevels.length > 0 && (
@@ -1271,6 +1878,24 @@ Return ONLY valid JSON — no markdown, no prose:
                 </div>
               )}
 
+              {livePatterns && livePatterns.patterns.length > 0 && (
+                <div className="rounded-md p-4" style={{ border: '1px solid rgba(99,102,241,0.35)', background: 'rgba(99,102,241,0.06)' }}>
+                  <h3 className="text-sm font-semibold mb-3" style={{ color: '#a5b4fc' }}>Live Pattern Signals</h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {livePatterns.patterns.map((p, i) => (
+                      <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '8px 10px', borderRadius: '7px', background: p.bullish ? 'rgba(74,222,128,0.07)' : 'rgba(239,68,68,0.07)', border: `1px solid ${p.bullish ? 'rgba(74,222,128,0.2)' : 'rgba(239,68,68,0.2)'}` }}>
+                        <span style={{ fontSize: '16px', lineHeight: 1, marginTop: '1px' }}>{p.bullish ? '↑' : '↓'}</span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: '12px', fontWeight: 700, color: p.bullish ? '#4ade80' : '#f87171', marginBottom: '2px' }}>{p.label}</div>
+                          <div style={{ fontSize: '11px', color: '#64748b' }}>{p.description}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: '10px', color: '#334155', marginTop: '8px' }}>Detected in last 3–5 sessions</div>
+                </div>
+              )}
+
             </div>
           )}
 
@@ -1278,24 +1903,343 @@ Return ONLY valid JSON — no markdown, no prose:
 
         {/* Sidebar */}
         <div className="space-y-3">
-          {/* AI Signal — show only the card matching the watchlist style */}
-          {pageStyle === 'SHORT' && shortSignal && <SignalCard signal={shortSignal} />}
-          {pageStyle === 'LONG'  && longSignal  && <SignalCard signal={longSignal} />}
-          {pageStyle === 'GROWTH' && growthSignal && (
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                <span style={{ fontSize: 10, fontWeight: 700, color: '#a78bfa', background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.3)', padding: '2px 8px', borderRadius: 4, letterSpacing: '0.05em' }}>
-                  GROWTH / MOMENTUM
-                </span>
-                <span style={{ fontSize: 10, color: '#64748b' }}>Relaxed thresholds for high-volatility stocks</span>
+          {/* AI Signal — tabbed horizon switcher */}
+          {(() => {
+            const SIG_C: Record<string, string> = { BUY: '#4ade80', SELL: '#f87171', WAIT: '#fbbf24', HOLD: '#94a3b8' };
+            const HORIZON_COLOR: Record<string, string> = { SHORT: '#38bdf8', SWING: '#818cf8', LONG: '#4ade80', GROWTH: '#a78bfa' };
+            const activeSig = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig
+              ?? (selectedHorizon === 'SWING' ? data.signal : null);
+            const sigTs = activeSig && 'ts' in activeSig ? (activeSig as Signal & { ts?: string }).ts : null;
+            const storedAge = sigTs ? (() => {
+              const mins = Math.round((Date.now() - new Date(sigTs).getTime()) / 60000);
+              if (mins < 90) return `${mins}m ago`;
+              const hrs = Math.round(mins / 60);
+              if (hrs < 48) return `${hrs}h ago`;
+              return `${Math.round(hrs / 24)}d ago`;
+            })() : null;
+            return (
+              <div>
+                {/* Stored-signal badge */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <span style={{ fontSize: 9, color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>AI Signals</span>
+                  {storedAge && <span style={{ fontSize: 9, color: '#334155' }}>stored · {storedAge} · <span style={{ color: '#475569' }}>Refresh to update</span></span>}
+                </div>
+                {/* Horizon tabs */}
+                <div style={{ display: 'flex', gap: 3, marginBottom: 8 }}>
+                  {allHorizonSignals.map(({ label, horizon, sig }) => {
+                    const isActive = selectedHorizon === horizon;
+                    const hColor = HORIZON_COLOR[horizon] ?? '#818cf8';
+                    return (
+                      <button
+                        key={horizon}
+                        onClick={() => setSelectedHorizon(horizon)}
+                        style={{
+                          flex: 1, padding: '5px 4px', borderRadius: 6, border: `1px solid ${isActive ? hColor : '#1e293b'}`,
+                          background: isActive ? `${hColor}18` : 'rgba(255,255,255,0.02)',
+                          cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+                        }}
+                      >
+                        <span style={{ fontSize: 9, fontWeight: 700, color: isActive ? hColor : '#475569', letterSpacing: '0.04em' }}>{label}</span>
+                        {sig ? (
+                          <>
+                            <span style={{ fontSize: 10, fontWeight: 800, color: SIG_C[sig.signal] ?? '#475569' }}>{sig.signal}</span>
+                            <span style={{ fontSize: 9, color: isActive ? hColor : '#334155', opacity: 0.9 }}>
+                              {sig.bullish_probability != null ? `${(sig.bullish_probability * 100).toFixed(0)}%` : ''}
+                            </span>
+                          </>
+                        ) : (
+                          <span style={{ fontSize: 10, color: '#334155' }}>—</span>
+                        )}
+                        {horizon === pageStyle && (
+                          <span style={{ fontSize: 8, color: hColor, opacity: 0.7 }}>watchlist</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                {/* Signal card for selected horizon */}
+                {activeSig && (
+                  <div>
+                    {selectedHorizon === 'GROWTH' && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: '#a78bfa', background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.3)', padding: '2px 8px', borderRadius: 4, letterSpacing: '0.05em' }}>GROWTH / MOMENTUM</span>
+                        <span style={{ fontSize: 10, color: '#64748b' }}>Relaxed thresholds for high-volatility stocks</span>
+                      </div>
+                    )}
+                    <SignalCard signal={activeSig} />
+                    {/* Conviction Gate — per-layer pass/fail using signal.reasons */}
+                    {(() => {
+                      const r = activeSig.reasons as Record<string, unknown>;
+                      const kscore = data?.ranking?.score;
+                      const regime = (r.market_regime as string) || 'unknown';
+                      // H2: use effective thresholds from tune_status watchdog/calibration (5-min cache)
+                      const tuneStyleData = tuneStatus?.styles?.[selectedHorizon];
+                      const baseMlThresh = tuneStyleData?.effective?.buy_threshold_bull ?? 0.558;
+                      const mlThreshMap: Record<string, number> = {
+                        bull: baseMlThresh,
+                        neutral: Math.min(baseMlThresh + 0.05, 0.82),
+                        high_vol: Math.min(baseMlThresh + 0.12, 0.85),
+                        bear: Math.min(baseMlThresh + 0.12, 0.85),
+                      };
+                      const mlThresh = mlThreshMap[regime] ?? Math.min(baseMlThresh + 0.05, 0.82);
+                      const mlProb = r.ml_probability != null ? Number(r.ml_probability) : null;
+                      // ml_weight=0 means model AUC<0.50 — signal-engine gave it zero weight,
+                      // so the gate mirrors that: soft-pass ML (same logic as Python gate)
+                      const mlWeight = r.ml_weight != null ? Number(r.ml_weight) : null;
+                      const rsi = r.rsi != null ? Number(r.rsi) : null;
+                      const rsiLo = selectedHorizon === 'GROWTH' ? 50 : 45;
+                      const rsiHi = selectedHorizon === 'GROWTH' ? 85 : 72;
+                      const macdHist = Number(r.macd_hist || 0);
+                      const macdExpanding = r.macd_hist_expanding !== undefined ? Boolean(r.macd_hist_expanding) : Boolean(r.macd_rising);
+                      const macdFading = Boolean(r.macd_momentum_fading);
+                      const macdCross = Boolean(r.macd_zero_cross_up);
+                      const layers = [
+                        { key: 'ks',  label: 'K-Score',  ok: kscore != null && kscore >= 55,  detail: kscore != null ? `${kscore.toFixed(0)} (min 55)` : 'unavailable', soft: false },
+                        { key: 'up',  label: 'Uptrend',  ok: selectedHorizon === 'GROWTH' ? Boolean(r.trend_above_sma50) : Boolean(r.sma50_above_sma200) && Boolean(r.trend_above_sma50), detail: selectedHorizon === 'GROWTH' ? 'price > SMA50' : 'SMA50>200 & price>SMA50', soft: false },
+                        { key: 'rsi', label: 'RSI',      ok: rsi != null && rsi >= rsiLo && rsi <= rsiHi, detail: rsi != null ? `${rsi.toFixed(0)} (${rsiLo}–${rsiHi})` : 'n/a', soft: false },
+                        { key: 'mac', label: 'MACD',     ok: (macdHist > 0 || macdCross) && !macdFading, detail: `hist ${macdHist.toFixed(3)} ${macdExpanding ? '↑ expanding' : macdFading ? '⚠ fading' : '↓'}`, soft: true },
+                        { key: 'obv', label: 'OBV',      ok: Boolean(r.obv_trend_bullish), detail: Boolean(r.obv_trend_bullish) ? 'confirming' : 'not confirming', soft: true },
+                        { key: 'adx', label: 'ADX',      ok: Boolean(r.adx_trending), detail: r.adx != null ? `ADX ${Number(r.adx).toFixed(0)} (min 25)` : 'n/a', soft: true },
+                        { key: 'ml',  label: 'ML Model', ok: mlProb == null || mlWeight === 0 || mlProb > mlThresh, detail: mlProb != null ? (mlWeight === 0 ? `AUC<0.50 — zero weight, gate skipped` : `${(mlProb*100).toFixed(0)}% vs ${(mlThresh*100).toFixed(0)}% (${regime})`) : 'no model', soft: true },
+                      ];
+                      const failed = layers.filter(l => !l.ok);
+                      const softFailed = failed.filter(l => l.soft);
+                      const hardFailed = failed.filter(l => !l.soft);
+                      const hasRsiDiv = r.rsi_divergence === 'bearish';
+                      const hasStochOB = Boolean(r.stoch_rsi_overbought);
+                      let tier: 'FULL' | 'NEAR' | 'FAILED' = 'FAILED';
+                      if (!hasRsiDiv && !hasStochOB) {
+                        if (failed.length === 0) tier = 'FULL';
+                        else if (hardFailed.length === 0 && softFailed.length === 1) tier = 'NEAR';
+                      }
+                      const tierColor = tier === 'FULL' ? '#4ade80' : tier === 'NEAR' ? '#fbbf24' : '#ef4444';
+                      const tierLabel = tier === 'FULL' ? '✓ Full conviction' : tier === 'NEAR' ? '~ Near conviction (1 soft miss)' : '✗ Gate not met';
+                      return (
+                        <div style={{ marginTop: 8, padding: '8px 10px', background: 'rgba(15,23,42,0.8)', border: `1px solid ${tierColor}33`, borderRadius: 6 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                            <span style={{ fontSize: 10, fontWeight: 700, color: '#334155', letterSpacing: '0.05em' }}>CONVICTION GATE</span>
+                            <span style={{ fontSize: 10, fontWeight: 700, color: tierColor }}>{tierLabel}</span>
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            {layers.map(l => (
+                              <div key={l.key} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                                <span style={{ fontSize: 10, color: l.ok ? '#4ade80' : l.soft ? '#fbbf24' : '#f87171', width: 10, flexShrink: 0 }}>{l.ok ? '✓' : '✗'}</span>
+                                <span style={{ fontSize: 10, color: '#64748b', width: 62, flexShrink: 0 }}>{l.label}</span>
+                                <span style={{ fontSize: 10, color: l.ok ? '#475569' : l.soft ? '#92400e' : '#7f1d1d' }}>{l.detail}</span>
+                                {!l.ok && l.soft && <span style={{ fontSize: 9, color: '#334155', marginLeft: 2 }}>(soft)</span>}
+                              </div>
+                            ))}
+                            {hasRsiDiv && <div style={{ fontSize: 10, color: '#f87171', marginTop: 2 }}>✗ Bearish RSI divergence — disqualifier</div>}
+                            {hasStochOB && <div style={{ fontSize: 10, color: '#f87171', marginTop: 2 }}>✗ Stoch RSI overbought — disqualifier</div>}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+                {!activeSig && (
+                  <div style={{ padding: '20px', textAlign: 'center', color: '#334155', fontSize: 12, border: '1px solid #1e293b', borderRadius: 8 }}>
+                    Loading {selectedHorizon} signal…
+                  </div>
+                )}
               </div>
-              <SignalCard signal={growthSignal} />
-            </div>
-          )}
-          {(!pageStyle || pageStyle === 'SWING') && data.signal && <SignalCard signal={data.signal} />}
+            );
+          })()}
+          {/* Research Intelligence — INT-1, INT-2, INT-6 */}
+          {(() => {
+            const REC_COLOR: Record<string, string> = { 'STRONG BUY': '#4ade80', BUY: '#86efac', WATCH: '#facc15', AVOID: '#fb923c', SELL: '#f87171' };
+            const REC_BG: Record<string, string> = { 'STRONG BUY': 'rgba(74,222,128,0.12)', BUY: 'rgba(74,222,128,0.08)', WATCH: 'rgba(250,204,21,0.12)', AVOID: 'rgba(251,146,60,0.12)', SELL: 'rgba(248,113,113,0.12)' };
+            const activeSig = data?.signal;
+            const sigConf = activeSig?.confidence ?? null;
+            const resCore = researchSummary?.recommendation;
+            const resScore = researchSummary?.overall_score ?? null;
+            const resConf = researchSummary?.confidence ?? null;
+            const resGenAt = researchSummary?.generated_at ? new Date(researchSummary.generated_at) : null;
+            const resAge = resGenAt && !isNaN(resGenAt.getTime()) ? Math.floor((Date.now() - resGenAt.getTime()) / 3600000) : null;
+
+            // Alignment logic (INT-2)
+            const sigIsBuy = activeSig?.signal === 'BUY' || activeSig?.signal === 'HOLD';
+            const resIsBuy = resCore === 'STRONG BUY' || resCore === 'BUY';
+            const resIsNeg = resCore === 'WATCH' || resCore === 'AVOID' || resCore === 'SELL';
+            let alignLabel = '', alignColor = '', alignBg = '', alignBorder = '';
+            if (resCore) {
+              if (sigIsBuy && resIsNeg) { alignLabel = 'DIVERGENT'; alignColor = '#f59e0b'; alignBg = 'rgba(245,158,11,0.12)'; alignBorder = 'rgba(245,158,11,0.3)'; }
+              else if (sigIsBuy && resIsBuy && (resConf ?? 0) >= 65) { alignLabel = 'STRONGLY ALIGNED'; alignColor = '#4ade80'; alignBg = 'rgba(74,222,128,0.12)'; alignBorder = 'rgba(74,222,128,0.3)'; }
+              else if (sigIsBuy && resIsBuy) { alignLabel = 'ALIGNED'; alignColor = '#86efac'; alignBg = 'rgba(74,222,128,0.08)'; alignBorder = 'rgba(74,222,128,0.25)'; }
+              else if (sigIsBuy && resCore === 'WATCH') { alignLabel = 'PARTIALLY ALIGNED'; alignColor = '#facc15'; alignBg = 'rgba(250,204,21,0.1)'; alignBorder = 'rgba(250,204,21,0.25)'; }
+              else { alignLabel = 'NEUTRAL'; alignColor = '#64748b'; alignBg = 'rgba(255,255,255,0.04)'; alignBorder = '#1e293b'; }
+            }
+
+            // Composite conviction (INT-6)
+            const staleResearch = resAge !== null && resAge > 14 * 24;
+            const convScore = sigConf !== null && resScore !== null && !staleResearch
+              ? Math.round(sigConf * 0.5 + resScore * 0.5)
+              : sigConf !== null ? Math.round(sigConf) : null;
+            const convColor = convScore !== null ? (convScore >= 75 ? '#4ade80' : convScore >= 60 ? '#facc15' : '#f87171') : '#475569';
+            const convLabel = sigConf !== null && resScore !== null && !staleResearch ? 'Conviction' : 'Signal conf.';
+
+            if (!resCore && !researchSummary) {
+              return (
+                <div style={{ fontSize: 10, color: '#334155', padding: '8px 12px', borderRadius: 8, border: '1px dashed #1e293b', textAlign: 'center' }}>
+                  No research report — <a href={`/research/${symbol}`} style={{ color: '#818cf8', textDecoration: 'none' }}>Generate</a> to see alignment
+                </div>
+              );
+            }
+
+            return (
+              <div style={{ background: '#0a0f1e', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {/* Research badge (INT-1) */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Research</span>
+                    {resCore && (
+                      <a href={`/research/${symbol}`} style={{ textDecoration: 'none' }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4, color: REC_COLOR[resCore] ?? '#94a3b8', background: REC_BG[resCore] ?? 'rgba(255,255,255,0.05)', border: `1px solid ${(REC_COLOR[resCore] ?? '#475569')}44`, cursor: 'pointer' }}>
+                          {resCore}
+                        </span>
+                      </a>
+                    )}
+                    {resScore !== null && <span style={{ fontSize: 10, color: '#64748b' }}>{resScore} pts</span>}
+                    {resAge !== null && <span style={{ fontSize: 9, color: staleResearch ? '#f87171' : '#334155' }}>{resAge < 24 ? `${resAge}h ago` : `${Math.floor(resAge / 24)}d ago`}{staleResearch ? ' · STALE' : ''}</span>}
+                    <button
+                      onClick={handleResearchRefresh}
+                      disabled={researchRefreshing}
+                      title="Trigger a fresh research report"
+                      style={{ marginLeft: 4, padding: '2px 7px', borderRadius: 5, border: '1px solid rgba(129,140,248,0.25)', background: 'rgba(129,140,248,0.08)', color: researchRefreshing ? '#f59e0b' : '#818cf8', cursor: researchRefreshing ? 'default' : 'pointer', fontSize: 10, fontWeight: 700, lineHeight: 1 }}
+                    >
+                      {researchRefreshing ? '…' : '↻'}
+                    </button>
+                    {researchTriggerMsg && <span style={{ fontSize: 9, color: '#4ade80', marginLeft: 4 }}>{researchTriggerMsg}</span>}
+                    {!resCore && <span style={{ fontSize: 10, color: '#334155' }}>—</span>}
+                  </div>
+                  {/* Conviction gauge (INT-6) */}
+                  {convScore !== null && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <span style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{convLabel}</span>
+                      <span style={{ fontSize: 13, fontWeight: 800, color: convColor }}>{convScore}</span>
+                      {sigConf !== null && resScore !== null && !staleResearch && (
+                        <span style={{ fontSize: 9, color: '#334155' }} title={`Signal ${Math.round(sigConf)} × 50% + Research ${resScore} × 50%`}>ℹ</span>
+                      )}
+                    </div>
+                  )}
+                  {(() => {
+                    const symBySym = symbolOutcomes?.by_symbol;
+                    if (!symBySym?.length) return null;
+                    const row = symBySym.find(r => r.symbol === symbol) ?? symBySym[0];
+                    if (row.count < 3) return null;
+                    const wr = Math.round(row.win_rate * 100);
+                    const wrColor = wr >= 55 ? '#4ade80' : wr >= 45 ? '#facc15' : '#f87171';
+                    return (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }} title={`${row.count} closed signals in last 90d`}>
+                        <span style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{activeHorizon} 90d</span>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: wrColor }}>{wr}%WR</span>
+                        <span style={{ fontSize: 9, color: '#334155' }}>({row.count})</span>
+                      </div>
+                    );
+                  })()}
+                </div>
+                {/* Alignment indicator (INT-2) */}
+                {alignLabel && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, color: alignColor, background: alignBg, border: `1px solid ${alignBorder}`, letterSpacing: '0.04em' }}>
+                      {alignLabel}
+                    </span>
+                    {alignLabel === 'DIVERGENT' && (
+                      <span style={{ fontSize: 10, color: '#64748b' }}>
+                        Signal: {activeSig?.signal} (conf {Math.round(sigConf ?? 0)}) vs Research: {resCore} (conf {resConf}) — review before entering
+                      </span>
+                    )}
+                    {alignLabel.includes('ALIGNED') && (
+                      <span style={{ fontSize: 10, color: '#475569' }}>Signal and research agree — higher conviction setup</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* Event Intelligence panel — catalyst/insider/congress scores from signal reasons */}
+          {(() => {
+            const r = data?.signal?.reasons as Record<string, unknown> | null | undefined;
+            if (!r) return null;
+            const catalystScore  = r?.catalyst_score  != null ? Number(r.catalyst_score)  : null;
+            const insiderScore   = r?.insider_score   != null ? Number(r.insider_score)   : null;
+            const congressScore  = r?.congress_score  != null ? Number(r.congress_score)  : null;
+            const compositeScore = r?.composite_score != null ? Number(r.composite_score) : null;
+            if (catalystScore == null && insiderScore == null && congressScore == null) return null;
+            const sc = (n: number | null) => n == null ? '#6b7280' : n >= 60 ? '#22c55e' : n >= 30 ? '#f59e0b' : n < 0 ? '#ef4444' : '#6b7280';
+            const fmt = (n: number | null) => n == null ? '—' : n.toFixed(0);
+            const bar = (n: number | null, maxAbs = 100) => {
+              if (n == null) return null;
+              const pct = Math.max(0, Math.min(100, ((n + maxAbs) / (2 * maxAbs)) * 100));
+              return <div style={{ flex: 1, height: 4, background: '#1f2937', borderRadius: 2 }}><div style={{ width: `${pct}%`, height: '100%', borderRadius: 2, background: sc(n) }} /></div>;
+            };
+            return (
+              <div style={{ background: '#0a0f1e', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Event Intelligence</span>
+                  <a href="/intelligence" style={{ fontSize: 9, color: '#f59e0b', textDecoration: 'none', opacity: 0.7 }}>Full dashboard →</a>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {[
+                    { label: 'Catalyst', val: catalystScore, tip: 'Composite: earnings × insider × congress × institutional' },
+                    { label: 'Insider',  val: insiderScore,  tip: 'Net insider buying pressure (−100 to +100, role-weighted)' },
+                    { label: 'Congress', val: congressScore, tip: 'Congressional buying interest (0–100, net purchase bias)' },
+                    { label: 'AI Composite', val: compositeScore, tip: '0.5×catalyst + 0.3×(100−risk) + 0.2×earnings' },
+                  ].map(({ label, val, tip }) => (
+                    <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6 }} title={tip}>
+                      <span style={{ fontSize: 10, color: '#64748b', width: 70, flexShrink: 0 }}>{label}</span>
+                      {bar(val)}
+                      <span style={{ fontSize: 10, fontWeight: 700, color: sc(val), width: 28, textAlign: 'right', flexShrink: 0 }}>{fmt(val)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
           {signalHistory && signalHistory.length >= 2 && (
             <ConfidenceTrend history={signalHistory} />
           )}
+
+          {/* Signal History — recent transitions */}
+          {signalHistory && signalHistory.length >= 2 && (() => {
+            const SIG_C: Record<string, string> = { BUY: '#4ade80', SELL: '#f87171', HOLD: '#94a3b8', WAIT: '#fbbf24' };
+            // Dedupe to transitions only (reversed = newest first)
+            const transitions: SignalHistoryPoint[] = [];
+            for (const h of [...signalHistory].reverse()) {
+              if (transitions.length === 0 || h.signal !== transitions[transitions.length - 1].signal) {
+                transitions.push(h);
+                if (transitions.length >= 5) break;
+              }
+            }
+            if (transitions.length < 2) return null;
+            return (
+              <div style={{ background: '#0a0f1e', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px' }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+                  Signal History
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {transitions.map((h, i) => {
+                    const color = SIG_C[h.signal] ?? '#94a3b8';
+                    const date = h.ts ? new Date(h.ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
+                    const bullPct = h.bullish_probability != null ? Math.round(h.bullish_probability * 100) : null;
+                    return (
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px', borderRadius: 5, background: i === 0 ? `${color}0f` : 'transparent' }}>
+                        <span style={{ fontSize: 9, fontWeight: 700, color: i === 0 ? color : '#334155', width: 26, flexShrink: 0 }}>
+                          {i === 0 ? 'NOW' : `−${i}`}
+                        </span>
+                        <span style={{ fontSize: 10, color: '#475569', fontFamily: 'monospace', width: 48, flexShrink: 0 }}>{date}</span>
+                        <span style={{ fontSize: 11, fontWeight: 700, color, width: 34, flexShrink: 0 }}>{h.signal}</span>
+                        <span style={{ fontSize: 10, color: '#64748b' }}>{Math.round(h.confidence ?? 0)}%</span>
+                        {bullPct != null && <span style={{ fontSize: 10, color: '#475569', marginLeft: 'auto' }}>{bullPct}% bull</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Fair Value */}
           {ranking?.fair_price != null && (() => {
@@ -1432,66 +2376,104 @@ Return ONLY valid JSON — no markdown, no prose:
             );
           })()}
 
-          {/* Signal Alert subscription */}
+          {/* Signal Consensus + per-horizon alert subscriptions */}
           {(() => {
-            const existing = signalAlerts?.find(a => a.symbol === symbol);
-            async function toggle() {
+            const SIG_C: Record<string, string> = { BUY: '#4ade80', SELL: '#f87171', WAIT: '#fbbf24', HOLD: '#94a3b8' };
+            const SIG_BG: Record<string, string> = { BUY: 'rgba(74,222,128,0.1)', SELL: 'rgba(239,68,68,0.1)', WAIT: 'rgba(251,191,36,0.08)', HOLD: 'rgba(148,163,184,0.06)' };
+            const email = (typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') : null) ?? '';
+
+            const directions = allHorizonSignals.map(h => h.sig?.signal).filter(Boolean);
+            const buyCount  = directions.filter(d => d === 'BUY').length;
+            const sellCount = directions.filter(d => d === 'SELL').length;
+            const consensusLabel = directions.length === 0 ? null
+              : buyCount >= 3 ? 'Strong bullish'
+              : buyCount === 2 ? 'Moderately bullish'
+              : sellCount >= 3 ? 'Strong bearish'
+              : sellCount === 2 ? 'Moderately bearish'
+              : 'Mixed — check entry timing';
+            const consensusColor = buyCount >= 3 ? '#4ade80' : buyCount === 2 ? '#a3e635' : sellCount >= 3 ? '#f87171' : sellCount === 2 ? '#fb923c' : '#fbbf24';
+
+            async function toggleHorizon(horizon: string) {
               setSignalAlertError('');
               setSignalAlertSaving(true);
+              const existing = signalAlerts?.find(a => a.symbol === symbol && a.horizon === horizon);
               try {
                 if (existing) {
                   await api.deleteSignalAlert(existing.id);
                 } else {
-                  const email = (typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') : null) ?? '';
-                  if (!email) {
-                    setSignalAlertError('Set an email in Settings → Profile first');
-                    return;
-                  }
-                  await api.createSignalAlert(symbol, email);
+                  if (!email) { setSignalAlertError('Set an email in Settings → Profile first'); return; }
+                  await api.createSignalAlert(symbol as string, email, 'all', horizon);
                 }
                 await mutateSignalAlerts();
               } catch (err: unknown) {
                 const msg = err instanceof Error ? err.message : String(err);
                 setSignalAlertError(msg.includes('400') ? 'Set an email in Settings → Profile first' : 'Failed to save alert');
-              } finally {
-                setSignalAlertSaving(false);
-              }
+              } finally { setSignalAlertSaving(false); }
             }
-            const active = !!existing;
+
             return (
-              <div>
-                <button
-                  onClick={toggle}
-                  disabled={signalAlertSaving}
-                  title={active ? 'Click to stop signal notifications for this stock' : 'Get emailed when AI Signal improves (SELL→HOLD or HOLD→BUY) while analysts rate it BUY'}
-                  style={{
-                    width: '100%', display: 'flex', alignItems: 'center', gap: '8px',
-                    padding: '9px 14px', borderRadius: '8px', cursor: signalAlertSaving ? 'not-allowed' : 'pointer',
-                    border: active ? '1px solid rgba(99,102,241,0.5)' : '1px solid rgba(148,163,184,0.15)',
-                    background: active ? 'rgba(99,102,241,0.1)' : 'rgba(255,255,255,0.02)',
-                    color: active ? '#818cf8' : '#64748b',
-                    fontSize: '12px', fontWeight: 600, transition: 'all 0.15s', textAlign: 'left',
-                  }}
-                >
-                  <span style={{ fontSize: '14px' }}>{active ? '🔔' : '🔕'}</span>
-                  <span style={{ flex: 1 }}>
-                    {signalAlertSaving ? 'Saving…' : active ? 'Signal alert on' : 'Notify on signal improvement'}
-                  </span>
-                  {active && existing?.last_signal && (
-                    <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.2)', padding: '2px 6px', borderRadius: '4px' }}>
-                      Last: {existing.last_signal}
-                    </span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {/* Consensus banner */}
+                <div style={{ padding: '8px 12px', borderRadius: '8px', background: 'rgba(15,23,42,0.8)', border: '1px solid #1e293b' }}>
+                  <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em', marginBottom: '6px' }}>SIGNAL CONSENSUS</div>
+                  <div style={{ display: 'flex', gap: '4px', marginBottom: '6px' }}>
+                    {allHorizonSignals.map(({ label, sig }) => (
+                      <div key={label} style={{ flex: 1, textAlign: 'center', padding: '4px 2px', borderRadius: '6px', background: SIG_BG[sig?.signal ?? ''] ?? 'rgba(255,255,255,0.02)', border: `1px solid ${SIG_C[sig?.signal ?? ''] ?? '#1e293b'}33` }}>
+                        <div style={{ fontSize: '9px', color: '#475569', marginBottom: '2px' }}>{label}</div>
+                        <div style={{ fontSize: '11px', fontWeight: 800, color: SIG_C[sig?.signal ?? ''] ?? '#334155' }}>
+                          {sig?.signal ?? '—'}
+                        </div>
+                        {sig?.confidence != null && (
+                          <div style={{ fontSize: '9px', color: '#334155', marginTop: '1px' }}>{sig.confidence.toFixed(0)}%</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {consensusLabel && (
+                    <div style={{ fontSize: '11px', fontWeight: 600, color: consensusColor }}>
+                      {consensusLabel}
+                    </div>
                   )}
-                </button>
+                </div>
+
+                {/* Per-horizon alert rows */}
+                <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em', marginTop: '2px', marginBottom: '2px' }}>SIGNAL ALERTS</div>
+                {allHorizonSignals.map(({ label, horizon, sig }) => {
+                  const sub = signalAlerts?.find(a => a.symbol === symbol && a.horizon === horizon);
+                  const active = !!sub;
+                  return (
+                    <div key={horizon} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 10px', borderRadius: '7px', border: active ? '1px solid rgba(99,102,241,0.4)' : '1px solid #1e293b', background: active ? 'rgba(99,102,241,0.07)' : 'rgba(255,255,255,0.01)' }}>
+                      <span style={{ fontSize: '10px', fontWeight: 700, color: '#475569', width: '42px', flexShrink: 0 }}>{label}</span>
+                      <span style={{ fontSize: '11px', fontWeight: 700, color: SIG_C[sig?.signal ?? ''] ?? '#334155', width: '36px', flexShrink: 0 }}>{sig?.signal ?? '—'}</span>
+                      <span style={{ flex: 1, fontSize: '10px', color: '#334155' }}>
+                        {active && sub.last_signal ? `Last sent: ${sub.last_signal}` : active ? 'Watching' : ''}
+                      </span>
+                      <button
+                        onClick={() => toggleHorizon(horizon)}
+                        disabled={signalAlertSaving}
+                        title={active ? `Stop ${label} signal alerts` : `Get emailed when ${label} signal improves`}
+                        style={{ fontSize: '13px', background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: active ? '#818cf8' : '#334155', transition: 'color 0.15s' }}
+                      >
+                        {active ? '🔔' : '🔕'}
+                      </button>
+                    </div>
+                  );
+                })}
                 {signalAlertError && (
-                  <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#f87171' }}>{signalAlertError}</p>
+                  <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#f87171' }}>{signalAlertError}</p>
                 )}
               </div>
             );
           })()}
 
-          {/* Game Plan — only for bullish/neutral signals where a buy plan makes sense */}
-          {isAiConfigured() && data.signal?.signal !== 'SELL' && (
+          {/* Game Plan — only for BUY/HOLD signals; hidden for WAIT/SELL */}
+          {isAiConfigured() && (() => {
+            const gpSig = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig
+              ?? (selectedHorizon === 'SWING' ? data.signal : data.signal);
+            const gpDirection = gpSig?.signal;
+            if (gpDirection === 'WAIT' || gpDirection === 'SELL') return null;
+            const gpButtonLabel = 'Generate 10-Day Game Plan';
+            return (
             <div>
               {/* Generate button */}
               {!gamePlan && !gamePlanLoading && (
@@ -1507,7 +2489,7 @@ Return ONLY valid JSON — no markdown, no prose:
                   }}
                 >
                   <span style={{ fontSize: '14px' }}>📋</span>
-                  <span style={{ flex: 1 }}>Generate 10-Day Game Plan</span>
+                  <span style={{ flex: 1 }}>{gpButtonLabel}</span>
                   <span style={{ fontSize: '10px', color: '#22c55e', opacity: 0.7 }}>AI</span>
                 </button>
               )}
@@ -1633,7 +2615,8 @@ Return ONLY valid JSON — no markdown, no prose:
                 </div>
               )}
             </div>
-          )}
+          );
+          })()}
 
         </div>
       </div>
@@ -1695,7 +2678,18 @@ Return ONLY valid JSON — no markdown, no prose:
 
         return (
           <div>
-            <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', marginBottom: '12px' }}>Company Financials</h2>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: '12px' }}>
+              <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Company Financials</h2>
+              {f.fetched_at && (() => {
+                const daysOld = Math.floor((Date.now() - new Date(f.fetched_at!).getTime()) / 86400000);
+                const stale = daysOld > 90;
+                return (
+                  <span style={{ fontSize: 10, color: stale ? '#fbbf24' : '#475569', background: stale ? 'rgba(251,191,36,0.1)' : 'transparent', border: stale ? '1px solid rgba(251,191,36,0.3)' : 'none', borderRadius: 4, padding: stale ? '1px 6px' : 0 }}>
+                    {stale ? `⚠ ${daysOld}d old` : `as of ${new Date(f.fetched_at!).toLocaleDateString()}`}
+                  </span>
+                );
+              })()}
+            </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
               {/* Row 1 — Valuation */}
@@ -1788,28 +2782,120 @@ Return ONLY valid JSON — no markdown, no prose:
                 )}
               </div>
 
-              {/* Row 5 — Short Interest + Ownership */}
-              {(f.short_percent_of_float != null || f.held_percent_institutions != null) && (
-                <div>
-                  <div style={{ fontSize: '10px', fontWeight: 700, color: '#ef4444', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>Short Interest &amp; Ownership</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '8px' }}>
-                    {f.short_percent_of_float != null && (() => {
-                      const pct = f.short_percent_of_float! * 100;
-                      const color = pct >= 20 ? '#f87171' : pct >= 10 ? '#fbbf24' : '#4ade80';
-                      const label = pct >= 20 ? 'High — squeeze risk' : pct >= 10 ? 'Elevated' : 'Low';
-                      return card('Short % of Float', `${pct.toFixed(1)}%`, label, color);
-                    })()}
-                    {f.short_ratio != null && (() => {
-                      const color = f.short_ratio >= 5 ? '#f87171' : f.short_ratio >= 3 ? '#fbbf24' : '#94a3b8';
-                      return card('Days to Cover', `${f.short_ratio.toFixed(1)}d`, 'short ratio', color);
-                    })()}
-                    {f.held_percent_institutions != null && card('Institutional', `${(f.held_percent_institutions * 100).toFixed(1)}%`, 'of float held')}
-                    {f.held_percent_insiders != null && card('Insider Hold', `${(f.held_percent_insiders * 100).toFixed(1)}%`, 'of float held')}
+              {/* Row 5 — Short Interest + Ownership + Squeeze Score */}
+              {(f.short_percent_of_float != null || f.held_percent_institutions != null) && (() => {
+                // Squeeze score: 0–100 from short float %, days-to-cover, and options flow
+                const floatPct = (f.short_percent_of_float ?? 0) * 100;
+                const ratio    = f.short_ratio ?? 0;
+                const floatPts = floatPct >= 20 ? 40 : floatPct >= 15 ? 25 : floatPct >= 10 ? 15 : 0;
+                const ratioPts = ratio >= 8 ? 30 : ratio >= 5 ? 20 : ratio >= 3 ? 10 : 0;
+                const optPts   = optionsFlow?.available
+                  ? ((optionsFlow.whale_count ?? 0) > 0 && (optionsFlow.cp_ratio ?? 0) >= 1.5 ? 30
+                    : (optionsFlow.cp_ratio ?? 0) >= 1.5 ? 20
+                    : (optionsFlow.cp_ratio ?? 0) >= 1.2 ? 10 : 0)
+                  : 0;
+                const squeezeScore = floatPts + ratioPts + optPts;
+                const hasShortData = floatPct > 0 || ratio > 0;
+                return (
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: '6px' }}>
+                      <div style={{ fontSize: '10px', fontWeight: 700, color: '#ef4444', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Short Interest &amp; Ownership</div>
+                      {hasShortData && squeezeScore > 0 && (() => {
+                        const sc = squeezeScore;
+                        const [bg, border, text, label] = sc >= 70
+                          ? ['rgba(251,146,60,0.12)', 'rgba(251,146,60,0.4)', '#fb923c', '🔥 HIGH SQUEEZE']
+                          : sc >= 40
+                          ? ['rgba(251,191,36,0.1)', 'rgba(251,191,36,0.35)', '#fbbf24', '⚡ MODERATE']
+                          : ['rgba(148,163,184,0.08)', 'rgba(148,163,184,0.2)', '#94a3b8', 'LOW'];
+                        return (
+                          <span style={{ fontSize: 11, fontWeight: 700, color: text, background: bg, border: `1px solid ${border}`, borderRadius: 5, padding: '2px 8px' }}>
+                            {label} · {sc}/100
+                          </span>
+                        );
+                      })()}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '8px' }}>
+                      {f.short_percent_of_float != null && (() => {
+                        const pct = f.short_percent_of_float! * 100;
+                        const color = pct >= 20 ? '#f87171' : pct >= 10 ? '#fbbf24' : '#4ade80';
+                        const label = pct >= 20 ? 'High — squeeze risk' : pct >= 10 ? 'Elevated' : 'Low';
+                        return card('Short % of Float', `${pct.toFixed(1)}%`, label, color);
+                      })()}
+                      {f.shares_short != null && f.shares_short_prior_month != null && (() => {
+                        const rising = f.shares_short > f.shares_short_prior_month!;
+                        const pctChg = ((f.shares_short - f.shares_short_prior_month!) / f.shares_short_prior_month!) * 100;
+                        const color = rising ? '#f87171' : '#4ade80';
+                        return card('Short Trend', rising ? `↑ ${pctChg.toFixed(0)}% MoM` : `↓ ${Math.abs(pctChg).toFixed(0)}% MoM`, rising ? 'Shorts rising (bearish)' : 'Shorts falling (bullish)', color);
+                      })()}
+                      {f.short_ratio != null && (() => {
+                        const color = f.short_ratio >= 5 ? '#f87171' : f.short_ratio >= 3 ? '#fbbf24' : '#94a3b8';
+                        return card('Days to Cover', `${f.short_ratio.toFixed(1)}d`, 'short ratio', color);
+                      })()}
+                      {f.held_percent_institutions != null && card('Institutional', `${(f.held_percent_institutions * 100).toFixed(1)}%`, 'of float held')}
+                      {f.held_percent_insiders != null && card('Insider Hold', `${(f.held_percent_insiders * 100).toFixed(1)}%`, 'of float held')}
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
-              {/* Row 6 — EPS Surprise History */}
+              {/* Row 6 — Quarterly Revenue & Earnings Trend (T230) */}
+              {quarterly && quarterly.length > 0 && (() => {
+                function fmtQ(n: number | null): string {
+                  if (n == null) return '—';
+                  const abs = Math.abs(n);
+                  const sign = n < 0 ? '-' : '';
+                  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(1)}T`;
+                  if (abs >= 1e9)  return `${sign}$${(abs / 1e9).toFixed(1)}B`;
+                  if (abs >= 1e6)  return `${sign}$${(abs / 1e6).toFixed(0)}M`;
+                  if (abs >= 1e3)  return `${sign}$${(abs / 1e3).toFixed(0)}K`;
+                  return `${sign}$${abs.toFixed(0)}`;
+                }
+                const qRows: { label: string; key: keyof QuarterlyRow; color?: (v: number | null) => string }[] = [
+                  { label: 'Revenue',      key: 'revenue' },
+                  { label: 'Gross Profit', key: 'gross_profit' },
+                  { label: 'Net Income',   key: 'net_income',   color: (v) => v == null ? '#94a3b8' : v >= 0 ? '#4ade80' : '#f87171' },
+                  { label: 'EBITDA',       key: 'ebitda' },
+                ];
+                return (
+                  <div>
+                    <div style={{ fontSize: '10px', fontWeight: 700, color: '#0891b2', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
+                      Quarterly Trend (last {quarterly.length}Q)
+                    </div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                        <thead>
+                          <tr>
+                            <th style={{ textAlign: 'left', color: '#475569', fontWeight: 600, padding: '4px 8px 4px 0', whiteSpace: 'nowrap', width: '90px' }}></th>
+                            {quarterly.map(q => (
+                              <th key={q.date} style={{ textAlign: 'right', color: '#475569', fontWeight: 600, padding: '4px 6px', whiteSpace: 'nowrap', fontSize: '10px' }}>
+                                {q.date.slice(0, 7)}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {qRows.map(row => (
+                            <tr key={row.label} style={{ borderTop: '1px solid #1e293b' }}>
+                              <td style={{ color: '#94a3b8', padding: '5px 8px 5px 0', whiteSpace: 'nowrap', fontWeight: 600 }}>{row.label}</td>
+                              {quarterly.map(q => {
+                                const v = q[row.key] as number | null;
+                                const cellColor = row.color ? row.color(v) : '#e2e8f0';
+                                return (
+                                  <td key={q.date} style={{ textAlign: 'right', padding: '5px 6px', fontWeight: 600, color: cellColor, whiteSpace: 'nowrap' }}>
+                                    {fmtQ(v)}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Row 7 — EPS Surprise History */}
               {f.eps_history && f.eps_history.length > 0 && (
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
@@ -2106,6 +3192,12 @@ Return ONLY valid JSON — no markdown, no prose:
                           'Lowered Target': '#fb923c',
                           'Raised Target':  '#4ade80',
                         };
+                        const UP_ACTIONS = ['up', 'upgrade', 'init', 'initiated'];
+                        const DOWN_ACTIONS = ['down', 'downgrade'];
+                        const sevenDaysAgo = new Date(Date.now() - 7 * 86400_000).toISOString().slice(0, 10);
+                        const recent7d = f.analyst_actions.filter(a => a.date >= sevenDaysAgo);
+                        const ups7d = recent7d.filter(a => UP_ACTIONS.includes(a.action.toLowerCase())).length;
+                        const downs7d = recent7d.filter(a => DOWN_ACTIONS.includes(a.action.toLowerCase())).length;
                         const actionColor = (a: string) => {
                           for (const [k, v] of Object.entries(ACTION_COLOR)) {
                             if (a.toLowerCase().includes(k.toLowerCase())) return v;
@@ -2121,8 +3213,16 @@ Return ONLY valid JSON — no markdown, no prose:
                         };
                         return (
                           <div>
-                            <div style={{ fontSize: '10px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>
-                              Recent Analyst Actions <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: '#334155' }}>· last 90 days</span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: '8px' }}>
+                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                                Recent Analyst Actions <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: '#334155' }}>· last 90 days</span>
+                              </div>
+                              {(ups7d > 0 || downs7d > 0) && (
+                                <div style={{ display: 'flex', gap: 4, marginLeft: 'auto' }}>
+                                  {ups7d > 0 && <span style={{ fontSize: 10, background: 'rgba(34,197,94,0.12)', color: '#22c55e', borderRadius: 4, padding: '1px 6px', fontWeight: 700 }}>+{ups7d} 7d</span>}
+                                  {downs7d > 0 && <span style={{ fontSize: 10, background: 'rgba(239,68,68,0.12)', color: '#ef4444', borderRadius: 4, padding: '1px 6px', fontWeight: 700 }}>−{downs7d} 7d</span>}
+                                </div>
+                              )}
                             </div>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                               {f.analyst_actions.map((a, i) => (
@@ -2406,6 +3506,12 @@ Return ONLY valid JSON — no markdown, no prose:
                   <option value="new_52wk_high">New 52-week high</option>
                   <option value="new_52wk_low">New 52-week low</option>
                 </optgroup>
+                <optgroup label="Pattern Signals">
+                  <option value="macd_bullish_cross">MACD Bullish Crossover</option>
+                  <option value="rsi_oversold_bounce">RSI Oversold Bounce (crosses 30)</option>
+                  <option value="double_bottom">Double Bottom (W-pattern)</option>
+                  <option value="breakout">Volume Breakout (20-day high + surge)</option>
+                </optgroup>
               </select>
             </div>
             {/* Price threshold — only for above/below */}
@@ -2446,6 +3552,22 @@ Return ONLY valid JSON — no markdown, no prose:
                 style={{ background: '#1e293b', color: '#e2e8f0', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '6px', padding: '6px 10px', fontSize: '13px', width: '100%' }}
               />
             </div>
+            {/* Recurring toggle — only for pattern/technical conditions */}
+            {isNoThreshold && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '11px', color: '#64748b' }}>Alert mode</label>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button
+                    onClick={() => setAlertRecurring(false)}
+                    style={{ padding: '5px 10px', borderRadius: '5px', fontSize: '11px', border: `1px solid ${!alertRecurring ? 'rgba(99,102,241,0.5)' : '#1e293b'}`, background: !alertRecurring ? 'rgba(99,102,241,0.15)' : 'transparent', color: !alertRecurring ? '#a5b4fc' : '#475569', cursor: 'pointer' }}
+                  >Once</button>
+                  <button
+                    onClick={() => setAlertRecurring(true)}
+                    style={{ padding: '5px 10px', borderRadius: '5px', fontSize: '11px', border: `1px solid ${alertRecurring ? 'rgba(251,191,36,0.5)' : '#1e293b'}`, background: alertRecurring ? 'rgba(251,191,36,0.08)' : 'transparent', color: alertRecurring ? '#fbbf24' : '#475569', cursor: 'pointer' }}
+                  >↻ Recurring</button>
+                </div>
+              </div>
+            )}
             {/* Show email field only if no account email is saved */}
             {!alertEmail ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: '180px' }}>
@@ -2479,7 +3601,7 @@ Return ONLY valid JSON — no markdown, no prose:
         {alerts && alerts.length > 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {alerts.map(a => {
-              const isUp = ['above', 'cross_above_ema', 'new_52wk_high', 'golden_cross'].includes(a.condition);
+              const isUp = ['above', 'cross_above_ema', 'new_52wk_high', 'golden_cross', 'macd_bullish_cross', 'rsi_oversold_bounce', 'double_bottom', 'breakout'].includes(a.condition);
               const icon = isUp ? '▲' : '▼';
               let label = '';
               if (a.condition === 'above') label = `Rises above ${a.threshold}`;
@@ -2490,18 +3612,32 @@ Return ONLY valid JSON — no markdown, no prose:
               else if (a.condition === 'new_52wk_low') label = 'New 52-week low';
               else if (a.condition === 'golden_cross') label = 'Golden Cross (EMA50 ↑ EMA200)';
               else if (a.condition === 'death_cross') label = 'Death Cross (EMA50 ↓ EMA200)';
+              else if (a.condition === 'macd_bullish_cross') label = 'MACD Bullish Crossover';
+              else if (a.condition === 'rsi_oversold_bounce') label = 'RSI Oversold Bounce (crosses 30)';
+              else if (a.condition === 'double_bottom') label = 'Double Bottom (W-pattern)';
+              else if (a.condition === 'breakout') label = 'Volume Breakout (20-day high + surge)';
               else label = a.condition;
+              const isDone = a.triggered && !a.recurring;
+              const lastFired = a.recurring && a.last_sent_at
+                ? new Date(a.last_sent_at).toLocaleDateString()
+                : a.triggered_at ? new Date(a.triggered_at).toLocaleDateString() : null;
               return (
-                <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', background: a.triggered ? 'rgba(30,41,59,0.4)' : 'rgba(30,41,59,0.7)', border: `1px solid ${a.triggered ? 'rgba(148,163,184,0.1)' : 'rgba(99,102,241,0.2)'}`, borderRadius: '8px', padding: '10px 14px' }}>
+                <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', background: isDone ? 'rgba(30,41,59,0.4)' : 'rgba(30,41,59,0.7)', border: `1px solid ${isDone ? 'rgba(148,163,184,0.1)' : a.recurring ? 'rgba(251,191,36,0.25)' : 'rgba(99,102,241,0.2)'}`, borderRadius: '8px', padding: '10px 14px' }}>
                   <span style={{ fontSize: '18px' }}>{icon}</span>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: '13px', color: a.triggered ? '#64748b' : '#e2e8f0' }}>
+                    <div style={{ fontSize: '13px', color: isDone ? '#64748b' : '#e2e8f0' }}>
                       {label}
                       {a.note && <span style={{ color: '#64748b', marginLeft: '8px' }}>— {a.note}</span>}
                     </div>
-                    <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px' }}>→ {a.email}</div>
+                    <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px' }}>
+                      → {a.email}
+                      {lastFired && <span style={{ marginLeft: '8px' }}>· last fired {lastFired}</span>}
+                    </div>
                   </div>
-                  {a.triggered && (
+                  {a.recurring && (
+                    <span style={{ fontSize: '10px', background: 'rgba(251,191,36,0.08)', color: '#fbbf24', padding: '2px 7px', borderRadius: '4px', border: '1px solid rgba(251,191,36,0.2)', whiteSpace: 'nowrap' }}>↻ recurring</span>
+                  )}
+                  {isDone && (
                     <span style={{ fontSize: '11px', background: 'rgba(74,222,128,0.1)', color: '#4ade80', padding: '2px 8px', borderRadius: '4px' }}>Triggered</span>
                   )}
                   <button
@@ -2545,6 +3681,37 @@ Return ONLY valid JSON — no markdown, no prose:
                       <div style={{ fontSize: '15px', fontWeight: 700, color: '#e2e8f0' }}>{item.value}</div>
                     </div>
                   ))}
+                  {/* Dividend sustainability grade */}
+                  {dividendData.payout_ratio != null && (() => {
+                    const pr = dividendData.payout_ratio;
+                    const eg = data.fundamentals?.earnings_growth ?? null;
+                    const dy = dividendData.dividend_yield ?? 0;
+                    let score = 100;
+                    if (pr > 0.9) score -= 50;
+                    else if (pr > 0.75) score -= 30;
+                    else if (pr > 0.6) score -= 15;
+                    else if (pr > 0.4) score -= 5;
+                    if (eg != null) {
+                      if (eg < -0.1) score -= 20;
+                      else if (eg < 0) score -= 10;
+                      else if (eg > 0.1) score += 10;
+                    }
+                    if (dy > 0.08) score -= 10;
+                    const [g, c, d] = score >= 90 ? ['A', '#4ade80', 'Very safe'] :
+                                      score >= 75 ? ['B', '#86efac', 'Sustainable'] :
+                                      score >= 55 ? ['C', '#fbbf24', 'Adequate'] :
+                                      score >= 35 ? ['D', '#fb923c', 'Stretched'] :
+                                                    ['F', '#f87171', 'At risk'];
+                    return (
+                      <div>
+                        <div style={{ fontSize: '10px', color: '#475569', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '3px' }}>Div Safety</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ fontSize: '18px', fontWeight: 800, color: c }}>{g}</span>
+                          <span style={{ fontSize: '11px', color: '#64748b' }}>{d}</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
                 {dividendData.dividends.length === 0 ? (
                   <div style={{ fontSize: '12px', color: '#475569' }}>No dividend history found.</div>
@@ -2646,9 +3813,14 @@ Return ONLY valid JSON — no markdown, no prose:
       {/* Options Flow */}
       {optionsFlow && optionsFlow.available && (
         <div style={{ marginBottom: 24 }}>
-          <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', marginBottom: '12px' }}>
-            Options Flow
-          </h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+            <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Options Flow</h2>
+            {(optionsFlow.whale_count ?? 0) > 0 && (
+              <span style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b', background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 5, padding: '2px 8px' }}>
+                🐋 {optionsFlow.whale_count} whale {(optionsFlow.whale_count ?? 0) === 1 ? 'trade' : 'trades'}
+              </span>
+            )}
+          </div>
           <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
             {/* C/P ratio bar */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
@@ -2688,14 +3860,14 @@ Return ONLY valid JSON — no markdown, no prose:
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                     <thead>
                       <tr style={{ borderBottom: '1px solid #1e293b' }}>
-                        {['Side', 'Strike', 'Expiry', 'Volume', 'OI', 'Vol/OI', 'IV', 'ITM'].map(h => (
+                        {['Side', 'Strike', 'Expiry', 'Volume', 'OI', 'Vol/OI', 'IV', 'ITM', 'Premium'].map(h => (
                           <th key={h} style={{ padding: '4px 8px', textAlign: 'left', color: '#475569', fontWeight: 500 }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
                       {optionsFlow.unusual.map((c, i) => (
-                        <tr key={i} style={{ borderBottom: '1px solid #0f172a' }}>
+                        <tr key={i} style={{ borderBottom: '1px solid #0f172a', background: c.is_whale ? 'rgba(245,158,11,0.05)' : 'transparent', outline: c.is_whale ? '1px solid rgba(245,158,11,0.2)' : 'none' }}>
                           <td style={{ padding: '5px 8px' }}>
                             <span style={{ fontWeight: 700, color: c.side === 'call' ? '#4ade80' : '#f87171' }}>
                               {c.side.toUpperCase()}
@@ -2708,6 +3880,10 @@ Return ONLY valid JSON — no markdown, no prose:
                           <td style={{ padding: '5px 8px', color: c.vol_oi > 1 ? '#f59e0b' : '#94a3b8', fontWeight: c.vol_oi > 1 ? 700 : 400 }}>{c.vol_oi.toFixed(2)}×</td>
                           <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{c.iv.toFixed(0)}%</td>
                           <td style={{ padding: '5px 8px', color: c.itm ? '#4ade80' : '#475569' }}>{c.itm ? 'ITM' : 'OTM'}</td>
+                          <td style={{ padding: '5px 8px', color: c.is_whale ? '#f59e0b' : '#475569', fontWeight: c.is_whale ? 700 : 400 }}>
+                            {c.premium >= 1_000_000 ? `$${(c.premium / 1_000_000).toFixed(1)}M` : c.premium >= 1_000 ? `$${Math.round(c.premium / 1_000)}K` : c.premium > 0 ? `$${c.premium}` : '—'}
+                            {c.is_whale && ' 🐋'}
+                          </td>
                         </tr>
                       ))}
                     </tbody>

@@ -39,7 +39,7 @@
  * v3 signal engine enhancements reflected here:
  *   • weekly_alignment / weekly_ta_score  — ±12–15% confidence adjustment
  *   • active_patterns / pattern_adjustment — chart pattern fusion score
- *   • price_above_vwap / vwap_20          — institutional positioning context
+ *   • price_above_vwap / vwma_20          — volume-weighted trend context
  *   • days_to_earnings / earnings_warning — proximity penalty (critical/caution/note)
  */
 import type { Signal } from '@/lib/api';
@@ -56,6 +56,8 @@ type Reasons = {
   sma50_above_sma200?: boolean;
   golden_cross_event?: boolean;
   death_cross_event?: boolean;
+  gc_spread_expanding?: boolean;
+  gc_spread_pct?: number | null;
   rsi?: number | null;
   stoch_rsi_k?: number | null;
   stoch_rsi_oversold?: boolean;
@@ -64,18 +66,27 @@ type Reasons = {
   rsi_divergence?: string;
   macd_hist?: number | null;
   macd_rising?: boolean;
+  macd_hist_expanding?: boolean;
+  macd_momentum_fading?: boolean;
+  macd_hist_slope?: number | null;
   macd_zero_cross_up?: boolean;
   bb_pct_b?: number | null;
   adx?: number | null;
   adx_bullish?: boolean;
-  obv_bullish?: boolean;
+  obv_trend_bullish?: boolean;
   volume_z?: number | null;
   ml_probability?: number | null;
   market_regime?: string;
   ta_score?: number | null;
+  // pillar scores (SA-19)
+  pillar_trend?: number | null;
+  pillar_momentum?: number | null;
+  pillar_volume?: number | null;
+  pillar_structure?: number | null;
+  independent_pillars_active?: number | null;
   // v3 additions
   price_above_vwap?: boolean | null;
-  vwap_20?: number | null;
+  vwma_20?: number | null;
   weekly_ta_score?: number | null;
   weekly_alignment?: boolean | null;
   weekly_rsi?: number | null;
@@ -101,6 +112,34 @@ type Reasons = {
   stability_days?: number | null;
   // SA-12: regime threshold tier applied
   threshold_tier?: string | null;
+  // SA-27: OOS accuracy suppression flag
+  ml_oos_suppressed?: boolean;
+  low_oos_accuracy?: boolean;
+  // H3: additional context factors
+  breadth_compression?: number | null;
+  pullback_recovery?: string | null;
+  news_sentiment_flag?: string | null;
+  rs_flag?: string | null;
+  sector_headwind?: boolean | null;
+  short_interest_flag?: string | null;
+  analyst_momentum?: string | null;
+  analyst_momentum_adj?: number | null;
+  // T223: outcome-based calibrated win rate from signal_outcomes
+  calibrated_win_rate?: number | null;
+  // T232-OC5: sample size backing calibrated_win_rate (now keyed by horizon+direction[+market])
+  calibrated_win_rate_count?: number | null;
+  // T220: institutional intelligence suite
+  insider_cluster?: boolean;
+  insider_buy_usd?: number | null;
+  congress_buy?: boolean;
+  sector_momentum?: number | null;
+  squeeze_score?: number | null;
+  piotroski_score?: number | null;
+  macro_blackout?: string | null;
+  eps_revision_direction?: number | null;
+  // T220-E: 13F institutional ownership
+  inst_change_pct?: number | null;
+  inst_ownership_increased?: boolean;
 };
 
 type Factor = { label: string; bullish: boolean; detail: string; warning?: boolean };
@@ -109,7 +148,7 @@ function buildReasons(r: Reasons): Factor[] {
   const factors: Factor[] = [];
 
   // Earnings proximity — shown first when present
-  if (r.earnings_warning === 'critical') {
+  if (r.earnings_warning === 'critical' || r.earnings_warning === 'short_imminent_event') {
     factors.push({
       label: 'Earnings in ≤2 Days',
       bullish: false,
@@ -122,6 +161,13 @@ function buildReasons(r: Reasons): Factor[] {
       bullish: false,
       warning: true,
       detail: 'Approaching earnings — signal strength reduced, position sizing caution advised',
+    });
+  } else if (r.earnings_warning === 'watch') {
+    factors.push({
+      label: `Earnings in ${r.days_to_earnings}d`,
+      bullish: false,
+      warning: true,
+      detail: 'Earnings approaching — elevated uncertainty, reduce position size and tighten stop',
     });
   } else if (r.earnings_warning === 'note') {
     factors.push({
@@ -206,11 +252,11 @@ function buildReasons(r: Reasons): Factor[] {
   // VWAP
   if (r.price_above_vwap != null) {
     factors.push({
-      label: 'VWAP (20d)',
+      label: 'VWMA (20d)',
       bullish: r.price_above_vwap,
       detail: r.price_above_vwap
-        ? `Price above 20-day VWAP${r.vwap_20 != null ? ` ($${r.vwap_20.toFixed(2)})` : ''} — institutional support zone`
-        : `Price below 20-day VWAP${r.vwap_20 != null ? ` ($${r.vwap_20.toFixed(2)})` : ''} — below average transaction price`,
+        ? `Price above 20-day VWMA${r.vwma_20 != null ? ` ($${r.vwma_20.toFixed(2)})` : ''} — above volume-weighted average`
+        : `Price below 20-day VWMA${r.vwma_20 != null ? ` ($${r.vwma_20.toFixed(2)})` : ''} — below volume-weighted average`,
     });
   }
 
@@ -245,14 +291,19 @@ function buildReasons(r: Reasons): Factor[] {
   }
 
   if (r.sma50_above_sma200 != null) {
+    const spreadNote = r.sma50_above_sma200
+      ? (r.gc_spread_expanding === false ? ' • spread narrowing ⚠' : r.gc_spread_expanding ? ' • spread expanding' : '')
+      : '';
+    const spreadPct = r.gc_spread_pct != null ? ` (${(r.gc_spread_pct * 100).toFixed(1)}%)` : '';
     factors.push({
-      label: r.golden_cross_event ? '✦ Golden Cross' : 'SMA50 vs SMA200',
-      bullish: r.sma50_above_sma200,
+      label: r.golden_cross_event ? '✦ Golden Cross' : `SMA50 vs SMA200${spreadNote}`,
+      bullish: r.sma50_above_sma200 && r.gc_spread_expanding !== false,
+      warning: r.sma50_above_sma200 && r.gc_spread_expanding === false,
       detail: r.golden_cross_event
-        ? 'SMA50 just crossed above SMA200 — long-term bull signal'
+        ? `SMA50 just crossed above SMA200${spreadNote}${spreadPct} — long-term bull signal`
         : r.sma50_above_sma200
-          ? 'SMA50 above SMA200 — bull regime'
-          : 'SMA50 below SMA200 — bear regime',
+          ? `SMA50 above SMA200${spreadPct}${r.gc_spread_expanding === false ? ' — gap shrinking, momentum fading' : r.gc_spread_expanding ? ' — gap widening, trend strengthening' : ' — bull regime'}`
+          : `SMA50 below SMA200${spreadPct} — bear regime`,
     });
   }
 
@@ -285,16 +336,21 @@ function buildReasons(r: Reasons): Factor[] {
     const oversold   = r.stoch_rsi_oversold;
     const overbought = r.stoch_rsi_overbought;
     const crossUp    = r.stoch_rsi_cross_up;
+    // Bullish: oversold bounce (crossUp from <20) or healthy neutral zone (20–80, not overbought)
+    // Warning: overbought (>80) — elevated pullback risk
+    const isBullish = (crossUp ?? false) || oversold || (!overbought && !oversold);
+    const isWarning = overbought === true;
     factors.push({
       label: `Stoch RSI ${k.toFixed(0)}`,
-      bullish: oversold || (crossUp ?? false),
+      bullish: isBullish && !isWarning,
+      warning: isWarning,
       detail: crossUp
         ? `%K ${k.toFixed(0)} — just crossed up from oversold (strong entry signal)`
         : oversold
-          ? `%K ${k.toFixed(0)} — oversold zone (<20), RSI at a low extreme`
+          ? `%K ${k.toFixed(0)} — oversold zone (<20), potential reversal`
           : overbought
-            ? `%K ${k.toFixed(0)} — overbought zone (>80), RSI at a high extreme`
-            : `%K ${k.toFixed(0)} — neutral zone`,
+            ? `%K ${k.toFixed(0)} — overbought zone (>80), elevated pullback risk`
+            : `%K ${k.toFixed(0)} — neutral zone (20–80), healthy momentum`,
     });
   }
 
@@ -310,18 +366,24 @@ function buildReasons(r: Reasons): Factor[] {
     });
   }
 
-  // MACD
+  // MACD — use 3-bar slope (macd_hist_expanding) if available, else fall back to macd_rising
   if (r.macd_hist != null) {
     const bullish = r.macd_hist > 0;
     const zeroCross = r.macd_zero_cross_up;
+    const expanding = r.macd_hist_expanding !== undefined ? r.macd_hist_expanding : r.macd_rising;
+    const fading = r.macd_momentum_fading === true;
+    const slopeStr = r.macd_hist_slope != null ? ` slope ${r.macd_hist_slope > 0 ? '+' : ''}${r.macd_hist_slope.toFixed(4)}` : '';
     factors.push({
-      label: zeroCross ? '✦ MACD Zero Cross' : 'MACD',
-      bullish: bullish || (zeroCross ?? false),
+      label: zeroCross ? '✦ MACD Zero Cross' : fading ? 'MACD (momentum fading ⚠)' : 'MACD',
+      bullish: (bullish || (zeroCross ?? false)) && !fading,
+      warning: fading,
       detail: zeroCross
         ? `MACD just crossed above zero — trend direction confirmed bullish`
-        : bullish
-          ? `Histogram +${r.macd_hist.toFixed(3)}${r.macd_rising ? ' ↑ rising' : ''} — bullish momentum`
-          : `Histogram ${r.macd_hist.toFixed(3)}${r.macd_rising ? ' ↑ recovering' : ' ↓ falling'} — bearish momentum`,
+        : fading
+          ? `Histogram +${r.macd_hist.toFixed(3)}${slopeStr} — positive but slope declining, momentum exhausting`
+          : bullish
+            ? `Histogram +${r.macd_hist.toFixed(3)}${expanding ? ' ↑ expanding' : ''}${slopeStr} — bullish momentum`
+            : `Histogram ${r.macd_hist.toFixed(3)}${expanding ? ' ↑ recovering' : ' ↓ falling'}${slopeStr} — bearish momentum`,
     });
   }
 
@@ -340,11 +402,11 @@ function buildReasons(r: Reasons): Factor[] {
   }
 
   // OBV
-  if (r.obv_bullish != null) {
+  if (r.obv_trend_bullish != null) {
     factors.push({
       label: 'OBV (Volume)',
-      bullish: r.obv_bullish,
-      detail: r.obv_bullish
+      bullish: r.obv_trend_bullish,
+      detail: r.obv_trend_bullish
         ? 'On-Balance Volume trending up — volume confirming price direction'
         : 'OBV trending down — volume not confirming the price move',
     });
@@ -358,6 +420,178 @@ function buildReasons(r: Reasons): Factor[] {
       label: 'ML Model',
       bullish,
       detail: `XGBoost predicts ${pct}% probability of upward move`,
+    });
+  }
+
+  // ── Additional context factors (H3) ───────────────────────────────────────
+
+  // Market breadth compression
+  if (r.breadth_compression != null && r.breadth_compression < 1.0) {
+    const pct = Math.round((1 - r.breadth_compression) * 100);
+    factors.push({
+      label: `Breadth Compressed −${pct}%`,
+      bullish: false,
+      warning: r.breadth_compression <= 0.92,
+      detail: `Market breadth weak — signal compressed by ${pct}% (small/mid caps lagging)`,
+    });
+  }
+
+  // Sector headwind
+  if (r.sector_headwind === true) {
+    factors.push({
+      label: 'Sector Headwind',
+      bullish: false,
+      detail: 'Sector is underperforming — signal confidence reduced',
+    });
+  }
+
+  // Relative strength vs sector
+  if (r.rs_flag && r.rs_flag !== 'in_line_or_leading') {
+    factors.push({
+      label: 'RS: Lagging Sector',
+      bullish: false,
+      detail: r.rs_flag === 'lagging_sector_floor_applied'
+        ? 'Lagging sector but positive absolute return — floor applied, partial signal'
+        : 'Stock underperforming its sector — signal reduced',
+    });
+  } else if (r.rs_flag === 'in_line_or_leading') {
+    factors.push({ label: 'RS: Leading Sector', bullish: true, detail: 'Stock at or above sector performance — no drag on signal' });
+  }
+
+  // Analyst momentum
+  if (r.analyst_momentum && r.analyst_momentum !== 'neutral') {
+    const isBull = r.analyst_momentum === 'strong_upgrade' || r.analyst_momentum === 'mild_upgrade';
+    const adj = r.analyst_momentum_adj != null ? ` (${r.analyst_momentum_adj > 0 ? '+' : ''}${(r.analyst_momentum_adj * 100).toFixed(0)}%)` : '';
+    factors.push({
+      label: isBull ? 'Analyst Upgrades' : 'Analyst Downgrades',
+      bullish: isBull,
+      detail: `${r.analyst_momentum.replace(/_/g, ' ')} — analyst sentiment ${isBull ? 'improving' : 'worsening'}${adj}`,
+    });
+  }
+
+  // Short interest
+  if (r.short_interest_flag === 'very_high_squeeze_potential') {
+    factors.push({ label: 'High Short Interest', bullish: true, detail: 'Very high short interest — squeeze potential if price rises' });
+  } else if (r.short_interest_flag === 'elevated_short_interest') {
+    factors.push({ label: 'Elevated Short Interest', bullish: false, warning: true, detail: 'Above-average short interest — elevated overhead pressure' });
+  }
+
+  // News sentiment
+  if (r.news_sentiment_flag === 'strongly_negative') {
+    factors.push({ label: 'News: Strongly Negative', bullish: false, warning: true, detail: 'Recent news sentiment strongly negative — signal confidence reduced' });
+  } else if (r.news_sentiment_flag === 'negative') {
+    factors.push({ label: 'News: Negative', bullish: false, detail: 'Recent news sentiment negative — mild signal headwind' });
+  }
+
+  // Pullback recovery
+  if (r.pullback_recovery === 'confirmed' || r.pullback_recovery === 'confirmed_vol') {
+    factors.push({
+      label: r.pullback_recovery === 'confirmed_vol' ? '✦ Pullback Recovery' : 'Pullback Recovery',
+      bullish: true,
+      detail: r.pullback_recovery === 'confirmed_vol'
+        ? 'Pullback recovered with volume confirmation — high-quality entry setup'
+        : 'Pullback recovered — signal quality boost applied',
+    });
+  } else if (r.pullback_recovery === 'no_recovery_yet') {
+    factors.push({ label: 'Pullback: No Recovery', bullish: false, detail: 'In pullback with no recovery confirmation yet — wait for bounce' });
+  }
+
+  // ── T220: Institutional intelligence suite ────────────────────────────────
+
+  // Macro blackout (T220-D)
+  if (r.macro_blackout) {
+    factors.push({
+      label: 'Macro Blackout',
+      bullish: false,
+      warning: true,
+      detail: `${r.macro_blackout} event within 2h — signal suppressed, avoid new entries`,
+    });
+  }
+
+  // Insider cluster buy (T220-A)
+  if (r.insider_cluster === true) {
+    const usd = r.insider_buy_usd != null && r.insider_buy_usd >= 1e6
+      ? ` ($${(r.insider_buy_usd / 1e6).toFixed(1)}M total)`
+      : r.insider_buy_usd != null ? ` ($${(r.insider_buy_usd / 1e3).toFixed(0)}K total)` : '';
+    factors.push({
+      label: '✦ Insider Cluster Buy',
+      bullish: true,
+      detail: `≥2 insiders bought in last 30d${usd} — institutional conviction signal`,
+    });
+  }
+
+  // Congress buy (T220-H)
+  if (r.congress_buy === true) {
+    factors.push({
+      label: 'Congress Buy',
+      bullish: true,
+      detail: 'Congressional purchase disclosed in last 60d — public official interest signal',
+    });
+  }
+
+  // Sector momentum (T220-G)
+  if (r.sector_momentum === 1) {
+    factors.push({
+      label: 'Sector ↑ Rising',
+      bullish: true,
+      detail: 'Sector K-Score momentum rising — institutional rotation into this sector',
+    });
+  } else if (r.sector_momentum === -1) {
+    factors.push({
+      label: 'Sector ↓ Falling',
+      bullish: false,
+      detail: 'Sector K-Score momentum declining — institutional rotation out of this sector',
+    });
+  }
+
+  // Squeeze score (T220-C)
+  if (r.squeeze_score != null && r.squeeze_score >= 40) {
+    factors.push({
+      label: `Squeeze ${r.squeeze_score.toFixed(0)}%`,
+      bullish: true,
+      detail: r.squeeze_score >= 70
+        ? `High squeeze score ${r.squeeze_score.toFixed(0)}% — elevated short interest + upward price action creates squeeze risk for shorts`
+        : `Elevated squeeze score ${r.squeeze_score.toFixed(0)}% — notable short interest with improving price momentum`,
+    });
+  }
+
+  // Piotroski F-Score (T220-B)
+  if (r.piotroski_score != null) {
+    if (r.piotroski_score >= 7) {
+      factors.push({
+        label: `F9: ${r.piotroski_score}/9 Quality`,
+        bullish: true,
+        detail: `Piotroski F-Score ${r.piotroski_score}/9 — high-quality balance sheet across profitability, leverage, and efficiency`,
+      });
+    } else if (r.piotroski_score <= 2) {
+      factors.push({
+        label: `F: ${r.piotroski_score}/9 Weak`,
+        bullish: false,
+        detail: `Piotroski F-Score ${r.piotroski_score}/9 — deteriorating fundamentals across multiple dimensions`,
+      });
+    }
+  }
+
+  // EPS revision direction (T220-F)
+  if (r.eps_revision_direction === 1) {
+    factors.push({
+      label: 'EPS Estimates ↑',
+      bullish: true,
+      detail: 'Analyst EPS estimates trending upward — positive revision momentum (PEAD effect)',
+    });
+  } else if (r.eps_revision_direction === -1) {
+    factors.push({
+      label: 'EPS Estimates ↓',
+      bullish: false,
+      detail: 'Analyst EPS estimates trending downward — negative revision momentum headwind',
+    });
+  }
+
+  if (r.inst_ownership_increased === true && r.inst_change_pct != null) {
+    factors.push({
+      label: `Inst Holdings +${r.inst_change_pct.toFixed(1)}% QoQ`,
+      bullish: true,
+      detail: `Institutional 13F filings show ${r.inst_change_pct.toFixed(1)}% increase in shares held quarter-over-quarter — smart money accumulating`,
     });
   }
 
@@ -386,9 +620,69 @@ export default function SignalCard({ signal }: { signal: Signal }) {
               TIGHT
             </span>
           )}
+          {reasons?.low_oos_accuracy && (
+            <span title="ML model cross-validation accuracy < 52% — predictions are near coin-flip; signal relies more heavily on TA" style={{ fontSize: '9px', fontWeight: 700, color: '#eab308', background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.3)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              LOW ML CONF
+            </span>
+          )}
           {reasons?.stability_days != null && reasons.stability_days > 0 && (
             <span title={`Signal unchanged for ${reasons.stability_days} consecutive day${reasons.stability_days === 1 ? '' : 's'}`} style={{ fontSize: '9px', fontWeight: 700, color: '#94a3b8', background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.2)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
               {reasons.stability_days}d stable
+            </span>
+          )}
+          {/* T220: Institutional intelligence chips */}
+          {reasons?.macro_blackout && (
+            <span title={`Macro event within 2h: ${reasons.macro_blackout}`} style={{ fontSize: '9px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              MACRO BLACKOUT
+            </span>
+          )}
+          {reasons?.insider_cluster === true && (
+            <span title="≥2 insiders bought in last 30 days (Form 4 EDGAR)" style={{ fontSize: '9px', fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              Insider Buy
+            </span>
+          )}
+          {reasons?.congress_buy === true && (
+            <span title="Congressional purchase disclosed in last 60 days" style={{ fontSize: '9px', fontWeight: 700, color: '#60a5fa', background: 'rgba(96,165,250,0.1)', border: '1px solid rgba(96,165,250,0.3)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              Congress Buy
+            </span>
+          )}
+          {reasons?.sector_momentum === 1 && (
+            <span title="Sector K-Score momentum rising — institutional rotation into sector" style={{ fontSize: '9px', fontWeight: 700, color: '#4ade80', background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.25)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              Sector ↑
+            </span>
+          )}
+          {reasons?.sector_momentum === -1 && (
+            <span title="Sector K-Score momentum declining — institutional rotation out of sector" style={{ fontSize: '9px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              Sector ↓
+            </span>
+          )}
+          {reasons?.squeeze_score != null && reasons.squeeze_score >= 40 && (
+            <span
+              title={`Squeeze score ${reasons.squeeze_score.toFixed(0)}% — short interest + price momentum composite`}
+              style={{
+                fontSize: '9px', fontWeight: 700,
+                color: reasons.squeeze_score >= 70 ? '#fb923c' : '#fbbf24',
+                background: reasons.squeeze_score >= 70 ? 'rgba(251,146,60,0.1)' : 'rgba(251,191,36,0.1)',
+                border: `1px solid ${reasons.squeeze_score >= 70 ? 'rgba(251,146,60,0.3)' : 'rgba(251,191,36,0.3)'}`,
+                padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap',
+              }}
+            >
+              Squeeze {reasons.squeeze_score.toFixed(0)}%
+            </span>
+          )}
+          {reasons?.piotroski_score != null && reasons.piotroski_score >= 7 && (
+            <span title={`Piotroski F-Score ${reasons.piotroski_score}/9 — high-quality fundamentals`} style={{ fontSize: '9px', fontWeight: 700, color: '#4ade80', background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.25)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              F9:{reasons.piotroski_score}
+            </span>
+          )}
+          {reasons?.piotroski_score != null && reasons.piotroski_score <= 2 && (
+            <span title={`Piotroski F-Score ${reasons.piotroski_score}/9 — weak fundamentals`} style={{ fontSize: '9px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              F:{reasons.piotroski_score}
+            </span>
+          )}
+          {reasons?.inst_ownership_increased === true && reasons?.inst_change_pct != null && (
+            <span title={`Institutional 13F: +${(reasons.inst_change_pct as number).toFixed(1)}% QoQ — institutional accumulation`} style={{ fontSize: '9px', fontWeight: 700, color: '#34d399', background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.3)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              Inst ↑{(reasons.inst_change_pct as number).toFixed(0)}%
             </span>
           )}
           <span className={`rounded px-2.5 py-0.5 text-sm font-bold text-white ${SIGNAL_COLOR[signal.signal]}`}>
@@ -400,7 +694,7 @@ export default function SignalCard({ signal }: { signal: Signal }) {
       {/* Scores */}
       <div className="grid grid-cols-3 gap-2 mb-3">
         <div className="text-center">
-          <div className="text-lg font-bold text-slate-100">{(signal.confidence ?? 0).toFixed(0)}</div>
+          <div className="text-lg font-bold text-slate-100" title="TA composite score (0–100): higher = stronger conviction">{(signal.confidence ?? 0).toFixed(0)}%</div>
           <div className="text-xs text-slate-500">Confidence</div>
         </div>
         <div className="text-center">
@@ -421,6 +715,32 @@ export default function SignalCard({ signal }: { signal: Signal }) {
         />
       </div>
 
+      {/* T223/T232-OC5: Historical win rate from outcome calibration, keyed by horizon+direction+market */}
+      {reasons?.calibrated_win_rate != null && (
+        <div className="flex items-center justify-between mb-3 px-1">
+          <span
+            className="text-xs text-slate-500"
+            title="Win rate for this horizon, direction, and confidence level — from last 180 days of signal outcomes"
+          >
+            Historical win rate
+            {reasons.calibrated_win_rate_count != null && (
+              <span className="text-slate-600"> (n={reasons.calibrated_win_rate_count})</span>
+            )}
+          </span>
+          <span
+            className={`text-xs font-semibold ${
+              reasons.calibrated_win_rate >= 0.55
+                ? 'text-green-400'
+                : reasons.calibrated_win_rate >= 0.48
+                ? 'text-amber-400'
+                : 'text-slate-400'
+            }`}
+          >
+            {(reasons.calibrated_win_rate * 100).toFixed(0)}%
+          </span>
+        </div>
+      )}
+
       {/* Reasoning factors */}
       {factors.length > 0 && (
         <div className="space-y-1.5">
@@ -439,6 +759,35 @@ export default function SignalCard({ signal }: { signal: Signal }) {
               </div>
             </div>
           ))}
+          {/* Pillar score bars — show when at least 2 pillar scores are present */}
+          {reasons && (reasons.pillar_trend != null || reasons.pillar_momentum != null) && (() => {
+            const pillars = [
+              { label: 'Trend',     val: reasons.pillar_trend },
+              { label: 'Momentum',  val: reasons.pillar_momentum },
+              { label: 'Volume',    val: reasons.pillar_volume },
+              { label: 'Structure', val: reasons.pillar_structure },
+            ].filter(p => p.val != null) as { label: string; val: number }[];
+            return (
+              <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #1e293b' }}>
+                <div style={{ fontSize: 9, color: '#334155', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 5 }}>Pillar Scores</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  {pillars.map(p => {
+                    const pct = Math.round(p.val * 100);
+                    const col = p.val >= 0.6 ? '#4ade80' : p.val >= 0.4 ? '#fbbf24' : '#f87171';
+                    return (
+                      <div key={p.label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ fontSize: 9, color: '#475569', width: 54, flexShrink: 0 }}>{p.label}</span>
+                        <div style={{ flex: 1, height: 4, background: '#1e293b', borderRadius: 2, overflow: 'hidden' }}>
+                          <div style={{ width: `${pct}%`, height: '100%', background: col, borderRadius: 2 }} />
+                        </div>
+                        <span style={{ fontSize: 9, color: col, width: 24, textAlign: 'right', flexShrink: 0 }}>{pct}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
           {taScore != null && (
             <div className="mt-2 pt-2 border-t border-slate-800 text-xs text-slate-500">
               TA composite score: <span className="text-slate-300 font-medium">{(taScore * 100).toFixed(0)}/100</span>

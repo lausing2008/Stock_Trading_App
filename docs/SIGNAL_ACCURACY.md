@@ -32,7 +32,7 @@ CREATE TABLE signal_outcomes (
     signal_id        BIGINT NOT NULL UNIQUE REFERENCES signals(id) ON DELETE CASCADE,
     stock_id         INTEGER NOT NULL REFERENCES stocks(id) ON DELETE CASCADE,
     symbol           VARCHAR(32) NOT NULL,
-    horizon          signalhorizon NOT NULL,      -- SHORT | SWING | LONG
+    horizon          signalhorizon NOT NULL,      -- SHORT | SWING | LONG | GROWTH
     signal_direction VARCHAR(8) NOT NULL,         -- BUY | SELL
     signal_date      DATE NOT NULL,
     confidence       FLOAT NOT NULL,              -- 0–100
@@ -59,6 +59,7 @@ CREATE TABLE signal_outcomes (
 | SHORT | 7 | ~5 |
 | SWING | 14 | ~10 |
 | LONG | 28 | ~20 |
+| GROWTH | 14 | ~10 |
 
 - **Entry price**: first D1 close on or after the signal timestamp
 - **Exit price**: first D1 close on or after `entry_date + hold_window_days`
@@ -69,10 +70,10 @@ CREATE TABLE signal_outcomes (
 | When | What appears |
 |------|--------------|
 | Day 7 after a BUY | First SHORT outcomes |
-| Day 14 after a BUY | First SWING outcomes |
+| Day 14 after a BUY | First SWING and GROWTH outcomes |
 | Day 28 after a BUY | First LONG outcomes |
 | After ~4 weeks | Enough SHORT data to compute confidence-band win rates |
-| After ~8 weeks | Enough SWING data for meaningful calibration |
+| After ~8 weeks | Enough SWING / GROWTH data for meaningful calibration |
 | After ~3 months | Enough data to run Optuna on signal parameters |
 
 ---

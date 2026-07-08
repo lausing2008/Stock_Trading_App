@@ -26,7 +26,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type RankingRow, type LatestPrice, type SignalSummary, type WatchlistItem, type Overview, type TradePlan, type EarningsItem } from '@/lib/api';
+import { api, type RankingRow, type LatestPrice, type SignalSummary, type WatchlistItem, type WatchlistMeta, type Overview, type TradePlan, type EarningsItem, type ResearchSummary } from '@/lib/api';
 import { confluenceScore, confluenceGrade } from '@/lib/confluence';
 import { askAI, isAiConfigured } from '@/lib/ai';
 import { getSignalStyle } from '@/lib/settings';
@@ -447,16 +447,50 @@ export default function Opportunities() {
   const [outlookStatus, setOutlookStatus] = useState('');
   const [outlookCollapsed, setOutlookCollapsed] = useState(false);
 
+  // Radar watchlist add state
+  const [radarAdding, setRadarAdding] = useState<string | null>(null);
+  const [radarDone, setRadarDone] = useState<Set<string>>(new Set());
+
   const { data: rankData, isLoading } = useSWR('rankings-all', () => api.rankings());
   const { data: pricesData } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalsData } = useSWR('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()));
-  const { data: watchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
+  const { data: convictionData } = useSWR('conviction-all', () => api.convictionAll(), { refreshInterval: 300_000 });
+  const { data: watchlist, mutate: mutateWatchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
+  const { data: watchlists, mutate: mutateWatchlists } = useSWR<WatchlistMeta[]>('watchlists', () => api.listWatchlists());
   const { data: boardData } = useSWR<TradePlan[]>('board', () => api.listBoard());
-  const { data: earningsData } = useSWR<EarningsItem[]>('earnings-14d', () => api.earningsCalendar(14));
+  const { data: earningsData, isLoading: earningsLoading, error: earningsError } = useSWR<EarningsItem[]>('earnings-14d', () => api.earningsCalendar(14));
 
   const watchedSet = useMemo(() => new Set(watchlist?.map(w => w.symbol) ?? []), [watchlist]);
-  const boardSet = useMemo(() => new Set(boardData?.filter(p => p.stage !== 'closed').map(p => p.symbol) ?? []), [boardData]);
+  const activeSet = useMemo(() => new Set(boardData?.filter(p => p.stage === 'active').map(p => p.symbol) ?? []), [boardData]);
+  const boardSet = useMemo(() => new Set(boardData?.filter(p => p.stage === 'watch' || p.stage === 'planning').map(p => p.symbol) ?? []), [boardData]);
   const earningsSet = useMemo(() => new Set(earningsData?.map(e => e.symbol) ?? []), [earningsData]);
+
+  // Radar watchlist — fetch its contents separately so we know what's already in it
+  const radarList = useMemo(() => watchlists?.find(w => w.name === 'Radar'), [watchlists]);
+  const { data: radarItems, mutate: mutateRadar } = useSWR<WatchlistItem[]>(
+    radarList ? `watchlist-radar-${radarList.id}` : null,
+    () => radarList ? api.listWatchlist(radarList.id) : Promise.resolve([]),
+  );
+  const radarSymbols = useMemo(() => new Set((radarItems ?? []).map(w => w.symbol)), [radarItems]);
+
+  // Research summaries for signal cards (INT-10) — state only; effect wired after opportunities is declared below
+  const [researchMap, setResearchMap] = useState<Record<string, ResearchSummary>>({});
+
+  async function addToRadar(symbol: string) {
+    setRadarAdding(symbol);
+    try {
+      let listId = radarList?.id;
+      if (!listId) {
+        const created = await api.createWatchlist('Radar', null);
+        listId = created.id;
+        await mutateWatchlists();
+      }
+      await api.addToWatchlist(symbol, listId);
+      await mutateRadar();
+      setRadarDone(prev => new Set(prev).add(symbol));
+    } catch { /* non-fatal */ }
+    setRadarAdding(null);
+  }
 
   const priceMap = useMemo(() => {
     const m: Record<string, LatestPrice> = {};
@@ -496,6 +530,13 @@ export default function Opportunities() {
       .sort((a, b) => b.stratScore - a.stratScore)
       .slice(0, 20);
   }, [rankData, priceMap, signalMap, strategy, market, watchedSet, earningsSoon, earningsSet]);
+
+  // Research batch fetch — must come after opportunities is declared
+  useEffect(() => {
+    if (!opportunities || opportunities.length === 0) return;
+    const syms = opportunities.slice(0, 30).map(o => o.row.symbol);
+    api.getResearchBatch(syms).then(r => setResearchMap(r ?? {})).catch(() => {});
+  }, [opportunities]);
 
   async function generateOutlook() {
     if (!isAiConfigured()) {
@@ -872,7 +913,17 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
       {/* ── End Near-Term Outlook ────────────────────────────────────── */}
 
       {/* ── Earnings This Week ──────────────────────────────────────── */}
-      {earningsThisWeek.length > 0 && (
+      {earningsLoading && (
+        <div style={{ padding: '14px 18px', borderRadius: '14px', border: '1px solid rgba(251,146,60,0.15)', color: '#475569', fontSize: '12px' }}>
+          Loading earnings…
+        </div>
+      )}
+      {earningsError && !earningsLoading && (
+        <div style={{ padding: '14px 18px', borderRadius: '14px', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171', fontSize: '12px' }}>
+          Could not load earnings calendar.
+        </div>
+      )}
+      {!earningsLoading && !earningsError && earningsThisWeek.length > 0 && (
         <div style={{
           borderRadius: '14px', border: '1px solid rgba(251,146,60,0.25)',
           background: 'linear-gradient(135deg, rgba(251,146,60,0.04) 0%, rgba(15,23,42,0.95) 100%)',
@@ -1100,9 +1151,14 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
                           {sig.signal}
                         </span>
                       )}
+                      {activeSet.has(r.symbol) && (
+                        <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.35)' }}>
+                          ▶ ACTIVE
+                        </span>
+                      )}
                       {boardSet.has(r.symbol) && (
                         <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', color: '#34d399', background: 'rgba(52,211,153,0.12)', border: '1px solid rgba(52,211,153,0.3)' }}>
-                          ✓ On Board
+                          ✓ Watching
                         </span>
                       )}
                       {earningsSet.has(r.symbol) && (
@@ -1110,6 +1166,31 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
                           Earnings ≤14d
                         </span>
                       )}
+                      {/* Research chip — INT-10 */}
+                      {(() => {
+                        const rs = researchMap[r.symbol];
+                        const RC: Record<string, string> = { 'STRONG BUY': '#4ade80', BUY: '#86efac', WATCH: '#facc15', AVOID: '#fb923c', SELL: '#f87171' };
+                        if (!rs) return <span style={{ fontSize: '9px', color: '#334155' }}>R: —</span>;
+                        return (
+                          <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', color: RC[rs.recommendation] ?? '#94a3b8', background: `${RC[rs.recommendation] ?? '#475569'}18`, border: `1px solid ${RC[rs.recommendation] ?? '#475569'}44` }}>
+                            R: {rs.recommendation === 'STRONG BUY' ? 'S.BUY' : rs.recommendation}
+                          </span>
+                        );
+                      })()}
+                      {/* Conviction gate badge */}
+                      {(() => {
+                        const style = getSignalStyle()?.toUpperCase() ?? 'SWING';
+                        const cv = convictionData?.[`${r.symbol}:${style}`];
+                        if (!cv) return null;
+                        const tier = cv.failed.length === 0 ? 'FULL' : cv.failed.length === 1 ? 'NEAR' : null;
+                        if (!tier) return null;
+                        const isFull = tier === 'FULL';
+                        return (
+                          <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', color: isFull ? '#4ade80' : '#facc15', background: isFull ? 'rgba(74,222,128,0.1)' : 'rgba(250,204,21,0.1)', border: `1px solid ${isFull ? 'rgba(74,222,128,0.3)' : 'rgba(250,204,21,0.3)'}` }}>
+                            {isFull ? '✓ Gate FULL' : '~ Gate NEAR'}
+                          </span>
+                        );
+                      })()}
                     </div>
 
                     {/* Reason bullets */}
@@ -1169,21 +1250,45 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
                       <span style={{ color: scoreColor(stratScore), fontWeight: 700 }}>{stratScore}</span>
                       <span style={{ color: '#334155' }}> · K{(r.score ?? 0).toFixed(0)}</span>
                     </div>
-                    {/* Bell button */}
-                    <button
-                      onClick={e => { e.preventDefault(); e.stopPropagation(); openAlertPanel(r.symbol); }}
-                      title="Suggest alerts"
-                      style={{
-                        marginTop: '8px', display: 'block', marginLeft: 'auto',
-                        background: panelOpen ? 'rgba(99,102,241,0.2)' : 'transparent',
-                        border: `1px solid ${panelOpen ? 'rgba(99,102,241,0.5)' : '#1e293b'}`,
-                        color: panelOpen ? '#818cf8' : '#334155',
-                        borderRadius: '6px', padding: '4px 8px', fontSize: '13px',
-                        cursor: 'pointer', transition: 'all 0.15s',
-                      }}
-                    >
-                      🔔
-                    </button>
+                    {/* Action buttons row */}
+                    <div style={{ display: 'flex', gap: '4px', marginTop: '8px', justifyContent: 'flex-end' }}>
+                      {/* Add to Radar */}
+                      {(() => {
+                        const inRadar = radarSymbols.has(r.symbol) || radarDone.has(r.symbol);
+                        const adding = radarAdding === r.symbol;
+                        return (
+                          <button
+                            onClick={e => { e.preventDefault(); e.stopPropagation(); if (!inRadar) addToRadar(r.symbol); }}
+                            disabled={adding || inRadar}
+                            title={inRadar ? 'Already on Radar watchlist' : 'Add to Radar watchlist'}
+                            style={{
+                              background: inRadar ? 'rgba(52,211,153,0.12)' : 'transparent',
+                              border: `1px solid ${inRadar ? 'rgba(52,211,153,0.35)' : '#1e293b'}`,
+                              color: inRadar ? '#34d399' : '#334155',
+                              borderRadius: '6px', padding: '4px 8px', fontSize: '12px',
+                              cursor: inRadar ? 'default' : 'pointer', transition: 'all 0.15s',
+                              fontWeight: inRadar ? 700 : 400,
+                            }}
+                          >
+                            {adding ? '…' : inRadar ? '📡 Radar' : '📡'}
+                          </button>
+                        );
+                      })()}
+                      {/* Bell button */}
+                      <button
+                        onClick={e => { e.preventDefault(); e.stopPropagation(); openAlertPanel(r.symbol); }}
+                        title="Suggest alerts"
+                        style={{
+                          background: panelOpen ? 'rgba(99,102,241,0.2)' : 'transparent',
+                          border: `1px solid ${panelOpen ? 'rgba(99,102,241,0.5)' : '#1e293b'}`,
+                          color: panelOpen ? '#818cf8' : '#334155',
+                          borderRadius: '6px', padding: '4px 8px', fontSize: '13px',
+                          cursor: 'pointer', transition: 'all 0.15s',
+                        }}
+                      >
+                        🔔
+                      </button>
+                    </div>
                   </div>
                 </div>
               </Link>

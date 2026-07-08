@@ -13,6 +13,14 @@ router = APIRouter(prefix="/board", tags=["board"])
 
 VALID_STAGES = {"watch", "planning", "active", "closed"}
 
+# FSM: maps current_stage → set of allowed next stages
+VALID_TRANSITIONS: dict[str, set[str]] = {
+    "watch":    {"planning", "closed"},  # allow watch→closed for quick discard
+    "planning": {"watch", "active", "closed"},
+    "active":   {"closed"},
+    "closed":   set(),  # terminal state — no further transitions
+}
+
 
 class PlanIn(BaseModel):
     symbol: str
@@ -139,6 +147,9 @@ def update_plan(
     if body.stage is not None:
         if body.stage not in VALID_STAGES:
             raise HTTPException(400, f"stage must be one of {sorted(VALID_STAGES)}")
+        allowed = VALID_TRANSITIONS.get(plan.stage, set())
+        if body.stage != plan.stage and body.stage not in allowed:
+            raise HTTPException(400, f"Invalid stage transition: {plan.stage} → {body.stage}. Allowed: {sorted(allowed) or 'none'}")
         plan.stage = body.stage
         if body.stage == "closed" and plan.closed_at is None:
             plan.closed_at = datetime.now(timezone.utc)
@@ -175,6 +186,16 @@ def delete_plan(
     ).scalar_one_or_none()
     if not plan:
         raise HTTPException(404, "Plan not found")
+    if plan.stage == "active":
+        from db.models import UserPosition
+        pos = session.execute(
+            select(UserPosition).where(
+                UserPosition.symbol == plan.symbol.upper(),
+                UserPosition.user_id == current.id,  # MUST scope to current user
+            )
+        ).scalar_one_or_none()
+        if pos:
+            session.delete(pos)
     session.delete(plan)
     session.commit()
     return {"status": "deleted", "id": plan_id}

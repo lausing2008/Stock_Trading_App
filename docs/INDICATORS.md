@@ -294,6 +294,8 @@ in a sideways market. Always confirm with ADX (> 20) to ensure there is a trend 
 
 ### RSI Divergence
 
+> **Status: DISABLED** — The divergence detector is currently inactive in the signal engine. The `rsi_divergence` field always returns `"none"` and no score adjustment is applied. The simplified 10-bar lookback implementation was prone to false positives; a future version will use proper pivot-high/low detection before re-enabling it.
+
 **What it is:**
 RSI divergence occurs when price and RSI move in opposite directions. This signals that momentum is
 diverging from price — a warning that the current trend may be running out of steam.

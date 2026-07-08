@@ -4,7 +4,7 @@ x-py-common: &py-common
   env_file: ../.env
   depends_on:
     redis:
-      condition: service_started
+      condition: service_healthy
     postgres:
       condition: service_healthy
   networks: [stockai-net]
@@ -28,8 +28,16 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy volatile-lru
     #ports: ["6379:6379"]
     networks: [stockai-net]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   market-data:
     <<: *py-common
@@ -55,6 +63,11 @@ services:
     #ports: ["8003:8003"]
     volumes:
       - datavol:/data
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+          cpus: "1.5"
 
   ranking-engine:
     <<: *py-common
@@ -93,6 +106,20 @@ services:
       dockerfile: services/research-engine/Dockerfile
     #ports: ["8008:8008"]
 
+  decision-engine:
+    <<: *py-common
+    build:
+      context: ..
+      dockerfile: services/decision-engine/Dockerfile
+    #ports: ["8009:8009"]
+
+  event-intelligence:
+    <<: *py-common
+    build:
+      context: ..
+      dockerfile: services/event-intelligence/Dockerfile
+    #ports: ["8010:8010"]
+
   api-gateway:
     <<: *py-common
     build:
@@ -100,14 +127,30 @@ services:
       dockerfile: services/api-gateway/Dockerfile
     ports: ["127.0.0.1:8000:8000"]
     depends_on:
-      - market-data
-      - technical-analysis
-      - ml-prediction
-      - ranking-engine
-      - signal-engine
-      - strategy-engine
-      - portfolio-optimizer
-      - research-engine
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      market-data:
+        condition: service_healthy
+      technical-analysis:
+        condition: service_healthy
+      ml-prediction:
+        condition: service_healthy
+      ranking-engine:
+        condition: service_healthy
+      signal-engine:
+        condition: service_healthy
+      strategy-engine:
+        condition: service_healthy
+      portfolio-optimizer:
+        condition: service_healthy
+      research-engine:
+        condition: service_healthy
+      decision-engine:
+        condition: service_healthy
+      event-intelligence:
+        condition: service_healthy
 
   frontend:
     build:
@@ -122,6 +165,7 @@ services:
 volumes:
   datavol:
   pgdata:
+  redisdata:
 
 networks:
   stockai-net:
