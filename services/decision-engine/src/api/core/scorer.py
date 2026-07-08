@@ -109,7 +109,12 @@ def compute_score(
     breakdown.append(ScoreItem(layer="ml_signal", pts=pts, note=note))
 
     # ── Layer 3d: Confidence trajectory (SA-26) ───────────────────────────────
-    conf_delta = signal_data.get("confidence_delta")
+    # Was signal_data.get("confidence_delta") — but signal-engine only ever writes this into
+    # reasons["confidence_delta"] (signal-engine/src/api/routes.py:592), never top-level. Every
+    # other reasons-sourced field in this function (volume_z, days_to_earnings, catalyst_score)
+    # already correctly reads from `reasons`; this one was an isolated miss, making layer 3d
+    # permanently dead code — accelerating/decelerating signals never got their ±1 adjustment.
+    conf_delta = reasons.get("confidence_delta")
     if conf_delta is not None:
         cd = float(conf_delta)
         if cd > 8:

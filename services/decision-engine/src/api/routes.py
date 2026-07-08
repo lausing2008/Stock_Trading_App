@@ -259,10 +259,18 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
     _MIN_COMBINED_MULT = 0.30
     _micro_position_reason: str | None = None
     if verdict == "BUY":
+        # T232-DE1 (same fix already applied in sizer.py, missed here): regime, breadth, and
+        # vix multipliers are NOT independent — all three describe "how dangerous is the broad
+        # market right now" (regime_mult is itself partly VIX-derived), so multiplying all three
+        # together double/triple-counts the same signal. At VIX=30 + risk_off + confidence=0.85,
+        # straight multiplication gave 0.283 (incorrectly below the 0.30 floor, skipping a trade
+        # the real sizer would size normally at 0.425). Composed via min() for the market-wide
+        # trio, matching sizer.py's market_mult exactly, then multiplied by the genuinely
+        # independent per-trade factors (research/confidence/consensus/earnings).
+        _market_mult = min(multipliers.regime, multipliers.breadth, multipliers.vix)
         _combined_mult = (
-            multipliers.regime * multipliers.research * multipliers.confidence
+            _market_mult * multipliers.research * multipliers.confidence
             * multipliers.consensus * multipliers.earnings
-            * multipliers.breadth * multipliers.vix
         )
         if _combined_mult < _MIN_COMBINED_MULT:
             verdict = "SKIP"

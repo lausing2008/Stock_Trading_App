@@ -73,7 +73,11 @@ def _build_prompt(
     min_score: int,
     breakdown_summary: str,
 ) -> str:
-    live = game_plan.get("entry", game_plan.get("stop", 0) * 1.1)
+    # Was game_plan.get("entry", ...) — no producer (aggregator.py's _default_game_plan or
+    # build_game_plan) ever sets an "entry" key, only "entry2". This always fell through to the
+    # fabricated fallback (stop * 1.1) on every call, feeding the LLM a fictitious entry price
+    # and R:R that could diverge significantly from the real game plan.
+    live = game_plan.get("entry2", game_plan.get("stop", 0) * 1.1)
     stop = game_plan.get("stop", 0)
     tp = game_plan.get("take_profit", 0)
     rr = round((tp - live) / (live - stop), 2) if stop and live and tp and live != stop else None
