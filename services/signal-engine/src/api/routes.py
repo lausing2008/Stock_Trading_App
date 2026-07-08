@@ -106,7 +106,6 @@ def _service_token() -> str:
 
 
 from ..generators import generate_signal, generate_all_signals
-from ..config import get_thresholds, reload as reload_thresholds, loaded_at as thresholds_loaded_at
 
 log = get_logger("signals")
 
@@ -2288,9 +2287,15 @@ def calibrate_ta_weights(
             skipped += 1
             continue
 
+        # T+1 entry: use the first close STRICTLY AFTER signal_date, matching the same fix
+        # already applied in evaluate_signal_outcomes (see its "T+1 entry" comment) — the
+        # signal is generated from that day's already-known close, so using the SAME day's
+        # close as "entry price" bakes in look-ahead bias (fitting weights as if you could
+        # buy at the exact price the BUY decision was itself based on). Exit is measured
+        # hold_days after the actual T+1 entry date, not after signal_date, for consistency.
         signal_date = row.ts.date() if hasattr(row.ts, "date") else row.ts
-        entry_price_row = _lookup_price(row.stock_id, signal_date)
-        exit_price_row = _lookup_price(row.stock_id, signal_date + timedelta(days=hold_days))
+        entry_price_row = _lookup_price(row.stock_id, signal_date + timedelta(days=1))
+        exit_price_row = _lookup_price(row.stock_id, signal_date + timedelta(days=1 + hold_days))
 
         if entry_price_row is None or exit_price_row is None:
             skipped += 1
@@ -2354,22 +2359,6 @@ def calibrate_ta_weights(
         "in_sample_accuracy": round(accuracy, 4),
         "weights":          new_weights,
     }
-
-
-@router.get("/admin/config")
-def get_signal_config(_: str = Depends(get_current_username)):
-    """Return current signal_thresholds.json values + last-loaded timestamp."""
-    return {"thresholds": get_thresholds(), "loaded_at": thresholds_loaded_at()}
-
-
-@router.post("/admin/reload_config")
-def reload_signal_config(_: str = Depends(get_current_username)):
-    """Hot-reload signal_thresholds.json without restarting the container."""
-    try:
-        result = reload_thresholds()
-        return {"ok": True, **result}
-    except Exception as exc:
-        raise HTTPException(500, f"Failed to reload config: {exc}")
 
 
 @router.post("/calibrate_conviction_weights")
@@ -4353,7 +4342,6 @@ def tune_status(
 
     return {
         "as_of": date.today().isoformat(),
-        "config_loaded_at": thresholds_loaded_at(),
         "styles": styles_out,
     }
 

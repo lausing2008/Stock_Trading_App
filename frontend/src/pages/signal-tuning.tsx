@@ -30,7 +30,6 @@ type StyleStatus = {
 
 type TuneStatusResponse = {
   as_of: string;
-  config_loaded_at: string | null;
   styles: Record<string, StyleStatus>;
 };
 
@@ -315,7 +314,6 @@ export default function SignalTuningPage() {
         {data && (
           <p style={{ margin: 0, color: '#64748b', fontSize: 12 }}>
             As of {data.as_of}
-            {data.config_loaded_at && ` · Config loaded ${new Date(data.config_loaded_at).toLocaleString()}`}
           </p>
         )}
       </div>

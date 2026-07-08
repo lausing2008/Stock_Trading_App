@@ -294,7 +294,7 @@ export const api = {
     request<{ status: string; count: number; symbols: string[] }>(`/ml/tune_all?n_trials=${nTrials}`, { method: 'POST' }),
   signalTuneStatus: () =>
     request<{
-      as_of: string; config_loaded_at: string | null;
+      as_of: string;
       styles: Record<string, {
         defaults: { buy_threshold_bull: number; ml_weight_cap: number; adx_min: number | null; breadth_compression: number | null };
         redis_overrides: { watchdog_threshold: number | null; calibrated_threshold: number | null; ml_weight_cap: number | null; adx_min: number | null; breadth_compression: number | null };
