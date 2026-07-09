@@ -2353,6 +2353,63 @@ def _call_decision_engine(
         return None
 
 
+# T232-DL-DUALSCORER-SHADOW: max list length for de:divergences/de:agreements — bounds Redis
+# memory while keeping enough history for the /paper-portfolio/de-divergences UI (which reads
+# up to 500) to show a meaningful sample rather than just the last few scan cycles.
+_DE_SHADOW_LIST_MAXLEN = 2000
+
+
+def _record_de_shadow_comparison(
+    symbol: str,
+    paper_enter: bool,
+    paper_score: int,
+    de_verdict: str,
+    de_score: int,
+    de_min_score: int,
+    de_blocked_reason: str | None,
+) -> None:
+    """Record whether _should_enter() and decision-engine agreed on this candidate.
+
+    T232-DL-DUALSCORER-SHADOW: the /paper-portfolio/de-divergences endpoint and its "DE Audit"
+    UI tab have existed since before this fix with zero writer anywhere in the codebase — the
+    Redis lists it reads (de:divergences, de:agreements) were always empty, so the endpoint
+    silently always returned total_divergences=0/total_agreements=0 and the UI always showed
+    "No shadow data yet" regardless of how long the system had been running. This is the first
+    writer: called once per candidate regardless of which scorer is currently authoritative
+    (decision_engine_mode="primary" or "shadow"), so real agreement-rate data accumulates on
+    both settings rather than only ever comparing against whichever mode happens to be active.
+    Fail-silent — shadow logging must never affect the real entry decision or block trading.
+    """
+    import json as _json
+    de_agrees = paper_enter == (de_verdict in ("BUY", "SCALE"))
+    payload = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "symbol": symbol,
+        "paper_enter": paper_enter,
+        "paper_score": paper_score,
+        "de_verdict": de_verdict,
+        "de_score": de_score,
+        "de_min_score": de_min_score,
+        "de_blocked_reason": de_blocked_reason,
+    }
+    if not de_agrees:
+        key = "de:divergences"
+    else:
+        key = "de:agreements"
+        payload = {
+            "ts": payload["ts"], "symbol": symbol, "verdict": de_verdict,
+            "paper_enter": paper_enter, "de_score": de_score, "paper_score": paper_score,
+        }
+    try:
+        import redis as _rb
+        from common.config import get_settings as _gs_shadow
+        _r = _rb.Redis.from_url(_gs_shadow().redis_url, decode_responses=True)
+        _r.lpush(key, _json.dumps(payload))
+        _r.ltrim(key, 0, _DE_SHADOW_LIST_MAXLEN - 1)
+    except Exception:
+        pass
+
+
 def _clear_gate_block(portfolio_id: int) -> None:
     """Delete the Redis gate_block key so the UI no longer shows a block reason."""
     try:
@@ -3372,41 +3429,60 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         kscore_f = float(ranking.score) if ranking and ranking.score is not None else None
         gate_source = "de"
 
+        # T232-DL-DUALSCORER-SHADOW: run BOTH scorers on every candidate regardless of which one
+        # is authoritative, purely to populate the de:divergences/de:agreements comparison data
+        # the /paper-portfolio/de-divergences endpoint and "DE Audit" UI tab have been reading
+        # from since before this fix — with no writer anywhere, that endpoint always silently
+        # returned zero data no matter how long the system ran. Only the AUTHORITATIVE scorer
+        # (selected by de_mode below, unchanged from before) drives should_enter/score/notes;
+        # the other one's result is used for comparison logging only and can never affect
+        # whether a real position gets opened.
+        de_result = _call_decision_engine(
+            symbol=stock.symbol,
+            live_price=live_price,
+            game_plan=game_plan,
+            equity=equity,
+            open_count=open_count,
+            cfg=cfg,
+            daily_pnl_pct=_daily_pnl_pct,
+            recent_win_rate=_recent_wr,
+            open_sector_counts=_open_sector_counts,   # T186: sector gate
+            candidate_sector=stock.sector,             # T186: sector gate
+            consec_losses=_consec_losses,              # T187: streak gate
+        )
+        se_result = _should_enter(
+            stock.symbol, signal_data, live_price, game_plan, cfg, live_regime,
+            kscore=kscore_f,
+        )
+
         if de_mode == "primary":
-            de_result = _call_decision_engine(
-                symbol=stock.symbol,
-                live_price=live_price,
-                game_plan=game_plan,
-                equity=equity,
-                open_count=open_count,
-                cfg=cfg,
-                daily_pnl_pct=_daily_pnl_pct,
-                recent_win_rate=_recent_wr,
-                open_sector_counts=_open_sector_counts,   # T186: sector gate
-                candidate_sector=stock.sector,             # T186: sector gate
-                consec_losses=_consec_losses,              # T187: streak gate
-            )
             if de_result is not None:
                 should_enter, de_verdict, score, de_blocked = de_result
                 notes = [f"DE: {de_verdict}"] + ([f"blocked: {de_blocked}"] if de_blocked else [])
                 log.info("paper.de_verdict", symbol=stock.symbol,
                          verdict=de_verdict, score=score, blocked=de_blocked)
+                _record_de_shadow_comparison(
+                    stock.symbol, se_result[0], se_result[1],
+                    de_verdict, score, cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]),
+                    de_blocked,
+                )
             else:
                 # DE unreachable — fall back to _should_enter() so trading continues
-                should_enter, score, notes = _should_enter(
-                    stock.symbol, signal_data, live_price, game_plan, cfg, live_regime,
-                    kscore=kscore_f,
-                )
+                should_enter, score, notes = se_result
                 gate_source = "fallback"
                 log.warning("paper.de_fallback", symbol=stock.symbol,
                             note="DE unreachable; using _should_enter()")
         else:
-            # Legacy shadow mode: _should_enter() decides, DE logged only
-            should_enter, score, notes = _should_enter(
-                stock.symbol, signal_data, live_price, game_plan, cfg, live_regime,
-                kscore=kscore_f,
-            )
+            # Legacy shadow mode: _should_enter() decides; DE result (if reachable) logged only.
+            should_enter, score, notes = se_result
             gate_source = "legacy"
+            if de_result is not None:
+                _, de_verdict, de_score, de_blocked = de_result
+                _record_de_shadow_comparison(
+                    stock.symbol, should_enter, score,
+                    de_verdict, de_score, cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]),
+                    de_blocked,
+                )
 
         if not should_enter:
             log.info("paper.entry_skipped",
