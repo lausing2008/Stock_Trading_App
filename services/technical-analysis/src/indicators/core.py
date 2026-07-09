@@ -36,10 +36,14 @@ def macd(
     slow: int = 26,
     signal: int = 9,
 ) -> pd.DataFrame:
-    ema_fast = close.ewm(span=fast, adjust=False).mean()
-    ema_slow = close.ewm(span=slow, adjust=False).mean()
+    # TA-MACD1: min_periods on all three .ewm() calls — matches the warmup-NaN convention already
+    # used by sma/ema/rsi/atr in this module. Without it, macd()/signal/hist serve fabricated,
+    # numerically-real values from bar 0 onward, well before the slow EMA (or the signal line
+    # built on top of it) has enough bars to mean anything.
+    ema_fast = close.ewm(span=fast, adjust=False, min_periods=fast).mean()
+    ema_slow = close.ewm(span=slow, adjust=False, min_periods=slow).mean()
     macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    signal_line = macd_line.ewm(span=signal, adjust=False, min_periods=signal).mean()
     hist = macd_line - signal_line
     return pd.DataFrame({"macd": macd_line, "signal": signal_line, "hist": hist})
 
