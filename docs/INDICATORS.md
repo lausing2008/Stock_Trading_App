@@ -489,6 +489,56 @@ supply/demand imbalance.
 
 ---
 
+### RVOL — Relative Volume
+
+**What it is:**
+RVOL compares today's cumulative share volume, as of the current time of day, to how much volume
+this stock has traded by that same time of day on average over the last 20 trading days.
+
+```
+RVOL = today's cumulative volume (up to now) / 20-day average cumulative volume (same time-of-day)
+```
+
+Unlike Volume Z-score (which looks at a full trading day vs a full-day average, after the close),
+RVOL is intraday-aware: it only compares "how much has traded by 11:30am" to "how much normally
+trades by 11:30am," so it's meaningful in real time, mid-session, not just at end of day.
+
+**In the app:**
+
+`GET /stocks/{symbol}/rvol` returns:
+
+| Field | Meaning |
+|-------|---------|
+| `rvol` | Today's cumulative volume ÷ 20-day average cumulative volume for this time of day |
+| `today_volume` | Raw share count traded today so far |
+| `avg_volume` | The 20-day average cumulative volume for this time of day |
+
+Shown on the Screener (RVOL column, sortable) and the stock detail page as a live "unusual volume"
+signal.
+
+**How to read it:**
+
+| RVOL | Interpretation |
+|------|-----------------|
+| > 2.0 | Unusual activity right now — institutional accumulation/distribution, breaking news, or an earnings reaction in progress |
+| 1.0–2.0 | Somewhat above-normal participation |
+| ~1.0 | Trading at the normal pace for this time of day |
+| < 1.0 | Below-normal participation — low conviction, thin liquidity |
+
+**RVOL vs Volume Z-score vs vol_ratio_5d20d — three different "volume/volatility ratios":**
+
+| Metric | Measures | Compares | Best for |
+|--------|----------|----------|----------|
+| RVOL | Share *volume* | Today so far vs 20-day average, same time-of-day | Real-time, intraday "is something happening right now" |
+| Volume Z-score | Share *volume* | Today's full-day total vs 20-day average, in standard deviations | End-of-day conviction scoring (feeds `ta_score`) |
+| `vol_ratio_5d20d` | Price *volatility* (return std dev) | 5-day vs 20-day rolling std dev of daily % returns | ML training feature — detecting volatility compression/expansion regimes, not volume at all |
+
+RVOL and Volume Z-score both measure trading *volume* (how many shares changed hands) at
+different time granularities. `vol_ratio_5d20d` (see Part 6) measures price *volatility* (how much
+the price is swinging) — it has "vol" in the name but is unrelated to how many shares traded.
+
+---
+
 ## Part 4 — Volatility Indicators
 
 Volatility indicators answer: **how wide is price swinging, and is the stock near an extreme?**
@@ -607,8 +657,18 @@ individual stock. It learns which patterns in recent price behavior have histori
 upward vs downward moves over the next 5–10 trading days.
 
 **Features fed into the model:**
-RSI, MACD histogram, Bollinger %B, volume ratio, SMA50 slope, SMA200 slope, 5-day and 20-day
-price returns, and ADX — approximately 20 features per bar.
+RSI, MACD histogram, Bollinger %B, `vol_ratio_5d20d`, SMA50 slope, SMA200 slope, 5-day and 20-day
+price returns, and ADX, among a larger set of momentum/volatility/fundamental/sector features
+(see `FEATURE_COLUMNS` in `services/ml-prediction/src/features/builder.py` for the current list).
+
+**`vol_ratio_5d20d` — one of these features, not to be confused with RVOL (Part 3):**
+```
+vol_ratio_5d20d = std_dev(daily % returns, last 5 days) / std_dev(daily % returns, last 20 days)
+```
+This measures price *volatility* expansion/compression, not trading volume — a ratio above 1.0
+means the last week has been choppier than the last month (volatility expanding); a ratio below 1.0
+means the last week has been calmer than the last month (volatility compressing, often a pre-breakout
+setup). It has no relationship to RVOL or Volume Z-score, which both measure share volume instead.
 
 **In the app:**
 
