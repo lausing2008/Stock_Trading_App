@@ -360,8 +360,8 @@ def _redis_save_macro(macro: pd.DataFrame) -> None:
         from common.config import get_settings
         r = redis_lib.Redis.from_url(get_settings().redis_url, decode_responses=True)
         r.setex(_MACRO_CACHE_KEY, _MACRO_CACHE_TTL, macro.to_json(orient="split"))
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("macro_features.redis_save_failed", error=str(exc))
 
 
 def _redis_load_macro() -> pd.DataFrame:
@@ -372,8 +372,9 @@ def _redis_load_macro() -> pd.DataFrame:
         raw = r.get(_MACRO_CACHE_KEY)
         if raw:
             return pd.read_json(raw, orient="split")
-    except Exception:
-        pass
+        log.warning("macro_features.redis_cache_empty", note="no prior successful fetch cached — returning empty DataFrame")
+    except Exception as exc:
+        log.warning("macro_features.redis_load_failed", error=str(exc))
     return pd.DataFrame()
 
 
@@ -397,6 +398,12 @@ def fetch_macro_features(start_date: date, end_date: date, symbol: str = "") -> 
     is_hk = symbol.upper().endswith(".HK")
     buffer_start = start_date - timedelta(days=260)  # extended buffer for 200d SMA rolling calculations
 
+    # ML-MACRO1: both the except branch and the empty-result fallback previously returned
+    # silently with zero logging — container logs showed 210+ "possibly delisted" yfinance
+    # errors in a single day (2026-07-09, likely transient rate-limiting) with nothing at the
+    # application level to surface that macro features were silently falling back to a stale
+    # Redis cache. Warn so a prolonged outage (stale cache exhausted, or Redis itself empty)
+    # is visible instead of only showing up as degraded model quality with no diagnostic trail.
     try:
         spy = yf.download(
             "SPY",
@@ -411,10 +418,13 @@ def fetch_macro_features(start_date: date, end_date: date, symbol: str = "") -> 
             progress=False,
             auto_adjust=False,  # VIX is an index, not a stock — no dividends/splits to adjust
         )
-    except Exception:
+    except Exception as exc:
+        log.warning("macro_features.fetch_failed", error=str(exc), note="falling back to Redis cache")
         return _redis_load_macro()
 
     if spy.empty or vix.empty:
+        log.warning("macro_features.empty_result", spy_empty=spy.empty, vix_empty=vix.empty,
+                    note="falling back to Redis cache")
         return _redis_load_macro()
 
     # Flatten MultiIndex columns (yfinance ≥0.2)
@@ -486,7 +496,8 @@ def fetch_macro_features(start_date: date, end_date: date, symbol: str = "") -> 
                 macro["hsi_ret_1"]    = np.nan
                 macro["hsi_ret_5"]    = np.nan
                 macro["hsi_200d_gap"] = np.nan
-        except Exception:
+        except Exception as exc:
+            log.warning("macro_features.hsi_fetch_failed", symbol=symbol, error=str(exc))
             macro["hsi_ret_1"]    = np.nan
             macro["hsi_ret_5"]    = np.nan
             macro["hsi_200d_gap"] = np.nan
