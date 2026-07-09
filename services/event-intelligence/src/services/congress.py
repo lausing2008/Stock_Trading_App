@@ -14,8 +14,19 @@ from db import get_session, SessionLocal, CongressTrade, Stock
 
 log = structlog.get_logger()
 
+# EI-CONGRESS1: house-stock-watcher / senate-stock-watcher (both the old S3 dumps below AND
+# their replacement REST APIs at housestockwatcher.com/senatestockwatcher.com) are permanently
+# dead — the maintainer has been inactive since March 2021 and never responded to a 2024
+# shutdown inquiry; both domains fail to resolve as of 2026-07-09. This left congress_trades
+# with 0 rows in production (confirmed) and market-data's /congress/trades endpoint silently
+# returning an empty list to every real user with no Quiver key configured as a fallback.
+# Replaced with kadoa-org/congress-trading-monitor's live, unauthenticated GitHub JSON feed —
+# MIT-licensed, updates via daily automated commits, covers House Clerk + Senate eFD + OGE
+# (executive branch) filings in one combined response. Rolling ~5000-row window (not full
+# history), which is fine for keeping the feed current going forward.
 _HOUSE_URL = "https://house-stock-watcher-data.s3-us-east-2.amazonaws.com/data/all_transactions.json"
 _SENATE_URL = "https://senate-stock-watcher-data.s3-us-east-2.amazonaws.com/data/all_transactions.json"
+_KADOA_URL = "https://raw.githubusercontent.com/kadoa-org/congress-trading-monitor/main/public/data/trades.json"
 
 _AMOUNT_RANGES = {
     "$1,001 - $15,000": (1001, 15000),
@@ -66,7 +77,14 @@ def _ticker_to_stock_id(ticker: str, ticker_map: dict[str, int]) -> int | None:
 
 
 async def sync_congress_trades(lookback_days: int = 365) -> dict:
-    """Download House + Senate JSON and upsert recent trades to DB."""
+    """Download congress trading disclosures and upsert recent trades to DB.
+
+    EI-CONGRESS1: source is now kadoa-org/congress-trading-monitor (see module docstring
+    comment above _KADOA_URL) — a single combined House+Senate+executive-branch feed, unlike
+    the old two-URL House/Senate loop. Non-congress (branch != "congress") records — mostly
+    OGE executive-branch filings, ~85% of the feed's rolling 5000-row window — are filtered
+    out here since this function is specifically congress trades.
+    """
     cutoff = date.today() - timedelta(days=lookback_days)
 
     # Build ticker → stock_id lookup
@@ -75,77 +93,71 @@ async def sync_congress_trades(lookback_days: int = 365) -> dict:
 
     total = 0
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        for url, chamber in [(_HOUSE_URL, "House"), (_SENATE_URL, "Senate")]:
-            try:
-                r = await client.get(url)
-                if r.status_code == 403:
-                    log.warning(
-                        "congress.source_private",
-                        chamber=chamber,
-                        url=url,
-                        detail="house/senate-stock-watcher S3 buckets are no longer public. "
-                               "Upgrade to Quiver Quantitative API for congress data.",
-                    )
-                    continue
-                if r.status_code != 200:
-                    log.warning("congress.fetch_fail", chamber=chamber, status=r.status_code)
-                    continue
-                trades = r.json()
-                if isinstance(trades, dict):
-                    trades = trades.get("data") or trades.get("transactions") or []
-            except Exception as exc:
-                log.warning("congress.fetch_error", chamber=chamber, error=str(exc))
-                continue
+        try:
+            r = await client.get(_KADOA_URL)
+            if r.status_code != 200:
+                log.warning("congress.fetch_fail", status=r.status_code, url=_KADOA_URL)
+                return {"rows_upserted": 0}
+            trades = r.json()
+            if isinstance(trades, dict):
+                trades = trades.get("data") or trades.get("trades") or []
+        except Exception as exc:
+            log.warning("congress.fetch_error", error=str(exc), url=_KADOA_URL)
+            return {"rows_upserted": 0}
 
-            with SessionLocal() as s:
-                for t in trades:
-                    try:
-                        # House and Senate have slightly different field names
-                        trade_date_str = t.get("transaction_date") or t.get("date") or ""
-                        if not trade_date_str:
-                            continue
-                        trade_date = date.fromisoformat(trade_date_str[:10])
-                        if trade_date < cutoff:
-                            continue
-
-                        ticker = (t.get("ticker") or t.get("asset_description") or "").upper()[:16]
-                        if not ticker or len(ticker) > 8:
-                            continue
-
-                        politician = (t.get("representative") or t.get("senator") or t.get("name") or "Unknown")[:255]
-                        party = (t.get("party") or "")[:32]
-                        state = (t.get("state") or "")[:8]
-                        txn_type = _normalize_txn_type(t.get("type") or t.get("transaction_type"))
-                        amount_str = t.get("amount") or t.get("amount_range") or ""
-                        amount_min, amount_max = _parse_amount(amount_str)
-                        disc_date_str = t.get("disclosure_date") or t.get("filed_at") or ""
-                        disc_date = date.fromisoformat(disc_date_str[:10]) if disc_date_str else None
-                        stock_id = _ticker_to_stock_id(ticker, ticker_map)
-
-                        stmt = (
-                            pg_insert(CongressTrade)
-                            .values(
-                                politician_name=politician,
-                                party=party,
-                                chamber=chamber,
-                                state=state,
-                                ticker=ticker,
-                                stock_id=stock_id,
-                                transaction_type=txn_type,
-                                amount_range=amount_str[:64] if amount_str else None,
-                                amount_min=amount_min,
-                                amount_max=amount_max,
-                                trade_date=trade_date,
-                                disclosure_date=disc_date,
-                                source=chamber.lower() + "_clerk",
-                            )
-                            .on_conflict_do_nothing(constraint="uq_congress_trade")
-                        )
-                        result = s.execute(stmt)
-                        total += result.rowcount
-                    except Exception:
+        with SessionLocal() as s:
+            for t in trades:
+                try:
+                    if t.get("branch") != "congress":
                         continue
-                s.commit()
+
+                    trade_date_str = t.get("transaction_date") or ""
+                    if not trade_date_str:
+                        continue
+                    trade_date = date.fromisoformat(trade_date_str[:10])
+                    if trade_date < cutoff:
+                        continue
+
+                    ticker = (t.get("ticker") or "").upper()[:16]
+                    if not ticker or len(ticker) > 8:
+                        continue
+
+                    chamber = (t.get("chamber") or "").capitalize() or "Unknown"
+                    politician = (t.get("filer_name") or "Unknown")[:255]
+                    party = (t.get("party") or "")[:32]
+                    state = (t.get("state") or "")[:8]
+                    txn_type = _normalize_txn_type(t.get("transaction_type"))
+                    amount_str = t.get("amount_range_label") or ""
+                    amount_min = t.get("amount_range_low")
+                    amount_max = t.get("amount_range_high")
+                    disc_date_str = t.get("filing_date") or ""
+                    disc_date = date.fromisoformat(disc_date_str[:10]) if disc_date_str else None
+                    stock_id = _ticker_to_stock_id(ticker, ticker_map)
+
+                    stmt = (
+                        pg_insert(CongressTrade)
+                        .values(
+                            politician_name=politician,
+                            party=party,
+                            chamber=chamber,
+                            state=state,
+                            ticker=ticker,
+                            stock_id=stock_id,
+                            transaction_type=txn_type,
+                            amount_range=amount_str[:64] if amount_str else None,
+                            amount_min=amount_min,
+                            amount_max=amount_max,
+                            trade_date=trade_date,
+                            disclosure_date=disc_date,
+                            source="kadoa_" + chamber.lower(),
+                        )
+                        .on_conflict_do_nothing(constraint="uq_congress_trade")
+                    )
+                    result = s.execute(stmt)
+                    total += result.rowcount
+                except Exception:
+                    continue
+            s.commit()
 
     return {"rows_upserted": total}
 
