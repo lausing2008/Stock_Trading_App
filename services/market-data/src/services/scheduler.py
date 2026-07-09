@@ -539,31 +539,6 @@ def _get_current_regime() -> str:
     return "unknown"
 
 
-def _confluence_score_full(
-    signal: str,
-    confidence: float,
-    kscore: float,
-    technical: float,
-    momentum: float,
-    rec_mean: float | None,
-) -> int:
-    """Mirror of frontend confluenceScoreFull() — 5-factor weighted score 0-100.
-
-    Weights: AI signal×conf 30%, K-Score 25%, Analyst 20%, Technical 15%, Momentum 10%.
-    rec_mean is the yfinance recommendationMean: 1.0 = Strong Buy, 5.0 = Sell.
-    """
-    ai_dir = 100 if signal == "BUY" else 50 if signal == "HOLD" else 25 if signal == "WAIT" else 0
-    ai = ai_dir * confidence / 100
-    analyst = max(0.0, min(100.0, (5.0 - rec_mean) / 4.0 * 100.0)) if rec_mean is not None else 50.0
-    return round(
-        ai         * 0.30 +
-        kscore     * 0.25 +
-        analyst    * 0.20 +
-        technical  * 0.15 +
-        momentum   * 0.10,
-    )
-
-
 def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: str | None = None, rankings_api_ok: bool = True) -> tuple[bool, str, list[str], list[str]]:
     """Check all conviction layers for a BUY signal across all 4 framework layers.
 
