@@ -87,7 +87,7 @@ from db import AlertCondition, PaperPortfolio, PaperTrade, Price, PriceAlert, Ra
 
 
 from .ingestion import ingest_universe
-from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification, send_post_open_digest_email, send_data_quality_alert_email
+from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification, send_post_open_digest_email, send_data_quality_alert_email, is_quota_exceeded
 from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists, poll_broker_order_fills
 from ..api.routes import refresh_live_price_cache, refresh_avg_volume_cache
 
@@ -1361,6 +1361,16 @@ def check_signal_alerts() -> None:
                             message=analyst_ratings.get(alert.symbol, ""),
                             color=0x22c55e if current == "BUY" else 0xef4444,
                         )
+                elif is_quota_exceeded():
+                    # T239-EMAIL2: DP-1's 5-retry give-up was designed for a genuinely broken
+                    # SMTP config (bad password, wrong host) that never recovers on its own.
+                    # Gmail's daily quota (550 5.4.5) is transient and self-clears — during a
+                    # 2026-07-08 outage that lasted 6+ hours, 14 distinct real signal-change
+                    # alerts hit the 5-retry cap and were permanently, silently dropped while
+                    # Gmail was still capped. Don't count quota failures toward the give-up
+                    # limit at all — keep retrying every cycle until Gmail recovers.
+                    log.warning("signal_alert.skipped_quota_exceeded", symbol=alert.symbol,
+                                note="Gmail daily send quota exceeded — will keep retrying, not counted toward give-up limit")
                 else:
                     # DP-1: cap retries to prevent infinite loop on broken email config
                     _alert_fail_counts[alert.id] = _alert_fail_counts.get(alert.id, 0) + 1
