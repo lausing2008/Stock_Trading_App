@@ -17,6 +17,23 @@ from common.logging import get_logger
 log = get_logger("email_service")
 _settings = get_settings()
 
+# T239-EMAIL2: Gmail's daily sending quota (550 5.4.5) is a TRANSIENT, self-healing failure —
+# it clears on a rolling ~24h window — unlike a genuinely broken SMTP config (bad password,
+# wrong host), which never recovers on its own. The scheduler's retry-give-up logic (DP-1,
+# 5 retries then force-advance state) was designed for the latter and silently, permanently
+# dropped real signal-change alerts during a multi-hour quota outage: 14 distinct alerts hit
+# the 5-retry cap and gave up on 2026-07-08 while Gmail stayed capped for 6+ hours straight.
+# Track quota-exceeded separately so callers can skip counting it toward that give-up limit.
+_QUOTA_MARKERS = ("5.4.5", "daily user sending limit", "user-reported spam")
+_quota_exceeded_until: float = 0.0  # unix timestamp; 0 = not currently quota-limited
+
+
+def is_quota_exceeded() -> bool:
+    """True if the last known SMTP failure was a Gmail daily-quota rejection, within the
+    last hour. Callers should keep retrying (not give up) while this is True."""
+    import time as _time
+    return _time.time() < _quota_exceeded_until
+
 
 def _build_message(to: str, subject: str, body_html: str, body_text: str) -> MIMEMultipart:
     msg = MIMEMultipart("alternative")
@@ -55,6 +72,7 @@ def _send_ses(to: str, subject: str, body_html: str, body_text: str) -> None:
 
 def send_email(to: str, subject: str, body_html: str, body_text: str) -> bool:
     """Send an email. Returns True on success, False on failure or disabled."""
+    global _quota_exceeded_until
     if not (to or "").strip():
         log.warning("email.invalid_recipient", to=repr(to))
         return False
@@ -74,9 +92,19 @@ def send_email(to: str, subject: str, body_html: str, body_text: str) -> bool:
             log.warning("email.unknown_provider", provider=provider)
             return False
         log.info("email.sent", provider=provider, to=to, subject=subject)
+        _quota_exceeded_until = 0.0  # a real success means we're no longer quota-limited
         return True
     except Exception as exc:
-        log.error("email.failed", provider=provider, to=to, error=str(exc))
+        # T239-EMAIL1: subject was missing here (present on the success log two lines up),
+        # making every failure indistinguishable from any other — impossible to tell which
+        # alert/digest actually failed to send without cross-referencing caller-side logs that
+        # also don't record it. Log the same fields as the success path.
+        log.error("email.failed", provider=provider, to=to, subject=subject, error=str(exc))
+        if any(marker in str(exc).lower() for marker in _QUOTA_MARKERS):
+            import time as _time
+            _quota_exceeded_until = _time.time() + 3600  # re-check in 1h, not indefinitely
+            log.warning("email.quota_exceeded_detected",
+                        note="treating as transient — will not count toward alert give-up retries")
         return False
 
 
