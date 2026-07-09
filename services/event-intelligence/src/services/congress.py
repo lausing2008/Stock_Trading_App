@@ -213,7 +213,14 @@ def get_recent_congress_trades(days: int = 30, limit: int = 50) -> list[dict]:
 
 
 def compute_congress_score(stock_id: int, days: int = 90) -> float:
-    """0-100 congress activity score."""
+    """-100 to 100 congress activity score (negative = net selling pressure).
+
+    EI-DOC1: docstring previously said "0-100", contradicting the actual
+    min(100.0, max(-100.0, score)) clamp below — sales subtract from score,
+    so a sell-heavy trade history legitimately produces a negative value.
+    catalyst.py already correctly documents and relies on this real range
+    (see its T237-EI1 comment); this docstring was simply out of date.
+    """
     trades = get_congress_for_symbol(stock_id, days)
     if not trades:
         return 0.0

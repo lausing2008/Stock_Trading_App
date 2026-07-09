@@ -248,7 +248,13 @@ def get_insider_leaderboard(days: int = 30, limit: int = 20) -> list[dict]:
 
 
 def compute_insider_score(stock_id: int, days: int = 90) -> float:
-    """0-100 insider score (negative = net selling)."""
+    """-100 to 100 insider score (negative = net selling).
+
+    EI-DOC1: was previously self-contradicting ("0-100 ... negative = net
+    selling" in the same sentence) — matches the real max(-100.0, min(100.0,
+    score)) clamp below. Same stale-range docstring class as congress.py's
+    compute_congress_score.
+    """
     txns = get_insider_for_symbol(stock_id, days)
     if not txns:
         return 0.0
