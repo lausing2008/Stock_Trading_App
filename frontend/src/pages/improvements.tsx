@@ -8133,12 +8133,13 @@ const ITEMS: Item[] = [
   {
     id: 'T232-ML5-OPTUNA-WRONG-METRIC',
     title: 'Optuna optimizes mean CV AUC but the system trades only the top tail of the distribution',
-    tier: 232 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 232 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/ml-prediction/src/training/tuner.py',
     effort: 'M',
     impact: 'Medium-High — live trading acts only on prob > buy_threshold with precision floors 0.53–0.78 (the extreme right tail). AUC rewards ranking across the whole distribution and is nearly insensitive to tail precision — weekend tune_all can pick params that improve AUC while degrading precision@threshold.',
-    what: 'tuner.py:137-171 returns -mean(cv_auc).',
-    fix: 'Optimize precision@(recall≥5%) averaged across purged folds, AUC as tiebreaker. Add gap=horizon to the tuner\'s TimeSeriesSplit.',
+    what: 'tuner.py:137-171 returned -mean(cv_auc). Note: gap=horizon on the tuner\'s TimeSeriesSplit was already implemented separately (T232-ML4) before this fix.',
+    fix: 'Fixed 2026-07-09 — objective() now scores each fold by precision among the top ~10% highest-predicted validation rows (_TOP_K_FRAC=0.10, a proxy for the buy_threshold tail actually traded), with mean AUC kept as a small tiebreaker (_AUC_TIEBREAK_WEIGHT=0.05) so early/sparse folds still have gradient for Optuna\'s pruner/sampler. Real per-metric AUC and top-k precision are recovered from the winning trial via trial.set_user_attr()/study.best_trial.user_attrs rather than decomposed from the blended objective value, so tune.best_params log lines and the returned result dict (best_cv_precision_top_k, best_cv_auc) still report meaningful, undiluted numbers.\n\nVerified the fold/precision mechanics against a synthetic 320-row dataset with realistic class balance and TimeSeriesSplit fold sizes (matching production shapes) — confirmed top-k precision correctly tracks above the base positive rate for a model with real signal, and the objective runs without error across all 5 folds. Did not run a live tune_symbol() test against production data before deploying (would have persisted new hyperparameters and retrained a live model as a side effect of testing) — instead shipped via the normal commit-and-let-the-next-scheduled-tune_all-validate path, since retraining already happens on tune_all\'s regular weekly cadence regardless.',
+    implementedNote: 'Done 2026-07-09 — will take effect symbol-by-symbol as the next scheduled tune_all run retunes each one.',
   },
   {
     id: 'T232-ML7-HMM-STABILITY',
