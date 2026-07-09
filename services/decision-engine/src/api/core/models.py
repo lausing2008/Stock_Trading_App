@@ -81,7 +81,7 @@ class Multipliers(BaseModel):
 class DecisionResult(BaseModel):
     symbol: str
     style: str
-    verdict: str                              # BUY | SCALE | HOLD | SKIP | BLOCKED
+    verdict: str                              # BUY | HOLD | SKIP | BLOCKED
     score: int
     min_score: int
     position: PositionPlan | None = None      # None when verdict is BLOCKED / SKIP / HOLD; ILLUSTRATIVE ONLY — see PositionPlan docstring
