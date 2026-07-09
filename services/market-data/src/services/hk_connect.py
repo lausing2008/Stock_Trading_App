@@ -3,9 +3,28 @@
 Fetches daily southbound (Mainland→HK) net buy/sell data for HK stocks.
 Source: HKEX public data API (no authentication required).
 
-HKEX API notes
-──────────────
-HKEX provides a public endpoint that returns buy/sell turnover per HK stock
+MD-HKCONNECT1 (2026-07-09): the HKEX endpoint below is CONFIRMED DEAD — it now returns
+HTTP 302 redirecting to an ASP.NET error path (`?aspxerrorpath=...`) instead of JSON, on every
+request. HKEX has retired this legacy `.asmx` web service with no public per-stock JSON/CSV
+replacement (their current Stock Connect Statistics pages only publish aggregate market-wide
+turnover, not per-stock). Confirmed via production logs (100% failure, 3+ consecutive days) and
+the DB (hk_connect_flows has 0 rows total — this feature has never successfully stored real
+data). Researched alternatives: the best free per-stock option found is scraping Eastmoney's
+per-stock page (data.eastmoney.com/hsgt/{code}.html, e.g. via the `akshare` Python library's
+stock_hsgt_individual_em()) — an HTML scrape, not a clean API, with a known recent bug in that
+specific function. NOT implemented yet (deliberately deferred — too fragile to rush); this module
+is left calling the dead HKEX endpoint (harmless — it fails cleanly and predictably) until a real
+replacement is built. In the meantime, ingest_southbound_flows() now logs an ERROR-level
+hk_connect.ingest_all_failed event on a full-batch failure so this stays visible in production
+logs instead of only showing up as silent DEBUG-level per-symbol lines. Downstream impact:
+paper_trading_engine.py's hk_flow_gate (T224-A) reads flow_5d_net_hkd from signal reasons, which
+is always None while this table is empty — the gate's `is not None` check means it NEVER blocks
+an HK entry right now (fail-open by construction, not a separate bug — see paper_trading_engine.py
+around T224-A for the gate itself).
+
+HKEX API notes (historical — endpoint is dead, kept for reference)
+────────────────────────────────────────────────────────────────
+HKEX provided a public endpoint that returned buy/sell turnover per HK stock
 via the Stock Connect scheme (mainland investors buying HK shares):
 
   GET https://www.hkex.com.hk/eng/csm/ws/stock-connect-details.asmx/
@@ -182,10 +201,33 @@ def ingest_southbound_flows(db, hk_symbols: list[str]) -> dict:
 
         time.sleep(0.2)  # polite rate-limiting — ~5 req/s max to HKEX
 
-    _log.info(
-        "hk_connect.ingest_complete",
-        processed=processed, stored=stored, failed=failed,
-    )
+    # MD-HKCONNECT1: a full-batch failure (every symbol failed) previously logged at the same
+    # info level as a normal, mostly-successful run — indistinguishable in production logs
+    # without counting failed/processed by hand. Confirmed live 2026-07-09: the HKEX .asmx
+    # endpoint this module calls now returns HTTP 302 to an error page instead of JSON (HKEX
+    # retired the legacy web service with no public per-stock replacement), so every single
+    # ingest run has failed 100% since at least 2026-07-07, and hk_connect_flows has 0 rows
+    # total — meaning the paper-trading HK mainland-flow gate (hk_flow_gate in
+    # paper_trading_engine.py, T224-A) has been permanently fail-open (flow_5d_net_hkd is
+    # always None, so the gate's `is not None` check never fires) since inception or since
+    # HKEX's retirement, completely silently. Promote to warning/error so this is visible in
+    # production logs without needing to grep DEBUG-level lines or query the DB directly.
+    if processed > 0 and failed == processed:
+        _log.error(
+            "hk_connect.ingest_all_failed",
+            processed=processed, failed=failed,
+            note="every symbol failed — HKEX source likely down; hk_flow_gate is fail-open while this persists",
+        )
+    elif failed > 0:
+        _log.warning(
+            "hk_connect.ingest_partial_failure",
+            processed=processed, stored=stored, failed=failed,
+        )
+    else:
+        _log.info(
+            "hk_connect.ingest_complete",
+            processed=processed, stored=stored, failed=failed,
+        )
     return {"processed": processed, "stored": stored, "failed": failed}
 
 
