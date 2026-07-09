@@ -1351,6 +1351,39 @@ Starts at 50 and adjusts based on:
 
 ---
 
+## Congress Trading (`/congress`, `/insider`, `/intelligence`)
+
+Tracks US House and Senate members' stock trades, disclosed under the STOCK Act. Two independent
+implementations exist (see `.claude/CLAUDE.md`'s "Congress Trading Data" section for the full
+technical/ops detail) — this section covers what the feature actually shows.
+
+### Data source
+
+Both implementations pull from **kadoa-org/congress-trading-monitor** (a live, free, MIT-licensed
+GitHub feed, no API key needed), fixed 2026-07-09 after the previous free source
+(housestockwatcher.com/senatestockwatcher.com) went permanently offline. Covers House Clerk and
+Senate eFD filings — the feed also includes executive-branch (OGE) disclosures, filtered out here
+since those aren't congress trades. An optional Quiver Quantitative key ($30/mo, set in Settings)
+upgrades market-data's version with richer metadata.
+
+### `/congress` and `/insider` pages (market-data-backed)
+
+Live-fetched on every page load (no DB caching) — always current as of the feed's last update.
+Filterable by politician name, ticker, and transaction type (Purchase/Sale/Exchange).
+
+### `/intelligence` page (event-intelligence-backed)
+
+Reads from a scheduled sync job into the shared `congress_trades` table, feeding the catalyst
+score. A congress-heavy buy cluster on a stock (3+ purchases in 90 days) adds a bonus to
+`compute_congress_score()`; net selling pressure (more sales than purchases) subtracts — the
+score can go negative (range is -100 to 100, not 0-100) when selling dominates.
+
+**How it factors into signals:** `_compute_risk_score()` in event-intelligence adds risk points
+when congress sells outnumber buys for a stock in the last 90 days — shown as part of the
+Catalyst/Risk breakdown on stock detail pages and research reports.
+
+---
+
 ## Positions (`/positions`)
 
 Portfolio tracker for your actual or simulated stock holdings.
