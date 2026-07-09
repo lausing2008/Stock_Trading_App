@@ -2344,7 +2344,7 @@ def _call_decision_engine(
             return None
         result = r.json()
         verdict       = result.get("verdict", "SKIP")
-        should_enter  = verdict in ("BUY", "SCALE")
+        should_enter  = verdict == "BUY"
         score         = result.get("score", 0)
         blocked       = result.get("blocked_reason")
         return should_enter, verdict, score, blocked
