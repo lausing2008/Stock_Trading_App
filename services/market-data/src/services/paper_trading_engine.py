@@ -2406,6 +2406,8 @@ _SKIP_REASON_LABEL: dict[str, str] = {
     "insufficient_cash": "Insufficient cash",
     "conviction_gate": "Alert system's conviction gate already rejected this BUY",
     "entry_score_below_threshold": "Entry score below minimum (DE or fallback scorer)",
+    "already_open_scale_in_only": "Already an open position — evaluated for scale-in only",
+    "not_on_watchlist": "Signal exists but stock isn't on this style's watchlist",
 }
 
 
@@ -3165,9 +3167,18 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                                          symbol=stock.symbol, added_shares=_si_add_shares,
                                          live_price=_si_live, pnl_pct=round(_si_pnl_pct * 100, 1),
                                          confidence=_si_conf)
+            # TA-WHYNOTRADE2: this candidate already has an open position, so it was only ever
+            # eligible for scale-in above (whether or not scale-in actually fired) — not a fresh
+            # entry. Previously untallied, so _write_no_entry_summary's top_reasons could show []
+            # even when every candidate had this perfectly legitimate explanation.
+            _skip_tally["already_open_scale_in_only"] = _skip_tally.get("already_open_scale_in_only", 0) + 1
             continue
         # Optionally restrict to the GROWTH watchlist
         if growth_stock_ids and stock.id not in growth_stock_ids:
+            # TA-WHYNOTRADE2: signals are computed per-horizon for every active stock regardless
+            # of watchlist membership, so a stock can have e.g. a fresh SWING BUY signal without
+            # ever being added to a SWING-style watchlist. Previously untallied — see above.
+            _skip_tally["not_on_watchlist"] = _skip_tally.get("not_on_watchlist", 0) + 1
             continue
         # K-Score filter — enforce quality gate; reject unranked stocks if require_kscore
         if ranking is None:
