@@ -85,7 +85,12 @@ def detect_double_top_bottom(df: pd.DataFrame) -> list[PatternHit]:
     current_price = float(close.iloc[-1])
     vol20_avg = float(volume.rolling(20).mean().iloc[-1]) if volume is not None else None
 
-    highs_idx, lows_idx = _find_pivots(close, order=5)
+    # TA-DTB1 (same bug class as T237-TA-HS-CLOSE-HIGH-MISMATCH above): pivots were found on
+    # `close` but the trough/peak price levels were then read from `low`/`high` at those same
+    # indices. A close-based local min/max isn't guaranteed to coincide with that bar's actual
+    # low/high (e.g. a long wick) — find pivots on the actual series being measured instead.
+    _, lows_idx = _find_pivots(low, order=5)
+    highs_idx, _ = _find_pivots(high, order=5)
 
     # ── Double Bottom ─────────────────────────────────────────────────────────
     if len(lows_idx) >= 2:
@@ -189,7 +194,11 @@ def detect_triangle(df: pd.DataFrame, window: int = 60) -> list[PatternHit]:
     # _find_pivots returns 0-based indices within the sub-window slice; convert
     # to absolute df positions by adding the slice offset.
     offset = len(df) - len(sub)
-    highs_idx, lows_idx = _find_pivots(sub["close"], order=3)
+    # TA-DTB1/TA-TRI1 (same bug class as T237-TA-HS-CLOSE-HIGH-MISMATCH): pivots must be found
+    # on the same series they're later read from — a close-based local max/min isn't guaranteed
+    # to be the same bar as that bar's actual high/low (e.g. a long wick).
+    highs_idx, _ = _find_pivots(sub["high"], order=3)
+    _, lows_idx = _find_pivots(sub["low"], order=3)
     if len(highs_idx) < 2 or len(lows_idx) < 2:
         return []
     hs = np.polyfit(highs_idx, sub["high"].values[highs_idx], 1)[0]
