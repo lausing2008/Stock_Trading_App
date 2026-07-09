@@ -5,7 +5,10 @@ Usage (via API):
   POST /ml/tune_all    — tunes every active symbol sequentially (background task)
 
 For each symbol the tuner:
-  1. Runs `n_trials` Optuna trials, each scored by mean TimeSeriesSplit AUC
+  1. Runs `n_trials` Optuna trials, each scored by mean TimeSeriesSplit precision among the
+     top ~10% highest-predicted-probability validation rows per fold (a proxy for production's
+     buy_threshold tail, which only ever fires on prob > ~0.60-0.76), with mean AUC as a small
+     tiebreaker (see T232-ML5)
   2. Saves best params to  {model_dir}/xgboost/{symbol}_params.json
   3. Retrains the final model with those best params so predictions update immediately
 """
@@ -139,6 +142,18 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
     X_arr = X.values
     y_arr = y_dir.values
 
+    # T232-ML5: live trading only acts on prob > buy_threshold, which in production sits in the
+    # 0.60-0.76 range across styles/regimes — the extreme right tail of the predicted-probability
+    # distribution. Mean AUC rewards ranking quality across the WHOLE distribution and is nearly
+    # insensitive to precision at that tail, so a params set can improve AUC while making the
+    # actual traded signals worse. Score each fold on precision among the top ~10% highest-scored
+    # validation rows (the closest fold-local proxy for "what would have fired a BUY"), with AUC
+    # kept as a small tiebreaker so trials with few positives in the top decile still get a usable
+    # gradient. _TOP_K_FRAC=0.10 approximates production's tail without being so small (e.g. top 1%)
+    # that a 5-fold CV split has too few rows per fold to give a stable precision estimate.
+    _TOP_K_FRAC = 0.10
+    _AUC_TIEBREAK_WEIGHT = 0.05
+
     def objective(trial: optuna.Trial) -> float:
         params = {name: _suggest(trial, name) for name in _SEARCH}
         clf = XGBClassifier(
@@ -153,6 +168,7 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
         # forward-return labels computed from prices that overlap the validation window.
         tscv = TimeSeriesSplit(n_splits=5, gap=horizon)
         aucs: list[float] = []
+        precisions: list[float] = []
         for fold, (tr_idx, val_idx) in enumerate(tscv.split(X_arr)):
             X_tr, X_val = X_arr[tr_idx], X_arr[val_idx]
             y_tr, y_val = y_arr[tr_idx], y_arr[val_idx]
@@ -167,16 +183,30 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
             if len(np.unique(y_val)) > 1:
                 aucs.append(roc_auc_score(y_val, preds))
 
+            top_k = max(int(len(preds) * _TOP_K_FRAC), 1)
+            top_idx = np.argsort(preds)[-top_k:]
+            precisions.append(float(np.mean(y_val[top_idx])))
+
             # ML-FIX-3: report running mean so MedianPruner can kill weak trials early
-            if aucs:
-                trial.report(-float(np.mean(aucs)), step=fold)
+            if precisions:
+                _running = -float(np.mean(precisions))
+                if aucs:
+                    _running += _AUC_TIEBREAK_WEIGHT * -float(np.mean(aucs))
+                trial.report(_running, step=fold)
                 if trial.should_prune():
                     raise optuna.exceptions.TrialPruned()
 
-        # Return a large positive value (bad objective) when no fold produced a valid AUC.
-        # Optuna minimises, so 1.0 (= AUC of 0.0 inverted) is correctly worse than
-        # any real model's objective (which is negative for AUC > 0).
-        return -float(np.mean(aucs)) if aucs else 1.0
+        # Return a large positive value (bad objective) when no fold produced a valid score.
+        # Optuna minimises, so 1.0 (= precision of 0.0 inverted) is correctly worse than
+        # any real model's objective (which is negative for precision > 0).
+        trial.set_user_attr("mean_precision_top_k", float(np.mean(precisions)) if precisions else 0.0)
+        trial.set_user_attr("mean_auc", float(np.mean(aucs)) if aucs else 0.0)
+        if not precisions:
+            return 1.0
+        objective_val = -float(np.mean(precisions))
+        if aucs:
+            objective_val += _AUC_TIEBREAK_WEIGHT * -float(np.mean(aucs))
+        return objective_val
 
     # ML-FIX-3: MedianPruner kills trials that are below the median after 10 startup trials.
     # n_warmup_steps=2 means the first 2 folds are never pruned (not enough data for the pruner).
@@ -189,7 +219,11 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
 
     best_params = study.best_params
-    best_cv_auc = -study.best_value
+    # T232-ML5: study.best_value is now a blended (precision@top-decile, AUC-tiebreak) objective,
+    # not plain AUC — read the real per-metric values back from the winning trial's user attrs
+    # so downstream logging/consumers still see meaningful, undiluted numbers.
+    best_cv_precision_top_k = study.best_trial.user_attrs.get("mean_precision_top_k", 0.0)
+    best_cv_auc = study.best_trial.user_attrs.get("mean_auc", 0.0)
 
     # Persist best params — atomic write to avoid partial-read race with _load_best_params
     p = _params_path(symbol)
@@ -198,10 +232,16 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
     with open(tmp, "w") as f:
         json.dump(best_params, f, indent=2)
     os.replace(tmp, p)
-    log.info("tune.best_params", symbol=symbol, cv_auc=round(best_cv_auc, 4), **best_params)
+    log.info(
+        "tune.best_params", symbol=symbol,
+        cv_precision_top_k=round(best_cv_precision_top_k, 4),
+        cv_auc=round(best_cv_auc, 4),
+        **best_params,
+    )
 
     # Retrain final model using best params (train_model will pick them up via _load_best_params)
     result = train_model(symbol, "xgboost", horizon, hyperparams=best_params, style=style)
     result["best_params"] = best_params
+    result["best_cv_precision_top_k"] = round(best_cv_precision_top_k, 4)
     result["best_cv_auc"] = round(best_cv_auc, 4)
     return result
