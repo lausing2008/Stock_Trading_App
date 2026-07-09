@@ -70,6 +70,13 @@ def compute_position(
 
     regime_mult = _REGIME_MULT.get(regime_state, 1.0)
 
+    # DE-SIZER1: STRONG BUY/BUY previously had no "score gate failed" branch — unlike WATCH
+    # (which falls to 0.60 below when it misses its own >=60 gate), a STRONG BUY at score 70
+    # (below its 75 gate) or a BUY at score 50 (below its 65 gate) fell through every elif and
+    # landed on the generic `else: research_mult = 1.00` — identical to having NO research
+    # coverage at all, silently un-penalizing exactly the weak-recommendation case this gating
+    # logic exists to catch. Matches WATCH's existing pattern: recommendation present but
+    # doesn't clear its confidence bar → 0.60, not a silent no-op back to neutral.
     rec_upper = (research_rec or "").upper().replace("_", " ")
     if rec_upper == "STRONG BUY" and (research_score_val or 0) >= 75:
         research_mult = 1.20
@@ -77,7 +84,7 @@ def compute_position(
         research_mult = 1.00
     elif rec_upper == "WATCH" and (research_score_val or 0) >= 60:
         research_mult = 0.80
-    elif rec_upper in ("WATCH", "AVOID", "SELL"):
+    elif rec_upper in ("STRONG BUY", "BUY", "WATCH", "AVOID", "SELL"):
         research_mult = 0.60
     else:
         research_mult = 1.00
