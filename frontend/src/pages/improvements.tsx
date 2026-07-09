@@ -14260,6 +14260,17 @@ const ITEMS: Item[] = [
     fix: 'Fixed 2026-07-09 — detect_double_top_bottom() now calls _find_pivots(low) for lows_idx and _find_pivots(high) for highs_idx separately, instead of one _find_pivots(close) call for both. detect_triangle() likewise now finds highs_idx on sub["high"] and lows_idx on sub["low"] instead of sub["close"] for both. close is still correctly used elsewhere in detect_double_top_bottom() for current_price and the neckline (a genuine "highest/lowest close between pivots" concept, unaffected by this fix).\n\nCompile-checked (3.12). Verified live: ran detect_double_top_bottom(), detect_triangle(), and the full detect_patterns() entrypoint against synthetic OHLCV data — all ran without error and produced pattern hits with self-consistent, correctly-sourced trough/peak/neckline/target/stop values.',
     implementedNote: 'Done 2026-07-09 — found via a fresh audit pass on less-scrutinized services.',
   },
+  {
+    id: 'DE-SIZER1-WEAK-RESEARCH-REC-UNPENALIZED',
+    tier: 240 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/src/api/core/sizer.py',
+    effort: '10m',
+    impact: 'Medium — compute_position()\'s research_mult gating gave WATCH both a passes-score-gate branch (0.80) and a fails-gate fallback (0.60), but STRONG BUY/BUY only had the passes branch. A STRONG BUY at score 70 (below its own 75 gate) or a BUY at score 50 (below its own 65 gate) fell through every elif to the generic `else: research_mult = 1.00` — identical to having zero research coverage at all, silently un-penalizing exactly the weak-recommendation case this gate exists to catch. Directly affects position size on every DE-primary entry with a marginal research call.',
+    title: 'DE-SIZER1: weak STRONG BUY/BUY research recommendations silently sized as if there was no research at all',
+    what: 'Found via a second fresh audit pass, focused on ml-prediction/decision-engine/frontend lib code not yet deeply re-checked this session. Confirmed by reading compute_position()\'s research_mult if/elif chain directly — WATCH\'s two-branch pattern (pass/fail) made the missing fail-branch for STRONG BUY/BUY visually obvious once found.',
+    fix: 'Fixed 2026-07-09 — extended the `elif rec_upper in (...)` fallback to include "STRONG BUY" and "BUY" alongside the existing WATCH/AVOID/SELL, so a recommendation that exists but misses its own score gate always resolves to 0.60, never silently back to neutral 1.00. Verified numerically: STRONG BUY@70 and BUY@50 (previously 1.00) now correctly return 0.60; STRONG BUY@80, BUY@70, WATCH@65/40, AVOID, and genuinely-no-research (empty string, still 1.00) all confirmed unaffected.',
+    implementedNote: 'Done 2026-07-09 — found via a second fresh audit pass on ml-prediction/decision-engine/frontend-lib code.',
+  },
 ];
 
 
