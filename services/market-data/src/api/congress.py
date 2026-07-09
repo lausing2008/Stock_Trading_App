@@ -1,9 +1,18 @@
 """Congressional trading data.
 
 Primary source (free, no API key):
-  House Stock Watcher  — housestockwatcher.com/api/transactions
-  Senate Stock Watcher — senatestockwatcher.com/api/transactions
-  Both scrape official STOCK Act disclosures from congress.gov.
+  kadoa-org/congress-trading-monitor — raw.githubusercontent.com JSON feed.
+  MIT-licensed, unauthenticated, daily-updated. Covers House Clerk + Senate
+  eFD + OGE executive-branch filings in one combined response (~5000-row
+  rolling window, filtered here to chamber in {house, senate}).
+
+  MD-CONGRESS1: House Stock Watcher (housestockwatcher.com/api/transactions)
+  and Senate Stock Watcher (senatestockwatcher.com/api/transactions) — the
+  previous primary source — are both permanently dead as of 2026-07-09
+  (domains fail to resolve; maintainer inactive since March 2021). This left
+  /congress/trades silently returning an empty list to every real user with
+  no Quiver key configured, and confirmed 0 rows in the shared congress_trades
+  table populated by event-intelligence's sync job for the same reason.
 
 Optional upgrade:
   Quiver Quantitative  — quiverquant.com (paid, $30/mo) — richer metadata,
@@ -72,90 +81,64 @@ def _cutoff_date(days: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
 
 
-# ── Free source: House Stock Watcher ─────────────────────────────────────────
+# ── Free source: kadoa-org/congress-trading-monitor ──────────────────────────
 
-async def _fetch_house(client: httpx.AsyncClient, days: int) -> list[dict]:
+_KADOA_URL = "https://raw.githubusercontent.com/kadoa-org/congress-trading-monitor/main/public/data/trades.json"
+
+
+async def _fetch_kadoa(client: httpx.AsyncClient, days: int) -> list[dict]:
+    """Fetch House+Senate congress trades from the kadoa-org GitHub JSON feed.
+
+    MD-CONGRESS1: replaces the dead _fetch_house/_fetch_senate (housestockwatcher.com/
+    senatestockwatcher.com — both permanently offline, see module docstring). Single combined
+    feed covering House+Senate+executive-branch filings; filtered to chamber in {house, senate}
+    since the executive-branch (OGE) records are ~85% of the feed's rolling window and not
+    congress trades. Amounts arrive as native numbers (amount_range_low/high), unlike the old
+    sources' formatted strings, so no _parse_amount() call is needed here.
+    """
     try:
         resp = await client.get(
-            "https://housestockwatcher.com/api/transactions",
+            _KADOA_URL,
             headers={"User-Agent": "StockAI/1.0"},
             timeout=20,
         )
         if not resp.is_success:
-            log.warning("congress.house_error", status=resp.status_code)
+            log.warning("congress.kadoa_error", status=resp.status_code)
             return []
         raw: list[dict] = resp.json()
+        if isinstance(raw, dict):
+            raw = raw.get("data") or raw.get("trades") or []
     except Exception as exc:
-        log.warning("congress.house_fetch_failed", error=str(exc))
+        log.warning("congress.kadoa_fetch_failed", error=str(exc))
         return []
 
     cutoff = _cutoff_date(days)
+    _TX_MAP = {"purchase": "Purchase", "sale": "Sale", "exchange": "Exchange"}
     out = []
     for t in raw:
-        date_str = (t.get("transaction_date") or t.get("disclosure_date") or "")[:10]
+        chamber_raw = (t.get("chamber") or "").lower()
+        if chamber_raw not in ("house", "senate"):
+            continue
+        date_str = (t.get("transaction_date") or "")[:10]
         if date_str < cutoff:
             continue
         ticker = (t.get("ticker") or "").strip().upper()
         if not ticker or ticker in ("--", "N/A"):
             continue
-        tx_raw = (t.get("type") or "").lower()
-        tx = "Purchase" if "purchase" in tx_raw or "buy" in tx_raw else "Sale"
-        lo, hi = _parse_amount(t.get("amount"))
+        tx_raw = (t.get("transaction_type") or "").lower()
+        tx = "Purchase" if "purchase" in tx_raw or "buy" in tx_raw else \
+             "Exchange" if "exchange" in tx_raw else "Sale"
         out.append({
             "Ticker": ticker,
             "Date": date_str,
-            "Politician": t.get("representative") or t.get("owner") or "—",
+            "Politician": t.get("filer_name") or "—",
             "Transaction": tx,
-            "Min": lo,
-            "Max": hi,
+            "Min": t.get("amount_range_low"),
+            "Max": t.get("amount_range_high"),
             "Party": (t.get("party") or "")[:1].upper() or None,
             "State": t.get("state") or None,
-            "Chamber": "House",
-            "ReportDate": (t.get("disclosure_date") or "")[:10] or None,
-        })
-    return out
-
-
-# ── Free source: Senate Stock Watcher ────────────────────────────────────────
-
-async def _fetch_senate(client: httpx.AsyncClient, days: int) -> list[dict]:
-    try:
-        resp = await client.get(
-            "https://senatestockwatcher.com/api/transactions",
-            headers={"User-Agent": "StockAI/1.0"},
-            timeout=20,
-        )
-        if not resp.is_success:
-            log.warning("congress.senate_error", status=resp.status_code)
-            return []
-        raw: list[dict] = resp.json()
-    except Exception as exc:
-        log.warning("congress.senate_fetch_failed", error=str(exc))
-        return []
-
-    cutoff = _cutoff_date(days)
-    out = []
-    for t in raw:
-        date_str = (t.get("transaction_date") or t.get("disclosure_date") or "")[:10]
-        if date_str < cutoff:
-            continue
-        ticker = (t.get("ticker") or "").strip().upper()
-        if not ticker or ticker in ("--", "N/A"):
-            continue
-        tx_raw = (t.get("type") or "").lower()
-        tx = "Purchase" if "purchase" in tx_raw or "buy" in tx_raw else "Sale"
-        lo, hi = _parse_amount(t.get("amount"))
-        out.append({
-            "Ticker": ticker,
-            "Date": date_str,
-            "Politician": t.get("senator") or t.get("owner") or "—",
-            "Transaction": tx,
-            "Min": lo,
-            "Max": hi,
-            "Party": None,  # Senate Watcher doesn't return party
-            "State": None,
-            "Chamber": "Senate",
-            "ReportDate": (t.get("ptr_link") or t.get("disclosure_date") or "")[:10] or None,
+            "Chamber": chamber_raw.capitalize(),
+            "ReportDate": (t.get("filing_date") or "")[:10] or None,
         })
     return out
 
@@ -196,9 +179,9 @@ async def congress_trades(
 ):
     """Fetch recent congressional trades.
 
-    Uses House Stock Watcher + Senate Stock Watcher (free, no key needed) by
-    default. Falls back to Quiver Quantitative if a key is configured in
-    Settings — Quiver has richer metadata but costs $30/mo.
+    Uses the kadoa-org/congress-trading-monitor GitHub feed (free, no key
+    needed) by default. Falls back to Quiver Quantitative if a key is
+    configured in Settings — Quiver has richer metadata but costs $30/mo.
     """
     async with httpx.AsyncClient() as client:
         key = _quiver_api_key
@@ -209,9 +192,8 @@ async def congress_trades(
             cutoff = _cutoff_date(days)
             data = [t for t in data if (t.get("Date") or "")[:10] >= cutoff]
         else:
-            # Free path — merge House + Senate watchers
-            house, senate = await _fetch_house(client, days), await _fetch_senate(client, days)
-            data = house + senate
+            # Free path — kadoa-org combined House+Senate feed
+            data = await _fetch_kadoa(client, days)
 
     # Shared filters
     if politician:
