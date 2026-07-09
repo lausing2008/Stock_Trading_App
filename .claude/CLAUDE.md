@@ -876,3 +876,97 @@ ps` before and after, and re-verify file checksums on anything you'd previously 
 `docker cp` in a container that got swept in. Never assume a long-running background job (a
 retrain, a bulk backfill) survived a `docker compose up` on an unrelated service without checking
 `docker ps`/process state directly afterward.
+
+---
+
+## Recurring Issue: Congress Trading Data Silently Empty — Free Source Domains Permanently Dead
+
+**Symptom:** `/congress/trades` (market-data) returns an empty list with no error to every real
+user; `congress.tsx`/`insider.tsx` show a permanently empty page with zero indication anything is
+broken. `congress_trades` table (shared, written by event-intelligence) has 0 rows no matter how
+long the scheduler has been running. Catalyst scoring's congress component
+(`compute_congress_score()`, `_compute_risk_score()`'s congress-selling check) silently operates
+on zero real data — not fail-open-with-a-flag, just quietly always-zero.
+
+**Root cause (found 2026-07-09):** Both free congress-trading data sources this app depended on —
+`housestockwatcher.com/api/transactions` and `senatestockwatcher.com/api/transactions` — are
+**permanently dead**: the domains fail to resolve via DNS at all (not a 403/301/timeout on a live
+host — confirmed via direct `curl`/`nslookup` from inside the running market-data container). The
+underlying project's maintainer has been inactive since March 2021 and never responded to a 2024
+GitHub issue asking about a shutdown. This affected TWO independent call sites that both silently
+degraded to empty results on fetch failure with no alerting: event-intelligence's
+`sync_congress_trades()` (writes the shared `congress_trades` table) and market-data's
+`/congress/trades` endpoint (`_fetch_house`/`_fetch_senate`, since replaced by `_fetch_kadoa`).
+
+**Fix applied (2026-07-09):** Repointed both call sites to
+`https://raw.githubusercontent.com/kadoa-org/congress-trading-monitor/main/public/data/trades.json`
+— a live, unauthenticated, MIT-licensed GitHub JSON feed that updates via daily automated commits.
+Covers House Clerk + Senate eFD + OGE executive-branch filings in one combined response (a rolling
+~5000-row window, not full history — fine for keeping the feed current going forward, not a
+substitute for deep historical backfill). Both call sites now filter to congress-only records
+(`branch == "congress"` in event-intelligence; `chamber in ("house", "senate")` in market-data) —
+executive-branch OGE filings are ~85% of the feed's rolling window and are NOT congress trades.
+Verified live in production: triggered a real sync via `POST /events/sync/congress`, confirmed
+441 real rows upserted into `congress_trades` with correct politician names, tickers, transaction
+types, and dates.
+
+**What to check if this recurs (either this source dies too, or a similar silent-empty-fetch
+pattern shows up elsewhere):**
+```bash
+# Confirm the current source is actually reachable — DNS failure looks different from a 4xx/5xx:
+docker exec stockai-market-data-1 curl -sv 'https://raw.githubusercontent.com/kadoa-org/congress-trading-monitor/main/public/data/trades.json' --max-time 15 2>&1 | head -20
+docker exec stockai-market-data-1 nslookup raw.githubusercontent.com
+
+# Check current row count / staleness in the shared table:
+docker exec stockai-market-data-1 python3 -c "
+import sys; sys.path.insert(0,'/app'); sys.path.insert(0,'/app/src')
+from db import SessionLocal; from sqlalchemy import text
+s = SessionLocal()
+print(s.execute(text('SELECT COUNT(*), MAX(trade_date) FROM congress_trades')).fetchone())
+s.close()"
+
+# Manually trigger a resync (uses the same _service_token() pattern as other scheduler jobs):
+docker exec stockai-market-data-1 python3 -c "
+import sys, uuid, time; sys.path.insert(0,'/app'); sys.path.insert(0,'/app/src')
+from common.config import get_settings; from jose import jwt as _jwt; import httpx
+s = get_settings()
+tok = _jwt.encode({'sub':'scheduler','jti':str(uuid.uuid4()),'exp':int(time.time())+86400}, s.jwt_secret, algorithm='HS256')
+r = httpx.post('http://event-intelligence:8010/events/sync/congress', headers={'Authorization': f'Bearer {tok}'}, timeout=30)
+print(r.status_code, r.text[:200])"
+```
+
+**Design invariant:** Any external free-tier data source this app depends on should have its
+fetch failures surfaced somewhere visible (a log line grep, a staleness check) rather than
+silently degrading to an empty result — the original bug went undetected for an unknown period
+specifically because both call sites' `except: return []` pattern is indistinguishable from
+"genuinely no trades today" at the API response level. When adding a new free external data
+source, prefer one with committed, checkable update activity (this fix's replacement source
+updates via visible daily commits) over an opaque scraped API with no way to verify liveness
+without actually calling it.
+
+---
+
+## Feature Reference: Congress Trading Data (Two Independent Implementations)
+
+There are TWO separate, non-wire-compatible congress-trading code paths — this is intentional
+duplication tracked as architectural debt (see `T233-ARCH-CONGRESS-DEDUP` in
+`frontend/src/pages/improvements.tsx`), not a bug, but worth knowing both exist:
+
+1. **`services/market-data/src/api/congress.py`** — `GET /congress/trades`. No DB persistence;
+   live-fetches on every request from `_fetch_kadoa()` (or Quiver Quantitative if
+   `quiver_api_key` is configured in Settings — richer metadata, $30/mo). Response is
+   PascalCase (`Ticker`, `Date`, `Politician`, `Transaction`, `Min`, `Max`, `Party`, `State`,
+   `Chamber`, `ReportDate`), binary `Purchase`/`Sale`/`Exchange` transaction type. Consumed by
+   `frontend/src/pages/congress.tsx` and `frontend/src/pages/insider.tsx`.
+
+2. **`services/event-intelligence/src/services/congress.py`** — `POST /events/sync/congress`
+   (scheduled job) writes to the shared `congress_trades` DB table via
+   `sync_congress_trades()`; `GET /events/congress/*` reads from it. Response is snake_case
+   (`transaction_type`, `politician_name`, etc.), 4-state transaction type
+   (purchase/sale/exchange/unknown), and feeds `compute_congress_score()` for catalyst scoring.
+   Consumed by `frontend/src/pages/intelligence.tsx` and the catalyst-scoring pipeline.
+
+Both now source from the same kadoa-org feed (see the Recurring Issue section above) but keep
+independent parsing/schema — a fix to one's data source does NOT automatically fix the other;
+they must each be checked/fixed separately, exactly as happened when the previous free source
+died for both simultaneously.
