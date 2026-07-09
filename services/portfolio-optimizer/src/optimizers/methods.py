@@ -106,15 +106,24 @@ def mean_variance(returns: pd.DataFrame, max_weight: float = 0.40) -> PortfolioW
         vol = float(np.sqrt(np.clip(w @ cov @ w, 1e-12, None)))
         return -(ret - RISK_FREE) / vol
 
-    x0 = np.full(n, 1 / n)
-    res = minimize(
-        neg_sharpe, x0,
-        bounds=[(0.0, max_weight)] * n,
-        constraints=[{"type": "eq", "fun": lambda w: w.sum() - 1.0}],
-        method="SLSQP",
-        options={"ftol": 1e-9, "maxiter": 1000},
-    )
-    w = _normalize(np.clip(res.x, 0, None)) if res.success else np.full(n, 1.0 / n)
+    # TA-PO1: the equality constraint sum(w)=1.0 is infeasible whenever n * max_weight < 1.0
+    # (e.g. n=2, max_weight=0.40 -> max feasible sum is 0.80). SLSQP then always reports
+    # res.success=False and the code below silently falls back to flat 1/n weights with no
+    # error surfaced — every 2-symbol mean_variance request was silently forced to 50/50
+    # regardless of actual expected returns/risk. Skip optimization outright when infeasible,
+    # matching the existing n==1 bypass already used in ai_allocation for the same root cause.
+    if n * max_weight < 1.0:
+        w = np.full(n, 1.0 / n)
+    else:
+        x0 = np.full(n, 1 / n)
+        res = minimize(
+            neg_sharpe, x0,
+            bounds=[(0.0, max_weight)] * n,
+            constraints=[{"type": "eq", "fun": lambda w: w.sum() - 1.0}],
+            method="SLSQP",
+            options={"ftol": 1e-9, "maxiter": 1000},
+        )
+        w = _normalize(np.clip(res.x, 0, None)) if res.success else np.full(n, 1.0 / n)
     return _pack(symbols, w, "mean_variance", mu, cov, returns)
 
 
@@ -238,9 +247,11 @@ def ai_allocation(
         vol = float(np.sqrt(np.clip(w @ cov @ w, 1e-12, None)))
         return -(ret - RISK_FREE) / vol
 
-    if n == 1:
-        # Single stock: SLSQP is infeasible (max_weight=0.40 < required sum=1.0), skip it
-        w = np.array([1.0])
+    # TA-PO1: generalized from the original n==1-only check — sum(w)=1.0 is infeasible
+    # whenever n * max_weight < 1.0 (e.g. n=2, max_weight=0.40 -> max feasible sum 0.80),
+    # not just n==1. See the identical fix/comment in mean_variance() above.
+    if n * max_weight < 1.0:
+        w = np.full(n, 1.0 / n)
     else:
         x0 = np.full(n, 1 / n)
         res = minimize(

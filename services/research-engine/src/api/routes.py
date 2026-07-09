@@ -1251,17 +1251,20 @@ def _fallback_ai() -> dict:
 
 def _compute_yf_indicators(hist: pd.DataFrame) -> dict:
     closes = hist["Close"]
-    sma50 = closes.rolling(50).mean()
-    sma200 = closes.rolling(200).mean()
+    sma50 = closes.rolling(50, min_periods=50).mean()
+    sma200 = closes.rolling(200, min_periods=200).mean()
     delta = closes.diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    gain = delta.clip(lower=0).rolling(14, min_periods=14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14, min_periods=14).mean()
     rs = gain / loss.replace(0, float("nan"))
     rsi = 100 - (100 / (1 + rs))
-    ema12 = closes.ewm(span=12, adjust=False).mean()
-    ema26 = closes.ewm(span=26, adjust=False).mean()
+    # TA-MACD1 (same bug class, second occurrence): min_periods on all three .ewm() calls so
+    # macd_line/signal_line/macd_hist correctly evaluate to NaN during warmup instead of serving
+    # a fabricated crossover that _macd_interp() below would render as a false "Strong buy signal."
+    ema12 = closes.ewm(span=12, adjust=False, min_periods=12).mean()
+    ema26 = closes.ewm(span=26, adjust=False, min_periods=26).mean()
     macd_line = ema12 - ema26
-    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    signal_line = macd_line.ewm(span=9, adjust=False, min_periods=9).mean()
     macd_hist = macd_line - signal_line
 
     def to_list(s):
