@@ -371,8 +371,8 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
     !filters.minChange && !filters.maxChange && !filters.minPrice && !filters.maxPrice &&
     !filters.sector && !filters.minFairDiscount && !filters.minRS && !filters.minConfidence &&
     !filters.maxPE && !filters.minRevGrowth && !filters.maxDebt && !filters.maxPEG &&
-    !filters.minInstOwnership && !filters.capTier && !filters.minVolRatio && filters.patterns.size === 0 &&
-    !filters.watchlistOnly && !filters.search
+    !filters.minInstOwnership && !filters.capTier && !filters.minVolRatio && !filters.minRvol && filters.patterns.size === 0 &&
+    filters.watchlistOnly && !filters.search
   );
 
   const loading = !rankData || !signals;
@@ -425,12 +425,42 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
       {/* Preset filter chips */}
       <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
         {[
-          { label: 'Vol Surge ⚡', apply: () => setFilters(f => ({ ...f, minVolRatio: '2' })), active: filters.minVolRatio === '2' },
-          { label: 'Unusual Vol Today 🔥', apply: () => setFilters(f => ({ ...f, minRvol: '1.5' })), active: filters.minRvol === '1.5' },
-          { label: 'Strong BUY', apply: () => setFilters(f => ({ ...f, signals: new Set(['BUY']), minScore: '65', minConfidence: '60' })), active: filters.signals.size === 1 && filters.signals.has('BUY') && filters.minScore === '65' },
-          { label: 'High Short', apply: () => setFilters(f => ({ ...f, minFairDiscount: '' })), active: false },
-          { label: 'Deep Value', apply: () => setFilters(f => ({ ...f, minFairDiscount: '15', maxPE: '20' })), active: filters.minFairDiscount === '15' && filters.maxPE === '20' },
-          { label: 'Growth Momentum', apply: () => setFilters(f => ({ ...f, minRevGrowth: '20', minMomentum: '60' })), active: filters.minRevGrowth === '20' && filters.minMomentum === '60' },
+          {
+            label: 'Vol Surge ⚡',
+            active: filters.minVolRatio === '2',
+            apply: () => setFilters(f => ({ ...f, minVolRatio: f.minVolRatio === '2' ? '' : '2' })),
+          },
+          {
+            label: 'Unusual Vol Today 🔥',
+            active: filters.minRvol === '1.5',
+            apply: () => setFilters(f => ({ ...f, minRvol: f.minRvol === '1.5' ? '' : '1.5' })),
+          },
+          {
+            label: 'Strong BUY',
+            active: filters.signals.size === 1 && filters.signals.has('BUY') && filters.minScore === '65' && filters.minConfidence === '60',
+            apply: () => setFilters(f => {
+              const isActive = f.signals.size === 1 && f.signals.has('BUY') && f.minScore === '65' && f.minConfidence === '60';
+              return isActive
+                ? { ...f, signals: new Set(), minScore: '', minConfidence: '' }
+                : { ...f, signals: new Set(['BUY']), minScore: '65', minConfidence: '60' };
+            }),
+          },
+          {
+            label: 'Deep Value',
+            active: filters.minFairDiscount === '15' && filters.maxPE === '20',
+            apply: () => setFilters(f => {
+              const isActive = f.minFairDiscount === '15' && f.maxPE === '20';
+              return isActive ? { ...f, minFairDiscount: '', maxPE: '' } : { ...f, minFairDiscount: '15', maxPE: '20' };
+            }),
+          },
+          {
+            label: 'Growth Momentum',
+            active: filters.minRevGrowth === '20' && filters.minMomentum === '60',
+            apply: () => setFilters(f => {
+              const isActive = f.minRevGrowth === '20' && f.minMomentum === '60';
+              return isActive ? { ...f, minRevGrowth: '', minMomentum: '' } : { ...f, minRevGrowth: '20', minMomentum: '60' };
+            }),
+          },
         ].map(preset => (
           <button key={preset.label} onClick={preset.apply}
             style={{ padding: '4px 10px', borderRadius: '5px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', border: `1px solid ${preset.active ? '#6366f1' : '#1e293b'}`, background: preset.active ? 'rgba(99,102,241,0.15)' : 'transparent', color: preset.active ? '#818cf8' : '#64748b', transition: 'all 0.1s' }}>

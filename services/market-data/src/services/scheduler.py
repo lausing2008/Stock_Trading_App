@@ -89,7 +89,7 @@ from db import AlertCondition, PaperPortfolio, PaperTrade, Price, PriceAlert, Ra
 from .ingestion import ingest_universe
 from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification, send_post_open_digest_email, send_data_quality_alert_email, is_quota_exceeded
 from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists, poll_broker_order_fills
-from ..api.routes import refresh_live_price_cache, refresh_avg_volume_cache
+from ..api.routes import refresh_live_price_cache, refresh_avg_volume_cache, _AVG_VOLUME_KEY
 
 log = get_logger("scheduler")
 _settings = get_settings()
@@ -3506,6 +3506,36 @@ def start_scheduler() -> None:
         id="avg_volume_cache_refresh",
         replace_existing=True,
         max_instances=1, coalesce=True,
+    )
+
+    # MD-RVOL2: an IntervalTrigger's countdown resets to its FULL period on every restart —
+    # it does not remember when the job last actually succeeded. A restart occurring more
+    # often than every 4h (routine during active deploys) can therefore push the real next
+    # run further into the future each time, while the Redis cache's own 6h TTL keeps
+    # expiring on schedule regardless — the two clocks are independent, and repeated
+    # restarts can leave stockai:avg_volume empty for hours, silently breaking every RVOL
+    # read app-wide (screener "Min RVOL"/"Unusual Vol Today" filter, stock-detail RVOL chip,
+    # post-open digest volume-surge section) with zero visible error, since every reader
+    # treats a missing cache entry as "no data" rather than "stale." Confirmed in production
+    # 2026-07-10: 3 restarts in ~2.5h left the key fully expired with 0/154 symbols cached.
+    # Fix: run once at startup, but only if the cache is actually missing/stale — skips the
+    # yfinance batch download entirely on a routine restart where the cache is still fresh.
+    def _avg_volume_startup_check() -> None:
+        try:
+            exists = _get_redis().exists(_AVG_VOLUME_KEY)
+        except Exception:
+            exists = False
+        if not exists:
+            log.warning("avg_volume.cache_missing_at_startup_refreshing")
+            _avg_volume_refresh_job()
+
+    _scheduler.add_job(
+        _avg_volume_startup_check,
+        "date",
+        run_date=datetime.now(timezone.utc) + timedelta(seconds=30),
+        id="avg_volume_startup_check",
+        replace_existing=True,
+        max_instances=1,
     )
 
     # ── Tier 86: Self-healing watchdog — daily 06:10 ET ──────────────────────
