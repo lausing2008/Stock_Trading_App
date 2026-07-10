@@ -17,7 +17,9 @@ from src.backtest.candidate_event_mining import (
     MinedCandidate,
     _atr_at,
     _build_atr_series,
+    _build_realized_vol_percentile_series,
     _regime_favorable_near,
+    _sector_correlation_at,
     build_feature_matrix,
     candidates_to_dataframe,
 )
@@ -187,3 +189,80 @@ def test_build_feature_matrix_length_mismatch_raises():
         assert False, "expected AssertionError on length mismatch"
     except AssertionError:
         pass
+
+
+# ── realized_vol_percentile / sector_correlation (2026-07-10 follow-up) ────────────────
+# Added after a real-data smoke test showed the position-scaling gate failing its own
+# feature-importance sign-off check (current_drawdown_pct dominating at 45%) — traced to
+# these two features being hardcoded constants with zero variance, starving the model of
+# real signal. These tests cover the real computations that replaced the constants.
+
+def test_realized_vol_percentile_high_vol_period_ranks_high():
+    """Construct a price series that is calm for a year, then suddenly choppy for the last
+    stretch — the choppy period's realized vol should rank near the top of its own trailing
+    history (close to 1.0), not the fixed 0.5 the old placeholder always returned.
+    """
+    rng = np.random.RandomState(7)
+    n_calm = 300
+    n_choppy = 40
+    calm = 100 + np.cumsum(rng.uniform(-0.3, 0.3, n_calm))
+    choppy = calm[-1] + np.cumsum(rng.uniform(-4, 4, n_choppy))
+    closes = np.concatenate([calm, choppy])
+    dates = pd.date_range("2025-01-01", periods=len(closes), freq="D")
+    df = pd.DataFrame({
+        "ts": dates,
+        "high": closes + 0.5, "low": closes - 0.5, "close": closes,
+    })
+    series = _build_realized_vol_percentile_series(df)
+    last_val = series.iloc[-1]
+    assert last_val is not None and not pd.isna(last_val)
+    assert last_val > 0.8, f"expected the choppy tail to rank near the top, got {last_val}"
+
+
+def test_realized_vol_percentile_insufficient_history_is_nan():
+    df = _price_df(n=10)  # far short of the ~40-bar minimum for a resolved reading
+    series = _build_realized_vol_percentile_series(df)
+    assert series.isna().all()
+
+
+def test_sector_correlation_perfectly_tracking_peers_is_near_one():
+    dates = pd.date_range("2026-01-01", periods=90, freq="D")
+    rng = np.random.RandomState(3)
+    shared_moves = rng.uniform(-0.02, 0.02, 90)
+    stock_returns = pd.Series(shared_moves, index=dates)
+    peer_returns = pd.DataFrame({
+        "peer_a": shared_moves,
+        "peer_b": shared_moves,
+    }, index=dates)
+    corr = _sector_correlation_at(stock_returns, peer_returns, dates[-1])
+    assert corr > 0.99
+
+
+def test_sector_correlation_independent_of_peers_is_near_zero():
+    dates = pd.date_range("2026-01-01", periods=90, freq="D")
+    rng = np.random.RandomState(4)
+    stock_returns = pd.Series(rng.uniform(-0.02, 0.02, 90), index=dates)
+    peer_returns = pd.DataFrame({
+        "peer_a": rng.uniform(-0.02, 0.02, 90),
+        "peer_b": rng.uniform(-0.02, 0.02, 90),
+    }, index=dates)
+    corr = _sector_correlation_at(stock_returns, peer_returns, dates[-1])
+    assert abs(corr) < 0.3, f"expected near-zero correlation for independent series, got {corr}"
+
+
+def test_sector_correlation_empty_peers_returns_zero():
+    dates = pd.date_range("2026-01-01", periods=90, freq="D")
+    stock_returns = pd.Series(np.zeros(90), index=dates)
+    corr = _sector_correlation_at(stock_returns, pd.DataFrame(), dates[-1])
+    assert corr == 0.0
+
+
+def test_sector_correlation_insufficient_window_returns_zero():
+    """Fewer than _SECTOR_CORR_WINDOW (60) days of history — too little to trust a
+    correlation reading, should fall back to the neutral 0.0 rather than a noisy value."""
+    dates = pd.date_range("2026-01-01", periods=20, freq="D")
+    rng = np.random.RandomState(5)
+    stock_returns = pd.Series(rng.uniform(-0.02, 0.02, 20), index=dates)
+    peer_returns = pd.DataFrame({"peer_a": rng.uniform(-0.02, 0.02, 20)}, index=dates)
+    corr = _sector_correlation_at(stock_returns, peer_returns, dates[-1])
+    assert corr == 0.0

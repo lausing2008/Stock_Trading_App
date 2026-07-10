@@ -1360,43 +1360,61 @@ def send_post_open_digest_email(
             return "#ef4444", "distribution"
         return "#64748b", "flat"
 
+    # MD-VOLDIRECTION1: split into buying vs. selling instead of one mixed table with a
+    # small inline tag — heavy selling volume (surge + falling price) is the case a user
+    # most needs to notice quickly, and burying it as one row among rising-price rows made
+    # it easy to miss. A stock with change_pct exactly in the -0.5%..+0.5% "flat" band is
+    # surging on volume without a clear directional lean yet — shown in the Buying table
+    # (arbitrary but consistent tie-break) so no surging stock is silently dropped from
+    # either sub-section.
+    def _vol_row(v: dict) -> str:
+        rvol = v["volume_z"]
+        intensity = "#ef4444" if rvol >= 3.0 else "#f97316" if rvol >= 2.0 else "#f59e0b"
+        price = v.get("current_price")
+        change_pct = v.get("change_pct")
+        price_str = f"${price:,.2f}" if price is not None else "—"
+        change_color, direction = _vol_direction(change_pct)
+        change_str = f"{change_pct:+.1f}%" if change_pct is not None else "—"
+        direction_str = f" ({direction})" if direction else ""
+        return (
+            f'<tr style="border-bottom:1px solid #f1f5f9">'
+            f'<td style="padding:6px 10px;font-weight:700;font-size:13px">{v["symbol"]}</td>'
+            f'<td style="padding:6px 10px;font-size:13px;font-weight:700;color:{intensity}">{rvol:.1f}×</td>'
+            f'<td style="padding:6px 10px;font-size:13px;color:#374151">{price_str}</td>'
+            f'<td style="padding:6px 10px;font-size:13px;font-weight:700;color:{change_color}">{change_str}{direction_str}</td>'
+            f'</tr>'
+        )
+
+    def _vol_text_row_generic(v: dict) -> str:
+        price = v.get("current_price")
+        change_pct = v.get("change_pct")
+        price_str = f"${price:,.2f}" if price is not None else "—"
+        _, direction = _vol_direction(change_pct)
+        change_str = f"{change_pct:+.1f}%" if change_pct is not None else "—"
+        direction_str = f" ({direction})" if direction else ""
+        return f"  {v['symbol']:8}  {v['volume_z']:.1f}x avg volume   {price_str:>10}  {change_str}{direction_str}\n"
+
+    vol_surge_buying = [v for v in (vol_surge or []) if (v.get("change_pct") or 0) > -0.5]
+    vol_surge_selling = [v for v in (vol_surge or []) if (v.get("change_pct") or 0) <= -0.5]
+
     vol_surge_html = ""
     vol_surge_text = ""
-    if vol_surge:
-        def _vol_row(v: dict) -> str:
-            rvol = v["volume_z"]
-            intensity = "#ef4444" if rvol >= 3.0 else "#f97316" if rvol >= 2.0 else "#f59e0b"
-            price = v.get("current_price")
-            change_pct = v.get("change_pct")
-            price_str = f"${price:,.2f}" if price is not None else "—"
-            change_color, direction = _vol_direction(change_pct)
-            change_str = f"{change_pct:+.1f}%" if change_pct is not None else "—"
-            direction_str = f" ({direction})" if direction else ""
-            return (
-                f'<tr style="border-bottom:1px solid #f1f5f9">'
-                f'<td style="padding:6px 10px;font-weight:700;font-size:13px">{v["symbol"]}</td>'
-                f'<td style="padding:6px 10px;font-size:13px;font-weight:700;color:{intensity}">{rvol:.1f}×</td>'
-                f'<td style="padding:6px 10px;font-size:13px;color:#374151">{price_str}</td>'
-                f'<td style="padding:6px 10px;font-size:13px;font-weight:700;color:{change_color}">{change_str}{direction_str}</td>'
-                f'</tr>'
-            )
-        vol_rows_html = "".join(_vol_row(v) for v in vol_surge)
-        vol_surge_html = f"""
+    if vol_surge_selling:
+        selling_rows_html = "".join(_vol_row(v) for v in vol_surge_selling)
+        vol_surge_html += f"""
     <div style="margin-top:20px">
-      <div style="font-size:11px;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Volume Surge (RVOL vs. 20d avg)</div>
-      <table style="width:100%;border-collapse:collapse;background:#fafafa;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">{vol_rows_html}</table>
+      <div style="font-size:11px;font-weight:700;color:#ef4444;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Volume Surge — Selling (RVOL vs. 20d avg)</div>
+      <table style="width:100%;border-collapse:collapse;background:#fef2f2;border-radius:8px;overflow:hidden;border:1px solid #fecaca">{selling_rows_html}</table>
     </div>"""
-
-        def _vol_text_row(v: dict) -> str:
-            price = v.get("current_price")
-            change_pct = v.get("change_pct")
-            price_str = f"${price:,.2f}" if price is not None else "—"
-            _, direction = _vol_direction(change_pct)
-            change_str = f"{change_pct:+.1f}%" if change_pct is not None else "—"
-            direction_str = f" ({direction})" if direction else ""
-            return f"  {v['symbol']:8}  {v['volume_z']:.1f}x avg volume   {price_str:>10}  {change_str}{direction_str}\n"
-
-        vol_surge_text = "\nVOLUME SURGE (RVOL):\n" + "".join(_vol_text_row(v) for v in vol_surge)
+        vol_surge_text += "\nVOLUME SURGE — SELLING (RVOL):\n" + "".join(_vol_text_row_generic(v) for v in vol_surge_selling)
+    if vol_surge_buying:
+        buying_rows_html = "".join(_vol_row(v) for v in vol_surge_buying)
+        vol_surge_html += f"""
+    <div style="margin-top:20px">
+      <div style="font-size:11px;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Volume Surge — Buying (RVOL vs. 20d avg)</div>
+      <table style="width:100%;border-collapse:collapse;background:#fafafa;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">{buying_rows_html}</table>
+    </div>"""
+        vol_surge_text += "\nVOLUME SURGE — BUYING (RVOL):\n" + "".join(_vol_text_row_generic(v) for v in vol_surge_buying)
 
     # MD-VOLDRYUP1: mirror-image case — RVOL <= 0.5, trading meaningfully BELOW normal
     # volume today. A sudden dry-up can mean conviction has evaporated, often precedes a
@@ -1448,8 +1466,10 @@ def send_post_open_digest_email(
         subject_bits.append("Signal flip")
     if new_signal_changes:
         subject_bits.append(f"{len(new_signal_changes)} new signal(s)")
-    if vol_surge:
-        subject_bits.append(f"{len(vol_surge)} volume surge")
+    if vol_surge_selling:
+        subject_bits.append(f"{len(vol_surge_selling)} selling on volume")
+    if vol_surge_buying:
+        subject_bits.append(f"{len(vol_surge_buying)} buying on volume")
     if vol_dryup:
         subject_bits.append(f"{len(vol_dryup)} volume dry-up")
     subject_detail = " · ".join(subject_bits) if subject_bits else "Update"
