@@ -4,6 +4,7 @@ import { loadSettings, saveSettings, type AppSettings } from '@/lib/settings';
 import { getSession, changePassword, startImpersonation } from '@/lib/auth';
 import { api, type AppUser, type BrokerConnection, type BrokerType } from '@/lib/api';
 import { storage } from '@/lib/storage';
+import { isPushSupported, getExistingSubscription, enablePushNotifications, disablePushNotifications } from '@/lib/push';
 
 const inp: React.CSSProperties = {
   background: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px',
@@ -100,6 +101,34 @@ export default function SettingsPage() {
   // Feature flags (admin-controlled)
   const [brokerEnabled, setBrokerEnabled] = useState(false);
   const [featureFlagSaving, setFeatureFlagSaving] = useState(false);
+
+  // T230-ALERTING-PUSH-NOTIFICATIONS
+  const [pushSupported, setPushSupported] = useState(false);
+  const [pushSubscribed, setPushSubscribed] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushError, setPushError] = useState('');
+
+  useEffect(() => {
+    setPushSupported(isPushSupported());
+    getExistingSubscription().then(sub => setPushSubscribed(!!sub)).catch(() => {});
+  }, []);
+
+  async function togglePush() {
+    setPushBusy(true);
+    setPushError('');
+    try {
+      const result = pushSubscribed ? await disablePushNotifications() : await enablePushNotifications();
+      if (result.ok) {
+        setPushSubscribed(!pushSubscribed);
+      } else {
+        setPushError(result.error || 'Something went wrong.');
+      }
+    } catch (e) {
+      setPushError(e instanceof Error ? e.message : 'Something went wrong.');
+    } finally {
+      setPushBusy(false);
+    }
+  }
 
   useEffect(() => {
     api.getFeatureFlags().then(f => setBrokerEnabled(f.broker_enabled)).catch(() => {});
@@ -1053,6 +1082,37 @@ export default function SettingsPage() {
           }}>
             Manage Alerts →
           </Link>
+        </div>
+
+        {/* T230-ALERTING-PUSH-NOTIFICATIONS: near-instant browser push, alongside email */}
+        <div style={{ padding: '0 20px 16px', borderTop: '1px solid #1e293b', marginTop: '4px', paddingTop: '16px' }}>
+          <label style={lbl}>Push Notifications</label>
+          <div style={hint}>
+            Get signal and price alerts pushed straight to this browser — seconds instead of the
+            5–15 minute email delay.
+          </div>
+          {!pushSupported ? (
+            <div style={{ ...hint, color: '#f59e0b', marginTop: '8px' }}>
+              This browser doesn&apos;t support push notifications.
+            </div>
+          ) : (
+            <div style={{ marginTop: '10px' }}>
+              <button
+                onClick={togglePush}
+                disabled={pushBusy}
+                style={{
+                  padding: '9px 16px', borderRadius: '8px', fontSize: '13px', fontWeight: 600,
+                  cursor: pushBusy ? 'default' : 'pointer', opacity: pushBusy ? 0.6 : 1,
+                  background: pushSubscribed ? 'rgba(239,68,68,0.15)' : 'rgba(34,197,94,0.15)',
+                  border: pushSubscribed ? '1px solid rgba(239,68,68,0.3)' : '1px solid rgba(34,197,94,0.3)',
+                  color: pushSubscribed ? '#f87171' : '#4ade80',
+                }}
+              >
+                {pushBusy ? 'Working…' : pushSubscribed ? '🔕 Disable push notifications' : '🔔 Enable push notifications'}
+              </button>
+              {pushError && <div style={{ ...hint, color: '#f87171', marginTop: '8px' }}>{pushError}</div>}
+            </div>
+          )}
         </div>
       </div>
 

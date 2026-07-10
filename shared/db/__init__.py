@@ -42,6 +42,7 @@ from .models import (
     PoliticalEvent,
     CatalystScore,
     TuneHistory,
+    PushSubscription,
 )
 from .session import SessionLocal, engine, get_session, init_db
 
@@ -89,6 +90,7 @@ __all__ = [
     "PoliticalEvent",
     "CatalystScore",
     "TuneHistory",
+    "PushSubscription",
     "SessionLocal",
     "engine",
     "get_session",

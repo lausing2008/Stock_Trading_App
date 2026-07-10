@@ -18,6 +18,7 @@ from .api.portfolio import router as portfolio_router
 from .api.paper_portfolio import router as paper_portfolio_router
 from .api.broker import router as broker_router
 from .api.rl import router as rl_router
+from .api.push import router as push_router
 from .services.scheduler import start_scheduler
 
 
@@ -28,6 +29,6 @@ async def on_startup():
 
 app = create_app(
     "market-data-service",
-    routers=[data_router, admin_router, auth_router, watchlists_router, watchlist_router, news_router, alerts_router, signal_alerts_router, congress_router, journal_router, board_router, positions_router, app_notifications_router, portfolio_router, paper_portfolio_router, broker_router, rl_router],
+    routers=[data_router, admin_router, auth_router, watchlists_router, watchlist_router, news_router, alerts_router, signal_alerts_router, congress_router, journal_router, board_router, positions_router, app_notifications_router, portfolio_router, paper_portfolio_router, broker_router, rl_router, push_router],
     on_startup=on_startup,
 )
