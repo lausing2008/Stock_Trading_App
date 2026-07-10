@@ -150,9 +150,32 @@ export default function SettingsPage() {
   const [emailSaving, setEmailSaving] = useState(false);
   const [syncingEmail, setSyncingEmail] = useState(false);
 
+  // T230-ALERTING-SLACK-DISCORD-FIX: Discord/Slack webhook for signal alert delivery
+  const [webhookUrl, setWebhookUrl] = useState('');
+  const [webhookMsg, setWebhookMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [webhookSaving, setWebhookSaving] = useState(false);
+
   useEffect(() => {
-    api.getMe().then(u => { if (u.email) setProfileEmail(u.email); }).catch(() => {});
+    api.getMe().then(u => {
+      if (u.email) setProfileEmail(u.email);
+      if (u.notification_webhook) setWebhookUrl(u.notification_webhook);
+    }).catch(() => {});
   }, []);
+
+  async function handleSaveWebhook(e: React.FormEvent) {
+    e.preventDefault();
+    setWebhookSaving(true);
+    setWebhookMsg(null);
+    try {
+      await api.updateProfile({ notification_webhook: webhookUrl.trim() || undefined });
+      setWebhookMsg({ ok: true, text: webhookUrl.trim() ? 'Webhook saved.' : 'Webhook cleared.' });
+      setTimeout(() => setWebhookMsg(null), 3000);
+    } catch (err) {
+      setWebhookMsg({ ok: false, text: err instanceof Error ? err.message : 'Failed to save webhook — must be an https:// URL.' });
+    } finally {
+      setWebhookSaving(false);
+    }
+  }
 
   async function handleSaveEmail(e: React.FormEvent) {
     e.preventDefault();
@@ -1178,6 +1201,35 @@ export default function SettingsPage() {
               style={{ padding: '8px 18px', borderRadius: '8px', border: '1px solid #334155', background: 'transparent', color: '#94a3b8', fontSize: '13px', fontWeight: 600, cursor: (syncingEmail || emailSaving) ? 'not-allowed' : 'pointer', opacity: (syncingEmail || emailSaving) ? 0.6 : 1 }}
             >
               {syncingEmail ? 'Syncing…' : 'Sync to all alerts'}
+            </button>
+          </div>
+        </form>
+
+        {/* T230-ALERTING-SLACK-DISCORD-FIX: Discord/Slack webhook */}
+        <form onSubmit={handleSaveWebhook} style={{ padding: '16px 20px', borderBottom: '1px solid #1e293b', display: 'flex', gap: '12px', alignItems: 'flex-end' }}>
+          <div style={{ flex: 1 }}>
+            <label style={lbl}>Discord / Slack Webhook</label>
+            <input
+              type="url"
+              value={webhookUrl}
+              onChange={e => setWebhookUrl(e.target.value)}
+              placeholder="https://discord.com/api/webhooks/..."
+              style={inp}
+            />
+            <div style={hint}>
+              Signal alerts also post here when set (Discord embed format). Must be an https:// URL.
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingBottom: '2px' }}>
+            {webhookMsg && (
+              <span style={{ fontSize: '12px', color: webhookMsg.ok ? '#4ade80' : '#f87171' }}>{webhookMsg.text}</span>
+            )}
+            <button
+              type="submit"
+              disabled={webhookSaving}
+              style={{ padding: '8px 18px', borderRadius: '8px', border: 'none', background: '#f59e0b', color: '#0f172a', fontSize: '13px', fontWeight: 700, cursor: webhookSaving ? 'not-allowed' : 'pointer', opacity: webhookSaving ? 0.6 : 1 }}
+            >
+              {webhookSaving ? 'Saving…' : 'Save Webhook'}
             </button>
           </div>
         </form>

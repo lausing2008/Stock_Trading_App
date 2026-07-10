@@ -82,6 +82,13 @@ class User(Base):
     role: Mapped[UserRole] = mapped_column(SAEnum(UserRole), default=UserRole.USER)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     email: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # T230-ALERTING-SLACK-DISCORD-FIX: this field was referenced by scheduler.py's signal-alert
+    # webhook delivery since 2026-07-01 (via getattr(alert.user, "notification_webhook", None))
+    # but never actually existed on this model — the getattr fallback meant that code path
+    # always silently no-op'd, discovered while wiring T230-ALERTING-PUSH-NOTIFICATIONS into
+    # the same call site. Set via PUT /auth/me (reuses alerts.py's _validate_webhook_url SSRF
+    # guard — https-only, no private/internal IP targets).
+    notification_webhook: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     watchlist_items: Mapped[list["WatchlistItem"]] = relationship(back_populates="user")
