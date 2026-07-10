@@ -1200,6 +1200,7 @@ def send_post_open_digest_email(
     top_movers: list,          # [{symbol, change_pct}]
     bottom_movers: list,       # [{symbol, change_pct}]
     vol_surge: list | None = None,  # [{symbol, volume_z (RVOL), current_price, change_pct}]
+    vol_dryup: list | None = None,  # [{symbol, volume_z (RVOL), current_price, change_pct}] — RVOL <= 0.5
 ) -> bool:
     """Post-open market update — 30 min or 1 hour after {market} opens.
 
@@ -1341,27 +1342,27 @@ def send_post_open_digest_email(
         losers_text = "".join(f"  {m['symbol']:8}  {m['change_pct']:.1f}%\n" for m in bottom_movers)
         movers_text = f"\nTOP GAINERS:\n{gainers_text}\nTOP LOSERS:\n{losers_text}"
 
-    # ── Volume surge — stocks trading meaningfully above their normal volume ────
+    # ── Volume surge/dry-up — stocks trading meaningfully above/below normal volume ──
+    # MD-RVOL1: value is now RVOL (today_volume / avg_volume, same metric/scope as the
+    # screener's RVOL column and stock detail page's RVOL chip) rather than a volume_z
+    # z-score — rendered as "×" to match those pages' own display convention (e.g. "2.3×"),
+    # not "σ", so a value seen here reads identically to the same stock's RVOL elsewhere.
+    # T241-DIGEST5X: a volume surge on rising price (accumulation/breakout) and one on
+    # falling price (distribution/panic selling) call for very different reactions — the
+    # bare RVOL ratio alone couldn't distinguish them, so price + %change + a directional
+    # note are now shown alongside it. Shared by both the surge and dry-up sections below.
+    def _vol_direction(change_pct: float | None) -> tuple[str, str]:
+        if change_pct is None:
+            return "#64748b", ""
+        if change_pct >= 0.5:
+            return "#22c55e", "accumulation"
+        if change_pct <= -0.5:
+            return "#ef4444", "distribution"
+        return "#64748b", "flat"
+
     vol_surge_html = ""
     vol_surge_text = ""
     if vol_surge:
-        # MD-RVOL1: value is now RVOL (today_volume / avg_volume, same metric/scope as the
-        # screener's RVOL column and stock detail page's RVOL chip) rather than a volume_z
-        # z-score — rendered as "×" to match those pages' own display convention (e.g. "2.3×"),
-        # not "σ", so a value seen here reads identically to the same stock's RVOL elsewhere.
-        # T241-DIGEST5X: a volume surge on rising price (accumulation/breakout) and one on
-        # falling price (distribution/panic selling) call for very different reactions — the
-        # bare RVOL ratio alone couldn't distinguish them, so price + %change + a directional
-        # note are now shown alongside it.
-        def _vol_direction(change_pct: float | None) -> tuple[str, str]:
-            if change_pct is None:
-                return "#64748b", ""
-            if change_pct >= 0.5:
-                return "#22c55e", "accumulation"
-            if change_pct <= -0.5:
-                return "#ef4444", "distribution"
-            return "#64748b", "flat"
-
         def _vol_row(v: dict) -> str:
             rvol = v["volume_z"]
             intensity = "#ef4444" if rvol >= 3.0 else "#f97316" if rvol >= 2.0 else "#f59e0b"
@@ -1397,6 +1398,49 @@ def send_post_open_digest_email(
 
         vol_surge_text = "\nVOLUME SURGE (RVOL):\n" + "".join(_vol_text_row(v) for v in vol_surge)
 
+    # MD-VOLDRYUP1: mirror-image case — RVOL <= 0.5, trading meaningfully BELOW normal
+    # volume today. A sudden dry-up can mean conviction has evaporated, often precedes a
+    # breakout once volume returns, or just flags a stock coasting on no news — reported
+    # in its own section rather than mixed into the surge table above, since "loud" and
+    # "quiet" call for different reactions.
+    vol_dryup_html = ""
+    vol_dryup_text = ""
+    if vol_dryup:
+        def _dryup_row(v: dict) -> str:
+            rvol = v["volume_z"]
+            intensity = "#94a3b8" if rvol <= 0.2 else "#64748b" if rvol <= 0.35 else "#94a3b8"
+            price = v.get("current_price")
+            change_pct = v.get("change_pct")
+            price_str = f"${price:,.2f}" if price is not None else "—"
+            change_color, direction = _vol_direction(change_pct)
+            change_str = f"{change_pct:+.1f}%" if change_pct is not None else "—"
+            direction_str = f" ({direction})" if direction else ""
+            return (
+                f'<tr style="border-bottom:1px solid #f1f5f9">'
+                f'<td style="padding:6px 10px;font-weight:700;font-size:13px">{v["symbol"]}</td>'
+                f'<td style="padding:6px 10px;font-size:13px;font-weight:700;color:{intensity}">{rvol:.1f}×</td>'
+                f'<td style="padding:6px 10px;font-size:13px;color:#374151">{price_str}</td>'
+                f'<td style="padding:6px 10px;font-size:13px;font-weight:700;color:{change_color}">{change_str}{direction_str}</td>'
+                f'</tr>'
+            )
+        dryup_rows_html = "".join(_dryup_row(v) for v in vol_dryup)
+        vol_dryup_html = f"""
+    <div style="margin-top:20px">
+      <div style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Volume Dry-Up (RVOL vs. 20d avg)</div>
+      <table style="width:100%;border-collapse:collapse;background:#fafafa;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">{dryup_rows_html}</table>
+    </div>"""
+
+        def _dryup_text_row(v: dict) -> str:
+            price = v.get("current_price")
+            change_pct = v.get("change_pct")
+            price_str = f"${price:,.2f}" if price is not None else "—"
+            _, direction = _vol_direction(change_pct)
+            change_str = f"{change_pct:+.1f}%" if change_pct is not None else "—"
+            direction_str = f" ({direction})" if direction else ""
+            return f"  {v['symbol']:8}  {v['volume_z']:.1f}x avg volume   {price_str:>10}  {change_str}{direction_str}\n"
+
+        vol_dryup_text = "\nVOLUME DRY-UP (RVOL):\n" + "".join(_dryup_text_row(v) for v in vol_dryup)
+
     subject_bits = []
     if regime_changed:
         subject_bits.append(f"Regime→{_state_label.get(cur_state, cur_state.upper())}")
@@ -1406,6 +1450,8 @@ def send_post_open_digest_email(
         subject_bits.append(f"{len(new_signal_changes)} new signal(s)")
     if vol_surge:
         subject_bits.append(f"{len(vol_surge)} volume surge")
+    if vol_dryup:
+        subject_bits.append(f"{len(vol_dryup)} volume dry-up")
     subject_detail = " · ".join(subject_bits) if subject_bits else "Update"
     subject = f"📈 {market} {window_label}: {subject_detail} — {date_str}"
 
@@ -1415,6 +1461,7 @@ def send_post_open_digest_email(
         f"{pos_section_text}"
         f"{sig_section_text}"
         f"{vol_surge_text}"
+        f"{vol_dryup_text}"
         f"{movers_text}"
     )
     body_html = f"""<!DOCTYPE html><html><body style="font-family:sans-serif;background:#f8fafc;padding:24px;margin:0">
@@ -1427,6 +1474,7 @@ def send_post_open_digest_email(
     {pos_section_html}
     {sig_section_html}
     {vol_surge_html}
+    {vol_dryup_html}
     {movers_html}
     <p style="font-size:12px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:12px">
       <a href="https://lausing.com/signal-filters" style="color:#6366f1">View signal filters →</a> ·
