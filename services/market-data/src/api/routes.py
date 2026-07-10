@@ -2326,55 +2326,78 @@ def hk_connect_flow(
 
 @router.get("/{symbol}/rvol")
 def get_rvol(symbol: str, session: Session = Depends(get_session)):
-    """Relative volume: today's cumulative volume vs 20-day average for same time-of-day.
+    """Time-of-day-adjusted relative volume: today's cumulative volume-so-far vs the average
+    cumulative volume other recent trading days had reached by this SAME point in their own
+    session, using real 5-minute intraday bars (Price, timeframe=M5).
 
-    Returns {"symbol": str, "rvol": float | None, "today_volume": int, "avg_volume": float}.
-    RVOL > 2.0 = unusual institutional accumulation.
+    Returns {"symbol": str, "rvol": float | None, "today_volume": int, "avg_volume": float,
+    "minutes_since_open": int | None}. RVOL > 2.0 = unusual activity for this point in the day.
+
+    T241-AUDIT-RVOL-INTRADAY-BIAS (fixed 2026-07-10, found via a Fable 5 audit): this endpoint
+    previously queried a table (`prices_5m`) that has never existed in this schema — it 500'd
+    on every call and had zero real callers anywhere in the frontend (all RVOL display is
+    computed client-side from stockai:live_prices/avg_volume, comparing full-day cumulative
+    volume against a full-day average with no time-of-day adjustment — a real source of false
+    "quiet"/"surging" reads early in the trading session, per the same audit). Rewritten
+    against the real `prices` table (Price model, keyed by stock_id + timeframe, not a raw
+    `symbol` column) with a genuinely time-of-day-aware comparison: "minutes since THIS
+    market's own open" rather than raw UTC hour-of-day, so an HK stock queried from a
+    US-timezone server context still compares against the correct point in HK's own session.
     """
-    from sqlalchemy import text
-    from datetime import datetime, timezone, timedelta
-    now = datetime.now(timezone.utc)
-    today_str = now.date().isoformat()
-    current_minute = now.hour * 60 + now.minute
+    from zoneinfo import ZoneInfo
 
-    # Today's cumulative volume up to current minute
-    today_vol_row = session.execute(text("""
-        SELECT COALESCE(SUM(volume), 0) as vol
-        FROM prices_5m
-        WHERE symbol = :sym
-          AND DATE(ts AT TIME ZONE 'UTC') = :today
-          AND (EXTRACT(hour FROM ts AT TIME ZONE 'UTC') * 60 + EXTRACT(minute FROM ts AT TIME ZONE 'UTC')) <= :cur_min
-    """), {"sym": symbol.upper(), "today": today_str, "cur_min": current_minute}).fetchone()
-    today_vol = int(today_vol_row.vol) if today_vol_row else 0
+    from db import Market as _Market
 
+    stock = session.execute(select(Stock).where(Stock.symbol == symbol.upper())).scalar_one_or_none()
+    if stock is None:
+        raise HTTPException(status_code=404, detail=f"Unknown symbol: {symbol}")
+
+    market_tz = ZoneInfo("Asia/Hong_Kong") if stock.market == _Market.HK else ZoneInfo("America/New_York")
+    now_local = datetime.now(market_tz)
+    today_local = now_local.date()
+    minutes_since_midnight = now_local.hour * 60 + now_local.minute
+
+    bars = session.execute(
+        select(Price.ts, Price.volume)
+        .where(Price.stock_id == stock.id, Price.timeframe == TimeFrame.M5)
+        .order_by(Price.ts.asc())
+    ).all()
+    if not bars:
+        return {"symbol": stock.symbol, "rvol": None, "today_volume": 0, "avg_volume": 0.0, "minutes_since_open": None}
+
+    # Price.ts is stored naive-UTC (per the shared schema) — localize to this stock's own
+    # market timezone before comparing calendar dates or minutes-of-day.
+    by_local_date: dict[date, list[tuple[int, float]]] = {}
+    for ts, vol in bars:
+        local_ts = ts.replace(tzinfo=timezone.utc).astimezone(market_tz)
+        minutes = local_ts.hour * 60 + local_ts.minute
+        by_local_date.setdefault(local_ts.date(), []).append((minutes, float(vol or 0)))
+
+    today_bars = by_local_date.get(today_local, [])
+    today_vol = sum(v for m, v in today_bars if m <= minutes_since_midnight)
     if today_vol == 0:
-        return {"symbol": symbol.upper(), "rvol": None, "today_volume": 0, "avg_volume": 0.0}
+        return {"symbol": stock.symbol, "rvol": None, "today_volume": 0, "avg_volume": 0.0, "minutes_since_open": minutes_since_midnight}
 
-    # Average cumulative volume for same time-of-day over last 20 trading days (exclude today)
-    avg_row = session.execute(text("""
-        SELECT AVG(daily_vol) as avg_vol
-        FROM (
-            SELECT DATE(ts AT TIME ZONE 'UTC') as dt, SUM(volume) as daily_vol
-            FROM prices_5m
-            WHERE symbol = :sym
-              AND DATE(ts AT TIME ZONE 'UTC') < :today
-              AND DATE(ts AT TIME ZONE 'UTC') >= :cutoff
-              AND (EXTRACT(hour FROM ts AT TIME ZONE 'UTC') * 60 + EXTRACT(minute FROM ts AT TIME ZONE 'UTC')) <= :cur_min
-            GROUP BY DATE(ts AT TIME ZONE 'UTC')
-            ORDER BY dt DESC
-            LIMIT 20
-        ) sub
-    """), {
-        "sym": symbol.upper(),
-        "today": today_str,
-        "cutoff": (now - timedelta(days=30)).date().isoformat(),
-        "cur_min": current_minute,
-    }).fetchone()
+    # Same cumulative-by-this-time-of-day comparison across the last 20 PRIOR trading days
+    # that have any bars at all (skips weekends/holidays automatically — no bars exist for
+    # non-trading days) rather than the last 20 calendar days.
+    prior_dates = sorted((d for d in by_local_date if d < today_local), reverse=True)[:20]
+    daily_cumulative: list[float] = []
+    for d in prior_dates:
+        day_total = sum(v for m, v in by_local_date[d] if m <= minutes_since_midnight)
+        if day_total > 0:
+            daily_cumulative.append(day_total)
 
-    avg_vol = float(avg_row.avg_vol) if avg_row and avg_row.avg_vol else 0.0
+    avg_vol = sum(daily_cumulative) / len(daily_cumulative) if daily_cumulative else 0.0
     rvol = round(today_vol / avg_vol, 2) if avg_vol > 0 else None
 
-    return {"symbol": symbol.upper(), "rvol": rvol, "today_volume": today_vol, "avg_volume": round(avg_vol, 0)}
+    return {
+        "symbol": stock.symbol,
+        "rvol": rvol,
+        "today_volume": int(today_vol),
+        "avg_volume": round(avg_vol, 0),
+        "minutes_since_open": minutes_since_midnight,
+    }
 
 
 @router.get("/signal-outcomes/summary")
