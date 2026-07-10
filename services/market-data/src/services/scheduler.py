@@ -3122,6 +3122,28 @@ def send_post_open_digest(market: str, window: str) -> None:
                     select(Stock.symbol).where(Stock.market == market, Stock.active.is_(True))
                 ).all()
             }
+            # T241-AUDIT-RVOL-INTRADAY-BIAS (fixed 2026-07-10, found via a Fable 5 audit):
+            # rvol here is TODAY'S CUMULATIVE volume-so-far divided by a FULL-DAY historical
+            # average, with no adjustment for how much of the trading day has elapsed. At the
+            # earliest digest windows this makes "dry-up" degenerate into "the quietest stocks
+            # so far" (confirmed live in production: at the 30min window on a normal day, 112
+            # of 152 stocks — 74% — read <=0.5 simply because cumulative volume 30 minutes in
+            # is naturally a small fraction of a full day) while making "surge" too strict
+            # (needing 1.5x a FULL day's volume within the window's first few minutes).
+            # Scale both thresholds by how far into a ~6.5h US / ~5h HK trading session this
+            # window sits, so a stock needs to be unusual RELATIVE TO WHAT'S STRUCTURALLY
+            # EXPECTED at this point in the day, not unusual relative to a full day that
+            # hasn't happened yet. This is a coarse linear approximation (real intraday volume
+            # is U-shaped, heavier at open/close, not uniform) — good enough to fix the
+            # confirmed false-positive/false-negative pattern without a per-symbol intraday
+            # bar query on every digest run for every active stock.
+            _WINDOW_ELAPSED_MINUTES = {
+                "30min": 30, "1hr30min": 90, "2hr30min": 150, "3hr30min": 210, "4hr30min": 270,
+            }
+            _session_minutes = 330.0 if market == "HK" else 390.0  # HK ~5.5h, US ~6.5h trading day
+            _elapsed_frac = min(1.0, _WINDOW_ELAPSED_MINUTES.get(window, _session_minutes) / _session_minutes)
+            _surge_threshold = max(1.05, 1.5 * _elapsed_frac)
+            _dryup_threshold = min(0.5, 0.5 * _elapsed_frac) if _elapsed_frac > 0 else 0.5
             for row in _live_raw:
                 sym = row.get("symbol")
                 if sym not in _market_symbols:
@@ -3135,7 +3157,7 @@ def send_post_open_digest(market: str, window: str) -> None:
                 rvol = float(vol) / float(avg_vol)
                 change_pct = ((float(price) - float(prev_close)) / float(prev_close) * 100
                               if price and prev_close else None)
-                if rvol >= 1.5:  # same threshold convention as the screener's RVOL filter
+                if rvol >= _surge_threshold:  # scaled by session-elapsed-fraction, see above
                     # T241-DIGEST5X: added current_price/change_pct alongside RVOL — a volume
                     # surge on rising price (accumulation) and one on falling price (distribution/
                     # panic selling) call for very different reactions, and the bare ratio alone
@@ -3145,15 +3167,15 @@ def send_post_open_digest(market: str, window: str) -> None:
                         "symbol": sym, "volume_z": round(rvol, 2),  # key name kept for the email template/snapshot schema below
                         "current_price": price, "change_pct": round(change_pct, 2) if change_pct is not None else None,
                     })
-                elif rvol <= 0.5:
+                elif rvol <= _dryup_threshold:  # scaled by session-elapsed-fraction, see above
                     # MD-VOLDRYUP1: the mirror-image case — trading meaningfully BELOW normal
                     # volume today. Useful as a different kind of signal than a surge: a
                     # sudden dry-up can mean conviction has evaporated (few buyers OR sellers
                     # willing to trade), often precedes a breakout once volume returns, or
-                    # simply flags a stock coasting on no news. Same 1.5x/0.5x symmetric
-                    # threshold convention, same RVOL source, same dedup-by-day pattern as
-                    # vol_surge above — reported separately since "quiet" and "loud" call for
-                    # different reactions and shouldn't be mixed in one table.
+                    # simply flags a stock coasting on no news. Same RVOL source, same
+                    # dedup-by-day pattern as vol_surge above — reported separately since
+                    # "quiet" and "loud" call for different reactions and shouldn't be mixed
+                    # in one table.
                     vol_dryup.append({
                         "symbol": sym, "volume_z": round(rvol, 2),
                         "current_price": price, "change_pct": round(change_pct, 2) if change_pct is not None else None,
