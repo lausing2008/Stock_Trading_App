@@ -2117,25 +2117,46 @@ def _check_position_scaling_gate_drift() -> None:
             return
 
         bundle = joblib.load(model_path)
-        training_hit_rate = (bundle.get("metadata") or {}).get("walk_forward_report", {}).get("mean_hit_rate")
+        metadata = bundle.get("metadata") or {}
+        training_hit_rate = metadata.get("walk_forward_report", {}).get("mean_hit_rate")
 
+        # T241-AUDIT-WALKFORWARD-VALIDITY (found 2026-07-10 via audit): this previously
+        # compared live_mean_prob against the model's act_threshold (0.55) — an arbitrary
+        # decision boundary, not a real distributional baseline. A calibrated model's mean
+        # predicted probability sits near its training label's base rate, not near the
+        # threshold, so comparing against the threshold could false-alarm every week (if the
+        # real base rate differs meaningfully from 0.55, which the earlier T241 investigation
+        # found is likely — the positive label rate was well under 50%) or fail to catch real
+        # drift. Now compares against training_mean_act_probability, computed and stored in
+        # the model bundle's metadata at save time (train_and_save_position_scaling_gate) —
+        # the model's own mean predicted probability on the data it was actually trained on.
+        training_mean_prob = metadata.get("training_mean_act_probability")
         live_mean_prob = sum(recent_probs) / len(recent_probs)
-        # T241-P6-DRIFT-THRESHOLD: the model's own act_threshold (0.55 default) is the
-        # decision boundary — a live mean act_probability drifting far from what training-time
-        # walk-forward folds implied (roughly centered near the act_threshold by construction,
-        # since folds balance both act/no-act outcomes) signals the live candidate population
-        # looks meaningfully different from what the model learned on. 0.15 absolute
-        # probability drift is the same magnitude already used as the signal-decay threshold
-        # in thesis_persistence_gate.py, kept consistent rather than picking a new number.
-        act_threshold = bundle.get("act_threshold", 0.55)
-        drift = abs(live_mean_prob - act_threshold)
+
+        if training_mean_prob is None:
+            # Model saved before this fix — no real baseline stored yet. Skip the drift
+            # verdict entirely rather than falling back to the known-wrong act_threshold
+            # comparison; the next weekly retrain will populate this field.
+            log.info(
+                "position_scaling_gate.drift_check_skipped",
+                reason="saved model predates training_mean_act_probability metadata — will populate on next retrain",
+                n_recent_verdicts=len(recent_probs),
+                live_mean_act_probability=round(live_mean_prob, 4),
+            )
+            _record_job_status("position_scaling_gate_drift_check", "ok", time.monotonic() - _t0)
+            return
+
+        # 0.15 absolute probability drift matches the magnitude already used as the
+        # signal-decay threshold in thesis_persistence_gate.py, kept consistent rather than
+        # picking a new number.
+        drift = abs(live_mean_prob - training_mean_prob)
         drifted = drift > 0.15
 
         log.info(
             "position_scaling_gate.drift_check_done",
             n_recent_verdicts=len(recent_probs),
             live_mean_act_probability=round(live_mean_prob, 4),
-            training_act_threshold=act_threshold,
+            training_mean_act_probability=training_mean_prob,
             training_mean_hit_rate=training_hit_rate,
             drift=round(drift, 4),
             drifted=drifted,
@@ -2144,7 +2165,7 @@ def _check_position_scaling_gate_drift() -> None:
             log.warning(
                 "position_scaling_gate.drift_detected",
                 live_mean_act_probability=round(live_mean_prob, 4),
-                training_act_threshold=act_threshold,
+                training_mean_act_probability=training_mean_prob,
                 note="live shadow predictions have drifted meaningfully from training-time expectations — consider an earlier retrain",
             )
         _record_job_status("position_scaling_gate_drift_check", "ok", time.monotonic() - _t0)
