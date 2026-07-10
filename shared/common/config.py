@@ -85,6 +85,17 @@ class Settings(BaseSettings):
     # AWS SES
     ses_region: str = "us-east-1"
 
+    # T230-ALERTING-PUSH-NOTIFICATIONS: Web Push (VAPID). Empty by default — push delivery
+    # is a no-op fail-open (skipped, not an error) if these aren't set, matching how
+    # email_provider="" disables email rather than crashing. Generate once with:
+    #   python3 -c "from pywebpush import webpush; from py_vapid import Vapid01; v = Vapid01(); v.generate_keys(); print(v.private_pem().decode()); print(v.public_key.public_bytes(...))"
+    # or the simpler `vapid --gen` CLI from the pywebpush package. Store the PRIVATE key only
+    # in the EC2 .env (never commit); the PUBLIC key is also served to the frontend
+    # (GET /push/vapid-public-key) since browsers need it to create a subscription.
+    vapid_private_key: str = ""      # PEM-encoded EC private key
+    vapid_public_key: str = ""       # base64url-encoded public key, shared with the frontend
+    vapid_subject: str = "mailto:admin@lausing.com"  # contact URI required by the Web Push spec
+
 
 @lru_cache
 def get_settings() -> Settings:

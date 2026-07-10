@@ -570,6 +570,14 @@ export const api = {
   positionScalingShadow: (limit = 100) =>
     request<PositionScalingShadowResponse>(`/paper-portfolio/position-scaling-shadow?limit=${limit}`),
 
+  // ── Push Notifications (T230-ALERTING-PUSH-NOTIFICATIONS) ─────────────────
+  pushVapidPublicKey: () => request<{ public_key: string }>('/push/vapid-public-key'),
+  pushSubscribe: (subscription: PushSubscriptionJSON) =>
+    request<{ status: string }>('/push/subscribe', { method: 'POST', body: JSON.stringify(subscription) }),
+  pushUnsubscribe: (endpoint: string) =>
+    request<{ status: string }>('/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint }) }),
+  pushStatus: () => request<{ subscription_count: number; push_available: boolean }>('/push/status'),
+
   // ── Signal Quality / Calibration ──────────────────────────────────────────
   outcomesCalibration: (days = 180) =>
     request<CalibrationData>(`/signals/outcomes/calibration?days=${days}`),
@@ -1696,6 +1704,13 @@ export type PositionScalingShadowResponse = {
   would_act_hit_rate_pct: number | null;
   pending: PositionScalingShadowVerdict[];
   resolved: PositionScalingShadowVerdict[];
+};
+
+// T230-ALERTING-PUSH-NOTIFICATIONS
+export type PushSubscriptionJSON = {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+  user_agent?: string;
 };
 
 // ── Event Intelligence types ─────────────────────────────────────────────────

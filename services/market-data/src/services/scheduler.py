@@ -1337,6 +1337,22 @@ def check_signal_alerts() -> None:
                             message=analyst_ratings.get(alert.symbol, ""),
                             color=0x22c55e if current == "BUY" else 0xef4444,
                         )
+                    # T230-ALERTING-PUSH-NOTIFICATIONS: near-instant browser/mobile push,
+                    # alongside email — a no-op if the user has no active subscription or
+                    # VAPID isn't configured (see push_service.py). tag=alert.symbol so a
+                    # rapid re-flip on the same symbol replaces the notification rather than
+                    # stacking duplicates.
+                    try:
+                        from .push_service import send_push_to_user
+                        send_push_to_user(
+                            alert.user,
+                            title=f"{alert.symbol}: {prev} → {current}",
+                            body=analyst_ratings.get(alert.symbol, "") or f"Signal changed to {current}",
+                            url=f"/stock/{alert.symbol}",
+                            tag=alert.symbol,
+                        )
+                    except Exception as _push_exc:
+                        log.warning("signal_alert.push_failed", symbol=alert.symbol, error=str(_push_exc))
                 elif is_quota_exceeded():
                     # T239-EMAIL2: DP-1's 5-retry give-up was designed for a genuinely broken
                     # SMTP config (bad password, wrong host) that never recovers on its own.
@@ -1457,6 +1473,7 @@ def check_price_alerts() -> None:
             fired = 0
             pending_emails: list[dict] = []
             pending_webhooks: list[tuple[str, dict]] = []
+            pending_pushes: list[tuple] = []  # (user, symbol, condition, threshold, price)
             for alert in alerts:
                 price = prices.get(alert.symbol)
                 if price is None:
@@ -1484,6 +1501,12 @@ def check_price_alerts() -> None:
                         symbol=alert.symbol, condition=alert.condition.value,
                         threshold=alert.threshold, price=price, note=alert.note,
                     )))
+                # T230-ALERTING-PUSH-NOTIFICATIONS: alert.user is the same relationship
+                # already used for user_id-scoped alerts elsewhere in this file — accessing
+                # it here triggers a lazy-load per alert, acceptable since triggered price
+                # alerts are rare relative to the full scan.
+                if alert.user_id:
+                    pending_pushes.append((alert.user, alert.symbol, alert.condition.value, alert.threshold, price))
 
             # Commit triggered flags BEFORE sending emails so a crash between
             # commit and send causes a missed email rather than a duplicate.
@@ -1496,6 +1519,18 @@ def check_price_alerts() -> None:
                     log.warning("alert.email_failed", symbol=kwargs["symbol"], email=kwargs["to"])
             for url, payload in pending_webhooks:
                 _fire_webhook(url, payload)
+            for user, symbol, condition, threshold, price in pending_pushes:
+                try:
+                    from .push_service import send_push_to_user
+                    send_push_to_user(
+                        user,
+                        title=f"{symbol} price alert",
+                        body=f"{symbol} is now {condition} ${threshold:,.2f} (currently ${price:,.2f})",
+                        url=f"/stock/{symbol}",
+                        tag=f"price-{symbol}",
+                    )
+                except Exception as _push_exc:
+                    log.warning("alert.push_failed", symbol=symbol, error=str(_push_exc))
 
             # T230-ALERTING-PORTFOLIO-ALERTS: notify users when a paper position is down ≥ 5%.
             try:

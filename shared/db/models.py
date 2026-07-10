@@ -93,6 +93,7 @@ class User(Base):
     positions: Mapped[list["UserPosition"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     cash_balances: Mapped[list["UserCash"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     app_notifications: Mapped[list["AppNotification"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    push_subscriptions: Mapped[list["PushSubscription"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class Stock(Base):
@@ -355,6 +356,27 @@ class SignalAlert(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "symbol", "horizon", name="uq_signal_alerts_user_symbol_horizon"),
     )
+
+
+class PushSubscription(Base):
+    """T230-ALERTING-PUSH-NOTIFICATIONS: one browser/device Web Push subscription per user.
+    A user can have multiple (one per browser/device they've enabled push on). Populated by
+    the frontend's service worker registration via POST /push/subscribe; consumed by
+    send_push_notification() in email_service.py alongside every existing email/webhook
+    alert delivery path.
+    """
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    endpoint: Mapped[str] = mapped_column(String(512), unique=True)
+    p256dh_key: Mapped[str] = mapped_column(String(256))
+    auth_key: Mapped[str] = mapped_column(String(128))
+    user_agent: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    user: Mapped["User"] = relationship(back_populates="push_subscriptions")
 
 
 class UserPosition(Base):
