@@ -13,6 +13,7 @@ from datetime import timedelta
 import numpy as np
 import pandas as pd
 
+import src.backtest.candidate_event_mining as cem
 from src.backtest.candidate_event_mining import (
     MinedCandidate,
     _atr_at,
@@ -22,6 +23,7 @@ from src.backtest.candidate_event_mining import (
     _sector_correlation_at,
     build_feature_matrix,
     candidates_to_dataframe,
+    mine_all_horizons,
 )
 from src.backtest.position_scaling_gate import FEATURE_COLUMNS
 
@@ -63,6 +65,33 @@ def test_regime_favorable_near_too_far_defaults_false():
 
 def test_regime_favorable_near_empty_snapshots_defaults_false():
     assert _regime_favorable_near(pd.DataFrame(), pd.Timestamp("2026-03-01").date()) is False
+
+
+def test_regime_favorable_near_ignores_future_snapshot():
+    """T241-AUDIT-WALKFORWARD-VALIDITY: a snapshot recorded AFTER the event date must never
+    be used, even if it's the only one within window_days and even if it's a favorable
+    ("bull") regime — using it would leak future information into a training feature. The
+    only available snapshot here is 3 days in the future; with no eligible on-or-before
+    snapshot, this must fall back to the conservative False default, not reach into the
+    future for the closest match.
+    """
+    snapshots = pd.DataFrame({
+        "entry_date": pd.to_datetime(["2026-03-10"]),
+        "market_regime_at_entry": ["bull"],
+    })
+    assert _regime_favorable_near(snapshots, pd.Timestamp("2026-03-07").date()) is False
+
+
+def test_regime_favorable_near_prefers_past_snapshot_over_closer_future_one():
+    """Given both a past AND a closer future snapshot, must use the past one (2026-03-05,
+    2 days before) and ignore the closer-in-time future one (2026-03-08, 1 day after) —
+    confirms the fix filters future rows out entirely rather than merely deprioritizing them.
+    """
+    snapshots = pd.DataFrame({
+        "entry_date": pd.to_datetime(["2026-03-05", "2026-03-08"]),
+        "market_regime_at_entry": ["bear", "bull"],
+    })
+    assert _regime_favorable_near(snapshots, pd.Timestamp("2026-03-07").date()) is False
 
 
 def test_build_atr_series_matches_canonical_atr_directly():
@@ -266,3 +295,108 @@ def test_sector_correlation_insufficient_window_returns_zero():
     peer_returns = pd.DataFrame({"peer_a": rng.uniform(-0.02, 0.02, 20)}, index=dates)
     corr = _sector_correlation_at(stock_returns, peer_returns, dates[-1])
     assert corr == 0.0
+
+
+# ── sector_correlation self-exclusion (T241-AUDIT-WALKFORWARD-VALIDITY) ────────────────
+# Found via a 2026-07-10 audit: mine_candidate_events() cached _sector_peer_returns() per
+# SECTOR, but the self-exclusion inside that function was applied per STOCK at cache-build
+# time — so only the first stock processed in a sector was actually excluded from its own
+# "peer average"; every subsequent same-sector stock reused the same cached DataFrame,
+# which still only excluded the first stock, meaning it correlated against a peer average
+# that included ITS OWN returns. Fixed by caching the UNFILTERED per-sector DataFrame and
+# excluding each stock's own column at USE time via _sector_correlation_at's new
+# exclude_stock_id parameter.
+
+def test_sector_correlation_excludes_own_column_when_present_in_cached_peers():
+    """Reproduces the exact bug shape: a per-sector cache holds ALL sector members
+    (including the stock currently being scored, stock_id=1), and the correlation must
+    still come out as if stock 1 were never in the peer set — i.e. identical to computing
+    the correlation from a peer set that never included stock 1 to begin with.
+    """
+    dates = pd.date_range("2026-01-01", periods=90, freq="D")
+    rng = np.random.RandomState(6)
+    stock_1_returns = rng.uniform(-0.02, 0.02, 90)
+    peer_a_returns = rng.uniform(-0.02, 0.02, 90)
+    stock_returns = pd.Series(stock_1_returns, index=dates)
+
+    # Cached DataFrame includes stock 1's OWN column alongside a real peer — the bug shape.
+    contaminated_peers = pd.DataFrame({1: stock_1_returns, 2: peer_a_returns}, index=dates)
+    # The correct comparison: peer set with stock 1 never present.
+    clean_peers = pd.DataFrame({2: peer_a_returns}, index=dates)
+
+    corr_with_exclusion = _sector_correlation_at(stock_returns, contaminated_peers, dates[-1], exclude_stock_id=1)
+    corr_clean = _sector_correlation_at(stock_returns, clean_peers, dates[-1])
+
+    assert corr_with_exclusion == corr_clean, (
+        "excluding a stock's own column from a contaminated cache must match computing "
+        "the correlation against a peer set that never included that stock's own returns"
+    )
+
+
+def test_sector_correlation_without_exclude_id_uses_all_columns_unchanged():
+    """When exclude_stock_id is omitted (the default), behavior must be identical to before
+    this fix — no regression for callers that already pass a pre-excluded peer set (e.g.
+    the live compute_live_features_for_position path, which queries _sector_peer_returns
+    fresh with the exclusion already applied at the DB query)."""
+    dates = pd.date_range("2026-01-01", periods=90, freq="D")
+    rng = np.random.RandomState(7)
+    shared = rng.uniform(-0.02, 0.02, 90)
+    stock_returns = pd.Series(shared, index=dates)
+    peer_returns = pd.DataFrame({"peer_a": shared}, index=dates)
+    corr = _sector_correlation_at(stock_returns, peer_returns, dates[-1])
+    assert corr > 0.99
+
+
+def test_sector_correlation_exclude_id_not_present_is_a_noop():
+    """exclude_stock_id that isn't actually a column in peer_returns (e.g. the live path's
+    pre-excluded DataFrame) must not raise or change the result."""
+    dates = pd.date_range("2026-01-01", periods=90, freq="D")
+    rng = np.random.RandomState(8)
+    shared = rng.uniform(-0.02, 0.02, 90)
+    stock_returns = pd.Series(shared, index=dates)
+    peer_returns = pd.DataFrame({99: shared}, index=dates)
+    corr = _sector_correlation_at(stock_returns, peer_returns, dates[-1], exclude_stock_id=1)
+    assert corr > 0.99
+
+
+# ── mine_all_horizons chronological ordering (T241-AUDIT-WALKFORWARD-VALIDITY) ─────────
+# Found via a 2026-07-10 audit: walk_forward_train() requires its input pre-sorted
+# chronologically and does not re-sort — but mine_all_horizons() concatenated horizons
+# (SWING then SHORT then LONG then GROWTH) without sorting, producing a horizon-major,
+# NOT chronological, list. This let "training" folds contain events chronologically AFTER
+# "validation" fold events (real temporal leakage) and let the same stock/date mined under
+# multiple horizons land as near-duplicates on both sides of a split. Fixed by sorting once,
+# inside mine_all_horizons, so every caller gets a chronological list for free.
+
+def test_mine_all_horizons_sorts_chronologically_across_concatenated_horizons(monkeypatch):
+    """Simulates the exact bug shape: each horizon's mock results are individually sorted
+    (as the real per-stock mining always produces), but the horizons interleave in time —
+    e.g. horizon B's events are chronologically BEFORE horizon A's — so simple concatenation
+    would leave the combined list out of order. mine_all_horizons must re-sort the result.
+    """
+    def _fake_mine_candidate_events(session, stock_ids, barrier_cfg, horizon, max_events_per_stock):
+        # Each horizon returns a small, individually-sorted run of dates, but the runs for
+        # different horizons are chosen to interleave rather than being cleanly separated.
+        offsets = {"SWING": [0, 4, 8], "SHORT": [1, 5], "LONG": [2, 6, 9], "GROWTH": [3, 7]}[horizon]
+        base = pd.Timestamp("2026-01-01")
+        return [
+            MinedCandidate(
+                symbol=f"{horizon}{i}",
+                event_timestamp=base + timedelta(days=off),
+                atr_at_event=1.0,
+                candidate_add_price=100.0,
+                candidate_add_shares=10.0,
+            )
+            for i, off in enumerate(offsets)
+        ]
+
+    monkeypatch.setattr(cem, "mine_candidate_events", _fake_mine_candidate_events)
+
+    result = mine_all_horizons(session=None, stock_ids=[1], barrier_cfg=None)
+
+    timestamps = [c.event_timestamp for c in result]
+    assert timestamps == sorted(timestamps), (
+        "mine_all_horizons must return candidates sorted by event_timestamp — "
+        "walk_forward_train() relies on this and does not re-sort itself"
+    )
+    assert len(result) == 10  # 3+2+3+2 across the 4 horizons, none dropped by the sort

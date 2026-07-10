@@ -104,18 +104,32 @@ class MinedCandidate:
 
 def _regime_favorable_near(regime_snapshots: pd.DataFrame, event_date, window_days: int = 10) -> bool:
     """Approximate regime_is_favorable for a historical date using the nearest real
-    PaperTrade.market_regime_at_entry snapshot within `window_days`. No live regime-engine
-    call — this module is offline/historical by design. Defaults to False (not favorable)
-    when no snapshot is close enough, matching a conservative "unknown = don't assume
-    favorable" stance rather than fabricating an optimistic default.
+    PaperTrade.market_regime_at_entry snapshot AT OR BEFORE that date, within `window_days`.
+    No live regime-engine call — this module is offline/historical by design. Defaults to
+    False (not favorable) when no qualifying snapshot exists, matching a conservative
+    "unknown = don't assume favorable" stance rather than fabricating an optimistic default.
+
+    T241-AUDIT-WALKFORWARD-VALIDITY (found 2026-07-10 via audit): this previously used
+    `.abs()` on the date delta, which let a regime snapshot recorded UP TO window_days AFTER
+    the event be used to fill in that event's regime feature. Market regime in the days
+    following an event correlates with the event's own forward return — the very thing
+    being predicted — so using a future snapshot leaked outcome information into a training
+    feature. It also created a train/live mismatch: compute_live_features_for_position()
+    always uses the CURRENT regime (never a future one), so the offline training feature and
+    the live inference feature were computed under different rules. Restricted to
+    on-or-before snapshots only, matching what's actually knowable at the event's own time.
     """
     if regime_snapshots.empty:
         return False
-    deltas = (regime_snapshots["entry_date"] - pd.Timestamp(event_date)).abs()
+    event_ts = pd.Timestamp(event_date)
+    eligible = regime_snapshots[regime_snapshots["entry_date"] <= event_ts]
+    if eligible.empty:
+        return False
+    deltas = event_ts - eligible["entry_date"]
     nearest_idx = deltas.idxmin()
     if deltas.loc[nearest_idx] > timedelta(days=window_days):
         return False
-    state = regime_snapshots.loc[nearest_idx, "market_regime_at_entry"]
+    state = eligible.loc[nearest_idx, "market_regime_at_entry"]
     return state in ("bull", "neutral")
 
 
@@ -156,23 +170,31 @@ def _build_realized_vol_percentile_series(price_df: pd.DataFrame) -> pd.Series:
     )
 
 
-def _sector_peer_returns(session: Session, sector: str | None, exclude_stock_id: int) -> pd.DataFrame:
-    """Daily close-to-close returns for every OTHER active stock in the same sector, wide
-    format (columns = symbol, index = ts). Used to build a same-sector "peer average" return
+def _sector_peer_returns(session: Session, sector: str | None, exclude_stock_id: int | None = None) -> pd.DataFrame:
+    """Daily close-to-close returns for active stocks in the same sector, wide format
+    (columns = stock_id, index = ts). Used to build a same-sector "peer average" return
     series for sector_correlation. Returns an empty DataFrame if sector is None or has no
-    other members with price history — callers must handle that (see _sector_correlation_at).
+    members with price history — callers must handle that (see _sector_correlation_at).
+
+    T241-AUDIT-WALKFORWARD-VALIDITY (found 2026-07-10 via audit): exclude_stock_id is now
+    OPTIONAL and, when the caller is going to cache this result across multiple stocks in
+    the same sector (as mine_candidate_events() does — see _peer_returns_cache), should be
+    left as None so the cached DataFrame contains every sector member. The self-exclusion
+    then happens per-stock at USE time (see _sector_correlation_at's exclude_stock_id param)
+    instead of being baked into a shared, per-sector cache entry. Baking the exclusion in at
+    cache-build time was the actual bug: only the FIRST stock processed in a sector correctly
+    excluded itself — every subsequent same-sector stock reused that same cached DataFrame,
+    which still excluded only the first stock, meaning its OWN returns were included in its
+    own "peer average" and inflated its sector_correlation reading.
     """
     from db import Price, Stock, TimeFrame
 
     if not sector:
         return pd.DataFrame()
-    peer_ids = [
-        sid for (sid,) in session.execute(
-            select(Stock.id).where(
-                Stock.sector == sector, Stock.active.is_(True), Stock.id != exclude_stock_id,
-            )
-        ).all()
-    ]
+    query = select(Stock.id).where(Stock.sector == sector, Stock.active.is_(True))
+    if exclude_stock_id is not None:
+        query = query.where(Stock.id != exclude_stock_id)
+    peer_ids = [sid for (sid,) in session.execute(query).all()]
     if not peer_ids:
         return pd.DataFrame()
 
@@ -192,8 +214,9 @@ def _sector_peer_returns(session: Session, sector: str | None, exclude_stock_id:
 
 def _sector_correlation_at(
     stock_returns: pd.Series,  # daily pct-change returns, indexed by ts, for the stock itself
-    peer_returns: pd.DataFrame,  # wide daily returns for sector peers, indexed by ts
+    peer_returns: pd.DataFrame,  # wide daily returns for sector peers, indexed by ts (columns = stock_id)
     ts: pd.Timestamp,
+    exclude_stock_id: int | None = None,
 ) -> float:
     """Correlation between the stock's own trailing-window daily returns and its sector
     peers' AVERAGE daily returns over the same window, ending at (or just before) `ts`. High
@@ -201,7 +224,17 @@ def _sector_correlation_at(
     not idiosyncratic); low/negative correlation means the stock is moving independently of
     its sector. Returns 0.0 (no evidence either way) if there isn't enough peer data —
     matches compute_features_for_event's existing "0.0 = no signal" convention for this field.
+
+    exclude_stock_id: if peer_returns was built from an UNFILTERED per-sector cache (every
+    sector member's column, not pre-excluded — see _sector_peer_returns), pass the current
+    stock's own id here to drop its column before averaging, so a stock never counts its own
+    returns as part of its own "peer average." Safe to omit if peer_returns was already
+    built with that stock excluded at query time.
     """
+    if peer_returns.empty:
+        return 0.0
+    if exclude_stock_id is not None and exclude_stock_id in peer_returns.columns:
+        peer_returns = peer_returns.drop(columns=[exclude_stock_id])
     if peer_returns.empty:
         return 0.0
     peer_avg = peer_returns.mean(axis=1)
@@ -254,7 +287,10 @@ def mine_candidate_events(
 
     # Sector peer-return series are expensive to build (a DB query + pivot per sector) and
     # are shared by every stock in that sector — cache per sector rather than recomputing
-    # once per stock.
+    # once per stock. Cached UNFILTERED (every sector member's column, no exclusion) so the
+    # same cache entry is valid for every stock in the sector; each stock's OWN column is
+    # dropped at use time via _sector_correlation_at's exclude_stock_id, not baked into the
+    # cached DataFrame — see _sector_peer_returns' docstring for the bug this fixes.
     _peer_returns_cache: dict[str, pd.DataFrame] = {}
 
     for stock_id in stock_ids:
@@ -288,7 +324,7 @@ def mine_candidate_events(
             select(Stock.symbol, Stock.sector).where(Stock.id == stock_id)
         ).one()
         if stock_sector not in _peer_returns_cache:
-            _peer_returns_cache[stock_sector] = _sector_peer_returns(session, stock_sector, stock_id)
+            _peer_returns_cache[stock_sector] = _sector_peer_returns(session, stock_sector)
         peer_returns = _peer_returns_cache[stock_sector]
 
         first_ts, first_conf, first_reasons = sig_rows[0]
@@ -351,7 +387,7 @@ def mine_candidate_events(
                 days_since_last_entry=(ts - last_tranche_ts).days,
                 num_prior_adds=len(tranches) - 1,
                 realized_vol_percentile=vol_pctile if vol_pctile is not None else 0.5,
-                sector_correlation=_sector_correlation_at(stock_returns, peer_returns, ts),
+                sector_correlation=_sector_correlation_at(stock_returns, peer_returns, ts, exclude_stock_id=stock_id),
             ))
             events_this_stock += 1
             # The hypothetical position grows with each mined candidate treated as if it
@@ -534,6 +570,19 @@ def mine_all_horizons(
     """Mine candidate events across every trading horizon (SWING/SHORT/LONG/GROWTH by
     default) and concatenate them — see the module-level note above for why this is the
     default over mining a single horizon.
+
+    T241-AUDIT-WALKFORWARD-VALIDITY (found 2026-07-10 via audit): mine_candidate_events()
+    returns each horizon's candidates in per-stock chronological order, but concatenating
+    horizon-by-horizon (all of SWING for every stock, then all of SHORT, ...) produces a
+    list that is horizon-major / stock-major, NOT chronological overall.
+    position_scaling_gate.walk_forward_train() explicitly documents that its caller must
+    pass chronologically-sorted data — "this function does not re-sort" — but no caller
+    ever sorted it, so every walk-forward "train" fold could contain events that occurred
+    chronologically AFTER events in the "validation" fold (real temporal leakage), and the
+    same stock/date pair mined under multiple horizons could land as near-duplicate rows
+    on both sides of a split. Sorting here, at the single point every training caller goes
+    through, fixes both training entry points (train_and_save_position_scaling_gate and any
+    future caller) without requiring each one to remember to sort itself.
     """
     horizons = horizons or _ALL_MINING_HORIZONS
     candidates: list[MinedCandidate] = []
@@ -541,6 +590,7 @@ def mine_all_horizons(
         candidates.extend(mine_candidate_events(
             session, stock_ids, barrier_cfg, horizon=horizon, max_events_per_stock=max_events_per_stock,
         ))
+    candidates.sort(key=lambda c: c.event_timestamp)
     return candidates
 
 
@@ -616,11 +666,21 @@ def train_and_save_position_scaling_gate(
     report = walk_forward_report(fold_results)
 
     importances = final_gate.feature_importances().to_dict()
+    # T241-AUDIT-WALKFORWARD-VALIDITY (found 2026-07-10 via audit): the drift-check
+    # previously compared live shadow verdicts' mean act_probability against the model's
+    # act_threshold (0.55) — an arbitrary decision boundary, not a real distributional
+    # baseline. A calibrated model's mean predicted probability sits near its training
+    # label's base rate, not near the threshold, so that comparison could false-alarm
+    # every week (if the real base rate differs meaningfully from 0.55) or fail to catch
+    # real drift. Store the model's own mean predicted probability ON ITS TRAINING SET here
+    # so scheduler.py's drift check has a real baseline to compare live verdicts against.
+    training_mean_act_probability = round(float(final_gate.model.predict_proba(X[FEATURE_COLUMNS].values)[:, 1].mean()), 4)
     final_gate.save(save_path, metadata={
         "n_candidates": len(candidates),
         "n_stocks": len({c.symbol for c in candidates}),
         "walk_forward_report": report,
         "feature_importances": importances,
+        "training_mean_act_probability": training_mean_act_probability,
     })
 
     return {
@@ -629,6 +689,7 @@ def train_and_save_position_scaling_gate(
         "n_stocks": len({c.symbol for c in candidates}),
         "walk_forward_report": report,
         "feature_importances": importances,
+        "training_mean_act_probability": training_mean_act_probability,
         "saved_to": save_path,
     }
 
