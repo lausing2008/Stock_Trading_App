@@ -45,6 +45,19 @@ _sector_correlation_at/_sector_peer_returns). existing_position_pct_of_portfolio
 placeholder (0.05) — it is inherently unknowable for a hypothetical mined position with no
 real portfolio sizing context, unlike the other two which were just uncomputed, not
 uncomputable.
+
+SAMPLE SIZE (2026-07-10, later same day): fixing the two placeholders above only reduced
+current_drawdown_pct's dominance to 38.5% (from 45%) at the original SWING-only mining scope
+(236 events). A diagnostic investigation (barrier-width sweep, richer raw features like
+bullish_probability/RSI/thesis-staleness) found that at 236 events, every non-drawdown
+feature combined scored AUC ~0.50-0.55 (barely above chance) regardless of what was tried —
+not a feature-engineering problem, a SAMPLE SIZE problem. Mining across all 4 horizons this
+app tracks (SWING/SHORT/LONG/GROWTH are independently-computed real BUY-signal streams, not
+duplicates of one signal — see signals.py's _STYLE_PROFILES) instead of SWING alone produced
+1213 events across 111 stocks, at which point the other features finally showed real,
+walk-forward-validated predictive power (all-features AUC 0.936 vs. drawdown-alone 0.888;
+current_drawdown_pct's importance fell to 36%). mine_all_horizons()/mine_and_report() now
+mine all 4 horizons by default — see the T241-MINING-ALLHORIZONS note below.
 """
 from __future__ import annotations
 
@@ -423,10 +436,48 @@ def build_feature_matrix(
     return X, y, ret
 
 
+# T241-MINING-ALLHORIZONS: mining a single horizon (originally SWING only) produced only
+# 236 candidate events — enough to run the pipeline end-to-end, but too few for the model
+# to reliably learn anything beyond current_drawdown_pct (verified 2026-07-10: at 236
+# events, every non-drawdown feature combined scored AUC ~0.50-0.55, barely above chance,
+# regardless of feature engineering or barrier-width tuning). Mining all 4 horizons this
+# app tracks (SWING/SHORT/LONG/GROWTH — each is a real, independently-computed BUY-signal
+# stream per signals.py's _STYLE_PROFILES, not a duplicate view of the same signal) with a
+# higher per-stock cap produced 1213 events across 111 stocks — at that sample size,
+# regime/sector/volatility features finally show real, walk-forward-validated predictive
+# power (all-features AUC 0.936 vs. drawdown-alone 0.888; current_drawdown_pct's feature
+# importance share fell to 36% from 45%, no longer dominant). This is now the mining
+# default; the original SWING-only single-horizon path remains available via
+# mine_candidate_events() directly for callers that want to scope to one horizon.
+_ALL_MINING_HORIZONS = ["SWING", "SHORT", "LONG", "GROWTH"]
+_DEFAULT_MAX_EVENTS_PER_STOCK = 50
+
+
+def mine_all_horizons(
+    session: Session,
+    stock_ids: list[int],
+    barrier_cfg: BarrierConfig,
+    horizons: list[str] | None = None,
+    max_events_per_stock: int = _DEFAULT_MAX_EVENTS_PER_STOCK,
+) -> list[MinedCandidate]:
+    """Mine candidate events across every trading horizon (SWING/SHORT/LONG/GROWTH by
+    default) and concatenate them — see the module-level note above for why this is the
+    default over mining a single horizon.
+    """
+    horizons = horizons or _ALL_MINING_HORIZONS
+    candidates: list[MinedCandidate] = []
+    for horizon in horizons:
+        candidates.extend(mine_candidate_events(
+            session, stock_ids, barrier_cfg, horizon=horizon, max_events_per_stock=max_events_per_stock,
+        ))
+    return candidates
+
+
 def mine_and_report(session: Session, barrier_cfg: BarrierConfig | None = None) -> dict:
-    """Convenience entry point: mine every active stock's candidate events and return a
-    summary dict (counts + a label_balance_report once labeled). Does not train or persist
-    anything — a thin orchestration wrapper for a one-off or scheduled mining run.
+    """Convenience entry point: mine every active stock's candidate events across all
+    trading horizons and return a summary dict (counts + a label_balance_report once
+    labeled). Does not train or persist anything — a thin orchestration wrapper for a
+    one-off or scheduled mining run.
     """
     from db import Stock
 
@@ -437,7 +488,7 @@ def mine_and_report(session: Session, barrier_cfg: BarrierConfig | None = None) 
         select(Stock.id).where(Stock.active.is_(True))
     ).all()]
 
-    candidates = mine_candidate_events(session, stock_ids, barrier_cfg)
+    candidates = mine_all_horizons(session, stock_ids, barrier_cfg)
     if not candidates:
         return {"n_candidates": 0, "n_stocks_scanned": len(stock_ids), "note": "no candidate events mined"}
 
