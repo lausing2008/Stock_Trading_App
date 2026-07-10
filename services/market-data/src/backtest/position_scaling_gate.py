@@ -136,6 +136,38 @@ class PositionScalingGate:
         )
         return pd.Series(importances, index=FEATURE_COLUMNS).sort_values(ascending=False)
 
+    def save(self, path: str, metadata: dict | None = None) -> None:
+        """Persist this gate (model + threshold + optional training metadata like the
+        training window, walk-forward hit-rate, and feature importances) to disk via
+        joblib, matching ml-prediction's trainer.py save pattern: write to a temp path in
+        the same directory, then os.replace() atomically, so a concurrent load() during a
+        save never reads a partially-written file.
+        """
+        if not self._is_fitted:
+            raise RuntimeError("Cannot save an unfit PositionScalingGate")
+        import os
+
+        import joblib
+
+        bundle = {
+            "model": self.model,
+            "act_threshold": self.act_threshold,
+            "metadata": metadata or {},
+        }
+        tmp_path = f"{path}.tmp"
+        joblib.dump(bundle, tmp_path)
+        os.replace(tmp_path, path)
+
+    @classmethod
+    def load(cls, path: str) -> "PositionScalingGate":
+        import joblib
+
+        bundle = joblib.load(path)
+        gate = cls(act_threshold=bundle["act_threshold"])
+        gate.model = bundle["model"]
+        gate._is_fitted = True
+        return gate
+
 
 def compute_features_for_event(
     primary_signal_confidence: float,
