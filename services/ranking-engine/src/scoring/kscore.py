@@ -13,6 +13,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from common.indicators import rsi as _canon_rsi
+
 
 @dataclass
 class KScoreComponents:
@@ -37,12 +39,19 @@ _WEIGHTS = {
 
 
 def _rsi(close: pd.Series, w: int = 14) -> pd.Series:
-    d = close.diff()
-    g = d.clip(lower=0).ewm(alpha=1 / w, adjust=False).mean()
-    l = (-d.clip(upper=0)).ewm(alpha=1 / w, adjust=False).mean()
-    rs = g / l.replace(0, np.nan)
-    # When l == 0 (no down days), rs is NaN — treat as RSI=100 (all gains, no losses).
-    return (100 - 100 / (1 + rs)).fillna(100)
+    """T233-ARCH-INDICATOR-DEDUP: now delegates to the canonical Wilder's RSI in
+    shared/common/indicators.py instead of a standalone reimplementation.
+
+    T233-KSCORE-RSI1: the old version had no min_periods on its .ewm() calls, so it produced
+    numerically real-looking RSI values from bar 0 onward — a stock with only 5 bars of real
+    history (a recent IPO/watchlist addition) could already show RSI=96, well before the 14-bar
+    window has enough data to mean anything. `.fillna(100)` then conflated that warmup case
+    with the genuinely-different "no down days at all" case (both real RSI=100 situations,
+    but for entirely different reasons) — same bug class as T232-TA1, already fixed in the
+    canonical rsi(), just not previously ported here. The canonical version correctly returns
+    NaN during warmup; see _technical_score() below for the explicit NaN handling this requires.
+    """
+    return _canon_rsi(close, window=w)
 
 
 def _adx_value(df: pd.DataFrame, period: int = 14) -> float:
@@ -82,9 +91,16 @@ def _technical_score(df: pd.DataFrame) -> float:
     sma50_above_sma200 = (1 if sma50 > sma200           else 0) if (_s50_ok and _s200_ok) else 0.5
 
     r = _rsi(close).iloc[-1]
+    # T233-KSCORE-RSI1: canonical rsi() correctly returns NaN during the 14-bar warmup window
+    # (a stock with <14 bars of real history) instead of a fabricated real-looking value.
+    # Use 75.0 — the midpoint of this function's own output range (50-100, see below) — as the
+    # neutral fallback, matching the same intent as the SMA neutral-fallback above: don't treat
+    # "we don't have enough data yet" as either bullish or bearish.
+    if pd.isna(r):
+        rsi_score = 75.0
     # Asymmetric: optimal zone is 50-70 (bullish momentum). Oversold (<30) and
     # very overbought (>80) penalised. A trending RSI=70 scores higher than RSI=40.
-    if r <= 30:
+    elif r <= 30:
         rsi_score = 50.0
     elif r <= 50:
         rsi_score = 50.0 + (r - 30) * 2.0       # 50→90 as RSI 30→50
