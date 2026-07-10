@@ -29,11 +29,29 @@ running cost basis while the position is still within max_holding_days of its mo
 recent tranche, that signal becomes one candidate event: "could/should we have added
 here." This deliberately does not require a real trade to have happened — it is exactly
 the "what if" universe the design doc's section 5.1 describes.
+
+FEATURE COMPLETENESS (2026-07-10 follow-up): the first version of this module fed
+position_scaling_gate two of its 11 features as hardcoded constants (realized_vol_percentile
+always 0.5, sector_correlation always 0.0) with a "not available for offline mining" note.
+A constant feature has zero variance and can never be split on by a gradient-boosted tree —
+that dead weight has to go somewhere, and a real-data smoke test showed it landing on
+current_drawdown_pct (45% importance), which fails position_scaling_gate.py's own sign-off
+check for "did the model just re-learn naive averaging down." Both are now computed for
+real: realized_vol_percentile from each stock's own trailing 20d realized-vol history,
+percentile-ranked against its trailing 1yr distribution (see
+_build_realized_vol_percentile_series); sector_correlation from the correlation between the
+stock's trailing 60d returns and its sector peers' average returns over the same window (see
+_sector_correlation_at/_sector_peer_returns). existing_position_pct_of_portfolio remains a
+placeholder (0.05) — it is inherently unknowable for a hypothetical mined position with no
+real portfolio sizing context, unlike the other two which were just uncomputed, not
+uncomputable.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import timedelta
+
+import numpy as np
 
 import pandas as pd
 from sqlalchemy import select
@@ -67,6 +85,8 @@ class MinedCandidate:
     support_level: float | None = None
     days_since_last_entry: int = 0
     num_prior_adds: int = 0
+    realized_vol_percentile: float = 0.5
+    sector_correlation: float = 0.0
 
 
 def _regime_favorable_near(regime_snapshots: pd.DataFrame, event_date, window_days: int = 10) -> bool:
@@ -92,6 +112,97 @@ def _build_atr_series(price_df: pd.DataFrame) -> pd.Series:
     of the app uses (shared/common/indicators.py) — not a standalone reimplementation.
     """
     return _canon_atr(price_df["high"], price_df["low"], price_df["close"], period=_ATR_WINDOW)
+
+
+_REALIZED_VOL_WINDOW = 20     # trailing window for the "current" realized vol reading
+_REALIZED_VOL_LOOKBACK_DAYS = 365  # history window the percentile is ranked against
+_SECTOR_CORR_WINDOW = 60      # trailing days of returns used for the correlation
+
+
+def _build_realized_vol_percentile_series(price_df: pd.DataFrame) -> pd.Series:
+    """Rolling 20d realized vol (std of daily log returns), then each value's percentile
+    rank against its own trailing 1yr history — a genuinely regime-aware measure of "is
+    this stock unusually volatile right now for ITSELF," not a fixed cross-sectional cutoff.
+    Returns a series aligned to price_df's index; NaN until enough history exists for a
+    full lookback window.
+    """
+    returns = np.log(price_df["close"] / price_df["close"].shift(1))
+    realized_vol = returns.rolling(_REALIZED_VOL_WINDOW).std()
+
+    def _pct_rank(window: pd.Series) -> float:
+        current = window.iloc[-1]
+        if pd.isna(current):
+            return np.nan
+        history = window.dropna()
+        if len(history) < _REALIZED_VOL_WINDOW:  # not enough resolved vol readings yet
+            return np.nan
+        return float((history <= current).mean())
+
+    return realized_vol.rolling(_REALIZED_VOL_LOOKBACK_DAYS, min_periods=_REALIZED_VOL_WINDOW * 2).apply(
+        _pct_rank, raw=False,
+    )
+
+
+def _sector_peer_returns(session: Session, sector: str | None, exclude_stock_id: int) -> pd.DataFrame:
+    """Daily close-to-close returns for every OTHER active stock in the same sector, wide
+    format (columns = symbol, index = ts). Used to build a same-sector "peer average" return
+    series for sector_correlation. Returns an empty DataFrame if sector is None or has no
+    other members with price history — callers must handle that (see _sector_correlation_at).
+    """
+    from db import Price, Stock, TimeFrame
+
+    if not sector:
+        return pd.DataFrame()
+    peer_ids = [
+        sid for (sid,) in session.execute(
+            select(Stock.id).where(
+                Stock.sector == sector, Stock.active.is_(True), Stock.id != exclude_stock_id,
+            )
+        ).all()
+    ]
+    if not peer_ids:
+        return pd.DataFrame()
+
+    rows = session.execute(
+        select(Price.stock_id, Price.ts, Price.close)
+        .where(Price.stock_id.in_(peer_ids), Price.timeframe == TimeFrame.D1)
+        .order_by(Price.ts.asc())
+    ).all()
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows, columns=["stock_id", "ts", "close"])
+    df["ts"] = pd.to_datetime(df["ts"])
+    wide = df.pivot_table(index="ts", columns="stock_id", values="close")
+    return wide.pct_change(fill_method=None)
+
+
+def _sector_correlation_at(
+    stock_returns: pd.Series,  # daily pct-change returns, indexed by ts, for the stock itself
+    peer_returns: pd.DataFrame,  # wide daily returns for sector peers, indexed by ts
+    ts: pd.Timestamp,
+) -> float:
+    """Correlation between the stock's own trailing-window daily returns and its sector
+    peers' AVERAGE daily returns over the same window, ending at (or just before) `ts`. High
+    correlation means the stock's recent moves track its sector closely (a sector-wide move,
+    not idiosyncratic); low/negative correlation means the stock is moving independently of
+    its sector. Returns 0.0 (no evidence either way) if there isn't enough peer data —
+    matches compute_features_for_event's existing "0.0 = no signal" convention for this field.
+    """
+    if peer_returns.empty:
+        return 0.0
+    peer_avg = peer_returns.mean(axis=1)
+    window_end = stock_returns.index[stock_returns.index <= ts]
+    if len(window_end) < _SECTOR_CORR_WINDOW:
+        return 0.0
+    window_idx = window_end[-_SECTOR_CORR_WINDOW:]
+    stock_window = stock_returns.loc[window_idx]
+    peer_window = peer_avg.reindex(window_idx)
+    aligned = pd.concat([stock_window, peer_window], axis=1).dropna()
+    if len(aligned) < _SECTOR_CORR_WINDOW // 2:  # need a real majority of the window, not a handful of points
+        return 0.0
+    corr = aligned.iloc[:, 0].corr(aligned.iloc[:, 1])
+    return float(corr) if not pd.isna(corr) else 0.0
 
 
 def mine_candidate_events(
@@ -128,6 +239,11 @@ def mine_candidate_events(
     if not regime_snapshots.empty:
         regime_snapshots["entry_date"] = pd.to_datetime(regime_snapshots["entry_date"])
 
+    # Sector peer-return series are expensive to build (a DB query + pivot per sector) and
+    # are shared by every stock in that sector — cache per sector rather than recomputing
+    # once per stock.
+    _peer_returns_cache: dict[str, pd.DataFrame] = {}
+
     for stock_id in stock_ids:
         sig_rows = session.execute(
             select(Signal.ts, Signal.confidence, Signal.reasons)
@@ -152,8 +268,15 @@ def mine_candidate_events(
         price_df = pd.DataFrame(price_rows, columns=["ts", "high", "low", "close"])
         price_df["ts"] = pd.to_datetime(price_df["ts"])
         atr_series = _build_atr_series(price_df)
+        vol_pctile_series = _build_realized_vol_percentile_series(price_df)
+        stock_returns = price_df.set_index("ts")["close"].pct_change()
 
-        stock_symbol = session.execute(select(Stock.symbol).where(Stock.id == stock_id)).scalar_one()
+        stock_symbol, stock_sector = session.execute(
+            select(Stock.symbol, Stock.sector).where(Stock.id == stock_id)
+        ).one()
+        if stock_sector not in _peer_returns_cache:
+            _peer_returns_cache[stock_sector] = _sector_peer_returns(session, stock_sector, stock_id)
+        peer_returns = _peer_returns_cache[stock_sector]
 
         first_ts, first_conf, first_reasons = sig_rows[0]
         first_ts = pd.Timestamp(first_ts)
@@ -199,6 +322,7 @@ def mine_candidate_events(
                 continue
 
             reasons = reasons or {}
+            vol_pctile = _series_at(vol_pctile_series, price_df, ts)
             candidates.append(MinedCandidate(
                 symbol=stock_symbol,
                 event_timestamp=ts,
@@ -213,6 +337,8 @@ def mine_candidate_events(
                 support_level=reasons.get("sr_nearest_support"),
                 days_since_last_entry=(ts - last_tranche_ts).days,
                 num_prior_adds=len(tranches) - 1,
+                realized_vol_percentile=vol_pctile if vol_pctile is not None else 0.5,
+                sector_correlation=_sector_correlation_at(stock_returns, peer_returns, ts),
             ))
             events_this_stock += 1
             # The hypothetical position grows with each mined candidate treated as if it
@@ -225,14 +351,22 @@ def mine_candidate_events(
     return candidates
 
 
-def _atr_at(atr_series: pd.Series, price_df: pd.DataFrame, ts: pd.Timestamp) -> float | None:
-    """Look up the ATR value at or immediately before `ts` in the aligned series."""
+def _series_at(series: pd.Series, price_df: pd.DataFrame, ts: pd.Timestamp) -> float | None:
+    """Look up a price_df-aligned series' value at or immediately before `ts`. Generic
+    lookup shared by ATR, realized-vol-percentile, and any other per-bar series computed
+    over the same price_df — not specific to any one indicator.
+    """
     idx = price_df.index[price_df["ts"] <= ts]
     if len(idx) == 0:
         return None
     pos = idx[-1]
-    val = atr_series.loc[pos]
+    val = series.loc[pos]
     return None if pd.isna(val) else float(val)
+
+
+def _atr_at(atr_series: pd.Series, price_df: pd.DataFrame, ts: pd.Timestamp) -> float | None:
+    """Look up the ATR value at or immediately before `ts` in the aligned series."""
+    return _series_at(atr_series, price_df, ts)
 
 
 def candidates_to_dataframe(candidates: list[MinedCandidate]) -> pd.DataFrame:
@@ -274,11 +408,11 @@ def build_feature_matrix(
             current_price=current_price,
             weighted_avg_cost_basis=cost_basis,
             regime_is_favorable=cand.regime_is_favorable,
-            realized_vol_percentile=0.5,  # not available for offline historical mining — see module docstring caveat
+            realized_vol_percentile=cand.realized_vol_percentile,
             volume_zscore=cand.volume_zscore,
-            sector_correlation=0.0,        # not available for offline historical mining — see module docstring caveat
+            sector_correlation=cand.sector_correlation,
             days_since_last_entry=cand.days_since_last_entry,
-            existing_position_pct_of_portfolio=0.05,  # placeholder; not modeled per-candidate, see caveat
+            existing_position_pct_of_portfolio=0.05,  # inherently unknowable for a hypothetical mined position — see module docstring caveat
             num_prior_adds=cand.num_prior_adds,
             support_level=cand.support_level if cand.support_level is not None else current_price * 0.97,
             atr=cand.atr_at_event,
