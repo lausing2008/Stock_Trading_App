@@ -337,6 +337,12 @@ class PriceAlert(Base):
     last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     webhook_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # T230-ALERTING-COMPOUND-CONDITIONS: optional list of extra AND-conditions evaluated
+    # alongside the base condition/threshold above. Each item is
+    # {"metric": "volume_ratio"|"rsi"|"signal", "op": "gte"|"lte"|"eq", "value": float|str}.
+    # ALL must pass (AND) for the alert to fire — the base condition is always required too.
+    # NULL/empty = old single-condition behavior, unchanged.
+    compound_conditions: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="price_alerts")
 

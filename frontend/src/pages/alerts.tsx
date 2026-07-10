@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import useSWR from 'swr';
-import { api, type PriceAlert, type SignalAlertItem, type Stock, type SignalSummary, type WatchlistMeta, type WatchlistItem } from '@/lib/api';
+import { api, type PriceAlert, type SignalAlertItem, type Stock, type SignalSummary, type WatchlistMeta, type WatchlistItem, type CompoundCondition } from '@/lib/api';
 import { getSignalStyle } from '@/lib/settings';
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -62,6 +62,20 @@ function triggeredLabel(a: PriceAlert): string {
   if (a.condition === 'double_bottom') return 'Double Bottom pattern fired';
   if (a.condition === 'breakout') return 'Volume Breakout fired';
   return a.condition;
+}
+
+const COMPOUND_METRIC_LABEL: Record<string, string> = {
+  volume_ratio: 'RVOL', rsi: 'RSI', signal: 'Signal',
+};
+const COMPOUND_OP_LABEL: Record<string, string> = {
+  gte: '≥', lte: '≤', eq: '=',
+};
+function compoundConditionLabel(c: CompoundCondition): string {
+  return `${COMPOUND_METRIC_LABEL[c.metric] ?? c.metric} ${COMPOUND_OP_LABEL[c.op] ?? c.op} ${c.value}`;
+}
+function compoundSummary(conds: CompoundCondition[] | null | undefined): string {
+  if (!conds || !conds.length) return '';
+  return conds.map(compoundConditionLabel).join(' AND ');
 }
 
 const SIGNAL_COLOR: Record<string, string> = {
@@ -238,6 +252,30 @@ function PriceAlertsTab() {
   const [saved, setSaved]         = useState(false);
   const [error, setError]         = useState('');
 
+  // T230-ALERTING-COMPOUND-CONDITIONS: up to 3 extra AND-conditions (volume/RSI/signal)
+  const [compoundConditions, setCompoundConditions] = useState<CompoundCondition[]>([]);
+  const canAddCompound = compoundConditions.length < 3 && !NO_THRESHOLD.includes(condition);
+
+  function addCompoundCondition() {
+    if (compoundConditions.length >= 3) return;
+    setCompoundConditions(prev => [...prev, { metric: 'volume_ratio', op: 'gte', value: 2 }]);
+  }
+  function updateCompoundCondition(i: number, patch: Partial<CompoundCondition>) {
+    setCompoundConditions(prev => prev.map((c, idx) => {
+      if (idx !== i) return c;
+      const next = { ...c, ...patch } as CompoundCondition;
+      // Reset value to a sane default when metric changes type (numeric <-> string)
+      if (patch.metric && patch.metric !== c.metric) {
+        next.value = patch.metric === 'signal' ? 'BUY' : patch.metric === 'rsi' ? 30 : 2;
+        next.op = patch.metric === 'signal' ? 'eq' : 'gte';
+      }
+      return next;
+    }));
+  }
+  function removeCompoundCondition(i: number) {
+    setCompoundConditions(prev => prev.filter((_, idx) => idx !== i));
+  }
+
   // Filter + pagination state
   const [filterSymbol, setFilterSymbol]       = useState('');
   const [filterCondition, setFilterCondition] = useState('');
@@ -288,10 +326,14 @@ function PriceAlertsTab() {
     const thresholdVal = isNoThreshold ? 0 : isEma ? parseInt(emaPeriod) : parseFloat(threshold);
     setSaving(true); setError('');
     try {
-      await api.createAlert({ symbol, condition, threshold: thresholdVal, email, note: note || undefined, recurring: isNoThreshold ? recurring : false, webhook_url: webhookUrl || undefined });
+      await api.createAlert({
+        symbol, condition, threshold: thresholdVal, email, note: note || undefined,
+        recurring: isNoThreshold ? recurring : false, webhook_url: webhookUrl || undefined,
+        compound_conditions: canAddCompound && compoundConditions.length ? compoundConditions : undefined,
+      });
       localStorage.setItem('stockai_alert_email', email);
       await mutate();
-      setThreshold(''); setNote(''); setWebhookUrl('');
+      setThreshold(''); setNote(''); setWebhookUrl(''); setCompoundConditions([]);
       setSaved(true); setTimeout(() => setSaved(false), 2000);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to create alert');
@@ -493,6 +535,63 @@ function PriceAlertsTab() {
                 {saved ? '✓ Saved' : saving ? 'Saving…' : '+ Add Alert'}
               </button>
             </div>
+
+            {/* T230-ALERTING-COMPOUND-CONDITIONS: extra AND-conditions, price alerts only */}
+            {canAddCompound && (
+              <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: '1px solid #1e293b' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: compoundConditions.length ? '10px' : '0' }}>
+                  <span style={lbl}>Also require (AND) — reduces false positives</span>
+                  {compoundConditions.length < 3 && (
+                    <button type="button" onClick={addCompoundCondition}
+                      style={{ fontSize: '11px', fontWeight: 700, color: '#818cf8', background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: '6px', padding: '3px 9px', cursor: 'pointer' }}>
+                      + AND condition
+                    </button>
+                  )}
+                </div>
+                {compoundConditions.map((c, i) => (
+                  <div key={i} style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' }}>
+                    <select value={c.metric} onChange={e => updateCompoundCondition(i, { metric: e.target.value as CompoundCondition['metric'] })}
+                      style={{ ...inp, width: '140px' }}>
+                      <option value="volume_ratio">Volume (RVOL)</option>
+                      <option value="rsi">RSI</option>
+                      <option value="signal">Signal</option>
+                    </select>
+                    {c.metric === 'signal' ? (
+                      <select value={c.value as string} onChange={e => updateCompoundCondition(i, { value: e.target.value })}
+                        style={{ ...inp, width: '110px' }}>
+                        <option value="BUY">= BUY</option>
+                        <option value="SELL">= SELL</option>
+                        <option value="HOLD">= HOLD</option>
+                        <option value="WAIT">= WAIT</option>
+                      </select>
+                    ) : (
+                      <>
+                        <select value={c.op} onChange={e => updateCompoundCondition(i, { op: e.target.value as CompoundCondition['op'] })}
+                          style={{ ...inp, width: '70px' }}>
+                          <option value="gte">≥</option>
+                          <option value="lte">≤</option>
+                        </select>
+                        <input type="number" step="0.1" value={c.value as number}
+                          onChange={e => updateCompoundCondition(i, { value: parseFloat(e.target.value) || 0 })}
+                          style={{ ...inp, width: '90px' }} />
+                      </>
+                    )}
+                    <span style={{ fontSize: '11px', color: '#475569' }}>
+                      {c.metric === 'volume_ratio' ? '× avg volume' : c.metric === 'rsi' ? 'RSI (0-100)' : ''}
+                    </span>
+                    <button type="button" onClick={() => removeCompoundCondition(i)}
+                      style={{ marginLeft: 'auto', fontSize: '11px', color: '#f87171', background: 'transparent', border: 'none', cursor: 'pointer', padding: '2px 6px' }}>
+                      ✕
+                    </button>
+                  </div>
+                ))}
+                {compoundConditions.length > 0 && (
+                  <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
+                    Fires only when the base condition AND all of the above are true: {compoundSummary(compoundConditions)}
+                  </div>
+                )}
+              </div>
+            )}
             {error && <div style={{ marginTop: '8px', fontSize: '12px', color: '#f87171' }}>{error}</div>}
           </form>
         </div>
@@ -612,6 +711,12 @@ function PriceAlertsTab() {
               <span style={{ fontSize: '13px', color: a.triggered ? '#64748b' : '#cbd5e1', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {a.triggered ? triggeredLabel(a) : alertLabel(a)}
               </span>
+
+              {a.compound_conditions && a.compound_conditions.length > 0 && (
+                <span title={compoundSummary(a.compound_conditions)} style={{ fontSize: '10px', padding: '2px 7px', borderRadius: '4px', background: 'rgba(74,222,128,0.08)', color: '#4ade80', border: '1px solid rgba(74,222,128,0.2)', whiteSpace: 'nowrap', flexShrink: 0, maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  AND {compoundSummary(a.compound_conditions)}
+                </span>
+              )}
 
               {a.note && <span style={{ fontSize: '11px', color: '#475569', fontStyle: 'italic', flexShrink: 0, maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.note}</span>}
 
