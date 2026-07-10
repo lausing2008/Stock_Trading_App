@@ -196,3 +196,43 @@ def test_walk_forward_report_all_skipped():
     report = walk_forward_report(fold_results)
     assert report["all_folds_skipped"] is True
     assert report["n_valid_folds"] == 0
+
+
+# ── save/load persistence (T241 Phase 5) ───────────────────────────────────────────────
+
+def test_save_load_roundtrip_produces_identical_predictions(tmp_path):
+    X, y, _ = _synthetic_dataset(200, seed=7)
+    gate = PositionScalingGate(act_threshold=0.6)
+    gate.fit(X, y)
+    original_pred = gate.predict(X.iloc[0])
+
+    save_path = str(tmp_path / "gate.joblib")
+    gate.save(save_path, metadata={"n_candidates": 200})
+
+    loaded = PositionScalingGate.load(save_path)
+    loaded_pred = loaded.predict(X.iloc[0])
+
+    assert loaded.act_threshold == 0.6
+    assert loaded_pred.act_probability == original_pred.act_probability
+    assert loaded_pred.suggested_size_multiplier == original_pred.suggested_size_multiplier
+    assert loaded_pred.should_act == original_pred.should_act
+
+
+def test_save_unfit_gate_raises(tmp_path):
+    gate = PositionScalingGate()
+    try:
+        gate.save(str(tmp_path / "gate.joblib"))
+        assert False, "expected RuntimeError"
+    except RuntimeError:
+        pass
+
+
+def test_save_is_atomic_no_leftover_tmp_file(tmp_path):
+    X, y, _ = _synthetic_dataset(150, seed=8)
+    gate = PositionScalingGate()
+    gate.fit(X, y)
+    save_path = str(tmp_path / "gate.joblib")
+    gate.save(save_path)
+    import os
+    assert os.path.exists(save_path)
+    assert not os.path.exists(f"{save_path}.tmp")
