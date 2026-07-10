@@ -39,6 +39,7 @@ import numpy as np
 import pandas as pd
 
 from common.logging import get_logger
+from common.indicators import atr as _canon_atr
 from db import (
     Indicator, PaperEquityCurve, PaperPortfolio, PaperTrade, Price, TimeFrame,
     Ranking, SessionLocal, Signal, SignalAlert, Stock, User, Watchlist, WatchlistItem,
@@ -492,16 +493,16 @@ _HK_MARKET_OVERRIDES: dict = {
 # ── ATR helper ────────────────────────────────────────────────────────────────
 
 def _ewm_atr_from_ohlc(high: "pd.Series", low: "pd.Series", close: "pd.Series", period: int = 14) -> float | None:
-    """Compute EWM-ATR from pre-fetched OHLC series. Returns None on bad data."""
+    """Compute EWM-ATR from pre-fetched OHLC series. Returns None on bad data.
+
+    T233-ARCH-INDICATOR-DEDUP: delegates to shared/common/indicators.py's canonical Wilder's
+    ATR (pure refactor, no behavior change — this function always reads only the final row,
+    and min_periods only affects EARLIER rows in the series; verified zero numeric difference
+    on real data across multiple symbols before deploying).
+    """
     if len(close) < period + 1:
         return None
-    prev_close = close.shift(1)
-    tr = pd.concat([
-        high - low,
-        (high - prev_close).abs(),
-        (low  - prev_close).abs(),
-    ], axis=1).max(axis=1)
-    val = float(tr.ewm(alpha=1 / period, adjust=False).mean().iloc[-1])
+    val = float(_canon_atr(high, low, close, period=period).iloc[-1])
     return val if pd.notna(val) and val > 0 else None
 
 
