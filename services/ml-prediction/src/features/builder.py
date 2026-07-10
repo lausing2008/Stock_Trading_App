@@ -68,6 +68,7 @@ import numpy as np
 import pandas as pd
 
 from common.logging import get_logger
+from common.indicators import rsi as _canon_rsi, atr as _canon_atr
 
 log = get_logger("ml-prediction.builder")
 
@@ -534,16 +535,11 @@ def compute_label_threshold(df: pd.DataFrame, horizon: int = 5, symbol: str = ""
 
 
 def _rsi(close: pd.Series, w: int = 14) -> pd.Series:
-    # T237-ML3: min_periods=w added — same missing-warmup bug class already found and fixed
-    # this session in technical-analysis's atr() and strategy-engine's RSI/MACD/ATR/EMA.
-    # Without it, .ewm() emits non-NaN values from the 2nd row, well before the nominal
-    # w-period window has actually filled — a training feature that's statistically
-    # meaningless in the warmup window but indistinguishable from a converged value.
-    d = close.diff()
-    g = d.clip(lower=0).ewm(alpha=1 / w, adjust=False, min_periods=w).mean()
-    l = (-d.clip(upper=0)).ewm(alpha=1 / w, adjust=False, min_periods=w).mean()
-    rs = g / l.replace(0, np.nan)
-    return 100 - 100 / (1 + rs)
+    """T233-ARCH-INDICATOR-DEDUP: delegates to shared/common/indicators.py's canonical Wilder's
+    RSI (pure refactor — this function's own formula already had min_periods, T237-ML3, and is
+    numerically identical to the canonical version; verified byte-for-byte parity on real data
+    before deploying, not just assumed from matching source)."""
+    return _canon_rsi(close, window=w)
 
 
 def _compute_piotroski(fund_data: dict) -> float:
@@ -625,14 +621,10 @@ def build_features(
     out["vol_60"] = daily_ret.rolling(60).std()
     out["vol_ratio_5d20d"] = daily_ret.rolling(5).std() / daily_ret.rolling(20).std().replace(0, np.nan)
 
-    tr = pd.concat([
-        h - lo,
-        (h - c.shift(1)).abs(),
-        (lo - c.shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    # Wilder's EWM-ATR: matches paper trading and signal ATR (alpha=1/14 = Wilder smoothing)
-    # T237-ML3: min_periods=14 added — see _rsi()'s comment above for the full explanation.
-    atr14 = tr.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    # T233-ARCH-INDICATOR-DEDUP: delegates to shared/common/indicators.py's canonical Wilder's
+    # ATR (pure refactor — this was already numerically identical, T237-ML3 min_periods fix
+    # already applied; verified byte-for-byte parity on real data before deploying).
+    atr14 = _canon_atr(h, lo, c, period=14)
     out["atr_14_pct"] = atr14 / c.replace(0, np.nan)
     out["atr_ratio"] = atr14 / atr14.rolling(20).mean().replace(0, np.nan)
 
