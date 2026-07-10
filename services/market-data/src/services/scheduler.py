@@ -2935,7 +2935,9 @@ def send_post_open_digest(market: str, window: str) -> None:
             # here is guaranteed to show the same RVOL if checked on the screener at the same
             # moment.
             vol_surge: list[dict] = []
+            vol_dryup: list[dict] = []
             prev_vol_surge_symbols: set = set(prev.get("vol_surge_symbols", []))
+            prev_vol_dryup_symbols: set = set(prev.get("vol_dryup_symbols", []))
             try:
                 _live_raw = json.loads(redis_client.get("stockai:live_prices") or "[]")
                 _avg_vol_cache = json.loads(redis_client.get("stockai:avg_volume") or "{}")
@@ -2957,27 +2959,44 @@ def send_post_open_digest(market: str, window: str) -> None:
                 if not vol or not avg_vol:
                     continue
                 rvol = float(vol) / float(avg_vol)
+                change_pct = ((float(price) - float(prev_close)) / float(prev_close) * 100
+                              if price and prev_close else None)
                 if rvol >= 1.5:  # same threshold convention as the screener's RVOL filter
                     # T241-DIGEST5X: added current_price/change_pct alongside RVOL — a volume
                     # surge on rising price (accumulation) and one on falling price (distribution/
                     # panic selling) call for very different reactions, and the bare ratio alone
                     # didn't distinguish them. See email_service.py's rendering for how this is
                     # used to add a directional note.
-                    change_pct = ((float(price) - float(prev_close)) / float(prev_close) * 100
-                                  if price and prev_close else None)
                     vol_surge.append({
                         "symbol": sym, "volume_z": round(rvol, 2),  # key name kept for the email template/snapshot schema below
                         "current_price": price, "change_pct": round(change_pct, 2) if change_pct is not None else None,
                     })
+                elif rvol <= 0.5:
+                    # MD-VOLDRYUP1: the mirror-image case — trading meaningfully BELOW normal
+                    # volume today. Useful as a different kind of signal than a surge: a
+                    # sudden dry-up can mean conviction has evaporated (few buyers OR sellers
+                    # willing to trade), often precedes a breakout once volume returns, or
+                    # simply flags a stock coasting on no news. Same 1.5x/0.5x symmetric
+                    # threshold convention, same RVOL source, same dedup-by-day pattern as
+                    # vol_surge above — reported separately since "quiet" and "loud" call for
+                    # different reactions and shouldn't be mixed in one table.
+                    vol_dryup.append({
+                        "symbol": sym, "volume_z": round(rvol, 2),
+                        "current_price": price, "change_pct": round(change_pct, 2) if change_pct is not None else None,
+                    })
             vol_surge.sort(key=lambda v: v["volume_z"], reverse=True)
-            # Every run after the first one of the day only reports surges not already shown
-            # in an earlier run today — T241-DIGEST5X generalized this from a hardcoded
+            vol_dryup.sort(key=lambda v: v["volume_z"])  # lowest RVOL (quietest) first
+            # Every run after the first one of the day only reports surges/dry-ups not already
+            # shown in an earlier run today — T241-DIGEST5X generalized this from a hardcoded
             # window=="1hr" check (back when there were only 2 windows/day) to work for any
             # number of scheduled windows: is_first_check_of_day is derived from whether a
             # snapshot already exists for today (see below), not from a specific window name.
             if not is_first_check_of_day and prev_vol_surge_symbols:
                 vol_surge = [v for v in vol_surge if v["symbol"] not in prev_vol_surge_symbols]
+            if not is_first_check_of_day and prev_vol_dryup_symbols:
+                vol_dryup = [v for v in vol_dryup if v["symbol"] not in prev_vol_dryup_symbols]
             vol_surge = vol_surge[:5]
+            vol_dryup = vol_dryup[:5]
 
             # ── Decide whether there's anything worth emailing ──────────────────
             has_content = (
@@ -2986,6 +3005,7 @@ def send_post_open_digest(market: str, window: str) -> None:
                 or bool(new_signal_changes)
                 or any(abs(p.get("pnl_pct") or 0) >= 2.0 for p in position_rows)
                 or bool(vol_surge)
+                or bool(vol_dryup)
             )
 
             # Always refresh the snapshot so the next run's delta is accurate,
@@ -2999,6 +3019,8 @@ def send_post_open_digest(market: str, window: str) -> None:
                 "watchlist_signals": cur_watchlist_signals,
                 "vol_surge_symbols": [v["symbol"] for v in vol_surge] if is_first_check_of_day else
                                      list(prev_vol_surge_symbols | {v["symbol"] for v in vol_surge}),
+                "vol_dryup_symbols": [v["symbol"] for v in vol_dryup] if is_first_check_of_day else
+                                     list(prev_vol_dryup_symbols | {v["symbol"] for v in vol_dryup}),
             }))
 
             if not has_content:
@@ -3021,6 +3043,7 @@ def send_post_open_digest(market: str, window: str) -> None:
                     top_movers=movers[:3],
                     bottom_movers=movers[-3:][::-1] if len(movers) > 3 else [],
                     vol_surge=vol_surge,
+                    vol_dryup=vol_dryup,
                 )
                 if ok:
                     sent += 1
