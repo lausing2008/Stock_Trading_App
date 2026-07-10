@@ -79,6 +79,7 @@ import pandas as pd
 
 from common.config import get_settings
 from common.logging import get_logger
+from common.indicators import rsi as _canon_rsi, macd as _canon_macd
 
 log = get_logger("signal-generator")
 _settings = get_settings()
@@ -685,10 +686,12 @@ def _weekly_technicals(df: pd.DataFrame) -> dict:
     weekly_confidence = min(1.0, 0.70 + (len(df) - 15) / (26 - 15) * 0.30) if len(df) < 26 else 1.0
     close = _adj_close(df)
 
-    d = close.diff()
-    g = d.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
-    l = (-d.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
-    rsi = 100 - 100 / (1 + g / l.replace(0, np.nan))
+    # T233-ARCH-INDICATOR-DEDUP: delegates to shared/common/indicators.py's canonical
+    # Wilder's RSI/MACD. Pure refactor here — this function's own guard (len(df) < 15) already
+    # ensures RSI's min_periods=14 always converges by the time this runs, and MACD's
+    # weekly_confidence scaling (see comment above) already correctly discounts the 15-25 bar
+    # window where the 26-bar slow EMA hasn't fully converged, so no behavior changes.
+    rsi = _canon_rsi(close, window=14)
     rsi_val = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else None
 
     sma10 = close.rolling(10).mean()
@@ -700,8 +703,9 @@ def _weekly_technicals(df: pd.DataFrame) -> dict:
         elif pct < -0.01:
             weekly_trend = "down"
 
-    macd_line = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
-    hist = macd_line - macd_line.ewm(span=9, adjust=False).mean()
+    _weekly_macd_df = _canon_macd(close, fast=12, slow=26, signal=9)
+    macd_line = _weekly_macd_df["macd"]
+    hist = _weekly_macd_df["hist"]
     macd_positive = bool(hist.iloc[-1] > 0)
     macd_rising = bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False
     weekly_macd_bull = macd_positive and macd_rising
@@ -914,7 +918,12 @@ def _pattern_score_adjustment(patterns: list[dict], df_len: int) -> tuple[float,
 
 
 def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> tuple[float, dict]:
-    if df.empty or len(df) < 14:
+    # T233-SIG-RSI1: raised from 14 to 15 — close.diff() below drops the first row, so a
+    # 14-bar df only ever produces 13 real diffs, one short of what canonical rsi()'s
+    # min_periods=14 needs for a real (non-NaN) value. The old unguarded .ewm() (no
+    # min_periods) silently produced a fabricated RSI at exactly 14 bars instead of correctly
+    # returning None — this guard now matches what the RSI calculation actually needs.
+    if df.empty or len(df) < 15:
         return 0.5, {"insufficient_data": True, "bar_count": len(df)}
     close  = _adj_close(df)
     volume = df["volume"].astype(float)
@@ -955,10 +964,10 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
     reasons["gc_spread_expanding"]  = gc_spread_expanding
 
     # ── RSI (full series — needed for StochRSI and divergence) ────────────
-    d = close.diff()
-    g = d.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
-    l = (-d.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
-    rsi = 100 - 100 / (1 + g / l.replace(0, np.nan))
+    # T233-ARCH-INDICATOR-DEDUP / T233-SIG-RSI1: delegates to shared/common/indicators.py's
+    # canonical Wilder's RSI (with min_periods=14) instead of a standalone reimplementation
+    # that had no min_periods and could produce a fabricated value at exactly 14 bars.
+    rsi = _canon_rsi(close, window=14)
     rsi_val = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else None
     reasons["rsi"] = rsi_val
 
@@ -984,8 +993,16 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
     # also unbacktested and contested. Both the penalty and the bullish bonus are zeroed
     # until the logic is rewritten to compare RSI values at the two price peaks.
     # ── MACD histogram + zero-line crossover ──────────────────────────────
-    macd_line = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
-    hist = macd_line - macd_line.ewm(span=9, adjust=False).mean()
+    # T233-ARCH-INDICATOR-DEDUP / T233-SIG-RSI1: delegates to shared/common/indicators.py's
+    # canonical MACD (min_periods=12/26/9) instead of a standalone reimplementation with no
+    # min_periods. A thin-history stock (15-25 bars, below the 26-bar slow-EMA window) now
+    # correctly gets NaN instead of a fabricated MACD line — every downstream consumer here
+    # (macd_hist > 0, macd_rising, macd_zero_cross_up) already treats NaN comparisons as
+    # False via Python's built-in semantics, degrading safely to "not bullish" rather than
+    # crashing or silently corrupting the score.
+    _macd_df = _canon_macd(close, fast=12, slow=26, signal=9)
+    macd_line = _macd_df["macd"]
+    hist = _macd_df["hist"]
     macd_hist  = float(hist.iloc[-1])
     macd_rising = bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False
     # 3-bar histogram slope: smoother than single-bar, catches momentum exhaustion earlier.
