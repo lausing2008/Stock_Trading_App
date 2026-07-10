@@ -567,6 +567,8 @@ export const api = {
     request<RegimeStatus>(`/decide/regime?market=${market}`),
   deDivergences: (limit = 100) =>
     request<DeDivergenceResponse>(`/paper-portfolio/de-divergences?limit=${limit}`),
+  positionScalingShadow: (limit = 100) =>
+    request<PositionScalingShadowResponse>(`/paper-portfolio/position-scaling-shadow?limit=${limit}`),
 
   // ── Signal Quality / Calibration ──────────────────────────────────────────
   outcomesCalibration: (days = 180) =>
@@ -1666,6 +1668,34 @@ export type DeDivergenceResponse = {
   agreement_rate_pct: number | null;
   divergences: DeDivergenceEvent[];
   agreements: DeAgreementEvent[];
+};
+
+// T241-P6: position-scaling gate shadow-mode verdicts
+export type PositionScalingShadowVerdict = {
+  ts: string;
+  resolve_after: string;
+  symbol: string;
+  portfolio_id: number;
+  act_probability: number;
+  suggested_size_multiplier: number;
+  would_act: boolean;
+  thesis_recommendation: string;
+  thesis_broken_reasons: string[];
+  price_at_verdict: number;
+  entry_price: number;
+  resolved_ts?: string;
+  subsequent_return?: number;
+  outcome_correct?: boolean;
+};
+
+export type PositionScalingShadowResponse = {
+  total_pending: number;
+  total_resolved: number;
+  hit_rate_pct: number | null;
+  would_act_count: number;
+  would_act_hit_rate_pct: number | null;
+  pending: PositionScalingShadowVerdict[];
+  resolved: PositionScalingShadowVerdict[];
 };
 
 // ── Event Intelligence types ─────────────────────────────────────────────────
