@@ -1319,22 +1319,26 @@ def send_post_open_digest_email(
     vol_surge_html = ""
     vol_surge_text = ""
     if vol_surge:
+        # MD-RVOL1: value is now RVOL (today_volume / avg_volume, same metric/scope as the
+        # screener's RVOL column and stock detail page's RVOL chip) rather than a volume_z
+        # z-score — rendered as "×" to match those pages' own display convention (e.g. "2.3×"),
+        # not "σ", so a value seen here reads identically to the same stock's RVOL elsewhere.
         def _vol_row(v: dict) -> str:
-            vz = v["volume_z"]
-            intensity = "#ef4444" if vz >= 3.0 else "#f97316" if vz >= 2.0 else "#f59e0b"
+            rvol = v["volume_z"]
+            intensity = "#ef4444" if rvol >= 3.0 else "#f97316" if rvol >= 2.0 else "#f59e0b"
             return (
                 f'<tr style="border-bottom:1px solid #f1f5f9">'
                 f'<td style="padding:6px 10px;font-weight:700;font-size:13px">{v["symbol"]}</td>'
-                f'<td style="padding:6px 10px;font-size:13px;font-weight:700;color:{intensity}">{vz:.1f}σ</td>'
+                f'<td style="padding:6px 10px;font-size:13px;font-weight:700;color:{intensity}">{rvol:.1f}×</td>'
                 f'</tr>'
             )
         vol_rows_html = "".join(_vol_row(v) for v in vol_surge)
         vol_surge_html = f"""
     <div style="margin-top:20px">
-      <div style="font-size:11px;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Volume Surge (vs. 20d normal)</div>
+      <div style="font-size:11px;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Volume Surge (RVOL vs. 20d avg)</div>
       <table style="width:100%;border-collapse:collapse;background:#fafafa;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">{vol_rows_html}</table>
     </div>"""
-        vol_surge_text = "\nVOLUME SURGE:\n" + "".join(f"  {v['symbol']:8}  {v['volume_z']:.1f}σ above normal\n" for v in vol_surge)
+        vol_surge_text = "\nVOLUME SURGE (RVOL):\n" + "".join(f"  {v['symbol']:8}  {v['volume_z']:.1f}x avg volume\n" for v in vol_surge)
 
     subject_bits = []
     if regime_changed:
