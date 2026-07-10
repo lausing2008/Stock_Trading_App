@@ -665,6 +665,44 @@ that was tried once for research and the underlying double-hop fragility remaine
 
 ---
 
+## Recurring Issue: Adding a Column to an EXISTING Table Doesn't Auto-Apply — `create_all()` Only Creates Missing Tables
+
+**Symptom:** Adding a new field to an existing SQLAlchemy model (e.g. a new column on `User`,
+which already has rows in production) breaks EVERY query against that model in production
+immediately after deploy — `psycopg2.errors.UndefinedColumn: column users.new_field does not
+exist`. This is different from (and easy to confuse with) the "stale `shared/db/` in a
+container" issue below — this happens even with a perfectly fresh, freshly-rebuilt container.
+
+**Root cause (found 2026-07-10):** This repo has no active Alembic migrations (`alembic.ini`
+exists but zero real migration files do) — the only schema-application mechanism is
+`Base.metadata.create_all()` in `shared/db/session.py`, run on every service startup.
+`create_all()` only creates tables that don't exist yet; it does **not** `ALTER TABLE` an
+existing table to add a newly-declared column. Adding a brand-new table's model (e.g.
+`PushSubscription`, same session) works fine via this mechanism — but adding a field to an
+existing, already-populated table (e.g. `User.notification_webhook`) silently does nothing to
+the real schema, and the gap isn't visible until the first request that queries that column.
+
+**Fix applied (2026-07-10):** Manually ran `ALTER TABLE users ADD COLUMN IF NOT EXISTS
+notification_webhook VARCHAR(2048);` directly against production Postgres to add the missing
+column. Login (`GET /auth/me`) recovered immediately once the column existed.
+
+**What to check before adding ANY field to an EXISTING model (not a new one):**
+```bash
+# Does the table already exist and have rows? If yes, create_all() will NOT add the new column.
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c "\d table_name"
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c "SELECT COUNT(*) FROM table_name"
+```
+If the table already exists, a manual `ALTER TABLE ... ADD COLUMN IF NOT EXISTS ...` must run
+against production (and any local dev Postgres) BEFORE or immediately after deploying the code
+change — plan this as an explicit deploy step, not something the deploy pipeline does for you.
+
+**Design invariant:** `create_all()` is only sufficient for adding a brand-new table. Any new
+column on an existing table needs its own manual `ALTER TABLE`, run against every environment
+(production, local dev) separately — there is no migration system doing this automatically in
+this repo today. Consider this a standing gap until real Alembic migrations are adopted.
+
+---
+
 ## Recurring Issue: Local Dev Containers Run Stale `shared/db/` — AttributeError on Recently Added Model Fields
 
 **Symptom:** A backend endpoint that reads a recently-added SQLAlchemy model field crashes with
