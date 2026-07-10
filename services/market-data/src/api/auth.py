@@ -1,7 +1,9 @@
 """Auth routes — JWT login, user management (admin), password change."""
+import ipaddress
 from datetime import datetime, timedelta, timezone
 import time as _time
 import uuid
+from urllib.parse import urlparse
 
 import bcrypt as _bcrypt
 import redis as redis_lib
@@ -22,6 +24,35 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 _settings = get_settings()
 _security = HTTPBearer(auto_error=False)
+
+# Shared with alerts.py (PriceAlert.webhook_url) — kept here since auth.py is this codebase's
+# foundational API module (every other API module imports FROM auth.py, never the reverse;
+# defining this here rather than in alerts.py keeps that direction consistent for
+# User.notification_webhook's own validation in update_me() below).
+_PRIVATE_NETS = [
+    ipaddress.ip_network(cidr) for cidr in (
+        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+        "127.0.0.0/8", "169.254.0.0/16", "::1/128", "fc00::/7",
+    )
+]
+
+
+def validate_webhook_url(url: str | None) -> str | None:
+    if url is None:
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise ValueError("webhook_url must use https")
+    host = parsed.hostname or ""
+    try:
+        addr = ipaddress.ip_address(host)
+        if any(addr in net for net in _PRIVATE_NETS):
+            raise ValueError("webhook_url must not target private/internal IP ranges")
+    except ValueError as exc:
+        if "must" in str(exc):
+            raise
+        # hostname (not an IP) — allow; internal DNS not resolvable here
+    return url
 
 _BLACKLIST_PREFIX = "auth:blacklist:"
 _BLACKLIST_MEM: dict[str, float] = {}   # jti → expiry unix timestamp
@@ -199,6 +230,7 @@ class UserOut(BaseModel):
     role: str
     is_active: bool
     email: str | None = None
+    notification_webhook: str | None = None
     created_at: str
 
     class Config:
@@ -207,6 +239,7 @@ class UserOut(BaseModel):
 
 class UpdateProfileRequest(BaseModel):
     email: str | None = None
+    notification_webhook: str | None = None
 
 
 # ── Public endpoints ──────────────────────────────────────────────────────────
@@ -271,6 +304,7 @@ def me(current: User = Depends(get_current_user)):
     return UserOut(
         id=current.id, username=current.username, role=current.role.value.lower(),
         is_active=current.is_active, email=current.email,
+        notification_webhook=current.notification_webhook,
         created_at=current.created_at.isoformat(),
     )
 
@@ -300,11 +334,18 @@ def update_me(
                 .where(SignalAlert.user_id == user.id, SignalAlert.email == old_email)
                 .values(email=None)
             )
+    if body.notification_webhook is not None:
+        new_webhook = body.notification_webhook.strip() or None
+        try:
+            user.notification_webhook = validate_webhook_url(new_webhook)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
     session.commit()
     session.refresh(user)
     return UserOut(
         id=user.id, username=user.username, role=user.role.value.lower(),
         is_active=user.is_active, email=user.email,
+        notification_webhook=user.notification_webhook,
         created_at=user.created_at.isoformat(),
     )
 

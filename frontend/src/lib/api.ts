@@ -165,7 +165,7 @@ export const api = {
 
   // User profile
   getMe: () => request<AppUser>(`/auth/me`),
-  updateProfile: (body: { email?: string }) =>
+  updateProfile: (body: { email?: string; notification_webhook?: string }) =>
     request<AppUser>(`/auth/me`, { method: 'PUT', body: JSON.stringify(body) }),
   syncAlertEmail: () =>
     request<{ ok: boolean; email: string; price_alerts_updated: number; signal_alerts_updated: number }>(`/auth/sync-alert-email`, { method: 'POST' }),
@@ -762,7 +762,7 @@ export type MarketIndex = { name: string; ticker: string; market: string; price:
 export type WatchlistItem = { symbol: string; name: string; name_zh?: string | null; market: string; exchange: string; sector?: string; currency: string; added_at: string; note?: string | null };
 export type WatchlistMeta = { id: number; name: string; item_count: number; trading_style: string | null; created_at: string };
 export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };
-export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; email?: string | null; created_at: string };
+export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; email?: string | null; notification_webhook?: string | null; created_at: string };
 export type PriceAlert = { id: number; symbol: string; condition: string; threshold: number; email: string; note: string | null; triggered: boolean; triggered_at: string | null; recurring: boolean; last_sent_at: string | null; webhook_url: string | null; created_at: string };
 export type SignalAlertItem = { id: number; symbol: string; email: string | null; last_signal: string | null; last_sent_at: string | null; alert_mode: string; horizon: string; require_consensus: boolean; created_at: string };
 export type TradePlan = { id: number; symbol: string; stage: 'watch' | 'planning' | 'active' | 'closed'; game_plan: Record<string, unknown> | null; entry_price: number | null; stop_loss: number | null; take_profit: number | null; notes: string | null; source: string | null; exit_price: number | null; actual_entry_price: number | null; shares: number | null; trading_style: string | null; closed_at: string | null; created_at: string; updated_at: string };
