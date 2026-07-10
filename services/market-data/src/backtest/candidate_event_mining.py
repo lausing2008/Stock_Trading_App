@@ -382,6 +382,77 @@ def _atr_at(atr_series: pd.Series, price_df: pd.DataFrame, ts: pd.Timestamp) -> 
     return _series_at(atr_series, price_df, ts)
 
 
+def compute_live_features_for_position(
+    session: Session,
+    stock_id: int,
+    symbol: str,
+    sector: str | None,
+    current_price: float,
+    weighted_avg_cost_basis: float,
+    primary_signal_confidence: float,
+    signal_confidence_at_last_entry: float,
+    regime_is_favorable: bool,
+    volume_zscore: float,
+    support_level: float | None,
+    days_since_last_entry: int,
+    existing_position_pct_of_portfolio: float,
+    num_prior_adds: int,
+) -> pd.Series | None:
+    """T241 Phase 5: the LIVE counterpart to build_feature_matrix() — assembles one feature
+    row for an already-open position, right now, instead of a historical candidate event.
+    Reuses the exact same realized_vol_percentile/sector_correlation/ATR computations the
+    offline mining module uses (_build_realized_vol_percentile_series, _sector_correlation_at,
+    _sector_peer_returns, _series_at) so a live shadow-mode prediction and an offline-mined
+    training example are computed identically — no second, drifting implementation of the
+    same math.
+
+    Returns None if there isn't enough real price history to compute a trustworthy ATR/vol
+    reading (mirrors mine_candidate_events()'s own _MIN_PRICE_HISTORY_BARS gate) — callers
+    must treat None as "skip this candidate for now," not silently substitute a placeholder.
+    """
+    from db import Price, TimeFrame
+
+    price_rows = session.execute(
+        select(Price.ts, Price.high, Price.low, Price.close)
+        .where(Price.stock_id == stock_id, Price.timeframe == TimeFrame.D1)
+        .order_by(Price.ts.asc())
+    ).all()
+    if len(price_rows) < _MIN_PRICE_HISTORY_BARS:
+        return None
+
+    price_df = pd.DataFrame(price_rows, columns=["ts", "high", "low", "close"])
+    price_df["ts"] = pd.to_datetime(price_df["ts"])
+    now = price_df["ts"].iloc[-1]  # most recent bar as-of time; live callers have no future data anyway
+
+    atr_series = _build_atr_series(price_df)
+    atr = _series_at(atr_series, price_df, now)
+    if atr is None or atr <= 0:
+        return None
+
+    vol_pctile_series = _build_realized_vol_percentile_series(price_df)
+    vol_pctile = _series_at(vol_pctile_series, price_df, now)
+
+    stock_returns = price_df.set_index("ts")["close"].pct_change()
+    peer_returns = _sector_peer_returns(session, sector, stock_id)
+    sector_corr = _sector_correlation_at(stock_returns, peer_returns, now)
+
+    return compute_features_for_event(
+        primary_signal_confidence=primary_signal_confidence,
+        signal_confidence_at_last_entry=signal_confidence_at_last_entry,
+        current_price=current_price,
+        weighted_avg_cost_basis=weighted_avg_cost_basis,
+        regime_is_favorable=regime_is_favorable,
+        realized_vol_percentile=vol_pctile if vol_pctile is not None else 0.5,
+        volume_zscore=volume_zscore,
+        sector_correlation=sector_corr,
+        days_since_last_entry=days_since_last_entry,
+        existing_position_pct_of_portfolio=existing_position_pct_of_portfolio,
+        num_prior_adds=num_prior_adds,
+        support_level=support_level if support_level is not None else current_price * 0.97,
+        atr=atr,
+    )
+
+
 def candidates_to_dataframe(candidates: list[MinedCandidate]) -> pd.DataFrame:
     """Convert to the exact column shape triple_barrier_labeling.build_labeled_dataset()
     expects for its `candidate_events` argument.
@@ -503,6 +574,62 @@ def mine_and_report(session: Session, barrier_cfg: BarrierConfig | None = None) 
         "n_stocks_with_candidates": len({c.symbol for c in candidates}),
         "n_labeled": len(labeled),
         "label_balance": report,
+    }
+
+
+def train_and_save_position_scaling_gate(
+    session: Session,
+    save_path: str,
+    barrier_cfg: BarrierConfig | None = None,
+) -> dict:
+    """T241 Phase 5: mine -> label -> walk-forward train -> save, in one call. This is the
+    function a scheduled retrain job calls; it does NOT touch any live trading decision by
+    itself — saving a new model file only takes effect once something explicitly loads it
+    (see paper_trading_engine.py's position-scaling shadow-mode block).
+
+    Returns a summary dict (candidate/label counts, walk-forward report, feature
+    importances) so a caller can log or alert on training results without needing to
+    inspect the saved file separately.
+    """
+    from .position_scaling_gate import walk_forward_report, walk_forward_train
+
+    barrier_cfg = barrier_cfg or BarrierConfig()
+    from db import Stock
+    stock_ids = [sid for (sid,) in session.execute(
+        select(Stock.id).where(Stock.active.is_(True))
+    ).all()]
+
+    candidates = mine_all_horizons(session, stock_ids, barrier_cfg)
+    if not candidates:
+        return {"trained": False, "reason": "no candidate events mined"}
+
+    price_history = _load_price_history(session, {c.symbol for c in candidates})
+    candidate_df = candidates_to_dataframe(candidates)
+
+    from .triple_barrier_labeling import build_labeled_dataset
+    labeled = build_labeled_dataset(candidate_df, price_history, barrier_cfg)
+    if labeled.empty:
+        return {"trained": False, "reason": "no events survived labeling"}
+
+    X, y, ret = build_feature_matrix(candidates, labeled)
+    fold_results, final_gate = walk_forward_train(X, y, ret, n_splits=5, min_samples_per_split=15)
+    report = walk_forward_report(fold_results)
+
+    importances = final_gate.feature_importances().to_dict()
+    final_gate.save(save_path, metadata={
+        "n_candidates": len(candidates),
+        "n_stocks": len({c.symbol for c in candidates}),
+        "walk_forward_report": report,
+        "feature_importances": importances,
+    })
+
+    return {
+        "trained": True,
+        "n_candidates": len(candidates),
+        "n_stocks": len({c.symbol for c in candidates}),
+        "walk_forward_report": report,
+        "feature_importances": importances,
+        "saved_to": save_path,
     }
 
 

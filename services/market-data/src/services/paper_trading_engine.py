@@ -348,6 +348,19 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     # "primary": DE verdict is the gate (fallback to _should_enter() if DE unreachable).
     # "shadow":  old behavior — _should_enter() decides, DE logged for comparison only.
     "decision_engine_mode":    "primary",
+    # T241-P5: position-scaling gate (conviction-based pullback-add) mode.
+    # "off":    default. The pullback-add evaluation never runs at all — zero behavior
+    #           change from before this phase existed.
+    # "shadow": the position-scaling gate + thesis-persistence check run on every
+    #           already-open candidate and their verdicts are logged (paper.position_
+    #           scaling_shadow) — but this phase NEVER places a real add or touches
+    #           portfolio.current_cash, regardless of this setting. There is currently no
+    #           "live" mode: real-money-affecting wiring (sizer.py integration, actually
+    #           placing the add) is intentionally deferred to a follow-up phase once shadow
+    #           data validates the model against real outcomes, matching the design doc's
+    #           own Phase 6 shadow-deployment requirement and the T232-DL-DUALSCORER-SHADOW
+    #           precedent already used for the decision engine.
+    "position_scaling_mode":  "off",
 }
 
 
@@ -3225,6 +3238,103 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                                          symbol=stock.symbol, added_shares=_si_add_shares,
                                          live_price=_si_live, pnl_pct=round(_si_pnl_pct * 100, 1),
                                          confidence=_si_conf)
+
+            # T241-P5-SHADOW: position-scaling gate (conviction-based PULLBACK add) —
+            # the opposite direction from the scale-in block above, which only adds to a
+            # position already up 5%+. This block NEVER places a real add or touches
+            # portfolio.current_cash — position_scaling_mode="off" (default) skips it
+            # entirely; "shadow" runs the real gate + thesis-persistence check on real data
+            # and logs the verdict for later comparison against what actually happens to
+            # the position, but still never acts. See _DEFAULT_CONFIG's position_scaling_mode
+            # comment for why real order placement is deliberately deferred to a later phase.
+            _ps_mode = cfg.get("position_scaling_mode", "off")
+            if _ps_mode == "shadow":
+                _ps_live = live_prices.get(stock.symbol)
+                if _ps_live:
+                    _ps_trade = session.execute(
+                        select(PaperTrade).where(
+                            PaperTrade.portfolio_id == portfolio.id,
+                            PaperTrade.symbol == stock.symbol,
+                            PaperTrade.stage == "open",
+                        )
+                    ).scalar_one_or_none()
+                    if _ps_trade and _ps_live < float(_ps_trade.entry_price):
+                        # Only a genuine pullback (price below current cost basis) is in scope —
+                        # matches the explicit Phase 0 scope decision that this system adds
+                        # ONLY on a pullback, leaving the existing 5%-up scale-in untouched.
+                        try:
+                            from ..backtest.candidate_event_mining import compute_live_features_for_position
+                            from ..backtest.position_scaling_gate import PositionScalingGate
+                            from ..backtest.thesis_persistence_gate import (
+                                RegimeLabel, ThesisPersistenceGate, snapshot_from_paper_trade,
+                            )
+
+                            _ps_notes = _ps_trade.entry_decision_notes or []
+                            _ps_num_prior_adds = sum(1 for n in _ps_notes if "SCALE_IN" in str(n) or "PS_SHADOW" in str(n))
+                            _ps_features = compute_live_features_for_position(
+                                session=session,
+                                stock_id=stock.id,
+                                symbol=stock.symbol,
+                                sector=stock.sector,
+                                current_price=_ps_live,
+                                weighted_avg_cost_basis=float(_ps_trade.entry_price),
+                                primary_signal_confidence=float(sig.confidence or 0.0),
+                                signal_confidence_at_last_entry=float(_ps_trade.confidence_at_entry or 50.0),
+                                regime_is_favorable=bool(live_regime and live_regime.get("state") in ("bull", "neutral")),
+                                volume_zscore=float((sig.reasons or {}).get("volume_z") or 0.0),
+                                support_level=(sig.reasons or {}).get("sr_nearest_support"),
+                                days_since_last_entry=(datetime.now(timezone.utc).date() - _ps_trade.entry_date).days,
+                                existing_position_pct_of_portfolio=round(
+                                    (_ps_trade.shares * _ps_live) / portfolio.current_cash, 4
+                                ) if portfolio.current_cash > 0 else 0.0,
+                                num_prior_adds=_ps_num_prior_adds,
+                            )
+                            if _ps_features is not None:
+                                from common.config import get_settings as _gs_ps
+                                _ps_model_path = str(Path(_gs_ps().model_dir) / "position_scaling_gate.joblib")
+                                _ps_gate = PositionScalingGate.load(_ps_model_path)
+                                _ps_pred = _ps_gate.predict(_ps_features)
+
+                                _ps_snapshot = snapshot_from_paper_trade(
+                                    symbol=stock.symbol,
+                                    market_regime_at_entry=_ps_trade.market_regime_at_entry,
+                                    confidence_at_entry=_ps_trade.confidence_at_entry,
+                                    entry_price=float(_ps_trade.entry_price),
+                                    entry_reasons=_ps_trade.entry_reasons,
+                                )
+                                _ps_current_regime = RegimeLabel.UNKNOWN
+                                if live_regime and live_regime.get("state"):
+                                    try:
+                                        _ps_current_regime = RegimeLabel(live_regime["state"])
+                                    except ValueError:
+                                        pass
+                                _ps_thesis_gate = ThesisPersistenceGate()
+                                _ps_thesis_result = _ps_thesis_gate.check(
+                                    _ps_snapshot,
+                                    current_regime=_ps_current_regime,
+                                    current_signal_confidence=float(sig.confidence or 0.0),
+                                    current_rs_score=(sig.reasons or {}).get("rs_score"),
+                                    current_price=_ps_live,
+                                )
+                                log.info(
+                                    "paper.position_scaling_shadow",
+                                    symbol=stock.symbol, portfolio=portfolio.name,
+                                    act_probability=round(_ps_pred.act_probability, 4),
+                                    suggested_size_multiplier=_ps_pred.suggested_size_multiplier,
+                                    would_act=_ps_pred.should_act,
+                                    thesis_recommendation=_ps_thesis_result.recommendation,
+                                    thesis_broken_reasons=_ps_thesis_result.broken_reasons,
+                                    pnl_pct=round((_ps_live - float(_ps_trade.entry_price)) / float(_ps_trade.entry_price) * 100, 2),
+                                )
+                        except FileNotFoundError:
+                            # No trained model saved yet (train_and_save_position_scaling_gate()
+                            # hasn't run) — shadow mode has nothing to log against, fail silent
+                            # rather than spamming logs every scan until a model exists.
+                            pass
+                        except Exception as _ps_exc:
+                            log.warning("paper.position_scaling_shadow_failed",
+                                        symbol=stock.symbol, error=str(_ps_exc))
+
             # TA-WHYNOTRADE2: this candidate already has an open position, so it was only ever
             # eligible for scale-in above (whether or not scale-in actually fired) — not a fresh
             # entry. Previously untallied, so _write_no_entry_summary's top_reasons could show []

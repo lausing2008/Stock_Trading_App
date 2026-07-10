@@ -76,6 +76,7 @@ from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, func, text
@@ -2001,6 +2002,48 @@ def _retrain_meta_model() -> None:
         _record_job_status("meta_model_retrain", "error", elapsed, str(exc))
 
 
+def _retrain_position_scaling_gate() -> None:
+    """T241-P5: weekly retrain of the position-scaling gate (conviction-based pullback-add
+    classifier). Runs entirely in-process — mine -> label -> walk-forward train -> save to
+    disk (see candidate_event_mining.train_and_save_position_scaling_gate). Saving a new
+    model file has no effect on any live/paper decision by itself; only a portfolio with
+    position_scaling_mode="shadow" ever loads it, and even then only to log a verdict, not
+    to act on it. Logs the walk-forward hit-rate and top feature importance on every run so
+    model quality regressions are visible in production logs without needing to re-run the
+    training pipeline manually.
+    """
+    _t0 = time.monotonic()
+    try:
+        from ..backtest.candidate_event_mining import train_and_save_position_scaling_gate
+
+        model_path = str(Path(_settings.model_dir) / "position_scaling_gate.joblib")
+        with SessionLocal() as session:
+            result = train_and_save_position_scaling_gate(session, model_path)
+        elapsed = time.monotonic() - _t0
+        if result.get("trained"):
+            wf = result.get("walk_forward_report", {})
+            top_feature = None
+            importances = result.get("feature_importances") or {}
+            if importances:
+                top_feature = max(importances.items(), key=lambda kv: kv[1])
+            log.info(
+                "position_scaling_gate.retrain_done",
+                n_candidates=result.get("n_candidates"),
+                n_stocks=result.get("n_stocks"),
+                mean_hit_rate=wf.get("mean_hit_rate"),
+                n_valid_folds=wf.get("n_valid_folds"),
+                top_feature=top_feature,
+                elapsed_s=round(elapsed, 1),
+            )
+        else:
+            log.warning("position_scaling_gate.retrain_skipped", reason=result.get("reason"), elapsed_s=round(elapsed, 1))
+        _record_job_status("position_scaling_gate_retrain", "ok", elapsed)
+    except Exception as exc:
+        elapsed = time.monotonic() - _t0
+        log.error("position_scaling_gate.retrain_failed", error=str(exc), exc_info=True)
+        _record_job_status("position_scaling_gate_retrain", "error", elapsed, str(exc))
+
+
 def _ingest_edgar_8k() -> None:
     """T208: Trigger SEC EDGAR 8-K filing ingest via event-intelligence service.
 
@@ -3590,6 +3633,20 @@ def start_scheduler() -> None:
         _retrain_meta_model,
         CronTrigger(day_of_week="sun", day="1-7", hour=3, minute=0, timezone="UTC"),
         id="meta_model_monthly_retrain", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── T241-P5: weekly position-scaling gate retrain — every Sunday ─────────
+    # In-process (unlike the meta-model above, this runs entirely inside market-data —
+    # no cross-service HTTP call needed). Weekly rather than monthly since the mined
+    # candidate universe is still small (~1200 events) and grows meaningfully week to
+    # week as new signals accumulate; ~2 minutes end-to-end per the production smoke test.
+    # Saving a new model file has NO effect on any live/paper decision by itself — it only
+    # matters once a portfolio's position_scaling_mode is "shadow" (the default is "off"),
+    # and even in shadow mode the gate's verdict is logged only, never acted on.
+    _scheduler.add_job(
+        _retrain_position_scaling_gate,
+        CronTrigger(day_of_week="sun", hour=4, minute=0, timezone="UTC"),
+        id="position_scaling_gate_weekly_retrain", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── T208: EDGAR 8-K filing ingest — daily 17:30 ET (1.5h after US close) ─
