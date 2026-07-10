@@ -2452,8 +2452,23 @@ def _record_position_scaling_shadow_verdict(
     scan loop. resolve_after is the timestamp _resolve_position_scaling_shadow_verdicts()
     uses to know when enough price history exists to judge whether would_act was correct
     (matching BarrierConfig.max_holding_days, the same horizon the model was trained on).
+
+    T241-AUDIT-WALKFORWARD-VALIDITY (found 2026-07-10 via audit): _scan_for_entries() runs
+    roughly every 5 minutes during market hours, so a single position sitting below its cost
+    basis with an active BUY signal would previously log a near-identical verdict ~60-80
+    times in one trading day. Since all of those resolve ~20 days later against essentially
+    the same real outcome, the eventual "hit rate" the comparison report shows would be
+    dominated by whichever few symbols happened to sit in a long pullback rather than a
+    representative independent sample, and a handful of such symbols could evict everything
+    else from the bounded ps:shadow:pending list. Deduped here via a per symbol+portfolio+day
+    Redis marker (SETNX, 25h TTL — slightly over a day so a marker set just before midnight
+    UTC still blocks a duplicate shortly after) so at most one verdict is recorded per
+    position per calendar day, regardless of how many scan ticks evaluate it that day.
     """
     import json as _json
+
+    today_str = datetime.now(timezone.utc).date().isoformat()
+    dedup_key = f"ps:shadow:seen:{portfolio_id}:{symbol}:{today_str}"
 
     payload = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -2472,6 +2487,8 @@ def _record_position_scaling_shadow_verdict(
         import redis as _rb
         from common.config import get_settings as _gs_ps_shadow
         _r = _rb.Redis.from_url(_gs_ps_shadow().redis_url, decode_responses=True)
+        if not _r.set(dedup_key, "1", nx=True, ex=25 * 3600):
+            return  # already recorded this symbol+portfolio+day — skip the duplicate
         _r.lpush("ps:shadow:pending", _json.dumps(payload))
         _r.ltrim("ps:shadow:pending", 0, _PS_SHADOW_LIST_MAXLEN - 1)
     except Exception:
@@ -2506,25 +2523,28 @@ def resolve_position_scaling_shadow_verdicts(session) -> dict:
 
     raw_pending = r.lrange("ps:shadow:pending", 0, -1)
     now = datetime.now(timezone.utc)
-    still_pending: list[str] = []
+    to_remove: list[str] = []  # raw entries actually processed — removed via LREM, not a full-list rebuild
     resolved_count = 0
     correct_count = 0
+    still_pending_count = 0
 
     for raw in raw_pending:
         try:
             payload = _json.loads(raw)
             resolve_after = datetime.fromisoformat(payload["resolve_after"])
         except Exception:
-            continue  # malformed entry — drop rather than get stuck forever
+            to_remove.append(raw)  # malformed entry — drop rather than get stuck forever
+            continue
 
         if now < resolve_after:
-            still_pending.append(raw)
+            still_pending_count += 1
             continue
 
         symbol = payload["symbol"]
         try:
             stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
             if stock is None:
+                still_pending_count += 1
                 continue
             verdict_ts = datetime.fromisoformat(payload["ts"])
             price_row = session.execute(
@@ -2534,11 +2554,11 @@ def resolve_position_scaling_shadow_verdicts(session) -> dict:
                 ).order_by(Price.ts.desc()).limit(1)
             ).scalar()
         except Exception:
-            still_pending.append(raw)  # DB hiccup — try again on the next run, don't lose it
+            still_pending_count += 1  # DB hiccup — try again on the next run, don't lose it
             continue
 
         if price_row is None:
-            still_pending.append(raw)
+            still_pending_count += 1
             continue
 
         subsequent_return = (float(price_row) - payload["price_at_verdict"]) / payload["price_at_verdict"]
@@ -2556,20 +2576,28 @@ def resolve_position_scaling_shadow_verdicts(session) -> dict:
             r.ltrim("ps:shadow:resolved", 0, _PS_SHADOW_LIST_MAXLEN - 1)
         except Exception:
             pass
+        to_remove.append(raw)
         resolved_count += 1
         if outcome_correct:
             correct_count += 1
 
+    # T241-AUDIT-WALKFORWARD-VALIDITY (found 2026-07-10 via audit): previously did
+    # lrange -> process -> delete-the-whole-list -> rpush-back-the-still-pending-ones, which
+    # silently dropped any verdict lpush'd by a concurrent scan between the lrange and the
+    # delete. This job runs at 05:00 UTC = 13:00 HKT, squarely inside the HK trading session
+    # when shadow verdicts are actively being recorded, so that window was real. LREM only
+    # removes the SPECIFIC raw entries this run actually processed (by exact string match,
+    # count=1 each so a byte-identical duplicate verdict pushed concurrently isn't also
+    # removed) — anything pushed after this run's lrange snapshot was taken is left alone.
     try:
-        r.delete("ps:shadow:pending")
-        if still_pending:
-            r.rpush("ps:shadow:pending", *still_pending)
+        for raw in to_remove:
+            r.lrem("ps:shadow:pending", 1, raw)
     except Exception:
         pass
 
     return {
         "resolved": resolved_count,
-        "still_pending": len(still_pending),
+        "still_pending": still_pending_count,
         "hit_rate": round(correct_count / resolved_count, 4) if resolved_count else None,
     }
 
