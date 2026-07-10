@@ -2913,35 +2913,48 @@ def send_post_open_digest(market: str, window: str) -> None:
                         movers.append({"symbol": sym, "change_pct": (float(close) - float(open_)) / float(open_) * 100})
                 movers.sort(key=lambda m: m["change_pct"], reverse=True)
 
-            # ── 5. Top 5 volume-surge stocks across watchlists ───────────────────
-            # Reuses volume_z (z-score of today's volume vs. its 20-day mean/std), already
-            # computed by the ML feature builder and stored in Signal.reasons at each open-burst
-            # refresh (5 runs 09:25-09:45) — no new intraday volume aggregation needed.
+            # ── 5. Top 5 volume-surge stocks, market-wide ────────────────────────
+            # MD-RVOL1: previously used volume_z (a z-score of daily volume vs its 20-day
+            # mean/std, from Signal.reasons, SWING-horizon + watchlist-only) — a DIFFERENT
+            # metric and DIFFERENT scope than the screener's/stock-detail page's RVOL column
+            # (today_volume / avg_volume, all stocks, no horizon restriction). The two could
+            # legitimately disagree at the exact same moment, and since volume patterns move
+            # fast intraday, a user checking the screener even 15-30 minutes after this email
+            # sends would often see the flagged stocks no longer elevated by either metric —
+            # confusing and unverifiable without reading source code. Now reads the SAME
+            # stockai:live_prices / stockai:avg_volume Redis caches the screener/stock-detail
+            # RVOL already use, computing the identical ratio, market-wide (not watchlist-
+            # restricted, matching the screener's own "all stocks" scope) — a symbol flagged
+            # here is guaranteed to show the same RVOL if checked on the screener at the same
+            # moment.
             vol_surge: list[dict] = []
             prev_vol_surge_symbols: set = set(prev.get("vol_surge_symbols", []))
-            if watchlist_stock_ids:
-                vol_sig_subq = (
-                    select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
-                    .where(Signal.horizon == "SWING", Signal.stock_id.in_(watchlist_stock_ids))
-                    .group_by(Signal.stock_id)
-                    .subquery()
-                )
-                vol_rows = session.execute(
-                    select(Stock.symbol, Signal.reasons)
-                    .join(vol_sig_subq, Stock.id == vol_sig_subq.c.stock_id)
-                    .join(Signal, (Signal.stock_id == vol_sig_subq.c.stock_id)
-                          & (Signal.ts == vol_sig_subq.c.max_ts) & (Signal.horizon == "SWING"))
-                    .where(Stock.market == market)
+            try:
+                _live_raw = json.loads(redis_client.get("stockai:live_prices") or "[]")
+                _avg_vol_cache = json.loads(redis_client.get("stockai:avg_volume") or "{}")
+            except Exception:
+                _live_raw, _avg_vol_cache = [], {}
+            _market_symbols = {
+                sym for (sym,) in session.execute(
+                    select(Stock.symbol).where(Stock.market == market, Stock.active.is_(True))
                 ).all()
-                for sym, reasons in vol_rows:
-                    vz = (reasons or {}).get("volume_z")
-                    if vz is not None and vz >= 1.5:  # ~93rd percentile — meaningfully elevated
-                        vol_surge.append({"symbol": sym, "volume_z": float(vz)})
-                vol_surge.sort(key=lambda v: v["volume_z"], reverse=True)
-                # 1hr run: only report surges not already shown in the 30min run
-                if window == "1hr" and prev_vol_surge_symbols:
-                    vol_surge = [v for v in vol_surge if v["symbol"] not in prev_vol_surge_symbols]
-                vol_surge = vol_surge[:5]
+            }
+            for row in _live_raw:
+                sym = row.get("symbol")
+                if sym not in _market_symbols:
+                    continue
+                vol = row.get("volume")
+                avg_vol = _avg_vol_cache.get(sym)
+                if not vol or not avg_vol:
+                    continue
+                rvol = float(vol) / float(avg_vol)
+                if rvol >= 1.5:  # same threshold convention as the screener's RVOL filter
+                    vol_surge.append({"symbol": sym, "volume_z": round(rvol, 2)})  # key name kept for the email template/snapshot schema below
+            vol_surge.sort(key=lambda v: v["volume_z"], reverse=True)
+            # 1hr run: only report surges not already shown in the 30min run
+            if window == "1hr" and prev_vol_surge_symbols:
+                vol_surge = [v for v in vol_surge if v["symbol"] not in prev_vol_surge_symbols]
+            vol_surge = vol_surge[:5]
 
             # ── Decide whether there's anything worth emailing ──────────────────
             has_content = (
