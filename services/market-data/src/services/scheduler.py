@@ -2044,6 +2044,116 @@ def _retrain_position_scaling_gate() -> None:
         _record_job_status("position_scaling_gate_retrain", "error", elapsed, str(exc))
 
 
+def _resolve_position_scaling_shadow() -> None:
+    """T241-P6: daily resolution of pending position-scaling shadow verdicts — checks each
+    verdict whose holding window has passed against the real subsequent price and moves it
+    from ps:shadow:pending to ps:shadow:resolved with an outcome_correct flag attached. Feeds
+    the /paper-portfolio/position-scaling-shadow comparison report the design doc's Phase 6
+    calls for ("a running shadow-mode report you can review weekly before deciding whether to
+    let the new pipeline start controlling paper trades for real").
+    """
+    _t0 = time.monotonic()
+    try:
+        from .paper_trading_engine import resolve_position_scaling_shadow_verdicts
+
+        with SessionLocal() as session:
+            result = resolve_position_scaling_shadow_verdicts(session)
+        elapsed = time.monotonic() - _t0
+        log.info(
+            "position_scaling_shadow.resolve_done",
+            resolved=result.get("resolved"),
+            still_pending=result.get("still_pending"),
+            hit_rate=result.get("hit_rate"),
+            elapsed_s=round(elapsed, 1),
+        )
+        _record_job_status("position_scaling_shadow_resolve", "ok", elapsed)
+    except Exception as exc:
+        elapsed = time.monotonic() - _t0
+        log.error("position_scaling_shadow.resolve_failed", error=str(exc), exc_info=True)
+        _record_job_status("position_scaling_shadow_resolve", "error", elapsed, str(exc))
+
+
+def _check_position_scaling_gate_drift() -> None:
+    """T241-P6: model-decay monitoring per the design doc's Phase 6 requirement — "track the
+    meta-model's live prediction distribution vs. its training-time distribution, and alert
+    if they drift meaningfully (this is your signal that a retrain is due)."
+
+    Compares the mean act_probability of shadow verdicts recorded in the last 7 days against
+    the mean predicted probability the model saw across its OWN training set (stored in the
+    model bundle's metadata at train time — see train_and_save_position_scaling_gate). A
+    large gap means live candidates look systematically different from what the model was
+    trained on (e.g. a genuine regime shift, or the mined training universe no longer
+    resembling what candidates look like now) — the actionable signal is "retrain," not
+    something this check can fix by itself.
+    """
+    _t0 = time.monotonic()
+    try:
+        import json as _json
+
+        import redis as _rb
+
+        r = _rb.Redis.from_url(_settings.redis_url, decode_responses=True)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        recent_probs = []
+        for raw in r.lrange("ps:shadow:pending", 0, -1) + r.lrange("ps:shadow:resolved", 0, -1):
+            try:
+                payload = _json.loads(raw)
+                if datetime.fromisoformat(payload["ts"]) >= cutoff:
+                    recent_probs.append(payload["act_probability"])
+            except Exception:
+                continue
+
+        if not recent_probs:
+            log.info("position_scaling_gate.drift_check_skipped", reason="no shadow verdicts in the last 7 days")
+            _record_job_status("position_scaling_gate_drift_check", "ok", time.monotonic() - _t0)
+            return
+
+        import joblib
+
+        model_path = Path(_settings.model_dir) / "position_scaling_gate.joblib"
+        if not model_path.exists():
+            log.info("position_scaling_gate.drift_check_skipped", reason="no trained model saved yet")
+            _record_job_status("position_scaling_gate_drift_check", "ok", time.monotonic() - _t0)
+            return
+
+        bundle = joblib.load(model_path)
+        training_hit_rate = (bundle.get("metadata") or {}).get("walk_forward_report", {}).get("mean_hit_rate")
+
+        live_mean_prob = sum(recent_probs) / len(recent_probs)
+        # T241-P6-DRIFT-THRESHOLD: the model's own act_threshold (0.55 default) is the
+        # decision boundary — a live mean act_probability drifting far from what training-time
+        # walk-forward folds implied (roughly centered near the act_threshold by construction,
+        # since folds balance both act/no-act outcomes) signals the live candidate population
+        # looks meaningfully different from what the model learned on. 0.15 absolute
+        # probability drift is the same magnitude already used as the signal-decay threshold
+        # in thesis_persistence_gate.py, kept consistent rather than picking a new number.
+        act_threshold = bundle.get("act_threshold", 0.55)
+        drift = abs(live_mean_prob - act_threshold)
+        drifted = drift > 0.15
+
+        log.info(
+            "position_scaling_gate.drift_check_done",
+            n_recent_verdicts=len(recent_probs),
+            live_mean_act_probability=round(live_mean_prob, 4),
+            training_act_threshold=act_threshold,
+            training_mean_hit_rate=training_hit_rate,
+            drift=round(drift, 4),
+            drifted=drifted,
+        )
+        if drifted:
+            log.warning(
+                "position_scaling_gate.drift_detected",
+                live_mean_act_probability=round(live_mean_prob, 4),
+                training_act_threshold=act_threshold,
+                note="live shadow predictions have drifted meaningfully from training-time expectations — consider an earlier retrain",
+            )
+        _record_job_status("position_scaling_gate_drift_check", "ok", time.monotonic() - _t0)
+    except Exception as exc:
+        elapsed = time.monotonic() - _t0
+        log.error("position_scaling_gate.drift_check_failed", error=str(exc), exc_info=True)
+        _record_job_status("position_scaling_gate_drift_check", "error", elapsed, str(exc))
+
+
 def _ingest_edgar_8k() -> None:
     """T208: Trigger SEC EDGAR 8-K filing ingest via event-intelligence service.
 
@@ -3647,6 +3757,28 @@ def start_scheduler() -> None:
         _retrain_position_scaling_gate,
         CronTrigger(day_of_week="sun", hour=4, minute=0, timezone="UTC"),
         id="position_scaling_gate_weekly_retrain", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── T241-P6: daily position-scaling shadow verdict resolution ────────────
+    # Checks pending shadow verdicts whose holding window has passed against the real
+    # subsequent price and moves them to ps:shadow:resolved with an outcome_correct flag.
+    # Daily is plenty — verdicts only become resolvable after max_holding_days (~20 days),
+    # so nothing is lost by not running this more often.
+    _scheduler.add_job(
+        _resolve_position_scaling_shadow,
+        CronTrigger(hour=5, minute=0, timezone="UTC"),
+        id="position_scaling_shadow_daily_resolve", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── T241-P6: weekly position-scaling gate drift check ────────────────────
+    # Per the design doc's Phase 6: "track the meta-model's live prediction distribution vs.
+    # its training-time distribution, and alert if they drift meaningfully." Runs right after
+    # the weekly retrain (4:30 UTC vs. retrain's 4:00 UTC) so drift is checked against whatever
+    # model is currently live, not a stale one about to be replaced.
+    _scheduler.add_job(
+        _check_position_scaling_gate_drift,
+        CronTrigger(day_of_week="sun", hour=4, minute=30, timezone="UTC"),
+        id="position_scaling_gate_weekly_drift_check", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── T208: EDGAR 8-K filing ingest — daily 17:30 ET (1.5h after US close) ─

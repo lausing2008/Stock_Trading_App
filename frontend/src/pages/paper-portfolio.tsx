@@ -16,6 +16,7 @@ import {
   type PaperPortfolioConfig,
   type ResearchSummary,
   type DeDivergenceResponse,
+  type PositionScalingShadowResponse,
 } from '@/lib/api';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1312,7 +1313,7 @@ function TradeParamsPanel({ onDone }: { onDone: () => void }) {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
-const TABS = ['Positions', 'Decisions', 'Journal', 'Closed Trades', 'Equity Curve', 'Attribution', 'Risk', 'DE Audit'] as const;
+const TABS = ['Positions', 'Decisions', 'Journal', 'Closed Trades', 'Equity Curve', 'Attribution', 'Risk', 'DE Audit', 'Position Scaling'] as const;
 type Tab = typeof TABS[number];
 
 export default function PaperPortfolioPage() {
@@ -1416,6 +1417,10 @@ export default function PaperPortfolioPage() {
   const { data: deAudit } = useSWR<DeDivergenceResponse>(
     authed && tab === 'DE Audit' ? 'de-divergences' : null,
     () => api.deDivergences(200), { revalidateOnFocus: false, refreshInterval: 60_000 }
+  );
+  const { data: psShadow } = useSWR<PositionScalingShadowResponse>(
+    authed && tab === 'Position Scaling' ? 'position-scaling-shadow' : null,
+    () => api.positionScalingShadow(200), { revalidateOnFocus: false, refreshInterval: 60_000 }
   );
 
   if (!authed) return null;
@@ -2749,6 +2754,101 @@ export default function PaperPortfolioPage() {
                               <td style={{ padding: '5px 10px', color: a.paper_enter ? '#22c55e' : '#64748b', fontWeight: 600 }}>{a.paper_enter ? 'ENTER' : 'SKIP'}</td>
                               <td style={{ padding: '5px 10px', color: '#94a3b8', textAlign: 'center' }}>{a.de_score}</td>
                               <td style={{ padding: '5px 10px', color: '#94a3b8', textAlign: 'center' }}>{a.paper_score}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Position Scaling shadow-mode tab (T241) */}
+        {tab === 'Position Scaling' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div style={{ padding: '10px 14px', background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, fontSize: 12, color: '#94a3b8' }}>
+              Conviction-based pullback-add gate — currently SHADOW MODE ONLY on any portfolio
+              where enabled. Logs what it would have done on a pullback; never places a real add.
+              Verdicts resolve ~20 days later against the real subsequent price.
+            </div>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              {[
+                { label: 'Pending', value: psShadow?.total_pending ?? '—', color: '#f59e0b' },
+                { label: 'Resolved', value: psShadow?.total_resolved ?? '—', color: '#6366f1' },
+                { label: 'Overall Hit Rate', value: psShadow?.hit_rate_pct != null ? `${psShadow.hit_rate_pct}%` : '—', color: '#22c55e' },
+                { label: 'Would-Act Hit Rate', value: psShadow?.would_act_hit_rate_pct != null ? `${psShadow.would_act_hit_rate_pct}%` : '—', color: '#22c55e' },
+              ].map(({ label, value, color }) => (
+                <div key={label} style={{ flex: 1, minWidth: 160, padding: '12px 16px', background: '#0f172a', borderRadius: 8, border: '1px solid #1e293b' }}>
+                  <div style={{ fontSize: 11, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>{label}</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color }}>{value}</div>
+                </div>
+              ))}
+            </div>
+
+            {!psShadow || (psShadow.total_pending === 0 && psShadow.total_resolved === 0) ? (
+              <div style={{ padding: 24, background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, textAlign: 'center', color: '#475569' }}>
+                No shadow data yet. Enable position_scaling_mode="shadow" on a portfolio to start collecting verdicts.
+              </div>
+            ) : (
+              <>
+                {(psShadow?.resolved?.length ?? 0) > 0 && (
+                  <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: '#6366f1', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
+                      Resolved Verdicts ({psShadow!.total_resolved})
+                    </div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                            {['Verdict Time', 'Symbol', 'Act Prob', 'Would Act', 'Thesis', 'Subsequent Return', 'Correct?'].map(h => (
+                              <th key={h} style={{ padding: '6px 10px', textAlign: 'left', color: '#475569', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {psShadow!.resolved.slice(0, 50).map((v, i) => (
+                            <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
+                              <td style={{ padding: '5px 10px', color: '#64748b', whiteSpace: 'nowrap' }}>{new Date(v.ts).toLocaleString()}</td>
+                              <td style={{ padding: '5px 10px', fontWeight: 700, color: '#e2e8f0' }}>{v.symbol}</td>
+                              <td style={{ padding: '5px 10px', color: '#94a3b8', textAlign: 'center' }}>{v.act_probability.toFixed(2)}</td>
+                              <td style={{ padding: '5px 10px', color: v.would_act ? '#22c55e' : '#64748b', fontWeight: 600 }}>{v.would_act ? 'YES' : 'no'}</td>
+                              <td style={{ padding: '5px 10px', color: v.thesis_recommendation === 'allow_add' ? '#22c55e' : v.thesis_recommendation === 'hold_only' ? '#f59e0b' : '#ef4444', fontSize: 11 }}>{v.thesis_recommendation}</td>
+                              <td style={{ padding: '5px 10px', color: (v.subsequent_return ?? 0) >= 0 ? '#22c55e' : '#ef4444', textAlign: 'center' }}>{v.subsequent_return != null ? `${(v.subsequent_return * 100).toFixed(1)}%` : '—'}</td>
+                              <td style={{ padding: '5px 10px', color: v.outcome_correct ? '#22c55e' : '#ef4444', fontWeight: 700, textAlign: 'center' }}>{v.outcome_correct ? '✓' : '✗'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {(psShadow?.pending?.length ?? 0) > 0 && (
+                  <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
+                      Pending Verdicts ({psShadow!.total_pending}) — awaiting resolution
+                    </div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                            {['Verdict Time', 'Symbol', 'Act Prob', 'Would Act', 'Thesis', 'Resolves After'].map(h => (
+                              <th key={h} style={{ padding: '6px 10px', textAlign: 'left', color: '#475569', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {psShadow!.pending.slice(0, 50).map((v, i) => (
+                            <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
+                              <td style={{ padding: '5px 10px', color: '#64748b', whiteSpace: 'nowrap' }}>{new Date(v.ts).toLocaleString()}</td>
+                              <td style={{ padding: '5px 10px', fontWeight: 700, color: '#e2e8f0' }}>{v.symbol}</td>
+                              <td style={{ padding: '5px 10px', color: '#94a3b8', textAlign: 'center' }}>{v.act_probability.toFixed(2)}</td>
+                              <td style={{ padding: '5px 10px', color: v.would_act ? '#22c55e' : '#64748b', fontWeight: 600 }}>{v.would_act ? 'YES' : 'no'}</td>
+                              <td style={{ padding: '5px 10px', color: v.thesis_recommendation === 'allow_add' ? '#22c55e' : v.thesis_recommendation === 'hold_only' ? '#f59e0b' : '#ef4444', fontSize: 11 }}>{v.thesis_recommendation}</td>
+                              <td style={{ padding: '5px 10px', color: '#64748b', whiteSpace: 'nowrap' }}>{new Date(v.resolve_after).toLocaleDateString()}</td>
                             </tr>
                           ))}
                         </tbody>
