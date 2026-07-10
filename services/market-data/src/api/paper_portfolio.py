@@ -1671,6 +1671,66 @@ def get_de_divergences(
     }
 
 
+# ── T241-P6: position-scaling shadow-mode comparison report ─────────────────
+
+@router.get("/position-scaling-shadow")
+def get_position_scaling_shadow(
+    limit: int = Query(100, ge=1, le=500),
+    _: User = Depends(get_current_user),
+) -> dict:
+    """Per the T241 design doc's Phase 6 acceptance criteria: "a running shadow-mode report
+    you can review weekly before deciding whether to let the new pipeline start controlling
+    paper trades for real." Reads ps:shadow:pending (verdicts still within their holding
+    window) and ps:shadow:resolved (verdicts scheduler.py has checked against the real
+    subsequent price) from Redis — same pattern as /de-divergences above.
+    """
+    import redis as _redis_lib
+    try:
+        rc = _redis_lib.from_url(_settings.redis_url, decode_responses=True, socket_connect_timeout=2)
+        raw_pending = rc.lrange("ps:shadow:pending", 0, limit - 1)
+        raw_resolved = rc.lrange("ps:shadow:resolved", 0, limit - 1)
+        total_pending = rc.llen("ps:shadow:pending")
+        total_resolved = rc.llen("ps:shadow:resolved")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Redis unavailable: {exc}")
+
+    pending = []
+    for raw in raw_pending:
+        try:
+            pending.append(json.loads(raw))
+        except Exception:
+            pass
+
+    resolved = []
+    for raw in raw_resolved:
+        try:
+            resolved.append(json.loads(raw))
+        except Exception:
+            pass
+
+    n_correct = sum(1 for r in resolved if r.get("outcome_correct"))
+    hit_rate = round(n_correct / len(resolved) * 100, 1) if resolved else None
+
+    # Would-act vs. would-not-act breakdown — lets a reviewer see whether the model's
+    # "act" calls specifically are earning their keep, not just the aggregate hit rate
+    # (which a model that mostly predicts "don't act" could inflate trivially).
+    would_act_resolved = [r for r in resolved if r.get("would_act")]
+    would_act_hit_rate = (
+        round(sum(1 for r in would_act_resolved if r.get("outcome_correct")) / len(would_act_resolved) * 100, 1)
+        if would_act_resolved else None
+    )
+
+    return {
+        "total_pending": total_pending,
+        "total_resolved": total_resolved,
+        "hit_rate_pct": hit_rate,
+        "would_act_count": len(would_act_resolved),
+        "would_act_hit_rate_pct": would_act_hit_rate,
+        "pending": pending,
+        "resolved": resolved,
+    }
+
+
 @router.get("/kelly")
 def kelly_sizing(
     style: str = Query("SWING", description="Trading style: SWING|GROWTH|LONG|SHORT"),

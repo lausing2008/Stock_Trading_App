@@ -2424,6 +2424,156 @@ def _record_de_shadow_comparison(
         pass
 
 
+# T241-P6: position-scaling shadow verdicts, same bounded-Redis-list pattern as
+# de:divergences/de:agreements above. Verdicts start in ps:shadow:pending (unresolved — we
+# don't yet know if the "would-act" prediction was right) and move to ps:shadow:resolved once
+# _resolve_position_scaling_shadow_verdicts() (scheduler.py) checks the real price outcome
+# after enough time has passed. Kept as two separate lists (not one list with a "resolved"
+# flag) so /paper-portfolio/position-scaling-shadow can cheaply report "N pending, M resolved,
+# X% hit rate" without scanning and filtering a single combined list on every request.
+_PS_SHADOW_LIST_MAXLEN = 2000
+
+
+def _record_position_scaling_shadow_verdict(
+    symbol: str,
+    portfolio_id: int,
+    act_probability: float,
+    suggested_size_multiplier: float,
+    would_act: bool,
+    thesis_recommendation: str,
+    thesis_broken_reasons: list[str],
+    price_at_verdict: float,
+    entry_price: float,
+    max_holding_days: int,
+) -> None:
+    """Record one position-scaling shadow verdict for later outcome resolution.
+
+    Fail-silent — shadow logging must never affect the real trading decision or block the
+    scan loop. resolve_after is the timestamp _resolve_position_scaling_shadow_verdicts()
+    uses to know when enough price history exists to judge whether would_act was correct
+    (matching BarrierConfig.max_holding_days, the same horizon the model was trained on).
+    """
+    import json as _json
+
+    payload = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "resolve_after": (datetime.now(timezone.utc) + timedelta(days=max_holding_days)).isoformat(),
+        "symbol": symbol,
+        "portfolio_id": portfolio_id,
+        "act_probability": round(act_probability, 4),
+        "suggested_size_multiplier": suggested_size_multiplier,
+        "would_act": would_act,
+        "thesis_recommendation": thesis_recommendation,
+        "thesis_broken_reasons": thesis_broken_reasons,
+        "price_at_verdict": round(price_at_verdict, 4),
+        "entry_price": round(entry_price, 4),
+    }
+    try:
+        import redis as _rb
+        from common.config import get_settings as _gs_ps_shadow
+        _r = _rb.Redis.from_url(_gs_ps_shadow().redis_url, decode_responses=True)
+        _r.lpush("ps:shadow:pending", _json.dumps(payload))
+        _r.ltrim("ps:shadow:pending", 0, _PS_SHADOW_LIST_MAXLEN - 1)
+    except Exception:
+        pass
+
+
+def resolve_position_scaling_shadow_verdicts(session) -> dict:
+    """T241-P6: scan ps:shadow:pending for verdicts whose resolve_after has passed, look up
+    the real subsequent return for each, and move them to ps:shadow:resolved with an
+    outcome_correct verdict attached. Called by scheduler.py on a recurring job — NOT tied to
+    the per-scan _scan_for_entries() loop, since resolution only needs to run as often as new
+    verdicts finish their holding window (daily is plenty).
+
+    "Correct" here means the would_act prediction matched the ACTUAL subsequent return sign
+    relative to the price at verdict time: would_act=True is scored correct if the position
+    was up by more than a small noise threshold (+0.5%, matching triple_barrier_labeling.py's
+    own TIME_LIMIT correctness threshold) by resolve_after; would_act=False is scored correct
+    if it was NOT (i.e. staying out would have avoided a loss or non-move). This is a real,
+    if simpler, comparison than the offline training labels' with/without-add counterfactual —
+    shadow mode never actually places an add, so there is no real "with-add" position to
+    compare against, only "did the signal that said 'this pullback is worth watching' end up
+    being right about the stock's subsequent direction."
+    """
+    import json as _json
+
+    try:
+        import redis as _rb
+        from common.config import get_settings as _gs_ps_resolve
+        r = _rb.Redis.from_url(_gs_ps_resolve().redis_url, decode_responses=True)
+    except Exception as exc:
+        return {"resolved": 0, "still_pending": 0, "error": str(exc)}
+
+    raw_pending = r.lrange("ps:shadow:pending", 0, -1)
+    now = datetime.now(timezone.utc)
+    still_pending: list[str] = []
+    resolved_count = 0
+    correct_count = 0
+
+    for raw in raw_pending:
+        try:
+            payload = _json.loads(raw)
+            resolve_after = datetime.fromisoformat(payload["resolve_after"])
+        except Exception:
+            continue  # malformed entry — drop rather than get stuck forever
+
+        if now < resolve_after:
+            still_pending.append(raw)
+            continue
+
+        symbol = payload["symbol"]
+        try:
+            stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
+            if stock is None:
+                continue
+            verdict_ts = datetime.fromisoformat(payload["ts"])
+            price_row = session.execute(
+                select(Price.close).where(
+                    Price.stock_id == stock.id, Price.timeframe == TimeFrame.D1,
+                    Price.ts >= verdict_ts.replace(tzinfo=None),
+                ).order_by(Price.ts.desc()).limit(1)
+            ).scalar()
+        except Exception:
+            still_pending.append(raw)  # DB hiccup — try again on the next run, don't lose it
+            continue
+
+        if price_row is None:
+            still_pending.append(raw)
+            continue
+
+        subsequent_return = (float(price_row) - payload["price_at_verdict"]) / payload["price_at_verdict"]
+        actually_worked = subsequent_return > 0.005  # matches triple_barrier_labeling.py's own threshold
+        outcome_correct = payload["would_act"] == actually_worked
+
+        resolved_payload = {
+            **payload,
+            "resolved_ts": now.isoformat(),
+            "subsequent_return": round(subsequent_return, 4),
+            "outcome_correct": outcome_correct,
+        }
+        try:
+            r.lpush("ps:shadow:resolved", _json.dumps(resolved_payload))
+            r.ltrim("ps:shadow:resolved", 0, _PS_SHADOW_LIST_MAXLEN - 1)
+        except Exception:
+            pass
+        resolved_count += 1
+        if outcome_correct:
+            correct_count += 1
+
+    try:
+        r.delete("ps:shadow:pending")
+        if still_pending:
+            r.rpush("ps:shadow:pending", *still_pending)
+    except Exception:
+        pass
+
+    return {
+        "resolved": resolved_count,
+        "still_pending": len(still_pending),
+        "hit_rate": round(correct_count / resolved_count, 4) if resolved_count else None,
+    }
+
+
 def _clear_gate_block(portfolio_id: int) -> None:
     """Delete the Redis gate_block key so the UI no longer shows a block reason."""
     try:
@@ -3264,6 +3414,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         # ONLY on a pullback, leaving the existing 5%-up scale-in untouched.
                         try:
                             from ..backtest.candidate_event_mining import compute_live_features_for_position
+                            from ..backtest.multi_tranche_engine import BarrierConfig
                             from ..backtest.position_scaling_gate import PositionScalingGate
                             from ..backtest.thesis_persistence_gate import (
                                 RegimeLabel, ThesisPersistenceGate, snapshot_from_paper_trade,
@@ -3325,6 +3476,21 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                                     thesis_recommendation=_ps_thesis_result.recommendation,
                                     thesis_broken_reasons=_ps_thesis_result.broken_reasons,
                                     pnl_pct=round((_ps_live - float(_ps_trade.entry_price)) / float(_ps_trade.entry_price) * 100, 2),
+                                )
+                                # T241-P6: persist beyond the log line so a rolling comparison
+                                # report (was would_act right in hindsight?) can be built —
+                                # resolved later by scheduler.py once max_holding_days has passed.
+                                _record_position_scaling_shadow_verdict(
+                                    symbol=stock.symbol,
+                                    portfolio_id=portfolio.id,
+                                    act_probability=_ps_pred.act_probability,
+                                    suggested_size_multiplier=_ps_pred.suggested_size_multiplier,
+                                    would_act=_ps_pred.should_act,
+                                    thesis_recommendation=_ps_thesis_result.recommendation,
+                                    thesis_broken_reasons=_ps_thesis_result.broken_reasons,
+                                    price_at_verdict=_ps_live,
+                                    entry_price=float(_ps_trade.entry_price),
+                                    max_holding_days=BarrierConfig().max_holding_days,
                                 )
                         except FileNotFoundError:
                             # No trained model saved yet (train_and_save_position_scaling_gate()
