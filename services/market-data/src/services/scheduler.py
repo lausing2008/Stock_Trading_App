@@ -1328,8 +1328,12 @@ def check_signal_alerts() -> None:
                     log.info("signal_alert.fired", symbol=alert.symbol, prev=prev, current=current, style=style)
                     _store_conviction(alert.symbol, style, True, conviction_passed or [], [], current,
                                       sent_at=now_utc.isoformat(), conviction_tier=conviction_tier or "full")
-                    # T230-ALERTING-SLACK-DISCORD: also deliver via webhook if user has one configured
-                    webhook = getattr(alert.user, "notification_webhook", None)
+                    # T230-ALERTING-SLACK-DISCORD-FIX: also deliver via webhook if user has one
+                    # configured. Previously used getattr(..., None) because
+                    # User.notification_webhook didn't actually exist on the model — this
+                    # delivery path silently never fired despite being documented as "done."
+                    # Now a real column (see models.py), so this reads the real value.
+                    webhook = alert.user.notification_webhook
                     if webhook:
                         send_webhook_notification(
                             webhook,

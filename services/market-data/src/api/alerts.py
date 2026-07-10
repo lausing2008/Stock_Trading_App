@@ -1,10 +1,8 @@
 """Price alert CRUD — create, list, delete alerts per authenticated user."""
 from __future__ import annotations
 
-import ipaddress
 import re
 from datetime import datetime
-from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -13,36 +11,12 @@ from sqlalchemy.orm import Session
 
 from common.logging import get_logger
 from db import PriceAlert, AlertCondition, SignalAlert, get_session
-from .auth import get_current_user
+from .auth import get_current_user, validate_webhook_url as _validate_webhook_url
 
 log = get_logger("alerts")
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 
-_PRIVATE_NETS = [
-    ipaddress.ip_network(cidr) for cidr in (
-        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
-        "127.0.0.0/8", "169.254.0.0/16", "::1/128", "fc00::/7",
-    )
-]
 _SYMBOL_RE = re.compile(r'^[A-Z0-9.\^\-]{1,20}$')
-
-
-def _validate_webhook_url(url: str | None) -> str | None:
-    if url is None:
-        return None
-    parsed = urlparse(url)
-    if parsed.scheme != "https":
-        raise ValueError("webhook_url must use https")
-    host = parsed.hostname or ""
-    try:
-        addr = ipaddress.ip_address(host)
-        if any(addr in net for net in _PRIVATE_NETS):
-            raise ValueError("webhook_url must not target private/internal IP ranges")
-    except ValueError as exc:
-        if "must" in str(exc):
-            raise
-        # hostname (not an IP) — allow; internal DNS not resolvable here
-    return url
 
 
 class AlertCreate(BaseModel):
