@@ -75,7 +75,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, func, text
@@ -2799,6 +2799,13 @@ def send_post_open_digest(market: str, window: str) -> None:
         snap_key = _post_open_snapshot_key(market)
         prev_raw = redis_client.get(snap_key)
         prev = json.loads(prev_raw) if prev_raw else {}
+        # T241-DIGEST5X: the 24h snapshot TTL means a snapshot from YESTERDAY'S last run can
+        # still be present when today's first run fires (market opens are ~24h apart, not
+        # >24h) — checking "does a snapshot exist" alone would incorrectly treat today's first
+        # check as a follow-up to yesterday's last one. Compare the snapshot's own recorded
+        # date instead of just its presence.
+        _today_str = date.today().isoformat()
+        is_first_check_of_day = prev.get("snapshot_date") != _today_str
 
         with SessionLocal() as session:
             users = session.execute(
@@ -2945,14 +2952,30 @@ def send_post_open_digest(market: str, window: str) -> None:
                     continue
                 vol = row.get("volume")
                 avg_vol = _avg_vol_cache.get(sym)
+                price = row.get("price")
+                prev_close = row.get("prev_close")
                 if not vol or not avg_vol:
                     continue
                 rvol = float(vol) / float(avg_vol)
                 if rvol >= 1.5:  # same threshold convention as the screener's RVOL filter
-                    vol_surge.append({"symbol": sym, "volume_z": round(rvol, 2)})  # key name kept for the email template/snapshot schema below
+                    # T241-DIGEST5X: added current_price/change_pct alongside RVOL — a volume
+                    # surge on rising price (accumulation) and one on falling price (distribution/
+                    # panic selling) call for very different reactions, and the bare ratio alone
+                    # didn't distinguish them. See email_service.py's rendering for how this is
+                    # used to add a directional note.
+                    change_pct = ((float(price) - float(prev_close)) / float(prev_close) * 100
+                                  if price and prev_close else None)
+                    vol_surge.append({
+                        "symbol": sym, "volume_z": round(rvol, 2),  # key name kept for the email template/snapshot schema below
+                        "current_price": price, "change_pct": round(change_pct, 2) if change_pct is not None else None,
+                    })
             vol_surge.sort(key=lambda v: v["volume_z"], reverse=True)
-            # 1hr run: only report surges not already shown in the 30min run
-            if window == "1hr" and prev_vol_surge_symbols:
+            # Every run after the first one of the day only reports surges not already shown
+            # in an earlier run today — T241-DIGEST5X generalized this from a hardcoded
+            # window=="1hr" check (back when there were only 2 windows/day) to work for any
+            # number of scheduled windows: is_first_check_of_day is derived from whether a
+            # snapshot already exists for today (see below), not from a specific window name.
+            if not is_first_check_of_day and prev_vol_surge_symbols:
                 vol_surge = [v for v in vol_surge if v["symbol"] not in prev_vol_surge_symbols]
             vol_surge = vol_surge[:5]
 
@@ -2968,12 +2991,13 @@ def send_post_open_digest(market: str, window: str) -> None:
             # Always refresh the snapshot so the next run's delta is accurate,
             # even when this run had nothing worth emailing.
             redis_client.setex(snap_key, _POST_OPEN_SNAPSHOT_TTL, json.dumps({
+                "snapshot_date": _today_str,
                 "regime_state": cur_state,
                 "vix": cur_vix,
                 "spy_price": cur_spy,
                 "signals": cur_signals,
                 "watchlist_signals": cur_watchlist_signals,
-                "vol_surge_symbols": [v["symbol"] for v in vol_surge] if window == "30min" else
+                "vol_surge_symbols": [v["symbol"] for v in vol_surge] if is_first_check_of_day else
                                      list(prev_vol_surge_symbols | {v["symbol"] for v in vol_surge}),
             }))
 
@@ -3387,30 +3411,26 @@ def start_scheduler() -> None:
         id="morning_digest_hk", replace_existing=True, **_JOB_DEFAULTS,
     )
 
-    # ── Post-open digests — 30 min and 1hr after each market opens ──────────────
-    # US opens 09:30 ET → 10:00 ET / 10:30 ET. HK opens 09:30 HKT → 10:00 HKT / 10:30 HKT.
-    # Only sent when something changed (regime shift, signal flip, new BUY/SELL, big move) —
-    # see send_post_open_digest's has_content check.
-    _scheduler.add_job(
-        lambda: send_post_open_digest("US", "30min"),
-        CronTrigger(hour=10, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
-        id="post_open_digest_us_30min", replace_existing=True, **_JOB_DEFAULTS,
-    )
-    _scheduler.add_job(
-        lambda: send_post_open_digest("US", "1hr"),
-        CronTrigger(hour=10, minute=30, day_of_week="mon-fri", timezone="America/New_York"),
-        id="post_open_digest_us_1hr", replace_existing=True, **_JOB_DEFAULTS,
-    )
-    _scheduler.add_job(
-        lambda: send_post_open_digest("HK", "30min"),
-        CronTrigger(hour=10, minute=0, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
-        id="post_open_digest_hk_30min", replace_existing=True, **_JOB_DEFAULTS,
-    )
-    _scheduler.add_job(
-        lambda: send_post_open_digest("HK", "1hr"),
-        CronTrigger(hour=10, minute=30, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
-        id="post_open_digest_hk_1hr", replace_existing=True, **_JOB_DEFAULTS,
-    )
+    # ── Post-open digests — 30 min after open, then hourly for 4 more checks ───
+    # T241-DIGEST5X: US/HK both open 09:30 local → checks fire at 10:00 (30min), 11:00
+    # (1hr30min), 12:00 (2hr30min), 13:00 (3hr30min), 14:00 (4hr30min), all local to the
+    # respective market's timezone. Only sent when something changed (regime shift, signal
+    # flip, new BUY/SELL, big move, volume surge) — see send_post_open_digest's has_content
+    # check. window names must match _WINDOW_LABELS in email_service.py.
+    _POST_OPEN_WINDOWS = [
+        ("30min", 10, 0),
+        ("1hr30min", 11, 0),
+        ("2hr30min", 12, 0),
+        ("3hr30min", 13, 0),
+        ("4hr30min", 14, 0),
+    ]
+    for _market, _tz in (("US", "America/New_York"), ("HK", "Asia/Hong_Kong")):
+        for _window, _hour, _minute in _POST_OPEN_WINDOWS:
+            _scheduler.add_job(
+                lambda m=_market, w=_window: send_post_open_digest(m, w),
+                CronTrigger(hour=_hour, minute=_minute, day_of_week="mon-fri", timezone=_tz),
+                id=f"post_open_digest_{_market.lower()}_{_window}", replace_existing=True, **_JOB_DEFAULTS,
+            )
 
     # ── Data quality checks — every 2 hours, all days ────────────────────────
     # Checks actual data freshness (not job-run status — see run_data_quality_checks'

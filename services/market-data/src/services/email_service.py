@@ -141,6 +141,11 @@ def send_signal_alert_email(
     bullish_prob = signal_data.get("bullish_probability") if signal_data else None
     confidence   = signal_data.get("confidence") if signal_data else None
     ml_prob      = reasons.get("ml_probability")
+    # MD-SIGPRICE1: last_price is the price the signal was actually computed against (set at
+    # signal-compute time in signal-engine) — using this rather than a separately-fetched live
+    # quote keeps the displayed price consistent with what this exact signal/gate evaluation
+    # saw, since the alert itself reads the stored DB signal (live=False), not a live one.
+    current_price = reasons.get("last_price")
 
     def _yn(v) -> str:
         return "Yes" if v else "No"
@@ -239,6 +244,7 @@ def send_signal_alert_email(
         return s
 
     reason_rows = [
+        ("Current price",         f"${current_price:,.2f}" if current_price is not None else "—"),
         ("Market regime",         regime_note),
         ("Trend above SMA50",     _yn(reasons.get("trend_above_sma50"))),
         ("SMA50 above SMA200",    _yn(reasons.get("sma50_above_sma200"))),
@@ -453,7 +459,8 @@ Key Risk: {risk}
     horizon_tag = f" [{horizon}]" if horizon else ""
     _conf_tag = f" · {float(confidence):.0f}% conf" if confidence is not None else ""
     _bp_tag = f" · {float(bullish_prob)*100:.0f}%BP" if bullish_prob is not None else ""
-    subject = f"{subject_prefix}: {symbol} {prev_signal} → {new_signal}{horizon_tag}{_conf_tag}{_bp_tag}"
+    _price_tag = f" · ${current_price:,.2f}" if current_price is not None else ""
+    subject = f"{subject_prefix}: {symbol} {prev_signal} → {new_signal}{horizon_tag}{_price_tag}{_conf_tag}{_bp_tag}"
     cta = (
         "AI signal has reversed — consider reviewing your position.\n"
         if is_exit_alert else
@@ -1161,10 +1168,29 @@ def send_paper_portfolio_digest_email(
     return send_email(to, subject, body_html, body_text)
 
 
+# T241-DIGEST5X: 5 post-open checks/day — 30min, then hourly through 4hr30min.
+# Keys must match the window names scheduler.py's _POST_OPEN_WINDOWS registers jobs with.
+_WINDOW_LABELS = {
+    "30min": "30 min after open",
+    "1hr30min": "1.5 hours after open",
+    "2hr30min": "2.5 hours after open",
+    "3hr30min": "3.5 hours after open",
+    "4hr30min": "4.5 hours after open",
+}
+# What each window's "since ___" comparison point actually is, for the digest header.
+_WINDOW_SINCE_LABELS = {
+    "30min": "open",
+    "1hr30min": "30 min ago",
+    "2hr30min": "1.5 hours ago",
+    "3hr30min": "2.5 hours ago",
+    "4hr30min": "3.5 hours ago",
+}
+
+
 def send_post_open_digest_email(
     to: str,
     market: str,
-    window: str,  # "30min" | "1hr"
+    window: str,  # one of _WINDOW_LABELS' keys
     regime_changed: bool,
     prev_state: str | None,
     cur_state: str,
@@ -1173,7 +1199,7 @@ def send_post_open_digest_email(
     new_signal_changes: list,  # [{symbol, signal, prev_signal}]
     top_movers: list,          # [{symbol, change_pct}]
     bottom_movers: list,       # [{symbol, change_pct}]
-    vol_surge: list | None = None,  # [{symbol, volume_z}]
+    vol_surge: list | None = None,  # [{symbol, volume_z (RVOL), current_price, change_pct}]
 ) -> bool:
     """Post-open market update — 30 min or 1 hour after {market} opens.
 
@@ -1183,7 +1209,7 @@ def send_post_open_digest_email(
     """
     from datetime import date as _date
     date_str = _date.today().strftime("%b %d, %Y")
-    window_label = "30 min after open" if window == "30min" else "1 hour after open"
+    window_label = _WINDOW_LABELS.get(window, window)
 
     _state_color = {"bull": "#22c55e", "neutral": "#facc15", "choppy": "#f97316",
                      "risk_off": "#f97316", "bear": "#ef4444", "unknown": "#94a3b8"}
@@ -1323,13 +1349,34 @@ def send_post_open_digest_email(
         # screener's RVOL column and stock detail page's RVOL chip) rather than a volume_z
         # z-score — rendered as "×" to match those pages' own display convention (e.g. "2.3×"),
         # not "σ", so a value seen here reads identically to the same stock's RVOL elsewhere.
+        # T241-DIGEST5X: a volume surge on rising price (accumulation/breakout) and one on
+        # falling price (distribution/panic selling) call for very different reactions — the
+        # bare RVOL ratio alone couldn't distinguish them, so price + %change + a directional
+        # note are now shown alongside it.
+        def _vol_direction(change_pct: float | None) -> tuple[str, str]:
+            if change_pct is None:
+                return "#64748b", ""
+            if change_pct >= 0.5:
+                return "#22c55e", "accumulation"
+            if change_pct <= -0.5:
+                return "#ef4444", "distribution"
+            return "#64748b", "flat"
+
         def _vol_row(v: dict) -> str:
             rvol = v["volume_z"]
             intensity = "#ef4444" if rvol >= 3.0 else "#f97316" if rvol >= 2.0 else "#f59e0b"
+            price = v.get("current_price")
+            change_pct = v.get("change_pct")
+            price_str = f"${price:,.2f}" if price is not None else "—"
+            change_color, direction = _vol_direction(change_pct)
+            change_str = f"{change_pct:+.1f}%" if change_pct is not None else "—"
+            direction_str = f" ({direction})" if direction else ""
             return (
                 f'<tr style="border-bottom:1px solid #f1f5f9">'
                 f'<td style="padding:6px 10px;font-weight:700;font-size:13px">{v["symbol"]}</td>'
                 f'<td style="padding:6px 10px;font-size:13px;font-weight:700;color:{intensity}">{rvol:.1f}×</td>'
+                f'<td style="padding:6px 10px;font-size:13px;color:#374151">{price_str}</td>'
+                f'<td style="padding:6px 10px;font-size:13px;font-weight:700;color:{change_color}">{change_str}{direction_str}</td>'
                 f'</tr>'
             )
         vol_rows_html = "".join(_vol_row(v) for v in vol_surge)
@@ -1338,7 +1385,17 @@ def send_post_open_digest_email(
       <div style="font-size:11px;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Volume Surge (RVOL vs. 20d avg)</div>
       <table style="width:100%;border-collapse:collapse;background:#fafafa;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">{vol_rows_html}</table>
     </div>"""
-        vol_surge_text = "\nVOLUME SURGE (RVOL):\n" + "".join(f"  {v['symbol']:8}  {v['volume_z']:.1f}x avg volume\n" for v in vol_surge)
+
+        def _vol_text_row(v: dict) -> str:
+            price = v.get("current_price")
+            change_pct = v.get("change_pct")
+            price_str = f"${price:,.2f}" if price is not None else "—"
+            _, direction = _vol_direction(change_pct)
+            change_str = f"{change_pct:+.1f}%" if change_pct is not None else "—"
+            direction_str = f" ({direction})" if direction else ""
+            return f"  {v['symbol']:8}  {v['volume_z']:.1f}x avg volume   {price_str:>10}  {change_str}{direction_str}\n"
+
+        vol_surge_text = "\nVOLUME SURGE (RVOL):\n" + "".join(_vol_text_row(v) for v in vol_surge)
 
     subject_bits = []
     if regime_changed:
@@ -1364,7 +1421,7 @@ def send_post_open_digest_email(
   <div style="max-width:560px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
     <div style="margin-bottom:20px">
       <div style="font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">{market} Post-Open Update · {window_label} · {date_str}</div>
-      <div style="font-size:20px;font-weight:700;color:#111827">What changed since {"open" if window == "30min" else "30 min ago"}</div>
+      <div style="font-size:20px;font-weight:700;color:#111827">What changed since {_WINDOW_SINCE_LABELS.get(window, "the last check")}</div>
     </div>
     {regime_html}
     {pos_section_html}
