@@ -14702,13 +14702,14 @@ const ITEMS: Item[] = [
   },
   {
     id: 'AUD232-INDICATOR-DEDUP-INCOMPLETE',
-    tier: 242 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 242 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/technical-analysis/src/indicators/core.py, services/technical-analysis/src/api/routes.py, services/ml-prediction/src/features/builder.py, services/ranking-engine/src/scoring/kscore.py, services/signal-engine/src/generators/signals.py, services/research-engine/src/api/routes.py',
     effort: 'M',
     impact: 'Medium — directly contradicts the T233-ARCH-INDICATOR-DEDUP tracker entry\'s \'done\' status; the min_periods gap in particular is a real (if narrow) correctness issue for short-history stocks across multiple services.',
     title: 'The shared/common/indicators.py rollout (marked DONE 2026-07-09 as T233-ARCH-INDICATOR-DEDUP) is INCOMPLETE — 6 confirmed local reimplementations still exist across 5 services, several missing the shared module\'s min_periods warm-up guard',
     what: 'technical-analysis\'s core.py still has fully independent sma/ema/rsi/macd/bollinger_bands/atr — never imports the shared module at all. builder.py imports shared RSI/ATR but MACD and Bollinger Bands are still local. kscore.py\'s ADX-supporting ATR is local with no min_periods. signal-engine\'s _supertrend()/_adx() reimplement ATR the same way. technical-analysis\'s own get_indicators() endpoint recomputes EMA inline instead of calling its own core.py\'s ema(). research-engine has a third, structurally different, list-based ATR implementation. Full detail: docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-070, AUD232-071, AUD232-072, AUD232-073, AUD232-074, AUD232-075.',
     fix: 'Re-open T233-ARCH-INDICATOR-DEDUP (currently marked done) and finish the rollout: migrate technical-analysis/core.py, builder.py\'s MACD/Bollinger, kscore.py\'s ATR, signal-engine\'s ATR, and research-engine\'s ATR to shared/common/indicators.py, and fix get_indicators() to call its own core.py\'s ema() instead of duplicating the .ewm() call inline. Prioritize the min_periods gap specifically — it\'s the one difference with real correctness impact (early-history bars getting non-NaN indicator values that should be flagged as insufficient warm-up).',
+    implementedNote: 'Fixed 2026-07-11, 3 of 6 (the correctness-bearing min_periods gaps). AUD232-071: kscore.py\'s ADX now calls common.indicators.atr() (already imported for rsi) instead of a local .ewm() with no min_periods — NaN correctly propagates through di_plus/di_minus/dx/adx during warmup. AUD232-073: signal-engine\'s _supertrend() and _adx() both gained min_periods=period on their internal ATR calcs — _supertrend()\'s existing per-bar NaN guard now has real warmup NaNs to catch instead of silently computing on an under-warmed ATR; _adx()\'s existing "C3 FIX" None-return now also catches the under-warmed-ATR case, not just genuinely-NaN inputs. AUD232-074: get_indicators() now imports and calls core.py\'s own already-exported ema() instead of a raw duplicate .ewm() call. NOT done this pass: AUD232-070 (builder.py MACD/Bollinger still local — full parity-validated migration deferred per the module\'s own explicit caution against rushing trading-hot-path migrations), AUD232-072 (research-engine\'s _atr() has a genuinely different list-based calling convention, not a drop-in swap, and has no min_periods-class bug — its own len-check already guards correctly), AUD232-075 (technical-analysis/core.py IS the canonical source other services import from — nothing to migrate there). All 80 market-data tests pass; all touched files compile clean.',
   },
 
   {
@@ -14724,13 +14725,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD232-DE-MEDIUM-GROUP',
-    tier: 242 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 242 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/decision-engine/src/api/routes.py, services/decision-engine/src/api/core/sizer.py',
     effort: 'M',
     impact: 'Medium — low individual severity, but AUD232-053\'s inline recomputation is exactly the kind of small duplication that caused several of the critical/high findings elsewhere in this audit.',
     title: '2 medium decision-engine findings: confidence_mult tier duplication (same root cause as the already-tracked sizer/paper_trading_engine drift) and an inline recomputation of a multiplier already available from a shared helper',
     what: '(052) confidence_mult tiers (>=80 -> 1.25, >=62 -> 1.00, else -> 0.85) use a deliberately different scale from the real trading engine\'s confidence_size_mult (>=50 -> 1.25, >=30 -> 1.0, <30 -> 0.75) — both read the identical 0-100 signal confidence field but produce very different multipliers for the same input, e.g. confidence=65 gives 1.00x in DE vs 1.25x in the real engine. | (053) routes.py recomputes `_market_mult = min(multipliers.regime, multipliers.breadth, multipliers.vix)` inline for the micro-position skip check instead of reading a value returned by sizer.py, duplicating sizer.py\'s identical min()-composition logic (line 144) within the same service — a third in-repo copy of the same formula (the map already found two more in paper_trading_engine.py).. Full detail: docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-052, AUD232-053.',
     fix: 'AUD232-052 is the same underlying issue as AUD232-SIZER-VS-REAL-SIZING-DRIFT above — no separate fix needed, just confirms the tier mismatch is visible at this call site too. AUD232-053: factor the inline min(multipliers.regime, multipliers.breadth, multipliers.vix) recomputation in routes.py\'s micro-position skip check into a call to whatever helper already computes _market_mult elsewhere, so the two can\'t silently diverge if the formula changes in one place but not the other.',
+    implementedNote: 'AUD232-053 fixed 2026-07-11: extracted combined_market_mult(regime_mult, breadth_mult, vix_mult) as a real function in sizer.py (previously an inline expression inside compute_position()), and routes.py\'s micro-position skip check now calls it instead of re-deriving the identical min() expression. AUD232-052 is documented as an intentional, acknowledged divergence (same root cause as the already-tracked AUD232-SIZER-VS-REAL-SIZING-DRIFT entry) — no code change needed beyond what that entry already covers. Both files compile clean.',
   },
 
   {
@@ -14779,13 +14781,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD232-MLSERVICE-TOKEN-DUP',
-    tier: 242 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 242 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/signal-engine/src/generators/signals.py, services/signal-engine/src/api/routes.py',
     effort: 'M',
     impact: 'Medium — low risk today, but two independent JWT-minting/caching implementations are exactly the kind of duplication that\'s caused real bugs elsewhere in this audit when one copy gets a fix the other doesn\'t.',
     title: 'AUD232-069: _ml_service_token() (signals.py) duplicates _service_token() (routes.py) with a weaker cache-invalidation policy',
     what: 'signals.py\'s _ml_service_token() (lines 148-160): `if _ml_svc_token_cache: return _ml_svc_token_cache` — once set, this string is returned forever regardless of the embedded exp claim, with no _service_token_exp tracking at all. routes.py\'s _service_token() (lines 89-105) was later hardened with an explicit `_service_token_exp` global and `if _service_token_cache and time.time() < _service_token_exp - 7*86400` check, specifically so a cached token is "never used stale" (per its own docstring) — a fix that was never back-ported to the near-identical signals.py copy. Both mint 365-day tokens for the same jwt_secret with sub=\'signal-engine\' vs sub=\'signal-engine\' (routes.py) — functionally redundant, and now behaviorally diverged in exactly the dimension (staleness) this codebase has repeatedly been bitten by (see CLAUDE.md\'s jose/token incident history).',
     fix: 'Consolidate to one shared _service_token() helper (routes.py\'s version, which has the stronger cache-invalidation policy) and have signals.py import it instead of maintaining its own copy — matching the existing pattern already used to fix the analogous duplication in the T230-ALERTING-SLACK-DISCORD webhook validator move.',
+    implementedNote: 'Fixed 2026-07-11, but NOT via consolidation as originally recommended — routes.py imports FROM generators/signals.py at module load time (line 108), so signals.py importing _service_token back from routes.py would be a circular import; true consolidation would need a new shared module location, deferred as a larger refactor. Instead hardened _ml_service_token() in place to match _service_token()\'s exact refresh policy: added the same _ml_svc_token_exp tracking and the identical "refresh 7 days before expiry" check, so the two copies are no longer behaviorally diverged even though they remain textually duplicated. signals.py compiles clean.',
   },
   {
     id: 'AUD232-DEAD-VWAP-TEST',
