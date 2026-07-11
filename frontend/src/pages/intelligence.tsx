@@ -113,7 +113,7 @@ function OverviewTab() {
             {(ov.congress?.top_buys ?? []).slice(0, 8).map((item: CongressLeaderItem) => (
               <div key={item.symbol} style={{ padding: '8px 12px', borderBottom: '1px solid #1f2937', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ color: '#60a5fa', fontWeight: 600 }}>{item.symbol}</span>
-                <span style={{ color: '#22c55e', fontSize: 13 }}>{fmt(item.score)}</span>
+                <span style={{ color: '#22c55e', fontSize: 13 }}>${Math.round(item.net_amount).toLocaleString()}</span>
               </div>
             ))}
             {(ov.congress?.top_buys ?? []).length === 0 && (
@@ -320,7 +320,7 @@ function CongressTab() {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ borderBottom: '2px solid #1f2937' }}>
-                {['Symbol', 'Score', 'Buy Txns', 'Sell Txns', 'Politicians'].map(h => (
+                {['Symbol', 'Net Amount', 'Purchases', 'Sales', 'Politicians'].map(h => (
                   <th key={h} style={{ textAlign: 'left', padding: '8px 10px', color: '#6b7280', fontWeight: 600, fontSize: 11, textTransform: 'uppercase' }}>{h}</th>
                 ))}
               </tr>
@@ -329,10 +329,12 @@ function CongressTab() {
               {(leaders ?? []).map((item: CongressLeaderItem) => (
                 <tr key={item.symbol} style={{ borderBottom: '1px solid #111827' }}>
                   <td style={{ padding: '8px 10px', color: '#60a5fa', fontWeight: 600 }}>{item.symbol}</td>
-                  <td style={{ padding: '8px 10px', minWidth: 160 }}><ScoreBar score={item.score} max={100} /></td>
-                  <td style={{ padding: '8px 10px', color: '#22c55e' }}>{item.buy_count}</td>
-                  <td style={{ padding: '8px 10px', color: '#ef4444' }}>{item.sell_count}</td>
-                  <td style={{ padding: '8px 10px', color: '#9ca3af' }}>{item.politician_count}</td>
+                  <td style={{ padding: '8px 10px', color: item.net_amount >= 0 ? '#22c55e' : '#ef4444', fontWeight: 600 }}>
+                    {item.net_amount >= 0 ? '+' : ''}${Math.round(item.net_amount).toLocaleString()}
+                  </td>
+                  <td style={{ padding: '8px 10px', color: '#22c55e' }}>{item.purchases}</td>
+                  <td style={{ padding: '8px 10px', color: '#ef4444' }}>{item.sales}</td>
+                  <td style={{ padding: '8px 10px', color: '#9ca3af' }}>{item.unique_politicians}</td>
                 </tr>
               ))}
               {(leaders ?? []).length === 0 && !l1 && (
@@ -357,19 +359,19 @@ function CongressTab() {
             <tbody>
               {(recent ?? []).map((t: CongressTrade) => (
                 <tr key={t.id} style={{ borderBottom: '1px solid #111827' }}>
-                  <td style={{ padding: '8px 10px', color: '#60a5fa', fontWeight: 600 }}>{t.symbol}</td>
+                  <td style={{ padding: '8px 10px', color: '#60a5fa', fontWeight: 600 }}>{t.ticker}</td>
                   <td style={{ padding: '8px 10px', color: '#d1d5db' }}>{t.politician_name}</td>
-                  <td style={{ padding: '8px 10px', color: '#9ca3af' }}>{t.chamber}</td>
+                  <td style={{ padding: '8px 10px', color: '#9ca3af' }}>{t.chamber ?? '—'}</td>
                   <td style={{ padding: '8px 10px' }}>
                     {t.party === 'R' && <span style={{ color: '#f87171' }}>R</span>}
                     {t.party === 'D' && <span style={{ color: '#60a5fa' }}>D</span>}
                     {!t.party && '—'}
                   </td>
-                  <td style={{ padding: '8px 10px', color: t.transaction_type.toLowerCase().includes('purchase') ? '#22c55e' : '#ef4444', fontWeight: 600 }}>
+                  <td style={{ padding: '8px 10px', color: t.transaction_type === 'purchase' ? '#22c55e' : t.transaction_type === 'sale' ? '#ef4444' : '#9ca3af', fontWeight: 600 }}>
                     {t.transaction_type}
                   </td>
                   <td style={{ padding: '8px 10px', color: '#9ca3af' }}>{t.amount_range ?? '—'}</td>
-                  <td style={{ padding: '8px 10px', color: '#d1d5db' }}>{t.transaction_date}</td>
+                  <td style={{ padding: '8px 10px', color: '#d1d5db' }}>{t.trade_date ?? '—'}</td>
                 </tr>
               ))}
               {(recent ?? []).length === 0 && !l2 && (
