@@ -395,7 +395,11 @@ def _load_outcome_features(symbol: str, style: str = "SWING", lookback_days: int
         return pd.DataFrame(), pd.Series(dtype=int)
 
     try:
-        _outcome_horizon = {"SWING": 10, "LONG": 20, "GROWTH": 15, "SHORT": 5}.get(style.upper(), 10)
+        # AUD232-055: use the module's own _HORIZON_BY_STYLE instead of an independent inline
+        # copy of the same style->horizon-days table — a 4th duplicate (routes.py and
+        # meta_trainer.py's _HORIZON_DAYS are two more) that could silently drift out of sync
+        # with the rest of the file's training pipeline if a horizon is ever retuned.
+        _outcome_horizon = _HORIZON_BY_STYLE.get(style.upper(), 10)
         X_full, y_dir, _ = build_features(df, horizon=_outcome_horizon, macro_df=None)
     except Exception:
         return pd.DataFrame(), pd.Series(dtype=int)

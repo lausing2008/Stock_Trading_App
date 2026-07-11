@@ -81,6 +81,11 @@ def _adj_close(df: pd.DataFrame) -> pd.Series:
     return df["close"].astype(float)
 
 
+# AUD232-054: kept in sync with meta_trainer.py's SECTOR_MAP sector-name coverage — the two
+# maps serve different purposes (ETF lookup here vs. ordinal encoding there) so can't be merged
+# into one dict, but both must recognize the same real stock.sector values or a stock silently
+# gets valid features from one and "unknown" from the other for no reason but drift. Verified
+# against production stocks.sector distinct values (2026-07-11).
 SECTOR_ETF_MAP: dict[str, str] = {
     "Technology":             "XLK",
     "Financial Services":     "XLF",
@@ -88,6 +93,7 @@ SECTOR_ETF_MAP: dict[str, str] = {
     "Healthcare":             "XLV",
     "Energy":                 "XLE",
     "Consumer Cyclical":      "XLY",
+    "Consumer Defensive":     "XLP",
     "Utilities":              "XLU",
     "Industrials":            "XLI",
     "Basic Materials":        "XLB",
