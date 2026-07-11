@@ -1,35 +1,37 @@
 import { useState, useMemo } from 'react';
 import Link from 'next/link';
 import useSWR from 'swr';
-import { api, type CongressTradeRecord as CongressTrade } from '@/lib/api';
-import { loadSettings } from '@/lib/settings';
-import { askAI, isAiConfigured } from '@/lib/ai';
+import { api, type CongressTrade } from '@/lib/api';
 
-const AI_PROMPT_SYSTEM = `You output ONLY raw JSON arrays. No markdown fences, no prose, no explanation — just the [ ... ] array starting on the very first character of your response.
+// T233-ARCH-CONGRESS-DEDUP: this page used to call market-data's /congress/trades
+// (PascalCase, Quiver-optional-with-AI-fallback) — that endpoint has been deleted in favor
+// of event-intelligence's canonical /events/congress/recent (the DB-persisted, catalyst-
+// scoring source of truth). Kept this page's internal PascalCase shape/filters/screeners
+// unchanged (they're all still valid UI logic) and adapt the new snake_case response into
+// it at the fetch boundary, rather than rewriting every filter/sort/screener below.
+type CongressTradeRecord = {
+  Ticker: string; Date: string; Politician: string; Transaction: string;
+  Min: number | null; Max: number | null; Party: string | null; State: string | null;
+  Chamber: string | null; ReportDate: string | null;
+};
 
-Each element must have exactly these fields (use null for unknown numeric fields):
-{"Ticker":"NVDA","Date":"2024-11-15","Politician":"Pelosi, Nancy","Transaction":"Purchase","Min":1000000,"Max":5000000,"Party":"D","State":"CA","Chamber":"House","ReportDate":"2024-11-30"}
-
-Rules:
-- Transaction is exactly "Purchase" or "Sale"
-- Date and ReportDate are YYYY-MM-DD strings
-- Min/Max are integers in USD (can be null)
-- Your entire response must be parseable by JSON.parse()`;
-
-const AI_PROMPT_USER = `List all known congressional stock trades from 2023 onwards.
-
-Include trades from:
-- Nancy Pelosi (D-CA) — known very active trader
-- Mark Green (R-TN)
-- Austin Scott (R-GA)
-- Josh Gottheimer (D-NJ)
-- Dan Crenshaw (R-TX)
-- Tommy Tuberville (R-AL)
-- Any other congress members particularly active in 2024-2025
-
-Include both Purchases and Sales. Include the largest/most notable trades. Return at least 40 trades total across all politicians.
-
-Return ONLY the JSON array.`;
+function adaptTrade(t: CongressTrade): CongressTradeRecord {
+  return {
+    Ticker: t.ticker,
+    Date: t.trade_date ?? '',
+    Politician: t.politician_name,
+    // "unknown" (event-intelligence's 4th transaction_type state) has no clean Purchase/Sale
+    // mapping — txBadge()'s /purchase|buy/i regex already treats anything else as SELL, which
+    // would silently mislabel it; pass the raw value through so the label at least isn't wrong.
+    Transaction: t.transaction_type === 'purchase' ? 'Purchase' : t.transaction_type === 'sale' ? 'Sale' : t.transaction_type,
+    Min: t.amount_min,
+    Max: t.amount_max,
+    Party: t.party,
+    State: t.state,
+    Chamber: t.chamber,
+    ReportDate: t.disclosure_date,
+  };
+}
 
 const PARTY_COLOR: Record<string, string> = { D: '#60a5fa', R: '#f87171', I: '#4ade80' };
 
@@ -44,12 +46,13 @@ function partyBadge(party: string | null) {
 
 function txBadge(tx: string) {
   const isBuy = /purchase|buy/i.test(tx);
+  const isUnknown = /unknown/i.test(tx);
   return (
     <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 5,
-      background: isBuy ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)',
-      border: `1px solid ${isBuy ? 'rgba(34,197,94,0.35)' : 'rgba(239,68,68,0.35)'}`,
-      color: isBuy ? '#4ade80' : '#f87171' }}>
-      {isBuy ? '▲ BUY' : '▼ SELL'}
+      background: isUnknown ? 'rgba(148,163,184,0.12)' : isBuy ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)',
+      border: `1px solid ${isUnknown ? 'rgba(148,163,184,0.35)' : isBuy ? 'rgba(34,197,94,0.35)' : 'rgba(239,68,68,0.35)'}`,
+      color: isUnknown ? '#94a3b8' : isBuy ? '#4ade80' : '#f87171' }}>
+      {isUnknown ? '? UNKNOWN' : isBuy ? '▲ BUY' : '▼ SELL'}
     </span>
   );
 }
@@ -76,9 +79,6 @@ function daysChip(d: string) {
 }
 
 export default function CongressPage() {
-  const hasKey = typeof window !== 'undefined' ? !!loadSettings().quiverApiKey : false;
-  const aiAvailable = isAiConfigured();
-
   const [days, setDays] = useState(90);
   const [txFilter, setTxFilter] = useState<'all' | 'buy' | 'sell'>('all');
   const [partyFilter, setPartyFilter] = useState<'all' | 'D' | 'R'>('all');
@@ -87,51 +87,19 @@ export default function CongressPage() {
   const [sortBy, setSortBy] = useState<'date' | 'amount' | 'politician'>('date');
   const [netBuyersOnly, setNetBuyersOnly] = useState(false);
 
-  // Live data via Quiver (paid) — only when key is configured
-  const { data: liveTrades, isLoading: liveLoading } = useSWR<CongressTrade[]>(
-    hasKey ? ['congress-trades', days] : null,
-    () => api.congressTrades(days),
+  const { data: rawTrades, isLoading } = useSWR<CongressTrade[]>(
+    ['congress-trades', days],
+    () => api.eventsCongressRecent(days, { limit: 500 }),
     { revalidateOnFocus: false },
   );
 
-  // AI fallback state
-  const [aiTrades, setAiTrades] = useState<CongressTrade[] | null>(null);
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState('');
-  const [usingAi, setUsingAi] = useState(false);
-
-  const trades = liveTrades ?? aiTrades ?? null;
-  const isLoading = liveLoading || aiLoading;
-
-  async function loadWithAi() {
-    setAiLoading(true);
-    setAiError('');
-    setUsingAi(true);
-    try {
-      const raw = await askAI([{ role: 'user', content: AI_PROMPT_USER }], AI_PROMPT_SYSTEM, 8192, 0);
-      const stripped = raw.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '');
-      const match = stripped.match(/\[[\s\S]*\]/);
-      if (!match) throw new Error('AI response did not contain a JSON array.');
-      const parsed = JSON.parse(match[0]) as CongressTrade[];
-      if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('AI returned an empty dataset.');
-      setAiTrades(parsed);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'AI request failed.';
-      setAiError(msg.toLowerCase().includes('networkerror') || msg.toLowerCase().includes('failed to fetch')
-        ? 'AI request failed — go to Settings → AI Assistant and enter your API key.'
-        : msg);
-      setUsingAi(false);
-    } finally {
-      setAiLoading(false);
-    }
-  }
+  const trades = useMemo(() => (rawTrades ?? []).map(adaptTrade), [rawTrades]);
 
   // ── Filtered trades ──────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
-    if (!trades) return [];
     return trades.filter(t => {
       if (txFilter === 'buy' && !/purchase|buy/i.test(t.Transaction)) return false;
-      if (txFilter === 'sell' && /purchase|buy/i.test(t.Transaction)) return false;
+      if (txFilter === 'sell' && !/sale|sell/i.test(t.Transaction)) return false;
       if (partyFilter !== 'all' && (t.Party || '').toUpperCase() !== partyFilter) return false;
       if (symbolSearch && !(t.Ticker || '').toUpperCase().includes(symbolSearch.toUpperCase())) return false;
       if (politicianSearch && !(t.Politician || '').toLowerCase().includes(politicianSearch.toLowerCase())) return false;
@@ -149,7 +117,7 @@ export default function CongressPage() {
 
   // ── Conviction screener — by ticker ─────────────────────────────────────────
   const tickerConviction = useMemo(() => {
-    if (!trades) return [];
+    if (!trades.length) return [];
     const cutoff = Date.now() - days * 86_400_000;
     const byTicker: Record<string, { netBuy: number; buyers: Set<string>; sellers: Set<string>; buyCount: number; sellCount: number }> = {};
     trades.filter(t => new Date(t.Date).getTime() >= cutoff).forEach(t => {
@@ -161,7 +129,7 @@ export default function CongressPage() {
         byTicker[tk].netBuy += amt;
         byTicker[tk].buyers.add(t.Politician || '?');
         byTicker[tk].buyCount++;
-      } else {
+      } else if (/sale|sell/i.test(t.Transaction)) {
         byTicker[tk].netBuy -= amt;
         byTicker[tk].sellers.add(t.Politician || '?');
         byTicker[tk].sellCount++;
@@ -176,7 +144,7 @@ export default function CongressPage() {
 
   // ── Politician conviction — who is buying most ────────────────────────────
   const politicianConviction = useMemo(() => {
-    if (!trades) return [];
+    if (!trades.length) return [];
     const cutoff = Date.now() - days * 86_400_000;
     const byPol: Record<string, { netBuy: number; buyCount: number; sellCount: number; party: string | null }> = {};
     trades.filter(t => new Date(t.Date).getTime() >= cutoff).forEach(t => {
@@ -184,7 +152,7 @@ export default function CongressPage() {
       if (!byPol[pol]) byPol[pol] = { netBuy: 0, buyCount: 0, sellCount: 0, party: t.Party };
       const amt = midAmt(t.Min, t.Max);
       if (/purchase|buy/i.test(t.Transaction)) { byPol[pol].netBuy += amt; byPol[pol].buyCount++; }
-      else { byPol[pol].netBuy -= amt; byPol[pol].sellCount++; }
+      else if (/sale|sell/i.test(t.Transaction)) { byPol[pol].netBuy -= amt; byPol[pol].sellCount++; }
     });
     return Object.entries(byPol)
       .map(([name, v]) => ({ name, ...v }))
@@ -195,9 +163,9 @@ export default function CongressPage() {
 
   // ── Summary stats ─────────────────────────────────────────────────────────
   const stats = useMemo(() => {
-    if (!trades || !trades.length) return null;
+    if (!trades.length) return null;
     const buys = trades.filter(t => /purchase|buy/i.test(t.Transaction));
-    const sells = trades.filter(t => !/purchase|buy/i.test(t.Transaction));
+    const sells = trades.filter(t => /sale|sell/i.test(t.Transaction));
     const totalBuyAmt = buys.reduce((s, t) => s + midAmt(t.Min, t.Max), 0);
     const totalSellAmt = sells.reduce((s, t) => s + midAmt(t.Min, t.Max), 0);
     const uniquePols = new Set(trades.map(t => t.Politician)).size;
@@ -213,13 +181,7 @@ export default function CongressPage() {
       <div style={{ marginBottom: 20 }}>
         <div style={{ fontSize: 22, fontWeight: 800, color: '#e2e8f0' }}>🏛️ Congressional Trading</div>
         <div style={{ fontSize: 12, color: '#475569', marginTop: 4 }}>
-          {hasKey ? 'Quiver Quantitative (live STOCK Act filings)' : usingAi ? 'AI training data — approximate, not live filings' : 'STOCK Act disclosures'}
-          {' · '} Last {days} days
-          {!hasKey && (
-            <span style={{ marginLeft: 10, fontSize: 11, color: '#334155' }}>
-              · <Link href="/settings" style={{ color: '#475569', textDecoration: 'underline' }}>Add Quiver key</Link> for live data
-            </span>
-          )}
+          STOCK Act disclosures · Last {days} days
         </div>
       </div>
 
@@ -239,55 +201,6 @@ export default function CongressPage() {
               <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>{s.label}</div>
             </div>
           ))}
-        </div>
-      )}
-
-      {/* AI load button — shown when no Quiver key and no data yet */}
-      {!hasKey && !trades && !aiLoading && (
-        <div style={{ marginBottom: 20, padding: '16px 20px', background: '#0f172a', border: '1px solid #1e293b', borderRadius: 10, display: 'flex', alignItems: 'center', gap: 16 }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: '#94a3b8' }}>No live data source configured</div>
-            <div style={{ fontSize: 12, color: '#475569', marginTop: 3 }}>
-              {aiAvailable
-                ? 'Use AI to generate approximate congressional trades from training data (2023–2025). Data may not reflect recent filings.'
-                : 'Add a Quiver API key in Settings for live STOCK Act filings, or configure an AI assistant for approximate historical data.'}
-            </div>
-          </div>
-          {aiAvailable && (
-            <button onClick={loadWithAi}
-              style={{ padding: '8px 18px', borderRadius: 8, background: 'rgba(99,102,241,0.15)', border: '1px solid #6366f1',
-                color: '#818cf8', fontWeight: 600, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-              Ask AI for data
-            </button>
-          )}
-          {!aiAvailable && (
-            <Link href="/settings" style={{ padding: '8px 18px', borderRadius: 8, background: 'rgba(99,102,241,0.15)', border: '1px solid #6366f1',
-              color: '#818cf8', fontWeight: 600, fontSize: 12, textDecoration: 'none', whiteSpace: 'nowrap' }}>
-              Go to Settings
-            </Link>
-          )}
-        </div>
-      )}
-
-      {/* AI loading */}
-      {aiLoading && (
-        <div style={{ marginBottom: 20, padding: '14px 20px', background: '#0f172a', border: '1px solid #1e293b', borderRadius: 10, color: '#64748b', fontSize: 13 }}>
-          Asking AI for congressional trading data…
-        </div>
-      )}
-
-      {/* AI disclaimer banner */}
-      {usingAi && trades && (
-        <div style={{ marginBottom: 16, padding: '10px 14px', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.2)', borderRadius: 8, fontSize: 12, color: '#fbbf24' }}>
-          ⚠ Data sourced from AI training data — approximate figures from 2023–2025. Not live STOCK Act filings.
-          Add a <Link href="/settings" style={{ color: '#fbbf24' }}>Quiver API key</Link> for real-time disclosures.
-        </div>
-      )}
-
-      {/* AI error */}
-      {aiError && (
-        <div style={{ marginBottom: 16, padding: '10px 14px', background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)', borderRadius: 8, fontSize: 12, color: '#f87171' }}>
-          {aiError}
         </div>
       )}
 
@@ -418,7 +331,7 @@ export default function CongressPage() {
 
       {/* Table */}
       {isLoading && <div style={{ color: '#475569', textAlign: 'center', padding: 48 }}>Loading congressional trades…</div>}
-      {!isLoading && trades && sorted.length === 0 && (
+      {!isLoading && sorted.length === 0 && (
         <div style={{ color: '#475569', textAlign: 'center', padding: 48 }}>No trades match the current filters.</div>
       )}
       {!isLoading && sorted.length > 0 && (

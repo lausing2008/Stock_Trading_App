@@ -180,7 +180,7 @@ export const api = {
     request(`/auth/users/${username}/reset-password`, { method: 'PUT', body: JSON.stringify({ new_password: newPassword }) }),
   toggleUser: (username: string) => request<{ is_active: boolean }>(`/auth/users/${username}/toggle`, { method: 'PUT' }),
   pushConfig: (keys: {
-    polygon_api_key?: string; alpha_vantage_api_key?: string; quiver_api_key?: string;
+    polygon_api_key?: string; alpha_vantage_api_key?: string;
     claude_api_key?: string; deepseek_api_key?: string;
     claude_model?: string; deepseek_model?: string;
     broker_enabled?: boolean;
@@ -208,13 +208,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ symbols, price_min: priceMin ?? null, price_max: priceMax ?? null }),
     }),
-
-  // Congressional trading
-  congressTrades: (days = 90, politician?: string) => {
-    const params = new URLSearchParams({ days: String(days) });
-    if (politician) params.set('politician', politician);
-    return request<CongressTradeRecord[]>(`/congress/trades?${params}`);
-  },
 
   // Signal accuracy tracker
   signalAccuracy: (lookbackDays = 90, symbol?: string, fromDate?: string, toDate?: string, page = 1, pageSize = 200, market?: string) => {
@@ -522,7 +515,13 @@ export const api = {
   eventsInsiderLeaderboard: (days = 30) => request<InsiderLeaderItem[]>(`/events/insider/leaderboard?days=${days}`),
   eventsCongress: (symbol: string, days = 90) => request<CongressResponse>(`/events/congress/${symbol}?days=${days}`),
   eventsCongressLeaderboard: (days = 90) => request<CongressLeaderItem[]>(`/events/congress/leaderboard?days=${days}`),
-  eventsCongressRecent: (days = 30) => request<CongressTrade[]>(`/events/congress/recent?days=${days}`),
+  eventsCongressRecent: (days = 30, opts?: { limit?: number; ticker?: string; politician?: string }) => {
+    const params = new URLSearchParams({ days: String(days) });
+    if (opts?.limit) params.set('limit', String(opts.limit));
+    if (opts?.ticker) params.set('ticker', opts.ticker);
+    if (opts?.politician) params.set('politician', opts.politician);
+    return request<CongressTrade[]>(`/events/congress/recent?${params}`);
+  },
   eventsInstitutional: (symbol: string) => request<InstitutionalResponse>(`/events/institutional/${symbol}`),
   eventsPolitical: (days = 30) => request<PoliticalEvent[]>(`/events/political?days=${days}`),
   catalystScore: (symbol: string) => request<CatalystScore>(`/catalyst/${symbol}`),
@@ -767,7 +766,6 @@ export type CompoundCondition = { metric: 'volume_ratio' | 'rsi' | 'signal'; op:
 export type PriceAlert = { id: number; symbol: string; condition: string; threshold: number; email: string; note: string | null; triggered: boolean; triggered_at: string | null; recurring: boolean; last_sent_at: string | null; webhook_url: string | null; created_at: string; compound_conditions: CompoundCondition[] | null };
 export type SignalAlertItem = { id: number; symbol: string; email: string | null; last_signal: string | null; last_sent_at: string | null; alert_mode: string; horizon: string; require_consensus: boolean; created_at: string };
 export type TradePlan = { id: number; symbol: string; stage: 'watch' | 'planning' | 'active' | 'closed'; game_plan: Record<string, unknown> | null; entry_price: number | null; stop_loss: number | null; take_profit: number | null; notes: string | null; source: string | null; exit_price: number | null; actual_entry_price: number | null; shares: number | null; trading_style: string | null; closed_at: string | null; created_at: string; updated_at: string };
-export type CongressTradeRecord = { Ticker: string; Date: string; Politician: string; Transaction: string; Min: number | null; Max: number | null; Party: string | null; State: string | null; Chamber: string | null; ReportDate: string | null };
 export type SignalAccuracyRow = { symbol: string; name: string; signal: 'BUY' | 'SELL'; confidence: number; bullish_probability: number | null; signal_date: string; entry_price: number; exit_price: number; pct_change: number; correct: boolean; days_held: number };
 export type SignalAccuracyReport = { lookback_days: number; total_signals: number; buy_count: number; sell_count: number; buy_accuracy: number | null; sell_accuracy: number | null; overall_accuracy: number | null; avg_buy_return_pct: number | null; avg_sell_return_pct: number | null; profit_factor: number | null; page: number; page_size: number; has_more: boolean; signals: SignalAccuracyRow[] };
 export type TradePair = { symbol: string; name: string; status: 'closed' | 'open'; entry_date: string; exit_date: string; entry_price: number; exit_price: number; pct_return: number; hold_days: number; win: boolean; exit_signal: string; entry_confidence: number };
@@ -1776,31 +1774,42 @@ export type InsiderLeaderItem = {
   net_value: number | null;
 };
 
+// T233-ARCH-CONGRESS-DEDUP: these three types previously didn't match the real backend
+// response at all (declared symbol/transaction_date/asset_description/score/buy_count/
+// sell_count/politician_count — none of which event-intelligence's congress.py actually
+// returns) — a real bug, not just staleness, since intelligence.tsx's top_buys rows were
+// rendering undefined for every score. Corrected to match congress.py's _trade_to_dict()
+// and get_congress_leaderboard()/compute_congress_score() exactly.
 export type CongressTrade = {
   id: number;
-  symbol: string;
   politician_name: string;
-  chamber: string;
   party: string | null;
-  transaction_type: string;
+  chamber: string | null;
+  state: string | null;
+  ticker: string;
+  transaction_type: string; // "purchase" | "sale" | "exchange" | "unknown"
   amount_range: string | null;
-  transaction_date: string;
+  amount_min: number | null;
+  amount_max: number | null;
+  trade_date: string | null;
   disclosure_date: string | null;
-  asset_description: string | null;
+  source: string | null;
 };
 
 export type CongressResponse = {
   symbol: string;
-  score: number;
+  congress_score: number;
   trades: CongressTrade[];
 };
 
 export type CongressLeaderItem = {
+  stock_id: number;
   symbol: string;
-  score: number;
-  buy_count: number;
-  sell_count: number;
-  politician_count: number;
+  company: string | null;
+  purchases: number;
+  sales: number;
+  net_amount: number;
+  unique_politicians: number;
 };
 
 export type InstitutionalHolding = {

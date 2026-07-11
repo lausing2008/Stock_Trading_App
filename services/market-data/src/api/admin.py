@@ -90,7 +90,6 @@ _HK_NAME_ZH: dict[str, str] = {
 class ConfigRequest(BaseModel):
     polygon_api_key: str | None = None
     alpha_vantage_api_key: str | None = None
-    quiver_api_key: str | None = None
     claude_api_key: str | None = None
     deepseek_api_key: str | None = None
     claude_model: str | None = None
@@ -122,9 +121,6 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
         set_runtime_key("polygon", req.polygon_api_key)
     if req.alpha_vantage_api_key is not None:
         set_runtime_key("alpha_vantage", req.alpha_vantage_api_key)
-    if req.quiver_api_key is not None:
-        from .congress import set_quiver_key
-        set_quiver_key(req.quiver_api_key)
     r = None
     if req.claude_api_key is not None or req.deepseek_api_key is not None or \
        req.claude_model is not None or req.deepseek_model is not None or \

@@ -377,7 +377,6 @@ export default function App({ Component, pageProps }: AppProps) {
           api.pushConfig({
             polygon_api_key: settings.polygonApiKey || undefined,
             alpha_vantage_api_key: settings.alphaVantageApiKey || undefined,
-            quiver_api_key: settings.quiverApiKey || undefined,
           }).catch(() => {});
         }
         setChecked(true);

@@ -88,8 +88,17 @@ def congress_leaderboard(days: int = Query(90, ge=30, le=365), limit: int = Quer
 
 
 @router.get("/events/congress/recent")
-def recent_congress(days: int = Query(30, ge=7, le=90), limit: int = Query(50, ge=10, le=200), _: str = Depends(get_current_username)):
-    return congress.get_recent_congress_trades(days, limit)
+def recent_congress(
+    days: int = Query(30, ge=7, le=365),
+    limit: int = Query(50, ge=10, le=500),
+    ticker: str | None = Query(None, description="Filter to one ticker, e.g. AAPL"),
+    politician: str | None = Query(None, description="Case-insensitive substring match on politician name"),
+    _: str = Depends(get_current_username),
+):
+    # T233-ARCH-CONGRESS-DEDUP: days/limit ceilings raised (was 90/200) and ticker/politician
+    # filters added so this single endpoint can fully replace market-data's now-deleted
+    # /congress/trades for congress.tsx/insider.tsx's full-table + screener UX.
+    return congress.get_recent_congress_trades(days, limit, ticker=ticker, politician=politician)
 
 
 @router.post("/events/sync/congress")
