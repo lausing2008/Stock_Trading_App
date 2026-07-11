@@ -1487,6 +1487,7 @@ export type DataQualityCheck = {
   age_hours: number | null;
   max_age_hours: number;
   checked_at: string;
+  skipped_reason?: string;
 };
 
 export type ServiceHealthResult = {

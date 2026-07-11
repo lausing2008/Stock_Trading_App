@@ -248,10 +248,16 @@ export default function AdminHealthPage() {
                   </span>
                 </div>
                 <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '8px' }}>
-                  Last updated: <strong style={{ color: c.ok ? '#e2e8f0' : '#f87171' }}>
-                    {c.age_hours != null ? `${c.age_hours.toFixed(1)}h ago` : 'never'}
-                  </strong>
-                  <span style={{ color: '#475569' }}> (max {c.max_age_hours}h)</span>
+                  {c.skipped_reason === 'market_closed' ? (
+                    <span style={{ color: '#64748b' }}>Market closed — check paused until next trading session</span>
+                  ) : (
+                    <>
+                      Last updated: <strong style={{ color: c.ok ? '#e2e8f0' : '#f87171' }}>
+                        {c.age_hours != null ? `${c.age_hours.toFixed(1)}h ago` : 'never'}
+                      </strong>
+                      <span style={{ color: '#475569' }}> (max {c.max_age_hours}h)</span>
+                    </>
+                  )}
                 </div>
               </div>
             ))}
