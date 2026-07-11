@@ -1489,13 +1489,24 @@ def calibrate_entry_weights() -> dict:
     Target: pnl > 0 (win = 1, loss = 0)
 
     Returns a dict with weights and metadata, or {"error": ...} if insufficient data.
-    Saves to entry_weights.json on success.
+    Saves to entry_weights.json only if the fit beats the current fallback rule
+    (score >= min_entry_score) on a held-out validation slice — see AUD232-001.
+
+    AUD232-001: previously fit on the FULL closed-trade dataset with no held-out
+    validation at all — the same class of problem (parameter calibration from historical
+    trade/outcome data, feeding back into live decision-making) that signal-engine's
+    routes.py hardened against in T232-OC3/T234-ML-WEIGHT-NO-VALIDATION-GATE/
+    T234-SIG-INSAMPLE-GATE-TUNING, all three of which exist specifically because an
+    unvalidated in-sample fit was found to apply upward-biased flukes as if they were real
+    signal. Now uses the same 70/30 chronological split + EV-lift-over-baseline gate.
     """
     try:
         from sklearn.linear_model import LogisticRegression
         from sklearn.preprocessing import StandardScaler
     except ImportError:
         return {"error": "scikit-learn not installed in market-data"}
+
+    from ..services.paper_trading_engine import _DEFAULT_CONFIG
 
     with SessionLocal() as session:
         rows = session.execute(
@@ -1505,38 +1516,50 @@ def calibrate_entry_weights() -> dict:
                 PaperTrade.entry_score,
                 PaperTrade.kscore_at_entry,
                 PaperTrade.pnl,
+                PaperTrade.entry_date,
             ).where(
                 PaperTrade.stage == "closed",
                 PaperTrade.pnl.is_not(None),
                 PaperTrade.rr_ratio_at_entry.is_not(None),
                 PaperTrade.confidence_at_entry.is_not(None),
                 PaperTrade.entry_score.is_not(None),
-            )
+            ).order_by(PaperTrade.entry_date)
         ).all()
 
     if len(rows) < _MIN_CALIBRATION_TRADES:
         return {"error": f"Need ≥{_MIN_CALIBRATION_TRADES} closed trades; have {len(rows)}"}
 
-    X_raw = np.array([
-        [
-            float(r.rr_ratio_at_entry),
-            float(r.confidence_at_entry),
-            float(r.entry_score),
-            float(r.kscore_at_entry) if r.kscore_at_entry is not None else 50.0,
-        ]
-        for r in rows
-    ])
-    y = np.array([1 if float(r.pnl) > 0 else 0 for r in rows])
+    # 70/30 chronological split (same convention as signal-engine's calibrate_ml_weight) —
+    # rows are already ordered by entry_date via the query above.
+    split = max(1, int(len(rows) * 0.7))
+    train_rows, val_rows = rows[:split], rows[split:]
+    _MIN_VAL_TRADES = 20
+    if len(val_rows) < _MIN_VAL_TRADES:
+        return {"error": f"Need ≥{_MIN_VAL_TRADES} validation-slice trades after a 70/30 split; have {len(val_rows)}"}
 
-    win_rate = float(y.mean())
+    def _to_xy(rset):
+        X = np.array([
+            [
+                float(r.rr_ratio_at_entry),
+                float(r.confidence_at_entry),
+                float(r.entry_score),
+                float(r.kscore_at_entry) if r.kscore_at_entry is not None else 50.0,
+            ]
+            for r in rset
+        ])
+        y = np.array([1 if float(r.pnl) > 0 else 0 for r in rset])
+        return X, y
+
+    X_train_raw, y_train = _to_xy(train_rows)
+    win_rate = float(y_train.mean())
     # Threshold calibration: use 52% floor to avoid over-filtering in choppy markets
     threshold = max(0.50, min(0.60, win_rate + 0.02))
 
     scaler = StandardScaler()
-    X = scaler.fit_transform(X_raw)
+    X_train = scaler.fit_transform(X_train_raw)
 
     model = LogisticRegression(max_iter=500, class_weight="balanced", random_state=42)
-    model.fit(X, y)
+    model.fit(X_train, y_train)
 
     # Un-scale coefficients back to raw-feature space for use without scaler at runtime
     coef = model.coef_[0]
@@ -1549,6 +1572,41 @@ def calibrate_entry_weights() -> dict:
     coef_raw = coef / stds
     intercept_raw = intercept - float(np.sum(coef * means / stds))
 
+    # ── Validation: does the calibrated rule beat the current fallback rule
+    # (score >= min_entry_score, i.e. no calibration at all) on trades the fit never saw? ──
+    import math as _math
+    _min_entry_score = _DEFAULT_CONFIG.get("min_entry_score", 4)
+    X_val_raw, y_val = _to_xy(val_rows)
+
+    def _mean_pnl_where(mask, rset):
+        selected = [float(r.pnl) for r, m in zip(rset, mask) if m]
+        return (sum(selected) / len(selected), len(selected)) if selected else (None, 0)
+
+    cal_logits = intercept_raw + X_val_raw @ coef_raw
+    cal_probs = 1.0 / (1.0 + np.exp(-cal_logits))
+    candidate_mask = cal_probs >= threshold
+    baseline_mask = X_val_raw[:, 2] >= _min_entry_score  # column 2 = entry_score
+
+    candidate_ev, candidate_n = _mean_pnl_where(candidate_mask, val_rows)
+    baseline_ev, baseline_n = _mean_pnl_where(baseline_mask, val_rows)
+
+    if candidate_ev is None or baseline_ev is None or candidate_ev <= baseline_ev:
+        log.info(
+            "paper.entry_weights_calibration_rejected",
+            n_trades=len(rows), val_n=len(val_rows),
+            candidate_ev=round(candidate_ev, 2) if candidate_ev is not None else None,
+            candidate_n=candidate_n,
+            baseline_ev=round(baseline_ev, 2) if baseline_ev is not None else None,
+            baseline_n=baseline_n,
+            reason="candidate did not beat the min_entry_score baseline on the validation slice",
+        )
+        return {
+            "error": "candidate weights did not beat the current fallback rule on the validation slice",
+            "candidate_ev": round(candidate_ev, 2) if candidate_ev is not None else None,
+            "baseline_ev": round(baseline_ev, 2) if baseline_ev is not None else None,
+            "val_n": len(val_rows),
+        }
+
     result = {
         "intercept":    float(intercept_raw),
         "w_rr":         float(coef_raw[0]),
@@ -1558,12 +1616,16 @@ def calibrate_entry_weights() -> dict:
         "threshold":    threshold,
         "win_rate":     win_rate,
         "n_trades":     len(rows),
+        "validation_n": len(val_rows),
+        "validation_ev": round(candidate_ev, 2),
+        "baseline_validation_ev": round(baseline_ev, 2),
         "calibrated_at": datetime.utcnow().isoformat(),
     }
 
     _ENTRY_WEIGHTS_PATH.parent.mkdir(parents=True, exist_ok=True)
     _ENTRY_WEIGHTS_PATH.write_text(json.dumps(result, indent=2))
-    log.info("paper.entry_weights_saved", n_trades=len(rows), win_rate=round(win_rate, 3), threshold=round(threshold, 3))
+    log.info("paper.entry_weights_saved", n_trades=len(rows), win_rate=round(win_rate, 3), threshold=round(threshold, 3),
+             validation_ev=round(candidate_ev, 2), baseline_validation_ev=round(baseline_ev, 2))
 
     # Signal engine to reload weights on next call
     try:

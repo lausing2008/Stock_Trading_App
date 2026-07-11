@@ -148,17 +148,33 @@ def compute_score(
             pass
 
     # ── Layer 3f: Catalyst intelligence ──────────────────────────────────────
-    catalyst_score = reasons.get("catalyst_score")
-    if catalyst_score is not None:
-        cs = float(catalyst_score)
-        if cs >= 60:
-            pts, note = 1, f"Strong catalyst signal (score={cs:.0f}) — insider buying or congress accumulation"
-        elif cs <= -30:
-            pts, note = -1, f"Negative catalyst signal (score={cs:.0f}) — insider selling or adverse events"
+    # AUD232-006: previously read a single combined reasons["catalyst_score"], which
+    # event-intelligence clamps to [0, 100] before signal-engine ever stores it — the
+    # `cs <= -30` branch below was unreachable dead code, silently dropping every
+    # bearish-catalyst penalty (heavy insider/congress selling got zero points instead
+    # of the -1 the fallback _should_enter() applies for the same signal). Fixed to read
+    # the two separate, genuinely-signed fields (insider_score, congress_score) signal-engine
+    # already writes into reasons, matching _should_enter()'s two-layer scoring exactly.
+    _insider_score  = reasons.get("insider_score")
+    _congress_score = reasons.get("congress_score")
+    if _insider_score is not None:
+        ins = float(_insider_score)
+        if ins >= 60:
+            pts, note = 1, f"Strong insider buying (score={ins:.0f}) — real-money conviction"
+        elif ins < -30:
+            pts, note = -1, f"Significant insider selling (score={ins:.0f}) — management caution"
         else:
-            pts, note = 0, f"Neutral catalyst signal (score={cs:.0f})"
+            pts, note = 0, f"Neutral insider signal (score={ins:.0f})"
         score += pts
-        breakdown.append(ScoreItem(layer="catalyst", pts=pts, note=note))
+        breakdown.append(ScoreItem(layer="catalyst_insider", pts=pts, note=note))
+    if _congress_score is not None:
+        cong = float(_congress_score)
+        if cong > 50:
+            pts, note = 1, f"Congress net buying (score={cong:.0f}) — informed capital inflow"
+        else:
+            pts, note = 0, f"Neutral congress signal (score={cong:.0f})"
+        score += pts
+        breakdown.append(ScoreItem(layer="catalyst_congress", pts=pts, note=note))
 
     # ── Layer 3g: Pre-regime early-warning (F11) ──────────────────────────────
     if is_pre_risk_off:
@@ -195,6 +211,22 @@ def compute_score(
     note = f"Regime: {regime_state}"
     score += pts
     breakdown.append(ScoreItem(layer="regime", pts=pts, note=note))
+
+    # ── Layer 6: Cross-horizon consensus ──────────────────────────────────────
+    # AUD232-007: this scorer had NO layer reading cross_style_buys at all — a 2-point
+    # swing in the fallback _should_enter() (+1 for >=2 other horizons also BUY, -1 for
+    # zero consensus in bear/choppy) was completely invisible here, even though
+    # cross_style_buys is already available in reasons (DE's own routes.py already reads
+    # it for sizer.py/llm_scorer.py, just never forwarded it into this scoring function).
+    cross_style_buys = int(reasons.get("cross_style_buys", 0))
+    if cross_style_buys >= 2:
+        pts, note = 1, f"Cross-horizon: {cross_style_buys}+ styles BUY — strong multi-timeframe alignment"
+        score += pts
+        breakdown.append(ScoreItem(layer="consensus", pts=pts, note=note))
+    elif cross_style_buys == 0 and regime_state in ("bear", "choppy"):
+        pts, note = -1, "No cross-horizon support in bear/choppy regime — conviction penalty"
+        score += pts
+        breakdown.append(ScoreItem(layer="consensus", pts=pts, note=note))
 
     return score, breakdown
 

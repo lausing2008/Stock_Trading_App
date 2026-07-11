@@ -4,7 +4,10 @@ Trains a single XGBoost model on all signal_outcomes across all symbols.
 Adds sector_code, market_cap_bin, horizon_code as additional features for
 cross-symbol generalization. Used as cold-start prior and 4th ensemble member.
 
-Feature vector: FEATURE_COLUMNS (61) filtered to non-constant cols, plus:
+Feature vector: FEATURE_COLUMNS (len(FEATURE_COLUMNS) in builder.py — AUD232-031: a
+hardcoded "(61)" here was already stale, the real count had drifted to 60; deliberately
+not repeating a hardcoded number so this comment can't drift out of sync again) filtered
+to non-constant cols, plus:
   sector_code     — ordinal-encoded sector (0–10; -1=unknown)
   market_cap_bin  — 0=micro/unknown, 1=small, 2=mid, 3=large, 4=mega
   horizon_code    — 0=SHORT, 1=SWING, 2=LONG, 3=GROWTH
@@ -107,13 +110,30 @@ def train_meta_model(db=None) -> dict:
         _close_session = True
 
     try:
+        # AUD232-002/017/030/033: two bugs in the original query, both fixed here:
+        # (1) joined stocks on the denormalized `symbol` string (`st.symbol = so.symbol`)
+        #     instead of the real, indexed FK `so.stock_id` — stocks.symbol is only unique
+        #     per (symbol, exchange), so two listings sharing a ticker string could silently
+        #     fan out or attach the wrong sector/market_cap to an outcome.
+        # (2) the fundamentals join had no as_of/date filter or LIMIT — every signal_outcome
+        #     row fanned out once per historical fundamentals snapshot for that stock, each
+        #     carrying an arbitrary (non-deterministic, not point-in-time) market_cap. Fixed
+        #     with a LATERAL join picking the single most-recent fundamentals row AS OF
+        #     so.signal_date (not "most recent overall"), matching the point-in-time
+        #     discipline T228-POINT-IN-TIME-FUNDAMENTALS/T234-ML-FUND-BROADCAST-LEAKAGE
+        #     already established for builder.py's per-row fundamental features.
         rows = _session.execute(text("""
             SELECT so.symbol, so.horizon, so.signal_date, so.confidence,
                    so.fused_prob, so.ta_score, so.is_correct,
                    st.sector, f.market_cap
             FROM signal_outcomes so
-            JOIN stocks st ON st.symbol = so.symbol
-            LEFT JOIN fundamentals f ON f.stock_id = st.id
+            JOIN stocks st ON st.id = so.stock_id
+            LEFT JOIN LATERAL (
+                SELECT market_cap FROM fundamentals
+                WHERE stock_id = st.id AND as_of <= so.signal_date
+                ORDER BY as_of DESC
+                LIMIT 1
+            ) f ON true
             WHERE so.is_correct IS NOT NULL
             ORDER BY so.signal_date DESC
             LIMIT 20000
@@ -328,6 +348,22 @@ def predict_meta(
         model = bundle["model"]
         scaler = bundle["scaler"]
         non_const = bundle["non_const"]
+        # AUD232-008: use the FEATURE_COLUMNS snapshot saved in the bundle at train time, not
+        # the live import above — builder.py's FEATURE_COLUMNS has already changed length
+        # multiple times (T220-F/T237-ML2, CRIT-3/4). Building vec from the CURRENT list while
+        # non_const holds positional indices from the OLD list either raises IndexError (if the
+        # new vector is shorter) or silently selects the wrong, now-shifted columns (if longer
+        # or reordered) — the same bug class as this codebase's documented "index 66 out of
+        # bounds" incident. bundle["feature_columns"] was already saved at train time but never
+        # read back until this fix.
+        saved_feature_columns = bundle.get("feature_columns")
+        if saved_feature_columns and saved_feature_columns != list(FEATURE_COLUMNS):
+            log.warning(
+                "meta_trainer.feature_columns_drift symbol=%s "
+                "saved_len=%d live_len=%d — using saved snapshot for this prediction",
+                symbol, len(saved_feature_columns), len(FEATURE_COLUMNS),
+            )
+        feature_columns_for_vec = saved_feature_columns or list(FEATURE_COLUMNS)
 
         # Load recent prices for the symbol to reconstruct feature vector
         with SessionLocal() as sess:
@@ -379,7 +415,7 @@ def predict_meta(
             float(latest.get(col, 0.0)) if not (
                 isinstance(latest.get(col), float) and np.isnan(latest.get(col))
             ) else 0.0
-            for col in FEATURE_COLUMNS
+            for col in feature_columns_for_vec
         ]
 
         # Meta features (must match training order)
@@ -391,6 +427,18 @@ def predict_meta(
         vec.append(float(ta_score))
 
         X_raw = np.array([vec], dtype=np.float32)
+        # Defensive bounds check: non_const holds positional indices computed at train time
+        # against len(feature_columns_for_vec) + 6 meta features. If an older bundle predates
+        # the "feature_columns" field (saved_feature_columns is None) and the live
+        # FEATURE_COLUMNS has since changed length, this catches the mismatch explicitly
+        # instead of letting X_raw[:, non_const] raise a raw IndexError.
+        if non_const.max(initial=-1) >= X_raw.shape[1]:
+            log.warning(
+                "meta_trainer.predict_skipped_shape_mismatch symbol=%s "
+                "vec_len=%d max_non_const_index=%d — stale model bundle, skipping meta prediction",
+                symbol, X_raw.shape[1], int(non_const.max(initial=-1)),
+            )
+            return None
         X_sel = X_raw[:, non_const]
         X_scaled = scaler.transform(X_sel)
         prob = float(model.predict_proba(X_scaled)[0, 1])

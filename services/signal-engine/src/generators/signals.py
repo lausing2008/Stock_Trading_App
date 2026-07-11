@@ -213,29 +213,41 @@ def set_ml_weight_global_cap(cap: float | None) -> None:
 _ml_weight_global_cap = _load_ml_weight_override()
 
 
+def _apply_ta_weights_migration(saved: dict) -> dict:
+    """Rename legacy key(s) and backfill any missing defaults.
+
+    AUD232-004/045: this used to be a closure inside _load_ta_weights(), so it only ever
+    ran on process-start load from Redis/file. calibrate_ta_weights() (routes.py) still
+    writes the pre-rename "volume_surge" key when it fits/persists new weights, and
+    set_ta_weights() (below) did a raw dict reassign with no migration step — so a freshly
+    calibrated volume weight had a dangling "volume_surge" key that _flag_map (which only
+    ever looks up "volume_z") never read, silently zeroing that feature's contribution
+    until the next restart re-loaded (and migrated) from Redis/file. Hoisted to module
+    level so both the load path AND set_ta_weights() apply the same migration.
+    """
+    if "volume_surge" in saved and "volume_z" not in saved:
+        saved["volume_z"] = saved.pop("volume_surge")
+    return {**_TA_WEIGHTS_DEFAULT, **saved}
+
+
 def _load_ta_weights() -> dict[str, float]:
     """Load calibrated TA weights from Redis (primary), file (fallback), then defaults.
 
     T228: moved from file-only to Redis-primary so Docker rebuilds don't wipe calibration state.
     """
-    def _apply_migration(saved: dict) -> dict:
-        if "volume_surge" in saved and "volume_z" not in saved:
-            saved["volume_z"] = saved.pop("volume_surge")
-        return {**_TA_WEIGHTS_DEFAULT, **saved}
-
     try:
         import redis as _redis_lib
         _rc = _redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
         _raw = _rc.get("stockai:ta_weights")
         if _raw:
-            return _apply_migration(json.loads(_raw))
+            return _apply_ta_weights_migration(json.loads(_raw))
     except Exception:
         pass
     try:
         if _TA_WEIGHTS_PATH.exists():
             with open(_TA_WEIGHTS_PATH) as f:
                 saved = json.load(f)
-            return _apply_migration(saved)
+            return _apply_ta_weights_migration(saved)
     except Exception:
         pass
     return dict(_TA_WEIGHTS_DEFAULT)
@@ -258,10 +270,16 @@ def set_ta_weights(new_weights: dict[str, float]) -> None:
     reads on every call) were only ever set once at import time — a running process could be
     operating on weeks-stale weights while an admin believed the latest calibration was live.
     Mirrors set_ml_weight_global_cap()'s existing reassign-under-lock pattern.
+
+    AUD232-004/045: applies the same key-rename migration _load_ta_weights() already applies
+    on process start — calibrate_ta_weights() (routes.py) still fits/persists the legacy
+    "volume_surge" key name, which _flag_map never reads (it only looks up "volume_z").
+    Without this, a raw reassign here left a dangling "volume_surge" key that silently
+    contributed zero to every calibrated_ta_score until the next restart re-migrated it.
     """
     global _ta_weights, _ta_weights_calibrated
     with _ta_weights_lock:
-        _ta_weights = dict(new_weights)
+        _ta_weights = _apply_ta_weights_migration(dict(new_weights))
         _ta_weights_calibrated = True
 
 

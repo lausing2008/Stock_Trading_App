@@ -545,6 +545,15 @@ def _bulk_persist(symbols: list[str]) -> None:
                                     _ai.reasons["catalyst_downgraded_signal"] = True
                         except Exception:
                             pass
+                        # AUD232-013: .confidence is derived once at generation time from the
+                        # pre-nudge fused probability (round(abs(fused-0.5)*200, 2) in signals.py's
+                        # _apply_style_signal) and was never recomputed here — so a catalyst nudge
+                        # that flips HOLD->BUY/SELL above left the PERSISTED confidence describing
+                        # the OLD, pre-nudge probability. Since /signals/{symbol}'s calibrated
+                        # win-rate lookup buckets by this same confidence, a signal whose direction
+                        # was just flipped by this nudge could show a win-rate annotation computed
+                        # for a different probability than the one actually driving the signal.
+                        _ai.confidence = round(abs(_ai.bullish_probability - 0.5) * 200, 2)
 
                     # T220-A/H: Boolean flags for UI chips (threshold-based from scores above)
                     if _insider_s is not None and _insider_s >= 60:
@@ -4714,11 +4723,20 @@ def confidence_calibration_map(
     cal = _get_confidence_calibration(session)
     if not cal:
         return {"message": f"Insufficient signal_outcomes data (need >={_CONF_CAL_MIN_COUNT} evaluated outcomes per bucket)", "buckets": {}}
+    # AUD232-003: surface how fresh the underlying signal_outcomes data actually is —
+    # the Redis cache rebuilding hourly (its TTL) is indistinguishable from evaluate_signal_
+    # outcomes having silently stopped running (e.g. the jose-missing-library pattern already
+    # seen repeatedly in this repo) unless something reports the real data's own age. This is
+    # a cheap MAX(signal_date) query, not part of the cached bucket computation itself.
+    latest_outcome_date = session.execute(
+        select(func.max(SignalOutcome.signal_date))
+    ).scalar()
     return {
         "buckets": cal,
         "note": "win_rate = fraction of signals in this (horizon, direction[, market]) confidence band that were correct within the hold window",
         "min_count": _CONF_CAL_MIN_COUNT,
         "lookback_days": 180,
+        "latest_signal_outcome_date": latest_outcome_date.isoformat() if latest_outcome_date else None,
     }
 
 
@@ -5085,6 +5103,19 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
                 updated += 1
 
         session.commit()
+
+    # AUD232-003: confidence-calibration's Redis cache (1h TTL) previously had no
+    # invalidation tied to this endpoint actually writing new/updated rows — it would
+    # rebuild every hour from whatever signal_outcomes data existed, self-consistently,
+    # with no signal if THIS job silently stopped running (e.g. the jose-missing-library
+    # failure pattern already seen multiple times in this repo). Explicitly invalidate
+    # whenever real data changed so the next read rebuilds from fresh rows instead of
+    # riding out the rest of the TTL on stale ones.
+    if evaluated or updated:
+        try:
+            _get_redis().delete(_CONF_CAL_CACHE_KEY)
+        except Exception:
+            pass
 
     log.info(
         "outcomes.evaluate_done",
@@ -5478,6 +5509,10 @@ def signal_for(
                                     _ai_sf.reasons["catalyst_downgraded_signal"] = True
                         except Exception:
                             pass
+                        # AUD232-013: same fix as _bulk_persist() above — recompute confidence
+                        # from the nudged bullish_probability so the persisted/returned confidence
+                        # matches the signal actually shown, not the stale pre-nudge value.
+                        _ai_sf.confidence = round(abs(_ai_sf.bullish_probability - 0.5) * 200, 2)
         except Exception:
             pass  # catalyst enrichment is best-effort; don't block the Refresh
 
