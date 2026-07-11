@@ -1326,6 +1326,15 @@ def _should_enter(
 
     # ── Hard rejects (override any positive score) ────────────────────────────
 
+    # AUD232-021: decision-engine's hard_rejects.py has a T193 market-closed guard (weekend/
+    # NYSE-holiday/outside-trading-hours) that this fallback lacked entirely — the scan is only
+    # ever SCHEDULED mon-fri (scheduler.py's CronTrigger), so weekends already can't reach here,
+    # but a US market holiday landing on a weekday (e.g. July 4th) would otherwise slip through
+    # with no check. Reuse the existing _is_market_hours() helper (already NYSE/HKEX-holiday-aware)
+    # rather than duplicating hard_rejects.py's separate holiday list.
+    if not _is_market_hours(cfg.get("market", "US")):
+        return False, -99, ["Market closed — outside regular trading session or a market holiday"]
+
     # Confidence hard floor — signals between 90%–100% of min_confidence get scored
     # but signals truly below 90% are rejected here (SQL filter lets them through at 90%)
     confidence = float(signal_data.get("confidence") or 0.0)
@@ -1336,6 +1345,13 @@ def _should_enter(
     # R:R check — enforce minimum stop distance to prevent infinite/backward R:R
     stop_dist = live_price - stop
     min_stop_dist = max(live_price * 0.005, 0.05)  # at least 0.5% of price or $0.05
+    # AUD232-024: decision-engine's hard_rejects.py splits this into two messages — a distinct
+    # "stop above price — invalid setup" for stop_dist<=0 vs "too close to price" for a small
+    # positive distance. This fallback used one combined branch that showed a confusing negative
+    # "distance" figure for the <=0 case. Same decision outcome either way (stop_dist < min_stop_dist
+    # covers both since min_stop_dist>0), just clearer diagnostics now.
+    if stop_dist <= 0:
+        return False, -99, [f"Stop ${stop:.2f} is above price ${live_price:.2f} — invalid setup"]
     if stop_dist < min_stop_dist:
         return False, -99, [
             f"Stop ${stop:.2f} too close to price ${live_price:.2f} "
@@ -2348,6 +2364,7 @@ def _call_decision_engine(
     open_sector_counts: dict | None = None,
     candidate_sector: str | None = None,
     consec_losses: int = 0,
+    kscore: float | None = None,
 ) -> tuple[bool, str, int, str | None] | None:
     """Call Decision Engine and return (should_enter, verdict, score, blocked_reason).
 
@@ -2380,6 +2397,13 @@ def _call_decision_engine(
                     **( {"open_sector_counts": open_sector_counts, "candidate_sector": candidate_sector}
                         if open_sector_counts is not None else {} ),
                     **( {"consec_losses": consec_losses} if consec_losses > 0 else {} ),
+                    # AUD232-042: DE previously had zero K-Score/ranking-engine reference
+                    # anywhere in its scoring — a LONG-horizon stock with kscore=25 (below the
+                    # LONG conviction gate's 55 floor) could still score highly and enter via
+                    # DE's gate purely because compute_score() had no K-Score input to reflect
+                    # the fundamental weakness. Threaded through config_overrides, matching the
+                    # existing recent_win_rate/consec_losses extension pattern.
+                    **( {"kscore": kscore} if kscore is not None else {} ),
                 },
             },
             headers={"Authorization": f"Bearer {_svc_token()}"},
@@ -3825,6 +3849,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             open_sector_counts=_open_sector_counts,   # T186: sector gate
             candidate_sector=stock.sector,             # T186: sector gate
             consec_losses=_consec_losses,              # T187: streak gate
+            kscore=kscore_f,                           # AUD232-042: K-Score visibility
         )
         se_result = _should_enter(
             stock.symbol, signal_data, live_price, game_plan, cfg, live_regime,
