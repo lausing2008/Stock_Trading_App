@@ -1358,8 +1358,17 @@ def _should_enter(
             f"(distance ${stop_dist:.2f} < min ${min_stop_dist:.2f}) — invalid setup"
         ]
     rr = (take_profit - live_price) / stop_dist
-    if rr < cfg.get("min_rr_ratio", 2.0):
-        return False, -99, [f"R:R {rr:.1f}:1 below minimum {cfg['min_rr_ratio']:.1f}:1 at ${live_price:.2f}"]
+    min_rr = cfg.get("min_rr_ratio", 2.0)
+    # AUD232-060: decision-engine's hard_rejects.py (the "primary" gate) requires a stricter
+    # R:R in choppy/risk_off regimes (T190) — this fallback had no regime-aware check at all,
+    # so it was measurably looser than DE in exactly the regimes where DE is strictest, right
+    # when this fallback is most likely to be the only thing standing between a candidate and
+    # a real paper entry (DE unreachable).
+    regime_state = (live_regime.get("state", "neutral") if live_regime else "neutral")
+    if regime_state in ("choppy", "risk_off"):
+        min_rr = max(min_rr, cfg.get("regime_min_rr_ratio", 3.0))
+    if rr < min_rr:
+        return False, -99, [f"R:R {rr:.1f}:1 below minimum {min_rr:.1f}:1 at ${live_price:.2f}"]
 
     # Earnings too close — binary event risk
     dte = reasons.get("days_to_earnings")
@@ -2295,8 +2304,11 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         for trade in open_trades:
             if trade.stage != "open":
                 continue
-            price = live_prices.get(trade.symbol) or trade.current_price or trade.entry_price
-            value = price * (trade.shares or 0)
+            # AUD232-062: use the shared _best_price() helper instead of a hand-rolled copy of
+            # its live -> cached -> entry fallback chain, so a future change to that fallback
+            # logic (e.g. a stale-price floor or a fallback-used warning) is picked up here too
+            # instead of this sector-cap monitor silently keeping the old behavior.
+            value = _best_price(trade, live_prices) * (trade.shares or 0)
             sector = (trade.sector or "unknown")
             sector_value[sector] = sector_value.get(sector, 0.0) + value
         for sector, value in sector_value.items():

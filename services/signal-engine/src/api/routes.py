@@ -5159,7 +5159,12 @@ def gate_backtest(
         .order_by(Signal.ts)
     ).all()
 
-    _REGIME_ML_THRESH = {"bull": 0.65, "neutral": 0.70, "high_vol": 0.78, "bear": 0.78}
+    # AUD232-066: this is a manually-synced replica of market-data/services/scheduler.py's
+    # _REGIME_THRESHOLDS (the real conviction gate — cross-service, can't be imported directly).
+    # "unknown" was previously missing here and relied on .get(regime, 0.70) coincidentally
+    # matching "neutral"'s value — made explicit so a future change to either side's "unknown"/
+    # "neutral" value doesn't silently desync this backtest replica from the real gate.
+    _REGIME_ML_THRESH = {"bull": 0.65, "neutral": 0.70, "high_vol": 0.78, "bear": 0.78, "unknown": 0.70}
 
     def _apply_gate(r: dict, horizon: str, new_macd_cond: bool, new_macd_soft: bool, new_growth_rsi: bool):
         """Inline replay of _is_conviction_buy. Returns (passes, tier, list[failed_keys])."""
