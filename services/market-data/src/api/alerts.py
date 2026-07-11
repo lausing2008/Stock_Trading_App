@@ -18,6 +18,31 @@ router = APIRouter(prefix="/alerts", tags=["alerts"])
 
 _SYMBOL_RE = re.compile(r'^[A-Z0-9.\^\-]{1,20}$')
 
+# T230-ALERTING-COMPOUND-CONDITIONS
+_COMPOUND_METRICS = {"volume_ratio", "rsi", "signal"}
+_COMPOUND_OPS = {"gte", "lte", "eq"}
+_MAX_COMPOUND_CONDITIONS = 3
+
+
+class CompoundCondition(BaseModel):
+    metric: str
+    op: str
+    value: float | str
+
+    @field_validator("metric")
+    @classmethod
+    def validate_metric(cls, v: str) -> str:
+        if v not in _COMPOUND_METRICS:
+            raise ValueError(f"metric must be one of: {sorted(_COMPOUND_METRICS)}")
+        return v
+
+    @field_validator("op")
+    @classmethod
+    def validate_op(cls, v: str) -> str:
+        if v not in _COMPOUND_OPS:
+            raise ValueError(f"op must be one of: {sorted(_COMPOUND_OPS)}")
+        return v
+
 
 class AlertCreate(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=20)
@@ -27,6 +52,7 @@ class AlertCreate(BaseModel):
     note: str | None = Field(default=None, max_length=500)
     recurring: bool = False
     webhook_url: str | None = Field(default=None, max_length=2048)
+    compound_conditions: list[CompoundCondition] | None = None
 
     @field_validator("symbol")
     @classmethod
@@ -40,6 +66,20 @@ class AlertCreate(BaseModel):
     @classmethod
     def validate_webhook(cls, v: str | None) -> str | None:
         return _validate_webhook_url(v)
+
+    @field_validator("compound_conditions")
+    @classmethod
+    def validate_compound_conditions(cls, v: list[CompoundCondition] | None) -> list[CompoundCondition] | None:
+        if not v:
+            return None
+        if len(v) > _MAX_COMPOUND_CONDITIONS:
+            raise ValueError(f"at most {_MAX_COMPOUND_CONDITIONS} compound conditions allowed")
+        for c in v:
+            if c.metric == "signal" and not isinstance(c.value, str):
+                raise ValueError("signal condition value must be a string (e.g. 'BUY')")
+            if c.metric in ("volume_ratio", "rsi") and isinstance(c.value, str):
+                raise ValueError(f"{c.metric} condition value must be numeric")
+        return v
 
 
 class AlertOut(BaseModel):
@@ -55,6 +95,7 @@ class AlertOut(BaseModel):
     last_sent_at: datetime | None
     webhook_url: str | None
     created_at: datetime
+    compound_conditions: list[CompoundCondition] | None = None
 
     class Config:
         from_attributes = True
@@ -83,11 +124,13 @@ def create_alert(
         note=body.note,
         recurring=body.recurring,
         webhook_url=body.webhook_url or None,
+        compound_conditions=[c.model_dump() for c in body.compound_conditions] if body.compound_conditions else None,
     )
     session.add(alert)
     session.commit()
     session.refresh(alert)
-    log.info("alert.created", symbol=alert.symbol, condition=body.condition, threshold=body.threshold, recurring=body.recurring, user=user.username)
+    log.info("alert.created", symbol=alert.symbol, condition=body.condition, threshold=body.threshold, recurring=body.recurring,
+              compound_conditions=alert.compound_conditions, user=user.username)
     return alert
 
 
