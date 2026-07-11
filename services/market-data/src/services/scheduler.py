@@ -3425,12 +3425,12 @@ _DQ_CHECKS: list[dict] = [
     {
         "name": "signals_us", "description": "US signal generation (all horizons)",
         "query": "SELECT MAX(sig.ts) FROM signals sig JOIN stocks st ON sig.stock_id=st.id WHERE st.market='US'",
-        "max_age_hours": 30, "is_date": False,
+        "max_age_hours": 30, "is_date": False, "market": "US",
     },
     {
         "name": "signals_hk", "description": "HK signal generation (all horizons)",
         "query": "SELECT MAX(sig.ts) FROM signals sig JOIN stocks st ON sig.stock_id=st.id WHERE st.market='HK'",
-        "max_age_hours": 30, "is_date": False,
+        "max_age_hours": 30, "is_date": False, "market": "HK",
     },
     {
         "name": "signal_outcomes", "description": "Outcome tracking — feeds T223 calibrated win rate + calibration loop",
@@ -3470,6 +3470,37 @@ def run_data_quality_checks() -> None:
             for check in _DQ_CHECKS:
                 try:
                     result = session.execute(text(check["query"])).scalar()
+                    # T242-DQ1: market-tagged checks (e.g. signals_us/signals_hk) are staleness
+                    # windows sized for intraday gaps (30h) — a market closed for the weekend
+                    # or a holiday goes 60+ hours without a fresh row through no fault of the
+                    # pipeline, which previously fired a guaranteed false "stale" + alert email
+                    # every Saturday/Sunday. Skip the check (report ok, no age shown) while its
+                    # market is currently closed, same holiday/weekday logic _refresh_market uses.
+                    market = check.get("market")
+                    if market == "HK" and (datetime.now(timezone.utc).astimezone(
+                        __import__("zoneinfo").ZoneInfo("Asia/Hong_Kong")
+                    ).weekday() >= 5 or _is_hk_holiday()):
+                        redis_client.setex(
+                            f"dq_check:{check['name']}", 86400 * 7,
+                            json.dumps({
+                                "name": check["name"], "description": check["description"],
+                                "ok": True, "age_hours": None, "max_age_hours": check["max_age_hours"],
+                                "checked_at": datetime.now(timezone.utc).isoformat(),
+                                "skipped_reason": "market_closed",
+                            }),
+                        )
+                        continue
+                    if market == "US" and not _is_us_trading_day():
+                        redis_client.setex(
+                            f"dq_check:{check['name']}", 86400 * 7,
+                            json.dumps({
+                                "name": check["name"], "description": check["description"],
+                                "ok": True, "age_hours": None, "max_age_hours": check["max_age_hours"],
+                                "checked_at": datetime.now(timezone.utc).isoformat(),
+                                "skipped_reason": "market_closed",
+                            }),
+                        )
+                        continue
                     if result is None:
                         age_hours = None
                         ok = False
