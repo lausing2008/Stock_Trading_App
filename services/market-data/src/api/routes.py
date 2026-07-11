@@ -2114,8 +2114,18 @@ def get_relative_strength(symbol: str, db: Session = Depends(get_session)):
 
     import numpy as np
     etf_ret  = etf_data["ret"]
-    rs_rank  = (1 + stock_ret) / (1 + etf_ret)
+    # AUD232-065: ranking-engine's independent RS implementation (_rs_score in
+    # ranking-engine/src/api/routes.py) received the T234-RANK-RS-UNBOUNDED fix that this,
+    # the docstring-declared "single source of truth", never did — a tighter 1e-6 near-zero
+    # denominator floor (the pre-check above uses a looser <0.01 threshold that doesn't catch
+    # etf_ret exactly at -0.99) and an explicit rs_rank clip to [-20, 20] (previously only
+    # rs_score was clipped; rs_rank itself was returned completely unbounded and could reach
+    # 100+ during a real sector-ETF crash). Ported both fixes here so the two implementations
+    # no longer diverge on this edge case.
+    denom    = 1 + etf_ret if abs(etf_ret + 1) > 1e-6 else 1e-6
+    rs_rank  = (1 + stock_ret) / denom
     rs_score = float(np.clip(50 + (rs_rank - 1.0) * 100, 0, 100))
+    rs_rank  = float(np.clip(rs_rank, -20.0, 20.0))
     result   = {
         "symbol":                sym,
         "rs_score":              round(rs_score, 1),
