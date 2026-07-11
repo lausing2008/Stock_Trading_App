@@ -2045,7 +2045,13 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                         setattr(_so, f"is_correct_{_bucket}", pnl_dollar > 0)
                         session.flush()
                 except Exception as _soe:
-                    log.warning("paper.signal_outcome_writeback_failed", signal_id=trade.signal_id, error=str(_soe))
+                    # AUD232-016: bumped from warning to error — a failed writeback here
+                    # silently leaves that SignalOutcome row's entry_price/exit_price/
+                    # return_Nd/is_correct_Nd unset for this (stock, horizon, signal_date)
+                    # with no retry and no reconciliation path back to
+                    # evaluate_signal_outcomes, so it needs to actually surface in
+                    # monitoring rather than blend into routine warning-level noise.
+                    log.error("paper.signal_outcome_writeback_failed", signal_id=trade.signal_id, error=str(_soe), exc_info=True)
             # PA-G4: rich attribution log — enables "why did this trade exit?" queries in logs
             log.info("paper.exit",
                      symbol=trade.symbol, reason=exit_reason,
