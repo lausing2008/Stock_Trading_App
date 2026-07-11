@@ -1,7 +1,7 @@
 """Admin endpoints: trigger ingestion + seed universe + add individual stock."""
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func, case
 from sqlalchemy.orm import Session
 import json
 import yfinance as yf
@@ -9,7 +9,10 @@ import redis as redis_lib
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import Exchange, Market, SessionLocal, Stock, Signal, SignalOutcome, init_db, get_session
+from db import (
+    Exchange, Market, SessionLocal, Stock, Signal, SignalOutcome, SignalHorizon,
+    Watchlist, WatchlistItem, Ranking, init_db, get_session,
+)
 
 from ..adapters.registry import set_runtime_key
 from ..services.ingestion import ingest_symbol, ingest_universe
@@ -310,6 +313,134 @@ def admin_signal_log(
         "limit": limit,
         "pages": max(1, (total_count + limit - 1) // limit),
         "items": results,
+    }
+
+
+@router.get("/watchlist-performance")
+def watchlist_performance(
+    style: str = Query(..., regex="^(SHORT|SWING|LONG|GROWTH)$"),
+    days_back: int = Query(90, ge=1, le=365),
+    min_outcomes: int = Query(4, ge=1, le=50, description="Minimum resolved outcomes for a symbol to count as reliable"),
+    candidate_limit: int = Query(10, ge=0, le=50, description="How many top-K-Score non-watchlist candidates to return"),
+    _: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+):
+    """Per-style watchlist health: win rate by symbol, sector concentration, and ranked
+    candidates not yet on the watchlist. Admin-only.
+
+    Consolidates into one endpoint what previously required manually cross-referencing
+    GET /signals/outcomes/summary's by_symbol field against watchlist membership and
+    GET /rankings — see the same watchlist-join pattern paper_trading_engine.py's
+    _scan_for_entries() already uses to pull a style's candidate pool.
+    """
+    from datetime import date, timedelta
+    from ..services.paper_trading_engine import _DEFAULT_CONFIG
+
+    horizon_enum = SignalHorizon(style)
+    cutoff = date.today() - timedelta(days=days_back)
+
+    # Stocks currently on any watchlist tagged with this style (same join as
+    # paper_trading_engine._scan_for_entries — see AUD232 watchlist-performance notes).
+    watchlist_rows = session.execute(
+        select(WatchlistItem.stock_id, Stock.symbol, Stock.sector, Stock.market)
+        .join(Watchlist, WatchlistItem.watchlist_id == Watchlist.id)
+        .join(Stock, WatchlistItem.stock_id == Stock.id)
+        .where(Watchlist.trading_style == style)
+    ).all()
+    # A stock can appear on more than one watchlist with the same style tag — dedupe by stock_id.
+    watchlist_stocks: dict[int, dict] = {}
+    for stock_id, symbol, sector, market in watchlist_rows:
+        watchlist_stocks[stock_id] = {
+            "stock_id": stock_id, "symbol": symbol,
+            "sector": sector or "Unknown",
+            "market": market.value if hasattr(market, "value") else str(market),
+        }
+
+    # Win rate per stock_id for this style/lookback, from resolved (is_correct is not null) outcomes.
+    outcome_rows = session.execute(
+        select(
+            SignalOutcome.stock_id,
+            func.count().label("n"),
+            func.sum(case((SignalOutcome.is_correct.is_(True), 1), else_=0)).label("wins"),
+            func.avg(SignalOutcome.pct_return).label("avg_return"),
+        )
+        .where(
+            SignalOutcome.horizon == horizon_enum,
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+        )
+        .group_by(SignalOutcome.stock_id)
+    ).all()
+    outcomes_by_stock: dict[int, dict] = {
+        row.stock_id: {
+            "n": row.n, "wins": row.wins,
+            "win_rate": round(row.wins / row.n, 3) if row.n else None,
+            "avg_return_pct": round(row.avg_return * 100, 2) if row.avg_return is not None else None,
+        }
+        for row in outcome_rows
+    }
+
+    # Merge: every watchlist stock, with outcome data if it has any.
+    watchlist_perf = []
+    for stock_id, info in watchlist_stocks.items():
+        oc = outcomes_by_stock.get(stock_id)
+        watchlist_perf.append({
+            **info,
+            "n": oc["n"] if oc else 0,
+            "win_rate": oc["win_rate"] if oc else None,
+            "avg_return_pct": oc["avg_return_pct"] if oc else None,
+            "reliable": bool(oc and oc["n"] >= min_outcomes),
+        })
+    watchlist_perf.sort(key=lambda x: (x["win_rate"] is None, x["win_rate"] if x["win_rate"] is not None else 0))
+
+    reliable = [p for p in watchlist_perf if p["reliable"]]
+    avg_win_rate = round(sum(p["win_rate"] for p in reliable) / len(reliable), 3) if reliable else None
+
+    # Sector composition of the watchlist itself.
+    sector_counts: dict[str, int] = {}
+    for info in watchlist_stocks.values():
+        sector_counts[info["sector"]] = sector_counts.get(info["sector"], 0) + 1
+    total_stocks = len(watchlist_stocks)
+    sector_pct = {
+        sec: round(count / total_stocks * 100, 1)
+        for sec, count in sorted(sector_counts.items(), key=lambda kv: -kv[1])
+    } if total_stocks else {}
+
+    # Top-ranked candidates (most recent as_of date) not already on this style's watchlist.
+    candidates: list[dict] = []
+    if candidate_limit > 0:
+        latest_as_of = session.execute(select(func.max(Ranking.as_of))).scalar_one_or_none()
+        if latest_as_of is not None:
+            excluded_ids = set(watchlist_stocks.keys())
+            cand_rows = session.execute(
+                select(Ranking.score, Stock.id, Stock.symbol, Stock.sector, Stock.market)
+                .join(Stock, Ranking.stock_id == Stock.id)
+                .where(Ranking.as_of == latest_as_of, Stock.active.is_(True))
+                .order_by(desc(Ranking.score))
+                .limit(candidate_limit + len(excluded_ids))
+            ).all()
+            for score, stock_id, symbol, sector, market in cand_rows:
+                if stock_id in excluded_ids:
+                    continue
+                candidates.append({
+                    "symbol": symbol, "score": score,
+                    "sector": sector or "Unknown",
+                    "market": market.value if hasattr(market, "value") else str(market),
+                })
+                if len(candidates) >= candidate_limit:
+                    break
+
+    return {
+        "style": style,
+        "days_back": days_back,
+        "min_outcomes": min_outcomes,
+        "total_watchlist_stocks": total_stocks,
+        "n_reliable": len(reliable),
+        "avg_win_rate": avg_win_rate,
+        "sector_pct": sector_pct,
+        "max_sector_pct": _DEFAULT_CONFIG.get("max_sector_pct"),
+        "watchlist_perf": watchlist_perf,
+        "candidates": candidates,
     }
 
 
