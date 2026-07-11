@@ -195,10 +195,21 @@ def train_meta(tasks: BackgroundTasks, _: str = Depends(get_current_username)):
     }
 
 
+def _resolve_horizon(req: "PredictRequest") -> int:
+    """AUD232-029: req.horizon defaulted to 5 (SHORT's horizon) regardless of req.style, and
+    signal-engine's caller never sends horizon at all — every non-SHORT-style live prediction
+    silently fell back to the wrong horizon. Currently harmless (build_features only uses
+    horizon for the y-target, discarded at inference time via inference_mode=True) but fragile
+    against any future feature that reads horizon for an X-column. Derive it server-side from
+    style, matching the same _HORIZON_BY_STYLE mapping already used at train time, rather than
+    trusting a fixed request-body default."""
+    return _HORIZON_BY_STYLE.get(req.style.upper(), req.horizon)
+
+
 @router.post("/predict")
 def predict(req: PredictRequest, _: str = Depends(get_current_username)):
     try:
-        return predict_latest(req.symbol, req.model, req.horizon, style=req.style)
+        return predict_latest(req.symbol, req.model, _resolve_horizon(req), style=req.style)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
@@ -213,7 +224,7 @@ def predict_ensemble(req: PredictRequest, _: str = Depends(get_current_username)
     Train both models first with POST /ml/train_all_ensemble.
     """
     try:
-        return predict_latest_ensemble(req.symbol, req.horizon, style=req.style)
+        return predict_latest_ensemble(req.symbol, _resolve_horizon(req), style=req.style)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
 
@@ -226,7 +237,7 @@ def predict_ensemble_three(req: PredictRequest, _: str = Depends(get_current_use
     Train all three with POST /ml/train_all_ensemble_three.
     """
     try:
-        return predict_latest_ensemble_three(req.symbol, req.horizon, style=req.style)
+        return predict_latest_ensemble_three(req.symbol, _resolve_horizon(req), style=req.style)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
 
