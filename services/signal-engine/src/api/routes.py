@@ -4173,9 +4173,11 @@ def signal_watchdog(
 ):
     """Self-healing threshold watchdog: monitor rolling win rates and auto-adjust.
 
-    Checks the last 14-day rolling win rate per style. If win rate drops below 38%,
-    applies an emergency threshold tightening (+0.03). If signal count drops to zero
-    for 7+ consecutive days, relaxes the threshold by 0.02 (floor: hardcoded default).
+    Checks the last 14 days of RESOLVABLE signals per style (a signal only becomes
+    resolvable once its own hold window has elapsed — see the window note below). If
+    win rate drops below 38%, applies an emergency threshold tightening (+0.03). If
+    signal count drops to zero for 7+ consecutive days, relaxes the threshold by 0.02
+    (floor: hardcoded default).
 
     Writes to stockai:watchdog:{STYLE}:threshold (Redis, 7-day TTL) — this key is
     read by _get_dynamic_buy_threshold() BEFORE the calibrated key, ensuring the
@@ -4189,7 +4191,6 @@ def signal_watchdog(
     from ..generators.signals import _STYLE_PROFILES
     import uuid as _uuid
 
-    _14D = date.today() - timedelta(days=14)
     _7D  = date.today() - timedelta(days=7)
     _REDIS_TTL_7D = 7 * 86400
     _MAX_TIGHTEN = 3
@@ -4214,10 +4215,18 @@ def signal_watchdog(
     status: list[dict] = []
 
     for style in ("SHORT", "SWING", "LONG", "GROWTH"):
-        # 14-day outcomes
+        # T243-TUNE-WINDOW: a flat 14-day signal_date cutoff can never surface outcomes for
+        # any style whose hold window is >=14 days — a signal only resolves hold_days after
+        # signal_date, so by the time it CAN resolve, signal_date has already aged out of a
+        # bare 14-day window (LONG's 28-day hold makes this a mathematical impossibility, not
+        # just unlikely — it would show 0 outcomes forever, no matter how long the system
+        # ran). Widen the signal_date floor by that style's own hold window so "last 14 days"
+        # means "14 days of signals that have HAD TIME to resolve," not "14 days of raw age."
+        _hold_days = _OUTCOME_HOLD_DAYS.get(style, 14)
+        _win_start = date.today() - timedelta(days=14 + _hold_days)
         outcomes_14d = session.execute(
             select(SignalOutcome).where(
-                SignalOutcome.signal_date >= _14D,
+                SignalOutcome.signal_date >= _win_start,
                 SignalOutcome.is_correct.is_not(None),
                 SignalOutcome.signal_direction == "BUY",
                 SignalOutcome.horizon == SignalHorizon[style],
@@ -4247,7 +4256,7 @@ def signal_watchdog(
         floor_threshold = _DEFAULT_THRESHOLDS.get(style, 0.65)
 
         action = None
-        _tune_window = (_14D, date.today())
+        _tune_window = (_win_start, date.today())
         if win_rate_14d is not None and win_rate_14d < 0.38 and len(outcomes_14d) >= _MIN_SAMPLES:
             if tighten_count >= _MAX_TIGHTEN:
                 action = "max_tighten_reached_manual_review_needed"
@@ -4292,6 +4301,23 @@ def signal_watchdog(
                 actions.append({"style": style, "action": action, "from": round(current_val, 4),
                                  "to": round(new_val, 4), "signals_7d": signals_7d})
 
+        # T243-TUNE-SILENT-EXPIRY: if an override is active but neither the tighten nor the
+        # relax branch fired this run, the key is coasting toward its 7-day TTL with no
+        # explicit "still active" or "about to lapse" signal anywhere — an operator watching
+        # only the dashboard's "Nominal" pill has no way to tell "healthy" from "override just
+        # expired with nobody reviewing whether the underlying condition actually improved."
+        # Log it so at least a log-based alert/dashboard could catch it; not changed: whether
+        # the override auto-renews (deliberately not renewing here — a stale win-rate read
+        # that keeps re-tightening every day without ever re-validating is its own risk).
+        if action is None and current_adj is not None:
+            ttl_remaining = redis_client.ttl(current_key)
+            log.info(
+                "signal_watchdog.override_active_no_action",
+                style=style, ttl_remaining_s=ttl_remaining,
+                current_threshold=float(current_adj), win_rate_14d=win_rate_14d,
+                n_outcomes_14d=len(outcomes_14d),
+            )
+
         status.append({
             "style": style,
             "win_rate_14d": round(win_rate_14d, 3) if win_rate_14d is not None else None,
@@ -4320,7 +4346,6 @@ def tune_status(
     from ..generators.signals import _STYLE_PROFILES
 
     redis_client = _get_redis()
-    _14D = date.today() - timedelta(days=14)
     _7D  = date.today() - timedelta(days=7)
 
     styles_out: dict = {}
@@ -4341,10 +4366,16 @@ def tune_status(
         eff_adx_min   = adx_min_tuned       if adx_min_tuned is not None       else p.get("adx_min")
         eff_breadth   = breadth_comp_tuned  if breadth_comp_tuned is not None  else p.get("breadth_compression")
 
-        # 14-day win rate
+        # T243-TUNE-WINDOW: same style-aware window widening as signal_watchdog() — a bare
+        # 14-day signal_date cutoff can never show outcomes for styles whose hold window is
+        # >=14 days (LONG's 28-day hold makes "14d win rate" mathematically always empty, not
+        # just usually empty). Widen by that style's own hold window so this reports "the last
+        # 14 days of signals that have HAD TIME to resolve."
+        _hold_days = _OUTCOME_HOLD_DAYS.get(style, 14)
+        _win_start = date.today() - timedelta(days=14 + _hold_days)
         outcomes_14d = session.execute(
             select(SignalOutcome).where(
-                SignalOutcome.signal_date >= _14D,
+                SignalOutcome.signal_date >= _win_start,
                 SignalOutcome.is_correct.is_not(None),
                 SignalOutcome.signal_direction == "BUY",
                 SignalOutcome.horizon == SignalHorizon[style],

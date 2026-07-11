@@ -220,9 +220,9 @@ function StyleCard({ style, data }: { style: string; data: StyleStatus }) {
           <div style={{ color: '#cbd5e1', fontWeight: 600, fontSize: 14 }}>{performance.signals_7d}</div>
           <div style={{ color: '#475569', fontSize: 10 }}>signals 7d</div>
         </div>
-        <div style={{ flex: 1, textAlign: 'center' }}>
+        <div style={{ flex: 1, textAlign: 'center' }} title="Counts signals generated in the last 14 days that have HAD TIME to resolve (window is widened by this style's own hold period — e.g. LONG's 28-day hold means this looks back 42 days of signal generation, not 14)">
           <div style={{ color: '#cbd5e1', fontWeight: 600, fontSize: 14 }}>{performance.n_outcomes_14d}</div>
-          <div style={{ color: '#475569', fontSize: 10 }}>outcomes 14d</div>
+          <div style={{ color: '#475569', fontSize: 10 }}>resolved outcomes*</div>
         </div>
         {watchdog.tighten_count > 0 && (
           <div style={{ flex: 1, textAlign: 'center' }}>
@@ -463,7 +463,7 @@ export default function SignalTuningPage() {
             {
               title: 'Tier 86 — Self-Healing Watchdog',
               color: '#f43f5e',
-              desc: 'Daily: if 14d win rate < 38% with ≥5 outcomes, tightens buy threshold +0.03 (max 3× before flagging manual review). If 0 signals for 7 days, relaxes −0.02. Writes to Redis (7d TTL).',
+              desc: 'Daily: if win rate on the last 14 days of resolvable signals < 38% with ≥15 resolved outcomes, tightens buy threshold +0.03 (max 3× before flagging manual review). If 0 signals for 7 days, relaxes −0.02. Writes to Redis (7d TTL).',
               schedule: 'Daily 06:10 ET Mon–Fri',
             },
             {
