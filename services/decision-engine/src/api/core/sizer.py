@@ -10,6 +10,32 @@ paper_trading_engine.py, never here; and the earnings multiplier doesn't compoun
 max-position-pct cap the way it does in paper_trading_engine.py. Treat this as a related but
 INDEPENDENT sizing model, not a mirror — see docs/AUDIT_REPORT_TIER232_2026-07-02.md Part 10
 for the full itemized diff before assuming a value here matches the real trading engine.
+
+AUD232-034/035/036/038/039/040/041 (audit pass 2026-07-10): confirmed 6 MORE divergences
+beyond the ones already listed above — this is a preview/scoring-only module (paper_trading
+never consumes its sizing plan, only its go/no-go verdict + score), so none of these are bugs
+to reconcile, just further evidence this module's numbers should never be read as "what the
+real engine would size":
+  1. (AUD232-034) stop_dist here is floored at 1% of price (T237-DE1, see compute_position()
+     below); paper_trading_engine.py has no equivalent floor and relies entirely on downstream
+     caps instead.
+  2. (AUD232-035/036) combined_market_mult() below uses min() across regime/breadth/vix;
+     paper_trading_engine.py instead multiplies ALL 6 of its per-trade multipliers together
+     AND applies its own 25% floor that has no equivalent here.
+  3. (AUD232-038) the confidence-multiplier tier tables (see the T232-DE2 comment below) differ
+     from paper_trading_engine.py's own bands in both breakpoints and whether a floor-rescale
+     is applied.
+  4. max_position_pct's interaction with a min_position_value skip-check exists in
+     paper_trading_engine.py but has no equivalent gate here.
+  5. (AUD232-039) no HMM bear-pressure dampening parameter exists in compute_position()'s
+     signature at all — paper_trading_engine.py applies min(regime_size_mult, 0.70) whenever
+     live_regime["hmm_bear_pressure"] is set; there is no third/fourth market_mult term here for
+     it. A permanent, accepted gap — see combined_market_mult()'s own docstring for why adding
+     a 4th term to that min() wouldn't even be the right fix if this WAS ever wired to real sizing.
+  6. (AUD232-041) this module has no K-score/ranking-engine input anywhere in its formula, so it
+     cannot replicate any DE-score-based sizing decision — confirmed to be a non-issue in
+     practice since paper_trading_engine.py's own score_size_mult formula also has no direct
+     K-score multiplier (K-score is a pre-entry gate, not a size multiplier, on both sides).
 """
 from __future__ import annotations
 
