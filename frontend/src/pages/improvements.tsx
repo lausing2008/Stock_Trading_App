@@ -14414,6 +14414,380 @@ const ITEMS: Item[] = [
     fix: 'FIXED 2026-07-10, same session as the audit — items 1-6 (the highest priority ones) all done:\n\n1. mine_all_horizons() now sorts its returned candidates by event_timestamp before returning, so every training caller (train_and_save_position_scaling_gate, and any future one) gets chronologically-ordered data for free, matching walk_forward_train()\'s own documented requirement. Re-ran the FULL mining -> labeling -> walk-forward-train pipeline against real production data after this fix: mean hit rate dropped from 89.0% to 84.9%, and critically the per-fold spread widened from a suspiciously tight 86.6%-95.1% to a much more realistic 75.0%-90.7% — exactly the expected signature of removing leakage (the model now looks honestly weaker, not artificially inflated by training-on-the-future). current_drawdown_pct\'s feature importance was essentially unchanged (36.3% -> 35.4%), confirming the earlier drawdown-dominance finding was independent of this particular bug.\n\n2. _regime_favorable_near() no longer uses .abs() on the date delta — restricted to snapshots at or before the event date only, so a snapshot recorded after the event can no longer leak future regime information into the feature.\n\n3. Fixed the sector-correlation self-contamination: _sector_peer_returns() now supports an unfiltered per-sector cache (every sector member\'s column, no baked-in exclusion), and _sector_correlation_at() gained an exclude_stock_id parameter that drops a stock\'s own column at USE time instead of at cache-build time — every stock in a sector now correctly excludes only itself, not whichever stock happened to be processed first.\n\n4. Shadow-verdict recording is now deduplicated via a per symbol+portfolio+calendar-day Redis marker (SETNX, 25h TTL) before this feature is ever turned on for real, so a position sitting in a long pullback can no longer flood the comparison report with dozens of near-identical daily verdicts.\n\n5. train_and_save_position_scaling_gate() now computes and stores training_mean_act_probability (the model\'s own mean predicted probability on its training set) in the saved model bundle\'s metadata; the drift check now compares live shadow verdicts against THIS stored value instead of the arbitrary 0.55 act_threshold. Confirmed via the retrain: the real training mean probability is 0.227 — comparing against 0.55 (as before the fix) would have produced a spurious ~0.32 "drift" reading on every single check, a permanent false alarm.\n\n6. (Bonus, found while fixing #1) Also fixed a separate read-delete-write race in resolve_position_scaling_shadow_verdicts() that could silently drop a shadow verdict pushed by a concurrent scan between reading the pending list and rebuilding it — now uses targeted LREM on only the specific entries actually processed, rather than deleting and rebuilding the entire list.\n\n10 new/updated tests (chronological sort verification via a monkeypatched mine_candidate_events, regime-lookahead exclusion boundary cases, sector-correlation self-exclusion reproducing the exact bug shape). All 67 market-data tests pass. Verified end-to-end in production: re-ran the full corrected pipeline (1227 candidates, 112 stocks, 370s), confirmed the new model bundle correctly stores training_mean_act_probability, and confirmed all 5 real portfolios remain position_scaling_mode="off" after deployment (unaffected by any of these fixes, which only change training/monitoring correctness, not the off/shadow/live behavior itself).\n\nItems 8-10 from the audit (minor barrier-labeling optimism, the PT-vs-PT near-mechanical-label observation) remain lower-priority polish, not fixed this pass — they don\'t affect correctness of the shadow evaluation the way items 1-6 did.',
     implementedNote: 'Audited 2026-07-10 via a Fable 5 subagent per explicit user request ("Do a deep full audit on this position sizing feature ... are they all fixed and accurate?"), then fixed the same session per the user\'s follow-up ("document them and switch back to auto and start fixing"). Items 1-6 (the walk-forward leakage, regime lookahead, sector-correlation bug, shadow dedup, drift baseline, and the bonus resolver race) are all fixed, tested, and deployed to production — verified via a real re-training run showing the expected honest performance drop that confirms the leakage was genuine, not a false positive from the audit. This corrects the "model passes its own sign-off check" conclusion from earlier the same session to a more defensible, leakage-free basis: current_drawdown_pct\'s dominance (35.4%, barely changed) was NOT an artifact of this bug, but the overall reported hit-rate/AUC numbers from before this fix should be considered superseded by the corrected 84.9% hit-rate figure. Items 8-10 (barrier-labeling optimism, PT-vs-PT near-mechanical labeling) remain open as lower-priority polish — see the fix field.',
   },
+  // ── Tier 242 — Deep audit: duplication, refactors & correctness across signal/ML/decision/paper-trading/ranking pipeline (2026-07-10) ──
+  // Full report: docs/AUDIT_REPORT_TIER242_2026-07-10.md — 101 findings total, every one independently re-verified against live code.
+  // Only critical findings get individual entries below; high/medium/low findings are grouped by domain to keep this tracker scannable —
+  // see the doc for all 101 with full file:line citations and failure scenarios, cross-referenced by AUD232-NNN id.
+
+  {
+    id: 'AUD232-CALENTRY-NOVAL',
+    tier: 242 as const, severity: 'critical', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/api/paper_portfolio.py',
+    effort: 'S',
+    impact: 'Critical — see docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-001 for full detail, cited lines, and independent verification notes.',
+    title: 'AUD232-001: calibrate_entry_weights() fits a logistic regression with NO train/validation split — every sibling calibration mechanism has one',
+    what: 'A small, noisy sample of closed paper trades (e.g. 40-60) can spuriously correlate with one entry factor due to a temporary market regime. The logistic regression fits a large coefficient to that factor and entry_weights.json is overwritten and applied to live entries immediately, with no held-out check that the fit generalizes.',
+    fix: 'Add the same 70/30 walk-forward split and EV-lift gate already used by calibrate_ml_weight/outcomes_calibrate_apply/tune_style_profiles in signal-engine (all hardened after the documented CAL-1 in-sample-overfit incident). Reject the fit if validation-slice EV is not better than the current weights.',
+  },
+
+  {
+    id: 'AUD232-METATRAIN-SYMBOLJOIN',
+    tier: 242 as const, severity: 'critical', defaultStatus: 'todo' as const,
+    file: 'services/ml-prediction/src/training/meta_trainer.py',
+    effort: 'S',
+    impact: 'Critical — see docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-002 for full detail, cited lines, and independent verification notes.',
+    title: 'AUD232-002: meta_trainer joins signal_outcomes to stocks on the symbol STRING, not stock_id — the actual indexed FK every other consumer uses',
+    what: 'stocks has UniqueConstraint(symbol, exchange) — symbol alone is not globally unique. If a US and HK listing (or a delisted/relisted stock) ever share a ticker string, the join silently fans out duplicate rows or attaches the wrong sector/market_cap to an outcome, with no error.',
+    fix: 'Change the raw SQL join from st.symbol = so.symbol to st.id = so.stock_id, matching every other signal_outcomes consumer (calibrate_conviction_weights, outcomes/summary, confidence-calibration).',
+  },
+
+  {
+    id: 'AUD232-CONFCAL-STALE-CACHE',
+    tier: 242 as const, severity: 'critical', defaultStatus: 'todo' as const,
+    file: 'services/signal-engine/src/api/routes.py',
+    effort: 'S',
+    impact: 'Critical — see docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-003 for full detail, cited lines, and independent verification notes.',
+    title: 'AUD232-003: confidence-calibration Redis cache has no invalidation tied to outcomes/evaluate — a silently-stopped evaluate job produces self-consistent but weeks-stale calibrated win rates with no staleness signal',
+    what: 'If /signals/outcomes/evaluate silently fails for weeks (matching this repo\'s well-documented jose-missing-library failure pattern), the confidence-calibration cache keeps expiring and rebuilding hourly from the same stale rows, returning numerically identical buckets with nothing to indicate the underlying evaluate job stopped.',
+    fix: 'Have evaluate_signal_outcomes delete/invalidate the confidence-calibration cache key after writing new rows, or store and surface a last-updated timestamp alongside the calibration numbers so staleness is visible on the SignalCard UI, not just self-consistent.',
+  },
+
+  {
+    id: 'AUD232-TAWEIGHTS-MULTIWORKER',
+    tier: 242 as const, severity: 'critical', defaultStatus: 'todo' as const,
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: 'S',
+    impact: 'Critical — see docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-004 for full detail, cited lines, and independent verification notes.',
+    title: 'AUD232-004: calibrate_ta_weights only updates the CALLING process\'s in-memory globals — other workers/replicas would silently keep stale weights',
+    what: 'If signal-engine is ever scaled to multiple uvicorn workers or container replicas, running calibrate_ta_weights updates exactly one worker\'s memory (plus Redis/disk). Every other worker keeps scoring with the previous week\'s TA weights until it happens to restart — the same symbol gets inconsistent confidence depending on which worker handles the request.',
+    fix: 'Not urgent while single-worker, but document the constraint explicitly (a comment is not enough) and add either a pub/sub invalidation signal or a periodic re-read-from-Redis check in the signal generator before ever scaling signal-engine horizontally.',
+  },
+
+  {
+    id: 'AUD232-DE-FALLBACK-LOOSER',
+    tier: 242 as const, severity: 'critical', defaultStatus: 'todo' as const,
+    file: 'services/decision-engine/src/api/core/hard_rejects.py',
+    effort: 'S',
+    impact: 'Critical — see docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-005 for full detail, cited lines, and independent verification notes.',
+    title: 'AUD232-005: DE\'s hard-reject gate has a time-of-day check and a breakout-extension guard that the fallback _should_enter() lacks entirely — an outage makes live trading MORE permissive exactly when caution matters most',
+    what: 'Decision-engine becomes unreachable during the first 10 minutes of market open. gate_source falls back to _should_enter(), which has no time-of-day check at all — the system opens real paper positions in the exact high-spread, low-liquidity window the DE gate exists specifically to avoid, silently, for the duration of the outage.',
+    fix: 'Port the time-of-day gate and breakout-extension guard into _should_enter() as well, matching the existing T234-DE-MISSING-HARD-REJECTS precedent (which ported gates the other direction, fallback to DE, for gap-up and macro-blackout).',
+  },
+
+  {
+    id: 'AUD232-DE-CATALYST-DEADBRANCH',
+    tier: 242 as const, severity: 'critical', defaultStatus: 'todo' as const,
+    file: 'services/decision-engine/src/api/core/scorer.py',
+    effort: 'S',
+    impact: 'Critical — see docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-006 for full detail, cited lines, and independent verification notes.',
+    title: 'AUD232-006: DE\'s negative-catalyst branch (cs <= -30) is unreachable dead code — catalyst_score is clamped to [0,100] upstream, so heavy insider/congress selling gets ZERO penalty under the default gate',
+    what: 'A stock with insider_score=-80 (heavy insider selling) and no other catalyst activity produces catalyst_score=0.0 after upstream clamping. DE\'s Layer 3f sees cs=0.0, falls into the neutral branch, and applies no penalty — even though _should_enter()\'s equivalent insider_score check would apply a full -1. Since DE is the default authoritative gate, this stock\'s real entry score is silently 1 point higher than intended.',
+    fix: 'Either read the pre-clamp insider_score/congress_score directly (matching _should_enter()\'s two separate layers) instead of the clamped combined catalyst_score, or have event-intelligence also expose an unclamped raw value DE can read.',
+  },
+
+  {
+    id: 'AUD232-DE-NO-CONSENSUS',
+    tier: 242 as const, severity: 'critical', defaultStatus: 'todo' as const,
+    file: 'services/decision-engine/src/api/core/scorer.py',
+    effort: 'S',
+    impact: 'Critical — see docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-007 for full detail, cited lines, and independent verification notes.',
+    title: 'AUD232-007: DE has no cross-horizon consensus scoring layer at all — a 2-point swing in the fallback system is completely invisible to the primary gate',
+    what: 'Two otherwise-identical candidates in a choppy regime — one with cross_style_buys=0, one with cross_style_buys=2 — score identically under DE\'s compute_score() despite a real 2-point spread under _should_enter() (+1 for >=2, -1 for zero-consensus in bear/choppy) that can be the difference between SKIP and BUY. DE\'s module docstring still claims to be extracted faithfully from _should_enter().',
+    fix: 'Add a cross_style_buys-reading layer to compute_score() mirroring _should_enter()\'s +1/-1 rule — this closes the largest single scoring gap found in the scorer-vs-_should_enter() comparison (9 total divergences found; see the grouped Decision Engine entry below for the rest).',
+  },
+
+  {
+    id: 'AUD232-METAPREDICT-LIVE-FEATURECOLS',
+    tier: 242 as const, severity: 'critical', defaultStatus: 'todo' as const,
+    file: 'services/ml-prediction/src/training/meta_trainer.py',
+    effort: 'S',
+    impact: 'Critical — see docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-008 for full detail, cited lines, and independent verification notes.',
+    title: 'AUD232-008: predict_meta() rebuilds its feature vector from the LIVE FEATURE_COLUMNS instead of the training-time snapshot saved in the bundle — the same bug class behind this codebase\'s own documented index-out-of-bounds incident, currently latent',
+    what: 'builder.py\'s FEATURE_COLUMNS has already changed length multiple times (T220-F/T237-ML2, CRIT-3/4). If it changes again before the next monthly meta-model retrain, predict_meta() builds a vec of the NEW length but applies the OLD bundle\'s non_const positional indices — either an IndexError silently swallowed by a blanket except (dropping the meta ensemble member from every live prediction with no alert), or worse, silently feeding misaligned features into the model with no error at all.',
+    fix: 'Change predict_meta() to read bundle[\'feature_columns\'] (already saved at train time, currently written but never read back) and validate its length/order against the live FEATURE_COLUMNS before building vec, matching trainer.py\'s predict_latest() which already does this correctly for the base model.',
+  },
+
+  {
+    id: 'AUD232-PCTPORTFOLIO-CASH-NOT-EQUITY',
+    tier: 242 as const, severity: 'critical', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: 'S',
+    impact: 'Critical — see docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-009 + AUD232-012 for full detail, cited lines, and independent verification notes.',
+    title: 'AUD232-009/012: existing_position_pct_of_portfolio divides by remaining CASH, not total EQUITY — found independently by BOTH audit workflows at the identical file:line, cross-corroborating that this is real',
+    what: 'A portfolio that is 90% invested (10% cash remaining) holds a position genuinely worth 20% of total equity — the computed feature reads as 200% (dividing by the small remaining cash balance instead of cash+positions). As cash approaches zero this diverges to infinity while the true percentage caps near 100%. Every act_probability/suggested_size_multiplier prediction and every shadow verdict logged while a portfolio is heavily deployed is trained/scored against a systematically wrong concentration signal — corrupting the shadow-mode validation data before position_scaling_mode is ever promoted from shadow to live.',
+    fix: 'Change the divisor from portfolio.current_cash to total account equity (cash + market value of all open positions), matching what percent of portfolio means everywhere else in this file (_compute_equity, sector-cap checks).',
+  },
+
+  {
+    id: 'AUD232-SIZING-FLOOR-COMMENT-WRONG',
+    tier: 242 as const, severity: 'critical', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: 'S',
+    impact: 'Critical — see docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-011 for full detail, cited lines, and independent verification notes.',
+    title: 'AUD232-011: The 25%-floor safety comment\'s worst-case math (0.084) only applies when gate_source==de — the fallback path\'s real worst case is 0.1125, understating risk during exactly the outage window extra caution matters most',
+    what: 'During a Decision Engine outage, score_size_mult is hardcoded to 1.0 (not derived from _score_excess), so the T234-PT-SIZING-MULT-STACK comment\'s cited worst-case stack (earnings 0.50 x regime 0.50 x confidence 0.75 x research 0.6 x score 0.75 = 0.084) is unreachable on the fallback path — the real fallback-path floor-triggering minimum is 0.1125. An engineer reasoning about the floor\'s safety margin using the stale 0.084 figure would misjudge how much protection it actually provides during exactly the scenario (DE down) where the extra caution matters most.',
+    fix: 'Correct the comment to state both worst-case figures (0.084 for gate_source==de, 0.1125 for fallback/legacy) so future reasoning about the floor\'s safety margin uses the right number for each path.',
+  },
+
+  {
+    id: 'AUD232-SCALEIN-STALE-SNAPSHOT',
+    tier: 242 as const, severity: 'critical', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: 'S',
+    impact: 'Critical — see docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-010 for full detail, cited lines, and independent verification notes.',
+    title: 'AUD232-010: Scale-in never updates confidence_at_entry/kscore_at_entry/market_regime_at_entry — RL training and calibration-by-confidence-band reporting both silently attribute a scaled position\'s full P&L to its ORIGINAL, now-stale entry conditions',
+    what: 'A position opens at confidence=61 in a choppy regime, then scales in weeks later at confidence=95 in a bull regime. rl_agent.py trains its RL feature vector using the stale confidence=61/choppy values even though most of the position\'s dollar exposure reflects the confidence=95/bull add. paper_portfolio.py\'s calibration-by-confidence-band report buckets the trade\'s full P&L under the ORIGINAL 55-65% band, silently corrupting the report used to judge signal-engine quality. thesis_persistence_gate.py also uses the stale market_regime_at_entry as its baseline for the now-larger position.',
+    fix: 'Either update confidence_at_entry/kscore_at_entry/market_regime_at_entry to a weighted blend on scale-in (matching the existing cost-basis blend), or add a separate confidence_at_last_add/regime_at_last_add field so downstream consumers can choose the right basis instead of silently using stale data.',
+  },
+
+  {
+    id: 'AUD232-CATALYST-STALE-CONFIDENCE',
+    tier: 242 as const, severity: 'critical', defaultStatus: 'todo' as const,
+    file: 'services/signal-engine/src/api/routes.py',
+    effort: 'S',
+    impact: 'Critical — see docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-013 for full detail, cited lines, and independent verification notes.',
+    title: 'AUD232-013: The catalyst-score nudge can flip a signal\'s label (HOLD to BUY/SELL) but never recomputes .confidence — the persisted confidence and the calibrated win-rate badge built from it describe a DIFFERENT probability than the signal actually shown',
+    what: 'A stock at fused=0.60 (HOLD, confidence=20) gets a +0.03 catalyst nudge from strong insider buying, crossing a style\'s buy_threshold to flip HOLD to BUY. The persisted row shows signal=BUY with the stale pre-nudge confidence=20 instead of the true ~30-36 implied by the new probability. Since /signals/{symbol}\'s calibrated_win_rate lookup buckets by this same stale confidence, the SignalCard UI can show a materially wrong calibrated win rate for a signal whose direction was just flipped by the same nudge that made confidence stale.',
+    fix: 'Recompute .confidence from the nudged bullish_probability (same formula already used at generation time: round(abs(fused-0.5)*200, 2)) in both _bulk_persist() and signal_for() right after the catalyst-driven label flip, so the persisted confidence always matches the persisted signal/probability.',
+  },
+
+  {
+    id: 'AUD232-KSCORE-ADX-FALLBACK-REGRESSION',
+    tier: 242 as const, severity: 'critical', defaultStatus: 'todo' as const,
+    file: 'services/ranking-engine/src/scoring/kscore.py',
+    effort: 'S',
+    impact: 'Critical — see docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-014 for full detail, cited lines, and independent verification notes.',
+    title: 'AUD232-014: kscore.py\'s ADX fallback (20.0, not None) reintroduces a bug signal-engine already fixed elsewhere (C3 FIX) — silently boosts K-Score by +2 for every short-history stock',
+    what: 'signal-engine\'s _adx() has an explicit comment explaining why it returns None (not 20.0) on insufficient data — a 20.0 fallback previously silently passed the adx_min=25 compression check on all short-history stocks. ranking-engine\'s independent _adx_value() still has the pre-fix pattern, feeding a real (not neutral) +2.0 adx_boost into _technical_score() for any newly-listed or short-history stock, inflating its K-Score and rank position purely due to missing data.',
+    fix: 'Change _adx_value() to return None on insufficient data (matching signal-engine\'s already-fixed pattern) and have _technical_score() skip the adx_boost term entirely when ADX is None, rather than treating unknown as 20.',
+  },
+
+  {
+    id: 'AUD232-TA-DTB-MUTUAL-EXCLUSION-GAP',
+    tier: 242 as const, severity: 'critical', defaultStatus: 'todo' as const,
+    file: 'services/technical-analysis/src/patterns/recognizer.py',
+    effort: 'S',
+    impact: 'Critical — see docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-015 for full detail, cited lines, and independent verification notes.',
+    title: 'AUD232-015: The double-top/double-bottom mutual-exclusion fix only ever compares the single NEWEST candidate of each pattern type — an older, genuinely-overlapping pair is never even constructed, so exactly the conflict T237-TA-DTB-MUTUAL-EXCLUSION was built to catch can still slip through',
+    what: 'A stock has a valid double-bottom at bars 40-70 AND a valid double-top at bars 45-75 (genuinely overlapping) — but also a newer, non-overlapping double-bottom-like dip at bars 150-160. Both detection loops break after their first structurally-valid pair regardless of confidence, so only the bars 150-160 pair is ever built as a PatternHit. The mutual-exclusion check then compares 150-160 vs 45-75, finds no overlap, and returns BOTH hits — the real conflict (40-70 vs 45-75) was never even examined.',
+    fix: 'Either build all structurally-valid candidate pairs (not just the newest) before applying mutual exclusion, or explicitly document that this fix only guards the single most-recent pair per type and accept the residual gap as a known limitation.',
+  },
+  {
+    id: 'AUD232-SCORER-VS-SHOULDENTER-9GAPS',
+    tier: 242 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/decision-engine/src/api/core/scorer.py, services/decision-engine/src/api/core/hard_rejects.py, services/market-data/src/services/paper_trading_engine.py',
+    effort: 'S',
+    impact: 'High — 9 of the 34 tracked scorer/should_enter divergences now have confirmed file:line citations and failure scenarios; see T232-DL-DUALSCORER-DEBT for the full 34-item architectural debt context.',
+    title: '9 confirmed divergences between decision-engine\'s scorer.py/hard_rejects.py and the fallback _should_enter() it claims to be extracted faithfully from — extends the already-tracked T232-DL-DUALSCORER-DEBT list',
+    what: 'Deep audit found 9 specific, independently-confirmed gaps: DE hard-rejects on time-of-day (first 30min/last 15min) but the fallback does not; DE hard-rejects on weekend/holiday/outside-hours but the fallback does not; DE hard-rejects on research AVOID/SELL but the fallback never checks research_rec as a hard reject; DE hard-rejects on sector position-COUNT cap but this only exists in the fallback\'s CALLER, not inside _should_enter() itself, and the fallback also has a parallel dollar-exposure cap DE cannot check; DE\'s stop-distance check has different wording/structure than the fallback\'s single min_stop_dist comparison; DE has no cross-horizon consensus layer the fallback has (+1/-1); DE scores catalyst as one combined layer, the fallback scores insider_score and congress_score as two separate layers with different thresholds; DE has no RL policy adjustment layer the fallback has; DE\'s decision rule is always the additive-score threshold, while the fallback can bypass it entirely via a calibrated logistic-regression model once >=100 closed trades exist. Full detail per-gap: docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-020 through AUD232-028.',
+    fix: 'This is new evidence for the already-tracked T232-DL-DUALSCORER-DEBT item (34 remaining differences found in an earlier audit) — treat these 9 as a confirmed, itemized subset of that same architectural-debt backlog rather than a separate fix. Prioritize AUD232-005/006/007 above (the 3 promoted to individual critical entries) first, since they\'re the only 3 of the 9 that plausibly change a real BUY/SKIP verdict rather than just a scoring/sizing detail.',
+  },
+
+  {
+    id: 'AUD232-SIZER-VS-REAL-SIZING-DRIFT',
+    tier: 242 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/decision-engine/src/api/core/sizer.py, services/market-data/src/services/paper_trading_engine.py',
+    effort: 'S',
+    impact: 'High — documents that the acknowledged sizer.py/paper_trading_engine.py divergence (already flagged as intentional/documented) is wider than its current docstring states; the one dangerous item in this cluster (bear-regime fallback silently defaulting to full size) is tracked separately as a critical-adjacent item below.',
+    title: '6 more confirmed sizing-formula divergences between sizer.py and the real paper-trading sizing path — beyond the already-documented confidence-band mismatch (T232-DL-DUALSCORER-DOCFIX)',
+    what: 'Beyond the already-documented confidence-band tier mismatch, the audit found: sizer.py floors stop_dist at 1% of price (T237-DE1) but paper_trading_engine.py has no equivalent floor, relying entirely on downstream caps; sizer.py uses min() across market signals while paper_trading_engine.py multiplies ALL 6 per-trade multipliers together AND applies a 25% floor sizer.py lacks entirely; the two confidence-multiplier tier tables differ in both breakpoints and whether a floor-rescale is applied; max_position_pct\'s interaction with a min_position_value skip-check exists in paper_trading_engine.py but not sizer.py; and sizer.py has no K-score/ranking-engine input in its formula at all, meaning it cannot replicate any DE-score-based sizing — though this specific gap is confirmed to be a non-issue in practice since paper_trading_engine.py\'s own score_size_mult formula also has no direct K-score multiplier (K-score is a pre-entry gate, not a size multiplier, on both sides). Full detail: docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-034, AUD232-035, AUD232-036, AUD232-038, AUD232-040, AUD232-041.',
+    fix: 'sizer.py\'s docstring already documents that it deliberately diverges from the real engine for preview purposes (T232-DL-DUALSCORER-DOCFIX) — extend that same docstring to explicitly enumerate these 6 additional divergences so a future caller of the /decide preview endpoint doesn\'t assume closer parity than actually exists. No functional fix needed unless sizer.py\'s preview output is ever wired into a real trading decision path.',
+  },
+
+  {
+    id: 'AUD232-REGIME-BEAR-FALLBACK-FULLSIZE',
+    tier: 242 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: 'S',
+    impact: 'High — sizer.py explicitly treats bear regime as a full block (size 0), but the REAL sizing path has no such entry and defaults to full size instead — this is the one item in the sizer/paper_trading_engine comparison where the two systems don\'t just differ, but differ in the DANGEROUS direction (real engine is more permissive, not less, during a bear regime).',
+    title: 'paper_trading_engine.py\'s regime_size_mult dict has NO \'bear\' key — a bear regime state silently falls back to FULL size (1.0) via .get(regime_state, 1.0), while sizer.py\'s parallel table explicitly zeroes bear regime sizing',
+    what: 'If any future refactor removes or narrows the upstream regime_bear entry gate (or a new caller invokes this sizing block directly, bypassing the gate) while regime_state is \'bear\', paper_trading_engine.py would size the trade at full 1.0x regime multiplier (before VIX/HMM/breadth min() reductions), while decision-engine\'s sizer.py — asked to size the identical bear-regime trade — would apply its own regime_mult=0.00, functionally zeroing the position. The same (symbol, regime=\'bear\') input produces a full-size trade in one system and a zero-size trade in the other.',
+    fix: 'Add an explicit \'bear\': 0.0 (or an appropriately small non-zero floor, matching whatever sizer.py\'s explicit bear:0.00 was designed to protect against) entry to paper_trading_engine.py\'s regime_size_mult dict so a bear regime state cannot silently fall through to full-size positions via the .get() default.',
+  },
+  {
+    id: 'AUD232-TAWEIGHTS-VOLUMEKEY-MISMATCH',
+    tier: 242 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/signal-engine/src/api/routes.py, services/signal-engine/src/generators/signals.py',
+    effort: 'S',
+    impact: 'High — this is a currently-active bug, not a latent one: every real run of calibrate_ta_weights silently zeroes out the volume dimension\'s calibrated weight until the next restart. See docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-045.',
+    title: 'AUD232-045: calibrate_ta_weights() writes a weight keyed \'volume_surge\', but _ta_score()\'s _flag_map only ever reads \'volume_z\' — the calibrated volume weight is ACTIVELY silently dropped from every score until the next container restart',
+    what: 'signals.py\'s _TA_WEIGHTS_DEFAULT (line 133) stores the key as "volume_z" with an explicit comment "renamed from volume_surge to match reasons dict key", and _load_ta_weights()\'s _apply_migration() (lines 221-224) does the volume_surge→volume_z rename — but ONLY when loading from Redis/file at process start. routes.py\'s calibrate_ta_weights() TA_FEATURES list (line 2266) and REASONS_MAP (line 2287) still use the old name "volume_surge", so the freshly-fitted dict it writes to ta_weights.json/Redis and passes to set_ta_weights() (line 2392) contains a "volume_surge" key, not "volume_z". set_ta_weights() (signals.py line 253-265) does a raw dict reassign with NO migration step, so the in-process _ta_weights dict now has a dangling "volume_surge" key that _flag_map (which looks up "volume_z", line 1202) never reads. The net effect: the volume feature\'s calibrated weight contributes 0 to every calibrated_ta_score computed by this process until it restarts and _load_ta_weights() re-applies the migration on next load from Redis/file.',
+    fix: 'Rename TA_FEATURES/REASONS_MAP\'s \'volume_surge\' key to \'volume_z\' in calibrate_ta_weights() (routes.py), matching the rename signals.py\'s own _TA_WEIGHTS_DEFAULT and _apply_migration() already made — or call the existing _apply_migration() helper on the freshly-fitted dict before passing it to set_ta_weights(), so set_ta_weights() gets the same migration treatment _load_ta_weights() already applies on process start.',
+  },
+
+  {
+    id: 'AUD232-CALLOOP-HIGH-GROUP',
+    tier: 242 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py, services/signal-engine/src/api/routes.py',
+    effort: 'S',
+    impact: 'High — see individual findings in the doc for exact fix priority; signal_watchdog (AUD232-018) is the most urgent of the 3.',
+    title: '3 more high-severity gaps in the calibration/outcome-tracking feedback loop: a swallowed writeback failure, an unvalidated emergency threshold override, and a silent research-summary timeout',
+    what: '(016, paper_trading_engine.py) The signal_outcomes writeback in _close_trade wraps the SELECT+update in a bare try/except that only logs a warning on failure and continues — a failed writeback silently leaves that SignalOutcome row\'s entry_price/exit_price/return_Nd/is_correct_Nd fields unset for the (stock, horizon, signal_date) tuple, with no retry and no reconciliation path back to evaluate_signal_outcomes. | (018, routes.py) signal_watchdog() can tighten BUY thresholds by up to +12pp based on as few as 5 fourteen-day samples with zero out-of-sample validation, while every other threshold-mutation path in the same file (outcomes_calibrate_apply, tune_style_profiles, calibrate_ml_weight) requires 2x-4x min_samples plus a 70/30 walk-forward split before applying any change. | (019, routes.py) evaluate_signal_outcomes calls the research-engine\'s /research/{symbol}/summary endpoint with a 2-second timeout and swallows any failure into (None, None) silently — a slow research-engine response permanently blanks research_rec/research_score for that outcome row unless Phase 2\'s NULL-column backfill happens to retry it later.. Full detail: docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-016, AUD232-018, AUD232-019.',
+    fix: '(1) In _close_trade, log the swallowed exception at a level that surfaces in monitoring (not just a warning) and consider a reconciliation job that re-checks signal_outcomes rows with a NULL exit_price against recently-closed PaperTrades. (2) Add the same 70/30 walk-forward validation and TuneHistory audit-trail recording to signal_watchdog() that every other threshold-mutation path already has — this is the most urgent of the 3, since it can silence legitimate BUY signals for up to 7 days on n=5 noise with zero audit trail. (3) Log when _fetch_research times out (not just swallow it silently) so a systemic Sunday research-engine slowdown is visible rather than showing up only as an unexplained spike in \'no_research\' bucket counts.',
+  },
+
+  {
+    id: 'AUD232-METATRAIN-FUNDAMENTALS-FANOUT',
+    tier: 242 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/ml-prediction/src/training/meta_trainer.py',
+    effort: 'S',
+    impact: 'High — actively corrupts meta-model training data for any symbol with more than one fundamentals snapshot (i.e. most tracked stocks over time); the meta-model\'s cross-symbol generalization feature (market_cap_bin) is silently unreliable as a result.',
+    title: 'meta_trainer\'s fundamentals JOIN has no as_of/date filter or LIMIT — every signal_outcome row silently fans out once per historical fundamentals snapshot, with a non-deterministic (non-point-in-time) market_cap attached to each duplicate',
+    what: 'fundamentals has one row per stock per day a refresh ran (UniqueConstraint(stock_id, as_of)). meta_trainer.py\'s raw SQL does a plain LEFT JOIN with no ORDER BY/LIMIT on the fundamentals side, unlike trainer.py\'s own _load_fundamentals() which explicitly orders by as_of DESC and limits to 1. A stock with 50 historical fundamentals snapshots and 10 signal_outcomes rows produces 500 joined training rows instead of 10 — each carrying an arbitrary (not point-in-time-correct) market_cap, duplicating the same real outcome under multiple different (effectively random) market_cap_bin labels. This is the exact lookahead/point-in-time class of bug T228-POINT-IN-TIME-FUNDAMENTALS and T234-ML-FUND-BROADCAST-LEAKAGE already fixed for builder.py\'s per-row features, missed here. Full detail: docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-017, AUD232-030, AUD232-033.',
+    fix: 'Add a point-in-time filter (fundamentals.as_of <= signal_outcomes.signal_date, ordered DESC, limited to 1 per stock) to the JOIN, matching the pattern trainer.py\'s _load_fundamentals() already uses correctly.',
+  },
+
+  {
+    id: 'AUD232-PREDICT-HORIZON-DEFAULT-MISMATCH',
+    tier: 242 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/ml-prediction/src/api/routes.py',
+    effort: 'S',
+    impact: 'High — currently no user-visible harm (build_features only uses horizon for the y-target, discarded at inference time), but latent and fragile against a plausible future change.',
+    title: 'AUD232-029: PredictRequest.horizon defaults to 5 (SHORT\'s horizon) regardless of style, and signal-engine never sends horizon at all — currently harmless, but fragile',
+    what: '`PredictRequest.horizon: int = 5` is a fixed default independent of `style`, whereas train-time horizon is always correctly derived server-side via `_HORIZON_BY_STYLE.get(style.upper(), ...)`. signal-engine\'s `_fetch_ml_data()` (services/signal-engine/src/generators/signals.py:335) sends `payload = {"symbol": symbol, "style": style_key}` with no `horizon` key at all, so every call for SWING/LONG/GROWTH styles silently falls back to horizon=5 (SHORT\'s horizon) inside predict_latest()/predict_latest_ensemble_three(). This currently causes no user-visible harm only because build_features() with inference_mode=True discards the fwd_ret/y_dir it computes from `horizon` and only the artifact\'s own trained buy_threshold/scaler/model (loaded from the correct per-style .joblib path) actually drive the prediction — but this is fragile: any future change to build_features() that starts using `horizon` for an X-column (not just the y target) would silently corrupt every non-SHORT-style live prediction with no error.',
+    fix: 'Derive horizon server-side from style (matching the existing _HORIZON_BY_STYLE.get(style.upper(), ...) pattern already used at train time) instead of relying on a fixed request-body default, so a future feature addition that uses horizon for an X-column can\'t silently corrupt non-SHORT-style predictions.',
+  },
+
+  {
+    id: 'AUD232-METAMODEL-DOC-AND-MASKING-DRIFT',
+    tier: 242 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/ml-prediction/src/training/meta_trainer.py',
+    effort: 'S',
+    impact: 'High — same underlying risk class as the critical AUD232-008 finding above; fixing that finding\'s recommended validation resolves this one too.',
+    title: 'Stale FEATURE_COLUMNS count in the module docstring (claims 61, actually 60) plus no length/order assertion on the persisted non_const column mask — both symptoms of the same underlying risk as AUD232-008 (predict_meta not validating against the training-time snapshot)',
+    what: 'The docstring\'s \'(61)\' is already wrong today (real count is 60) — exactly the kind of stale documentation that would let a real future FEATURE_COLUMNS drift go unnoticed by someone trusting the comment. Separately, non_const is a pure positional index array computed once at train time with no runtime check that vec\'s length still matches what it was computed against. Full detail: docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-031, AUD232-032.',
+    fix: 'Fix the docstring count (or better, remove the hardcoded number and reference len(FEATURE_COLUMNS) in the comment so it can\'t drift again), and add the same feature_columns length/order validation recommended in AUD232-008 — these two findings share one fix.',
+  },
+
+  {
+    id: 'AUD232-SIZER-NO-HMM-DAMPENING',
+    tier: 242 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/decision-engine/src/api/core/sizer.py',
+    effort: 'S',
+    impact: 'High — part of the broader sizer.py/paper_trading_engine.py divergence cluster (see AUD232-SIZER-VS-REAL-SIZING-DRIFT above); called out separately since HMM bear dampening is a real risk-control input, not just a cosmetic tier mismatch.',
+    title: 'AUD232-039: sizer.py has no HMM bear-pressure dampening at all — paper_trading_engine.py applies an extra size cut whenever the HMM model\'s bear_prob exceeds 50%, with no equivalent path in sizer.py\'s formula',
+    what: 'paper_trading_engine.py lines 3120-3131 (QW-8): `if live_regime.get(\'hmm_bear_pressure\'): regime_size_mult = min(regime_size_mult, 0.70)`. sizer.py\'s `compute_position()` signature (lines 37-49) takes no hmm_bear_pressure or hmm_state parameter whatsoever, and its market_mult = min(regime_mult, breadth_size_mult, vix_size_mult) has no third/fourth term for HMM. This gap is already called out in sizer.py\'s own corrected docstring (lines 7-9) as a known, accepted divergence, not a bug to fix — but it is a real formula difference that will size trades differently whenever HMM bear_prob crosses 0.50 outside of a rule-based bear/risk_off regime.',
+    fix: 'Add an hmm_bear_prob (or similar) parameter to sizer.py\'s sizing function and apply the same min(regime_size_mult, 0.70)-style dampening paper_trading_engine.py uses, or explicitly document this as an acknowledged, permanent divergence in sizer.py\'s docstring (matching the existing T232-DL-DUALSCORER-DOCFIX pattern) if closing it isn\'t planned.',
+  },
+
+  {
+    id: 'AUD232-RANKING-HIGH-GROUP',
+    tier: 242 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/decision-engine/src/api/core/scorer.py, services/ranking-engine/src/api/routes.py, services/signal-engine/src/api/routes.py',
+    effort: 'S',
+    impact: 'High — (1) is a real BUY/SKIP-affecting gap; (2) is a production-reliability gap (full leaderboard 500 on one bad symbol); (3) makes an operator-facing validation tool silently useless until manually re-synced.',
+    title: '3 more high-severity ranking/K-Score gaps: decision-engine structurally can\'t see K-Score at all, the live-compute rankings fallback has no per-stock error isolation, and gate_backtest compares two identical parameterizations against each other',
+    what: '(042, scorer.py) decision-engine\'s compute_score() has zero reference to K-Score or ranking-engine anywhere in the file (confirmed via full-file read and repo-wide grep for \'kscore\'/\'ranking\' in services/decision-engine/src/ — no hits). The map\'s follow-up question (\'whether/how kscore enters signal_data/reasons upstream\') resolves to: it doesn\'t, at all. compute_score\'s 5 layers (price_zone, rr_quality, volume/earnings/ml/conf_delta/freshness/catalyst, pre_regime, research, regime) never incorporate the K-Score fundamental/technical composite that signal-engine\'s LONG style explicitly uses as a +/-0.08/+0.04/-0.06 fusion adjustment (signals.py:1909-1916) and that market-data\'s real conviction gate hard-requires >=55 for (scheduler.py:578-587). | (043, routes.py) _leaderboard_live() (the live-compute fallback used by GET /rankings whenever the Ranking table has zero rows for the requested market) has no per-stock try/except around its loop (lines 734-762), unlike _persist_rankings() which explicitly added per-stock exception isolation (lines 822-861) after the T232-RANKSTALE incident specifically to prevent one bad symbol from killing an entire batch. | (044, routes.py) gate_backtest\'s \'old vs new\' comparison hardcodes a phantom baseline: the \'new\' parameterization (relaxed MACD OR-condition, MACD soft-fail, GROWTH RSI floor=50) is not a proposed change — it IS the current, already-shipped behavior of the real _is_conviction_buy() in services/market-data/src/services/scheduler.py (lines 636-646, 691, 619-624). The function _is_conviction_buy referenced by name in this file\'s docstrings/comments (lines 5116, 5154, 5202) does not exist anywhere in signal-engine — grepping the whole repo shows the real implementation lives only in market-data\'s scheduler.py, a different service. gate_backtest was written to validate a historical migration (T234) and was never updated afterward to track the real gate\'s current parameters.. Full detail: docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-042, AUD232-043, AUD232-044.',
+    fix: '(1) This is the same K-Score-blindness root cause as the already-tracked scorer-vs-should_enter cluster — a LONG-horizon stock with kscore=25 (below the LONG conviction gate\'s 55 floor) can still score highly and enter via decision-engine\'s gate purely because compute_score() has no K-Score input at all; add a K-Score-derived layer to compute_score(). (2) Add the same per-stock try/except isolation to _leaderboard_live() that _persist_rankings() already has (added after the T232-RANKSTALE incident specifically for this reason) so one bad symbol can\'t 500 an entire market\'s leaderboard. (3) Re-sync gate_backtest\'s hardcoded \'old\' baseline parameters against the REAL current scheduler.py gate before trusting any future comparison run through this endpoint — right now both comparison arms are effectively identical, so it always reports ~0% change regardless of what\'s actually being tested.',
+  },
+  {
+    id: 'AUD232-INDICATOR-DEDUP-INCOMPLETE',
+    tier: 242 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/technical-analysis/src/indicators/core.py, services/technical-analysis/src/api/routes.py, services/ml-prediction/src/features/builder.py, services/ranking-engine/src/scoring/kscore.py, services/signal-engine/src/generators/signals.py, services/research-engine/src/api/routes.py',
+    effort: 'M',
+    impact: 'Medium — directly contradicts the T233-ARCH-INDICATOR-DEDUP tracker entry\'s \'done\' status; the min_periods gap in particular is a real (if narrow) correctness issue for short-history stocks across multiple services.',
+    title: 'The shared/common/indicators.py rollout (marked DONE 2026-07-09 as T233-ARCH-INDICATOR-DEDUP) is INCOMPLETE — 6 confirmed local reimplementations still exist across 5 services, several missing the shared module\'s min_periods warm-up guard',
+    what: 'technical-analysis\'s core.py still has fully independent sma/ema/rsi/macd/bollinger_bands/atr — never imports the shared module at all. builder.py imports shared RSI/ATR but MACD and Bollinger Bands are still local. kscore.py\'s ADX-supporting ATR is local with no min_periods. signal-engine\'s _supertrend()/_adx() reimplement ATR the same way. technical-analysis\'s own get_indicators() endpoint recomputes EMA inline instead of calling its own core.py\'s ema(). research-engine has a third, structurally different, list-based ATR implementation. Full detail: docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-070, AUD232-071, AUD232-072, AUD232-073, AUD232-074, AUD232-075.',
+    fix: 'Re-open T233-ARCH-INDICATOR-DEDUP (currently marked done) and finish the rollout: migrate technical-analysis/core.py, builder.py\'s MACD/Bollinger, kscore.py\'s ATR, signal-engine\'s ATR, and research-engine\'s ATR to shared/common/indicators.py, and fix get_indicators() to call its own core.py\'s ema() instead of duplicating the .ewm() call inline. Prioritize the min_periods gap specifically — it\'s the one difference with real correctness impact (early-history bars getting non-NaN indicator values that should be flagged as insufficient warm-up).',
+  },
+
+  {
+    id: 'AUD232-CALLOOP-MEDIUM-GROUP',
+    tier: 242 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/ml-prediction/src/training/meta_trainer.py, services/signal-engine/src/api/routes.py, services/signal-engine/src/generators/signals.py',
+    effort: 'M',
+    impact: 'Medium — mostly internal consistency/maintainability, not active bugs; the SELL threshold duplication (AUD232-051) is the one item with a plausible near-term drift risk.',
+    title: '6 medium-severity internal-coherence gaps in the calibration/outcome-tracking feedback loop — pooled BUY/SELL labels, inconsistent win-rule cost hurdles, and 3 independent re-derivations of the same forward-return/threshold logic',
+    what: '(046) meta_trainer trains a single is_correct label pooling BUY and SELL signal_outcomes together, while every other calibration consumer (calibrate_conviction_weights, confidence-calibration, outcomes/summary) explicitly separates by signal_direction because BUY and SELL have documented divergent base rates. | (047) rolling_accuracy() and signal_accuracy() use a bare zero-line win rule (no cost hurdle), diverging from the canonical _OUTCOME_WIN_HURDLE_PCT=0.005 used by evaluate_signal_outcomes and every calibration endpoint that reads signal_outcomes. | (048) calibrate_ta_weights() independently recomputes forward returns directly from Signal+Price (its own bisect-based entry/exit lookup) instead of reading the already-computed, already-persisted signal_outcomes table that calibrate_conviction_weights (in the same file) correctly uses for the same underlying question. | (049) calibrate_ta_weights does not read signal_outcomes at all — it independently re-derives its own entry/exit price lookups directly from the signals and prices tables, duplicating the win/loss labeling logic that outcomes/evaluate already computed and persisted. | (050) outcomes/summary\'s by_direction stats and confidence-calibration\'s per-(horizon,direction,market) buckets both compute a \'win rate by horizon+direction\' from signal_outcomes independently, using different minimum-sample-size floors and different grouping granularity (no market split in by_direction vs. market-first in confidence-calibration), so the two endpoints can report materially different win rates for the same nominal horizon+direction slice. | (051) SELL fallback threshold (0.35) is hardcoded independently in both signals.py and routes.py\'s outcomes_calibrate_apply, with no shared source of truth unlike the BUY threshold which reads from _STYLE_PROFILES.. Full detail: docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-046, AUD232-047, AUD232-048, AUD232-049, AUD232-050, AUD232-051.',
+    fix: 'Lowest-effort wins first: hardcode the SELL fallback threshold (0.35) in exactly one shared location instead of two independent copies (AUD232-051), and apply the canonical _OUTCOME_WIN_HURDLE_PCT cost hurdle consistently in rolling_accuracy()/signal_accuracy() (AUD232-047). The 3 independent forward-return re-derivations (calibrate_ta_weights, calibrate_ml_weight, and evaluate_signal_outcomes itself) are a larger refactor — consolidate into one shared helper once time allows, since each independent copy is a future opportunity for the 3 to silently disagree.',
+  },
+
+  {
+    id: 'AUD232-DE-MEDIUM-GROUP',
+    tier: 242 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/decision-engine/src/api/routes.py, services/decision-engine/src/api/core/sizer.py',
+    effort: 'M',
+    impact: 'Medium — low individual severity, but AUD232-053\'s inline recomputation is exactly the kind of small duplication that caused several of the critical/high findings elsewhere in this audit.',
+    title: '2 medium decision-engine findings: confidence_mult tier duplication (same root cause as the already-tracked sizer/paper_trading_engine drift) and an inline recomputation of a multiplier already available from a shared helper',
+    what: '(052) confidence_mult tiers (>=80 -> 1.25, >=62 -> 1.00, else -> 0.85) use a deliberately different scale from the real trading engine\'s confidence_size_mult (>=50 -> 1.25, >=30 -> 1.0, <30 -> 0.75) — both read the identical 0-100 signal confidence field but produce very different multipliers for the same input, e.g. confidence=65 gives 1.00x in DE vs 1.25x in the real engine. | (053) routes.py recomputes `_market_mult = min(multipliers.regime, multipliers.breadth, multipliers.vix)` inline for the micro-position skip check instead of reading a value returned by sizer.py, duplicating sizer.py\'s identical min()-composition logic (line 144) within the same service — a third in-repo copy of the same formula (the map already found two more in paper_trading_engine.py).. Full detail: docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-052, AUD232-053.',
+    fix: 'AUD232-052 is the same underlying issue as AUD232-SIZER-VS-REAL-SIZING-DRIFT above — no separate fix needed, just confirms the tier mismatch is visible at this call site too. AUD232-053: factor the inline min(multipliers.regime, multipliers.breadth, multipliers.vix) recomputation in routes.py\'s micro-position skip check into a call to whatever helper already computes _market_mult elsewhere, so the two can\'t silently diverge if the formula changes in one place but not the other.',
+  },
+
+  {
+    id: 'AUD232-MLPRED-MEDIUM-GROUP',
+    tier: 242 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/ml-prediction/src/features/builder.py, services/ml-prediction/src/training/trainer.py, services/ml-prediction/src/training/meta_trainer.py',
+    effort: 'M',
+    impact: 'Medium — both are drift risks (two systems silently disagreeing on a lookup table) rather than active bugs today.',
+    title: '2 medium ML-prediction findings: two independently-maintained sector taxonomies that can disagree, and a 4th independent copy of the horizon-days map',
+    what: '(054) SECTOR_ETF_MAP (builder.py) and SECTOR_MAP (meta_trainer.py) are two independently-maintained sector taxonomies that disagree on sector name coverage | (055) _load_outcome_features() hardcodes a 4th independent copy of the SHORT/SWING/LONG/GROWTH horizon-days map, duplicating the module\'s own _HORIZON_BY_STYLE constant. Full detail: docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-054, AUD232-055.',
+    fix: 'Consolidate SECTOR_ETF_MAP (builder.py) and SECTOR_MAP (meta_trainer.py) into one shared sector taxonomy module both can import, eliminating the possibility of the two disagreeing on a sector name. Same treatment for the horizon-days map — there are now 4 independent copies across trainer.py/meta_trainer.py/signals.py/_load_outcome_features(); consolidate into shared/common/ once convenient, matching the pattern already used for shared/common/indicators.py.',
+  },
+
+  {
+    id: 'AUD232-METAMODEL-MEDIUM-GROUP',
+    tier: 242 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/ml-prediction/src/training/meta_trainer.py',
+    effort: 'M',
+    impact: 'Medium — mostly maintainability and a subtle missing-vs-zero ambiguity, not active correctness bugs.',
+    title: '4 medium meta-model findings: a 5th independent horizon-days copy, zero-fill NaN handling that masks missing data as a real value, and per-row redundant feature recomputation',
+    what: '(056) _HORIZON_DAYS dict (SHORT=5, SWING=10, LONG=20, GROWTH=15) is an independently-maintained duplicate of trainer.py\'s _HORIZON_BY_STYLE (same values), with no shared import — the two can silently drift. | (057) meta_trainer.py zero-fills NaN across all FEATURE_COLUMNS (including sparse fundamentals/sector/outcome columns) instead of leaving them as NaN for XGBoost to route natively, contradicting the codebase\'s own documented preprocessing rule and diverging from builder.py/trainer.py\'s actual practice. | (058) predict_meta() repeats the same zero-fill-instead-of-NaN preprocessing at inference time, so train/inference are at least internally consistent with each other but both diverge from the base models\' NaN-preserving convention — meaning the meta model was trained and is served on a systematically different (arguably worse) missing-data treatment than its own inputs\' origin pipeline uses everywhere else. | (059) train_meta_model() recomputes compute_label_threshold() and build_features() per signal_outcome row using only that symbol\'s own historical price slice up to signal_date, independently re-deriving each base model\'s dead-zone/label logic rather than reusing any stored value — a second, separate execution path for feature/label construction that must be kept behaviorally identical to builder.py\'s own call sites (trainer.py\'s train_model/predict_latest) by hand.. Full detail: docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-056, AUD232-057, AUD232-058, AUD232-059.',
+    fix: 'The zero-fill NaN handling (AUD232-057/058) is internally consistent between train and inference (same fix pattern applied at both points), so it\'s not an active bug — but it does mean a genuinely-missing fundamentals/sector value is indistinguishable from a real zero to the model, worth revisiting if meta-model feature importance analysis ever attributes unexpected weight to a sparse column. The per-row recomputation of compute_label_threshold()/build_features() (AUD232-059) is a performance/refactor item, not correctness.',
+  },
+
+  {
+    id: 'AUD232-PAPERTRADING-MEDIUM-GROUP',
+    tier: 242 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/decision-engine/src/api/core/hard_rejects.py, services/decision-engine/src/api/core/sizer.py, services/market-data/src/services/paper_trading_engine.py',
+    effort: 'M',
+    impact: 'Medium — the R:R gap (DE stricter than the real engine) errs on the side of caution rather than danger, unlike several of the critical/high findings above.',
+    title: '3 medium paper-trading findings: DE\'s R:R hard-reject is stricter than the real engine\'s, sizing band duplication (same root cause as the sizer cluster above), and a sector-cap price-source inconsistency',
+    what: '(060) Decision-engine\'s authoritative hard-reject gate requires a stricter R:R (regime_min_rr_ratio, default 3.0) in choppy/risk_off regimes, but the fallback _should_enter() in paper_trading_engine.py has no regime-aware R:R check at all and always uses the flat 2.0 minimum. | (061) Confidence-based position sizing bands in decision-engine\'s sizer.py (>=80/>=62/else) use different breakpoints than paper_trading_engine.py\'s own confidence_size_mult bands (>=50/>=30/else) for the equivalent per-trade sizing decision — both real, both currently used, genuinely different scales by design per the module\'s own corrected docstring, but worth flagging since a casual reader comparing the two files would reasonably assume they should match. | (062) Sector-cap dollar-value check in _scan_for_entries computes sector_value using _best_price() (live -> cached -> entry fallback chain) while the earlier portfolio-level sector-cap monitor in _monitor_positions (L2246-2261) recomputes an equivalent sum inline with a slightly different fallback chain (price -> current_price -> entry_price, no live_prices.get() miss distinguished from None) — same computation, two separate expressions.. Full detail: docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-060, AUD232-061, AUD232-062.',
+    fix: 'AUD232-061 is the same underlying issue as AUD232-SIZER-VS-REAL-SIZING-DRIFT above. For AUD232-060 and AUD232-062, review whether the R:R strictness gap and the sector-cap price-source (live vs cached vs entry fallback) inconsistency are intentional design choices or oversights — if oversights, align both to a single documented source of truth.',
+  },
+
+  {
+    id: 'AUD232-RANKING-MEDIUM-GROUP',
+    tier: 242 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/decision-engine/src/api/core/scorer.py, services/market-data/src/api/routes.py, services/market-data/src/services/scheduler.py, services/ranking-engine/src/scoring/kscore.py',
+    effort: 'M',
+    impact: 'Medium — AUD232-065\'s diverging bug-fix status is the one item here with a plausible near-term correctness gap between two call sites of what should be the same calculation.',
+    title: '6 medium ranking/scoring findings: an independent R:R calculation, a duplicated research-recommendation vocabulary mapping, two relative-strength implementations with diverging bug-fix status, the real conviction-buy gate living entirely outside ranking-engine, two independent weighted-factor composite scorers, and kscore\'s RSI-zone scoring using different breakpoints than elsewhere',
+    what: '(063) R:R (reward:risk) ratio is computed independently here (`rr = (take_profit - live_price) / max(stop_dist, 0.0001)`) and again, with a different guard clause, in ranking-engine has no analog — but the same formula is duplicated a third time inside decision-engine itself (hard_rejects.py line 113) and a fourth time in sizer.py, none of which import a shared helper. | (064) decision-engine hardcodes its own `_RESEARCH_SCORE` string→int mapping for the same research recommendation vocabulary (STRONG BUY/BUY/WATCH/AVOID/SELL) that ranking-engine and signal-engine also independently interpret, with no shared enum or scoring table. | (065) Two independent relative-strength-vs-sector-ETF implementations exist with the same formula but diverging bug-fix status. market-data\'s get_relative_strength() explicitly claims to be the \'Single source of truth for all signal consumers\' (docstring, line 2052) and is what signal-engine\'s _fetch_relative_strength() calls (services/signal-engine/src/generators/signals.py:457-483). But services/ranking-engine/src/api/routes.py has its own fully independent _rs_score()/_stock_rs()/_etf_20d_return() (lines 92-154, 306-317) computing the identical rs_rank=(1+stock_ret)/(1+etf_ret), rs_score=clip(50+(rs_rank-1)*100,0,100) formula against the same _SECTOR_ETF map and ^HSI HK special-case, purely to feed K-Score\'s relative_strength component. ranking-engine\'s copy received the T234-RANK-RS-UNBOUNDED fix (rs_rank clipped to [-20,20] at routes.py:153) plus a tighter near-zero-denominator guard (1e-6 floor, line 145); market-data\'s copy has neither — its rs_rank at line 2117 is computed and returned completely unclipped, only guarded by a looser pre-check (abs(1+etf_ret)<0.01, line 2111) before the division. | (066) The real BUY-alert conviction gate (_is_conviction_buy, 5 layers: K-Score/Uptrend/RSI/MACD/OBV/ADX/ML + 2 disqualifiers) lives in market-data/scheduler.py, but signal-engine/src/api/routes.py:5106-5233 (gate_backtest) independently re-implements every layer\'s thresholds by hand (RSI 45-72 / GROWTH 50-85, K-Score<55, ML regime thresholds {bull:0.65,neutral:0.70,high_vol:0.78,bear:0.78}, soft-fail keyword set {OBV,ADX,ML,MACD}) as a parallel, manually-synced copy rather than importing/calling the canonical function (which it can\'t anyway, cross-service, so it was reimplemented instead of exposed via a shared endpoint or shared/common module). | (067) Both ranking-engine\'s K-Score and decision-engine\'s layered score independently implement a \'weighted-factor composite that redistributes weight when an input is missing\' pattern, with no shared abstraction, and no cross-check that a stock\'s K-Score and its decision-engine verdict are using consistent underlying signals. | (068) kscore.py\'s RSI-zone scoring (_technical_score, lines 93-110: 50-100 scale, asymmetric bullish zone with breakpoints at RSI 30/50/70, optimal 50-70) and signal-engine\'s independent RSI-zone scoring (signals.py lines 1114-1119 and 1349-1352: 0-1 scale, breakpoints at RSI 35/45/65/72, optimal 45-65 for the base pillar and 72-85 as a GROWTH-specific bonus zone) are two hand-tuned, differently-shaped mappings of the same underlying RSI value to a bullishness score, maintained completely independently with no shared config or reference to each other.. Full detail: docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-063, AUD232-064, AUD232-065, AUD232-066, AUD232-067, AUD232-068.',
+    fix: 'AUD232-065 (diverging relative-strength bug-fix status between market-data\'s get_relative_strength and its counterpart) is the most actionable — check which copy has the more recent bug fix and port it to the other, or consolidate into one shared implementation. The rest are lower-priority consolidation opportunities for a future refactor pass.',
+  },
+
+  {
+    id: 'AUD232-MLSERVICE-TOKEN-DUP',
+    tier: 242 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/signal-engine/src/generators/signals.py, services/signal-engine/src/api/routes.py',
+    effort: 'M',
+    impact: 'Medium — low risk today, but two independent JWT-minting/caching implementations are exactly the kind of duplication that\'s caused real bugs elsewhere in this audit when one copy gets a fix the other doesn\'t.',
+    title: 'AUD232-069: _ml_service_token() (signals.py) duplicates _service_token() (routes.py) with a weaker cache-invalidation policy',
+    what: 'signals.py\'s _ml_service_token() (lines 148-160): `if _ml_svc_token_cache: return _ml_svc_token_cache` — once set, this string is returned forever regardless of the embedded exp claim, with no _service_token_exp tracking at all. routes.py\'s _service_token() (lines 89-105) was later hardened with an explicit `_service_token_exp` global and `if _service_token_cache and time.time() < _service_token_exp - 7*86400` check, specifically so a cached token is "never used stale" (per its own docstring) — a fix that was never back-ported to the near-identical signals.py copy. Both mint 365-day tokens for the same jwt_secret with sub=\'signal-engine\' vs sub=\'signal-engine\' (routes.py) — functionally redundant, and now behaviorally diverged in exactly the dimension (staleness) this codebase has repeatedly been bitten by (see CLAUDE.md\'s jose/token incident history).',
+    fix: 'Consolidate to one shared _service_token() helper (routes.py\'s version, which has the stronger cache-invalidation policy) and have signals.py import it instead of maintaining its own copy — matching the existing pattern already used to fix the analogous duplication in the T230-ALERTING-SLACK-DISCORD webhook validator move.',
+  },
+  {
+    id: 'AUD232-DEAD-VWAP-TEST',
+    tier: 242 as const, severity: 'low', defaultStatus: 'todo' as const,
+    file: 'services/technical-analysis/tests/test_indicators.py',
+    effort: 'XS',
+    impact: 'Low — a broken/dead test, no production impact, but worth a 2-minute fix or deletion since a failing test that\'s ignored erodes trust in the rest of the suite.',
+    title: 'AUD232-101: test_vwap_finite() imports and calls an undefined vwap from core.py — core.py has no vwap function, so this test is either failing or being silently skipped',
+    what: 'test_vwap_finite() imports and calls an undefined `vwap` from core.py — core.py has no vwap function and the test file has no local definition or import of one — this test currently fails with NameError/ImportError, not just a stale reference.',
+    fix: 'Either implement vwap() in core.py if VWAP support is still wanted, or delete the dead test — matches the exact same class of issue as this repo\'s already-fixed vwap-related test failure documented elsewhere.',
+  },
+
+  {
+    id: 'AUD232-LOW-PRIORITY-BACKLOG',
+    tier: 242 as const, severity: 'low', defaultStatus: 'todo' as const,
+    file: 'services/decision-engine/src/api/core/aggregator.py, services/decision-engine/src/api/routes.py, services/market-data/src/backtest/multi_tranche_engine.py, services/market-data/src/backtest/position_scaling_gate.py, services/market-data/src/services/paper_trading_engine.py, services/ml-prediction/src/training/meta_trainer.py (+6 more — see doc)',
+    effort: 'L',
+    impact: 'Low — cleanup and maintainability only; the doc calls out which 2 of the 25 are actually side-effects of critical items already tracked above, so they aren\'t double-counted as separate work.',
+    title: '25 low-priority refactor/cleanup/dead-code findings across the pipeline — god functions, copy-pasted blocks, stale docstring line-citations, minor inefficiencies, and 2 more dead-code items',
+    what: 'A grab-bag of minor findings not worth individual tracker entries: predict_latest_ensemble_three() is a 180-line god function (AUD232-083); train_meta_model()/predict_meta() share a near-identical copy-pasted preprocessing block (AUD232-087); two dead/unused fields in the meta-model bundle (META_SCALER_PATH, AUD232-086; feature_columns never validated, AUD232-088 — the latter is the same root cause as the critical AUD232-008 finding above and gets fixed by the same change); outcomes_calibrate_apply is an oversized ~410-line function handling 2 independent pipelines (AUD232-078); a stale line-number citation in a cross-file docstring comment that already drifted once (AUD232-092); set_ta_weights()\'s raw unmigrated dict reassignment (AUD232-098 — this is the exact mechanism behind the critical AUD232-004/045 findings above, so fixing those effectively addresses this one too); plus assorted N+1-style redundant recomputation and convoluted-but-correct boolean expressions. Full list with file:line and detail for every item: docs/AUDIT_REPORT_TIER242_2026-07-10.md AUD232-076, AUD232-077, AUD232-078, AUD232-079, AUD232-080, AUD232-081, AUD232-082, AUD232-083, AUD232-084, AUD232-085, AUD232-086, AUD232-087, AUD232-088, AUD232-089, AUD232-090, AUD232-091, AUD232-092, AUD232-093, AUD232-094, AUD232-095, AUD232-096, AUD232-097, AUD232-098, AUD232-099, AUD232-100.',
+    fix: 'No urgent action needed — these are quality-of-life refactors for whenever the relevant file is next touched for an unrelated reason, not a dedicated fix pass. The two exceptions: AUD232-088 and AUD232-098 are effectively already covered by fixing AUD232-008 (critical, meta-model feature validation) and AUD232-004/045 (critical/high, TA weight migration) respectively — no separate work needed for those two once the critical items are addressed.',
+  },
 ];
 
 
@@ -14666,6 +15040,7 @@ const TIER_LABEL: Record<Tier, string> = {
   239: 'Tier 239 — Email Alert Delivery Fixes (2026-07-08 — found via a direct user report of not receiving emails from the system. Root cause was a real, extended Gmail daily-sending-quota outage (550 5.4.5), not a code bug in what triggers alerts. Two real bugs found while investigating: email failure logs omitted the subject line, making 94 failed sends in 24h impossible to individually diagnose without a DB cross-reference; and the existing 5-retry give-up logic (designed for a genuinely broken SMTP config) did not distinguish that from a transient, self-clearing Gmail quota outage — during the 6+ hour outage, 14 distinct real signal-change alerts hit the give-up cap and were permanently, silently dropped rather than being retried once Gmail recovered)',
   240: 'Tier 240 — Fresh Audit Pass on Less-Scrutinized Services (2026-07-09 — run after closing out T237-T239 and T232-ML5/DE-M1, targeting technical-analysis, portfolio-optimizer, and research-engine specifically since they had less dedicated attention than signal-engine/decision-engine/ml-prediction in prior audit rounds. macd() was missing min_periods in BOTH technical-analysis and an independent duplicate implementation in research-engine — same warmup-NaN bug class as TA-ATR1 (tier 237), missed on MACD specifically; the research-engine copy fed a fabricated "Strong buy signal" crossover into AI-generated report text for thin-history stocks. portfolio-optimizer\'s mean_variance()/ai_allocation() silently forced flat 50/50 weights for every 2-symbol optimization request — the SLSQP equality constraint was mathematically infeasible whenever n*max_weight<1.0, not just hard to solve, and the existing fallback gave zero indication real optimization never ran. detect_double_top_bottom() and detect_triangle() in technical-analysis both had the identical close/high-low pivot-series mismatch already found and fixed in the sibling head-and-shoulders detector (T237) but missed in these two — two more occurrences of a bug class believed fully closed out)',
   241: 'Tier 241 — Conviction-Based Position Scaling: Design Review (2026-07-09 — user provided a pre-written architecture doc and phased implementation prompt for making paper trading "act like a human": buy a portion, average in on a pullback only if independent evidence still supports the original thesis, gated through a meta-labeling model and a rules-based thesis-persistence circuit breaker rather than naive price-triggered averaging-down. Read both documents in full plus the actual codebase across 7 areas (tranche schema, multi-tranche backtesting, ML/signal/regime output formats, existing thesis-snapshot data, position sizing composition) before any code was written, per the design doc\'s own required Phase 0. Findings: scale-in already exists but as a single fixed-25%-once mechanism, not a repeatable meta-model-sized add; multi-tranche backtesting doesn\'t exist in either backtest engine and is a from-scratch build, not an extension as the doc implies; thesis-snapshot DATA is already 100% captured today (only the re-evaluation/diffing logic is missing); sizing multipliers already exist in two independently-diverged implementations (decision-engine\'s sizer.py and paper_trading_engine.py) that any new gate must be wired into together; a naming collision exists between the proposed new "meta-labeling gate" and an existing unrelated T89 "meta-model" that answers a different question. Assessed the architecture itself as sound in its core shape — hierarchical gating, model/rules-separation, criticality ranking — with 5 concrete corrections recommended before Phase 1 begins)',
+  242: 'Tier 242 — Deep Audit: Duplication, Refactors & Correctness Across the Trading Pipeline (2026-07-10 — user requested a full audit for duplicate code/functionality plus a fresh correctness pass across signal-engine, ML prediction (incl. the meta-model), decision-engine, paper trading, ranking-engine, technical-analysis, position sizing, and the calibration/outcome-tracking feedback loop, then explicitly added position sizing and the meta-model as two more areas mid-session. Run as two multi-agent workflows — map -> per-area deep audit -> targeted cross-cutting comparisons (scorer.py vs _should_enter(), kscore.py vs decision-engine scoring, sizer.py vs the real sizing formula, the meta-model vs the base model\'s feature pipeline, the indicator-dedup rollout, the calibration loop\'s internal coherence) -> one independent adversarial verifier per candidate finding, re-reading the actual current code before confirming or refuting. Produced 101 confirmed findings (15 critical, 30 high, 30 medium, 26 low; 47 duplicate-logic, 28 correctness bugs, 23 refactor candidates, 3 dead-code) — full detail in docs/AUDIT_REPORT_TIER242_2026-07-10.md, cross-referenced by AUD232-NNN id from every tracker entry below. No fixes applied as part of the audit itself — this tier is prioritization/tracking output, same pattern as Tier 234)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -14910,6 +15285,7 @@ const TIER_COLOR: Record<Tier, string> = {
   239: '#0891b2',
   240: '#65a30d',
   241: '#0284c7',
+  242: '#e11d48',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
