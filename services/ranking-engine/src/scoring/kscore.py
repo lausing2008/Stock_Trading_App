@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from common.indicators import rsi as _canon_rsi
+from common.indicators import atr as _canon_atr, rsi as _canon_rsi
 
 
 @dataclass
@@ -76,9 +76,15 @@ def _adx_value(df: pd.DataFrame, period: int = 14) -> float | None:
     dm_plus  = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
     dm_minus = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
 
-    atr      = tr.ewm(alpha=1 / period, adjust=False).mean()
-    di_plus  = 100 * dm_plus.ewm(alpha=1 / period, adjust=False).mean() / atr.replace(0, np.nan)
-    di_minus = 100 * dm_minus.ewm(alpha=1 / period, adjust=False).mean() / atr.replace(0, np.nan)
+    # AUD232-071: was tr.ewm(...).mean() with no min_periods — computed a real-looking ATR
+    # from bar 0 (before `period` true-range bars have accumulated), reintroducing the exact
+    # warmup-NaN bug class T237-TA-ATR-MINPERIODS already fixed in the canonical version. Using
+    # common.indicators.atr() correctly propagates NaN through di_plus/di_minus/dx/adx during
+    # warmup instead of computing on too few bars — consistent with this function's own None
+    # return for genuinely insufficient data (AUD232-014).
+    atr_val  = _canon_atr(high, low, close, period=period)
+    di_plus  = 100 * dm_plus.ewm(alpha=1 / period, adjust=False).mean() / atr_val.replace(0, np.nan)
+    di_minus = 100 * dm_minus.ewm(alpha=1 / period, adjust=False).mean() / atr_val.replace(0, np.nan)
 
     dx  = 100 * (di_plus - di_minus).abs() / (di_plus + di_minus).replace(0, np.nan)
     adx = dx.ewm(alpha=1 / period, adjust=False).mean().iloc[-1]

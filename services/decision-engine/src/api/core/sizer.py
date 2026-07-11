@@ -34,6 +34,20 @@ _RESEARCH_MULT = {
 }
 
 
+def combined_market_mult(regime_mult: float, breadth_mult: float, vix_mult: float) -> float:
+    """T232-DE1: regime, breadth, and vix multipliers are NOT independent — all three
+    ultimately describe "how dangerous is the broad market right now" (regime_mult is itself
+    partly derived from VIX), so multiplying them together double/triple-counts the same
+    signal. Composed via min() instead — take the single most conservative market-wide signal.
+
+    AUD232-053: extracted so routes.py's micro-position skip-check (which needs the same
+    combined value from an already-computed Multipliers object) can call this instead of
+    re-deriving the identical min() expression inline — a small duplication, but one that
+    could silently diverge if this formula ever changed in only one of the two places.
+    """
+    return min(regime_mult, breadth_mult, vix_mult)
+
+
 def compute_position(
     equity: float,
     live_price: float,
@@ -131,17 +145,12 @@ def compute_position(
 
     # ── Share calculation ──────────────────────────────────────────────────────
 
-    # T232-DE1: regime_mult, breadth_size_mult, and vix_size_mult are NOT independent —
-    # all three ultimately describe "how dangerous is the broad market right now" (regime_mult
-    # is itself partly derived from VIX: VIX>=25 -> risk_off -> regime_mult=0.50, VIX>=30 ->
-    # bear -> regime_mult=0.00), so multiplying all three together double- (and sometimes
-    # triple-) counts the same underlying signal. At VIX=30: 0.50 (regime) x 0.667 (vix
-    # gradient) = 0.335 combined, when the intent is a single "how bad is it" dampening of
-    # 0.50. Composed via min() instead — take the single most conservative market-wide signal,
-    # matching how paper_trading_engine.py already composes these (min(), not multiplication).
-    # Idiosyncratic per-trade signals (research/confidence/consensus/earnings) are genuinely
-    # independent judgments about THIS trade and remain multiplied together.
-    market_mult = min(regime_mult, breadth_size_mult, vix_size_mult)
+    # T232-DE1: at VIX=30, 0.50 (regime) x 0.667 (vix gradient) = 0.335 combined, when the
+    # intent is a single "how bad is it" dampening of 0.50 — see combined_market_mult()'s
+    # docstring for the full reasoning. Idiosyncratic per-trade signals (research/confidence/
+    # consensus/earnings) are genuinely independent judgments about THIS trade and remain
+    # multiplied together.
+    market_mult = combined_market_mult(regime_mult, breadth_size_mult, vix_size_mult)
     risk_per_trade = cfg.get("risk_per_trade_pct", 0.01)
     risk_dollar = (
         equity * risk_per_trade

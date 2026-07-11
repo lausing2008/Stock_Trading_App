@@ -143,20 +143,33 @@ _ml_weight_lock = threading.Lock()
 _ML_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ml_fetch")
 
 _ml_svc_token_cache: str = ""
+_ml_svc_token_exp: float = 0.0  # epoch seconds when the cached token expires
 
 
 def _ml_service_token() -> str:
-    """Return a long-lived service JWT for authenticating signal-engine → ml-prediction calls."""
-    global _ml_svc_token_cache
-    if _ml_svc_token_cache:
-        return _ml_svc_token_cache
+    """Return a long-lived service JWT for authenticating signal-engine → ml-prediction calls.
+
+    AUD232-069: duplicates api/routes.py's _service_token() (same sub='signal-engine' JWT
+    pattern) rather than sharing one implementation — routes.py imports FROM this module
+    (generators/signals.py) at module load time, so signals.py importing back from routes.py
+    would be a circular import. Consolidating into one shared helper would need a new module
+    location outside both files; deferred as a larger refactor. In the meantime, hardened this
+    copy to match routes.py's stronger refresh-window policy: the old version only checked
+    truthiness (never refreshed once cached), this now refreshes 7 days before the 365-day
+    expiry so the cached token is never used stale, same as _service_token().
+    """
+    global _ml_svc_token_cache, _ml_svc_token_exp
     import time
     import uuid
     from jose import jwt as _jwt
     from common.config import get_settings as _gs
+    if _ml_svc_token_cache and time.time() < _ml_svc_token_exp - 7 * 86400:
+        return _ml_svc_token_cache
     s = _gs()
-    payload = {"sub": "signal-engine", "exp": int(time.time()) + 365 * 86400, "jti": str(uuid.uuid4())}
+    exp = int(time.time()) + 365 * 86400
+    payload = {"sub": "signal-engine", "exp": exp, "jti": str(uuid.uuid4())}
     _ml_svc_token_cache = _jwt.encode(payload, s.jwt_secret, algorithm="HS256")
+    _ml_svc_token_exp = float(exp)
     return _ml_svc_token_cache
 
 
@@ -570,7 +583,13 @@ def _supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3.0) -> 
 
     prev_c = close.shift(1)
     tr = pd.concat([high - low, (high - prev_c).abs(), (low - prev_c).abs()], axis=1).max(axis=1)
-    atr_s = tr.ewm(alpha=1 / period, adjust=False).mean()
+    # AUD232-073: was .ewm(...).mean() with no min_periods — computed a real-looking ATR from
+    # bar 0, before `period` true-range bars have accumulated (same bug class as
+    # T237-TA-ATR-MINPERIODS, already fixed in the canonical technical-analysis core.py). The
+    # loop below (line ~584) already has an explicit `if np.isnan(basic_upper[i])` guard that
+    # correctly holds the prior trend during warmup — it just never had real NaNs to catch
+    # before this fix, since the under-warmed ATR silently produced a real (if unreliable) number.
+    atr_s = tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
 
     hl2 = (high + low) / 2
     basic_upper = (hl2 + multiplier * atr_s).values
@@ -612,7 +631,10 @@ def _adx(df: pd.DataFrame, period: int = 14) -> tuple[float, float, float]:
     dm_plus  = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
     dm_minus = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
 
-    atr      = tr.ewm(alpha=1 / period, adjust=False).mean()
+    # AUD232-073: was .ewm(...).mean() with no min_periods — the under-warmed ATR still produced
+    # a real-looking (unreliable) number for short-history stocks even after the C3 FIX below,
+    # since that fix only catches a genuinely NaN adx, not one computed from too few TR bars.
+    atr      = tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
     di_plus  = 100 * dm_plus.ewm(alpha=1 / period, adjust=False).mean() / atr.replace(0, np.nan)
     di_minus = 100 * dm_minus.ewm(alpha=1 / period, adjust=False).mean() / atr.replace(0, np.nan)
 

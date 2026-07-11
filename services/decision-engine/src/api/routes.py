@@ -23,7 +23,7 @@ from .core.models import (
 )
 from .core.regime import get_regime
 from .core.scorer import compute_score, min_score_for_regime
-from .core.sizer import compute_position
+from .core.sizer import combined_market_mult, compute_position
 from .llm_scorer import score_with_llm
 
 router = APIRouter()
@@ -259,15 +259,13 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
     _MIN_COMBINED_MULT = 0.30
     _micro_position_reason: str | None = None
     if verdict == "BUY":
-        # T232-DE1 (same fix already applied in sizer.py, missed here): regime, breadth, and
-        # vix multipliers are NOT independent — all three describe "how dangerous is the broad
-        # market right now" (regime_mult is itself partly VIX-derived), so multiplying all three
-        # together double/triple-counts the same signal. At VIX=30 + risk_off + confidence=0.85,
-        # straight multiplication gave 0.283 (incorrectly below the 0.30 floor, skipping a trade
-        # the real sizer would size normally at 0.425). Composed via min() for the market-wide
-        # trio, matching sizer.py's market_mult exactly, then multiplied by the genuinely
-        # independent per-trade factors (research/confidence/consensus/earnings).
-        _market_mult = min(multipliers.regime, multipliers.breadth, multipliers.vix)
+        # T232-DE1: at VIX=30 + risk_off + confidence=0.85, straight multiplication of
+        # regime/breadth/vix gave 0.283 (incorrectly below the 0.30 floor, skipping a trade the
+        # real sizer would size normally at 0.425). AUD232-053: now calls sizer.py's
+        # combined_market_mult() directly instead of re-deriving the identical min() expression
+        # inline — the two could otherwise silently diverge if the formula changed in only one
+        # of the two places.
+        _market_mult = combined_market_mult(multipliers.regime, multipliers.breadth, multipliers.vix)
         _combined_mult = (
             _market_mult * multipliers.research * multipliers.confidence
             * multipliers.consensus * multipliers.earnings

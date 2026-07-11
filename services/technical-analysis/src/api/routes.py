@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from db import Price, Stock, TimeFrame, get_session
 
-from ..indicators import bollinger_bands, cog, fibonacci_retracement, macd, rsi, sma, supertrend
+from ..indicators import bollinger_bands, cog, ema, fibonacci_retracement, macd, rsi, sma, supertrend
 from ..indicators.trendlines import detect_support_resistance, detect_trendlines
 from ..patterns import detect_patterns
 
@@ -57,10 +57,14 @@ def get_indicators(
         "sma_20": sma(df["close"], 20),
         "sma_50": sma(df["close"], 50),
         "sma_200": sma(df["close"], 200),
-        "ema_12": df["close"].ewm(span=12, adjust=False).mean(),
-        "ema_20": df["close"].ewm(span=20, adjust=False).mean(),
-        "ema_26": df["close"].ewm(span=26, adjust=False).mean(),
-        "ema_50": df["close"].ewm(span=50, adjust=False).mean(),
+        # AUD232-074: was raw .ewm(span=N, adjust=False).mean() with no min_periods —
+        # this service's own core.py already defines and exports a canonical ema() with the
+        # correct warmup-NaN convention (min_periods=window, matching sma/bollinger_bands/atr),
+        # this endpoint just never called it.
+        "ema_12": ema(df["close"], 12),
+        "ema_20": ema(df["close"], 20),
+        "ema_26": ema(df["close"], 26),
+        "ema_50": ema(df["close"], 50),
         "rsi_14": rsi(df["close"], 14),
     }
     macd_df = macd(df["close"])
