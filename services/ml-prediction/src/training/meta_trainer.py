@@ -124,7 +124,7 @@ def train_meta_model(db=None) -> dict:
         #     already established for builder.py's per-row fundamental features.
         rows = _session.execute(text("""
             SELECT so.symbol, so.horizon, so.signal_date, so.confidence,
-                   so.fused_prob, so.ta_score, so.is_correct,
+                   so.fused_prob, so.ta_score, so.is_correct, so.signal_direction,
                    st.sector, f.market_cap
             FROM signal_outcomes so
             JOIN stocks st ON st.id = so.stock_id
@@ -234,6 +234,13 @@ def train_meta_model(db=None) -> dict:
             vec.append(float(SECTOR_MAP.get(row.sector or "", -1)))
             vec.append(float(_market_cap_bin(row.market_cap)))
             vec.append(float(HORIZON_MAP.get(str(row.horizon).upper(), -1)))
+            # AUD232-046: BUY (63.3%) and SELL (43.7%) signal_outcomes have documented divergent
+            # base rates (see T232-OC5 comment in routes.py) — every other calibration consumer
+            # (calibrate_conviction_weights, confidence-calibration, outcomes/summary) keys by
+            # signal_direction instead of pooling. Add it as a feature so the model can learn
+            # direction-specific patterns rather than blending two populations with different
+            # base rates into one implicit prior that silently drifts with the BUY/SELL mix.
+            vec.append(1.0 if str(row.signal_direction).upper() == "BUY" else 0.0)
             # T237-ML-META1: row.confidence is stored 0-100 (SignalOutcome.confidence), but
             # predict_meta()'s inference call site (trainer.py) divides xgb["confidence"] by 100
             # before passing it in — normalize here too so training and inference features match.
@@ -324,11 +331,17 @@ def predict_meta(
     ta_score: float,
     sector: str | None = None,
     market_cap: float | None = None,
+    direction: str = "BUY",
 ) -> float | None:
     """Return meta-model probability for a single prediction, or None if model unavailable.
 
     This function never crashes the main prediction path — any exception returns None.
     Loads prices internally so it can build the feature vector at the current date.
+
+    direction defaults to "BUY" — every current call site (trainer.py's ensemble blend)
+    evaluates bullish_probability from BUY-only per-model training (_load_outcome_features
+    filters signal_direction == "BUY"), so there is no live SELL-direction caller yet. Accept
+    it explicitly so callers aren't silently limited if a SELL-side caller is added later.
     """
     if not META_MODEL_PATH.exists():
         return None
@@ -425,6 +438,7 @@ def predict_meta(
         vec.append(float(confidence))
         vec.append(float(fused_prob))
         vec.append(float(ta_score))
+        vec.append(1.0 if str(direction).upper() == "BUY" else 0.0)
 
         X_raw = np.array([vec], dtype=np.float32)
         # Defensive bounds check: non_const holds positional indices computed at train time
