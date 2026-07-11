@@ -8,18 +8,14 @@ from common.logging import get_logger
 log = get_logger("ml.routes")
 
 from ..models import list_models
-from ..training import predict_latest, predict_latest_ensemble, predict_latest_ensemble_three, train_model, tune_symbol, validate_walkforward
+from ..training import predict_latest, predict_latest_ensemble, predict_latest_ensemble_three, train_model, tune_symbol, validate_walkforward, _HORIZON_BY_STYLE
 
 router = APIRouter(prefix="/ml", tags=["ml"])
 
-# Training horizon per style: SHORT holds 1-5 days, SWING 1-4 weeks, LONG 1-3 months.
-# Matching the label horizon to the intended hold period improves signal precision.
-_HORIZON_BY_STYLE: dict[str, int] = {
-    "SHORT":  5,
-    "SWING":  10,
-    "LONG":   20,
-    "GROWTH": 15,  # breakout extension horizon: longer than SWING, shorter than LONG
-}
+# AUD232-055: _HORIZON_BY_STYLE now imported from training/trainer.py (the module that
+# actually trains against these horizons) instead of an independent copy here — this was one
+# of 4 identical style->horizon-days tables across ml-prediction that had to be kept in sync
+# by hand with no enforcement.
 
 
 class TrainRequest(BaseModel):

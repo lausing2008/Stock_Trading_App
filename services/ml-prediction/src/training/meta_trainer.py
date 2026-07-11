@@ -30,6 +30,10 @@ META_MODEL_PATH = pathlib.Path("/data/models/meta_model.joblib")
 META_SCALER_PATH = pathlib.Path("/data/models/meta_scaler.joblib")
 
 # Sector encoding (ordinal — simpler than one-hot for tree models)
+# AUD232-054: kept in sync with builder.py's SECTOR_ETF_MAP sector-name coverage (see its
+# comment) — "Financial" appended at 11 rather than renumbering existing entries, since
+# existing trained model bundles already encode sectors against these exact integers and
+# reordering would silently corrupt their learned sector coefficients.
 SECTOR_MAP: dict[str, int] = {
     "Technology": 0,
     "Healthcare": 1,
@@ -42,6 +46,7 @@ SECTOR_MAP: dict[str, int] = {
     "Basic Materials": 8,
     "Real Estate": 9,
     "Utilities": 10,
+    "Financial": 11,
 }
 
 HORIZON_MAP: dict[str, int] = {
