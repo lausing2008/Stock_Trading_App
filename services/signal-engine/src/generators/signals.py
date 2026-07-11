@@ -1502,11 +1502,20 @@ def _get_dynamic_buy_threshold(style_key: str, reg: str) -> float | None:
     return float(np.clip(regime_base + delta, lo, hi))
 
 
+# AUD232-051: unlike buy_threshold, _STYLE_PROFILES has no per-style/per-regime sell_threshold
+# key — the SELL fallback is genuinely a single flat value regardless of style/regime, so a
+# module-level constant (not a fake per-style dict) is the correct single source of truth here.
+# routes.py's outcomes_calibrate_apply SELL sweep imports this instead of keeping its own
+# independently-hardcoded copy that had to be updated by hand in sync (see its old comment,
+# which literally said so, at the exact drift risk this fixes).
+_SELL_THRESHOLD_FALLBACK = 0.35
+
+
 def _get_dynamic_sell_threshold(style_key: str) -> float | None:
     """Read empirically-calibrated SELL threshold from Redis if available.
 
     T228: written by POST /outcomes/calibrate/apply SELL sweep, fused-probability scale
-    (T232-CAL3 fix). Returns None → falls back to hardcoded 0.35 in _decide_style.
+    (T232-CAL3 fix). Returns None → falls back to _SELL_THRESHOLD_FALLBACK in _decide_style.
     """
     dynamic = _redis_get_float(f"stockai:signal_thresholds:SELL:{style_key.upper()}")
     if dynamic is None:
@@ -1541,9 +1550,9 @@ def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tupl
     dynamic_buy = _get_dynamic_buy_threshold(style_key, reg)
     buy_t  = dynamic_buy if dynamic_buy is not None else p["buy_threshold"][reg]
     hold_t = p["hold_threshold"][reg]
-    # T228: dynamic SELL threshold from SELL-outcomes calibration; fallback to 0.35
+    # T228: dynamic SELL threshold from SELL-outcomes calibration; fallback to _SELL_THRESHOLD_FALLBACK
     dynamic_sell = _get_dynamic_sell_threshold(style_key)
-    sell_t = dynamic_sell if dynamic_sell is not None else 0.35
+    sell_t = dynamic_sell if dynamic_sell is not None else _SELL_THRESHOLD_FALLBACK
     tier = "bull" if reg == "bull" else ("bear" if reg in ("bear", "high_vol") else "neutral")
     if fused_prob > buy_t:   return "BUY",  style_key, tier
     if fused_prob > hold_t:  return "HOLD", style_key, tier

@@ -833,7 +833,11 @@ def signal_accuracy(
 
         pct_change  = (exit_close - entry_close) / entry_close * 100
         signal_type = sig.signal.value
-        correct     = (signal_type == "BUY" and pct_change >= 0) or (signal_type == "SELL" and pct_change <= 0)
+        # AUD232-047: use the same cost hurdle as evaluate_signal_outcomes' is_correct (T232-OC4)
+        # instead of a bare zero line — _OUTCOME_WIN_HURDLE_PCT is a fraction (0.005 = 0.5%);
+        # pct_change here is already in percentage points, so compare against the *100 hurdle.
+        _hurdle_pp = _OUTCOME_WIN_HURDLE_PCT * 100
+        correct     = (signal_type == "BUY" and pct_change > _hurdle_pp) or (signal_type == "SELL" and pct_change < -_hurdle_pp)
 
         results.append({
             "symbol": sym,
@@ -960,7 +964,10 @@ def rolling_accuracy(
         exit_ = first_close_after(sig.stock_id, exit_target)
         if entry is None or exit_ is None or entry <= 0:
             continue
-        correct = exit_ > entry
+        # AUD232-047: use the same cost hurdle as evaluate_signal_outcomes' is_correct
+        # (T232-OC4/_OUTCOME_WIN_HURDLE_PCT) instead of a bare zero line, so this drift
+        # series' "win" definition agrees with the canonical calibration-loop definition.
+        correct = (exit_ - entry) / entry > _OUTCOME_WIN_HURDLE_PCT
         evaluated.append((sig_date, correct))
 
     if not evaluated:
@@ -2230,14 +2237,21 @@ def filter_audit(
 @router.post("/calibrate_ta_weights")
 def calibrate_ta_weights(
     lookback_days: int = Query(365, ge=60, le=730),
-    hold_days: int = Query(10, ge=3, le=30),
     session: Session = Depends(get_session),
     _: str = Depends(get_current_username),
 ):
-    """Fit logistic regression on historical BUY signals to derive data-driven TA weights.
+    """Fit logistic regression on historical BUY signal_outcomes to derive data-driven TA weights.
 
-    Reads the last `lookback_days` of BUY signals, extracts TA boolean features from the
-    stored reasons JSON, looks up actual price returns over `hold_days`, then fits a logistic
+    AUD232-048/049: previously recomputed forward returns independently (its own bisect-based
+    entry/exit lookup against a single fixed `hold_days` param applied uniformly to every
+    horizon, with a bare fwd_ret > 0 win rule) instead of reading the already-computed,
+    already-persisted signal_outcomes table — the same source calibrate_conviction_weights (in
+    this same file) correctly uses. Now reads SignalOutcome.is_correct directly, so the label
+    matches evaluate_signal_outcomes' per-horizon hold window and cost-hurdle definition
+    (_OUTCOME_WIN_HURDLE_PCT) exactly, instead of silently disagreeing with every other win-rate
+    number in the calibration loop.
+
+    Extracts TA boolean features from the signal's stored reasons JSON, then fits a logistic
     regression model. The resulting coefficients (clipped to [0, ∞]) become the new TA weights
     and are written to ta_weights.json next to the ML models directory.
 
@@ -2255,15 +2269,20 @@ def calibrate_ta_weights(
 
     from ..generators.signals import _TA_WEIGHTS_DEFAULT, _TA_WEIGHTS_PATH, set_ta_weights
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    cutoff = date.today() - timedelta(days=lookback_days)
     rows = session.execute(
-        select(Signal.ts, Signal.reasons, Signal.stock_id)
-        .where(Signal.signal == SignalType.BUY, Signal.ts >= cutoff)
-        .order_by(Signal.ts)
+        select(SignalOutcome.is_correct, Signal.reasons)
+        .join(Signal, Signal.id == SignalOutcome.signal_id)
+        .where(
+            SignalOutcome.signal_direction == "BUY",
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+            Signal.reasons.is_not(None),
+        )
     ).all()
 
     if len(rows) < 50:
-        raise HTTPException(status_code=400, detail=f"Need ≥50 BUY signals, found {len(rows)}")
+        raise HTTPException(status_code=400, detail=f"Need ≥50 evaluated BUY outcomes, found {len(rows)}")
 
     # TA boolean feature names (positive weights only — penalties excluded from regression)
     TA_FEATURES = [
@@ -2296,67 +2315,19 @@ def calibrate_ta_weights(
         "volume_surge":           lambda r: (r.get("volume_z") or 0) > 0.5,
     }
 
-    import bisect
-
-    # Bulk-load all D1 prices for involved stocks — avoids N+1 queries in loop
-    stock_ids = list({row.stock_id for row in rows})
-    min_ts = min(row.ts for row in rows)
-    max_ts_needed = datetime.now(timezone.utc) + timedelta(days=hold_days + 10)
-    price_rows = session.execute(
-        select(Price.stock_id, Price.ts, Price.close)
-        .where(
-            Price.stock_id.in_(stock_ids),
-            Price.timeframe == TimeFrame.D1,
-            Price.ts >= min_ts,
-            Price.ts <= max_ts_needed,
-        )
-        .order_by(Price.stock_id, Price.ts)
-    ).all()
-    # Build per-stock sorted list of (ts_naive_date, close)
-    from collections import defaultdict
-    _price_map: dict[int, list[tuple]] = defaultdict(list)
-    for pr in price_rows:
-        ts_date = pr.ts.date() if hasattr(pr.ts, "date") else pr.ts
-        _price_map[pr.stock_id].append((ts_date, float(pr.close)))
-
-    def _lookup_price(stock_id: int, on_or_after: "date") -> "float | None":
-        bucket = _price_map.get(stock_id, [])
-        if not bucket:
-            return None
-        dates = [b[0] for b in bucket]
-        idx = bisect.bisect_left(dates, on_or_after)
-        if idx >= len(bucket):
-            return None
-        return bucket[idx][1]
-
     X_rows, y_rows, skipped = [], [], 0
-    for row in rows:
+    for is_correct, reasons_raw in rows:
         try:
-            reasons = json.loads(row.reasons) if isinstance(row.reasons, str) else (row.reasons or {})
+            reasons = json.loads(reasons_raw) if isinstance(reasons_raw, str) else (reasons_raw or {})
         except Exception:
             skipped += 1
             continue
 
-        # T+1 entry: use the first close STRICTLY AFTER signal_date, matching the same fix
-        # already applied in evaluate_signal_outcomes (see its "T+1 entry" comment) — the
-        # signal is generated from that day's already-known close, so using the SAME day's
-        # close as "entry price" bakes in look-ahead bias (fitting weights as if you could
-        # buy at the exact price the BUY decision was itself based on). Exit is measured
-        # hold_days after the actual T+1 entry date, not after signal_date, for consistency.
-        signal_date = row.ts.date() if hasattr(row.ts, "date") else row.ts
-        entry_price_row = _lookup_price(row.stock_id, signal_date + timedelta(days=1))
-        exit_price_row = _lookup_price(row.stock_id, signal_date + timedelta(days=1 + hold_days))
-
-        if entry_price_row is None or exit_price_row is None:
-            skipped += 1
-            continue
-
-        fwd_ret = exit_price_row / entry_price_row - 1
-        y_rows.append(1 if fwd_ret > 0 else 0)
+        y_rows.append(int(is_correct))
         X_rows.append([float(REASONS_MAP[f](reasons)) for f in TA_FEATURES])
 
     if len(X_rows) < 30:
-        raise HTTPException(status_code=400, detail=f"Only {len(X_rows)} usable rows after price lookup (skipped {skipped})")
+        raise HTTPException(status_code=400, detail=f"Only {len(X_rows)} usable rows after reasons parsing (skipped {skipped})")
 
     X = np.array(X_rows)
     y = np.array(y_rows)
@@ -3203,7 +3174,13 @@ def outcomes_summary(
         "20d": _window_stats(outcomes, "is_correct_20d", "return_20d"),
     }
 
-    # BUY vs SELL win rate by horizon — reveals directional bias in signal accuracy
+    # BUY vs SELL win rate by horizon — reveals directional bias in signal accuracy.
+    # AUD232-050: this is a raw diagnostic breakdown (any n, no market split) — a different
+    # purpose than _build_confidence_calibration's gated calibrated_win_rate shown on live
+    # signal cards (n>=_CONF_CAL_MIN_COUNT, market-first). The two can legitimately report
+    # different numbers for the same nominal horizon+direction slice; `reliable` flags when
+    # this bucket's n would NOT clear the calibration gate, so a consumer doesn't mistake a
+    # tiny-n diagnostic number for the same reliability as the gated one.
     direction_stats: dict = {}
     for h in ("SHORT", "SWING", "LONG", "GROWTH"):
         for direction in ("BUY", "SELL"):
@@ -3215,6 +3192,7 @@ def outcomes_summary(
                 "count": len(bucket),
                 "win_rate": round(sum(1 for o in bucket if o.is_correct) / len(bucket), 3),
                 "avg_return_pct": round(statistics.mean(bucket_returns) * 100, 2) if bucket_returns else None,
+                "reliable": len(bucket) >= _CONF_CAL_MIN_COUNT,
             }
 
     # By market (US vs HK) — T223-SIGNAL-WINRATE-API: surfaces cross-market win rate difference
@@ -3539,7 +3517,7 @@ def outcomes_calibrate_apply(
     hardcoded _STYLE_PROFILES values if absent).  Run this weekly via the scheduler.
     """
     import statistics as _stats
-    from ..generators.signals import _STYLE_PROFILES
+    from ..generators.signals import _STYLE_PROFILES, _SELL_THRESHOLD_FALLBACK
 
     # Bull-regime buy thresholds — source of truth is _STYLE_PROFILES (T232-SIG12: no more
     # independently-drifting hardcoded copies).
@@ -3757,7 +3735,9 @@ def outcomes_calibrate_apply(
 
     sell_applied: list[dict] = []
     sell_skipped: list[dict] = []
-    _CURRENT_SELL = 0.35  # fused-probability scale, matches the hardcoded fallback in signals.py
+    # AUD232-051: read the shared constant from signals.py instead of an independently
+    # hardcoded copy that had to be kept in sync by hand (fused-probability scale).
+    _CURRENT_SELL = _SELL_THRESHOLD_FALLBACK
 
     # T232-OC3: same walk-forward fix as the BUY sweep above — train on the older 70%,
     # validate the chosen threshold's EV lift on the newer, never-searched 30%.
