@@ -3438,13 +3438,17 @@ _DQ_CHECKS: list[dict] = [
         "max_age_hours": 72, "is_date": False,
     },
     {
+        # T242-DQ2: timeframe enum values are 'D1'/'M1'/etc (see TimeFrame in shared/db/models.py),
+        # not '1d' — the old literal silently errored every run (query_failed, swallowed by the
+        # per-check try/except) since this framework was added 2026-07-03, so these two checks
+        # never actually reported real freshness data despite looking configured correctly.
         "name": "prices_us_d1", "description": "US daily price bars",
-        "query": "SELECT MAX(p.ts) FROM prices p JOIN stocks st ON p.stock_id=st.id WHERE st.market='US' AND p.timeframe='1d'",
+        "query": "SELECT MAX(p.ts) FROM prices p JOIN stocks st ON p.stock_id=st.id WHERE st.market='US' AND p.timeframe='D1'",
         "max_age_hours": 48, "is_date": False,
     },
     {
         "name": "prices_hk_d1", "description": "HK daily price bars",
-        "query": "SELECT MAX(p.ts) FROM prices p JOIN stocks st ON p.stock_id=st.id WHERE st.market='HK' AND p.timeframe='1d'",
+        "query": "SELECT MAX(p.ts) FROM prices p JOIN stocks st ON p.stock_id=st.id WHERE st.market='HK' AND p.timeframe='D1'",
         "max_age_hours": 48, "is_date": False,
     },
     {
