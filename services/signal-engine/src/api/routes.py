@@ -2285,13 +2285,18 @@ def calibrate_ta_weights(
         raise HTTPException(status_code=400, detail=f"Need ≥50 evaluated BUY outcomes, found {len(rows)}")
 
     # TA boolean feature names (positive weights only — penalties excluded from regression)
+    # AUD232-045: "volume_z" here (not the legacy "volume_surge") — matches _TA_WEIGHTS_DEFAULT's
+    # key name directly instead of relying on set_ta_weights()'s migration fallback to rename it
+    # after the fact. Fitting/writing the correct key name at the source means the freshly
+    # calibrated volume weight is never at risk of being silently dropped (the migration only
+    # renames "volume_surge" -> "volume_z" when "volume_z" isn't already present).
     TA_FEATURES = [
         "above_sma50", "sma50_above_sma200", "golden_cross_event",
         "rsi_sweet_spot", "rsi_mild_oversold", "rsi_mild_overbought",
         "stoch_oversold", "stoch_cross_up",
         "macd_strong", "macd_positive", "macd_zero_cross_up",
         "bb_mid_zone", "price_above_vwap",
-        "bullish_trend", "obv_trend_bullish", "volume_surge",
+        "bullish_trend", "obv_trend_bullish", "volume_z",
     ]
 
     # Map feature name → extractor from stored reasons JSON.
@@ -2312,7 +2317,7 @@ def calibrate_ta_weights(
         "price_above_vwap":       lambda r: r.get("price_above_vwap") is True,
         "bullish_trend":          lambda r: bool(r.get("adx_bullish")),
         "obv_trend_bullish":      lambda r: bool(r.get("obv_trend_bullish")),
-        "volume_surge":           lambda r: (r.get("volume_z") or 0) > 0.5,
+        "volume_z":               lambda r: (r.get("volume_z") or 0) > 0.5,
     }
 
     X_rows, y_rows, skipped = [], [], 0
@@ -4182,11 +4187,22 @@ def signal_watchdog(
     Schedule: daily (06:00 ET) from market-data scheduler.
     """
     from ..generators.signals import _STYLE_PROFILES
+    import uuid as _uuid
 
     _14D = date.today() - timedelta(days=14)
     _7D  = date.today() - timedelta(days=7)
     _REDIS_TTL_7D = 7 * 86400
     _MAX_TIGHTEN = 3
+    # AUD232-018: every other threshold-mutation path in this file (outcomes_calibrate_apply,
+    # tune_style_profiles, calibrate_ml_weight) requires 2x-4x min_samples plus a walk-forward
+    # validation split before applying a change. signal_watchdog previously acted on as few as
+    # 5 fourteen-day samples with none of that — raised the floor to reduce acting on pure
+    # noise (a full walk-forward split isn't a fit here: watchdog is deliberately a fast, daily
+    # reactive nudge with fixed +0.03/-0.02 deltas, not a threshold search) and every action now
+    # gets a TuneHistory row so it's at least auditable after the fact, matching what every
+    # other mutation path already records.
+    _MIN_SAMPLES = 15
+    _run_id = str(_uuid.uuid4())
 
     # Bull-regime thresholds as floors — source of truth is _STYLE_PROFILES (T232-SIG12).
     _DEFAULT_THRESHOLDS = {
@@ -4231,7 +4247,8 @@ def signal_watchdog(
         floor_threshold = _DEFAULT_THRESHOLDS.get(style, 0.65)
 
         action = None
-        if win_rate_14d is not None and win_rate_14d < 0.38 and len(outcomes_14d) >= 5:
+        _tune_window = (_14D, date.today())
+        if win_rate_14d is not None and win_rate_14d < 0.38 and len(outcomes_14d) >= _MIN_SAMPLES:
             if tighten_count >= _MAX_TIGHTEN:
                 action = "max_tighten_reached_manual_review_needed"
                 actions.append({"style": style, "action": action, "win_rate_14d": round(win_rate_14d, 3)})
@@ -4247,6 +4264,14 @@ def signal_watchdog(
                 actions.append({"style": style, "action": action, "from": round(current_val, 4),
                                  "to": round(new_val, 4), "win_rate_14d": round(win_rate_14d, 3),
                                  "tighten_count": tighten_count + 1})
+                _record_tune_history(
+                    session, _run_id, "signal_threshold", "watchdog_buy_threshold", style, "ALL",
+                    old_value={"threshold": current_val}, new_value={"threshold": new_val},
+                    train_window=_tune_window, validation_window=_tune_window,
+                    train_ev_pct=None, validation_ev_pct=round(win_rate_14d, 4),
+                    baseline_validation_ev_pct=None, validation_n=len(outcomes_14d),
+                    promoted=True, gate_failures=[], triggered_by="watchdog",
+                )
 
         elif signals_7d == 0 and current_adj:
             # No signals for 7 days — the threshold may be too tight; relax
@@ -4256,6 +4281,14 @@ def signal_watchdog(
                 redis_client.setex(current_key, _REDIS_TTL_7D, str(round(new_val, 4)))
                 redis_client.delete(tighten_count_key)  # reset tighten count on relax
                 action = "relaxed"
+                _record_tune_history(
+                    session, _run_id, "signal_threshold", "watchdog_buy_threshold", style, "ALL",
+                    old_value={"threshold": current_val}, new_value={"threshold": new_val},
+                    train_window=_tune_window, validation_window=_tune_window,
+                    train_ev_pct=None, validation_ev_pct=None,
+                    baseline_validation_ev_pct=None, validation_n=signals_7d,
+                    promoted=True, gate_failures=[], triggered_by="watchdog",
+                )
                 actions.append({"style": style, "action": action, "from": round(current_val, 4),
                                  "to": round(new_val, 4), "signals_7d": signals_7d})
 
@@ -4891,8 +4924,15 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
                 _d = _r.json()
                 result = (_d.get("recommendation"), float(_d.get("overall_score") or 0) or None)
             else:
+                # AUD232-019: previously swallowed silently into (None, None) — a slow or
+                # erroring research-engine permanently blanked research_rec/research_score for
+                # this outcome row unless Phase 2's NULL-column backfill happened to retry it
+                # later, with no visible symptom until someone noticed a spike in the
+                # "no_research" bucket count. Logging this makes a systemic slowdown visible.
+                log.warning("outcomes.research_fetch_non200", symbol=symbol, status=_r.status_code)
                 result = (None, None)
-        except Exception:
+        except Exception as _rfe:
+            log.warning("outcomes.research_fetch_failed", symbol=symbol, error=str(_rfe))
             result = (None, None)
         _research_cache[symbol] = result
         return result
@@ -5122,19 +5162,32 @@ def gate_backtest(
     session: Session = Depends(get_session),
     _: str = Depends(get_current_username),
 ):
-    """Compare old vs new conviction gate logic against historical BUY signals.
+    """HISTORICAL RETROSPECTIVE of the T234 conviction-gate migration — NOT a live proposal.
 
-    Replays _is_conviction_buy with old and new parameters to measure how many
-    more signals fire and whether the newly-unblocked signals actually perform well.
+    AUD232-044: this endpoint's "new" parameterization (relaxed MACD OR-condition, MACD
+    soft-fail, GROWTH RSI floor=50) is not a pending change to evaluate — it IS the current,
+    already-shipped behavior of the real _is_conviction_buy() in
+    services/market-data/src/services/scheduler.py (see that function's Layer 4b/4c and
+    _SOFT_LAYER_KEYWORDS, confirmed to match this endpoint's "new" flags exactly as of
+    2026-07-11). The "old" parameterization is the PRE-T234 gate, which no longer runs in
+    production anywhere. Calling this a "new vs old" comparison (as if "new" were still under
+    review) was misleading after T234 shipped — both arms were never re-synced against the
+    real gate's current parameters, so if the real gate changes again in the future without a
+    corresponding update here, this retrospective would silently stop representing either the
+    real "before" or the real "after" state. Use this to see the win-rate lift T234 already
+    delivered, not to decide whether to ship anything — there is nothing left to decide here.
 
-    Gate changes evaluated:
-      1. MACD condition: old = (hist > 0 AND rising) OR crossover
-                         new = hist > 0 OR rising OR crossover
-      2. MACD soft tier: old = hard failure (blocks alone)
-                         new = soft failure (1 allowed per near-conviction tier)
-      3. GROWTH RSI lo:  old = 55  →  new = 50
+    Replays _is_conviction_buy with pre-T234 and post-T234 parameters to measure how many
+    more signals fired and whether the newly-unblocked signals actually performed well.
 
-    Returns per-group win-rate and avg return so you can validate each change.
+    Gate changes evaluated (all already live in production):
+      1. MACD condition: pre-T234 = (hist > 0 AND rising) OR crossover
+                         post-T234 = hist > 0 OR rising OR crossover
+      2. MACD soft tier: pre-T234 = hard failure (blocks alone)
+                        post-T234 = soft failure (1 allowed per near-conviction tier)
+      3. GROWTH RSI lo:  pre-T234 = 55  →  post-T234 = 50
+
+    Returns per-group win-rate and avg return for this retrospective comparison.
     """
     cache_key = f"signals:cache:gate_backtest:{lookback_days}:{style}:{hold_days}"
     cached = _cache_get(cache_key)

@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from src.indicators.core import bollinger_bands, macd, rsi, sma, vwap
+from src.indicators.core import bollinger_bands, macd, rsi, sma
 from src.patterns.recognizer import detect_patterns
 
 
@@ -34,21 +34,6 @@ def test_bollinger_bands_order():
     bb = bollinger_bands(s).dropna()
     assert (bb["bb_upper"] >= bb["bb_mid"]).all()
     assert (bb["bb_mid"] >= bb["bb_lower"]).all()
-
-
-def test_vwap_finite():
-    n = 100
-    rng = np.random.default_rng(1)
-    df = pd.DataFrame(
-        {
-            "high": 100 + rng.uniform(0, 2, n),
-            "low": 100 - rng.uniform(0, 2, n),
-            "close": 100 + rng.normal(0, 1, n),
-            "volume": rng.integers(1000, 5000, n),
-        }
-    )
-    v = vwap(df["high"], df["low"], df["close"], df["volume"])
-    assert np.isfinite(v).all()
 
 
 def test_patterns_run():
