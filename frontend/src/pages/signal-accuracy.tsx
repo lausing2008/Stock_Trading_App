@@ -1129,8 +1129,11 @@ export default function SignalAccuracyPage() {
                           <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{h}</span>
                           <span style={{ color: dir === 'BUY' ? '#4ade80' : '#f87171', fontWeight: 700, fontSize: 11 }}>{dir}</span>
                           <span style={{ color: '#64748b', textAlign: 'right' }}>{v.count}</span>
-                          <span style={{ color: wr >= 55 ? '#4ade80' : wr >= 50 ? '#facc15' : '#f87171', fontWeight: 700, textAlign: 'right' }}>
-                            {wr.toFixed(1)}%
+                          <span
+                            title={v.reliable ? undefined : 'Low sample size — this bucket has not reached the reliability threshold used to gate the calibrated win rate shown on signal cards, so it may differ from that number'}
+                            style={{ color: wr >= 55 ? '#4ade80' : wr >= 50 ? '#facc15' : '#f87171', fontWeight: 700, textAlign: 'right' }}
+                          >
+                            {wr.toFixed(1)}%{!v.reliable && <span style={{ color: '#475569', fontWeight: 400 }}> ⚠</span>}
                           </span>
                           <span style={{ color: v.avg_return_pct != null ? (v.avg_return_pct >= 0 ? '#4ade80' : '#f87171') : '#475569', textAlign: 'right' }}>
                             {v.avg_return_pct != null ? `${v.avg_return_pct >= 0 ? '+' : ''}${v.avg_return_pct.toFixed(2)}%` : '—'}
