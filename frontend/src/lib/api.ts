@@ -202,6 +202,14 @@ export const api = {
     return request<AdminSignalLogResponse>(`/admin/signal-log?${p.toString()}`);
   },
 
+  getWatchlistPerformance: (params: { style: string; days_back?: number; min_outcomes?: number; candidate_limit?: number }) => {
+    const p = new URLSearchParams({ style: params.style });
+    if (params.days_back != null) p.set('days_back', String(params.days_back));
+    if (params.min_outcomes != null) p.set('min_outcomes', String(params.min_outcomes));
+    if (params.candidate_limit != null) p.set('candidate_limit', String(params.candidate_limit));
+    return request<WatchlistPerformanceResponse>(`/admin/watchlist-performance?${p.toString()}`);
+  },
+
   // Broad stock scan (arbitrary tickers via yfinance)
   quickScan: (symbols: string[], priceMin?: number, priceMax?: number) =>
     request<QuickScanResult[]>(`/stocks/quick_scan`, {
@@ -1227,6 +1235,37 @@ export type AdminSignalLogResponse = {
   limit: number;
   pages: number;
   items: AdminSignalLogItem[];
+};
+
+export type WatchlistPerfStock = {
+  stock_id: number;
+  symbol: string;
+  sector: string;
+  market: string;
+  n: number;
+  win_rate: number | null;
+  avg_return_pct: number | null;
+  reliable: boolean;
+};
+
+export type WatchlistPerfCandidate = {
+  symbol: string;
+  score: number;
+  sector: string;
+  market: string;
+};
+
+export type WatchlistPerformanceResponse = {
+  style: string;
+  days_back: number;
+  min_outcomes: number;
+  total_watchlist_stocks: number;
+  n_reliable: number;
+  avg_win_rate: number | null;
+  sector_pct: Record<string, number>;
+  max_sector_pct: number;
+  watchlist_perf: WatchlistPerfStock[];
+  candidates: WatchlistPerfCandidate[];
 };
 
 // ── WF-2 Paper Portfolio types ────────────────────────────────────────────────
