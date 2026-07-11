@@ -732,34 +732,44 @@ def _leaderboard_live(market: str | None, limit: int, session: Session) -> dict:
 
     results = []
     for s in stocks:
-        df = _load_prices(session, s.id)
-        if df.empty or len(df) < 60:
-            continue
-        rs_score_val, _ = _stock_rs(s, df, session=session)
-        sc   = sector_scores.get(s.symbol, {})
-        comp = compute_kscore(
-            df,
-            rs_score=rs_score_val,
-            value_score=sc.get("value"),
-            growth_score=sc.get("growth"),
-        )
-        results.append(
-            {
-                "symbol":            s.symbol,
-                "name":              s.name,
-                "name_zh":           s.name_zh,
-                "market":            s.market.value,
-                "sector":            s.sector,
-                "score":             _clean(comp.score),
-                "technical":         _clean(comp.technical),
-                "momentum":          _clean(comp.momentum),
-                "value":             _clean(comp.value),
-                "growth":            _clean(comp.growth),
-                "volatility":        _clean(comp.volatility),
-                "fair_price":        _clean(comp.fair_price),
-                "relative_strength": _clean(comp.relative_strength),
-            }
-        )
+        # AUD232-043: _persist_rankings() got per-stock exception isolation after the
+        # T232-RANKSTALE incident specifically so one bad symbol can't kill an entire batch.
+        # This live-compute fallback (hit whenever the Ranking table has zero rows for the
+        # requested market — e.g. right after a fresh DB bootstrap) had no equivalent
+        # isolation: an uncaught exception from compute_kscore()/_stock_rs() on any single
+        # stock would 500 the ENTIRE leaderboard request for every user, instead of just
+        # skipping that one symbol and returning results for the rest.
+        try:
+            df = _load_prices(session, s.id)
+            if df.empty or len(df) < 60:
+                continue
+            rs_score_val, _ = _stock_rs(s, df, session=session)
+            sc   = sector_scores.get(s.symbol, {})
+            comp = compute_kscore(
+                df,
+                rs_score=rs_score_val,
+                value_score=sc.get("value"),
+                growth_score=sc.get("growth"),
+            )
+            results.append(
+                {
+                    "symbol":            s.symbol,
+                    "name":              s.name,
+                    "name_zh":           s.name_zh,
+                    "market":            s.market.value,
+                    "sector":            s.sector,
+                    "score":             _clean(comp.score),
+                    "technical":         _clean(comp.technical),
+                    "momentum":          _clean(comp.momentum),
+                    "value":             _clean(comp.value),
+                    "growth":            _clean(comp.growth),
+                    "volatility":        _clean(comp.volatility),
+                    "fair_price":        _clean(comp.fair_price),
+                    "relative_strength": _clean(comp.relative_strength),
+                }
+            )
+        except Exception as _stock_exc:
+            log.warning("ranking.leaderboard_live_stock_failed", symbol=s.symbol, error=str(_stock_exc))
     results.sort(key=lambda r: r["score"] or 0, reverse=True)
     return {"as_of": str(date.today()), "rankings": results[:limit]}
 

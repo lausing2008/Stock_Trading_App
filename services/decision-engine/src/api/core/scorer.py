@@ -1,4 +1,19 @@
-"""5-layer scoring model — extracted faithfully from paper_trading_engine._should_enter()."""
+"""7-layer scoring model — extracted from paper_trading_engine._should_enter(), not a byte-
+for-byte mirror. Two intentional, currently-undeferred divergences remain (AUD232-027/028,
+docs/AUDIT_REPORT_TIER242_2026-07-10.md):
+
+1. No RL policy adjustment layer (AL-1 in _should_enter()) — that layer depends on
+   rl_agent.py, a market-data-local module with its own trained Q-function state; porting
+   it here would mean either a cross-service HTTP call back to market-data on every score
+   (added latency/coupling) or duplicating the RL model-loading logic in a second service.
+   Deferred rather than rushed.
+2. compute_score()'s decision rule is always the additive-score threshold — it cannot
+   replicate _should_enter()'s PT-3 calibrated-logistic-regression bypass (entry_weights.json,
+   >=100 closed trades), which also depends on market-data-local file state this service has
+   no access to.
+
+Both are real, confirmed gaps — not silently unnoticed — see the audit doc for the full
+9-item comparison (T232-DL-DUALSCORER-DEBT tracks the broader architectural debt)."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -212,7 +227,29 @@ def compute_score(
     score += pts
     breakdown.append(ScoreItem(layer="regime", pts=pts, note=note))
 
-    # ── Layer 6: Cross-horizon consensus ──────────────────────────────────────
+    # ── Layer 6: K-Score conviction ────────────────────────────────────────────
+    # AUD232-042: DE previously had zero K-Score/ranking-engine reference anywhere — a
+    # LONG-horizon stock with kscore=25 (well below the real conviction gate's 55 floor,
+    # scheduler.py's check_signal_alerts()) could still score highly and enter via DE purely
+    # on price_zone + rr_quality + ml_signal + regime, since DE had no fundamental/momentum
+    # input to reflect that weakness. kscore arrives via cfg (threaded through config_overrides
+    # by the caller, matching the existing recent_win_rate/consec_losses pattern) since DE
+    # itself has no ranking-engine client — it's supplied by whichever caller already computed
+    # it (paper_trading_engine.py's kscore_f). Uses the same >=55 conviction threshold as the
+    # real gate; a low-but-still-gated K-Score (the pre-entry min_kscore gate already filters
+    # out anything below ~48-52 depending on style) gets a mild penalty rather than a 0, since
+    # it already passed that floor.
+    kscore = cfg.get("kscore")
+    if kscore is not None:
+        kscore = float(kscore)
+        if kscore >= 55:
+            pts, note = 1, f"K-Score {kscore:.0f} — conviction positive"
+        else:
+            pts, note = -1, f"K-Score {kscore:.0f} below 55 — weak fundamental/momentum case"
+        score += pts
+        breakdown.append(ScoreItem(layer="kscore", pts=pts, note=note))
+
+    # ── Layer 7: Cross-horizon consensus ──────────────────────────────────────
     # AUD232-007: this scorer had NO layer reading cross_style_buys at all — a 2-point
     # swing in the fallback _should_enter() (+1 for >=2 other horizons also BUY, -1 for
     # zero consensus in bear/choppy) was completely invisible here, even though
