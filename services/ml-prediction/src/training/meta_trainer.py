@@ -56,12 +56,10 @@ HORIZON_MAP: dict[str, int] = {
     "GROWTH": 3,
 }
 
-_HORIZON_DAYS: dict[str, int] = {
-    "SHORT": 5,
-    "SWING": 10,
-    "LONG": 20,
-    "GROWTH": 15,
-}
+# AUD232-056: import trainer.py's _HORIZON_BY_STYLE instead of an independent duplicate —
+# trainer.py is the module this file's own callers (predict_latest_ensemble_three) rely on,
+# so it is the de facto authoritative definition of what each style's horizon means.
+from .trainer import _HORIZON_BY_STYLE as _HORIZON_DAYS
 
 
 def _market_cap_bin(market_cap: float | None) -> int:
