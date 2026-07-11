@@ -1444,6 +1444,83 @@ def _fire_webhook(url: str, payload: dict) -> None:
         log.warning("webhook.failed", url=url, error=str(exc))
 
 
+def _evaluate_compound_conditions(
+    alert: "PriceAlert", session, signal_cache: dict, rvol_cache: dict,
+) -> bool:
+    """T230-ALERTING-COMPOUND-CONDITIONS: check every extra AND-condition on an alert.
+
+    Returns True if there are no compound conditions (old behavior unaffected) or if
+    every condition passes. Any single failed/unavailable metric fails the whole
+    alert closed (no partial fires) — compound alerts are explicitly opt-in noise
+    reduction, so failing safe here means fewer, not more, false positives.
+
+    signal_cache/rvol_cache are per-run caches keyed by symbol, populated lazily —
+    most price-alert runs have zero compound alerts, so nothing extra is fetched
+    unless an alert actually declares compound_conditions.
+    """
+    conditions = alert.compound_conditions
+    if not conditions:
+        return True
+
+    sym = alert.symbol
+    for cond in conditions:
+        metric = cond.get("metric")
+        op = cond.get("op")
+        value = cond.get("value")
+
+        if metric == "volume_ratio":
+            if sym not in rvol_cache:
+                try:
+                    from ..api.routes import get_rvol
+                    rvol_cache[sym] = get_rvol(sym, session=session).get("rvol")
+                except Exception:
+                    rvol_cache[sym] = None
+            actual = rvol_cache[sym]
+            if actual is None:
+                return False
+            passed = actual >= value if op == "gte" else actual <= value if op == "lte" else actual == value
+        elif metric == "rsi":
+            if sym not in signal_cache:
+                signal_cache[sym] = _fetch_stored_signal(sym)
+            payload = signal_cache[sym]
+            actual = (payload or {}).get("reasons", {}).get("rsi")
+            if actual is None:
+                return False
+            actual = float(actual)
+            passed = actual >= value if op == "gte" else actual <= value if op == "lte" else actual == value
+        elif metric == "signal":
+            if sym not in signal_cache:
+                signal_cache[sym] = _fetch_stored_signal(sym)
+            payload = signal_cache[sym]
+            actual = (payload or {}).get("signal")
+            if actual is None:
+                return False
+            passed = actual == value
+        else:
+            return False  # unknown metric — fail closed
+
+        if not passed:
+            return False
+
+    return True
+
+
+def _fetch_stored_signal(symbol: str, style: str = "SWING") -> dict | None:
+    """Fetch the stored (live=False) DB signal for a symbol — same source of truth
+    used by check_signal_alerts() and the Signal Filter page, so a compound alert's
+    "signal = BUY" reads the same signal a user sees on-screen, not a live recompute."""
+    try:
+        r = httpx.get(
+            f"{_settings.signal_engine_url}/signals/{symbol}",
+            params={"style": style, "live": "false"}, timeout=10,
+        )
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return None
+
+
 def check_price_alerts() -> None:
     """Check all untriggered alerts against latest live prices and fire emails."""
     try:
@@ -1478,6 +1555,10 @@ def check_price_alerts() -> None:
             pending_emails: list[dict] = []
             pending_webhooks: list[tuple[str, dict]] = []
             pending_pushes: list[tuple] = []  # (user, symbol, condition, threshold, price)
+            # T230-ALERTING-COMPOUND-CONDITIONS: per-run caches so alerts sharing a
+            # symbol don't each re-fetch the same RVOL/signal data.
+            _compound_signal_cache: dict = {}
+            _compound_rvol_cache: dict = {}
             for alert in alerts:
                 price = prices.get(alert.symbol)
                 if price is None:
@@ -1488,22 +1569,34 @@ def check_price_alerts() -> None:
                 )
                 if not should_trigger:
                     continue
+                if not _evaluate_compound_conditions(alert, session, _compound_signal_cache, _compound_rvol_cache):
+                    continue
 
                 alert.triggered = True
                 alert.triggered_at = datetime.now(timezone.utc)
                 fired += 1
-                log.info("alert.triggered", symbol=alert.symbol, price=price, threshold=alert.threshold)
+                log.info("alert.triggered", symbol=alert.symbol, price=price, threshold=alert.threshold,
+                          compound_conditions=alert.compound_conditions)
+
+                # Append the compound-condition summary to the note so it's visible in the
+                # delivered alert (email/webhook), not just in this log line.
+                note = alert.note
+                if alert.compound_conditions:
+                    cc_summary = " AND ".join(
+                        f"{c['metric']} {c['op']} {c['value']}" for c in alert.compound_conditions
+                    )
+                    note = f"{note}\n\nAlso matched: {cc_summary}" if note else f"Also matched: {cc_summary}"
 
                 if alert.email:
                     pending_emails.append(dict(
                         to=alert.email, symbol=alert.symbol,
                         condition=alert.condition.value,
-                        threshold=alert.threshold, price=price, note=alert.note,
+                        threshold=alert.threshold, price=price, note=note,
                     ))
                 if alert.webhook_url:
                     pending_webhooks.append((alert.webhook_url, dict(
                         symbol=alert.symbol, condition=alert.condition.value,
-                        threshold=alert.threshold, price=price, note=alert.note,
+                        threshold=alert.threshold, price=price, note=note,
                     )))
                 # T230-ALERTING-PUSH-NOTIFICATIONS: alert.user is the same relationship
                 # already used for user_id-scoped alerts elsewhere in this file — accessing
