@@ -93,6 +93,14 @@ def detect_double_top_bottom(df: pd.DataFrame) -> list[PatternHit]:
     highs_idx, _ = _find_pivots(high, order=5)
 
     # ── Double Bottom ─────────────────────────────────────────────────────────
+    # AUD232-015: previously `break`d after the first structurally-valid pair (newest-first),
+    # so only ONE candidate per pattern type was ever built — the mutual-exclusion check below
+    # could only ever compare the single newest bottom vs the single newest top. If an older,
+    # genuinely-overlapping pair existed further back, it was skipped over and never even
+    # constructed, so a real conflict could silently slip through undetected. Now collects every
+    # structurally-valid pair per type, and mutual exclusion (below) checks ALL bottom/top pairs
+    # against each other, not just the newest of each.
+    bottom_hits: list[PatternHit] = []
     if len(lows_idx) >= 2:
         for i in range(len(lows_idx) - 1, 0, -1):
             b_idx = int(lows_idx[i])
@@ -126,7 +134,7 @@ def detect_double_top_bottom(df: pd.DataFrame) -> list[PatternHit]:
             base_conf = 0.70 if vol_confirmed else 0.55
             conf = min(0.92, base_conf + (0.10 if neckline_broken else 0.0) + (0.08 if vol_boost else 0.0))
 
-            hits.append(PatternHit(
+            bottom_hits.append(PatternHit(
                 "double_bottom", a_idx, b_idx, round(conf, 2),
                 {
                     "trough_a": trough_a, "trough_b": trough_b,
@@ -134,9 +142,9 @@ def detect_double_top_bottom(df: pd.DataFrame) -> list[PatternHit]:
                     "neckline_broken": neckline_broken, "vol_confirmed": vol_confirmed,
                 }
             ))
-            break  # use most recent valid pair only
 
     # ── Double Top ────────────────────────────────────────────────────────────
+    top_hits: list[PatternHit] = []
     if len(highs_idx) >= 2:
         for i in range(len(highs_idx) - 1, 0, -1):
             b_idx = int(highs_idx[i])
@@ -163,7 +171,7 @@ def detect_double_top_bottom(df: pd.DataFrame) -> list[PatternHit]:
             base_conf = 0.70 if vol_confirmed else 0.55
             conf = min(0.92, base_conf + (0.10 if neckline_broken else 0.0))
 
-            hits.append(PatternHit(
+            top_hits.append(PatternHit(
                 "double_top", a_idx, b_idx, round(conf, 2),
                 {
                     "peak_a": peak_a, "peak_b": peak_b,
@@ -171,19 +179,33 @@ def detect_double_top_bottom(df: pd.DataFrame) -> list[PatternHit]:
                     "neckline_broken": neckline_broken, "vol_confirmed": vol_confirmed,
                 }
             ))
-            break
 
-    # T237-TA-DTB-MUTUAL-EXCLUSION: double-bottom (bullish) and double-top (bearish) are found by
-    # two independent scans over disjoint pivot arrays (lows_idx vs highs_idx), so nothing stopped
-    # both from firing for the same window — e.g. a choppy W-M consolidation produces a real local
-    # low pair AND a real local high pair, yielding a BUY-reversal and a SELL-reversal hit at once.
-    # Keep only the higher-confidence hit when their bar ranges overlap; a stock can't be both
-    # bottoming and topping in the same window.
-    if len(hits) == 2:
-        (bot, top) = hits if hits[0].name == "double_bottom" else (hits[1], hits[0])
-        overlaps = bot.start_idx <= top.end_idx and top.start_idx <= bot.end_idx
-        if overlaps:
-            hits = [bot] if bot.confidence >= top.confidence else [top]
+    # T237-TA-DTB-MUTUAL-EXCLUSION (AUD232-015 extends this to ALL pairs, not just the newest):
+    # double-bottom (bullish) and double-top (bearish) are found by two independent scans over
+    # disjoint pivot arrays (lows_idx vs highs_idx), so nothing stops both from firing for the
+    # same window — e.g. a choppy W-M consolidation produces a real local low pair AND a real
+    # local high pair, yielding a BUY-reversal and a SELL-reversal hit at once. For every
+    # overlapping (bottom, top) pair across the full candidate sets, drop the lower-confidence
+    # one — a stock can't be both bottoming and topping in the same window.
+    dropped: set[int] = set()  # id() of PatternHit objects to exclude
+    for bot in bottom_hits:
+        for top in top_hits:
+            if id(bot) in dropped or id(top) in dropped:
+                continue
+            overlaps = bot.start_idx <= top.end_idx and top.start_idx <= bot.end_idx
+            if overlaps:
+                dropped.add(id(top) if bot.confidence >= top.confidence else id(bot))
+
+    # Keep only the most recent surviving hit per type (matches prior behavior of reporting
+    # at most one double_bottom + one double_top), now chosen from a conflict-free candidate set.
+    # Both loops above append newest-pair-first (they iterate lows_idx/highs_idx from the end
+    # backwards), so the most recent surviving hit is at index 0, not -1.
+    surviving_bottoms = [h for h in bottom_hits if id(h) not in dropped]
+    surviving_tops = [h for h in top_hits if id(h) not in dropped]
+    if surviving_bottoms:
+        hits.append(surviving_bottoms[0])
+    if surviving_tops:
+        hits.append(surviving_tops[0])
 
     return hits
 

@@ -1388,6 +1388,38 @@ def _should_enter(
     if _macro_evt:
         return False, -99, [f"Macro blackout: {_macro_evt} within 2h — avoid binary-event risk"]
 
+    # AUD232-005: ported from decision-engine's hard_rejects.py (T185 time-of-day gate +
+    # breakout-extension guard). DE had these two checks but this fallback did not — meaning
+    # a DE outage made the LIVE system MORE permissive during exactly the outage window extra
+    # caution matters most. Same thresholds/messages as hard_rejects.py for parity.
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        _market = cfg.get("market", "US")
+        _tz = _ZI("America/New_York") if _market.upper() != "HK" else _ZI("Asia/Hong_Kong")
+        _local = datetime.now(timezone.utc).astimezone(_tz)
+        _mins = _local.hour * 60 + _local.minute
+        if 570 <= _mins < 600:
+            return False, -99, [
+                f"Time-of-day gate: first 30 min of market open — "
+                f"price discovery in progress ({_local.strftime('%H:%M')} local)"
+            ]
+        if 945 <= _mins < 960:
+            return False, -99, [
+                f"Time-of-day gate: last 15 min before close — "
+                f"avoid closing auction risk ({_local.strftime('%H:%M')} local)"
+            ]
+    except Exception:
+        pass  # tz lookup failure → allow entry (fail-open, matching hard_rejects.py)
+
+    if breakout and float(breakout) > 0:
+        _ext_pct = (live_price / float(breakout) - 1) * 100
+        _ext_threshold = cfg.get("max_breakout_extension_pct", 6.0)
+        if _ext_pct > _ext_threshold:
+            return False, -99, [
+                f"Stock {_ext_pct:.1f}% above breakout ${breakout:.2f} — "
+                f"extended move, wait for pullback (threshold {_ext_threshold:.0f}%)"
+            ]
+
     # ── Price zone (where is price relative to the game plan?) ───────────────
     # CB-2 FIX: old values (+4/+3) equalled the min_entry_score threshold (3–5), making it a
     # single-factor gate. Capped at +2 max so ≥2 additional factors must align for entry.
@@ -3070,11 +3102,19 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             except Exception:
                 pass  # Redis unavailable — fail-open; normal gates still apply
 
+        # AUD232-REGIME-BEAR-FALLBACK-FULLSIZE: this dict previously had no "bear" key, so
+        # .get(regime_state, 1.0) would have silently defaulted to FULL size (1.0) for a bear
+        # regime — the opposite of decision-engine's sizer.py, which explicitly zeroes bear
+        # sizing. Currently unreachable in practice (regime_state == "bear" hard-returns above
+        # at the regime_bear gate before this line ever runs), but added explicitly as
+        # defense-in-depth so a future reordering of the gates above can't silently resurrect
+        # full-size bear-regime entries via this fallback.
         regime_size_mult = {
             "bull":     cfg.get("regime_bull_size_mult", 1.0),
             "neutral":  1.0,
             "choppy":   cfg.get("regime_choppy_size_mult", 0.75),
             "risk_off": cfg.get("regime_risk_off_size_mult", 0.50),
+            "bear":     cfg.get("regime_bear_size_mult", 0.0),
         }.get(regime_state, 1.0)
         # Tighten entry score threshold for risk-off environments
         if regime_state == "risk_off":
@@ -3405,6 +3445,27 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                                 )
                                 _si_trade.entry_shares = round((_si_trade.entry_shares or _si_old_shares) + _si_add_shares, 4)
                                 _si_trade.shares = _si_new_shares
+                                # AUD232-010: confidence_at_entry/kscore_at_entry/market_regime_at_entry
+                                # were frozen at the ORIGINAL entry and never touched on scale-in, so
+                                # downstream consumers (rl_agent.py's training features,
+                                # paper_portfolio.py's calibration-by-confidence-band report,
+                                # thesis_persistence_gate.py's regime baseline) silently attributed a
+                                # scaled position's full P&L to stale, pre-scale-in conditions. Blend
+                                # confidence/kscore share-weighted (same accounting pattern already
+                                # used for entry_price above) and refresh regime to the current state
+                                # at scale-in time, so a position that's mostly a fresh high-conviction
+                                # add reads as one downstream, not as its original entry.
+                                _si_old_conf = _si_trade.confidence_at_entry or 0.0
+                                _si_old_kscore = _si_trade.kscore_at_entry or 0.0
+                                _si_new_kscore = float(ranking.score) if ranking and ranking.score is not None else _si_old_kscore
+                                _si_trade.confidence_at_entry = round(
+                                    (_si_old_shares * _si_old_conf + _si_add_shares * _si_conf) / _si_new_shares, 2
+                                )
+                                _si_trade.kscore_at_entry = round(
+                                    (_si_old_shares * _si_old_kscore + _si_add_shares * _si_new_kscore) / _si_new_shares, 2
+                                )
+                                if live_regime and live_regime.get("state"):
+                                    _si_trade.market_regime_at_entry = live_regime["state"]
                                 _si_new_notes = list(_si_notes_list)
                                 _si_new_notes.append("SCALE_IN")
                                 _si_new_notes.append(
@@ -3450,6 +3511,13 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
 
                             _ps_notes = _ps_trade.entry_decision_notes or []
                             _ps_num_prior_adds = sum(1 for n in _ps_notes if "SCALE_IN" in str(n) or "PS_SHADOW" in str(n))
+                            # AUD232-009/012: was dividing by portfolio.current_cash (remaining cash,
+                            # not total value) — a 90%-invested portfolio holding a position genuinely
+                            # worth 20% of equity computed this as ~200%. Use the same cash+positions
+                            # total _compute_equity() already uses everywhere else in this file
+                            # (sector-cap checks, etc.) so "pct of portfolio" means what its name says.
+                            _ps_equity = _compute_equity(session, portfolio, live_prices)
+                            _ps_pct_of_portfolio = round((_ps_trade.shares * _ps_live) / _ps_equity, 4) if _ps_equity > 0 else 0.0
                             _ps_features = compute_live_features_for_position(
                                 session=session,
                                 stock_id=stock.id,
@@ -3463,9 +3531,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                                 volume_zscore=float((sig.reasons or {}).get("volume_z") or 0.0),
                                 support_level=(sig.reasons or {}).get("sr_nearest_support"),
                                 days_since_last_entry=(datetime.now(timezone.utc).date() - _ps_trade.entry_date).days,
-                                existing_position_pct_of_portfolio=round(
-                                    (_ps_trade.shares * _ps_live) / portfolio.current_cash, 4
-                                ) if portfolio.current_cash > 0 else 0.0,
+                                existing_position_pct_of_portfolio=_ps_pct_of_portfolio,
                                 num_prior_adds=_ps_num_prior_adds,
                             )
                             if _ps_features is not None:
@@ -3903,11 +3969,22 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         # (each already min()-composed internally where it overlaps with another, e.g.
         # regime_size_mult folds in VIX/breadth/HMM via min() rather than multiplying them) —
         # multiplying independent judgments together is intentional, but with no combined floor
-        # the worst realistic stack (earnings 0.50 x regime 0.50 x confidence 0.75 x research 0.6
-        # x score 0.75 = 0.084) sizes a trade at 8.4% of the intended risk target, where
-        # commission/slippage drag can exceed the position's own expected profit. Floor the
-        # composed result at 25% of the unadjusted base so a trade that clears every other gate
-        # is never sized down to a token position — multipliers above this floor are unaffected.
+        # the worst realistic stack sizes a trade down to a token position, where commission/
+        # slippage drag can exceed the position's own expected profit. Floor the composed result
+        # at 25% of the unadjusted base so a trade that clears every other gate is never sized
+        # down below that — multipliers above this floor are unaffected.
+        #
+        # AUD232-011: the worst-case figure differs by gate_source, since score_size_mult is
+        # only derived from _score_excess when gate_source=="de" — on fallback/legacy it's
+        # pinned to 1.0 (see the if/else immediately above). Stating both explicitly so nobody
+        # reasons about the floor's safety margin using the wrong one for a given path:
+        #   gate_source=="de":              earnings 0.50 x regime 0.50 x confidence 0.75
+        #                                   x research 0.6 x score 0.75       = 0.084 (8.4%)
+        #   gate_source=="fallback"/"legacy": earnings 0.50 x regime 0.50 x confidence 0.75
+        #                                   x research 0.6 x score 1.0 (pinned) = 0.1125 (11.25%)
+        # The fallback path's real floor-triggering minimum is 0.1125, not 0.084 — worth knowing
+        # since the fallback is exactly the path active during a Decision Engine outage, when
+        # extra caution matters most.
         risk_dollar    = max(risk_dollar, _risk_base * 0.25)
         shares         = risk_dollar / stop_distance
 

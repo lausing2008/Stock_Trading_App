@@ -54,8 +54,16 @@ def _rsi(close: pd.Series, w: int = 14) -> pd.Series:
     return _canon_rsi(close, window=w)
 
 
-def _adx_value(df: pd.DataFrame, period: int = 14) -> float:
-    """Return ADX scalar. Returns 20.0 (neutral) if insufficient data."""
+def _adx_value(df: pd.DataFrame, period: int = 14) -> float | None:
+    """Return ADX scalar, or None if insufficient data.
+
+    AUD232-014: previously fell back to 20.0 (not None) on insufficient data — the exact
+    bug signal-engine's own _adx() already fixed ("C3 FIX"): a 20.0 fallback silently
+    passed as a real (non-neutral) value into _technical_score()'s adx_boost formula,
+    granting a fixed +2.0 boost to every short-history stock (np.clip((20-15)/25,0,1)*10 = 2.0)
+    instead of being treated as unknown. Returns None so the caller can explicitly skip the
+    ADX-derived boost rather than silently misapplying it.
+    """
     high  = df["high"].astype(float)
     low   = df["low"].astype(float)
     close = df["close"].astype(float)
@@ -74,7 +82,7 @@ def _adx_value(df: pd.DataFrame, period: int = 14) -> float:
 
     dx  = 100 * (di_plus - di_minus).abs() / (di_plus + di_minus).replace(0, np.nan)
     adx = dx.ewm(alpha=1 / period, adjust=False).mean().iloc[-1]
-    return float(adx) if not pd.isna(adx) else 20.0
+    return float(adx) if not pd.isna(adx) else None
 
 
 def _technical_score(df: pd.DataFrame) -> float:
@@ -110,8 +118,10 @@ def _technical_score(df: pd.DataFrame) -> float:
         rsi_score = 100.0 - (r - 70) * 2.5       # 100→62.5 as RSI 70→85+
 
     adx = _adx_value(df)
-    # ADX boost: strong trend (>25) lifts score; very weak trend (<15) drags it
-    adx_boost = np.clip((adx - 15) / 25, 0, 1) * 10  # 0–10 bonus
+    # ADX boost: strong trend (>25) lifts score; very weak trend (<15) drags it.
+    # AUD232-014: skip entirely (no boost, positive or negative) when ADX is unknown
+    # (insufficient history) rather than treating "unknown" as a real, non-neutral value.
+    adx_boost = np.clip((adx - 15) / 25, 0, 1) * 10 if adx is not None else 0.0  # 0–10 bonus
 
     base = (above_sma50 + above_sma200 + sma50_above_sma200) / 3 * 60 + rsi_score * 0.4
     return float(np.clip(base + adx_boost, 0, 100))
