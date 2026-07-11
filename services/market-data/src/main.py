@@ -9,7 +9,6 @@ from .api.watchlist import router as watchlist_router, lists_router as watchlist
 from .api.news import router as news_router
 from .api.alerts import router as alerts_router
 from .api.signal_alerts import router as signal_alerts_router
-from .api.congress import router as congress_router
 from .api.journal import router as journal_router
 from .api.board import router as board_router
 from .api.positions import router as positions_router
@@ -29,6 +28,6 @@ async def on_startup():
 
 app = create_app(
     "market-data-service",
-    routers=[data_router, admin_router, auth_router, watchlists_router, watchlist_router, news_router, alerts_router, signal_alerts_router, congress_router, journal_router, board_router, positions_router, app_notifications_router, portfolio_router, paper_portfolio_router, broker_router, rl_router, push_router],
+    routers=[data_router, admin_router, auth_router, watchlists_router, watchlist_router, news_router, alerts_router, signal_alerts_router, journal_router, board_router, positions_router, app_notifications_router, portfolio_router, paper_portfolio_router, broker_router, rl_router, push_router],
     on_startup=on_startup,
 )

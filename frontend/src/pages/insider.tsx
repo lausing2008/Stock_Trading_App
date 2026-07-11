@@ -1,27 +1,12 @@
 /**
  * Insider / Congress Trade Tracker page.
  *
- * AI provider: whichever is configured in Settings → AI Assistant
- *              (Claude or DeepSeek). Uses temperature=0.2 (default).
- *              AI is a FALLBACK only — used when no Quiver API key is set.
+ * T233-ARCH-CONGRESS-DEDUP: data source is event-intelligence's canonical
+ * GET /events/congress/recent (DB-persisted, feeds catalyst scoring) — previously called
+ * market-data's now-deleted /congress/trades (Quiver-optional with an AI-fallback path).
+ * The AI/Quiver fallback UI is gone since the live feed no longer needs one.
  *
- * Data source priority
- * ────────────────────
- * 1. Quiver Quantitative API (live, real-time disclosures)
- *    Requires a Quiver API key in Settings → Congressional & Insider Trading.
- *    Fetches from GET /congress/trades (proxied through api-gateway → congress.py).
- *    Returns actual STOCK Act filings with exact dollar ranges and dates.
- *
- * 2. AI fallback (loadWithAi) — used when no Quiver key is configured
- *    AI_PROMPT_SYSTEM: instructs AI to output ONLY a raw JSON array,
- *                      no markdown, no prose.
- *    AI_PROMPT_USER:   asks for all known congressional trades from 2023+
- *                      for Nancy Pelosi, Congressman Josh, and Mark Green.
- *    Response is stripped of markdown fences and parsed as CongressTrade[].
- *    A yellow disclaimer banner is shown to flag AI data as approximate
- *    (from training data, not live filings). max_tokens=4096.
- *
- * Featured traders (always highlighted regardless of data source)
+ * Featured traders (always highlighted)
  * ───────────────────────────────────────────────────────────────
  *   Nancy Pelosi  — matched by "pelosi"      in Politician field
  *   Congressman Josh — matched by "josh"
@@ -36,9 +21,28 @@
 import { useState, useMemo } from 'react';
 import Link from 'next/link';
 import useSWR from 'swr';
-import { api, type CongressTradeRecord as CongressTrade } from '@/lib/api';
-import { loadSettings } from '@/lib/settings';
-import { askAI, isAiConfigured } from '@/lib/ai';
+import { api, type CongressTrade } from '@/lib/api';
+
+type CongressTradeRecord = {
+  Ticker: string; Date: string; Politician: string; Transaction: string;
+  Min: number | null; Max: number | null; Party: string | null; State: string | null;
+  Chamber: string | null; ReportDate: string | null;
+};
+
+function adaptTrade(t: CongressTrade): CongressTradeRecord {
+  return {
+    Ticker: t.ticker,
+    Date: t.trade_date ?? '',
+    Politician: t.politician_name,
+    Transaction: t.transaction_type === 'purchase' ? 'Purchase' : t.transaction_type === 'sale' ? 'Sale' : t.transaction_type,
+    Min: t.amount_min,
+    Max: t.amount_max,
+    Party: t.party,
+    State: t.state,
+    Chamber: t.chamber,
+    ReportDate: t.disclosure_date,
+  };
+}
 
 // Featured traders to spotlight
 const FEATURED = [
@@ -62,13 +66,14 @@ function partyBadge(party: string | null) {
 
 function txBadge(tx: string) {
   const isPurchase = /purchase|buy/i.test(tx);
+  const isUnknown = /unknown/i.test(tx);
   return (
     <span style={{
       fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '5px',
-      background: isPurchase ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)',
-      border: `1px solid ${isPurchase ? 'rgba(34,197,94,0.35)' : 'rgba(239,68,68,0.35)'}`,
-      color: isPurchase ? '#4ade80' : '#f87171',
-    }}>{isPurchase ? '▲ BUY' : '▼ SELL'}</span>
+      background: isUnknown ? 'rgba(148,163,184,0.12)' : isPurchase ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)',
+      border: `1px solid ${isUnknown ? 'rgba(148,163,184,0.35)' : isPurchase ? 'rgba(34,197,94,0.35)' : 'rgba(239,68,68,0.35)'}`,
+      color: isUnknown ? '#94a3b8' : isPurchase ? '#4ade80' : '#f87171',
+    }}>{isUnknown ? '? UNKNOWN' : isPurchase ? '▲ BUY' : '▼ SELL'}</span>
   );
 }
 
@@ -89,76 +94,15 @@ function daysAgoBadge(dateStr: string) {
   return <span style={{ fontSize: '11px', color, fontWeight: d <= 7 ? 700 : 400 }}>{d === 0 ? 'Today' : `${d}d ago`}</span>;
 }
 
-const AI_PROMPT_SYSTEM = `You output ONLY raw JSON arrays. No markdown fences, no prose, no explanation — just the [ ... ] array starting on the very first character of your response.
-
-Each element must have exactly these fields (use null for unknown numeric fields):
-{"Ticker":"NVDA","Date":"2024-11-15","Politician":"Pelosi, Nancy","Transaction":"Purchase","Min":1000000,"Max":5000000,"Party":"D","State":"CA","Chamber":"House","ReportDate":"2024-11-30"}
-
-Rules:
-- Transaction is exactly "Purchase" or "Sale"
-- Date and ReportDate are YYYY-MM-DD strings
-- Min/Max are integers in USD (can be null)
-- Your entire response must be parseable by JSON.parse()`;
-
-const AI_PROMPT_USER = `List all known congressional stock trades you have in your training data from 2023 onwards for:
-1. Nancy Pelosi (D-CA)
-2. Congressman Josh (any: Gottheimer, Hawley, Brecheen, or other Josh)
-3. Mark Green (R-TN)
-
-Also include any other congress members who were particularly active traders in 2024-2025.
-
-Include both Purchases and Sales. Focus on the most notable/largest trades. Return at least 40 trades if known.
-
-Return ONLY the JSON array.`;
-
 export default function InsiderPage() {
-  const hasKey = typeof window !== 'undefined' ? !!loadSettings().quiverApiKey : false;
-  const aiAvailable = isAiConfigured();
-
-  const { data: liveTrades, error: liveError, isLoading: liveLoading } = useSWR<CongressTrade[]>(
-    hasKey ? 'congress-trades' : null,
-    () => api.congressTrades(90),
+  const { data: rawTrades, error: loadErrorObj, isLoading } = useSWR<CongressTrade[]>(
+    'congress-trades',
+    () => api.eventsCongressRecent(365, { limit: 500 }),
     { revalidateOnFocus: false },
   );
 
-  const [aiTrades, setAiTrades]       = useState<CongressTrade[] | null>(null);
-  const [aiLoading, setAiLoading]     = useState(false);
-  const [aiError, setAiError]         = useState('');
-  const [usingAi, setUsingAi]         = useState(false);
-
-  const trades = liveTrades ?? aiTrades ?? null;
-  const isLoading = liveLoading || aiLoading;
-  const loadError = liveError?.message ?? (aiError || '');
-
-  async function loadWithAi() {
-    setAiLoading(true);
-    setAiError('');
-    setUsingAi(true);
-    try {
-      const raw = await askAI([{ role: 'user', content: AI_PROMPT_USER }], AI_PROMPT_SYSTEM, 4096);
-
-      // Strip markdown code fences if present, then find the JSON array
-      const stripped = raw
-        .replace(/```(?:json)?\s*/gi, '')
-        .replace(/```/g, '');
-      const match = stripped.match(/\[[\s\S]*\]/);
-      if (!match) {
-        console.error('AI raw response:', raw.slice(0, 500));
-        throw new Error('AI response did not contain a JSON array. Try again.');
-      }
-      const parsed = JSON.parse(match[0]) as CongressTrade[];
-      if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('AI returned an empty dataset.');
-      setAiTrades(parsed);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'AI request failed.';
-      setAiError(msg.toLowerCase().includes('networkerror') || msg.toLowerCase().includes('failed to fetch')
-        ? 'AI request failed — go to Settings → AI Assistant and enter your API key.'
-        : msg);
-      setUsingAi(false);
-    } finally {
-      setAiLoading(false);
-    }
-  }
+  const trades = useMemo(() => (rawTrades ?? []).map(adaptTrade), [rawTrades]);
+  const loadError = loadErrorObj?.message ?? '';
 
   const [filterPolitician, setFilterPolitician] = useState('');
   const [filterTicker, setFilterTicker]         = useState('');
@@ -168,7 +112,6 @@ export default function InsiderPage() {
   const [showNetBuyersOnly, setShowNetBuyersOnly] = useState(false);
 
   const filtered = useMemo(() => {
-    if (!trades) return [];
     return trades
       .filter(t => {
         const txOk = filterTx === 'all'
@@ -176,7 +119,7 @@ export default function InsiderPage() {
           : filterTx === 'buy' ? /purchase|buy/i.test(t.Transaction) : /sale|sell/i.test(t.Transaction);
         const polOk = !filterPolitician || (t.Politician || '').toLowerCase().includes(filterPolitician.toLowerCase());
         const tkOk  = !filterTicker || (t.Ticker || '').toUpperCase().includes(filterTicker.toUpperCase());
-        const dateOk = usingAi ? true : daysAgo(t.Date) <= days;
+        const dateOk = daysAgo(t.Date) <= days;
         return txOk && polOk && tkOk && dateOk;
       })
       .sort((a, b) => {
@@ -186,11 +129,10 @@ export default function InsiderPage() {
         const bAmt = b.Max ?? b.Min ?? 0;
         return bAmt - aAmt;
       });
-  }, [trades, filterTx, filterPolitician, filterTicker, days, sortBy, usingAi]);
+  }, [trades, filterTx, filterPolitician, filterTicker, days, sortBy]);
 
   // Per-featured-trader summaries
   const featuredStats = useMemo(() => {
-    if (!trades) return {};
     return Object.fromEntries(FEATURED.map(f => {
       const rows = trades.filter(t => (t.Politician || '').toLowerCase().includes(f.match));
       const buys = rows.filter(t => /purchase|buy/i.test(t.Transaction));
@@ -206,7 +148,6 @@ export default function InsiderPage() {
 
   // Conviction screener: net buy $ per ticker, distinct buyers
   const convictionScores = useMemo(() => {
-    if (!trades) return [];
     const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
     const byTicker: Record<string, { netBuy: number; buyers: Set<string>; sellers: Set<string>; buyCount: number; sellCount: number }> = {};
     trades.filter(t => new Date(t.Date).getTime() >= cutoff).forEach(t => {
@@ -233,8 +174,7 @@ export default function InsiderPage() {
 
   // Sudden activity: tickers bought 2+ times across politicians
   const suddenActivity = useMemo(() => {
-    if (!trades) return [];
-    const recentBuys = trades.filter(t => /purchase|buy/i.test(t.Transaction) && daysAgo(t.Date) <= (usingAi ? 730 : 30));
+    const recentBuys = trades.filter(t => /purchase|buy/i.test(t.Transaction) && daysAgo(t.Date) <= 30);
     const freq: Record<string, { count: number; politicians: Set<string> }> = {};
     recentBuys.forEach(t => {
       if (!freq[t.Ticker]) freq[t.Ticker] = { count: 0, politicians: new Set() };
@@ -246,7 +186,7 @@ export default function InsiderPage() {
       .sort((a, b) => b[1].count - a[1].count)
       .slice(0, 10)
       .map(([ticker, v]) => ({ ticker, count: v.count, politicians: Array.from(v.politicians).slice(0, 3) }));
-  }, [trades, usingAi]);
+  }, [trades]);
 
   return (
     <div className="space-y-4">
@@ -254,110 +194,28 @@ export default function InsiderPage() {
         <h1 style={{ fontSize: '20px', fontWeight: 800, color: '#f1f5f9', margin: 0 }}>
           Congressional Trade Tracker
         </h1>
-        <span style={{ fontSize: '12px', color: '#475569' }}>
-          {usingAi ? 'AI knowledge base — not real-time' : 'STOCK Act disclosures via Quiver Quantitative'}
-        </span>
+        <span style={{ fontSize: '12px', color: '#475569' }}>STOCK Act disclosures</span>
       </div>
 
-      {/* No key — offer AI or setup */}
-      {!hasKey && !usingAi && !aiLoading && !aiTrades && (
-        <div style={{
-          padding: '28px', borderRadius: '12px', border: '1px solid rgba(251,146,60,0.3)',
-          background: 'rgba(251,146,60,0.06)',
-        }}>
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', textAlign: 'center' }}>
-            <div style={{ fontSize: '30px' }}>📋</div>
-            <div style={{ fontSize: '15px', fontWeight: 700, color: '#fdba74' }}>
-              No Quiver API Key Configured
-            </div>
-            <div style={{ fontSize: '13px', color: '#94a3b8', maxWidth: '500px' }}>
-              For real-time STOCK Act disclosures, add a free{' '}
-              <span style={{ color: '#fb923c' }}>quiverquant.com</span> key in Settings.
-              Or use AI to load known trades from Claude&apos;s knowledge base.
-            </div>
-            <div style={{ display: 'flex', gap: '12px', marginTop: '4px', flexWrap: 'wrap', justifyContent: 'center' }}>
-              {aiAvailable ? (
-                <button
-                  onClick={loadWithAi}
-                  style={{
-                    padding: '10px 24px', borderRadius: '8px', fontWeight: 700, fontSize: '13px', cursor: 'pointer',
-                    background: 'linear-gradient(135deg,#7c3aed,#a78bfa)', border: 'none', color: '#fff',
-                  }}
-                >
-                  🤖 Load with AI
-                </button>
-              ) : (
-                <div style={{ fontSize: '12px', color: '#475569' }}>
-                  No AI configured.{' '}
-                  <Link href="/settings" style={{ color: '#a78bfa' }}>Set up Claude in Settings</Link>
-                  {' '}to use AI as data source.
-                </div>
-              )}
-              <Link
-                href="/settings"
-                style={{
-                  display: 'inline-block', padding: '10px 20px', borderRadius: '8px',
-                  background: 'rgba(251,146,60,0.15)', border: '1px solid rgba(251,146,60,0.35)',
-                  color: '#fb923c', fontWeight: 700, fontSize: '13px', textDecoration: 'none',
-                }}
-              >
-                ⚙ Configure Quiver Key
-              </Link>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* AI loading spinner */}
-      {aiLoading && (
-        <div style={{ padding: '48px', textAlign: 'center', color: '#a78bfa', fontSize: '13px' }}>
-          <div style={{ fontSize: '24px', marginBottom: '8px', animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</div>
-          <div>Asking AI for congressional trading data…</div>
-        </div>
-      )}
-
-      {/* Quiver loading */}
-      {hasKey && liveLoading && (
+      {/* Loading */}
+      {isLoading && (
         <div style={{ padding: '48px', textAlign: 'center', color: '#475569', fontSize: '13px' }}>
           Loading congressional trades…
         </div>
       )}
 
       {/* Error */}
-      {loadError && !aiLoading && (
+      {loadError && !isLoading && (
         <div style={{
           padding: '14px 18px', borderRadius: '10px',
           background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)',
-          color: '#f87171', fontSize: '13px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          color: '#f87171', fontSize: '13px',
         }}>
-          <span>{loadError.includes('400') ? 'API key not pushed to backend — save it in Settings then refresh.' : loadError}</span>
-          {!hasKey && aiAvailable && (
-            <button onClick={loadWithAi} style={{ background: 'rgba(167,139,250,0.2)', border: '1px solid rgba(167,139,250,0.4)', color: '#a78bfa', borderRadius: '6px', padding: '5px 12px', fontSize: '12px', cursor: 'pointer' }}>
-              Try AI instead
-            </button>
-          )}
+          {loadError}
         </div>
       )}
 
-      {/* AI disclaimer banner */}
-      {usingAi && trades && (
-        <div style={{
-          padding: '10px 16px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.25)',
-        }}>
-          <div style={{ fontSize: '12px', color: '#a78bfa' }}>
-            🤖 Data from AI knowledge base — trades may be from training data (pre-2025), not real-time.
-            For live disclosures, add a{' '}
-            <Link href="/settings" style={{ color: '#c4b5fd', textDecoration: 'underline' }}>Quiver API key in Settings</Link>.
-          </div>
-          <button
-            onClick={() => { setAiTrades(null); setUsingAi(false); setAiError(''); }}
-            style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '18px', lineHeight: 1 }}
-          >×</button>
-        </div>
-      )}
-
-      {trades && (
+      {!isLoading && (
         <>
           {/* ── Featured trader cards ─────────────────────────────────── */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '12px' }}>
@@ -513,19 +371,17 @@ export default function InsiderPage() {
                 {v === 'all' ? 'All' : v === 'buy' ? '▲ Buys' : '▼ Sells'}
               </button>
             ))}
-            {!usingAi && (
-              <select
-                value={days}
-                onChange={e => setDays(Number(e.target.value))}
-                style={{ background: '#1e293b', color: '#cbd5e1', border: '1px solid #1e293b', borderRadius: '7px', padding: '6px 10px', fontSize: '12px' }}
-              >
-                <option value={7}>Last 7 days</option>
-                <option value={30}>Last 30 days</option>
-                <option value={60}>Last 60 days</option>
-                <option value={90}>Last 90 days</option>
-                <option value={365}>Last year</option>
-              </select>
-            )}
+            <select
+              value={days}
+              onChange={e => setDays(Number(e.target.value))}
+              style={{ background: '#1e293b', color: '#cbd5e1', border: '1px solid #1e293b', borderRadius: '7px', padding: '6px 10px', fontSize: '12px' }}
+            >
+              <option value={7}>Last 7 days</option>
+              <option value={30}>Last 30 days</option>
+              <option value={60}>Last 60 days</option>
+              <option value={90}>Last 90 days</option>
+              <option value={365}>Last year</option>
+            </select>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
               <span style={{ fontSize: '11px', color: '#475569' }}>Sort:</span>
               {(['date', 'amount', 'politician'] as const).map(v => (
@@ -542,14 +398,6 @@ export default function InsiderPage() {
               ))}
             </div>
             <div style={{ fontSize: '12px', color: '#475569' }}>{filtered.length} trades</div>
-            {usingAi && aiAvailable && (
-              <button
-                onClick={loadWithAi}
-                style={{ fontSize: '11px', padding: '5px 12px', borderRadius: '6px', background: 'rgba(167,139,250,0.15)', border: '1px solid rgba(167,139,250,0.3)', color: '#a78bfa', cursor: 'pointer' }}
-              >
-                ↻ Refresh AI
-              </button>
-            )}
           </div>
 
           {/* ── Trade table ──────────────────────────────────────────────── */}

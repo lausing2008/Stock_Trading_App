@@ -212,14 +212,22 @@ def get_congress_leaderboard(days: int = 90, limit: int = 20) -> list[dict]:
     return sorted_result[:limit]
 
 
-def get_recent_congress_trades(days: int = 30, limit: int = 50) -> list[dict]:
+def get_recent_congress_trades(
+    days: int = 30, limit: int = 50, ticker: str | None = None, politician: str | None = None,
+) -> list[dict]:
+    """T233-ARCH-CONGRESS-DEDUP: ticker/politician filters added so this endpoint can serve
+    congress.tsx/insider.tsx directly, replacing market-data's now-deleted /congress/trades
+    (which supported the same two filters server-side, though neither frontend page actually
+    wired them into its API call — both filtered client-side instead)."""
     since = date.today() - timedelta(days=days)
     with SessionLocal() as s:
+        stmt = select(CongressTrade).where(CongressTrade.trade_date >= since)
+        if ticker:
+            stmt = stmt.where(CongressTrade.ticker == ticker.upper())
+        if politician:
+            stmt = stmt.where(CongressTrade.politician_name.ilike(f"%{politician}%"))
         rows = s.execute(
-            select(CongressTrade)
-            .where(CongressTrade.trade_date >= since)
-            .order_by(CongressTrade.trade_date.desc())
-            .limit(limit)
+            stmt.order_by(CongressTrade.trade_date.desc()).limit(limit)
         ).scalars().all()
         return [_trade_to_dict(t) for t in rows]
 
