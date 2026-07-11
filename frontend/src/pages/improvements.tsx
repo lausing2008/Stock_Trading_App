@@ -14847,6 +14847,64 @@ const ITEMS: Item[] = [
     what: 'Watchlist curation today is 100% manual — nothing automatically drops a consistently losing stock or adds a newly-strong one. User asked (2026-07-11) whether to replace the 4 style-specific watchlists with one generic cross-market list rotated weekly by trailing-month performance, or keep the 4 separate style-specific lists. Recommendation given: keep the 4 separate lists (each style has its own independently-trained ML model per symbol and its own threshold profile — LONG in particular applies a fundamentals/K-Score boost the other styles don\'t, so "good for GROWTH" and "good for LONG" are genuinely different judgments, not the same ranking viewed two ways), but add an automated rotation job that runs independently PER STYLE against that style\'s own performance history and its own K-Score ranking, rather than one merged list.',
     fix: 'Add a weekly scheduled job (mirroring the existing scheduler.py job patterns) that, for each of SHORT/SWING/LONG/GROWTH independently: (1) reads that style\'s watchlist_perf via the same query GET /admin/watchlist-performance already implements; (2) drops any stock whose win_rate falls below a configurable floor AND has enough resolved outcomes to be statistically meaningful, not just a time window (see impact note on whipsaw risk); (3) pulls in the next N top-K-Score candidates from that style\'s own rankings.candidates list that aren\'t already on the watchlist; (4) logs every add/drop with the reason and the data it was based on (mirroring the existing TuneHistory audit-trail pattern used for other self-tuning mechanisms in this codebase, e.g. signal_watchdog), so a user can see why a stock disappeared rather than just noticing it\'s gone.',
   },
+
+  // ── Tier 244 — Self-Tuning Dashboard Deep Audit (2026-07-11) ──────────────
+  {
+    id: 'TUNE-WINDOW-STYLE-BLIND',
+    tier: 244 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/signal-engine/src/api/routes.py:signal_watchdog(), tune_status()',
+    effort: 'S',
+    impact: 'High — this made the self-tuning dashboard and the watchdog\'s own safety net effectively SHORT-only in practice. LONG could never show a non-zero "14d outcomes" count no matter how long the system ran, and SWING/GROWTH could only rarely show one, purely due to calendar-arithmetic, not a data or pipeline problem.',
+    title: 'signal_watchdog() and tune_status() used a flat 14-day signal_date cutoff for "resolved outcomes," which is mathematically incompatible with any style whose hold window is >=14 days',
+    what: 'User asked why only the SHORT style card on /signal-tuning showed real data ("223 outcomes 14d") while SWING/LONG/GROWTH showed 0. Investigation confirmed all 4 styles have healthy, continuously-generated signals and a healthy evaluate_signal_outcomes() job (SHORT=657, SWING=505, LONG=63, GROWTH=520 total resolved BUY outcomes in the DB) — the "0" was never a data gap. Both signal_watchdog() and tune_status() query `SignalOutcome.signal_date >= today - 14 days`, but a SignalOutcome row only gets created once hold_days (7/14/28/14 for SHORT/SWING/LONG/GROWTH respectively) has elapsed since signal_date. By the time a SWING/GROWTH signal (14d hold) can resolve, its signal_date has JUST fallen outside a 14-day trailing window; for LONG (28d hold) this is a guaranteed permanent 0, not a rare one — the window can never contain a resolved LONG outcome under the old query, structurally, forever.',
+    fix: 'Widen the signal_date floor per style by that style\'s own _OUTCOME_HOLD_DAYS value: `window_start = today - (14 + hold_days)` instead of a flat `today - 14`. This preserves the intent ("last 14 days of signals, evaluated on whether they won") while accounting for how long a signal of that style actually takes to become resolvable.',
+    implementedNote: 'Fixed 2026-07-11 in both signal_watchdog() and tune_status() (services/signal-engine/src/api/routes.py). Verified live against production data post-fix: SWING window (14+14=28d) now shows 196 resolved outcomes (82 wins); GROWTH (14+14=28d) shows 285 (120 wins); LONG (14+28=42d) shows all 63 available LONG outcomes instead of 0. Updated signal-tuning.tsx\'s "outcomes 14d" label/tooltip and the Tier 86 description text (which still said "≥5 outcomes," stale since this session\'s earlier signal_watchdog fix raised that floor to 15) to describe the style-aware window instead of implying a flat 14 days. market-data\'s 80-test suite unaffected; routes.py compiles clean.',
+  },
+
+  {
+    id: 'TUNE-WATCHDOG-SILENT-EXPIRY',
+    tier: 244 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/signal-engine/src/api/routes.py:signal_watchdog()',
+    effort: 'S',
+    impact: 'Medium — an operator watching only the dashboard\'s "Nominal" pill has no way to distinguish "genuinely healthy" from "an override quietly lapsed 7 days ago with nobody having reviewed whether the underlying win-rate problem actually improved."',
+    title: 'A watchdog threshold override expires from Redis after its 7-day TTL with no log line, no TuneHistory row, and no alert — the dashboard just silently reverts to showing "Nominal" the next day',
+    what: 'signal_watchdog()\'s tighten/relax actions are both correctly recorded to TuneHistory (fixed earlier this session), but if a style\'s win rate recovers above 38% (or its sample count drops below the min-sample floor) while an override is still active, NEITHER the tighten nor relax branch executes — the Redis key just counts down to its 7-day TTL and vanishes on its own. There is no "override expired" or "override still active, N days remaining" signal anywhere: not in TuneHistory, not in logs, not on the dashboard beyond the bare presence/absence of a "Nominal" vs colored-value pill.',
+    fix: 'Log (at minimum) when the watchdog runs and finds an active override but takes no action this run — including the override\'s remaining TTL — so a log-based alert or future dashboard enhancement could flag "override about to lapse" instead of it happening invisibly.',
+    implementedNote: 'Fixed 2026-07-11: signal_watchdog() now logs signal_watchdog.override_active_no_action (style, ttl_remaining_s, current_threshold, win_rate_14d, n_outcomes_14d) whenever an override is active but neither the tighten nor relax branch fires that run. Deliberately does NOT auto-renew the override\'s TTL on a no-action run — a stale win-rate read that keeps re-tightening forever without ever re-validating against fresh data would be its own, worse risk; letting it lapse and requiring the next real tighten condition to re-earn a fresh override is the safer default. routes.py compiles clean.',
+  },
+
+  {
+    id: 'TUNE-CADENCE-MISMATCH',
+    tier: 244 as const, severity: 'low', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/services/scheduler.py (job schedule), services/signal-engine/src/api/routes.py:signal_watchdog() vs outcomes_calibrate_apply()/tune_style_profiles()',
+    effort: 'M',
+    impact: 'Low-Medium — not a bug, a design interaction worth being aware of: the daily watchdog can \'confirm and harden\' a stale or wrong weekly-calibrated baseline for up to 6 days before the next Sunday sweep gets a chance to correct it.',
+    title: 'signal_watchdog runs daily but outcomes_calibrate_apply/tune_style_profiles (which set the calibrated baseline the watchdog tightens FROM) only run weekly — a bad Sunday calibration can get compounded by the watchdog before the following Sunday reviews it',
+    what: 'signal_watchdog runs Mon-Fri at 06:10 ET; outcomes_calibrate_apply and tune_style_profiles only run weekly (Sunday, inside _weekly_full_refresh). Redis key namespaces are cleanly separated (no two mechanisms write the same key — confirmed via live redis-cli KEYS scan), so this is not a write-conflict. But signal_watchdog\'s tighten logic explicitly falls back to reading stockai:signal_thresholds:{style} (the weekly calibration\'s own output) as its base value when no watchdog override yet exists — meaning a bad or noisy Sunday calibration run can be picked up and further tightened by the watchdog every weekday morning, compounding the effect, before the following Sunday\'s sweep re-examines whether that calibrated baseline itself needs correcting.',
+    fix: 'Not an obvious bug to patch reflexively — worth a deliberate design review rather than a reflexive fix: options include running the weekly calibration more often (e.g. every 2-3 days), having the watchdog cap how far it can push a threshold beyond some sanity bound independent of the calibrated baseline it started from, or explicitly logging when the watchdog\'s fallback base value itself was set by a low-confidence/borderline-gated weekly run.',
+  },
+
+  {
+    id: 'TUNE-VALIDATION-BAR-INCONSISTENT',
+    tier: 244 as const, severity: 'low', defaultStatus: 'todo' as const,
+    file: 'services/signal-engine/src/api/routes.py:tune_style_profiles()',
+    effort: 'S',
+    impact: 'Low — both bars are intentional per the function\'s own design, but the inconsistency between them (full min_samples for one parameter, much looser min_samples//2 or //4 for two others, in the same function, same validation split) isn\'t documented anywhere as a deliberate choice, and reads as an oversight to a fresh audit pass.',
+    title: 'tune_style_profiles() requires the full validation min_samples for its ml_weight_cap sweep, but only min_samples//2 (adx_min) or //4 (breadth_compression) for two other parameters tuned by the same function',
+    what: 'Within the same weekly job, the same validation data split is held to three different statistical bars: ml_weight_cap requires the full min_samples on the validation slice; adx_min requires only min_samples // 2; breadth_compression requires only min_samples // 4. Not necessarily wrong (documented in-code as intentional — adx_min/breadth_compression promotion is framed as an accuracy comparison rather than the EV-based gate ml_weight_cap uses), but the inconsistency isn\'t called out anywhere as a deliberate choice, so a future maintainer tightening one bar for a good reason could easily miss that the other two were meant to stay looser (or vice versa).',
+    fix: 'Add an explicit comment at the point all three gates are checked explaining why the bars differ (or unify them if the difference was actually accidental rather than intentional) — a quick documentation pass, not a behavior change, unless someone confirms the looser bars were never actually a deliberate choice.',
+  },
+
+  {
+    id: 'TUNE-LONG-EVALUATE-BACKLOG',
+    tier: 244 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/signal-engine/src/api/routes.py:evaluate_signal_outcomes()',
+    effort: 'M',
+    impact: 'Medium — a real, reproducible gap: 19 confirmed LONG BUY signals from 2026-06-12/13 have no signal_outcomes row at all despite being 4+ weeks past their 28-day hold window, with full price coverage available for their resolution date (confirmed for NVDA specifically — 20 real D1 price rows spanning the full window). Ruled out as the cause: the dedup guard (evaluated_sighd) — no colliding outcome row exists for any of these (stock_id, horizon, signal_date) keys either.',
+    title: '19 LONG BUY signals from 2026-06-12/13 never got evaluated into signal_outcomes despite being weeks past their hold window and having full price coverage — root cause not yet identified',
+    what: 'Found while investigating the signal_watchdog/tune_status 14-day-window issue above. Direct query confirmed 19 specific signal_ids (NVDA, KGS x2, ARMK x2, ASX x2, SCHD, MU, BULL, XSD, AAPL, DELL, SOXQ, QQQ, OSCR, GOOG, UPST, SOXX — all LONG horizon, signal dates 2026-06-12/13) have zero corresponding signal_outcomes row. evaluate_signal_outcomes()\'s candidate query (Signal.ts <= cutoff, not yet in evaluated_ids) should include all of these on every run since — the query itself looks correct on read, and NVDA\'s price data fully covers both the T+1 entry date and the 28-day-later exit target with no gap. This has now persisted across weeks of scheduled twice-daily evaluate runs without resolving, meaning something is silently short-circuiting these specific 19 rows every single run, not a one-time blip.',
+    fix: 'Needs a live debugging pass (add temporary logging around the entry/exit price lookup and the per-signal try/except for these specific signal_ids, or step through evaluate_signal_outcomes() locally against a DB snapshot containing them) to find why these particular rows are silently skipped every run despite passing every check that was manually re-verified against the codebase\'s current logic. Investigated this session but root cause not found within the scope of a read-only audit — flagging as a confirmed, reproducible bug rather than guessing at a blind fix.',
+  },
 ];
 
 
