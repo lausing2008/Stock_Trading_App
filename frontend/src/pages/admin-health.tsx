@@ -39,6 +39,7 @@ const JOB_META: Record<string, { label: string; maxAgeDays: number; desc: string
   db_purge_weekly:           { label: 'DB Weekly Purge',             maxAgeDays: 8,  desc: 'Deletes prices_5m + scheduler_jobs rows older than 90 days (Sun 15:00 PST)' },
   tune_all_sent:             { label: 'Optuna Tune-All',             maxAgeDays: 8,  desc: 'Weekly XGBoost hyperparameter tuning sent to ML service (Optuna search)' },
   calibrate_ta_weights_sent: { label: 'TA Weight Calibration',       maxAgeDays: 8,  desc: 'Weekly TA logistic regression calibration — updates ta_weights.json' },
+  calibrate_ml_weight_sent:  { label: 'ML Weight Calibration',       maxAgeDays: 8,  desc: 'Weekly ML/TA fusion weight sweep — applies only if it beats a neutral 0.5 baseline on held-out data' },
   rl_agent_train:            { label: 'RL Agent Train',              maxAgeDays: 8,  desc: 'Contextual bandit (Ridge Q-function) trained on closed paper trades. Requires ≥50 closed trades — shows "skipped" until paper trading accumulates enough history.' },
 };
 
