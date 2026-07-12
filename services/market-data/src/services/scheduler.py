@@ -2106,6 +2106,38 @@ def _weekly_full_refresh() -> None:
         log.error("scheduler.calibrate_entry_weights_failed", error=str(_exc))
         _record_job_status("calibrate_entry_weights", "error", 0.0, str(_exc))
 
+    # SELFIMPROVE-PROMOTION-GATES-INCOMPLETE: promotion_gate.py's evaluate_and_record() already
+    # has a real validation gate (walk-forward EV-lift + an approximate worst-trade regression
+    # check) and writes every attempt (promoted or not) to tune_history — its own module
+    # docstring calls the missing cron registration "Phase 5", but per this fix, scheduling it
+    # requires no new judgment call: it deliberately does NOT write to portfolio.config (a human
+    # still decides whether to hand-edit the live min_entry_score based on the result), so
+    # running it weekly only adds observability, never silently changes live trading behavior.
+    # Called directly (not via HTTP) for the same reason as calibrate_entry_weights above — the
+    # route requires an admin User dependency the scheduler's service token doesn't have.
+    try:
+        log.info("scheduler.promotion_gate_start")
+        from ..backtest.promotion_gate import evaluate_and_record as _promo_eval
+        from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+        _promo_window_end = date.today()
+        _promo_window_start = _promo_window_end - timedelta(days=60)
+        _promo_results = []
+        with SessionLocal() as _promo_session:
+            for _style in ("SHORT", "SWING", "LONG", "GROWTH"):
+                for _market in ("US", "HK"):
+                    _base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(_style, {})}
+                    try:
+                        _r = _promo_eval(_promo_session, _style, _market, _base_cfg, _promo_window_start, _promo_window_end, triggered_by="scheduler")
+                        _promo_results.append(f"{_style}/{_market}:{'promoted' if _r.get('promoted') else 'not_promoted'}")
+                    except Exception as _promo_exc:
+                        log.warning("scheduler.promotion_gate_style_failed", style=_style, market=_market, error=str(_promo_exc))
+                        _promo_results.append(f"{_style}/{_market}:error")
+        _record_job_status("promotion_gate", "ok", 0.0)
+        log.info("scheduler.promotion_gate_done", results=_promo_results)
+    except Exception as _exc:
+        log.error("scheduler.promotion_gate_failed", error=str(_exc))
+        _record_job_status("promotion_gate", "error", 0.0, str(_exc))
+
     # AL-1: train RL Q-function on closed paper trades (Ridge regression → pct_return).
     # Requires ≥50 trades. Saves policy to /data/models/rl_policy.json.
     try:
