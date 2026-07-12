@@ -41,6 +41,11 @@ const JOB_META: Record<string, { label: string; maxAgeDays: number; desc: string
   calibrate_ta_weights_sent: { label: 'TA Weight Calibration',       maxAgeDays: 8,  desc: 'Weekly TA logistic regression calibration — updates ta_weights.json' },
   calibrate_ml_weight_sent:  { label: 'ML Weight Calibration',       maxAgeDays: 8,  desc: 'Weekly ML/TA fusion weight sweep — applies only if it beats a neutral 0.5 baseline on held-out data' },
   rl_agent_train:            { label: 'RL Agent Train',              maxAgeDays: 8,  desc: 'Contextual bandit (Ridge Q-function) trained on closed paper trades. Requires ≥50 closed trades — shows "skipped" until paper trading accumulates enough history.' },
+  // Model promotion gates (SELFIMPROVE-PROMOTION-GATES-INCOMPLETE, see
+  // docs/DESIGN_MODEL_PROMOTION_GATES_2026-07-12.md) — a "skipped" status here means the
+  // retrain ran but its result did not clear the promotion bar, not that the job failed.
+  meta_model_promotion:      { label: 'Meta-Model Promotion',        maxAgeDays: 35, desc: 'Monthly meta-model retrain gate — rejects a new model only if its validation AUC is strictly worse than the currently deployed one' },
+  position_scaling_gate_promotion: { label: 'Pos-Scaling Gate Promotion', maxAgeDays: 8, desc: 'Weekly position-scaling gate retrain gate — SHADOW-LOG ONLY today (still always saves the new model regardless of verdict; real enforcement is a deliberate later follow-up)' },
 };
 
 function relTime(iso: string): string {

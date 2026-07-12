@@ -509,6 +509,10 @@ export const api = {
   calibrateEntry: () => request<{ status: string }>('/paper-portfolio/calibrate-entry', { method: 'POST' }),
   schedulerStatus: () => request<{ jobs: SchedulerJob[] }>('/admin/scheduler-status'),
   dqStatus: () => request<{ checks: DataQualityCheck[] }>('/admin/dq-status'),
+  promotionHistory: () => request<{
+    meta_model_history: MetaModelPromotionEntry[];
+    position_scaling_history: PositionScalingPromotionEntry[];
+  }>('/admin/promotion-history'),
   healthDeep: () => request<ServiceHealthReport>('/health/deep'),
   mlMetrics: (model = 'xgboost') => request<MlMetricsList>(`/ml/metrics?model=${model}`),
   mlFeatureImportance: (symbol: string, model = 'xgboost') =>
@@ -1527,6 +1531,23 @@ export type DataQualityCheck = {
   max_age_hours: number;
   checked_at: string;
   skipped_reason?: string;
+};
+
+// SELFIMPROVE-PROMOTION-GATES-INCOMPLETE — see docs/DESIGN_MODEL_PROMOTION_GATES_2026-07-12.md
+export type MetaModelPromotionEntry = {
+  ts: string;
+  promoted: boolean;
+  auc: number;
+  previous_auc: number | null;
+  n_samples: number;
+};
+
+export type PositionScalingPromotionEntry = {
+  ts: string;
+  would_promote: boolean;
+  new_hit_rate: number | null;
+  previous_hit_rate: number | null;
+  n_candidates: number;
 };
 
 export type ServiceHealthResult = {

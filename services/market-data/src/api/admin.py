@@ -478,6 +478,35 @@ def scheduler_status(_: User = Depends(get_admin_user)):
     return {"jobs": jobs}
 
 
+@router.get("/promotion-history")
+def promotion_history(_: User = Depends(get_admin_user)):
+    """Return the last 20 promotion-gate verdicts for both model-artifact promotion gates
+    (SELFIMPROVE-PROMOTION-GATES-INCOMPLETE, see docs/DESIGN_MODEL_PROMOTION_GATES_2026-07-12.md).
+
+    meta_model_history: written directly by ml-prediction's train_meta_model() into this same
+    shared Redis instance (cross-service write — see meta_trainer._record_promotion_status()
+    for why this needed adding a Redis client to ml-prediction, which had none before).
+    position_scaling_history: written by this service's own scheduler
+    (_record_position_scaling_promotion_status(), shadow-log-only per the design doc §3.4 —
+    the model is always saved regardless of the verdict shown here).
+    """
+    r = _get_redis()
+
+    def _history(key: str) -> list:
+        raw = r.get(key)
+        if not raw:
+            return []
+        try:
+            return json.loads(raw)
+        except Exception:
+            return []
+
+    return {
+        "meta_model_history": _history("meta_model:promotion_history"),
+        "position_scaling_history": _history("position_scaling_gate:promotion_history"),
+    }
+
+
 @router.get("/dq-status")
 def data_quality_status(_: User = Depends(get_admin_user)):
     """Return the latest result of each data-quality staleness check (from Redis).
