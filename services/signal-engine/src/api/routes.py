@@ -4968,7 +4968,18 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         _research_cache[symbol] = result
         return result
 
-    evaluated, skipped_open, skipped_no_price, censored = 0, 0, 0, 0
+    evaluated, skipped_open, skipped_no_price, censored, failed = 0, 0, 0, 0, 0
+    # T243-DQ6: previously one bulk session.commit() at the very end of the whole loop, with
+    # no per-signal try/except — a single IntegrityError anywhere (e.g. a duplicate signal_id
+    # from an overlapping/retried request; _post() in scheduler.py retries up to 3x on any
+    # timeout, including ReadTimeout from a slow run, and this endpoint has no lock against a
+    # second overlapping call) silently discarded EVERY new SignalOutcome row accumulated by
+    # that entire run, not just the one colliding row — a real, unexplained gap tracked as
+    # TUNE-LONG-EVALUATE-BACKLOG matches this exact failure shape. Commit incrementally so a
+    # failure only loses the batch since the last checkpoint, and wrap each signal's own work
+    # in its own try/except so one bad row can't take down any other row in the same run.
+    _COMMIT_EVERY = 25
+    _since_commit = 0
 
     for sig, symbol in pending_signals:
         if sig.id in evaluated_ids:
@@ -4989,29 +5000,77 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         if sighd_key in evaluated_sighd:
             continue
 
-        # T+1 entry: use the first close STRICTLY AFTER signal_date so we avoid
-        # same-day look-ahead bias (signal was generated after close; realistic
-        # fill is the next trading day's open/close).
-        entry_result = _lookup_outcome_price(sig.stock_id, signal_date + timedelta(days=1))
-        if entry_result is None:
-            skipped_no_price += 1
-            continue
+        try:
+            # T+1 entry: use the first close STRICTLY AFTER signal_date so we avoid
+            # same-day look-ahead bias (signal was generated after close; realistic
+            # fill is the next trading day's open/close).
+            entry_result = _lookup_outcome_price(sig.stock_id, signal_date + timedelta(days=1))
+            if entry_result is None:
+                skipped_no_price += 1
+                continue
 
-        entry_date, entry_price = entry_result
-        exit_target = entry_date + timedelta(days=hold_days)
+            entry_date, entry_price = entry_result
+            exit_target = entry_date + timedelta(days=hold_days)
 
-        if exit_target > today:
-            skipped_open += 1
-            continue
+            if exit_target > today:
+                skipped_open += 1
+                continue
 
-        exit_result = _lookup_outcome_price(sig.stock_id, exit_target)
-        if exit_result is None:
-            # T232-OC6: exit_target has passed but no price bar exists on/after it. Give
-            # ordinary ingestion lag a grace window (weekends/holidays plus a buffer) before
-            # concluding the price is permanently gone — otherwise a stock that's merely a
-            # few days behind on ingestion gets wrongly censored as delisted.
-            if today - exit_target > timedelta(days=_OUTCOME_CENSOR_GRACE_DAYS):
-                censored += 1
+            exit_result = _lookup_outcome_price(sig.stock_id, exit_target)
+            if exit_result is None:
+                # T232-OC6: exit_target has passed but no price bar exists on/after it. Give
+                # ordinary ingestion lag a grace window (weekends/holidays plus a buffer) before
+                # concluding the price is permanently gone — otherwise a stock that's merely a
+                # few days behind on ingestion gets wrongly censored as delisted.
+                if today - exit_target > timedelta(days=_OUTCOME_CENSOR_GRACE_DAYS):
+                    censored += 1
+                    outcome = SignalOutcome(
+                        signal_id=sig.id,
+                        stock_id=sig.stock_id,
+                        symbol=symbol,
+                        horizon=sig.horizon,
+                        signal_direction=sig.signal.value,
+                        signal_date=signal_date,
+                        confidence=sig.confidence,
+                        fused_prob=sig.bullish_probability,
+                        ta_score=(sig.reasons or {}).get("ta_score"),
+                        ml_prob=(sig.reasons or {}).get("ml_probability"),
+                        ml_auc=(sig.reasons or {}).get("ml_test_auc"),
+                        market_regime=(sig.reasons or {}).get("market_regime"),
+                        entry_date=entry_date,
+                        entry_price=entry_price,
+                        skip_reason="no_exit_price",
+                    )
+                    session.add(outcome)
+                    evaluated_ids.add(sig.id)
+                    evaluated_sighd.add(sighd_key)
+                    _since_commit += 1
+                else:
+                    skipped_open += 1
+                    continue
+            else:
+                exit_date, exit_price = exit_result
+                if entry_price <= 0:
+                    skipped_no_price += 1
+                    continue
+
+                pct_return = (exit_price - entry_price) / entry_price
+                hold_days_actual = (exit_date - entry_date).days
+                # T232-OC4: require clearing a real cost hurdle, not just a bare zero line — see
+                # _OUTCOME_WIN_HURDLE_PCT above for why 0.5% and what's deliberately NOT modeled here.
+                is_correct = (
+                    pct_return > _OUTCOME_WIN_HURDLE_PCT if sig.signal == SignalType.BUY
+                    else pct_return < -_OUTCOME_WIN_HURDLE_PCT
+                )
+
+                # INT-8: multi-window forward returns (pass signal direction so SELL wins on negative returns)
+                _sig_dir = sig.signal.value  # "BUY" or "SELL"
+                p5, r5, c5   = _window_return(sig.stock_id, entry_date, entry_price, 5,  _sig_dir)
+                p10, r10, c10 = _window_return(sig.stock_id, entry_date, entry_price, 10, _sig_dir)
+                p20, r20, c20 = _window_return(sig.stock_id, entry_date, entry_price, 20, _sig_dir)
+                res_rec, res_score = _fetch_research(symbol)
+
+                reasons = sig.reasons or {}
                 outcome = SignalOutcome(
                     signal_id=sig.id,
                     stock_id=sig.stock_id,
@@ -5021,73 +5080,43 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
                     signal_date=signal_date,
                     confidence=sig.confidence,
                     fused_prob=sig.bullish_probability,
-                    ta_score=(sig.reasons or {}).get("ta_score"),
-                    ml_prob=(sig.reasons or {}).get("ml_probability"),
-                    ml_auc=(sig.reasons or {}).get("ml_test_auc"),
-                    market_regime=(sig.reasons or {}).get("market_regime"),
+                    ta_score=reasons.get("ta_score"),
+                    ml_prob=reasons.get("ml_probability"),
+                    ml_auc=reasons.get("ml_test_auc"),
+                    market_regime=reasons.get("market_regime"),
                     entry_date=entry_date,
                     entry_price=entry_price,
-                    skip_reason="no_exit_price",
+                    exit_date=exit_date,
+                    exit_price=exit_price,
+                    hold_days=hold_days_actual,
+                    pct_return=pct_return,
+                    is_correct=is_correct,
+                    price_5d=p5, return_5d=r5, is_correct_5d=c5,
+                    price_10d=p10, return_10d=r10, is_correct_10d=c10,
+                    price_20d=p20, return_20d=r20, is_correct_20d=c20,
+                    research_rec=res_rec,
+                    research_score=res_score,
                 )
                 session.add(outcome)
                 evaluated_ids.add(sig.id)
                 evaluated_sighd.add(sighd_key)
-            else:
-                skipped_open += 1
-            continue
+                evaluated += 1
+                _since_commit += 1
 
-        exit_date, exit_price = exit_result
-        if entry_price <= 0:
-            skipped_no_price += 1
-            continue
-
-        pct_return = (exit_price - entry_price) / entry_price
-        hold_days_actual = (exit_date - entry_date).days
-        # T232-OC4: require clearing a real cost hurdle, not just a bare zero line — see
-        # _OUTCOME_WIN_HURDLE_PCT above for why 0.5% and what's deliberately NOT modeled here.
-        is_correct = (
-            pct_return > _OUTCOME_WIN_HURDLE_PCT if sig.signal == SignalType.BUY
-            else pct_return < -_OUTCOME_WIN_HURDLE_PCT
-        )
-
-        # INT-8: multi-window forward returns (pass signal direction so SELL wins on negative returns)
-        _sig_dir = sig.signal.value  # "BUY" or "SELL"
-        p5, r5, c5   = _window_return(sig.stock_id, entry_date, entry_price, 5,  _sig_dir)
-        p10, r10, c10 = _window_return(sig.stock_id, entry_date, entry_price, 10, _sig_dir)
-        p20, r20, c20 = _window_return(sig.stock_id, entry_date, entry_price, 20, _sig_dir)
-        res_rec, res_score = _fetch_research(symbol)
-
-        reasons = sig.reasons or {}
-        outcome = SignalOutcome(
-            signal_id=sig.id,
-            stock_id=sig.stock_id,
-            symbol=symbol,
-            horizon=sig.horizon,
-            signal_direction=sig.signal.value,
-            signal_date=signal_date,
-            confidence=sig.confidence,
-            fused_prob=sig.bullish_probability,
-            ta_score=reasons.get("ta_score"),
-            ml_prob=reasons.get("ml_probability"),
-            ml_auc=reasons.get("ml_test_auc"),
-            market_regime=reasons.get("market_regime"),
-            entry_date=entry_date,
-            entry_price=entry_price,
-            exit_date=exit_date,
-            exit_price=exit_price,
-            hold_days=hold_days_actual,
-            pct_return=pct_return,
-            is_correct=is_correct,
-            price_5d=p5, return_5d=r5, is_correct_5d=c5,
-            price_10d=p10, return_10d=r10, is_correct_10d=c10,
-            price_20d=p20, return_20d=r20, is_correct_20d=c20,
-            research_rec=res_rec,
-            research_score=res_score,
-        )
-        session.add(outcome)
-        evaluated_ids.add(sig.id)
-        evaluated_sighd.add(sighd_key)
-        evaluated += 1
+            if _since_commit >= _COMMIT_EVERY:
+                session.commit()
+                _since_commit = 0
+        except Exception as _eval_exc:
+            # A failure here (e.g. IntegrityError from a duplicate signal_id if a retried/
+            # overlapping request raced this one) previously rolled back EVERY row accumulated
+            # by the entire run's single end-of-loop commit, not just this one signal. Roll
+            # back just the uncommitted work since the last checkpoint and move on — at most
+            # this signal and up to _COMMIT_EVERY-1 already-processed-but-uncommitted signals
+            # are affected, not the whole batch.
+            session.rollback()
+            failed += 1
+            log.warning("outcomes.evaluate_signal_failed", signal_id=sig.id, symbol=symbol,
+                        horizon=horizon, error=str(_eval_exc))
 
     session.commit()
 
@@ -5181,6 +5210,7 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         "skipped_open": skipped_open,
         "skipped_no_price": skipped_no_price,
         "censored": censored,
+        "failed": failed,
         "updated_windows": updated,
     }
 

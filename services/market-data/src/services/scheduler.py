@@ -3413,14 +3413,19 @@ def _fetch_hk_regime_snapshot() -> dict | None:
 
 _DQ_CHECKS: list[dict] = [
     {
+        # T243-DQ3: rankings_us/rankings_hk had the identical weekend-staleness exposure as
+        # signals_us/signals_hk (rankings only refresh Mon-Fri) but were missing the "market"
+        # key that makes the T242-DQ1 weekend/holiday skip logic apply — verified live: both
+        # showed ok:false at age_hours=53.9 on a Sunday with zero real data problem, the exact
+        # guaranteed weekly false-positive alert T242-DQ1 was built to eliminate for signals.
         "name": "rankings_us", "description": "US K-Score rankings (blocks GROWTH/SWING entry gates)",
         "query": "SELECT MAX(rk.as_of) FROM rankings rk JOIN stocks st ON rk.stock_id=st.id WHERE st.market='US'",
-        "max_age_hours": 48, "is_date": True,
+        "max_age_hours": 48, "is_date": True, "market": "US",
     },
     {
         "name": "rankings_hk", "description": "HK K-Score rankings (blocks GROWTH/SWING entry gates)",
         "query": "SELECT MAX(rk.as_of) FROM rankings rk JOIN stocks st ON rk.stock_id=st.id WHERE st.market='HK'",
-        "max_age_hours": 48, "is_date": True,
+        "max_age_hours": 48, "is_date": True, "market": "HK",
     },
     {
         "name": "signals_us", "description": "US signal generation (all horizons)",
@@ -3469,6 +3474,13 @@ def run_data_quality_checks() -> None:
     _t0 = time.monotonic()
     redis_client = _get_redis()
     failing: list[dict] = []
+    # T243-DQ5: tracked separately from `failing` — a query that raises (vs. one that runs and
+    # finds stale data) means the check never actually ran, which is a DIFFERENT failure mode
+    # (infrastructure) than staleness. Without this, a shared DB outage makes every check's
+    # session.execute() raise, every one is swallowed by the per-check except below, `failing`
+    # stays empty, _record_job_status reports "ok", and no alert fires — a false "all healthy"
+    # reading during the exact class of incident this framework exists to catch.
+    query_errors: list[dict] = []
     try:
         with SessionLocal() as session:
             for check in _DQ_CHECKS:
@@ -3531,9 +3543,28 @@ def run_data_quality_checks() -> None:
                         })
                 except Exception as _check_exc:
                     log.warning("dq_check.query_failed", check=check["name"], error=str(_check_exc))
+                    query_errors.append({
+                        "name": check["name"], "description": check["description"],
+                        "age_hours": None, "max_age_hours": check["max_age_hours"],
+                    })
+                    # T243-DQ4: Postgres aborts the whole transaction block on any SQL error —
+                    # without an explicit rollback, every check AFTER this one in _DQ_CHECKS list
+                    # order fails too (InFailedSqlTransaction) purely from this cascade, not
+                    # because their own data has any real problem. Roll back so one bad query
+                    # can't silently poison every check that follows it on the shared session.
+                    session.rollback()
 
-        _record_job_status("data_quality_checks", "ok", time.monotonic() - _t0)
-        log.info("dq_check.run_done", total=len(_DQ_CHECKS), failing=len(failing))
+        _job_status = "ok"
+        # T243-DQ5: if every (or nearly every) check errored rather than merely finding stale
+        # data, that's a strong signal of a shared root cause (DB outage, connection exhaustion,
+        # credential rotation) rather than 8 independent per-table problems — reflect that in
+        # the job's own status instead of reporting "ok" when nothing meaningful was checked.
+        _job_error = None
+        if query_errors and len(query_errors) >= len(_DQ_CHECKS) // 2:
+            _job_status = "error"
+            _job_error = f"{len(query_errors)}/{len(_DQ_CHECKS)} checks errored — likely shared root cause (DB outage/connection issue)"
+        _record_job_status("data_quality_checks", _job_status, time.monotonic() - _t0, _job_error)
+        log.info("dq_check.run_done", total=len(_DQ_CHECKS), failing=len(failing), query_errors=len(query_errors))
 
         if failing:
             # De-dupe: only email once per 6h per failing set (avoid re-alerting every
@@ -3549,10 +3580,47 @@ def run_data_quality_checks() -> None:
                     admins = session.execute(
                         select(User).where(User.email.isnot(None), User.email != "")
                     ).scalars().all()
+                    # T243-DQ7: send_data_quality_alert_email()'s bool return (False on a
+                    # disabled/unconfigured provider, an SMTP auth failure, or an SES throttle)
+                    # was previously discarded — the cooldown was refreshed and "alert_sent"
+                    # was logged even when every send failed, silently suppressing retry for
+                    # 6h on a condition nobody was actually notified about.
+                    _any_sent = False
                     for user in admins:
-                        send_data_quality_alert_email(user.email, failing)
-                redis_client.set(alert_key, str(time.time()))
-                log.warning("dq_check.alert_sent", failing_checks=[f["name"] for f in failing])
+                        if send_data_quality_alert_email(user.email, failing):
+                            _any_sent = True
+                if _any_sent:
+                    redis_client.set(alert_key, str(time.time()))
+                    log.warning("dq_check.alert_sent", failing_checks=[f["name"] for f in failing])
+                else:
+                    log.error("dq_check.alert_delivery_failed", failing_checks=[f["name"] for f in failing],
+                               n_recipients=len(admins))
+
+        if query_errors:
+            # Independent de-dupe key so an infra-failure alert and a staleness alert don't
+            # cannibalize each other's 6h window — a shared-outage alert firing shouldn't
+            # suppress a genuine staleness alert 3 hours later, or vice versa.
+            infra_alert_key = "dq_check:last_infra_alert_ts"
+            last_infra_alert = redis_client.get(infra_alert_key)
+            should_infra_alert = True
+            if last_infra_alert:
+                elapsed = time.time() - float(last_infra_alert)
+                should_infra_alert = elapsed > 6 * 3600
+            if should_infra_alert:
+                with SessionLocal() as session:
+                    admins = session.execute(
+                        select(User).where(User.email.isnot(None), User.email != "")
+                    ).scalars().all()
+                    _any_sent = False
+                    for user in admins:
+                        if send_data_quality_alert_email(user.email, query_errors):
+                            _any_sent = True
+                if _any_sent:
+                    redis_client.set(infra_alert_key, str(time.time()))
+                    log.warning("dq_check.infra_alert_sent", errored_checks=[e["name"] for e in query_errors])
+                else:
+                    log.error("dq_check.infra_alert_delivery_failed", errored_checks=[e["name"] for e in query_errors],
+                               n_recipients=len(admins))
 
     except Exception as exc:
         log.error("dq_check.run_failed", error=str(exc), exc_info=True)
