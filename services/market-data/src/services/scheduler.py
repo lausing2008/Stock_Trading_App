@@ -2070,6 +2070,16 @@ def _weekly_full_refresh() -> None:
     _post(f"{_settings.signal_engine_url}/signals/calibrate_conviction_weights")
     _record_job_status("calibrate_conviction_weights_sent", "ok", 0.0)
 
+    # T234-ML-WEIGHT-NO-VALIDATION-GATE / SELFIMPROVE-MISSING-SCHEDULE-REGISTRATIONS: sweeps
+    # the ML/TA fusion weight and applies it only if it beats a neutral 0.5 baseline on a
+    # held-out validation slice (same walk-forward pattern as calibrate_ta_weights above) —
+    # already had a real safety gate, just never had a cron registration. Its siblings
+    # (calibrate_ta_weights, calibrate_conviction_weights, tune_style_profiles) were all
+    # already scheduled here; this was purely a missing entry, not a missing safety check.
+    log.info("scheduler.calibrate_ml_weight_start")
+    _post(f"{_settings.signal_engine_url}/signals/calibrate_ml_weight")
+    _record_job_status("calibrate_ml_weight_sent", "ok", 0.0)
+
     # Tier 79: auto-apply empirically-optimal buy thresholds from live outcomes data.
     # Writes per-horizon thresholds to Redis; signal generator reads them live.
     log.info("scheduler.calibrate_signal_thresholds_start")
