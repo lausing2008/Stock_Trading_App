@@ -181,12 +181,37 @@ async def sync_institutional() -> dict:
             holdings = await _parse_13f_holdings(client, fund_cik, accession)
 
             with SessionLocal() as s:
+                # T237-INST-TXN-NEVER-WRITTEN: capture the PREVIOUS period's holdings for this
+                # fund BEFORE upserting the new period's rows — needed to diff against below.
+                # Uses stock_id as the diff key (not cusip/name) since that's what
+                # InstitutionalHolding itself is keyed on.
+                previous_period_row = s.execute(
+                    select(InstitutionalHolding.period_date)
+                    .where(
+                        InstitutionalHolding.fund_cik == fund_cik,
+                        InstitutionalHolding.period_date < period_date,
+                    )
+                    .order_by(InstitutionalHolding.period_date.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+                previous_holdings_by_stock: dict[int, InstitutionalHolding] = {}
+                if previous_period_row is not None:
+                    prev_rows = s.execute(
+                        select(InstitutionalHolding).where(
+                            InstitutionalHolding.fund_cik == fund_cik,
+                            InstitutionalHolding.period_date == previous_period_row,
+                        )
+                    ).scalars().all()
+                    previous_holdings_by_stock = {h.stock_id: h for h in prev_rows}
+
+                current_holdings_by_stock: dict[int, dict] = {}
                 for h in holdings:
                     filing_name = h["name"] or ""
                     normalized = _normalize_company_name(filing_name)
                     stock_id = stocks_by_name.get(normalized) if normalized else None
                     if stock_id is None:
                         continue
+                    current_holdings_by_stock[stock_id] = h
 
                     stmt = (
                         pg_insert(InstitutionalHolding)
@@ -205,9 +230,107 @@ async def sync_institutional() -> dict:
                     )
                     result = s.execute(stmt)
                     total_holdings += result.rowcount
+
+                _write_institutional_transactions(
+                    s, fund_name, fund_cik, period_date,
+                    previous_holdings_by_stock, current_holdings_by_stock,
+                )
                 s.commit()
 
     return {"funds_processed": len(_TRACKED_FUNDS), "holdings_upserted": total_holdings}
+
+
+def _write_institutional_transactions(
+    session,
+    fund_name: str,
+    fund_cik: str,
+    period_date: date,
+    previous_holdings_by_stock: dict[int, "InstitutionalHolding"],
+    current_holdings_by_stock: dict[int, dict],
+) -> int:
+    """T237-INST-TXN-NEVER-WRITTEN: compare this period's holdings against the fund's most
+    recent PRIOR period's holdings and write one InstitutionalTransaction row per real change —
+    a new position ("initiate"), a fully-closed position ("exit"), or a share-count change on an
+    existing position ("add"/"trim"). Unchanged positions (identical share count) are skipped —
+    a real transaction table should only record real changes, not every quarter's re-affirmation
+    of an unchanged position. Returns the number of transaction rows written.
+    """
+    written = 0
+    all_stock_ids = set(previous_holdings_by_stock) | set(current_holdings_by_stock)
+
+    for stock_id in all_stock_ids:
+        prev = previous_holdings_by_stock.get(stock_id)
+        curr = current_holdings_by_stock.get(stock_id)
+        prev_shares = prev.shares if prev is not None else None
+        prev_value = prev.value_usd if prev is not None else None
+        diff = _diff_holding(
+            prev_shares=prev_shares, prev_value=prev_value,
+            curr_shares=curr["shares"] if curr is not None else None,
+            curr_value=curr["value_usd"] if curr is not None else None,
+            had_previous=prev is not None, has_current=curr is not None,
+        )
+        if diff is None:
+            continue  # no real change to record (or shares unknown on either side)
+        change_type, shares_change, value_change = diff
+
+        stmt = (
+            pg_insert(InstitutionalTransaction)
+            .values(
+                fund_name=fund_name,
+                fund_cik=fund_cik,
+                stock_id=stock_id,
+                period_date=period_date,
+                change_type=change_type,
+                shares_change=shares_change,
+                value_change_usd=value_change,
+            )
+            .on_conflict_do_update(
+                constraint="uq_inst_txn",
+                set_=dict(change_type=change_type, shares_change=shares_change, value_change_usd=value_change),
+            )
+        )
+        result = session.execute(stmt)
+        written += result.rowcount
+
+    return written
+
+
+def _diff_holding(
+    prev_shares: int | None,
+    prev_value: float | None,
+    curr_shares: int | None,
+    curr_value: float | None,
+    had_previous: bool,
+    has_current: bool,
+) -> tuple[str, int, float | None] | None:
+    """Pure diff logic for one (fund, stock) pair across two periods — factored out of
+    _write_institutional_transactions() so it's directly unit-testable without a DB session.
+    Returns (change_type, shares_change, value_change) or None if there's nothing to record.
+
+    shares_change/value_change are always (new - old), treating an absent side as 0 —
+    "initiate" naturally yields the full new position, "exit" naturally yields the negative of
+    the full old position, "add"/"trim" yield the real delta. Uses explicit `is not None`
+    checks throughout, NOT `or 0` — a genuine 0-share/0-value holding is a real value, not an
+    absent one, and `or 0` would silently coerce it the same way the T237-EI2 None-vs-falsy bug
+    did earlier this session.
+    """
+    if had_previous and has_current:
+        if prev_shares is None or curr_shares is None or prev_shares == curr_shares:
+            return None
+        change_type = "add" if curr_shares > prev_shares else "trim"
+    elif has_current and not had_previous:
+        change_type = "initiate"
+    elif had_previous and not has_current:
+        change_type = "exit"
+    else:
+        return None  # neither previous nor current — nothing to diff
+
+    shares_change = (curr_shares if curr_shares is not None else 0) - (prev_shares if prev_shares is not None else 0)
+    value_change = (
+        (curr_value if curr_value is not None else 0.0) - (prev_value if prev_value is not None else 0.0)
+        if (prev_value is not None or curr_value is not None) else None
+    )
+    return change_type, shares_change, value_change
 
 
 def get_institutional_for_symbol(stock_id: int) -> list[dict]:
