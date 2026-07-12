@@ -3603,20 +3603,31 @@ _DQ_CHECKS: list[dict] = [
         # genuinely quarterly filing, straight from SEC's submissions.json), so MAX(period_date)
         # only advances when a fund actually files a new quarterly 13F — legitimately up to ~45
         # days after quarter-end per SEC's own filing deadline. A weekly threshold here would
-        # false-positive on every sync run that is actually working correctly. 2400h (100 days)
-        # covers a full quarter plus the SEC filing-deadline lag with margin.
+        # false-positive on every sync run that is actually working correctly.
+        #
+        # Threshold corrected 2026-07-12 (same day, caught during live verification of
+        # T237-INST-TXN-NEVER-WRITTEN): the original 2400h (100 days) was under-computed — the
+        # true worst case is "a new quarter just started right after we last saw a filing" (up
+        # to ~91 days into the new quarter with nothing new yet) PLUS that new quarter's own
+        # ~45-day filing deadline, i.e. up to ~136 days, not 100. Confirmed live against real
+        # SEC data: on 2026-07-12 (103 days after Q1 2026's 2026-03-31 period-end), Berkshire's
+        # own submissions.json still reports 2026-03-31 as its latest 13F-HR reportDate — Q2
+        # 2026 (ended 2026-06-30) isn't due until ~2026-08-14, so 103-day-old data at this
+        # exact moment is 100% expected, not stale. 3300h (~137.5 days) covers the full
+        # worst-case window with margin.
         "name": "institutional_holdings", "description": "13F institutional holdings — quarterly filing period, synced weekly",
         "query": "SELECT MAX(period_date) FROM institutional_holdings",
-        "max_age_hours": 2400, "is_date": True,
+        "max_age_hours": 3300, "is_date": True,
     },
     {
         # T237-INST-TXN-NEVER-WRITTEN (fixed 2026-07-12): sync_institutional() now diffs each
         # period's holdings against the fund's prior period and writes one row per real change
         # (initiate/exit/add/trim) via _write_institutional_transactions(). Same quarterly
-        # filing cadence as institutional_holdings, so the threshold matches.
+        # filing cadence as institutional_holdings, so the threshold matches (see that check's
+        # comment above for the corrected 3300h/~137.5-day derivation).
         "name": "institutional_transactions", "description": "13F institutional transaction-change sync — quarterly filing period, synced weekly",
         "query": "SELECT MAX(period_date) FROM institutional_transactions",
-        "max_age_hours": 2400, "is_date": True,
+        "max_age_hours": 3300, "is_date": True,
     },
 ]
 
