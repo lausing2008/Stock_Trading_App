@@ -3516,14 +3516,27 @@ _DQ_CHECKS: list[dict] = [
         "max_age_hours": 192, "is_date": True,
     },
     {
-        "name": "institutional_holdings", "description": "Weekly 13F institutional holdings sync",
+        # EI-BUG (2026-07-12): period_date used to be the sync's RUN date (date.today().replace
+        # (day=1)), which made a 192h/weekly threshold sensible — it advanced monthly regardless
+        # of real filing activity. Now fixed to be the filing's actual reportDate (13F is a
+        # genuinely quarterly filing, straight from SEC's submissions.json), so MAX(period_date)
+        # only advances when a fund actually files a new quarterly 13F — legitimately up to ~45
+        # days after quarter-end per SEC's own filing deadline. A weekly threshold here would
+        # false-positive on every sync run that is actually working correctly. 2400h (100 days)
+        # covers a full quarter plus the SEC filing-deadline lag with margin.
+        "name": "institutional_holdings", "description": "13F institutional holdings — quarterly filing period, synced weekly",
         "query": "SELECT MAX(period_date) FROM institutional_holdings",
-        "max_age_hours": 192, "is_date": True,
+        "max_age_hours": 2400, "is_date": True,
     },
     {
-        "name": "institutional_transactions", "description": "Weekly 13F institutional transaction-change sync",
+        # Not yet populated by any code path — sync_institutional() only ever writes to
+        # InstitutionalHolding; there is no transaction-diffing logic anywhere in this service.
+        # See T237-INST-TXN-NEVER-WRITTEN in the improvements tracker. Kept registered (rather
+        # than removed) so the day someone builds the write path, staleness is monitored from
+        # day one instead of silently drifting again.
+        "name": "institutional_transactions", "description": "13F institutional transaction-change sync — NOT YET IMPLEMENTED, see T237-INST-TXN-NEVER-WRITTEN",
         "query": "SELECT MAX(period_date) FROM institutional_transactions",
-        "max_age_hours": 192, "is_date": True,
+        "max_age_hours": 2400, "is_date": True,
     },
 ]
 

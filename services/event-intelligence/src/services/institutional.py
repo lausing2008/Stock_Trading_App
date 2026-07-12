@@ -47,8 +47,9 @@ def _normalize_company_name(name: str) -> str:
     return upper
 
 
-async def _get_latest_13f(client: httpx.AsyncClient, fund_cik: str) -> str | None:
-    """Find the most recent 13F-HR accession number for a fund."""
+async def _get_latest_13f(client: httpx.AsyncClient, fund_cik: str) -> tuple[str, date] | None:
+    """Find the most recent 13F-HR accession number and its real reporting period-end for a
+    fund. Returns (accession, report_date) or None."""
     try:
         r = await client.get(
             f"https://data.sec.gov/submissions/CIK{fund_cik.zfill(10)}.json",
@@ -61,9 +62,10 @@ async def _get_latest_13f(client: httpx.AsyncClient, fund_cik: str) -> str | Non
         filings = data.get("filings", {}).get("recent", {})
         forms = filings.get("form", [])
         accessions = filings.get("accessionNumber", [])
-        for form, acc in zip(forms, accessions):
+        report_dates = filings.get("reportDate", [])
+        for form, acc, rdate in zip(forms, accessions, report_dates):
             if form in ("13F-HR", "13F-HR/A"):
-                return acc
+                return acc, date.fromisoformat(rdate)
         return None
     except Exception as exc:
         log.debug("institutional.get_13f_fail", cik=fund_cik, error=str(exc))
@@ -158,14 +160,23 @@ async def sync_institutional() -> dict:
     stocks_by_name = {_normalize_company_name(name): sid for sid, name in rows if name}
 
     total_holdings = 0
-    period_date = date.today().replace(day=1)  # approximate period
 
     async with httpx.AsyncClient() as client:
         for fund_name, fund_cik in _TRACKED_FUNDS:
             await asyncio.sleep(0.12)
-            accession = await _get_latest_13f(client, fund_cik)
-            if not accession:
+            # EI-BUG: period_date was `date.today().replace(day=1)` — the sync's RUN date, not
+            # the filing's actual reporting period. 13F filings are quarterly (this module's own
+            # docstring says so) and report a `reportDate` field (the real period-end, e.g.
+            # 2026-03-31) via the same submissions.json endpoint already being queried here. Using
+            # today's month-start meant period_date stayed frozen at the sync's first-ever run
+            # date for the rest of that calendar month regardless of the real filing period, and
+            # (since period_date is part of uq_inst_holding's conflict key) every later run that
+            # month just updated the same rows in place — MAX(period_date) never advanced until
+            # the calendar flipped months, masquerading as "sync is stale" when it was running fine.
+            latest = await _get_latest_13f(client, fund_cik)
+            if not latest:
                 continue
+            accession, period_date = latest
             await asyncio.sleep(0.12)
             holdings = await _parse_13f_holdings(client, fund_cik, accession)
 
