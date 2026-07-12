@@ -3610,12 +3610,11 @@ _DQ_CHECKS: list[dict] = [
         "max_age_hours": 2400, "is_date": True,
     },
     {
-        # Not yet populated by any code path — sync_institutional() only ever writes to
-        # InstitutionalHolding; there is no transaction-diffing logic anywhere in this service.
-        # See T237-INST-TXN-NEVER-WRITTEN in the improvements tracker. Kept registered (rather
-        # than removed) so the day someone builds the write path, staleness is monitored from
-        # day one instead of silently drifting again.
-        "name": "institutional_transactions", "description": "13F institutional transaction-change sync — NOT YET IMPLEMENTED, see T237-INST-TXN-NEVER-WRITTEN",
+        # T237-INST-TXN-NEVER-WRITTEN (fixed 2026-07-12): sync_institutional() now diffs each
+        # period's holdings against the fund's prior period and writes one row per real change
+        # (initiate/exit/add/trim) via _write_institutional_transactions(). Same quarterly
+        # filing cadence as institutional_holdings, so the threshold matches.
+        "name": "institutional_transactions", "description": "13F institutional transaction-change sync — quarterly filing period, synced weekly",
         "query": "SELECT MAX(period_date) FROM institutional_transactions",
         "max_age_hours": 2400, "is_date": True,
     },

@@ -7,7 +7,7 @@ would have made every stock trivially clear the top bucket.
 """
 from unittest.mock import patch
 
-from src.services.institutional import compute_institutional_score
+from src.services.institutional import compute_institutional_score, _diff_holding
 
 
 def _score(holdings):
@@ -62,3 +62,86 @@ def test_none_value_usd_treated_as_zero_not_a_crash():
 def test_score_clamped_at_100():
     holdings = [{"value_usd": 2_000_000_000}] * 6
     assert _score(holdings) == 100.0
+
+
+# ── T237-INST-TXN-NEVER-WRITTEN: _diff_holding() ──────────────────────────────
+# Pure diff logic factored out of _write_institutional_transactions() so it's directly
+# unit-testable without a DB session — see institutional.py for the full docstring.
+
+def test_diff_new_position_is_initiate():
+    result = _diff_holding(
+        prev_shares=None, prev_value=None, curr_shares=1000, curr_value=50000.0,
+        had_previous=False, has_current=True,
+    )
+    assert result == ("initiate", 1000, 50000.0)
+
+
+def test_diff_fully_closed_position_is_exit():
+    result = _diff_holding(
+        prev_shares=1000, prev_value=50000.0, curr_shares=None, curr_value=None,
+        had_previous=True, has_current=False,
+    )
+    assert result == ("exit", -1000, -50000.0)
+
+
+def test_diff_increased_shares_is_add():
+    result = _diff_holding(
+        prev_shares=1000, prev_value=50000.0, curr_shares=1500, curr_value=75000.0,
+        had_previous=True, has_current=True,
+    )
+    assert result == ("add", 500, 25000.0)
+
+
+def test_diff_decreased_shares_is_trim():
+    result = _diff_holding(
+        prev_shares=1000, prev_value=50000.0, curr_shares=600, curr_value=30000.0,
+        had_previous=True, has_current=True,
+    )
+    assert result == ("trim", -400, -20000.0)
+
+
+def test_diff_unchanged_shares_returns_none():
+    """A real transaction table should only record real changes, not every quarter's
+    re-affirmation of an unchanged position."""
+    result = _diff_holding(
+        prev_shares=1000, prev_value=50000.0, curr_shares=1000, curr_value=51000.0,
+        had_previous=True, has_current=True,
+    )
+    assert result is None
+
+
+def test_diff_zero_shares_prev_is_not_treated_as_absent():
+    """T237-EI2-class regression guard: a genuine 0-share prior holding must be used as a
+    real 0, not coerced to "absent" the way a naive `or 0`/falsy check would."""
+    result = _diff_holding(
+        prev_shares=0, prev_value=0.0, curr_shares=500, curr_value=25000.0,
+        had_previous=True, has_current=True,
+    )
+    assert result == ("add", 500, 25000.0)
+
+
+def test_diff_unknown_shares_on_either_side_returns_none():
+    """Can't classify add vs. trim without both share counts — must not guess."""
+    result = _diff_holding(
+        prev_shares=None, prev_value=50000.0, curr_shares=1500, curr_value=75000.0,
+        had_previous=True, has_current=True,
+    )
+    assert result is None
+
+
+def test_diff_neither_previous_nor_current_returns_none():
+    result = _diff_holding(
+        prev_shares=None, prev_value=None, curr_shares=None, curr_value=None,
+        had_previous=False, has_current=False,
+    )
+    assert result is None
+
+
+def test_diff_value_change_none_when_both_sides_have_no_value():
+    """value_change should stay None (not fabricate a 0.0) when neither side has a real
+    value_usd — distinguishable from a genuine $0 change."""
+    result = _diff_holding(
+        prev_shares=1000, prev_value=None, curr_shares=1500, curr_value=None,
+        had_previous=True, has_current=True,
+    )
+    assert result == ("add", 500, None)
