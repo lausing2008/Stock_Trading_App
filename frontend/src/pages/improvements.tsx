@@ -15039,13 +15039,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'SELFIMPROVE-MISSING-SCHEDULE-REGISTRATIONS',
-    tier: 246 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 246 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/scheduler.py',
     effort: 'XS',
     impact: 'Medium — calibrate_ml_weight already has its own train/validation-split safety gate built in (only applies a new weight if it beats a neutral 0.5 baseline on held-out data) — this is a pure "forgot to add it to the cron list" gap, not a missing feature or a missing safety check.',
     title: 'calibrate_ml_weight has never been added to the scheduler — it has a real validation gate and is reachable only via a manual API call, unlike its siblings which all run weekly',
     what: 'calibrate_ta_weights, calibrate_conviction_weights, and tune_style_profiles are all registered in the same Sunday ~14:10-14:20 scheduler block. calibrate_ml_weight is not — grepping scheduler.py for it returns zero hits.',
     fix: 'Add it to the same weekly block: `_post(f"{signal_engine_url}/signals/calibrate_ml_weight")` with `_record_job_status`, matching the existing calls exactly.',
+    implementedNote: 'Fixed 2026-07-12. Verified the validation gate\'s real strength by reading calibrate_ml_weight() in full before scheduling it: 70/30 chronological split, a 15-sample validation floor, and an EV-lift-over-neutral-baseline (0.5) requirement before the weight is ever applied — every rejected AND every applied outcome writes a TuneHistory row, matching the exact same discipline as its already-scheduled siblings (calibrate_ta_weights, calibrate_conviction_weights, tune_style_profiles). Added the _post() call + _record_job_status to the same Sunday weekly block right after calibrate_conviction_weights. Also added a calibrate_ml_weight_sent entry to admin-health.tsx\'s JOB_META so it displays with a proper label instead of falling through to the generic catch-all section. All 80 market-data tests pass; frontend typechecks clean.',
   },
 
   {
