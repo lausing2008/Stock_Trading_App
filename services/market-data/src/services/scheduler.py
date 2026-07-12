@@ -3471,6 +3471,60 @@ _DQ_CHECKS: list[dict] = [
         "query": "SELECT MAX(date) FROM paper_equity_curve",
         "max_age_hours": 48, "is_date": True,
     },
+    # T246-DQ8: 9 tables with no staleness check at all before this — 2 (congress_trades,
+    # hk_connect_flows) have each already gone silently stale once in the past with no check
+    # to catch it sooner (see CLAUDE.md's congress-source-dead and hk_connect-logging-bug
+    # incidents). The "market" tag reuses the existing weekend/holiday skip logic (T242-DQ1) —
+    # a pragmatic simplification for jobs that follow federal/HK business-day calendars
+    # (SEC EDGAR, Congress disclosures) rather than the exact NYSE/HKEX trading calendar;
+    # weekday-vs-weekend is what matters for the overwhelming majority of real cases, and a
+    # rare mismatch (e.g. a day NYSE is open but is a federal holiday) just means the check
+    # runs one day it technically didn't need to, not a false-negative risk.
+    {
+        "name": "paper_trades", "description": "Paper trading trade generation (actual entries/exits, not just equity snapshots)",
+        "query": "SELECT MAX(entry_time) FROM paper_trades",
+        "max_age_hours": 168, "is_date": False,
+    },
+    {
+        "name": "catalyst_scores", "description": "Composite catalyst scores (feeds paper-trading conviction bullets)",
+        "query": "SELECT MAX(computed_at) FROM catalyst_scores",
+        "max_age_hours": 12, "is_date": False,
+    },
+    {
+        "name": "congress_trades", "description": "Congress trading disclosures — already went silently dead once (2026-07-09 dead-source incident)",
+        "query": "SELECT MAX(created_at) FROM congress_trades",
+        "max_age_hours": 48, "is_date": False, "market": "US",
+    },
+    {
+        "name": "sec_filings", "description": "EDGAR 8-K filing ingest (US only)",
+        "query": "SELECT MAX(filed_date) FROM sec_filings",
+        "max_age_hours": 48, "is_date": True, "market": "US",
+    },
+    {
+        "name": "hk_connect_flows", "description": "HKEX Stock Connect southbound flow — already had a silent logging bug once (2026-07-01 incident)",
+        "query": "SELECT MAX(trade_date) FROM hk_connect_flows",
+        "max_age_hours": 48, "is_date": True, "market": "HK",
+    },
+    {
+        "name": "earnings_events", "description": "Earnings calendar + surprise tracking",
+        "query": "SELECT MAX(fetched_at) FROM earnings_events",
+        "max_age_hours": 48, "is_date": False, "market": "US",
+    },
+    {
+        "name": "fundamentals_snapshot", "description": "Weekly fundamentals snapshot — feeds ML eps_revision_direction feature",
+        "query": "SELECT MAX(snapshot_date) FROM fundamentals_snapshot",
+        "max_age_hours": 192, "is_date": True,
+    },
+    {
+        "name": "institutional_holdings", "description": "Weekly 13F institutional holdings sync",
+        "query": "SELECT MAX(period_date) FROM institutional_holdings",
+        "max_age_hours": 192, "is_date": True,
+    },
+    {
+        "name": "institutional_transactions", "description": "Weekly 13F institutional transaction-change sync",
+        "query": "SELECT MAX(period_date) FROM institutional_transactions",
+        "max_age_hours": 192, "is_date": True,
+    },
 ]
 
 
