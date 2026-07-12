@@ -4068,6 +4068,19 @@ def tune_style_profiles(
                 # T233-SELFIMPROVE-PHASE3 extension: adx_min/breadth_compression compare
                 # accuracy, not EV — TuneHistory's EV columns stay NULL for these two params
                 # rather than force a misleading number; see docs/DESIGN_TUNE_HISTORY_EXTENSION.
+                #
+                # TUNE-VALIDATION-BAR-INCONSISTENT: this validation-slice sample bar is
+                # deliberately looser than ml_weight_cap's (min_samples, checked in full above)
+                # — min_samples // 2 per side here, min_samples // 4 per side for
+                # breadth_compression below. This is intentional, not an oversight: ml_weight_cap
+                # is gated on an EV comparison (a continuous, noisier statistic that needs more
+                # data to trust), while adx_min/breadth_compression are gated on a simple
+                # below-vs-above accuracy split (a coarser, less sample-hungry comparison) that
+                # is ALSO checked twice — once on train (this file, ~15 lines up) and again here
+                # on validation — so the validation bar only needs to confirm a direction the
+                # train slice already found, not discover one from scratch. If you're tightening
+                # or loosening one of these three bars, this is deliberate asymmetry to preserve,
+                # not a bug to "fix" into consistency.
                 if len(val_below) >= min_samples // 2 and len(val_above) >= min_samples // 2:
                     val_below_acc = sum(1 for o in val_below if o.is_correct) / len(val_below)
                     val_above_acc = sum(1 for o in val_above if o.is_correct) / len(val_above)
@@ -4104,6 +4117,9 @@ def tune_style_profiles(
 
         # ── breadth_compression: verify compression is justified on TRAIN (breadth<40
         #    underperforms), then confirm the same direction holds on VALIDATION ──
+        # TUNE-VALIDATION-BAR-INCONSISTENT: validation bar here is min_samples // 4 per side,
+        # looser still than adx_min's // 2 above — see the comment at adx_min's validation
+        # check for why this asymmetry across all three parameters is intentional.
         breadth_train = [(o, r) for o, r in train_sr if r.get("breadth_pct") is not None]
         breadth_val = [(o, r) for o, r in val_sr if r.get("breadth_pct") is not None]
         if len(breadth_train) >= min_samples:
