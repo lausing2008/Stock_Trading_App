@@ -14886,13 +14886,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'TUNE-VALIDATION-BAR-INCONSISTENT',
-    tier: 244 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 244 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/signal-engine/src/api/routes.py:tune_style_profiles()',
     effort: 'S',
     impact: 'Low — both bars are intentional per the function\'s own design, but the inconsistency between them (full min_samples for one parameter, much looser min_samples//2 or //4 for two others, in the same function, same validation split) isn\'t documented anywhere as a deliberate choice, and reads as an oversight to a fresh audit pass.',
     title: 'tune_style_profiles() requires the full validation min_samples for its ml_weight_cap sweep, but only min_samples//2 (adx_min) or //4 (breadth_compression) for two other parameters tuned by the same function',
     what: 'Within the same weekly job, the same validation data split is held to three different statistical bars: ml_weight_cap requires the full min_samples on the validation slice; adx_min requires only min_samples // 2; breadth_compression requires only min_samples // 4. Not necessarily wrong (documented in-code as intentional — adx_min/breadth_compression promotion is framed as an accuracy comparison rather than the EV-based gate ml_weight_cap uses), but the inconsistency isn\'t called out anywhere as a deliberate choice, so a future maintainer tightening one bar for a good reason could easily miss that the other two were meant to stay looser (or vice versa).',
     fix: 'Add an explicit comment at the point all three gates are checked explaining why the bars differ (or unify them if the difference was actually accidental rather than intentional) — a quick documentation pass, not a behavior change, unless someone confirms the looser bars were never actually a deliberate choice.',
+    implementedNote: 'Fixed 2026-07-12 — confirmed a documentation gap, not a behavior bug, so no logic was touched. Added explicit comments at both the adx_min and breadth_compression validation checks explaining the asymmetry: ml_weight_cap is gated on an EV comparison (a continuous, noisier statistic needing more data to trust), while adx_min/breadth_compression are gated on a simple below-vs-above accuracy split that is ALSO already confirmed once on the train slice before the validation check ever runs — so the validation bar for those two only needs to CONFIRM a direction already found on train, not discover one from scratch, justifying a lower sample floor. Comment placed at both gate sites (not just adx_min) so a reader landing directly on breadth_compression also sees the explanation without needing to scroll up. routes.py compiles clean; zero behavior change (comment-only diff).',
   },
 
   {
