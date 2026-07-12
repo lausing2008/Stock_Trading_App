@@ -71,9 +71,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from common.indicators import atr as _canon_atr
+from common.logging import get_logger
 
 from .multi_tranche_engine import BarrierConfig
 from .position_scaling_gate import FEATURE_COLUMNS, compute_features_for_event
+
+log = get_logger("candidate_event_mining")
 
 _ATR_WINDOW = 14
 _MIN_PRICE_HISTORY_BARS = _ATR_WINDOW + 5  # enough for a warmed-up ATR read
@@ -641,6 +644,8 @@ def train_and_save_position_scaling_gate(
     importances) so a caller can log or alert on training results without needing to
     inspect the saved file separately.
     """
+    import os
+    import joblib
     from .position_scaling_gate import walk_forward_report, walk_forward_train
 
     barrier_cfg = barrier_cfg or BarrierConfig()
@@ -675,12 +680,55 @@ def train_and_save_position_scaling_gate(
     # real drift. Store the model's own mean predicted probability ON ITS TRAINING SET here
     # so scheduler.py's drift check has a real baseline to compare live verdicts against.
     training_mean_act_probability = round(float(final_gate.model.predict_proba(X[FEATURE_COLUMNS].values)[:, 1].mean()), 4)
+
+    # SELFIMPROVE-PROMOTION-GATES-INCOMPLETE: SHADOW-LOG-ONLY promotion gate — computes and
+    # logs a promoted/rejected verdict by comparing this run's mean_hit_rate against the
+    # PREVIOUSLY SAVED bundle's own walk_forward_report, but always still calls
+    # final_gate.save(...) regardless of the verdict. This is a deliberate staged rollout, not
+    # the full gate: per docs/DESIGN_MODEL_PROMOTION_GATES_2026-07-12.md §3.4, this component's
+    # own module docstring already documents real training data as far too thin to trust yet
+    # (~12 real scale-in events), and it is only ever consumed in shadow mode (never controls a
+    # live/paper trade) — so actually skipping a save on a still-unproven comparison risks
+    # freezing an already-shadow-only model for no real safety benefit. Flip "would_have_kept" to
+    # an actual skip-the-save decision only after a real review window of this log output.
+    previous_report: dict | None = None
+    if os.path.exists(save_path):
+        try:
+            previous_bundle = joblib.load(save_path)
+            previous_report = (previous_bundle.get("metadata") or {}).get("walk_forward_report")
+        except Exception as exc:
+            log.warning("position_scaling_gate.previous_bundle_unreadable", error=str(exc))
+
+    new_hit_rate = report.get("mean_hit_rate")
+    previous_hit_rate = (previous_report or {}).get("mean_hit_rate")
+    # Only compare if BOTH reports have a real hit rate — an all-folds-skipped report (the
+    # expected case today, given the ~12-event data volume) has nothing to compare with, and
+    # "nothing to compare" must default to promoted, not rejected (§3.1) — a gate that rejects
+    # whenever there's nothing conclusive would block every retrain indefinitely.
+    would_promote = True
+    if new_hit_rate is not None and previous_hit_rate is not None and new_hit_rate < previous_hit_rate:
+        would_promote = False
+        log.warning(
+            "position_scaling_gate.promotion_would_have_rejected",
+            new_hit_rate=new_hit_rate, previous_hit_rate=previous_hit_rate,
+        )
+    else:
+        log.info(
+            "position_scaling_gate.promotion_would_have_promoted",
+            new_hit_rate=new_hit_rate, previous_hit_rate=previous_hit_rate,
+        )
+
     final_gate.save(save_path, metadata={
         "n_candidates": len(candidates),
         "n_stocks": len({c.symbol for c in candidates}),
         "walk_forward_report": report,
         "feature_importances": importances,
         "training_mean_act_probability": training_mean_act_probability,
+        "promotion_gate_shadow": {
+            "would_promote": would_promote,
+            "new_hit_rate": new_hit_rate,
+            "previous_hit_rate": previous_hit_rate,
+        },
     })
 
     return {
@@ -691,6 +739,8 @@ def train_and_save_position_scaling_gate(
         "feature_importances": importances,
         "training_mean_act_probability": training_mean_act_probability,
         "saved_to": save_path,
+        "promotion_gate_would_promote": would_promote,
+        "promotion_gate_previous_hit_rate": previous_hit_rate,
     }
 
 

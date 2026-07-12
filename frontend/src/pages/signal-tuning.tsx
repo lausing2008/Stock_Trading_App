@@ -15,7 +15,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
-import { api, type MlMetricsList } from '@/lib/api';
+import { api, type MlMetricsList, type MetaModelPromotionEntry, type PositionScalingPromotionEntry } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -262,6 +262,13 @@ export default function SignalTuningPage() {
     { revalidateOnFocus: false },
   );
 
+  // SELFIMPROVE-PROMOTION-GATES-INCOMPLETE — see docs/DESIGN_MODEL_PROMOTION_GATES_2026-07-12.md
+  const { data: promotionData } = useSWR(
+    username ? 'promotion-history' : null,
+    () => api.promotionHistory(),
+    { revalidateOnFocus: false },
+  );
+
   async function runAction(key: string, fn: () => Promise<{ status: string }>) {
     setActionRunning(r => ({ ...r, [key]: true }));
     setActionStatus(s => ({ ...s, [key]: '' }));
@@ -445,6 +452,79 @@ export default function SignalTuningPage() {
                 </table>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Model promotion gates (SELFIMPROVE-PROMOTION-GATES-INCOMPLETE) */}
+      {promotionData && (promotionData.meta_model_history.length > 0 || promotionData.position_scaling_history.length > 0) && (
+        <div style={{ marginTop: 28, borderTop: '1px solid #1e293b', paddingTop: 18 }}>
+          <h2 style={{ color: '#94a3b8', fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+            Model Promotion Gates
+          </h2>
+          <p style={{ color: '#64748b', fontSize: 11, margin: '0 0 14px' }}>
+            Last 20 retrain verdicts — see docs/DESIGN_MODEL_PROMOTION_GATES_2026-07-12.md
+          </p>
+          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 340px', minWidth: 300 }}>
+              <div style={{ color: '#64748b', fontSize: 11, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                Meta-Model (monthly, real gate)
+              </div>
+              {promotionData.meta_model_history.length === 0 ? (
+                <div style={{ color: '#475569', fontSize: 11 }}>No retrains recorded yet</div>
+              ) : (
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      {['When', 'Verdict', 'New AUC', 'Previous AUC'].map(h => (
+                        <th key={h} style={{ padding: '3px 8px', color: '#475569', fontWeight: 500, fontSize: 10, textAlign: h === 'When' ? 'left' : 'right', textTransform: 'uppercase' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...promotionData.meta_model_history].reverse().map((entry: MetaModelPromotionEntry, i: number) => (
+                      <tr key={i} style={{ borderTop: '1px solid #1e293b' }}>
+                        <td style={{ padding: '4px 8px', color: '#94a3b8', fontSize: 10 }}>{new Date(entry.ts).toLocaleString()}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right', color: entry.promoted ? '#4ade80' : '#f87171', fontWeight: 600 }}>{entry.promoted ? 'Promoted' : 'Rejected'}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right', color: '#e2e8f0' }}>{entry.auc.toFixed(4)}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{entry.previous_auc != null ? entry.previous_auc.toFixed(4) : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div style={{ flex: '1 1 340px', minWidth: 300 }}>
+              <div style={{ color: '#64748b', fontSize: 11, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                Position-Scaling Gate (weekly, shadow-log only)
+              </div>
+              <div style={{ background: '#1c1410', border: '1px solid #d97706', borderRadius: 6, padding: '6px 10px', marginBottom: 8, color: '#fbbf24', fontSize: 10 }}>
+                Shadow-log only — the model is always saved regardless of the verdict shown here. Real enforcement is a deliberate later follow-up.
+              </div>
+              {promotionData.position_scaling_history.length === 0 ? (
+                <div style={{ color: '#475569', fontSize: 11 }}>No retrains recorded yet</div>
+              ) : (
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      {['When', 'Verdict', 'New Hit Rate', 'Prev Hit Rate'].map(h => (
+                        <th key={h} style={{ padding: '3px 8px', color: '#475569', fontWeight: 500, fontSize: 10, textAlign: h === 'When' ? 'left' : 'right', textTransform: 'uppercase' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...promotionData.position_scaling_history].reverse().map((entry: PositionScalingPromotionEntry, i: number) => (
+                      <tr key={i} style={{ borderTop: '1px solid #1e293b' }}>
+                        <td style={{ padding: '4px 8px', color: '#94a3b8', fontSize: 10 }}>{new Date(entry.ts).toLocaleString()}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right', color: entry.would_promote ? '#4ade80' : '#f87171', fontWeight: 600 }}>{entry.would_promote ? 'Would promote' : 'Would reject'}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right', color: '#e2e8f0' }}>{entry.new_hit_rate != null ? entry.new_hit_rate.toFixed(3) : '—'}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{entry.previous_hit_rate != null ? entry.previous_hit_rate.toFixed(3) : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
           </div>
         </div>
       )}

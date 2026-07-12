@@ -150,6 +150,48 @@ def _record_job_status(job_name: str, status: str, duration_s: float, error: str
         pass
 
 
+def _record_position_scaling_promotion_status(result: dict) -> None:
+    """Write position_scaling_gate's shadow-log promotion verdict to the same job-status
+    namespace admin-health.tsx already reads, plus a short history list for signal-tuning.tsx's
+    more detailed view. Mirrors ml-prediction's meta_trainer._record_promotion_status() —
+    see docs/DESIGN_MODEL_PROMOTION_GATES_2026-07-12.md §4 decision 3. Best-effort: a Redis
+    failure here must never break the retrain, since the model file save decision (currently
+    always "save", per the shadow-log-only staging) has already happened by this point.
+    """
+    try:
+        would_promote = result.get("promotion_gate_would_promote")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        r = _get_redis()
+
+        r.setex(
+            "scheduler:job:position_scaling_gate_promotion",
+            86400 * 14,
+            json.dumps({
+                "job": "position_scaling_gate_promotion",
+                "status": "ok" if would_promote else "skipped: would have rejected (shadow-log only, still saved)",
+                "last_run": now_iso,
+                "duration_s": 0.0,
+                "error": None,
+            }),
+        )
+
+        history_key = "position_scaling_gate:promotion_history"
+        raw = r.get(history_key)
+        history = json.loads(raw) if raw else []
+        wf = result.get("walk_forward_report", {})
+        history.append({
+            "ts": now_iso,
+            "would_promote": would_promote,
+            "new_hit_rate": wf.get("mean_hit_rate"),
+            "previous_hit_rate": result.get("promotion_gate_previous_hit_rate"),
+            "n_candidates": result.get("n_candidates"),
+        })
+        history = history[-20:]  # keep the last 20 runs only
+        r.setex(history_key, 86400 * 90, json.dumps(history))
+    except Exception as exc:
+        log.warning("position_scaling_gate.promotion_status_write_failed", error=str(exc))
+
+
 def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed: list, signal: str, sent_at: str | None = None, conviction_tier: str | None = None) -> None:
     try:
         r = _get_redis()
@@ -2209,6 +2251,13 @@ def _retrain_position_scaling_gate() -> None:
                 top_feature=top_feature,
                 elapsed_s=round(elapsed, 1),
             )
+            # SELFIMPROVE-PROMOTION-GATES-INCOMPLETE: shadow-log-only promotion verdict —
+            # candidate_event_mining.train_and_save_position_scaling_gate() ALWAYS saves the
+            # new model regardless of this verdict (see docs/DESIGN_MODEL_PROMOTION_GATES_
+            # 2026-07-12.md §3.4 for why real enforcement is a deliberate later follow-up, not
+            # part of this pass). Surface the verdict here so admin-health.tsx/signal-tuning.tsx
+            # have real history to review before that follow-up decision is made.
+            _record_position_scaling_promotion_status(result)
         else:
             log.warning("position_scaling_gate.retrain_skipped", reason=result.get("reason"), elapsed_s=round(elapsed, 1))
         _record_job_status("position_scaling_gate_retrain", "ok", elapsed)
