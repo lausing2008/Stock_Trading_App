@@ -299,6 +299,45 @@ def train_meta_model(db=None) -> dict:
         auc = float(roc_auc_score(y_val, model.predict_proba(X_val)[:, 1]))
     log.info("meta_trainer.trained n=%d auc=%.4f", len(records), auc)
 
+    # SELFIMPROVE-PROMOTION-GATES-INCOMPLETE: this used to unconditionally overwrite
+    # META_MODEL_PATH regardless of how the new AUC compared to whatever bundle was already
+    # deployed — the exact failure mode every OTHER calibration mechanism in this codebase
+    # (calibrate_ta_weights, calibrate_conviction_weights, calibrate_ml_weight,
+    # outcomes_calibrate_apply, tune_style_profiles) was explicitly built to avoid. Load the
+    # CURRENTLY DEPLOYED bundle's own stored AUC (predict_meta() already reads this back at
+    # inference time) and refuse to replace it with something strictly worse.
+    #
+    # MIN_AUC_IMPROVEMENT is deliberately 0.0 (reject only if strictly worse), not a positive
+    # margin: AUC on this validation slice (20% of up to 20,000 rows, retrained monthly) is
+    # noisy enough that an invented margin with no real variance data behind it would be
+    # security theater, and a margin set too strict would fail every future retrain forever,
+    # silently freezing a pipeline that's supposed to keep improving. See
+    # docs/DESIGN_MODEL_PROMOTION_GATES_2026-07-12.md §2.3 for the full reasoning — revisit
+    # once real promotion_rejected/promoted log volume exists.
+    MIN_AUC_IMPROVEMENT = 0.0
+    previous_auc: float | None = None
+    if META_MODEL_PATH.exists():
+        try:
+            previous_bundle = joblib.load(META_MODEL_PATH)
+            previous_auc = previous_bundle.get("auc")
+        except Exception as exc:
+            # An unreadable/corrupt existing bundle must NOT block the new one — failing
+            # closed here would turn a corrupted file into a permanent retrain freeze, worse
+            # than the bug this gate exists to prevent. Same fail-open principle as
+            # hard_rejects.py's macro-blackout check.
+            log.warning("meta_trainer.previous_bundle_unreadable error=%s", exc)
+
+    if previous_auc is not None and auc < previous_auc - MIN_AUC_IMPROVEMENT:
+        log.warning(
+            "meta_trainer.promotion_rejected new_auc=%.4f previous_auc=%.4f n_samples=%d",
+            auc, previous_auc, len(records),
+        )
+        _record_promotion_status(promoted=False, auc=auc, previous_auc=previous_auc, n_samples=len(records))
+        return {
+            "trained": True, "promoted": False, "n_samples": len(records),
+            "auc": round(auc, 4), "previous_auc": round(previous_auc, 4),
+        }
+
     META_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     bundle = {
@@ -323,7 +362,58 @@ def train_meta_model(db=None) -> dict:
             pass
         raise
 
-    return {"trained": True, "n_samples": len(records), "auc": round(auc, 4)}
+    log.info("meta_trainer.promoted new_auc=%.4f previous_auc=%s", auc, previous_auc)
+    _record_promotion_status(promoted=True, auc=auc, previous_auc=previous_auc, n_samples=len(records))
+    return {
+        "trained": True, "promoted": True, "n_samples": len(records),
+        "auc": round(auc, 4), "previous_auc": round(previous_auc, 4) if previous_auc is not None else None,
+    }
+
+
+def _record_promotion_status(promoted: bool, auc: float, previous_auc: float | None, n_samples: int) -> None:
+    """Write this retrain's promotion verdict to the SAME Redis key namespace market-data's
+    scheduler already uses for job status (scheduler:job:{name}) — market-data's own
+    GET /scheduler-status endpoint (already consumed by admin-health.tsx) reads any key
+    matching scheduler:job:*, so writing here directly, from ml-prediction, surfaces this
+    result in the existing dashboard with zero changes needed on the market-data/frontend
+    side. Also writes a small promoted/rejected history list (last 20 runs) to a separate key
+    for signal-tuning.tsx's more detailed view — see docs/DESIGN_MODEL_PROMOTION_GATES_2026-07-12.md
+    §4 decision 3. Best-effort: a Redis failure here must never break the retrain itself, since
+    the actual model file has already been written (or correctly not written) by this point.
+    """
+    try:
+        import json as _json
+        from datetime import datetime, timezone
+        import redis as _redis_lib
+        from common.config import get_settings as _get_settings
+
+        r = _redis_lib.from_url(_get_settings().redis_url, decode_responses=True)
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        r.setex(
+            "scheduler:job:meta_model_promotion",
+            86400 * 14,
+            _json.dumps({
+                "job": "meta_model_promotion",
+                "status": "ok" if promoted else "skipped: promotion rejected (new AUC worse than deployed)",
+                "last_run": now_iso,
+                "duration_s": 0.0,
+                "error": None,
+            }),
+        )
+
+        history_key = "meta_model:promotion_history"
+        raw = r.get(history_key)
+        history = _json.loads(raw) if raw else []
+        history.append({
+            "ts": now_iso, "promoted": promoted, "auc": round(auc, 4),
+            "previous_auc": round(previous_auc, 4) if previous_auc is not None else None,
+            "n_samples": n_samples,
+        })
+        history = history[-20:]  # keep the last 20 runs only
+        r.setex(history_key, 86400 * 90, _json.dumps(history))
+    except Exception as exc:
+        log.warning("meta_trainer.promotion_status_write_failed error=%s", exc)
 
 
 def predict_meta(
