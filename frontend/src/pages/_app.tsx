@@ -84,6 +84,7 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Signal Tuning',    href: '/signal-tuning',    color: '#a78bfa', tag: 'new' },
       { label: 'Trade Performance', href: '/trade-performance', color: '#34d399' },
       { label: 'Watchlist Performance', href: '/watchlist-performance', color: '#f59e0b', tag: 'new' },
+      { label: 'Watchlist Rotation — How It Works', href: '/watchlist-rotation-explainer', color: '#f59e0b', tag: 'new' },
       { label: 'Signal Log',       href: '/admin-signals',    color: '#f87171' },
       { label: 'System Health',    href: '/admin-health',     color: '#38bdf8' },
       { label: 'Improvements',     href: '/improvements',     color: '#f59e0b', tag: 'new' },
