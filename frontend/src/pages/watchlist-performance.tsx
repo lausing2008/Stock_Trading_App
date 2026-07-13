@@ -121,7 +121,10 @@ function RotationHistorySection({ style }: { style: string }) {
       </div>
       <p style={{ fontSize: '11px', color: '#475569', marginBottom: '10px' }}>
         Every add/drop the weekly auto-rotation job has made for this style. Reverting an "add" removes that
-        stock again; reverting a "drop" re-adds it to the same watchlist it came from.
+        stock again; reverting a "drop" re-adds it to the same watchlist it came from.{' '}
+        <a href="/watchlist-rotation-explainer" style={{ color: '#38bdf8', textDecoration: 'none' }}>
+          How does this job work? →
+        </a>
       </p>
       {revertError && (
         <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', fontSize: '12px', color: '#f87171', marginBottom: '10px' }}>
