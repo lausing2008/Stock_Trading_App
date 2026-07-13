@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
-import { api, type WatchlistPerfStock } from '@/lib/api';
+import { api, type WatchlistPerfStock, type WatchlistRotationHistoryRow } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 // ── Static config ─────────────────────────────────────────────────────────────
@@ -81,6 +81,121 @@ function SectorBar({ sectorPct, maxSectorPct }: { sectorPct: Record<string, numb
           entries here may be silently blocked even when the stock itself qualifies.
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Rotation history ──────────────────────────────────────────────────────────
+
+function RotationHistorySection({ style }: { style: string }) {
+  const [reverting, setReverting] = useState<number | null>(null);
+  const [revertError, setRevertError] = useState<string | null>(null);
+
+  const { data, isLoading, mutate } = useSWR(
+    ['watchlist-rotation-history', style],
+    () => api.getWatchlistRotationHistory({ style, limit: 100 }),
+    { revalidateOnFocus: false }
+  );
+
+  async function handleRevert(row: WatchlistRotationHistoryRow) {
+    const symbol = row.action === 'drop' ? row.old_value.symbol : row.new_value.symbol;
+    if (!confirm(`Revert this ${row.action === 'drop' ? 're-add' : 'removal of'} ${symbol}?`)) return;
+    setReverting(row.id);
+    setRevertError(null);
+    try {
+      await api.revertWatchlistRotation(row.id);
+      mutate();
+    } catch (e: unknown) {
+      setRevertError((e as Error)?.message || 'Revert failed');
+    } finally {
+      setReverting(null);
+    }
+  }
+
+  const rows = data?.rows ?? [];
+
+  return (
+    <div style={{ marginTop: '32px' }}>
+      <div style={{ marginBottom: '8px', fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>
+        ROTATION HISTORY — WATCHLIST-AUTO-ROTATION
+      </div>
+      <p style={{ fontSize: '11px', color: '#475569', marginBottom: '10px' }}>
+        Every add/drop the weekly auto-rotation job has made for this style. Reverting an "add" removes that
+        stock again; reverting a "drop" re-adds it to the same watchlist it came from.
+      </p>
+      {revertError && (
+        <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', fontSize: '12px', color: '#f87171', marginBottom: '10px' }}>
+          {revertError}
+        </div>
+      )}
+      <div style={{ borderRadius: '10px', border: '1px solid #1e293b', overflow: 'hidden' }}>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px' }}>
+            <thead>
+              <tr style={{ background: 'rgba(148,163,184,0.05)' }}>
+                {['When', 'Action', 'Symbol', 'Watchlist', 'Win Rate / K-Score', 'n', ''].map(h => (
+                  <th key={h} style={{ textAlign: h === '' || h === 'When' || h === 'Symbol' || h === 'Watchlist' ? 'left' : 'right', padding: '8px 12px', color: '#475569', fontWeight: 700, fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '0.04em', borderBottom: '1px solid #1e293b' }}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {isLoading && (
+                <tr><td colSpan={7} style={{ padding: '20px', textAlign: 'center', color: '#475569' }}>Loading…</td></tr>
+              )}
+              {!isLoading && rows.map(row => {
+                const info = row.action === 'drop' ? row.old_value : row.new_value;
+                return (
+                  <tr key={row.id} style={{ borderBottom: '1px solid #1e293b', opacity: row.reverted ? 0.5 : 1 }}>
+                    <td style={{ padding: '8px 12px', color: '#64748b', whiteSpace: 'nowrap' }}>
+                      {new Date(row.ts).toLocaleDateString()} {new Date(row.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </td>
+                    <td style={{ padding: '8px 12px' }}>
+                      <span style={{
+                        padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700,
+                        background: row.action === 'add' ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)',
+                        color: row.action === 'add' ? '#22c55e' : '#ef4444',
+                      }}>
+                        {row.action === 'add' ? '+ Added' : '− Dropped'}
+                      </span>
+                    </td>
+                    <td style={{ padding: '8px 12px', fontWeight: 700, color: '#e2e8f0' }}>{info.symbol ?? '—'}</td>
+                    <td style={{ padding: '8px 12px', color: '#94a3b8' }}>{info.watchlist_name ?? '—'}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#64748b' }}>
+                      {row.action === 'drop'
+                        ? (row.validation_ev_pct != null ? `${(row.validation_ev_pct * 100).toFixed(0)}% (floor ${((row.baseline_validation_ev_pct ?? 0) * 100).toFixed(0)}%)` : '—')
+                        : (row.new_value.kscore != null ? row.new_value.kscore.toFixed(1) : '—')}
+                    </td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#64748b' }}>{row.validation_n ?? '—'}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right' }}>
+                      {row.reverted ? (
+                        <span style={{ fontSize: 11, color: '#475569' }}>Reverted</span>
+                      ) : (
+                        <button
+                          onClick={() => handleRevert(row)}
+                          disabled={reverting === row.id}
+                          style={{
+                            padding: '3px 10px', borderRadius: '5px', fontSize: '11px', fontWeight: 600,
+                            cursor: reverting === row.id ? 'not-allowed' : 'pointer',
+                            border: '1px solid #1e293b', background: 'transparent',
+                            color: reverting === row.id ? '#334155' : '#38bdf8',
+                          }}
+                        >
+                          {reverting === row.id ? 'Reverting…' : 'Revert'}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {!isLoading && rows.length === 0 && (
+                <tr><td colSpan={7} style={{ padding: '20px', textAlign: 'center', color: '#475569' }}>No rotation actions recorded yet for this style.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
@@ -303,6 +418,8 @@ export default function WatchlistPerformancePage() {
               </table>
             </div>
           </div>
+
+          <RotationHistorySection style={style} />
         </>
       )}
     </div>
