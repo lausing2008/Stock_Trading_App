@@ -2561,6 +2561,160 @@ def _snapshot_fundamentals() -> None:
         log.error("scheduler.fundamentals_snapshot_failed", error=str(exc))
 
 
+def _run_watchlist_auto_rotation() -> None:
+    """WATCHLIST-AUTO-ROTATION: weekly per-watchlist rotation — drop stocks with a reliably
+    poor trailing win rate, add top-K-Score candidates not already on that watchlist.
+
+    Runs independently per (watchlist_id), not just per style — real watchlists mix US/HK
+    stocks under the same style tag (confirmed against production data: e.g. "Growth /
+    Momentum" and "Swing Trade" each span both markets), so candidate selection is scoped to
+    each watchlist's OWN market composition rather than one merged per-style candidate pool —
+    a US-heavy GROWTH watchlist should get US candidates, not HK ones, and vice versa.
+
+    Whipsaw guard (per this tracker item's own impact note — a short lookback reacting to a
+    small sample risks dropping a stock right before it recovers): a stock is only dropped if
+    it has AT LEAST _MIN_SAMPLES_FOR_DROP resolved outcomes in the lookback window, mirroring
+    signal_watchdog's own documented reasoning for raising ITS floor (see routes.py's
+    AUD232-018 comment) rather than acting on a handful of noisy outcomes.
+
+    Every add/drop is recorded as one TuneHistory row (parameter_class="watchlist_rotation")
+    so a user can see why a stock disappeared/appeared, matching every other self-tuning
+    mechanism's audit-trail discipline in this codebase. Does NOT add a new WatchlistItem
+    provenance column (no `source`/`is_auto_generated` field exists on WatchlistItem today,
+    and this repo has no working migration path for altering an existing populated table
+    without a manual production ALTER TABLE, per CLAUDE.md's documented create_all() gap) —
+    TuneHistory is the sole audit record for which items were added/dropped by this job.
+    """
+    import uuid as _uuid
+    from datetime import date as _date, timedelta as _timedelta
+    from db import TuneHistory
+    from sqlalchemy import func as _func, case as _case, delete as _delete
+
+    _MIN_SAMPLES_FOR_DROP = 15  # matches signal_watchdog's own raised floor (AUD232-018)
+    _WIN_RATE_FLOOR = 0.40
+    _LOOKBACK_DAYS = 90  # matches watchlist_performance's own default days_back
+    _MAX_ADDS_PER_WATCHLIST = 3
+    _t0 = time.monotonic()
+    _run_id = str(_uuid.uuid4())
+    added_total = 0
+    dropped_total = 0
+
+    try:
+        cutoff = _date.today() - _timedelta(days=_LOOKBACK_DAYS)
+        with SessionLocal() as session:
+            watchlists = session.execute(
+                select(Watchlist.id, Watchlist.trading_style, Watchlist.name)
+                .where(Watchlist.trading_style.is_not(None))
+            ).all()
+
+            for wl_id, style, wl_name in watchlists:
+                # This watchlist's own current membership + market composition.
+                member_rows = session.execute(
+                    select(WatchlistItem.id, WatchlistItem.stock_id, Stock.market)
+                    .join(Stock, WatchlistItem.stock_id == Stock.id)
+                    .where(WatchlistItem.watchlist_id == wl_id)
+                ).all()
+                if not member_rows:
+                    continue
+                member_stock_ids = {r.stock_id for r in member_rows}
+                market_counts: dict = {}
+                for r in member_rows:
+                    market_counts[r.market] = market_counts.get(r.market, 0) + 1
+                # Candidates are scoped to this watchlist's DOMINANT market — a mixed
+                # watchlist still needs one deterministic market to pull new candidates from
+                # rather than guessing; ties broken by enum order (US before HK).
+                dominant_market = max(market_counts.items(), key=lambda kv: (kv[1], kv[0] == Market.US))[0]
+
+                # Win rate per stock on THIS watchlist, for this style/lookback.
+                outcome_rows = session.execute(
+                    select(
+                        SignalOutcome.stock_id,
+                        _func.count().label("n"),
+                        _func.sum(_case((SignalOutcome.is_correct.is_(True), 1), else_=0)).label("wins"),
+                    )
+                    .where(
+                        SignalOutcome.horizon == SignalHorizon(style),
+                        SignalOutcome.signal_date >= cutoff,
+                        SignalOutcome.is_correct.is_not(None),
+                        SignalOutcome.stock_id.in_(member_stock_ids),
+                    )
+                    .group_by(SignalOutcome.stock_id)
+                ).all()
+
+                for row in outcome_rows:
+                    if row.n < _MIN_SAMPLES_FOR_DROP:
+                        continue  # whipsaw guard — not enough resolved outcomes to act on
+                    win_rate = row.wins / row.n
+                    if win_rate >= _WIN_RATE_FLOOR:
+                        continue
+
+                    item_id = next(r.id for r in member_rows if r.stock_id == row.stock_id)
+                    stock_row = session.execute(select(Stock.symbol).where(Stock.id == row.stock_id)).scalar_one()
+                    session.execute(_delete(WatchlistItem).where(WatchlistItem.id == item_id))
+                    session.add(TuneHistory(
+                        run_id=_run_id, parameter_class="watchlist_rotation", parameter_name="drop",
+                        style=style, market=dominant_market.value,
+                        old_value={"watchlist_id": wl_id, "watchlist_name": wl_name, "stock_id": row.stock_id, "symbol": stock_row},
+                        new_value={},
+                        train_window_start=cutoff, train_window_end=_date.today(),
+                        validation_window_start=cutoff, validation_window_end=_date.today(),
+                        train_ev_pct=None, validation_ev_pct=round(win_rate, 4),
+                        baseline_validation_ev_pct=_WIN_RATE_FLOOR, validation_n=row.n,
+                        promoted=True, gate_failures=[], triggered_by="auto_rotation",
+                    ))
+                    member_stock_ids.discard(row.stock_id)
+                    dropped_total += 1
+
+                session.commit()
+
+                # Top-K-Score candidates on this watchlist's dominant market, not already a member.
+                latest_as_of = session.execute(select(_func.max(Ranking.as_of))).scalar_one_or_none()
+                if latest_as_of is None:
+                    continue
+                cand_rows = session.execute(
+                    select(Ranking.score, Stock.id, Stock.symbol)
+                    .join(Stock, Ranking.stock_id == Stock.id)
+                    .where(
+                        Ranking.as_of == latest_as_of,
+                        Stock.active.is_(True),
+                        Stock.market == dominant_market,
+                    )
+                    .order_by(desc(Ranking.score))
+                    .limit(_MAX_ADDS_PER_WATCHLIST + len(member_stock_ids))
+                ).all()
+
+                added_this_watchlist = 0
+                for score, cand_stock_id, cand_symbol in cand_rows:
+                    if added_this_watchlist >= _MAX_ADDS_PER_WATCHLIST:
+                        break
+                    if cand_stock_id in member_stock_ids:
+                        continue
+                    session.add(WatchlistItem(stock_id=cand_stock_id, watchlist_id=wl_id))
+                    session.add(TuneHistory(
+                        run_id=_run_id, parameter_class="watchlist_rotation", parameter_name="add",
+                        style=style, market=dominant_market.value,
+                        old_value={}, new_value={"watchlist_id": wl_id, "watchlist_name": wl_name, "stock_id": cand_stock_id, "symbol": cand_symbol, "kscore": score},
+                        train_window_start=cutoff, train_window_end=_date.today(),
+                        validation_window_start=cutoff, validation_window_end=_date.today(),
+                        train_ev_pct=None, validation_ev_pct=None,
+                        baseline_validation_ev_pct=None, validation_n=0,
+                        promoted=True, gate_failures=[], triggered_by="auto_rotation",
+                    ))
+                    member_stock_ids.add(cand_stock_id)
+                    added_this_watchlist += 1
+                    added_total += 1
+
+                session.commit()
+
+        elapsed = time.monotonic() - _t0
+        _record_job_status("watchlist_auto_rotation", "ok", elapsed)
+        log.info("scheduler.watchlist_auto_rotation_complete", added=added_total, dropped=dropped_total, run_id=_run_id)
+    except Exception as exc:
+        elapsed = time.monotonic() - _t0
+        _record_job_status("watchlist_auto_rotation", "error", elapsed, str(exc))
+        log.error("scheduler.watchlist_auto_rotation_failed", error=str(exc))
+
+
 def _compute_sector_rotation() -> None:
     """T220-G: Compute sector K-Score momentum (this week vs 4 weeks ago) and cache in Redis."""
     import json as _json
@@ -4264,6 +4418,14 @@ def start_scheduler() -> None:
         _snapshot_fundamentals,
         CronTrigger(day_of_week="sun", hour=16, minute=30, timezone="America/New_York"),
         id="fundamentals_snapshot_weekly", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── WATCHLIST-AUTO-ROTATION: Sunday 17:00 ET (after fundamentals_snapshot, so its own
+    # candidate selection uses the freshest rankings available before rotation runs) ──
+    _scheduler.add_job(
+        _run_watchlist_auto_rotation,
+        CronTrigger(day_of_week="sun", hour=17, minute=0, timezone="America/New_York"),
+        id="watchlist_auto_rotation_weekly", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── One-shot startup run to restore conviction/Redis data after restarts ─
