@@ -210,6 +210,18 @@ export const api = {
     return request<WatchlistPerformanceResponse>(`/admin/watchlist-performance?${p.toString()}`);
   },
 
+  // WATCHLIST-AUTO-ROTATION history/revert
+  getWatchlistRotationHistory: (params?: { watchlist_id?: number; style?: string; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.watchlist_id != null) p.set('watchlist_id', String(params.watchlist_id));
+    if (params?.style) p.set('style', params.style);
+    if (params?.limit != null) p.set('limit', String(params.limit));
+    const qs = p.toString();
+    return request<WatchlistRotationHistoryResponse>(`/admin/watchlist-rotation-history${qs ? `?${qs}` : ''}`);
+  },
+  revertWatchlistRotation: (id: number) =>
+    request<{ status: string; id: number; action: string }>(`/admin/watchlist-rotation-history/${id}/revert`, { method: 'POST' }),
+
   // Broad stock scan (arbitrary tickers via yfinance)
   quickScan: (symbols: string[], priceMin?: number, priceMax?: number) =>
     request<QuickScanResult[]>(`/stocks/quick_scan`, {
@@ -1270,6 +1282,27 @@ export type WatchlistPerformanceResponse = {
   max_sector_pct: number;
   watchlist_perf: WatchlistPerfStock[];
   candidates: WatchlistPerfCandidate[];
+};
+
+// WATCHLIST-AUTO-ROTATION
+export type WatchlistRotationHistoryRow = {
+  id: number;
+  run_id: string;
+  ts: string;
+  action: 'add' | 'drop';
+  style: string;
+  market: string;
+  old_value: { watchlist_id?: number; watchlist_name?: string; stock_id?: number; symbol?: string };
+  new_value: { watchlist_id?: number; watchlist_name?: string; stock_id?: number; symbol?: string; kscore?: number };
+  validation_ev_pct: number | null;
+  baseline_validation_ev_pct: number | null;
+  validation_n: number | null;
+  reverted: boolean;
+};
+
+export type WatchlistRotationHistoryResponse = {
+  count: number;
+  rows: WatchlistRotationHistoryRow[];
 };
 
 // ── WF-2 Paper Portfolio types ────────────────────────────────────────────────

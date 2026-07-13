@@ -1,7 +1,7 @@
 """Admin endpoints: trigger ingestion + seed universe + add individual stock."""
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select, desc, func, case
+from sqlalchemy import select, desc, func, case, delete
 from sqlalchemy.orm import Session
 import json
 import yfinance as yf
@@ -442,6 +442,105 @@ def watchlist_performance(
         "watchlist_perf": watchlist_perf,
         "candidates": candidates,
     }
+
+
+@router.get("/watchlist-rotation-history")
+def watchlist_rotation_history(
+    watchlist_id: int | None = Query(None, description="Filter to one watchlist"),
+    style: str | None = Query(None, description="Filter to SHORT | SWING | LONG | GROWTH"),
+    limit: int = Query(100, ge=1, le=500),
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """WATCHLIST-AUTO-ROTATION: browse every add/drop the weekly rotation job has made,
+    newest first, with enough detail to answer "why did this stock disappear/appear" and
+    whether a given row has already been reverted (reverted_at is set) or can still be undone.
+    """
+    from db import TuneHistory
+
+    with SessionLocal() as session:
+        q = (
+            select(TuneHistory)
+            .where(TuneHistory.parameter_class == "watchlist_rotation")
+            .order_by(desc(TuneHistory.ts))
+            .limit(limit)
+        )
+        if style:
+            q = q.where(TuneHistory.style == style.upper())
+        rows = session.execute(q).scalars().all()
+        if watchlist_id is not None:
+            rows = [r for r in rows if (r.old_value or {}).get("watchlist_id") == watchlist_id
+                    or (r.new_value or {}).get("watchlist_id") == watchlist_id]
+        return {
+            "count": len(rows),
+            "rows": [
+                {
+                    "id": r.id, "run_id": r.run_id, "ts": r.ts.isoformat(),
+                    "action": r.parameter_name,  # "add" | "drop"
+                    "style": r.style, "market": r.market,
+                    "old_value": r.old_value, "new_value": r.new_value,
+                    "validation_ev_pct": r.validation_ev_pct,
+                    "baseline_validation_ev_pct": r.baseline_validation_ev_pct,
+                    "validation_n": r.validation_n,
+                    "reverted": bool((r.gate_failures or []) and "reverted" in r.gate_failures),
+                }
+                for r in rows
+            ],
+        }
+
+
+@router.post("/watchlist-rotation-history/{tune_history_id}/revert")
+def revert_watchlist_rotation(
+    tune_history_id: int,
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """Undo one specific add/drop the auto-rotation job made: re-adds a dropped stock, or
+    removes an added one. Marks the TuneHistory row as reverted (via gate_failures, the only
+    free-text-ish field already on this model — see the "reverted" flag in
+    watchlist_rotation_history() above) rather than deleting the audit row itself, so the
+    history page keeps showing what happened even after it's been undone.
+    """
+    from db import TuneHistory
+
+    with SessionLocal() as session:
+        row = session.execute(
+            select(TuneHistory).where(
+                TuneHistory.id == tune_history_id,
+                TuneHistory.parameter_class == "watchlist_rotation",
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="No such watchlist_rotation history row")
+        if row.gate_failures and "reverted" in row.gate_failures:
+            raise HTTPException(status_code=400, detail="This action was already reverted")
+
+        if row.parameter_name == "drop":
+            info = row.old_value or {}
+            watchlist_id, stock_id = info.get("watchlist_id"), info.get("stock_id")
+            if watchlist_id is None or stock_id is None:
+                raise HTTPException(status_code=400, detail="History row is missing watchlist_id/stock_id — cannot revert")
+            already_there = session.execute(
+                select(WatchlistItem.id).where(
+                    WatchlistItem.watchlist_id == watchlist_id, WatchlistItem.stock_id == stock_id,
+                )
+            ).scalar_one_or_none()
+            if already_there is None:
+                session.add(WatchlistItem(stock_id=stock_id, watchlist_id=watchlist_id))
+        elif row.parameter_name == "add":
+            info = row.new_value or {}
+            watchlist_id, stock_id = info.get("watchlist_id"), info.get("stock_id")
+            if watchlist_id is None or stock_id is None:
+                raise HTTPException(status_code=400, detail="History row is missing watchlist_id/stock_id — cannot revert")
+            session.execute(
+                delete(WatchlistItem).where(
+                    WatchlistItem.watchlist_id == watchlist_id, WatchlistItem.stock_id == stock_id,
+                )
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown action '{row.parameter_name}' — cannot revert")
+
+        row.gate_failures = list(row.gate_failures or []) + ["reverted"]
+        session.commit()
+        return {"status": "reverted", "id": tune_history_id, "action": row.parameter_name}
 
 
 @router.post("/send-morning-digest")
