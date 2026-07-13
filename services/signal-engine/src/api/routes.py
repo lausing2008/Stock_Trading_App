@@ -4271,6 +4271,36 @@ def signal_watchdog(
 
         floor_threshold = _DEFAULT_THRESHOLDS.get(style, 0.65)
 
+        # SELFIMPROVE-CROSS-MECHANISM-BLINDNESS: before acting, check whether some OTHER
+        # tuning mechanism (calibrate_ta_weights, calibrate_conviction_weights,
+        # calibrate_ml_weight, outcomes_calibrate_apply, tune_style_profiles — anything NOT
+        # triggered_by="watchdog") already changed this style within its own hold window. A
+        # recalibration shifts the style's effective scoring, so a win-rate dip right after one
+        # could be "still absorbing the recalibration," not "genuinely getting worse" — the
+        # watchdog has no way to tell those apart today. Rather than skip acting outright (a
+        # real emergency win-rate crash still deserves an immediate response — that's the whole
+        # point of a fast reactive nudge, not a search), flag it: the action still fires, but
+        # the TuneHistory row records that a coupled change landed recently so a human reviewing
+        # the history later can see two changes close together rather than treating the
+        # watchdog's action as an independent, uncorrelated signal.
+        _recent_coupled_change = session.execute(
+            select(TuneHistory.parameter_class, TuneHistory.parameter_name, TuneHistory.ts)
+            .where(
+                TuneHistory.style == style,
+                TuneHistory.promoted.is_(True),
+                TuneHistory.triggered_by != "watchdog",
+                TuneHistory.ts >= datetime.now(timezone.utc) - timedelta(days=_hold_days),
+            )
+            .order_by(TuneHistory.ts.desc())
+            .limit(1)
+        ).first()
+        _coupled_note = (
+            f"{_recent_coupled_change.parameter_class}.{_recent_coupled_change.parameter_name} "
+            f"promoted {_recent_coupled_change.ts.isoformat()}"
+        ) if _recent_coupled_change else None
+        if _coupled_note:
+            log.info("signal_watchdog.recent_coupled_change_detected", style=style, note=_coupled_note)
+
         action = None
         _tune_window = (_win_start, date.today())
         if win_rate_14d is not None and win_rate_14d < 0.38 and len(outcomes_14d) >= _MIN_SAMPLES:
@@ -4288,14 +4318,17 @@ def signal_watchdog(
                 action = "tightened"
                 actions.append({"style": style, "action": action, "from": round(current_val, 4),
                                  "to": round(new_val, 4), "win_rate_14d": round(win_rate_14d, 3),
-                                 "tighten_count": tighten_count + 1})
+                                 "tighten_count": tighten_count + 1,
+                                 "recent_coupled_change": _coupled_note})
                 _record_tune_history(
                     session, _run_id, "signal_threshold", "watchdog_buy_threshold", style, "ALL",
                     old_value={"threshold": current_val}, new_value={"threshold": new_val},
                     train_window=_tune_window, validation_window=_tune_window,
                     train_ev_pct=None, validation_ev_pct=round(win_rate_14d, 4),
                     baseline_validation_ev_pct=None, validation_n=len(outcomes_14d),
-                    promoted=True, gate_failures=[], triggered_by="watchdog",
+                    promoted=True,
+                    gate_failures=[f"recent_coupled_change:{_coupled_note}"] if _coupled_note else [],
+                    triggered_by="watchdog",
                 )
 
         elif signals_7d == 0 and current_adj:
@@ -4312,10 +4345,13 @@ def signal_watchdog(
                     train_window=_tune_window, validation_window=_tune_window,
                     train_ev_pct=None, validation_ev_pct=None,
                     baseline_validation_ev_pct=None, validation_n=signals_7d,
-                    promoted=True, gate_failures=[], triggered_by="watchdog",
+                    promoted=True,
+                    gate_failures=[f"recent_coupled_change:{_coupled_note}"] if _coupled_note else [],
+                    triggered_by="watchdog",
                 )
                 actions.append({"style": style, "action": action, "from": round(current_val, 4),
-                                 "to": round(new_val, 4), "signals_7d": signals_7d})
+                                 "to": round(new_val, 4), "signals_7d": signals_7d,
+                                 "recent_coupled_change": _coupled_note})
 
         # T243-TUNE-SILENT-EXPIRY: if an override is active but neither the tighten nor the
         # relax branch fired this run, the key is coasting toward its 7-day TTL with no
