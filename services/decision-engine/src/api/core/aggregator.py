@@ -210,3 +210,17 @@ def build_game_plan(live_price: float, style: str, signal_data: dict | None) -> 
             gp["target_1"] = gp["target_1"] or (live_price + (gp["take_profit"] - live_price) * 0.5)
             return {k: float(v) for k, v in gp.items()}
     return _default_game_plan(live_price, style, atr_14)
+
+
+async def abuild_game_plan(live_price: float, style: str, signal_data: dict | None) -> dict:
+    """T247-DECISIONENGINE-STYLEPARAMS-BLOCKING: build_game_plan() is called directly
+    (unawaited) from async def _decide() (routes.py); on the signal-reasons-missing path it
+    calls _default_game_plan() -> _get_style_params(), which does a blocking httpx.get() to
+    market-data on a cache miss. Same event-loop-stall class as regime.py's get_regime() bug
+    (T247-DECISIONENGINE-REGIME-BLOCKING) — compounds with it when both 15-minute caches are
+    cold simultaneously, serializing what asyncio.gather in /decide/batch was meant to
+    parallelize. build_game_plan() itself is fast/pure whenever signal_data already has full
+    game-plan reasons (the common case — no network call at all), so wrap the whole function
+    in the executor rather than threading async through every internal call site."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_yf_executor, build_game_plan, live_price, style, signal_data)
