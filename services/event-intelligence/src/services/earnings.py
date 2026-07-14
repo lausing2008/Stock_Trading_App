@@ -40,6 +40,17 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
                             fq = (report_date.month - 1) // 3 + 1
                             fy = report_date.year
                             strength = _compute_strength(eps_est, eps_act, surprise)
+                            # DQ-EARNINGS-FETCHED-AT-FROZEN: fetched_at has server_default=func.now(),
+                            # which only fires on a fresh INSERT — once every (stock_id, period) row
+                            # already exists from the initial backfill, every subsequent daily sync run
+                            # is 100% UPDATEs via the conflict path, so fetched_at could never advance
+                            # again no matter how many times the sync ran cleanly. This silently broke
+                            # the earnings_events DQ staleness check (AUD232-DQ-MISSING-CHECKS) — it
+                            # alerted "stale" every day despite a genuinely healthy daily sync, because
+                            # the column it watches was structurally frozen. Set it explicitly on every
+                            # upsert so it reflects "last time this row was actually touched," not
+                            # "first time this row ever existed."
+                            _now = datetime.now(timezone.utc)
                             stmt = (
                                 pg_insert(EarningsEvent)
                                 .values(
@@ -52,6 +63,7 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
                                     eps_actual=eps_act,
                                     surprise_pct=surprise,
                                     earnings_strength_score=strength,
+                                    fetched_at=_now,
                                 )
                                 .on_conflict_do_update(
                                     constraint="uq_earnings_stock_period",
@@ -61,6 +73,7 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
                                         surprise_pct=surprise,
                                         earnings_strength_score=strength,
                                         report_date=report_date,
+                                        fetched_at=_now,
                                     ),
                                 )
                             )
@@ -89,6 +102,9 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
                     fq = (upcoming.month - 1) // 3 + 1
                     fy = upcoming.year
                     with SessionLocal() as s:
+                        # See DQ-EARNINGS-FETCHED-AT-FROZEN comment above — same reasoning applies
+                        # to the upcoming-earnings-calendar upsert path.
+                        _now = datetime.now(timezone.utc)
                         stmt = (
                             pg_insert(EarningsEvent)
                             .values(
@@ -99,6 +115,7 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
                                 fiscal_quarter=fq,
                                 eps_estimate=float(eps_est) if eps_est and pd.notna(eps_est) else None,
                                 revenue_estimate=float(rev_est) if rev_est and pd.notna(rev_est) else None,
+                                fetched_at=_now,
                             )
                             .on_conflict_do_update(
                                 constraint="uq_earnings_stock_period",
@@ -106,6 +123,7 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
                                     report_date=upcoming,
                                     eps_estimate=float(eps_est) if eps_est and pd.notna(eps_est) else None,
                                     revenue_estimate=float(rev_est) if rev_est and pd.notna(rev_est) else None,
+                                    fetched_at=_now,
                                 ),
                             )
                         )
