@@ -15152,13 +15152,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-APIGATEWAY-2',
-    tier: 247 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/api-gateway/src/api/proxy.py:91',
     effort: 'S',
     impact: '_is_blacklisted() performs a synchronous, blocking Redis call (sync \'redis\' package, not redis.asyncio) directly inside the async def reverse_proxy() request path, so it runs on the event loop thread instead of a threadpool.',
     title: '_is_blacklisted() performs a synchronous, blocking Redis call (sync \'redis\' package, not redis.asyncio) directly inside the async def reverse_proxy() request path, so it runs on the event loop thread instead of a threadpool.',
     what: 'Every authenticated request through the gateway calls _require_auth() -> _is_blacklisted(jti), which does a blocking _redis_lib.Redis(...).exists(...) call. Because reverse_proxy is declared async def, FastAPI does NOT offload this sync call to a worker thread (that only happens automatically for plain \'def\' route handlers) -- it executes directly on the asyncio event loop. If Redis is slow or briefly unreachable, each call can block for up to socket_connect_timeout=1s, and because it\'s on the event loop, EVERY concurrent request the gateway process is currently serving stalls for that same ~1s, not just the one request that touched Redis. Under moderate concurrent traffic during a Redis blip, this turns a single slow dependency into a proxy-wide latency spike/timeout cascade.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13: added _require_auth_async(), an async wrapper that runs the unmodified sync _require_auth() (and its _is_blacklisted() Redis call) via loop.run_in_executor() on a dedicated ThreadPoolExecutor — same pattern as decision-engine\'s aget_regime(). reverse_proxy() now awaits this wrapper instead of calling _require_auth() directly; _require_auth() itself is untouched so its own existing unit tests keep exercising it synchronously exactly as before. Added 3 new tests: a timing-based test proving a concurrent coroutine isn\'t blocked during a slow blacklist check, and two correctness tests confirming the executor wrapper still raises/propagates HTTPException for a blacklisted token and still passes for a valid one. Adversarially verified: reverting to a direct blocking call made the timing test fail with a real measured 0.211s stall; restoring the fix passes all 20 tests in the file.',
   },
 
   {
