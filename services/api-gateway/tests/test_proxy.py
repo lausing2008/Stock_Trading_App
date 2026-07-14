@@ -13,7 +13,7 @@ import pytest
 from fastapi import HTTPException
 from jose import jwt as _jwt
 
-from src.api.proxy import _require_auth, _PUBLIC_PREFIXES, _is_blacklisted
+from src.api.proxy import _require_auth, _PUBLIC_PREFIXES, _is_blacklisted, _upstream, _ROUTES
 
 _JWT_SECRET = "test-secret-not-a-real-key"
 
@@ -146,6 +146,40 @@ def test_normpath_traversal_variants(raw_path, expected_normalized):
     the kind of thing that regresses silently if this logic is ever touched again."""
     normalized = posixpath.normpath("/" + raw_path).lstrip("/")
     assert normalized == expected_normalized
+
+
+def test_rl_agent_prefix_resolves_to_an_upstream():
+    """T247-APIGATEWAY-RLAGENT regression guard: market-data's rl.py registers
+    APIRouter(prefix="/rl-agent") (routes /rl-agent/status, /rl-agent/train,
+    /rl-agent/recommend), and the frontend calls these through the gateway. _ROUTES
+    previously had no 'rl-agent' key, so _upstream() returned None for every RL Agent
+    request and reverse_proxy() 404'd them all despite the backend fully implementing the
+    feature. Confirm the prefix now resolves to a real upstream instead of None."""
+    assert _upstream("rl-agent/status") is not None
+    assert _upstream("rl-agent/train") is not None
+    assert _upstream("rl-agent/recommend") is not None
+
+
+def test_every_backend_router_prefix_has_a_gateway_route():
+    """Broader sweep so a FUTURE new backend router can't silently repeat this exact bug:
+    every prefix any service's APIRouter registers must have a corresponding _ROUTES entry.
+    This mirrors the audit method that originally found the rl-agent gap (diffing every
+    backend router prefix against _ROUTES keys)."""
+    import pathlib
+    import re
+
+    services_root = pathlib.Path(__file__).resolve().parents[2]
+    prefix_pattern = re.compile(r'APIRouter\(\s*prefix\s*=\s*["\']\/?([a-zA-Z0-9_-]+)')
+    missing = []
+    for py_file in services_root.glob("*/src/api/*.py"):
+        if "api-gateway" in str(py_file):
+            continue  # the gateway's own routers aren't proxied to themselves
+        text = py_file.read_text()
+        for match in prefix_pattern.finditer(text):
+            prefix = match.group(1)
+            if prefix not in _ROUTES and prefix not in _PUBLIC_PREFIXES:
+                missing.append(f"{py_file.relative_to(services_root)}: prefix={prefix!r}")
+    assert not missing, f"backend router prefixes with no gateway route: {missing}"
 
 
 def test_pure_dotdot_path_would_be_rejected_by_reverse_proxy_guard():

@@ -53,6 +53,11 @@ _ROUTES = {
     "paper-portfolio": _settings.market_data_url,
     "broker": _settings.market_data_url,
     "push": _settings.market_data_url,
+    # T247-APIGATEWAY-RLAGENT: rl.py registers APIRouter(prefix="/rl-agent") on market-data
+    # (routes /rl-agent/status, /rl-agent/train, /rl-agent/recommend) — this entry was missing
+    # entirely, so every request 404'd at the gateway despite the backend fully implementing
+    # the feature (admin-health page's RL Agent tile, RL training trigger).
+    "rl-agent": _settings.market_data_url,
 }
 
 

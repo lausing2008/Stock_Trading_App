@@ -15140,13 +15140,14 @@ const ITEMS: Item[] = [
   // ── Tier 247 — Full Deep System Audit (2026-07-14, 11-service workflow, 42 confirmed) ──
   {
     id: 'AUD247-APIGATEWAY-1',
-    tier: 247 as const, severity: 'high', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/api-gateway/src/api/proxy.py:25',
     effort: 'S',
     impact: 'The _ROUTES prefix map is missing an entry for \'rl-agent\', so every request to the RL Agent feature 404s at the gateway.',
     title: 'The _ROUTES prefix map is missing an entry for \'rl-agent\', so every request to the RL Agent feature 404s at the gateway.',
     what: 'market-data registers router = APIRouter(prefix="/rl-agent") (services/market-data/src/api/rl.py, routes /rl-agent/status, /rl-agent/train, /rl-agent/recommend) and the frontend calls these via api.ts (request(\'/rl-agent/status\'), request(\'/rl-agent/train\', {method:\'POST\'})), which is proxied through /api/* -> Nginx -> api-gateway. Since _ROUTES has no \'rl-agent\' key, _upstream(\'rl-agent/status\') returns None and reverse_proxy() raises HTTPException(404, \'No route for /rl-agent/status\') for every call. The admin-health page\'s RL Agent status tile and the RL training trigger are permanently unreachable in production despite the backend fully implementing the feature. Confirmed by diffing every backend router prefix against _ROUTES keys -- rl-agent is the only mismatch.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13: added the missing "rl-agent": market_data_url entry to _ROUTES. Added two regression tests to services/api-gateway/tests/test_proxy.py — a direct check that rl-agent/* resolves to a real upstream, and a broader sweep that greps every services/*/src/api/*.py file for APIRouter(prefix=...) and asserts each prefix has a corresponding _ROUTES (or _PUBLIC_PREFIXES) entry, so a future new router can\'t silently repeat this gap. Adversarially verified: reverting the fix made both new tests fail with the exact expected assertion (missing=["market-data/src/api/rl.py: prefix=\'rl-agent\'"]); restoring it passes all 17 tests in the file. The sweep test also confirms the original audit\'s claim that rl-agent was the ONLY such mismatch — no other gaps found.',
   },
 
   {
