@@ -1296,6 +1296,27 @@ def _fetch_live_prices(symbols: list[str]) -> dict[str, float]:
     return prices
 
 
+def _composite_priority(row) -> float:
+    """PT-D6: composite candidate sort priority — confidence + K-Score + breakout context.
+    Extracted to module level (was a local closure inside _scan_for_entries) so it's
+    independently unit-testable.
+
+    T247-MARKETDATA-KSCORE-FALSY: `rank_r.score or 50.0` / `if rank_r and rank_r.score`
+    treated a real K-Score of exactly 0.0 (a valid, clipped [0,100] value per
+    ranking-engine's kscore.py) as falsy, silently substituting the unranked-neutral default
+    of 50 — inflating a genuinely rock-bottom candidate's composite priority by 0.15 (0.3
+    weight x 0.5) and letting it out-rank a real, correctly-scored mediocre candidate for one
+    of the day's limited entry slots. Use `is not None` so only a MISSING ranking (rank_r is
+    None, or rank_r.score itself is None) falls back to 50.
+    """
+    sig_r, _, rank_r = row
+    conf_score = float(sig_r.confidence or 0.0) / 100.0
+    kscore_score = float(rank_r.score) / 100.0 if rank_r is not None and rank_r.score is not None else 0.5
+    sr = (sig_r.reasons or {}).get("sr_context", "neutral")
+    breakout_bonus = 1.0 if sr == "breakout" else 0.5 if sr == "at_support" else 0.0
+    return 0.5 * conf_score + 0.3 * kscore_score + 0.2 * breakout_bonus
+
+
 # ── Entry qualifier ───────────────────────────────────────────────────────────
 
 def _should_enter(
@@ -3299,13 +3320,6 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             pass  # fail-open — yfinance unavailable doesn't block trading
 
     # PT-D6: Re-sort candidates by composite priority — confidence + K-Score + breakout context
-    def _composite_priority(row):
-        sig_r, _, rank_r = row
-        conf_score   = float(sig_r.confidence or 0.0) / 100.0
-        kscore_score = float(rank_r.score or 50.0) / 100.0 if rank_r and rank_r.score else 0.5
-        sr = (sig_r.reasons or {}).get("sr_context", "neutral")
-        breakout_bonus = 1.0 if sr == "breakout" else 0.5 if sr == "at_support" else 0.0
-        return 0.5 * conf_score + 0.3 * kscore_score + 0.2 * breakout_bonus
     buy_signals = sorted(buy_signals, key=_composite_priority, reverse=True)
 
     # AUD19-PERF2: Pre-fetch all open trades + their stocks ONCE before the candidate loop.

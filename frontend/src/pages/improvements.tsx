@@ -15299,13 +15299,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-MARKETDATA-1',
-    tier: 247 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/paper_trading_engine.py:3305',
     effort: 'S',
     impact: 'Candidate sort-priority computation uses `rank_r.score or 50.0` / `if rank_r and rank_r.score` — a K-Score of exactly 0 (a real, valid, clipped [0,100] value per ranking-engine\'s kscore.py) is falsy in Python, so it is silently treated as an unranked/neutral 50 instead of the true rock-bottom score.',
     title: 'Candidate sort-priority computation uses `rank_r.score or 50.0` / `if rank_r and rank_r.score` — a K-Score of exactly 0 (a real, valid, clipped [0,100] value per ranking-engine\'s kscore.py) is falsy in Python, so it is silently treated as an unranked/neutral 50 instead of the true rock-bottom score.',
     what: 'A stock with genuinely terrible fundamentals/momentum gets `Ranking.score == 0.0` written by ranking-engine. When `_scan_for_entries()` sorts same-cycle BUY candidates via `_composite_priority()` to decide entry order under `max_entries_per_day`/`max_positions` caps, this stock\'s `kscore_score` term evaluates to `50/100 = 0.5` instead of `0/100 = 0.0`, inflating its composite priority score by 0.15 (0.3 weight x 0.5) versus what it should get. It can now out-rank a genuinely mediocre (score=40, correctly weighted 0.12) candidate and consume one of the day\'s limited entry slots ahead of a better-qualified stock — the exact class of None-vs-falsy bug already called out in this repo\'s CLAUDE.md history.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13: `rank_r.score or 50.0` / `if rank_r and rank_r.score` replaced with explicit `is not None` checks — only a genuinely MISSING ranking (rank_r is None) or missing score (rank_r.score is None) now falls back to the neutral 50; a real 0.0 is used as-is. Extracted _composite_priority() from a local closure inside _scan_for_entries() to a module-level function so it\'s independently unit-testable (behavior unchanged). Added services/market-data/tests/test_paper_trading_engine.py (5 tests). Adversarially verified: reverting to the original falsy check reproduced the EXACT inversion described in the audit finding — a K-Score of 0 (priority 0.5) scored HIGHER than a K-Score of 40 (priority 0.47), i.e. the rock-bottom candidate out-ranked the mediocre one; restoring the fix passes all 98 tests in the suite.',
   },
 
   {
