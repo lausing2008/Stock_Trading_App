@@ -20,7 +20,9 @@ from ..dsl import compute_features, evaluate_rule
 @dataclass
 class BacktestResult:
     total_return: float
-    cagr: float
+    # T247-STRATEGYENGINE-CAGR-OVERFLOW: cagr can now be None for a degenerate (near-zero-day)
+    # backtest range where the annualized value would otherwise overflow to inf.
+    cagr: float | None
     sharpe: float | None
     sortino: float | None
     calmar: float | None
@@ -88,8 +90,19 @@ class BacktestEngine:
         dd = 1 - equity / equity.cummax()
 
         total_return = float(equity.iloc[-1] - 1) if len(equity) else 0.0
-        years = max((feat["ts"].iloc[-1] - feat["ts"].iloc[0]).days / 365.25, 1e-6)
+        # T247-STRATEGYENGINE-CAGR-OVERFLOW: years previously floored to 1e-6 for a
+        # same-calendar-day (or otherwise near-zero-day) range, so `equity ** (1/years)` raised
+        # to the power of up to 1,000,000 — any equity != 1.0 silently overflows to `inf` (a
+        # numpy RuntimeWarning, not an exception). `inf`/`nan` is not valid JSON (stdlib
+        # json.dumps emits the literal, non-spec-compliant token "Infinity"), breaking the
+        # frontend backtest page and corrupting the stored Backtest.cagr row for all future
+        # reads. Floor at 1 trading day (1/365.25 years) instead of 1e-6 — still produces a
+        # large-but-finite annualized number for genuinely short backtests, and explicitly
+        # guard the final result against inf/nan (same None-on-degenerate pattern already used
+        # for sharpe/sortino/calmar below) rather than trusting the floor alone to prevent it.
+        years = max((feat["ts"].iloc[-1] - feat["ts"].iloc[0]).days / 365.25, 1 / 365.25)
         cagr = (equity.iloc[-1]) ** (1 / years) - 1 if equity.iloc[-1] > 0 else -1.0
+        cagr = float(cagr) if np.isfinite(cagr) else None
         # `or 1e-9` does NOT catch NaN — NaN is truthy in Python, so it bypasses `or`.
         # Use explicit NaN + zero checks for all volatility denominators.
         # T237-SE1: the 1e-9 floor below used to feed straight into the sharpe/sortino division,
@@ -115,7 +128,9 @@ class BacktestEngine:
             if (not np.isnan(_sortino_vol_raw) and _sortino_vol_raw > _VOL_EPS) else None
         )
         # Return None (not 0.0) for zero-drawdown — 0.0 is indistinguishable from a losing strategy.
-        calmar = float(cagr / dd.max()) if dd.max() > 0 else None
+        # cagr can be None (see T247-STRATEGYENGINE-CAGR-OVERFLOW above) — calmar is undefined
+        # without a real cagr, same as the zero-drawdown case.
+        calmar = float(cagr / dd.max()) if (cagr is not None and dd.max() > 0) else None
 
         wins = [t for t in trades if "ret" in t and t["ret"] > 0]
         losses = [t for t in trades if "ret" in t and t["ret"] <= 0]
@@ -130,7 +145,7 @@ class BacktestEngine:
 
         return BacktestResult(
             total_return=round(total_return, 4),
-            cagr=round(float(cagr), 4),
+            cagr=round(float(cagr), 4) if cagr is not None else None,
             sharpe=round(sharpe, 4) if sharpe is not None else None,
             sortino=round(sortino, 4) if sortino is not None else None,
             calmar=round(calmar, 4) if calmar is not None else None,
