@@ -3,6 +3,7 @@ from dataclasses import asdict
 from datetime import date, timedelta
 
 import httpx
+import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -156,11 +157,20 @@ def backtest(
         spy_rets = spy_close.pct_change().fillna(0)
         spy_eq = (1 + spy_rets).cumprod()
         spy_total = float(spy_eq.iloc[-1] - 1)
-        spy_years = max((spy_df["ts"].iloc[-1] - spy_df["ts"].iloc[0]).days / 365.25, 1e-6)
-        spy_cagr = float(spy_eq.iloc[-1] ** (1 / spy_years) - 1) if spy_eq.iloc[-1] > 0 else -1.0
-        result.benchmark_cagr = round(spy_cagr, 4)
+        # T247-STRATEGYENGINE-CAGR-OVERFLOW: same overflow risk as BacktestEngine.run()'s own
+        # cagr computation (a same-calendar-day SPY range floors years to ~0, and
+        # equity**(1/years) overflows to inf) — same fix: floor at 1 trading day, guard the
+        # result with np.isfinite.
+        spy_years = max((spy_df["ts"].iloc[-1] - spy_df["ts"].iloc[0]).days / 365.25, 1 / 365.25)
+        spy_cagr_raw = spy_eq.iloc[-1] ** (1 / spy_years) - 1 if spy_eq.iloc[-1] > 0 else -1.0
+        spy_cagr = float(spy_cagr_raw) if np.isfinite(spy_cagr_raw) else None
+        result.benchmark_cagr = round(spy_cagr, 4) if spy_cagr is not None else None
         result.benchmark_total_return = round(spy_total, 4)
-        result.alpha = round(result.cagr - spy_cagr, 4)
+        result.alpha = (
+            round(result.cagr - spy_cagr, 4)
+            if (result.cagr is not None and spy_cagr is not None)
+            else None
+        )
         result.benchmark_equity_curve = [
             {"ts": str(t), "equity": round(float(e), 6)}
             for t, e in zip(spy_df["ts"], spy_eq, strict=False)
