@@ -15512,13 +15512,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-RESEARCHENGINE-1',
-    tier: 247 as const, severity: 'high', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/research-engine/src/api/routes.py:1486',
     effort: 'S',
     impact: 'Research report cache is keyed only by symbol, ignoring `portfolio_size`/`max_risk_pct` from the request body, so cached position-sizing numbers leak across users/requests with different inputs.',
     title: 'Research report cache is keyed only by symbol, ignoring `portfolio_size`/`max_risk_pct` from the request body, so cached position-sizing numbers leak across users/requests with different inputs.',
     what: 'User A calls POST /research/AAPL with portfolio_size=100000, max_risk_pct=2.0, generating and caching a report whose position_sizing block (dollar_risk, share_quantity, position_size, pct_of_portfolio) is computed for a $100k account. Within the 24h TTL, User B calls POST /research/AAPL with portfolio_size=500000, max_risk_pct=1.0 — the cache-hit path at line 1486-1492 returns User A\'s cached report verbatim, silently giving User B share-quantity/position-size figures sized for someone else\'s $100k portfolio instead of their own $500k inputs. This also applies to the in-flight waiter path (lines 1496-1511).',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13: added _position_sizing_matches(report, req), gating BOTH cache-hit sites (the fast path and the in-flight waiter path) on whether the cached report\'s own stored position_sizing.portfolio_size/max_risk_pct match the current request — a mismatch falls through to regenerate rather than serving stale-for-this-request numbers. _cache itself stays keyed by symbol only (report content besides position sizing is genuinely symbol-only and expensive to regenerate); only the cache-hit CHECK gates on portfolio params, not the storage key. Fails closed: a malformed/legacy cached report with no position_sizing block never matches. Added services/research-engine/tests/test_cache_portfolio_params.py (6 tests, calling the real function directly) plus 2 small conftest.py gaps fixed while touching this service (common.jwt_auth and common.indicators were both missing from the stub list, so the ENTIRE test directory failed at collection before any test ran — this also surfaced 3 pre-existing, unrelated test_scoring.py failures in _score_fundamental\'s balance_sheet logic, left as-is, out of scope for this fix). Adversarially verified: reverting _position_sizing_matches to always return True made 5 of 6 tests fail with real assertion errors; restoring it passes all 6.',
   },
 
   {

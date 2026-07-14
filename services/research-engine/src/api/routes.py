@@ -838,6 +838,24 @@ def _build_checklist(tech: dict, fund: dict, ai: dict) -> dict:
 
 # ── Position sizing ───────────────────────────────────────────────────────────
 
+def _position_sizing_matches(report: dict, req: "ResearchRequest") -> bool:
+    """T247-RESEARCHENGINE-CACHEKEY: generate_research()'s cache (_cache, keyed only by
+    symbol) previously served a cached report to ANY request for that symbol regardless of
+    portfolio_size/max_risk_pct — a report generated for one user's $100k/2% inputs was
+    silently returned verbatim to a different request with $500k/1% inputs, with the WRONG
+    position_sizing block (dollar_risk, share_quantity, position_size, pct_of_portfolio)
+    baked in. _cache itself stays keyed by symbol only (report content, sans position sizing,
+    is genuinely symbol-only and expensive to regenerate) — instead, gate the cache-hit on
+    whether the cached report's OWN stored portfolio_size/max_risk_pct (written into
+    report["position_sizing"] by _position_size()) match the current request. A mismatch
+    falls through to regenerate rather than serving stale-for-this-request numbers."""
+    sizing = report.get("position_sizing") or {}
+    return (
+        sizing.get("portfolio_size") == req.portfolio_size
+        and sizing.get("max_risk_pct") == req.max_risk_pct
+    )
+
+
 def _position_size(tech: dict, portfolio_size: float, max_risk_pct: float, price: float) -> dict:
     stop = (tech.get("entry_planning") or {}).get("stop_loss", {}).get("price")
     if not stop or not price or price <= stop:
@@ -1483,12 +1501,14 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
         raise HTTPException(400, f"Invalid symbol: {symbol!r}")
 
     # Cache check (fast path — no waiting)
+    # T247-RESEARCHENGINE-CACHEKEY: also require the cached report's own baked-in
+    # portfolio_size/max_risk_pct to match this request's — see _position_sizing_matches().
     entry = _cache.get(sym)
     if entry:
         report, ts = entry
         quality = report.get("report_quality", "full")
         ttl = CACHE_TTL_FALLBACK_SEC if quality == "fallback" else CACHE_TTL_PARTIAL_SEC if quality == "partial" else CACHE_TTL_SEC
-        if (datetime.now(timezone.utc) - ts).total_seconds() < ttl:
+        if (datetime.now(timezone.utc) - ts).total_seconds() < ttl and _position_sizing_matches(report, req):
             return report
 
     # Deduplicate concurrent AI calls for the same symbol using asyncio.Event.
@@ -1507,9 +1527,13 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
                 # A fallback-quality report has TTL=300s; returning it for 6h would be stale.
                 _q = report.get("report_quality", "full")
                 _waiter_ttl = CACHE_TTL_FALLBACK_SEC if _q == "fallback" else CACHE_TTL_PARTIAL_SEC if _q == "partial" else CACHE_TTL_SEC
-                if (datetime.now(timezone.utc) - ts).total_seconds() < _waiter_ttl:
+                # T247-RESEARCHENGINE-CACHEKEY: same portfolio-params check as the fast path —
+                # the in-flight report that just finished was generated for WHOEVER triggered
+                # it first, not necessarily this waiter's own portfolio_size/max_risk_pct.
+                if (datetime.now(timezone.utc) - ts).total_seconds() < _waiter_ttl and _position_sizing_matches(report, req):
                     return report
-            # Fell through (first caller had an error) — proceed to compute ourselves
+            # Fell through (first caller had an error, or portfolio params didn't match) —
+            # proceed to compute ourselves
     else:
         _inflight_research[sym] = asyncio.Event()
 
