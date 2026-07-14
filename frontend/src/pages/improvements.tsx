@@ -15566,13 +15566,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-SIGNALENGINE-1',
-    tier: 247 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/signal-engine/src/generators/signals.py:1429',
     effort: 'S',
     impact: 'Analyst \'init\' (initiated coverage) actions are unconditionally counted as upgrades regardless of the initial rating direction, contradicting the function\'s own docstring.',
     title: 'Analyst \'init\' (initiated coverage) actions are unconditionally counted as upgrades regardless of the initial rating direction, contradicting the function\'s own docstring.',
     what: 'market-data returns an analyst_actions row like {action: \'init\', from_grade: \'\', to_grade: \'Sell\'} (a bearish coverage initiation). _fetch_analyst_momentum classifies this as an upgrade purely because action.lower() == \'init\' is in _UP_ACTIONS (line 1432), never inspecting to_grade as the docstring says it should (\'init counts as an upgrade if to_grade is positive\'). This inflates analyst_upgrades_7d, which in _apply_style_signal (lines 1927-1937) adds +0.02 to +0.05 to the fused bullish probability (\'mild_upgrade\'/\'strong_upgrade\'), pushing a borderline signal over the BUY threshold on the basis of what was actually bearish new coverage.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13: added a _POSITIVE_GRADES set (buy, strong buy, outperform, overweight, positive, add — confirmed against real production analyst_actions data for AAPL) and moved "init"/"initiated" out of _UP_ACTIONS into its own check that also requires to_grade to be in that positive set, matching the docstring\'s original intent. Explicit "up"/"upgrade" actions still count unconditionally (unchanged). Added services/signal-engine/tests/test_analyst_momentum.py (7 tests). Adversarially verified: reverting to the unconditional init-as-upgrade behavior reproduced the exact bug (a bearish/neutral init counted as 1 upgrade instead of 0); restoring the fix passes all 7 tests. Note: found (but did not fix, out of scope) a separate pre-existing issue in this service — tests/test_signal_generator.py fails to import (_decide was renamed to _decide_style with a different signature at some point, and the test file was never updated), worth a follow-up tracker item.',
   },
 
   {
