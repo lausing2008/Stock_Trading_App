@@ -15,6 +15,10 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 
+from common.logging import get_logger
+
+log = get_logger("portfolio-optimizer")
+
 RISK_FREE = 0.04  # annualized risk-free rate (US T-bill proxy)
 
 
@@ -123,7 +127,16 @@ def mean_variance(returns: pd.DataFrame, max_weight: float = 0.40) -> PortfolioW
             method="SLSQP",
             options={"ftol": 1e-9, "maxiter": 1000},
         )
-        w = _normalize(np.clip(res.x, 0, None)) if res.success else np.full(n, 1.0 / n)
+        if res.success:
+            w = _normalize(np.clip(res.x, 0, None))
+        else:
+            # T247-PORTFOLIOOPTIMIZER-SLSQP-SILENT: SLSQP non-convergence (ill-conditioned
+            # covariance, maxiter exhaustion, etc.) previously fell back to flat 1/n weights
+            # with NO log line anywhere in this module — indistinguishable in the API response
+            # from a genuine optimization result. Log so this is visible/debuggable in production.
+            log.warning("portfolio.slsqp_failed_fallback_to_equal_weight", method="mean_variance",
+                        n_symbols=n, message=res.message)
+            w = np.full(n, 1.0 / n)
     return _pack(symbols, w, "mean_variance", mu, cov, returns)
 
 
@@ -143,22 +156,81 @@ def risk_parity(returns: pd.DataFrame, max_weight: float = 0.60) -> PortfolioWei
         rc = risk_contribs(w)
         return float(((rc - rc.mean()) ** 2).sum())
 
-    x0 = np.full(n, 1 / n)
-    res = minimize(
-        obj, x0,
-        bounds=[(0.0, max_weight)] * n,
-        constraints=[{"type": "eq", "fun": lambda w: w.sum() - 1.0}],
-        method="SLSQP",
-        options={"ftol": 1e-12, "maxiter": 2000},
-    )
-    w = _normalize(np.clip(res.x, 1e-6, None)) if res.success else np.full(n, 1.0 / n)
+    # TA-PO1: same generalized infeasibility guard as mean_variance/ai_allocation — sum(w)=1.0
+    # is infeasible whenever n * max_weight < 1.0. Latent today since routes.py only ever calls
+    # this with the default max_weight=0.60 (n*0.60>=1.0 for all n>=2), but risk_parity() never
+    # received this guard when TA-PO1 was applied elsewhere, so a smaller max_weight (direct
+    # call, future request-schema field per skill.md's documented-but-unimplemented contract)
+    # would silently hit the exact same SLSQP-infeasible-so-flat-1/n bug this guard prevents.
+    if n * max_weight < 1.0:
+        w = np.full(n, 1.0 / n)
+    else:
+        x0 = np.full(n, 1 / n)
+        res = minimize(
+            obj, x0,
+            bounds=[(0.0, max_weight)] * n,
+            constraints=[{"type": "eq", "fun": lambda w: w.sum() - 1.0}],
+            method="SLSQP",
+            options={"ftol": 1e-12, "maxiter": 2000},
+        )
+        if res.success:
+            w = _normalize(np.clip(res.x, 1e-6, None))
+        else:
+            # T247-PORTFOLIOOPTIMIZER-SLSQP-SILENT: see identical comment in mean_variance().
+            log.warning("portfolio.slsqp_failed_fallback_to_equal_weight", method="risk_parity",
+                        n_symbols=n, message=res.message)
+            w = np.full(n, 1.0 / n)
     return _pack(symbols, w, "risk_parity", mu, cov, returns)
 
 
 # ─── Method 3: Hierarchical Risk Parity (HRP) ────────────────────────────────
 
-def hierarchical_risk_parity(returns: pd.DataFrame) -> PortfolioWeights:
-    """HRP via Ward clustering + recursive bisection — robust to estimation error."""
+def _cap_and_redistribute(w: np.ndarray, max_weight: float) -> np.ndarray:
+    """Clip any weight above max_weight down to it, redistributing the excess proportionally
+    across the still-uncapped positions — a standard "water-filling" cap. Once a position is
+    capped it is FROZEN at max_weight for the rest of the pass; only never-yet-capped
+    positions absorb further excess. Without freezing, redistributing into a position that is
+    itself close to the cap can push it back over on the very next iteration, oscillating
+    between two capped positions forever without ever converging (found via a 3-asset test
+    case during development: LOWVOL and MIDVOL alternated above/below 0.40 across every
+    iteration and the fixed-iteration-count loop returned mid-oscillation, still violating the
+    cap). Freezing guarantees each iteration either finishes or permanently caps at least one
+    more position, so this always converges in at most n iterations.
+    Falls back to equal weight if max_weight * n < 1.0 (capping alone can never reach 100%
+    invested — same infeasibility condition TA-PO1 already guards for the SLSQP methods)."""
+    n = len(w)
+    if max_weight * n < 1.0:
+        return np.full(n, 1.0 / n)
+    w = w.copy()
+    frozen = np.zeros(n, dtype=bool)
+    for _ in range(n):
+        candidates = ~frozen
+        over = candidates & (w > max_weight)
+        if not over.any():
+            break
+        excess = float((w[over] - max_weight).sum())
+        w[over] = max_weight
+        frozen |= over
+        free = ~frozen
+        free_total = float(w[free].sum())
+        if free_total <= 1e-12:
+            # Every remaining free position is ~0 — nothing meaningful left to redistribute
+            # into; spread the remainder equally among them instead of dividing by ~0.
+            if free.any():
+                w[free] = excess / free.sum()
+            break
+        w[free] += excess * (w[free] / free_total)
+    return _normalize(w)
+
+
+def hierarchical_risk_parity(returns: pd.DataFrame, max_weight: float = 0.40) -> PortfolioWeights:
+    """HRP via Ward clustering + recursive bisection — robust to estimation error.
+
+    T247-PORTFOLIOOPTIMIZER-HRP-MAXWEIGHT: the recursive bisection had no concentration
+    cap at all, unlike the other three allocation methods (which enforce max_weight via
+    SLSQP bounds) — reproduced numerically with two very-different-volatility symbols
+    yielding a 99.4%/0.6% split. Default 0.40 matches mean_variance/ai_allocation's default.
+    """
     from scipy.cluster.hierarchy import linkage
     from scipy.spatial.distance import squareform
 
@@ -207,6 +279,7 @@ def hierarchical_risk_parity(returns: pd.DataFrame) -> PortfolioWeights:
     raw = _bisect(sorted_syms)
     w = np.array([raw.get(s, 0.0) for s in symbols])
     w = _normalize(w)
+    w = _cap_and_redistribute(w, max_weight)
     return _pack(symbols, w, "hierarchical_risk_parity", mu, cov, returns)
 
 
@@ -261,7 +334,13 @@ def ai_allocation(
             method="SLSQP",
             options={"ftol": 1e-9, "maxiter": 1000},
         )
-        w = _normalize(np.clip(res.x, 0, None)) if res.success else np.full(n, 1.0 / n)
+        if res.success:
+            w = _normalize(np.clip(res.x, 0, None))
+        else:
+            # T247-PORTFOLIOOPTIMIZER-SLSQP-SILENT: see identical comment in mean_variance().
+            log.warning("portfolio.slsqp_failed_fallback_to_equal_weight", method="ai_allocation",
+                        n_symbols=n, message=res.message)
+            w = np.full(n, 1.0 / n)
     w_scaled = w * (1 - cash_floor)
     cash = round(1 - float(w_scaled.sum()), 4)
     # Compute risk/return metrics on w (fully invested, sums to 1.0) so they are

@@ -15387,35 +15387,38 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-PORTFOLIOOPTIMIZER-1',
-    tier: 247 as const, severity: 'high', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/portfolio-optimizer/src/optimizers/methods.py:160',
     effort: 'S',
     impact: 'hierarchical_risk_parity() has no max_weight cap (unlike the other three allocation methods), so it can concentrate nearly the entire portfolio into one symbol.',
     title: 'hierarchical_risk_parity() has no max_weight cap (unlike the other three allocation methods), so it can concentrate nearly the entire portfolio into one symbol.',
     what: 'Call POST /portfolio/optimize with method=hierarchical_risk_parity for two symbols with very different volatility, e.g. one near-zero-vol name and one high-vol name. Reproduced numerically: weights came back {\'LOWVOL\': 0.9937, \'HIGHVOL\': 0.0063} — a 99.4% single-position allocation. mean_variance/risk_parity/ai_allocation all enforce a max_weight bound (0.40/0.60/0.40) via SLSQP bounds, but HRP\'s recursive bisection has no equivalent cap and no parameter to add one, so a user relying on HRP for diversification (the method skill.md explicitly recommends as \'Best default for multi-sector portfolios\' and \'Most robust method\') can receive a portfolio that is effectively undiversified with no warning or constraint violation reported.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13: added a max_weight parameter (default 0.40, matching mean_variance/ai_allocation) to hierarchical_risk_parity(), applied via a new _cap_and_redistribute() water-filling helper — clips any weight above the cap and redistributes the excess proportionally across still-uncapped positions, FREEZING each capped position so it can\'t be pushed back over the cap by a later redistribution round. Falls back to equal weight when max_weight*n<1.0 (same infeasibility condition as the SLSQP methods\' TA-PO1 guard). Also fixed AUD247-PORTFOLIOOPTIMIZER-2 (SLSQP silent failures) and AUD247-PORTFOLIOOPTIMIZER-3 (risk_parity missing the TA-PO1 guard) in the same pass since all three are in the same file. During test-writing, adversarial verification caught a REAL bug in my own first draft of the redistribution helper: without freezing capped positions, two positions near the cap can oscillate above/below it forever (reproduced with a 3-symbol low/mid/high-vol fixture — LOWVOL and MIDVOL alternated over the cap every iteration, and the fixed-iteration-count loop returned mid-oscillation still violating the cap by 20 points). Rewrote with freezing, which converges in at most n iterations. Added 12 new tests to services/portfolio-optimizer/tests/test_optimizers.py plus a conftest.py stub (methods.py now imports common.logging). Adversarially verified: reverting to the non-freezing version reproduces the exact oscillation failure (LOWVOL=0.5956, over the 0.40 cap); restoring the fix passes all 14 tests.',
   },
 
   {
     id: 'AUD247-PORTFOLIOOPTIMIZER-2',
-    tier: 247 as const, severity: 'high', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/portfolio-optimizer/src/optimizers/methods.py:126',
     effort: 'S',
     impact: 'SLSQP optimization failures (res.success == False) are silently swallowed with no logging anywhere in the module — no logger is even imported — so genuine non-convergence is indistinguishable from a successful optimization in the API response.',
     title: 'SLSQP optimization failures (res.success == False) are silently swallowed with no logging anywhere in the module — no logger is even imported — so genuine non-convergence is indistinguishable from a successful optimization in the API response.',
     what: 'Any call to mean_variance/risk_parity/ai_allocation where SLSQP fails to converge for a reason other than the now-guarded structural infeasibility (e.g. an ill-conditioned/near-singular Ledoit-Wolf covariance from highly collinear symbols, or maxiter exhaustion on a larger symbol set) silently falls back to flat 1/n weights via `np.full(n, 1.0/n)` on lines 126, 154, and 264. The HTTP response looks like a normal optimization result (all fields populated, no error field), so a caller has no way to tell they received a naive equal-weight fallback instead of a real optimization — the exact \'silent failure with no logging\' pattern already fixed once for the structural-infeasibility subset (TA-PO1) but left open for every other SLSQP failure mode.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13 alongside AUD247-PORTFOLIOOPTIMIZER-1: added `from common.logging import get_logger` and a log.warning("portfolio.slsqp_failed_fallback_to_equal_weight", method=..., n_symbols=..., message=res.message) call at all three fallback sites (mean_variance, risk_parity, ai_allocation). Regression tests monkeypatch scipy.optimize.minimize to return a fake non-converged result and assert the log fires with the correct method name.',
   },
 
   {
     id: 'AUD247-PORTFOLIOOPTIMIZER-3',
-    tier: 247 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/portfolio-optimizer/src/optimizers/methods.py:132',
     effort: 'S',
     impact: 'risk_parity() never received the TA-PO1 infeasibility guard that mean_variance() and ai_allocation() both got, so a future call with a smaller max_weight is silently forced to flat weights.',
     title: 'risk_parity() never received the TA-PO1 infeasibility guard that mean_variance() and ai_allocation() both got, so a future call with a smaller max_weight is silently forced to flat weights.',
     what: 'risk_parity(returns, max_weight=0.60) is currently only ever called with the default 0.60 from routes.py (never exposed as a request parameter), so with n>=2 the constraint n*max_weight>=1.0 always holds today and the bug is latent. But calling risk_parity() directly (e.g. from a script, a future request-schema change adding a max_weight/constraints field per skill.md\'s already-documented-but-unimplemented contract, or a unit test) with 3 symbols and max_weight=0.2 reproduces the exact same silent 1/n fallback pattern TA-PO1 fixed elsewhere: 2*0.2=0.4<1.0 makes sum(w)=1 infeasible under the bounds, SLSQP reports success=False, and the function returns flat 33/33/33 regardless of actual risk contributions, with nothing distinguishing this from a real risk-parity solution.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13 alongside AUD247-PORTFOLIOOPTIMIZER-1: added the identical `if n * max_weight < 1.0: w = np.full(n, 1.0/n)` guard already used in mean_variance/ai_allocation. Regression test confirms minimize() is never called when infeasible (max_weight=0.2, n=3) and the result is exact equal weight.',
   },
 
   {
