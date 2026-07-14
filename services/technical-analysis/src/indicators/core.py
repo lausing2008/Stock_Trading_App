@@ -137,8 +137,24 @@ def supertrend(
         if np.isnan(basic_upper[i]) or np.isnan(basic_lower[i]):
             trend[i] = trend[i - 1]
             continue
-        final_upper[i] = basic_upper[i] if (basic_upper[i] < final_upper[i - 1] or close_v[i - 1] > final_upper[i - 1]) else final_upper[i - 1]
-        final_lower[i] = basic_lower[i] if (basic_lower[i] > final_lower[i - 1] or close_v[i - 1] < final_lower[i - 1]) else final_lower[i - 1]
+        # T247-TA-SUPERTREND-NAN-SEED: at i=period (the first bar where ATR/basic bands become
+        # real numbers), final_upper[i-1]/final_lower[i-1] are still NaN — copied straight from
+        # the NaN warmup region of basic_upper/basic_lower. Any comparison against NaN is False
+        # in NumPy, so BOTH sides of the original `or` evaluated False here, taking the
+        # else-branch and setting final_upper[i] = final_upper[i-1] = NaN — which then
+        # propagated forward through every subsequent final_upper[i-1] reference for the rest
+        # of the series, leaving supertrend 100% NaN and trend/cross_up/cross_down permanently
+        # inert (verified: reproduces on every symbol, not an edge case). Seed directly from
+        # the fresh basic_upper[i]/basic_lower[i] the first time the prior final band is NaN,
+        # then let the normal band-carry logic take over from the next bar onward.
+        if np.isnan(final_upper[i - 1]):
+            final_upper[i] = basic_upper[i]
+        else:
+            final_upper[i] = basic_upper[i] if (basic_upper[i] < final_upper[i - 1] or close_v[i - 1] > final_upper[i - 1]) else final_upper[i - 1]
+        if np.isnan(final_lower[i - 1]):
+            final_lower[i] = basic_lower[i]
+        else:
+            final_lower[i] = basic_lower[i] if (basic_lower[i] > final_lower[i - 1] or close_v[i - 1] < final_lower[i - 1]) else final_lower[i - 1]
         if trend[i - 1] == -1:
             trend[i] = 1.0 if close_v[i] > final_upper[i] else -1.0
         else:
