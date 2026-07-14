@@ -21,6 +21,21 @@ _HEALTH_TICKERS = {"UNH", "CVS", "CI", "HUM", "CNC", "MOH", "ELV", "MCK", "ABC",
 _TECH_TICKERS = {"MSFT", "AMZN", "GOOGL", "IBM", "SAIC", "LEIDOS", "CACI", "BOOZ"}
 
 
+def _parse_award_amount(raw_amount, ticker: str = "") -> float:
+    """T247-EVENTINTELLIGENCE-AWARDAMOUNT-TYPE: USASpending's "Award Amount" field is
+    documented to sometimes come back as a string (e.g. "2500000.00") depending on the
+    endpoint/version. Comparing a raw str against an int directly (as the original code did)
+    raises TypeError, caught by the outer per-ticker except — one malformed award silently
+    aborted syncing for every other (valid) award for that ticker in the same response, not
+    just the bad one. An unparseable value is treated as 0.0 (excluded by the $1M floor the
+    caller applies), not a hard failure."""
+    try:
+        return float(raw_amount or 0)
+    except (TypeError, ValueError):
+        log.warning("political.award_amount_unparseable", ticker=ticker, raw_amount=raw_amount)
+        return 0.0
+
+
 async def sync_political_contracts(days: int = 30) -> dict:
     """Fetch recent government contract awards from USASpending.gov."""
     today = date.today()
@@ -54,7 +69,7 @@ async def sync_political_contracts(days: int = 30) -> dict:
                 results = r.json().get("results", [])
                 with SessionLocal() as s:
                     for award in results:
-                        amount = award.get("Award Amount") or 0
+                        amount = _parse_award_amount(award.get("Award Amount"), ticker=ticker)
                         if amount < 1_000_000:  # only track awards > $1M
                             continue
                         try:

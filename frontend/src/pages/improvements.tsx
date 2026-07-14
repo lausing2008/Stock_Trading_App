@@ -15254,13 +15254,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-EVENTINTELLIGENCE-1',
-    tier: 247 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/event-intelligence/src/services/political.py:57',
     effort: 'S',
     impact: 'USASpending `Award Amount` field is compared numerically without a type check, so a string amount (which the API can return) throws TypeError inside the per-award loop.',
     title: 'USASpending `Award Amount` field is compared numerically without a type check, so a string amount (which the API can return) throws TypeError inside the per-award loop.',
     what: 'USASpending\'s `Award Amount` field is documented to sometimes come back as a string (e.g. "2500000.00") depending on the endpoint/version. `amount = award.get(\'Award Amount\') or 0` then `if amount < 1_000_000` compares a str to an int, raising `TypeError: \'<\' not supported between instances of \'str\' and \'int\'`. This is caught by the outer `except Exception as exc: log.warning(...)` at the ticker level (line 93-94), so the whole ticker\'s contract sync silently aborts for that cycle with only a debug-level-invisible warning — no political events get stored for that ticker even though valid awards existed in the response.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13: extracted the amount-parsing logic into a new _parse_award_amount(raw_amount, ticker) helper — explicit float() coercion with a try/except that logs and returns 0.0 on any TypeError/ValueError, instead of letting a bad value propagate into the numeric comparison. Now one malformed award in a ticker\'s response can no longer abort syncing for every OTHER valid award for that same ticker. Added services/event-intelligence/tests/test_political.py (11 tests) calling the real extracted function directly. Adversarially verified: reverting to the original raw comparison reproduced the EXACT real error from the audit finding (TypeError: \'<\' not supported between instances of \'str\' and \'int\'), failing 5 of 11 tests; restoring the fix passes all 92 tests in the suite.',
   },
 
   {
