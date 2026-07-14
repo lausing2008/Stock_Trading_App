@@ -555,7 +555,12 @@ def _compute_piotroski(fund_data: dict) -> float:
     roe = fund_data.get("return_on_equity")
     fcf = fund_data.get("fcf_yield")
     gross_margin = fund_data.get("gross_margin")
-    debt_equity = fund_data.get("debt_equity") or fund_data.get("debt_to_equity")
+    # T247-MLPREDICTION-DEBTEQUITY-DEADFALLBACK: every caller of build_features (trainer.py's
+    # _load_fundamentals, tuner.py) populates fund_data with "debt_to_equity", never
+    # "debt_equity" — the removed fallback was permanently dead (fund_data.get("debt_equity")
+    # was always None, so the `or` always fell through to debt_to_equity anyway), left in as
+    # confusing code that looked like a deliberate alternate-source fallback.
+    debt_equity = fund_data.get("debt_to_equity")
     rev_growth = fund_data.get("revenue_growth")
     earn_growth = fund_data.get("earnings_growth")
     # We only have current-period data (no YoY delta without history).

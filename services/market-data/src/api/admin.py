@@ -577,6 +577,33 @@ def scheduler_status(_: User = Depends(get_admin_user)):
     return {"jobs": jobs}
 
 
+def _read_promotion_history(r, key: str) -> list:
+    """T247-MLPREDICTION-PROMOTIONHISTORY-RACE: meta_trainer._record_promotion_status() now
+    writes meta_model:promotion_history as a native Redis LIST (RPUSH/LTRIM, atomic under
+    concurrent writers) instead of a single read-modify-write JSON blob (SETEX).
+    position_scaling_gate:promotion_history (scheduler.py) still uses the old blob format —
+    branch on the actual Redis type so both formats read correctly rather than assuming one
+    or the other. Extracted to module level (was a local closure) so it's independently
+    unit-testable.
+    """
+    try:
+        key_type = r.type(key)
+    except Exception:
+        return []
+    if key_type == "list":
+        try:
+            return [json.loads(item) for item in r.lrange(key, 0, -1)]
+        except Exception:
+            return []
+    raw = r.get(key)
+    if not raw:
+        return []
+    try:
+        return json.loads(raw)
+    except Exception:
+        return []
+
+
 @router.get("/promotion-history")
 def promotion_history(_: User = Depends(get_admin_user)):
     """Return the last 20 promotion-gate verdicts for both model-artifact promotion gates
@@ -590,19 +617,9 @@ def promotion_history(_: User = Depends(get_admin_user)):
     the model is always saved regardless of the verdict shown here).
     """
     r = _get_redis()
-
-    def _history(key: str) -> list:
-        raw = r.get(key)
-        if not raw:
-            return []
-        try:
-            return json.loads(raw)
-        except Exception:
-            return []
-
     return {
-        "meta_model_history": _history("meta_model:promotion_history"),
-        "position_scaling_history": _history("position_scaling_gate:promotion_history"),
+        "meta_model_history": _read_promotion_history(r, "meta_model:promotion_history"),
+        "position_scaling_history": _read_promotion_history(r, "position_scaling_gate:promotion_history"),
     }
 
 
