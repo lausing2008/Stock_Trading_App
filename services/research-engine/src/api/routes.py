@@ -154,6 +154,25 @@ def _atr(prices: list[dict], period: int = 14) -> float | None:
     return atr
 
 
+def _institutional_ownership_pct(fund: dict) -> float:
+    """T247-RESEARCHENGINE-INSTOWNERSHIP-SCALE: yfinance's held_percent_institutions is a
+    decimal fraction (0.62 for 62%), matching this same function's raw fund dict convention
+    elsewhere (e.g. revenue_growth, earnings_growth) — but every other `_pct`-suffixed field
+    already sent to the LLM (fcf_margin_pct, roe_pct, short_float_pct, etc.) is pre-scaled to
+    a real percent before being embedded (see fcf_margin = fcf/revenue*100 above). Embedding
+    held_percent_institutions unscaled into the "pct" field of the exact JSON structure Claude
+    is instructed to fill in produced a concrete numeric literal (0.62) that Claude was very
+    likely to echo back unchanged — a report claiming 0.62% institutional ownership for a
+    stock that is actually 62% institutionally owned. The frontend previously worked around
+    this with a fragile `pct*100 > 1` heuristic (research/[symbol].tsx) rather than the
+    backend emitting a canonical percent in the first place.
+    """
+    raw = fund.get("held_percent_institutions")
+    if raw is None:
+        return 0.0
+    return round(float(raw) * 100, 1)
+
+
 def _fmt_cap(cap: float | None) -> str:
     if cap is None:
         return "N/A"
@@ -1067,7 +1086,7 @@ Return a JSON object with EXACTLY this structure (fill in all fields based on yo
       "explanation": "Explain based on insider_buy_transactions and insider_net_pct data"
     }},
     "institutional_ownership": {{
-      "pct": {fund.get("held_percent_institutions", 0) or 0},
+      "pct": {_institutional_ownership_pct(fund)},
       "trend": "Increasing|Stable|Decreasing",
       "interpretation": "Brief interpretation"
     }},
