@@ -572,7 +572,17 @@ def rank_symbol(symbol: str, session: Session = Depends(get_session)):
     # and this endpoint silently falls back to price proxies, diverging from the leaderboard's
     # K-Score for the same stock on the same day.
     fundamentals = _fetch_fundamentals_bulk()
-    universe = list(session.execute(select(Stock).where(Stock.active.is_(True))).scalars())
+    # T247-RANKINGENGINE-CROSSMARKET: T232-KS2's comment above claims this ranks against "the
+    # full active universe" to fix an under-populated peer-count gate — but "full active
+    # universe" included every market, pooling e.g. HK Technology stocks against 27 US
+    # Technology stocks whose PE/PB multiples trade on a structurally different basis. The
+    # batch/leaderboard path (_persist_rankings) is naturally market-scoped because the
+    # scheduler invokes /rankings/refresh once per market, so this single-symbol endpoint's
+    # value/growth score diverged from the leaderboard's score for the same stock on the same
+    # day. Scope the peer universe to the target stock's own market, matching that path.
+    universe = list(session.execute(
+        select(Stock).where(Stock.active.is_(True), Stock.market == stock.market)
+    ).scalars())
     stock_sectors = {s.symbol: (s.sector or "Unknown") for s in universe}
     stock_sectors.setdefault(symbol, stock.sector or "Unknown")
     sc = _sector_relative_scores(fundamentals, stock_sectors).get(symbol, {})

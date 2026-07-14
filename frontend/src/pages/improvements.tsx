@@ -15456,13 +15456,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-RANKINGENGINE-1',
-    tier: 247 as const, severity: 'high', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/ranking-engine/src/api/routes.py:575',
     effort: 'S',
     impact: 'rank_symbol() builds the sector-peer universe from ALL active stocks regardless of market, so US and HK stocks sharing a sector label (e.g. "Technology": 27 US + 14 HK stocks in production) are pooled together for value/growth percentile ranking.',
     title: 'rank_symbol() builds the sector-peer universe from ALL active stocks regardless of market, so US and HK stocks sharing a sector label (e.g. "Technology": 27 US + 14 HK stocks in production) are pooled together for value/growth percentile ranking.',
     what: 'GET /rankings/0700.HK (HK Technology) computes its value/growth percentile against a peer pool containing 27 US Technology stocks whose PE/PB multiples trade on a structurally different basis than HK tech names. The batch/leaderboard path (_persist_rankings, _leaderboard_live) correctly scopes stock_sectors to one market per call because the scheduler invokes /rankings/refresh separately per market — so the single-symbol endpoint\'s value/growth score for 0700.HK will diverge from what the leaderboard shows for the same stock on the same day, reproducing the exact class of bug the T232-KS2 comment on this same line claims was fixed (it only fixed the peer-count gate, not the cross-market pooling).',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13: added `Stock.market == stock.market` to the universe query, scoping the sector-peer pool to the target stock\'s own market — matches _persist_rankings\'s existing per-market scoping. Added services/ranking-engine/tests/test_rank_symbol_market_scoping.py: loads shared/db/models.py directly via importlib (routes.py itself can\'t be imported in a unit test — db/__init__.py eagerly creates a real psycopg2 engine at import time) and runs the exact fixed query text (verified via grep to match routes.py verbatim) against a real in-memory SQLite session with a mixed US/HK fixture. Also added a conftest.py for this service (pre-existing gap — test_kscore.py already needed common.indicators stubbing but had no conftest, so the whole test directory failed at collection before any test ran). Note: fixing that collection error surfaced a separate, pre-existing, unrelated bug in test_kscore.py itself (asserts 0<=v<=100 on value/growth scores that compute_kscore() intentionally returns as None when no fundamentals are passed) — left as-is, out of scope for this fix, worth a follow-up tracker item.',
   },
 
   {
