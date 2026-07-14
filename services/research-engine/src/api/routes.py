@@ -93,11 +93,18 @@ def _svc_token() -> str:
 
 
 async def _get(client: httpx.AsyncClient, url: str, auth: str = "") -> dict | list | None:
+    # T247-RESEARCHENGINE-GET-SILENT: a non-200 response (e.g. the "python-jose missing from
+    # container" 401 pattern already documented multiple times in this repo's CLAUDE.md,
+    # affecting signal-engine/ml-prediction/ranking-engine/portfolio-optimizer) previously fell
+    # through to `return None` with NO log line — only the exception branch logged. Every
+    # research report silently lost that upstream's data (signal/fundamentals/rankings) with
+    # nothing in the logs to grep for, unlike the exception path.
     try:
         headers = {"Authorization": auth} if auth else {}
         r = await client.get(url, timeout=20, headers=headers)
         if r.status_code == 200:
             return r.json()
+        log.warning("upstream.get.non_200", url=url, status=r.status_code)
     except Exception as exc:
         log.warning("upstream.get.failed", url=url, error=str(exc))
     return None
