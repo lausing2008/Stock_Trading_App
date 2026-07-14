@@ -3736,7 +3736,7 @@ _DQ_CHECKS: list[dict] = [
         "max_age_hours": 48, "is_date": True, "market": "US",
     },
     {
-        "name": "hk_connect_flows", "description": "HKEX Stock Connect southbound flow — already had a silent logging bug once (2026-07-01 incident)",
+        "name": "hk_connect_flows", "description": "HK Stock Connect southbound flow — Eastmoney-sourced since MD-HKCONNECT2 2026-07-13 (previously HKEX, dead since 2026-07-07; also had an earlier silent logging bug, 2026-07-01 incident)",
         "query": "SELECT MAX(trade_date) FROM hk_connect_flows",
         "max_age_hours": 48, "is_date": True, "market": "HK",
     },

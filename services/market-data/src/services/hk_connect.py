@@ -1,45 +1,47 @@
 """HKEX Stock Connect southbound flow data ingest — T209.
 
 Fetches daily southbound (Mainland→HK) net buy/sell data for HK stocks.
-Source: HKEX public data API (no authentication required).
+Source: Eastmoney data center (public JSON API, no authentication required).
 
-MD-HKCONNECT1 (2026-07-09): the HKEX endpoint below is CONFIRMED DEAD — it now returns
-HTTP 302 redirecting to an ASP.NET error path (`?aspxerrorpath=...`) instead of JSON, on every
-request. HKEX has retired this legacy `.asmx` web service with no public per-stock JSON/CSV
-replacement (their current Stock Connect Statistics pages only publish aggregate market-wide
-turnover, not per-stock). Confirmed via production logs (100% failure, 3+ consecutive days) and
-the DB (hk_connect_flows has 0 rows total — this feature has never successfully stored real
-data). Researched alternatives: the best free per-stock option found is scraping Eastmoney's
-per-stock page (data.eastmoney.com/hsgt/{code}.html, e.g. via the `akshare` Python library's
-stock_hsgt_individual_em()) — an HTML scrape, not a clean API, with a known recent bug in that
-specific function. NOT implemented yet (deliberately deferred — too fragile to rush); this module
-is left calling the dead HKEX endpoint (harmless — it fails cleanly and predictably) until a real
-replacement is built. In the meantime, ingest_southbound_flows() now logs an ERROR-level
-hk_connect.ingest_all_failed event on a full-batch failure so this stays visible in production
-logs instead of only showing up as silent DEBUG-level per-symbol lines. Downstream impact:
-paper_trading_engine.py's hk_flow_gate (T224-A) reads flow_5d_net_hkd from signal reasons, which
-is always None while this table is empty — the gate's `is not None` check means it NEVER blocks
-an HK entry right now (fail-open by construction, not a separate bug — see paper_trading_engine.py
-around T224-A for the gate itself).
+MD-HKCONNECT2 (2026-07-13): replaced the dead HKEX endpoint (see "MD-HKCONNECT1, historical"
+below) with Eastmoney's Stock Connect holdings-ranking report
+(reportName=RPT_MUTUAL_STOCK_HOLDRANKS), the same report backing the `akshare` Python library's
+stock_hsgt_individual_em() function — called directly via httpx rather than adding the akshare
+dependency (which pulls in py-mini-racer/a bundled V8 engine, akracer, lxml, etc. for what is,
+under the hood, a single plain `requests.get()` call with fixed query params; confirmed by
+reading akshare's own source).
 
-HKEX API notes (historical — endpoint is dead, kept for reference)
-────────────────────────────────────────────────────────────────
-HKEX provided a public endpoint that returned buy/sell turnover per HK stock
-via the Stock Connect scheme (mainland investors buying HK shares):
+This report is NOT the same disclosure that was killed by mainland exchanges' 2024-08-19 Stock
+Connect information-disclosure change (that killed the daily per-stock TRANSACTION net-buy/sell
+figure). This is a HOLDINGS report — cumulative shares/market-value currently held via Southbound
+Connect for a given stock, snapshotted daily, which mainland exchanges still publish. Its
+HOLD_SHARES_CHANGE / ADD_MARKET_CAP fields are exactly the day-over-day change in that holding —
+a legitimate proxy for net flow direction (net accumulation = net buying, net distribution = net
+selling), even though it is derived from a holdings snapshot rather than reconstructed from raw
+buy/sell tickets. Verified live (2026-07-13) against 2 real symbols (00700.HK Tencent, 09988.HK
+Alibaba): genuinely day-to-day changing HOLD_SHARES values through the current date, confirming
+this is live data, not a frozen/cached snapshot.
+
+If the Eastmoney API returns no data for a symbol (e.g. not in the Stock Connect southbound
+scheme, a non-trading day, or a transient API issue), a zero-flow row is NOT written — the
+symbol is simply skipped and logged at DEBUG level, same behavior as before.
+
+MD-HKCONNECT1 (2026-07-09, historical — superseded by the above): the HKEX endpoint below was
+CONFIRMED DEAD — it returned HTTP 302 redirecting to an ASP.NET error path (`?aspxerrorpath=...`)
+instead of JSON, on every request. HKEX retired this legacy `.asmx` web service with no public
+per-stock JSON/CSV replacement of its own (their current Stock Connect Statistics pages only
+publish aggregate market-wide turnover, not per-stock). Confirmed via production logs (100%
+failure, 3+ consecutive days, ongoing through 2026-07-13) and the DB (hk_connect_flows had 0 rows
+total). At the time, the best free per-stock alternative found (Eastmoney via akshare) was
+believed too fragile to rush — a follow-up investigation (2026-07-13) confirmed the underlying
+Eastmoney API works live and is a plain, callable JSON endpoint (not fragile HTML scraping as
+originally assumed), which is what's now wired in above.
 
   GET https://www.hkex.com.hk/eng/csm/ws/stock-connect-details.asmx/
         GetBuySellTurnOverDetails?MarketID=01&StockCode={CODE}&mktType=0&LangCode=en
-
-Where CODE is the 4-digit HK stock code (e.g. "0700" for Tencent).
-The endpoint is rate-limit-sensitive; requests are spaced 200ms apart.
-
-If the HKEX API returns no data (e.g. non-trading day, API change, or
-stock not in Stock Connect scheme), a zero-flow row is NOT written —
-the symbol is simply skipped and logged at DEBUG level.
 """
 from __future__ import annotations
 
-import json
 import time
 from datetime import date, timedelta
 
@@ -48,94 +50,93 @@ from common.logging import get_logger
 
 log = get_logger("hk_connect")
 
-_HKEX_BASE = "https://www.hkex.com.hk"
+_EASTMONEY_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; StockAI/1.0)",
-    "Accept": "application/json, text/html, */*",
-    "Referer": "https://www.hkex.com.hk/",
+    "Accept": "application/json",
 }
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _symbol_to_hk_code(symbol: str) -> str | None:
-    """Convert '0700.HK' → '0700', '9988.HK' → '9988'.
+def _symbol_to_eastmoney_code(symbol: str) -> str | None:
+    """Convert '0700.HK' → '00700.HK', '9988.HK' → '09988.HK'.
 
+    Eastmoney's SECUCODE filter requires the 5-digit zero-padded HK code (confirmed live —
+    the 4-digit HKEX convention this module previously used returns 0 rows against this API).
     Returns None if the symbol is not a HK-listed stock.
     """
     if not symbol.upper().endswith(".HK"):
         return None
     code = symbol.upper().replace(".HK", "")
-    return code.zfill(4)
+    return f"{code.zfill(5)}.HK"
 
 
-def _parse_hkd(val) -> float | None:
-    """Parse an HKD turnover value from HKEX JSON — handles commas and None."""
-    if val is None:
-        return None
-    try:
-        return float(str(val).replace(",", ""))
-    except (ValueError, TypeError):
-        return None
+# ── Eastmoney API fetch ────────────────────────────────────────────────────────
 
+def _fetch_southbound_stock(eastmoney_code: str) -> dict | None:
+    """Fetch the most recent southbound holdings-change snapshot for a single HK stock.
 
-# ── HKEX API fetch ────────────────────────────────────────────────────────────
-
-def _fetch_southbound_stock(hk_code: str) -> dict | None:
-    """Fetch today's southbound flow for a single HK stock code.
-
-    Returns a dict with keys buy_hkd, sell_hkd, net_buy_hkd, or None on failure.
+    Returns a dict with keys buy_hkd (None — not separable from this report), sell_hkd (None),
+    net_buy_hkd (HOLD_SHARES_CHANGE priced at the day's close, i.e. ADD_MARKET_CAP), or None on
+    failure/no data.
     """
-    url = (
-        f"{_HKEX_BASE}/eng/csm/ws/stock-connect-details.asmx"
-        f"/GetBuySellTurnOverDetails"
-        f"?MarketID=01&StockCode={hk_code}&mktType=0&LangCode=en"
-    )
+    params = {
+        "sortColumns": "TRADE_DATE",
+        "sortTypes": "-1",
+        "pageSize": "1",
+        "pageNumber": "1",
+        "reportName": "RPT_MUTUAL_STOCK_HOLDRANKS",
+        "columns": "ALL",
+        "source": "WEB",
+        "client": "WEB",
+        "filter": f'(SECUCODE="{eastmoney_code}")(MUTUAL_TYPE="002")',
+    }
     try:
-        resp = httpx.get(url, headers=_HEADERS, timeout=10, follow_redirects=True)
+        resp = httpx.get(_EASTMONEY_URL, params=params, headers=_HEADERS, timeout=10)
         if resp.status_code != 200:
-            log.debug("hk_connect.http_error", code=hk_code, status=resp.status_code)
+            log.debug("hk_connect.http_error", code=eastmoney_code, status=resp.status_code)
             return None
 
-        # Response may be JSON with {"d": "{...}"} or {"d": {...}}
         try:
             outer = resp.json()
         except Exception:
-            log.debug("hk_connect.json_parse_failed", code=hk_code)
+            log.debug("hk_connect.json_parse_failed", code=eastmoney_code)
             return None
 
-        inner = outer.get("d") if isinstance(outer, dict) else outer
-        if isinstance(inner, str):
-            try:
-                inner = json.loads(inner)
-            except Exception:
-                return None
-
-        if not isinstance(inner, dict):
+        result = outer.get("result") if isinstance(outer, dict) else None
+        rows = (result or {}).get("data") or []
+        if not rows:
+            log.debug("hk_connect.no_data", code=eastmoney_code)
             return None
 
-        # Try multiple key casing variants HKEX has used over time
-        buy = _parse_hkd(
-            inner.get("BuyTurnover") or inner.get("buy_turnover") or
-            inner.get("buyTurnover") or inner.get("Buy")
-        )
-        sell = _parse_hkd(
-            inner.get("SellTurnover") or inner.get("sell_turnover") or
-            inner.get("sellTurnover") or inner.get("Sell")
-        )
+        row = rows[0]
+        add_market_cap = row.get("ADD_MARKET_CAP")
+        net_buy_hkd = float(add_market_cap) if add_market_cap is not None else None
+        if net_buy_hkd is None:
+            log.debug("hk_connect.no_flow_field", code=eastmoney_code, keys=list(row.keys()))
+            return None
 
-        if buy is None and sell is None:
-            log.debug("hk_connect.no_turnover_fields", code=hk_code, keys=list(inner.keys()))
+        # DQ-EARNINGS-FETCHED-AT-FROZEN-class lesson applied here: use the report's OWN
+        # TRADE_DATE, not the sync job's run date — this report is a daily snapshot from
+        # mainland exchanges, which may not have a same-day row yet (weekend, holiday, or
+        # publication lag), and storing it under "today" when it's actually stale data would
+        # make hk_connect_flows look fresher than it really is.
+        trade_date_str = str(row.get("TRADE_DATE") or "")[:10]
+        row_trade_date = date.fromisoformat(trade_date_str) if trade_date_str else None
+        if row_trade_date is None:
+            log.debug("hk_connect.no_trade_date_field", code=eastmoney_code)
             return None
 
         return {
-            "buy_hkd":     buy,
-            "sell_hkd":    sell,
-            "net_buy_hkd": (buy or 0.0) - (sell or 0.0),
+            "buy_hkd":     None,  # this report gives net holding change, not gross buy/sell split
+            "sell_hkd":    None,
+            "net_buy_hkd": net_buy_hkd,
+            "trade_date":  row_trade_date,
         }
 
     except Exception as exc:
-        log.debug("hk_connect.fetch_exception", code=hk_code, exc=str(exc))
+        log.debug("hk_connect.fetch_exception", code=eastmoney_code, exc=str(exc))
         return None
 
 
@@ -156,19 +157,18 @@ def ingest_southbound_flows(db, hk_symbols: list[str]) -> dict:
     _log = _sl.get_logger()  # fresh proxy bound after configure_logging() — immune to stale cache
     from sqlalchemy import text
 
-    today = date.today()
     processed = stored = failed = 0
 
     for symbol in hk_symbols:
-        hk_code = _symbol_to_hk_code(symbol)
-        if not hk_code:
+        eastmoney_code = _symbol_to_eastmoney_code(symbol)
+        if not eastmoney_code:
             continue
         processed += 1
 
-        flow = _fetch_southbound_stock(hk_code)
+        flow = _fetch_southbound_stock(eastmoney_code)
         if flow is None:
             failed += 1
-            _log.debug("hk_connect.no_data", symbol=symbol, hk_code=hk_code)
+            _log.debug("hk_connect.no_data", symbol=symbol, eastmoney_code=eastmoney_code)
             continue
 
         try:
@@ -183,14 +183,14 @@ def ingest_southbound_flows(db, hk_symbols: list[str]) -> dict:
                     sell_hkd    = EXCLUDED.sell_hkd
             """), {
                 "sym": symbol,
-                "td":  today,
+                "td":  flow["trade_date"],
                 "net": flow["net_buy_hkd"],
                 "buy": flow["buy_hkd"],
                 "sell": flow["sell_hkd"],
             })
             db.commit()
             stored += 1
-            _log.debug("hk_connect.stored", symbol=symbol, net_buy_hkd=flow["net_buy_hkd"])
+            _log.debug("hk_connect.stored", symbol=symbol, net_buy_hkd=flow["net_buy_hkd"], trade_date=str(flow["trade_date"]))
         except Exception as exc:
             _log.warning("hk_connect.insert_failed", symbol=symbol, exc=str(exc))
             try:
@@ -199,24 +199,21 @@ def ingest_southbound_flows(db, hk_symbols: list[str]) -> dict:
                 pass
             failed += 1
 
-        time.sleep(0.2)  # polite rate-limiting — ~5 req/s max to HKEX
+        time.sleep(0.2)  # polite rate-limiting to Eastmoney
 
-    # MD-HKCONNECT1: a full-batch failure (every symbol failed) previously logged at the same
-    # info level as a normal, mostly-successful run — indistinguishable in production logs
-    # without counting failed/processed by hand. Confirmed live 2026-07-09: the HKEX .asmx
-    # endpoint this module calls now returns HTTP 302 to an error page instead of JSON (HKEX
-    # retired the legacy web service with no public per-stock replacement), so every single
-    # ingest run has failed 100% since at least 2026-07-07, and hk_connect_flows has 0 rows
-    # total — meaning the paper-trading HK mainland-flow gate (hk_flow_gate in
-    # paper_trading_engine.py, T224-A) has been permanently fail-open (flow_5d_net_hkd is
-    # always None, so the gate's `is not None` check never fires) since inception or since
-    # HKEX's retirement, completely silently. Promote to warning/error so this is visible in
-    # production logs without needing to grep DEBUG-level lines or query the DB directly.
+    # MD-HKCONNECT1 (2026-07-09): a full-batch failure (every symbol failed) previously logged
+    # at the same info level as a normal, mostly-successful run — indistinguishable in
+    # production logs without counting failed/processed by hand. Kept the same
+    # promote-to-error-on-full-failure discipline after the MD-HKCONNECT2 (2026-07-13) source
+    # replacement — this stays valuable regardless of which upstream source is behind it, since
+    # the paper-trading HK mainland-flow gate (hk_flow_gate in paper_trading_engine.py, T224-A)
+    # depends on flow_5d_net_hkd being populated, and a silent full-batch failure would return
+    # this gate to permanently fail-open with no visibility, same risk as before.
     if processed > 0 and failed == processed:
         _log.error(
             "hk_connect.ingest_all_failed",
             processed=processed, failed=failed,
-            note="every symbol failed — HKEX source likely down; hk_flow_gate is fail-open while this persists",
+            note="every symbol failed — Eastmoney source likely down; hk_flow_gate is fail-open while this persists",
         )
     elif failed > 0:
         _log.warning(
