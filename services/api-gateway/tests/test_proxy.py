@@ -7,13 +7,18 @@ normalizes the path with posixpath.normpath BEFORE any auth/routing decision is 
 tests exist so a future refactor of reverse_proxy()/_require_auth() can't silently reintroduce
 the same bypass with no CI signal.
 """
+import asyncio
 import posixpath
+import time
 
 import pytest
 from fastapi import HTTPException
 from jose import jwt as _jwt
 
-from src.api.proxy import _require_auth, _PUBLIC_PREFIXES, _is_blacklisted, _upstream, _ROUTES
+from src.api.proxy import (
+    _require_auth, _require_auth_async, _PUBLIC_PREFIXES, _is_blacklisted, _upstream, _ROUTES,
+)
+import src.api.proxy as proxy_mod
 
 _JWT_SECRET = "test-secret-not-a-real-key"
 
@@ -180,6 +185,62 @@ def test_every_backend_router_prefix_has_a_gateway_route():
             if prefix not in _ROUTES and prefix not in _PUBLIC_PREFIXES:
                 missing.append(f"{py_file.relative_to(services_root)}: prefix={prefix!r}")
     assert not missing, f"backend router prefixes with no gateway route: {missing}"
+
+
+def test_require_auth_async_runs_off_the_event_loop(monkeypatch):
+    """T247-APIGATEWAY-BLACKLIST-BLOCKING regression guard: a slow synchronous _is_blacklisted
+    call must not block other coroutines scheduled on the same event loop when reached via
+    _require_auth_async(). Same timing-based technique as decision-engine's aget_regime test."""
+    def _slow_is_blacklisted(jti):
+        time.sleep(0.2)
+        return False
+    monkeypatch.setattr(proxy_mod, "_is_blacklisted", _slow_is_blacklisted)
+
+    token = _make_token(role="user")
+    request = _FakeRequest({"authorization": f"Bearer {token}"})
+
+    timeline = []
+
+    async def _tracer():
+        await asyncio.sleep(0.01)
+        timeline.append(time.monotonic())
+
+    async def _main():
+        start = time.monotonic()
+        await asyncio.gather(_require_auth_async("stocks/AAPL", request), _tracer())
+        return start
+
+    start = asyncio.run(_main())
+    tracer_ts = timeline[0]
+    assert tracer_ts - start < 0.15, (
+        f"tracer took {tracer_ts - start:.3f}s — the event loop was blocked by the blacklist "
+        "check instead of it running in a thread pool"
+    )
+
+
+def test_require_auth_async_still_rejects_blacklisted_token(monkeypatch):
+    """The executor wrapper must not silently swallow the HTTPException a blacklisted token
+    raises inside _require_auth() — it must propagate back to the awaiting caller."""
+    monkeypatch.setattr(proxy_mod, "_is_blacklisted", lambda jti: True)
+    token = _make_token(jti="revoked-jti")
+    request = _FakeRequest({"authorization": f"Bearer {token}"})
+
+    async def _main():
+        await _require_auth_async("stocks/AAPL", request)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(_main())
+    assert exc_info.value.status_code == 401
+
+
+def test_require_auth_async_allows_valid_non_blacklisted_token():
+    token = _make_token(role="user")
+    request = _FakeRequest({"authorization": f"Bearer {token}"})
+
+    async def _main():
+        await _require_auth_async("stocks/AAPL", request)
+
+    asyncio.run(_main())  # no exception = pass
 
 
 def test_pure_dotdot_path_would_be_rejected_by_reverse_proxy_guard():
