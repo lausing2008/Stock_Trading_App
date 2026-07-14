@@ -1421,6 +1421,19 @@ def _fetch_short_interest(symbol: str) -> tuple[float | None, float | None]:
     return None, None
 
 
+# T247-SIGNALENGINE-INIT-GRADE: yfinance's own grade vocabulary is free-text per analyst firm
+# (no fixed enum) — confirmed live against real production data (AAPL): Buy, Strong Buy,
+# Outperform, Overweight are bullish; Neutral/Hold are neutral; Sell/Underperform/Underweight
+# (not observed in this sample but yfinance's documented vocabulary) are bearish. Only the
+# unambiguous bullish set is used to classify an "init" (initiated coverage) as an upgrade —
+# anything else (neutral, bearish, or an unrecognized grade) does NOT count as an upgrade,
+# matching this function's own docstring ("init counts as an upgrade if to_grade is positive")
+# which the original code never actually implemented.
+_POSITIVE_GRADES = {
+    "buy", "strong buy", "outperform", "overweight", "positive", "add",
+}
+
+
 def _fetch_analyst_momentum(symbol: str) -> tuple[int, int]:
     """Return (upgrades_7d, downgrades_7d) from market-data analyst_actions (last 7 days).
 
@@ -1429,8 +1442,9 @@ def _fetch_analyst_momentum(symbol: str) -> tuple[int, int]:
     "init" (initiated coverage) counts as an upgrade if to_grade is positive.
     Returns (0, 0) on any failure.
     """
-    _UP_ACTIONS = {"up", "upgrade", "init", "initiated"}
+    _UP_ACTIONS = {"up", "upgrade"}
     _DOWN_ACTIONS = {"down", "downgrade"}
+    _INIT_ACTIONS = {"init", "initiated"}
     try:
         from datetime import date as _adate, timedelta as _td
         cutoff = (_adate.today() - _td(days=7)).isoformat()
@@ -1439,15 +1453,18 @@ def _fetch_analyst_momentum(symbol: str) -> tuple[int, int]:
             r = c.get(url)
             if r.status_code == 200:
                 actions = r.json().get("analyst_actions", [])
+                recent = [a for a in actions if a.get("date", "") >= cutoff]
                 ups = sum(
-                    1 for a in actions
-                    if a.get("date", "") >= cutoff
-                    and a.get("action", "").lower() in _UP_ACTIONS
+                    1 for a in recent
+                    if a.get("action", "").lower() in _UP_ACTIONS
+                    or (
+                        a.get("action", "").lower() in _INIT_ACTIONS
+                        and a.get("to_grade", "").strip().lower() in _POSITIVE_GRADES
+                    )
                 )
                 downs = sum(
-                    1 for a in actions
-                    if a.get("date", "") >= cutoff
-                    and a.get("action", "").lower() in _DOWN_ACTIONS
+                    1 for a in recent
+                    if a.get("action", "").lower() in _DOWN_ACTIONS
                 )
                 return ups, downs
     except Exception:
