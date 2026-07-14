@@ -15198,13 +15198,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-DECISIONENGINE-2',
-    tier: 247 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/decision-engine/src/api/core/aggregator.py:66',
     effort: 'S',
     impact: '_get_style_params() is likewise a plain synchronous function doing a blocking httpx.get() to market-data, called (via _default_game_plan -> build_game_plan) directly from async def _decide() without being offloaded to a thread/executor.',
     title: '_get_style_params() is likewise a plain synchronous function doing a blocking httpx.get() to market-data, called (via _default_game_plan -> build_game_plan) directly from async def _decide() without being offloaded to a thread/executor.',
     what: 'Any request for a symbol with no usable game-plan fields in signal reasons (falls to build_game_plan -> _default_game_plan) on a cold 15-minute style-params cache blocks the event loop for up to 5s (the request timeout) while market-data answers -- same event-loop-stall class of bug as get_regime(), compounding it when both caches are cold simultaneously (up to ~15s of blocked event loop per request, serializing what asyncio.gather in decide_batch was meant to parallelize).',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13: added abuild_game_plan(), an async wrapper that runs the entire unmodified sync build_game_plan() (and its _default_game_plan()->_get_style_params() blocking httpx.get() on a cache miss) via run_in_executor() on the existing _yf_executor thread pool, reusing the same pattern already used for yfinance fallback in this file and for regime.py\'s aget_regime(). routes.py\'s async _decide() now awaits abuild_game_plan() instead of calling build_game_plan() directly. Added services/decision-engine/tests/test_aggregator.py (3 tests): a timing-based test proving a concurrent coroutine isn\'t blocked during a slow style-params fetch, a parity test confirming the async wrapper returns identical output to the sync version (not a drifted reimplementation), and a test confirming the common case (complete signal reasons already present) never touches the network at all. Adversarially verified: reverting to a direct blocking call reproduced a real measured 0.211s event-loop stall; restoring the fix passes all 71 tests in the suite.',
   },
 
   {

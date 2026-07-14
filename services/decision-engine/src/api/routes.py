@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from common.jwt_auth import get_current_username
 
-from .core.aggregator import build_game_plan, extract_live_price, fetch_all
+from .core.aggregator import abuild_game_plan, extract_live_price, fetch_all
 from .core.hard_rejects import check_hard_rejects
 from .core.models import (
     BatchDecisionRequest,
@@ -76,7 +76,10 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
     if req.game_plan:
         game_plan = {k: float(v) for k, v in req.game_plan.items()}
     else:
-        game_plan = build_game_plan(live_price, style, signal_data)
+        # T247-DECISIONENGINE-STYLEPARAMS-BLOCKING: must use the async variant — a cache miss
+        # inside build_game_plan()'s _get_style_params() call does a blocking httpx.get(),
+        # which would otherwise stall this shared event loop for every concurrent request.
+        game_plan = await abuild_game_plan(live_price, style, signal_data)
 
     stop_price  = game_plan.get("stop",       live_price * 0.880)
     take_profit = game_plan.get("take_profit", live_price * 1.350)
