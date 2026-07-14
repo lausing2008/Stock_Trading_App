@@ -1566,7 +1566,7 @@ _MACRO_2026: list[dict] = [
     {"type": "cpi", "date": "2026-04-10", "title": "CPI Release", "description": "Consumer Price Index — Mar 2026 data (BLS)", "impact": "high"},
     {"type": "cpi", "date": "2026-05-14", "title": "CPI Release", "description": "Consumer Price Index — Apr 2026 data (BLS)", "impact": "high"},
     {"type": "cpi", "date": "2026-06-11", "title": "CPI Release", "description": "Consumer Price Index — May 2026 data (BLS)", "impact": "high"},
-    {"type": "cpi", "date": "2026-07-15", "title": "CPI Release", "description": "Consumer Price Index — Jun 2026 data (BLS)", "impact": "high"},
+    {"type": "cpi", "date": "2026-07-14", "title": "CPI Release", "description": "Consumer Price Index — Jun 2026 data (BLS)", "impact": "high"},
     {"type": "cpi", "date": "2026-08-13", "title": "CPI Release", "description": "Consumer Price Index — Jul 2026 data (BLS)", "impact": "high"},
     {"type": "cpi", "date": "2026-09-11", "title": "CPI Release", "description": "Consumer Price Index — Aug 2026 data (BLS)", "impact": "high"},
     {"type": "cpi", "date": "2026-10-14", "title": "CPI Release", "description": "Consumer Price Index — Sep 2026 data (BLS)", "impact": "high"},
