@@ -15449,13 +15449,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-PORTFOLIOOPTIMIZER-6',
-    tier: 247 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/portfolio-optimizer/skill.md:59',
     effort: 'S',
     impact: 'skill.md documents a constraints.max_weight/min_weight and target_return request field that does not exist anywhere in OptimizeRequest (routes.py only defines symbols, method, lookback_days, min_score), so following this doc produces a request whose extra fields are silently ignored by FastAPI/Pydantic.',
     title: 'skill.md documents a constraints.max_weight/min_weight and target_return request field that does not exist anywhere in OptimizeRequest (routes.py only defines symbols, method, lookback_days, min_score), so following this doc produces a request whose extra fields are silently ignored by FastAPI/Pydantic.',
     what: 'A developer or caller builds a POST /portfolio/optimize request body following skill.md\'s example, including `"constraints": {"min_weight": 0.05, "max_weight": 0.40}` and `"target_return": null`, expecting to control position sizing. Pydantic\'s OptimizeRequest model silently drops unknown fields (no `extra=\'forbid\'` config), so the request is accepted, executes with the hardcoded default max_weight (0.40/0.60 depending on method) instead of the caller\'s intended value, and no error indicates the constraint was never applied — a documentation/code mismatch, not a runtime crash, but one that silently defeats the caller\'s actual intent.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13: added a real `constraints: {max_weight}` field to OptimizeRequest (new OptimizeConstraints model) and threaded it through to all 4 optimizer methods, which already accepted a max_weight parameter internally — this just exposes it through the request instead of leaving it hardcoded. Added a 400 error for max_weight outside (0, 1]. min_weight and target_return were NOT implemented (no optimizer method has lower-bound or target-return math today — building that is new functionality, not a bug fix) — removed both from skill.md rather than half-implementing them, along with a separate stale detail found in the same section (method: "ai" should be "ai_allocation", the real Literal value). Added services/portfolio-optimizer/tests/test_optimize_endpoint.py (5 tests) calling the real optimize() function directly with mocked _fetch_closes. Adversarially verified: reverting to ignore constraints entirely made 3 of 5 tests fail; restoring the fix passes all 19 tests in the suite.',
   },
 
   {
