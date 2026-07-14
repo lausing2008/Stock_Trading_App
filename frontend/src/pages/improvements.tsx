@@ -15543,13 +15543,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-RESEARCHENGINE-3',
-    tier: 247 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/research-engine/src/api/routes.py:1045',
     effort: 'S',
     impact: '`held_percent_institutions` (a yfinance decimal fraction like 0.62 for 62%) is injected directly into the prompt\'s `institutional_ownership.pct` field without multiplying by 100, so Claude is shown (and will likely echo back) a mislabeled \'pct\' value that is 100x too small.',
     title: '`held_percent_institutions` (a yfinance decimal fraction like 0.62 for 62%) is injected directly into the prompt\'s `institutional_ownership.pct` field without multiplying by 100, so Claude is shown (and will likely echo back) a mislabeled \'pct\' value that is 100x too small.',
     what: 'For a stock with real institutional ownership of 62% (`held_percent_institutions=0.62` from yfinance\'s fraction convention, same as revenue_growth/earnings_growth elsewhere in this same function), line 1045 embeds `"pct": 0.62` into the example JSON structure shown to Claude as the value to fill in for `company.institutional_ownership.pct`. Since Claude is instructed to fill in the exact structure and this field already has a concrete numeric literal (unlike sibling fields that show placeholder strings/enums), it is very likely echoed back unchanged, producing a report claiming 0.62% institutional ownership for a stock that is actually 62% institutionally owned. The frontend (research/[symbol].tsx line 649) has a fragile `pct*100 > 1` heuristic to guess-correct this, which happens to work across most realistic ranges but confirms the backend is emitting an ambiguous/wrong-scale value rather than a canonical percent.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13: added _institutional_ownership_pct(fund) helper — scales the raw yfinance fraction to a real percent (0.62 -> 62.0), matching the convention every other _pct-suffixed field in this function already follows (fcf_margin_pct, roe_pct, short_float_pct are all pre-scaled). Embedded the helper call in place of the raw fraction in the prompt\'s example JSON structure. Left the frontend\'s pct*100>1 defensive heuristic in place (harmless, and protects against any already-cached reports from before this fix within the 24h TTL). Added services/research-engine/tests/test_institutional_ownership_pct.py (6 tests). Adversarially verified: reverting to the raw unscaled value reproduced the exact bug (0.62 instead of 62.0) across 3 tests; restoring the fix passes all of them.',
   },
 
   {
