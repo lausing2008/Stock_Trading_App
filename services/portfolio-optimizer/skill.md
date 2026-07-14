@@ -52,16 +52,25 @@ previously-documented `/portfolio/frontier` and `/portfolio/correlation` endpoin
 ```json
 {
   "symbols": ["AAPL", "MSFT", "GOOG"],
-  "method": "hierarchical_risk_parity", // the actual Literal value — NOT "hrp" as previously documented
-                                          // valid values: mean_variance | risk_parity | hierarchical_risk_parity | ai
+  "method": "hierarchical_risk_parity", // the actual Literal value — NOT "hrp" or "ai" as
+                                          // previously documented. Valid values: mean_variance |
+                                          // risk_parity | hierarchical_risk_parity | ai_allocation
   "lookback_days": 252,         // historical window for covariance estimation
-  "target_return": null,        // optional; used by mean_variance only
+  "min_score": 60.0,            // ai_allocation only — K-Score floor for inclusion
   "constraints": {
-    "min_weight": 0.05,         // minimum position weight
-    "max_weight": 0.40          // maximum single position weight
+    "max_weight": 0.40          // optional; maximum single position weight, applied to
+                                  // whichever method is chosen (default 0.40/0.60 per method
+                                  // if omitted — see methods.py's own defaults)
   }
 }
 ```
+**Corrected 2026-07-14 (T247-PORTFOLIOOPTIMIZER-SKILLMD-SCHEMA):** this section previously
+also documented `target_return` and `constraints.min_weight` — NEITHER exists. No optimizer
+method has target-return or lower-bound support; a request including them had those fields
+silently dropped by Pydantic (no `extra="forbid"` on `OptimizeRequest`) and ran with default
+behavior instead, with no error indicating the constraint was never applied.
+`constraints.max_weight` (only) is real as of this fix — every method already computed its
+own internal max_weight, this just exposes it through the request.
 
 **Output:**
 ```json
