@@ -85,6 +85,22 @@ def _resolve(node: Any, df: pd.DataFrame) -> pd.Series | float:
     raise ValueError(f"Bad operand: {node!r}")
 
 
+def _mask_nan_operands(result: pd.Series, *operands: "pd.Series | float") -> pd.Series:
+    """Convert `result` to nullable-boolean dtype and set positions to <NA> wherever ANY
+    operand was NaN. A plain float comparison against NaN (e.g. `a > b` with b=NaN) always
+    numerically evaluates to False in numpy/pandas — it never propagates as NaN on its own —
+    so this has to be done explicitly by checking the operands themselves, not by casting the
+    comparison's own output afterward (astype("boolean") alone does not recover the lost
+    "unknown" information once the comparison has already produced a real False)."""
+    result = result.astype("boolean")
+    nan_mask = pd.Series(False, index=result.index)
+    for op_ in operands:
+        if isinstance(op_, pd.Series):
+            nan_mask = nan_mask | op_.isna()
+    result[nan_mask] = pd.NA
+    return result
+
+
 def _cmp(left: pd.Series | float, op: str, right: pd.Series | float) -> pd.Series:
     ops = {
         ">": lambda a, b: a > b,
@@ -94,31 +110,45 @@ def _cmp(left: pd.Series | float, op: str, right: pd.Series | float) -> pd.Serie
         "==": lambda a, b: a == b,
     }
     if op in ops:
-        return ops[op](left, right).fillna(False)
+        # T247-STRATEGYENGINE-NOT-NAN: previously fillna(False) was applied HERE, at every
+        # leaf — by the time a `not` node's `~` ran on this result, the NaN (warmup-period
+        # "unknown") had already been collapsed to a real False, so `not` inverted it to True.
+        # Every warmup bar was silently reported as a true entry/exit signal. Explicitly mask
+        # positions where either operand was NaN to <NA> (a numpy float comparison against NaN
+        # always numerically evaluates to False, never NaN, so this can't be recovered from the
+        # comparison's own output — see _mask_nan_operands()) so `not`/`and`/`or` can propagate
+        # "unknown" correctly. The single fillna(False) now happens only once, at
+        # evaluate_rule()'s outermost call.
+        return _mask_nan_operands(ops[op](left, right), left, right)
     if op == "crosses_above":
         diff = left - right
-        return (diff.shift(1) <= 0) & (diff > 0)
+        return _mask_nan_operands((diff.shift(1) <= 0) & (diff > 0), left, right)
     if op == "crosses_below":
         diff = left - right
-        return (diff.shift(1) >= 0) & (diff < 0)
+        return _mask_nan_operands((diff.shift(1) >= 0) & (diff < 0), left, right)
     raise ValueError(f"Unsupported op: {op}")
 
 
-def evaluate_rule(rule: dict, df: pd.DataFrame) -> pd.Series:
+def _evaluate_rule_nullable(rule: dict, df: pd.DataFrame) -> pd.Series:
+    """Returns a nullable-boolean Series (dtype "boolean") where NaN means "unknown" (e.g.
+    still in an indicator's warmup window) — distinct from a real False. and/or/not use
+    pandas' native nullable-boolean (Kleene) logic, which correctly propagates unknown:
+    not(unknown) = unknown, True & unknown = unknown, True | unknown = True, etc. Only the
+    public evaluate_rule() collapses "unknown" to False, and only once, at the very top."""
     op = rule.get("op")
     if op in ("and", "or"):
         nodes = rule.get("nodes")
         if not nodes:
             raise ValueError(f"'{op}' node requires a non-empty 'nodes' list")
-        sub = [evaluate_rule(n, df) for n in nodes]
+        sub = [_evaluate_rule_nullable(n, df) for n in nodes]
         result = sub[0]
         for s in sub[1:]:
             result = (result & s) if op == "and" else (result | s)
-        return result.fillna(False)
+        return result
     if op == "not":
         if "node" not in rule:
             raise ValueError("'not' node requires a 'node' child")
-        return ~evaluate_rule(rule["node"], df)
+        return ~_evaluate_rule_nullable(rule["node"], df)
     if "left" not in rule or "right" not in rule:
         raise ValueError(f"Comparison node op='{op}' requires 'left' and 'right'")
     left = _resolve(rule["left"], df)
@@ -126,3 +156,9 @@ def evaluate_rule(rule: dict, df: pd.DataFrame) -> pd.Series:
     if isinstance(left, float):
         left = pd.Series([left] * len(df), index=df.index)
     return _cmp(left, op, right)
+
+
+def evaluate_rule(rule: dict, df: pd.DataFrame) -> pd.Series:
+    """Public entrypoint — returns a plain bool Series (NaN/unknown collapsed to False),
+    matching every existing caller's expectation (e.g. backtest/engine.py's .astype(bool))."""
+    return _evaluate_rule_nullable(rule, df).fillna(False).astype(bool)
