@@ -15369,24 +15369,26 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-MLPREDICTION-4',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/ml-prediction/src/features/builder.py:558',
     effort: 'S',
     impact: '_compute_piotroski() looks up a debt_equity key that is never actually set anywhere in fund_data, making the `or` fallback in `fund_data.get("debt_equity") or fund_data.get("debt_to_equity")` permanently a no-op left-hand branch.',
     title: '_compute_piotroski() looks up a debt_equity key that is never actually set anywhere in fund_data, making the `or` fallback in `fund_data.get("debt_equity") or fund_data.get("debt_to_equity")` permanently a no-op left-hand branch.',
     what: 'Every caller of build_features (trainer.py\'s _load_fundamentals, tuner.py) populates fund_data with the key "debt_to_equity", never "debt_equity". Since fund_data.get("debt_equity") is therefore always None, the expression always evaluates to fund_data.get("debt_to_equity") anyway, so this happens not to corrupt output today (None or X == X regardless of X), but it\'s dead/confusing code that looks like a real fallback and could mask a genuine typo bug if the fundamentals dict schema is ever refactored (e.g. if a future edit renames the primary key without noticing this line silently \'still works\' by falling through to a key that was supposed to be a deliberate alternate source).',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: removed the dead `fund_data.get("debt_equity") or` left-hand branch — now reads `fund_data.get("debt_to_equity")` directly. Confirmed via grep no caller ever sets "debt_equity", so this is a pure no-op simplification with zero behavior change (None or X == X regardless of X). Ran the full test suite to confirm no regression.',
   },
 
   {
     id: 'AUD247-MLPREDICTION-5',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/ml-prediction/src/training/meta_trainer.py:384',
     effort: 'S',
     impact: '_record_promotion_status() does an unsynchronized read-modify-write on the meta_model:promotion_history Redis list, so concurrent retrains could lose history entries.',
     title: '_record_promotion_status() does an unsynchronized read-modify-write on the meta_model:promotion_history Redis list, so concurrent retrains could lose history entries.',
     what: 'If train_meta_model() is ever triggered twice in close succession (e.g. a manual POST /ml/train_meta while a scheduled retrain is also running), two processes could both `GET` the same history list, each append their own run, and each `SETEX` back — the second write clobbers the first\'s append, silently dropping one run\'s promotion record from the last-20 history. Low real-world likelihood since this is a single background task typically run at most a few times a day, but the code has no locking or atomic list-append (e.g. Redis RPUSH) despite being explicitly designed for a shared history log.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: replaced the GET/append-in-Python/SETEX pattern with native atomic Redis operations — RPUSH (atomic list-append, no race possible under concurrent writers), LTRIM -20 -1 (keeps only the last 20 entries, equivalent to the old history[-20:] slice), and EXPIRE (re-applies the same 90-day TTL). Updated market-data\'s admin.py /promotion-history reader (_read_promotion_history, extracted from a local closure to module level) to branch on the actual Redis key TYPE, since meta_model:promotion_history is now a native LIST while position_scaling_gate:promotion_history (scheduler.py, unchanged by this fix) still uses the old blob format — both must keep reading correctly. Added services/ml-prediction/tests/test_promotion_history.py (4 tests, mocking the redis client to assert RPUSH/LTRIM/EXPIRE are called, never GET-then-SETEX) and services/market-data/tests/test_promotion_history_reader.py (6 tests covering both formats). Adversarially verified both sides: reverting the writer to GET-then-SETEX failed 3 of 4 writer tests; reverting the reader to blob-only failed the new-list-format reader test; restoring both fixes passes all tests.',
   },
 
   {
