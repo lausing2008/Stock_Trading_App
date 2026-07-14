@@ -15531,13 +15531,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-RESEARCHENGINE-2',
-    tier: 247 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/research-engine/src/api/routes.py:95',
     effort: 'S',
     impact: 'The generic upstream `_get()` helper only logs on network/exception failures, not on non-200 HTTP responses (e.g. 401), so auth failures against signal-engine/ranking-engine/event-intelligence silently return None with zero log trace.',
     title: 'The generic upstream `_get()` helper only logs on network/exception failures, not on non-200 HTTP responses (e.g. 401), so auth failures against signal-engine/ranking-engine/event-intelligence silently return None with zero log trace.',
     what: 'signal-engine (or event-intelligence/ranking-engine) hits the exact \'python-jose missing from container\' 401 pattern already documented multiple times in this repo\'s CLAUDE.md (BUG affecting signal-engine, ml-prediction, ranking-engine, portfolio-optimizer). `_get(client, .../signals/{sym}?style=SWING, svc_auth)` at line 1531 receives a 401, `r.status_code != 200` so the `if` at line 99 is skipped and the function falls through to `return None` at line 103 with no log line at all — unlike the exception branch, which does log via `log.warning(\'upstream.get.failed\', ...)`. Every research report for every symbol silently gets `signal: {signal: None, confidence: None, horizon: None}` (or missing fundamentals/rankings) with nothing in the logs to grep for, making this class of incident much harder to diagnose here than in the services that do log their 401s.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13: added log.warning("upstream.get.non_200", url=..., status=...) for the non-200 fall-through path, matching the existing exception-path logging pattern. Added services/research-engine/tests/test_get_helper.py (4 tests). Adversarially verified: reverting to the silent version made both non-200 tests fail (0 log calls instead of 1); restoring the fix passes all tests except the 3 pre-existing, unrelated test_scoring.py balance_sheet failures noted in AUD247-RESEARCHENGINE-1\'s implementedNote.',
   },
 
   {
