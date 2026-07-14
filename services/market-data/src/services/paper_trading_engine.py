@@ -3728,11 +3728,12 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         # T224-A: Mainland flow gate — HK entries require positive 5-day southbound flow.
         # flow_5d_net_hkd < 0 means mainland money is net-selling the stock (bearish pressure).
         # Fail-open if flow data is absent (not all stocks are Stock Connect eligible).
-        # MD-HKCONNECT1 (2026-07-09): this gate has been PERMANENTLY fail-open since the HKEX
-        # southbound-flow source went dead (see services/hk_connect.py's module docstring) —
-        # flow_5d_net_hkd is always None (hk_connect_flows has 0 rows), so it never blocks a
-        # trade. Not a separate bug in this gate; documented here so a future reader doesn't
-        # assume this gate is actively protecting HK entries right now.
+        # MD-HKCONNECT2 (2026-07-13): real data now flows again — hk_connect.py was rewired to
+        # a working Eastmoney Stock Connect holdings-ranking source (see that module's
+        # docstring), superseding the dead HKEX endpoint (MD-HKCONNECT1, 2026-07-09) this gate
+        # was previously permanently fail-open against. This gate is once more able to actively
+        # block an HK entry on confirmed mainland net-selling, not just structurally pass
+        # everything through.
         if cfg.get("market") == "HK":
             _flow5d = (sig.reasons or {}).get("flow_5d_net_hkd")
             if _flow5d is not None and float(_flow5d) <= 0:
