@@ -15327,35 +15327,38 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-MLPREDICTION-1',
-    tier: 247 as const, severity: 'high', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/ml-prediction/src/training/meta_trainer.py:528',
     effort: 'S',
     impact: 'predict_meta() builds its meta-feature vector in a different column order than train_meta_model() trained on, so every live meta-model ensemble prediction is silently computed on scrambled features.',
     title: 'predict_meta() builds its meta-feature vector in a different column order than train_meta_model() trained on, so every live meta-model ensemble prediction is silently computed on scrambled features.',
     what: 'train_meta_model() appends meta features in the order [sector_code, market_cap_bin, horizon_code, signal_direction(BUY=1/0), confidence, fused_prob, ta_score] (lines 237-252). predict_meta(), called from trainer.py\'s predict_latest_ensemble_three() on every live prediction, appends [sector_code, market_cap_bin, horizon_code, confidence, fused_prob, ta_score, direction] (lines 528-534) — direction was tacked on at the very end instead of inserted after horizon_code. Concretely, for a live BUY prediction on any symbol, the model receives `confidence` in the slot it learned as `signal_direction`, `fused_prob` in the slot it learned as `confidence`, `ta_score` in the slot it learned as `fused_prob`, and `direction` in the slot it learned as `ta_score`. Because StandardScaler and the XGBoost tree splits were fit against the training column order, this corrupts the meta-model\'s 15%-weighted contribution to every ensemble prediction (predict_latest_ensemble_three in trainer.py) without raising any error — the shape-mismatch guard at line 542 only catches length differences, not reordering. Introduced 2026-07-11 (commit 1134926) when `direction` support was added to predict_meta() without updating its append order to match the training-side insertion point added earlier by AUD232-046.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13: reordered predict_meta()\'s append sequence so direction lands right after horizon_code (4th slot), matching train_meta_model()\'s real training-time order. Also fixed the two related stale-metadata bugs below (AUD247-MLPREDICTION-2/3) in the same change since all three point at the same root confusion. Regression test (services/ml-prediction/tests/test_meta_trainer.py) calls the REAL predict_meta() end-to-end — mocks joblib.load/SessionLocal/Price rows but runs the actual build_features() on 300 bars of synthetic OHLCV data, then reads back the exact vector passed to scaler.transform() — rather than a hand-written mirror of the append logic. An earlier draft of this test asserted on two separately-maintained reimplementation helper functions instead of calling predict_meta() itself; adversarial verification (reverting the real fix and re-running) caught that the old test still incorrectly passed because it never touched the real code. Rewritten to close that gap, then re-verified: reverting the fix now correctly fails all 3 tests with real assertion errors, and restoring it passes again.',
   },
 
   {
     id: 'AUD247-MLPREDICTION-2',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/ml-prediction/src/training/meta_trainer.py:348',
     effort: 'S',
     impact: 'The persisted bundle\'s n_meta_features is hardcoded to 6 and its comment omits signal_direction, even though the training vector actually appends 7 meta features.',
     title: 'The persisted bundle\'s n_meta_features is hardcoded to 6 and its comment omits signal_direction, even though the training vector actually appends 7 meta features.',
     what: 'train_meta_model() appends sector_code, market_cap_bin, horizon_code, signal_direction, confidence, fused_prob, ta_score (7 values) to the feature vector, but the bundle stores `"n_meta_features": 6` with a comment listing only 6 names. This field is currently unread anywhere in the codebase, so it\'s not causing a runtime bug today, but it is misleading documentation/metadata that will mislead the next person debugging the (real) ordering bug above, and will become a live bug if any future code starts trusting this field to slice or validate the feature vector.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13 alongside AUD247-MLPREDICTION-1: n_meta_features corrected from 6 to 7, comment updated to list all 7 fields including signal_direction. Confirmed via grep this field is not read anywhere else in the codebase, so no other call site needed updating.',
   },
 
   {
     id: 'AUD247-MLPREDICTION-3',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/ml-prediction/src/training/meta_trainer.py:538',
     effort: 'S',
     impact: 'Comment on the defensive shape-mismatch bounds check still says "+ 6 meta features", further entrenching the wrong count from the n_meta_features field and masking the real ordering bug.',
     title: 'Comment on the defensive shape-mismatch bounds check still says "+ 6 meta features", further entrenching the wrong count from the n_meta_features field and masking the real ordering bug.',
     what: 'A future maintainer reading this comment while debugging degraded meta-model AUC would reasonably conclude the feature count is correct (6 meta features) and look elsewhere, rather than noticing the vector actually has 7 meta features and that predict_meta\'s append order (lines 528-534) diverges from train_meta_model\'s (lines 237-252). The bounds check itself only guards against vector-length mismatches (stale FEATURE_COLUMNS length), not against silent column reordering — it will not catch or warn about the bug above at all.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13 alongside AUD247-MLPREDICTION-1: comment corrected from "+ 6 meta features" to "+ 7 meta features".',
   },
 
   {
