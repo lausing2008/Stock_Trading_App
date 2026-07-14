@@ -108,14 +108,23 @@ def _etf_20d_return(ticker: str, session: "Session | None" = None) -> float | No
                 with _ETF_CACHE_LOCK:
                     _ETF_CACHE[ticker] = (ret, _time.time())
                 return ret
+    # T247-RANKINGENGINE-HSI-SILENT: this fallback path is used exclusively for ^HSI (the HK
+    # benchmark isn't DB-seeded) — every failure here previously returned None with zero log
+    # line (unlike _fetch_patterns_bulk() a few lines above, which does log on failure), so a
+    # yfinance rate-limit/import failure silently collapsed EVERY HK stock's relative-strength
+    # score to a flat neutral 50.0 (via _rs_score()'s etf_ret=None branch) for the whole cache
+    # window, indistinguishable in logs from HSI genuinely trading flat.
     # Fallback: yfinance (for ^HSI index and any ETF not yet in DB)
     if not _HAS_YF:
+        log.warning("ranking.etf_return_fetch_failed", ticker=ticker, reason="yfinance_not_installed")
         with _ETF_CACHE_LOCK:
             _ETF_CACHE[ticker] = (None, _time.time())
         return None
     try:
         hist = yf.Ticker(ticker).history(period="2mo")
         if hist.empty or len(hist) < 21:
+            log.warning("ranking.etf_return_fetch_failed", ticker=ticker,
+                        reason="insufficient_history", bars=len(hist))
             with _ETF_CACHE_LOCK:
                 _ETF_CACHE[ticker] = (None, _time.time())
             return None
@@ -123,7 +132,8 @@ def _etf_20d_return(ticker: str, session: "Session | None" = None) -> float | No
         with _ETF_CACHE_LOCK:
             _ETF_CACHE[ticker] = (ret, _time.time())
         return ret
-    except Exception:
+    except Exception as exc:
+        log.warning("ranking.etf_return_fetch_failed", ticker=ticker, error=str(exc))
         with _ETF_CACHE_LOCK:
             _ETF_CACHE[ticker] = (None, _time.time())
         return None
@@ -164,13 +174,20 @@ def _fetch_fundamentals_bulk() -> dict[str, dict]:
     symbol that has a warm Redis cache entry. Symbols with no cache are omitted
     — they will fall back to the price-based K-Score proxies.
     """
+    # T247-RANKINGENGINE-FUNDAMENTALS-SILENT: this previously swallowed every failure with a
+    # bare `except Exception: pass` (and silently fell through to `return {}` on a non-200
+    # status without even reaching the except) — zero log line anywhere. A market-data outage
+    # or timeout during a scheduled rankings refresh silently excluded every stock's value/
+    # growth K-Score components for the whole outage window, indistinguishable in logs from
+    # normal operation (genuinely-empty fundamentals cache).
     try:
         with httpx.Client(timeout=10) as c:
             r = c.get(f"{_MARKET_DATA_URL}/stocks/fundamentals_bulk")
             if r.status_code == 200:
                 return r.json()
-    except Exception:
-        pass
+            log.warning("ranking.fundamentals_bulk_fetch_failed", status=r.status_code)
+    except Exception as exc:
+        log.warning("ranking.fundamentals_bulk_fetch_failed", error=str(exc))
     return {}
 
 

@@ -14,6 +14,8 @@ sys.modules.setdefault("common", MagicMock())
 sys.modules.setdefault("common.config", MagicMock())
 sys.modules.setdefault("common.logging", MagicMock())
 sys.modules["common.logging"].get_logger = MagicMock(return_value=MagicMock())
+sys.modules.setdefault("common.jwt_auth", MagicMock())
+sys.modules.setdefault("db", MagicMock())
 
 # common.indicators is pure pandas/numpy (no env/structlog deps) and kscore.py needs the REAL
 # implementation to compute actual RSI/ATR values in tests.
