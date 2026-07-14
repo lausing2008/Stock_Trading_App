@@ -15473,24 +15473,26 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-RANKINGENGINE-2',
-    tier: 247 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/ranking-engine/src/api/routes.py:172',
     effort: 'S',
     impact: '_fetch_fundamentals_bulk() silently swallows all exceptions (bare `except Exception: pass`, zero logging) and returns {} on any market-data outage/timeout.',
     title: '_fetch_fundamentals_bulk() silently swallows all exceptions (bare `except Exception: pass`, zero logging) and returns {} on any market-data outage/timeout.',
     what: 'market-data becomes slow or unreachable during a scheduled rankings refresh; every call to _fetch_fundamentals_bulk() (called once per _persist_rankings batch and once per rank_symbol request) silently returns {}, causing every stock\'s value/growth K-Score components to be excluded from the composite for the entire outage window, with zero log line anywhere indicating fundamentals data was unavailable versus genuinely absent for those symbols — indistinguishable from normal operation in logs.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13: added log.warning("ranking.fundamentals_bulk_fetch_failed", ...) for both failure modes — a non-200 response (previously fell through to `return {}` without even reaching the except block) and any exception. Fixed AUD247-RANKINGENGINE-3 (the adjacent _etf_20d_return HSI silent failure) in the same pass since it\'s the identical bug class in the same file. Added services/ranking-engine/tests/test_fetch_fundamentals_bulk.py (3 tests) and 2 small conftest.py stub gaps (common.jwt_auth, db). Adversarially verified: reverting to the silent swallow made both failure-path tests fail (0 log calls instead of 1); restoring the fix passes all tests except one pre-existing, unrelated test_kscore.py bug.',
   },
 
   {
     id: 'AUD247-RANKINGENGINE-3',
-    tier: 247 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/ranking-engine/src/api/routes.py:111',
     effort: 'S',
     impact: '_etf_20d_return()\'s yfinance fallback path (used exclusively for ^HSI, since it is not DB-seeded) silently returns None on any failure (line 126, bare `except Exception: pass`, no logging) and _HAS_YF=False path (line 112) is also unlogged, collapsing every HK stock\'s relative-strength score to a flat neutral 50.0 with no signal that the benchmark fetch failed.',
     title: '_etf_20d_return()\'s yfinance fallback path (used exclusively for ^HSI, since it is not DB-seeded) silently returns None on any failure (line 126, bare `except Exception: pass`, no logging) and _HAS_YF=False path (line 112) is also unlogged, collapsing every HK stock\'s relative-strength score to a flat neutral 50.0 with no signal that the benchmark fetch failed.',
     what: 'yfinance is rate-limited or the package fails to import in a given container; every HK stock\'s rs_score/relative_strength silently becomes exactly 50.0 (via _rs_score\'s etf_ret=None branch) for that entire refresh cycle, making all HK rankings\' relative-strength component identical and uninformative, with no log entry anywhere to alert that the HSI benchmark couldn\'t be fetched (contrast with the patterns-bulk fetch a few lines above, which does log a warning on failure).',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13 alongside AUD247-RANKINGENGINE-2: added log.warning("ranking.etf_return_fetch_failed", ...) to all 3 failure paths (_HAS_YF=False, insufficient history, and any exception), matching the logging already present on _fetch_patterns_bulk() a few lines above. Added services/ranking-engine/tests/test_etf_20d_return.py (4 tests). Adversarially verified: reverting to the silent version made all 3 failure-path tests fail; restoring the fix passes all of them.',
   },
 
   {
