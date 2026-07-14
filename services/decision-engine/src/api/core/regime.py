@@ -11,7 +11,9 @@ real trades, so it is the correct source of truth for every other consumer.
 """
 from __future__ import annotations
 
+import asyncio
 import time as _time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import structlog
@@ -20,6 +22,14 @@ from common.config import get_settings
 
 log = structlog.get_logger()
 _settings = get_settings()
+
+# T247-DECISIONENGINE-REGIME-BLOCKING: get_regime() is called unawaited from inside
+# async def _decide() (routes.py) — a blocking httpx.get() there stalls the ENTIRE event
+# loop, not just the calling task. A cold/expired cache hit during a 30-symbol /decide/batch
+# gather() serializes every concurrent request for up to the 10s timeout, exactly the
+# pattern aggregator.py's own yfinance fallback already runs in a thread pool to avoid.
+# Same fix here: run the blocking fetch in a dedicated executor.
+_regime_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="regime_fetch")
 
 _CACHE_TTL = 300  # 5 minutes — matches market-data's _refresh_5m cadence (T232-DE7). Was 900s;
 # after T232-DE7 added 2-tick hysteresis to market-data's own classification, a genuine
@@ -36,10 +46,28 @@ _NEUTRAL = {"state": "neutral", "vix": None, "notes": ["regime unavailable"]}
 
 
 def get_regime(market: str = "US") -> dict:
-    """Return current market regime dict. Uses cache; re-fetches after TTL."""
+    """Return current market regime dict. Uses cache; re-fetches after TTL.
+
+    Synchronous — safe to call from plain `def` routes (FastAPI runs those in their own
+    thread pool already) but NOT from `async def` code, where a cache-miss would block the
+    single event loop thread. Async callers must use `aget_regime()` instead.
+    """
     if market.upper() == "HK":
         return _get_cached("HK")
     return _get_cached("US")
+
+
+async def aget_regime(market: str = "US") -> dict:
+    """Async counterpart of get_regime() — the blocking fetch runs in a thread pool so a
+    cache miss stalls only the awaiting task, not the whole event loop. Use this from any
+    `async def` caller (e.g. routes.py's _decide(), which fans out many concurrent symbols
+    via asyncio.gather and would otherwise serialize on the first cold cache hit)."""
+    market_key = "HK" if market.upper() == "HK" else "US"
+    cache, ts = (_HK_CACHE, _HK_TS) if market_key == "HK" else (_US_CACHE, _US_TS)
+    if cache and (_time.time() - ts) < _CACHE_TTL:
+        return dict(cache)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_regime_executor, _get_cached, market_key)
 
 
 def _get_cached(market: str) -> dict:

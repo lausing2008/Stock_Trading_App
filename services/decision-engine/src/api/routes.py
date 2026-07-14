@@ -21,7 +21,7 @@ from .core.models import (
     PositionPlan,
     ScoreItem,
 )
-from .core.regime import get_regime
+from .core.regime import aget_regime, get_regime
 from .core.scorer import compute_score, min_score_for_regime
 from .core.sizer import combined_market_mult, compute_position
 from .llm_scorer import score_with_llm
@@ -117,7 +117,11 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
     market = req.market
     if symbol.endswith(".HK") and market == "US":
         market = "HK"
-    regime = get_regime(market)
+    # T247-DECISIONENGINE-REGIME-BLOCKING: must use the async variant here — this function
+    # runs on the shared event loop and is fanned out via asyncio.gather() by /decide/batch;
+    # the sync get_regime() would block that loop with a synchronous httpx.get() on any
+    # cache miss, stalling every other concurrent request for up to 10s.
+    regime = await aget_regime(market)
     regime_state = regime.get("state", "neutral")
     breadth_size_mult = float(regime.get("breadth_size_mult", 1.0))
     vix_size_mult     = float(regime.get("vix_size_mult", 1.0))

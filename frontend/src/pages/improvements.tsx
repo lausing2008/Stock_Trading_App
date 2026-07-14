@@ -15185,13 +15185,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-DECISIONENGINE-1',
-    tier: 247 as const, severity: 'high', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/decision-engine/src/api/core/regime.py:63',
     effort: 'S',
     impact: 'get_regime() is a plain synchronous function that makes a blocking httpx.get() call, but is invoked directly (unawaited) from inside async def _decide() -- it blocks the single asyncio event loop thread instead of running in a thread pool like the codebase\'s own yfinance fallback correctly does.',
     title: 'get_regime() is a plain synchronous function that makes a blocking httpx.get() call, but is invoked directly (unawaited) from inside async def _decide() -- it blocks the single asyncio event loop thread instead of running in a thread pool like the codebase\'s own yfinance fallback correctly does.',
     what: 'POST /decide/batch with 30 symbols in the same market triggers asyncio.gather over 30 concurrent _decide() calls; the first one to hit a cold/expired regime cache (5-min TTL) calls httpx.get(market-data:.../stocks/regime, timeout=10.0) synchronously on the event loop. All other concurrent requests -- both the other 29 batch tasks and any unrelated /decide/{symbol} call hitting the service at the same time -- stall for up to 10s while market-data responds or times out, even though fetch_all()\'s signal/research calls were deliberately built with async httpx.AsyncClient + asyncio.gather to avoid exactly this kind of serialization.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-13: added aget_regime() — an async counterpart that runs the blocking fetch via loop.run_in_executor() on a dedicated 2-worker ThreadPoolExecutor, matching aggregator.py\'s existing yfinance-fallback pattern. routes.py\'s async _decide() now awaits aget_regime() instead of calling the sync get_regime() directly; the sync /decide/regime route (a plain `def`, already run in FastAPI\'s own thread pool) keeps using get_regime() unchanged. Both variants share the same module-level cache dicts. Added services/decision-engine/tests/test_regime.py: a timing-based test proving a concurrent coroutine isn\'t blocked during a slow regime fetch, a two-concurrent-fetches-don\'t-serialize test, a warm-cache-skips-executor test, and a shared-cache test. Adversarially verified: reverting aget_regime() to call the blocking fetch directly on the event loop made the two concurrency-sensitive tests fail with real measured timings (0.301s instead of <0.25s for two supposedly-concurrent fetches); restoring the fix passes all 4 new tests plus the full 68-test suite.',
   },
 
   {
