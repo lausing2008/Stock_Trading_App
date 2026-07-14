@@ -3,8 +3,10 @@ through the gateway without knowing about internal service hosts.
 """
 from __future__ import annotations
 
+import asyncio
 import posixpath
 import time as _time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import redis as _redis_lib
@@ -16,6 +18,15 @@ from common.config import get_settings
 
 router = APIRouter(tags=["proxy"])
 _settings = get_settings()
+
+# T247-APIGATEWAY-BLACKLIST-BLOCKING: _is_blacklisted() makes a blocking, synchronous Redis
+# call (the sync 'redis' package). reverse_proxy() is `async def`, so FastAPI does NOT
+# offload this to a worker thread the way it does automatically for plain `def` handlers —
+# it runs directly on the shared event loop. A Redis blip (up to socket_connect_timeout=1s)
+# then stalls EVERY concurrent request the gateway is currently serving, not just the one
+# that touched Redis. Run _require_auth() (which calls _is_blacklisted()) in a dedicated
+# executor from the async path instead — same pattern as decision-engine's aget_regime().
+_auth_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="gateway_auth")
 log = structlog.get_logger()
 
 # Prefixes that don't require a valid JWT
@@ -146,6 +157,15 @@ def _require_auth(full_path: str, request: Request) -> None:
         raise HTTPException(401, "Invalid or expired token")
 
 
+async def _require_auth_async(full_path: str, request: Request) -> None:
+    """Async wrapper — runs the sync _require_auth() (whose _is_blacklisted() call can block
+    on Redis) in a dedicated thread pool so it only stalls the awaiting request, not the whole
+    event loop. _require_auth() itself stays sync/unchanged so its own direct unit tests
+    (test_proxy.py) continue to exercise it exactly as before."""
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(_auth_executor, _require_auth, full_path, request)
+
+
 @router.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def reverse_proxy(full_path: str, request: Request):
     # T237-AG1: FastAPI's {full_path:path} captures the raw, un-normalized path segment —
@@ -161,7 +181,7 @@ async def reverse_proxy(full_path: str, request: Request):
     full_path = normalized
     if full_path in ("health", "docs", "openapi.json", "redoc"):
         raise HTTPException(404)
-    _require_auth(full_path, request)
+    await _require_auth_async(full_path, request)
     upstream = _upstream(full_path)
     if not upstream:
         raise HTTPException(404, f"No route for /{full_path}")
