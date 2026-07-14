@@ -345,7 +345,12 @@ def train_meta_model(db=None) -> dict:
         "scaler": scaler,
         "non_const": non_const,
         "feature_columns": list(FEATURE_COLUMNS),
-        "n_meta_features": 6,  # sector_code, market_cap_bin, horizon_code, confidence, fused_prob, ta_score
+        # T247-ML-META-FEATURE-ORDER: corrected from 6 to 7 (was missing signal_direction,
+        # appended in train_meta_model() at AUD232-046 but never reflected here) — matches the
+        # real training append order: sector_code, market_cap_bin, horizon_code, direction,
+        # confidence, fused_prob, ta_score. Not read anywhere in the codebase today (grepped and
+        # confirmed) — purely descriptive metadata on the bundle, but was actively misleading.
+        "n_meta_features": 7,
         "auc": round(auc, 4),
     }
 
@@ -524,18 +529,28 @@ def predict_meta(
             for col in feature_columns_for_vec
         ]
 
-        # Meta features (must match training order)
+        # Meta features (must match training order — see train_meta_model()'s append sequence:
+        # sector_code, market_cap_bin, horizon_code, direction, confidence, fused_prob, ta_score).
+        # T247-ML-META-FEATURE-ORDER: this call site previously appended `direction` LAST
+        # instead of 4th (right after horizon_code), introduced when direction support was added
+        # here without updating the order to match training. Every live meta-model prediction
+        # was silently computed on a scrambled feature vector: confidence landed in the slot the
+        # model learned as direction, fused_prob in the slot learned as confidence, ta_score in
+        # the slot learned as fused_prob, and direction in the slot learned as ta_score. The
+        # shape-mismatch guard below only catches length differences, never reordering, so this
+        # produced no error — just silently wrong predictions for the ensemble's 15%-weighted
+        # meta-model contribution.
         vec.append(float(SECTOR_MAP.get(sector or "", -1)))
         vec.append(float(_market_cap_bin(market_cap)))
         vec.append(float(HORIZON_MAP.get(horizon.upper(), -1)))
+        vec.append(1.0 if str(direction).upper() == "BUY" else 0.0)
         vec.append(float(confidence))
         vec.append(float(fused_prob))
         vec.append(float(ta_score))
-        vec.append(1.0 if str(direction).upper() == "BUY" else 0.0)
 
         X_raw = np.array([vec], dtype=np.float32)
         # Defensive bounds check: non_const holds positional indices computed at train time
-        # against len(feature_columns_for_vec) + 6 meta features. If an older bundle predates
+        # against len(feature_columns_for_vec) + 7 meta features. If an older bundle predates
         # the "feature_columns" field (saved_feature_columns is None) and the live
         # FEATURE_COLUMNS has since changed length, this catches the mismatch explicitly
         # instead of letting X_raw[:, non_const] raise a raw IndexError.
