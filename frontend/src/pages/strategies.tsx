@@ -614,7 +614,11 @@ export default function StrategiesPage() {
           <div style={{ display: 'flex', gap: '8px', padding: '16px 22px', flexWrap: 'wrap' }}>
             {[
               { label: 'Total Return',   value: fmtPct(result.total_return),               color: retColor(result.total_return) },
-              { label: 'CAGR',           value: fmtPct(result.cagr),                       color: retColor(result.cagr) },
+              // T247-STRATEGYENGINE-CAGR-OVERFLOW: cagr can now be null for a degenerate
+              // (near-zero-day) backtest range where an annualized figure isn't meaningful —
+              // matches the same conditional-row pattern already used for benchmark_cagr/
+              // alpha/sortino below, rather than fmtPct silently coercing null to "+0.0%".
+              ...(result.cagr != null ? [{ label: 'CAGR', value: fmtPct(result.cagr), color: retColor(result.cagr) }] : []),
               ...(result.benchmark_cagr != null ? [{ label: 'SPY CAGR', value: fmtPct(result.benchmark_cagr), color: '#94a3b8' }] : []),
               ...(result.alpha != null ? [{ label: 'Alpha vs SPY', value: (result.alpha >= 0 ? '+' : '') + fmtPct(result.alpha), color: result.alpha >= 0.03 ? '#4ade80' : result.alpha >= 0 ? '#facc15' : '#f87171' }] : []),
               { label: 'Sharpe Ratio',   value: result.sharpe.toFixed(2),                  color: result.sharpe >= 1.5 ? '#4ade80' : result.sharpe >= 0.5 ? '#facc15' : '#f87171' },
@@ -822,7 +826,7 @@ export default function StrategiesPage() {
                 <tbody>
                   {[
                     { label: 'Total Return',  vals: compareRuns.map(r => r.total_return),   fmt: (v: number) => fmtPct(v),                       higherBetter: true  },
-                    { label: 'CAGR',          vals: compareRuns.map(r => r.cagr),            fmt: (v: number) => fmtPct(v),                       higherBetter: true  },
+                    { label: 'CAGR',          vals: compareRuns.map(r => r.cagr ?? 0),       fmt: (v: number) => fmtPct(v),                       higherBetter: true  },
                     { label: 'Sharpe Ratio',  vals: compareRuns.map(r => r.sharpe),          fmt: (v: number) => v.toFixed(2),                    higherBetter: true  },
                     { label: 'Max Drawdown',  vals: compareRuns.map(r => r.max_drawdown),    fmt: (v: number) => fmtPct(v),                       higherBetter: true  },
                     { label: 'Win Rate',      vals: compareRuns.map(r => r.win_rate),        fmt: (v: number) => `${(v * 100).toFixed(0)}%`,      higherBetter: true  },

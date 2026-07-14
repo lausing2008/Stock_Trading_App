@@ -728,7 +728,9 @@ export type Prediction = { symbol: string; bullish_probability: number; confiden
 export type Backtest = {
   backtest_id: number | null;
   total_return: number;
-  cagr: number;
+  // T247-STRATEGYENGINE-CAGR-OVERFLOW: null for a degenerate (near-zero-day) backtest range
+  // where an annualized figure would otherwise overflow to inf.
+  cagr: number | null;
   sharpe: number;
   sortino?: number | null;
   calmar?: number | null;
@@ -750,7 +752,7 @@ export type BacktestRun = {
   start: string;
   end: string;
   total_return: number;
-  cagr: number;
+  cagr: number | null;
   sharpe: number;
   sortino?: number | null;
   calmar?: number | null;
