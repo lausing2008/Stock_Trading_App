@@ -407,16 +407,23 @@ def _record_promotion_status(promoted: bool, auc: float, previous_auc: float | N
             }),
         )
 
+        # T247-MLPREDICTION-PROMOTIONHISTORY-RACE: previously GET the whole list, append in
+        # Python, SETEX the whole list back — two concurrent retrains (e.g. a manual
+        # POST /ml/train_meta while a scheduled retrain is also running) could both read the
+        # same list, each append their own run, and each write back, with the second write
+        # silently clobbering the first's append. RPUSH is a native atomic Redis list-append —
+        # no read-modify-write race is possible even under concurrent writers. LTRIM keeps only
+        # the last 20 entries (equivalent to the old history[-20:] slice), and EXPIRE
+        # re-applies the same 90-day TTL every write (matching the old SETEX behavior).
         history_key = "meta_model:promotion_history"
-        raw = r.get(history_key)
-        history = _json.loads(raw) if raw else []
-        history.append({
+        entry = _json.dumps({
             "ts": now_iso, "promoted": promoted, "auc": round(auc, 4),
             "previous_auc": round(previous_auc, 4) if previous_auc is not None else None,
             "n_samples": n_samples,
         })
-        history = history[-20:]  # keep the last 20 runs only
-        r.setex(history_key, 86400 * 90, _json.dumps(history))
+        r.rpush(history_key, entry)
+        r.ltrim(history_key, -20, -1)
+        r.expire(history_key, 86400 * 90)
     except Exception as exc:
         log.warning("meta_trainer.promotion_status_write_failed error=%s", exc)
 
