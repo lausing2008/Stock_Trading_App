@@ -523,7 +523,13 @@ class SignalOutcome(Base):
     return_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_correct_20d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # INT-8: Research alignment at signal time (from research engine cache)
-    research_rec: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # T247-SIGNALENGINE-RESEARCHREC-TOOSHORT: was String(16) — research-engine's real
+    # recommendation vocabulary includes "INSUFFICIENT DATA" (17 chars), which raised an
+    # unhandled psycopg2.errors.StringDataRightTruncation on every occurrence, silently
+    # failing the ENTIRE batch insert of up to 25 signal_outcomes rows in
+    # evaluate_signal_outcomes() (confirmed happening repeatedly in production 2026-07-14).
+    # Widened with margin above the longest current value (10-char "STRONG BUY").
+    research_rec: Mapped[str | None] = mapped_column(String(32), nullable=True)
     research_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     ts_evaluated: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     # T232-OC6: set when the hold window closed but no exit price was ever found (delisting,
