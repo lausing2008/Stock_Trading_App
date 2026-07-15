@@ -152,12 +152,14 @@ def _extract_form4_data(xml: str, accession: str) -> dict | None:
 
 
 def _normalize_role(raw: str) -> str:
+    # T247-EVENTINTELLIGENCE-DEADROLELOOP: the previous for-loop over _ROLE_WEIGHTS was dead
+    # code — its return and the fallback below both returned the identical raw.strip()[:64],
+    # so the loop could never produce a different outcome than skipping it entirely. The real
+    # role-weighted scoring already happens correctly in compute_insider_score()'s own keyword
+    # scan (see its `for key, w in _ROLE_WEIGHTS.items()` below) — this function only needs to
+    # normalize the free-text role string for display, not weight it.
     if not raw:
         return "Officer"
-    raw_lower = raw.lower()
-    for key, _ in _ROLE_WEIGHTS.items():
-        if key in raw_lower:
-            return raw.strip()[:64]
     return raw.strip()[:64]
 
 
