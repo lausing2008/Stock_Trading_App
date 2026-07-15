@@ -61,6 +61,29 @@ _FRED_SERIES: list[tuple[str, str, str, str]] = [
     ("FEDFUNDS",    "fed_funds",      "Fed Funds Rate",                "high"),
 ]
 
+# T249-MARKETMOVER-P0: FRED release_id → (event_type, title, importance) for the REAL release
+# calendar (when BLS/BEA actually PUBLISHES data), distinct from _FRED_SERIES above which
+# populates event_date with the observation's REFERENCE PERIOD (e.g. "2026-06-01" for June CPI
+# data) — a real release date is a different axis entirely (e.g. "2026-07-14", when June's CPI
+# was actually published) and any "alert me the moment CPI drops" feature needs THIS axis as
+# its trigger schedule, not the reference-period rows. Release IDs found via FRED's own
+# fred/series/release endpoint (services/event-intelligence/src/services/economic.py history —
+# verified directly against the live API, not guessed). ISM Manufacturing PMI (NAPM) has no
+# FRED release_id — ISM is a private organization, not government-sourced, so it's intentionally
+# absent here (same as it was already absent from FOMC's own dedicated _FOMC_DATES handling).
+_FRED_RELEASES: list[tuple[int, str, str, str]] = [
+    (10, "cpi_release",       "CPI Release",        "high"),
+    (46, "ppi_release",       "PPI Release",        "high"),
+    (53, "gdp_release",       "GDP Advance Estimate", "medium"),
+    (50, "nfp_release",       "Jobs Report (NFP)",  "high"),
+    (9,  "retail_sales_release", "Retail Sales Release", "medium"),
+    (91, "consumer_conf_release", "Consumer Sentiment Release", "medium"),
+    (27, "housing_starts_release", "Housing Starts Release", "medium"),
+    (180, "jobless_claims_release", "Jobless Claims Release", "medium"),
+    (18, "fed_funds_release", "Fed Funds Rate Release", "high"),
+    (54, "pce_release",       "PCE Inflation Release", "high"),
+]
+
 
 def _seed_fomc() -> int:
     """Insert hardcoded FOMC dates if not already present."""
@@ -150,6 +173,82 @@ async def sync_fred(lookback_days: int = 365) -> dict:
                 log.warning("economic.fred_error", series=series_id, error=str(exc))
 
     return {"fomc_seeded": fomc, "fred_series": upserted, "skipped": None}
+
+
+async def sync_fred_release_dates(lookback_days: int = 180, lookahead_days: int = 180) -> dict:
+    """T249-MARKETMOVER-P0: sync the REAL release-date calendar (when data is actually
+    published) from FRED's fred/release/dates endpoint, distinct from sync_fred()'s
+    reference-period rows. Writes both past release dates (lookback_days, so a "most recent
+    CPI release" lookup works immediately) and future scheduled release dates
+    (lookahead_days, so pre-market/calendar features have a real forward-looking schedule
+    instead of a hand-maintained list). Each release gets its own `{event_type}_release`
+    event_type (see _FRED_RELEASES above) so these rows never collide with sync_fred()'s
+    reference-period rows under the same uq_economic_event(event_type, country, event_date)
+    constraint — they're intentionally different rows, not updates to the same row.
+
+    include_release_dates_with_no_data=true is required to see FUTURE scheduled dates —
+    without it FRED only returns dates that already have data attached, which excludes
+    every date that hasn't happened yet.
+    """
+    api_key = getattr(_settings, "fred_api_key", "")
+    if not api_key:
+        log.info("economic.fred_release_dates_skip", reason="FRED_API_KEY not set")
+        return {"synced": 0, "skipped": "no_api_key"}
+
+    base_url = "https://api.stlouisfed.org/fred"
+    realtime_start = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    realtime_end = (datetime.now() + timedelta(days=lookahead_days)).strftime("%Y-%m-%d")
+    upserted = 0
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        for release_id, event_type, title, importance in _FRED_RELEASES:
+            try:
+                r = await client.get(
+                    f"{base_url}/release/dates",
+                    params={
+                        "release_id": release_id,
+                        "api_key": api_key,
+                        "file_type": "json",
+                        "realtime_start": realtime_start,
+                        "realtime_end": realtime_end,
+                        "include_release_dates_with_no_data": "true",
+                        "sort_order": "asc",
+                        "limit": 100,
+                    },
+                )
+                if r.status_code != 200:
+                    log.warning("economic.fred_release_dates_failed", release_id=release_id, status=r.status_code)
+                    continue
+                data = r.json()
+                release_dates = data.get("release_dates", [])
+                with SessionLocal() as s:
+                    for rd in release_dates:
+                        try:
+                            dt = datetime.strptime(rd["date"], "%Y-%m-%d").replace(
+                                hour=8, minute=30, tzinfo=timezone.utc
+                            )
+                            stmt = (
+                                pg_insert(EconomicEvent)
+                                .values(
+                                    event_type=event_type,
+                                    title=title,
+                                    country="US",
+                                    event_date=dt,
+                                    importance=importance,
+                                    source="fred_release_calendar",
+                                )
+                                .on_conflict_do_nothing(constraint="uq_economic_event")
+                            )
+                            result = s.execute(stmt)
+                            upserted += result.rowcount
+                        except Exception:
+                            continue
+                    s.commit()
+                await asyncio.sleep(0.1)  # FRED rate limit: 120/min
+            except Exception as exc:
+                log.warning("economic.fred_release_dates_error", release_id=release_id, error=str(exc))
+
+    return {"synced": upserted, "skipped": None}
 
 
 def get_upcoming_economic_events(days: int = 14, country: str = "US") -> list[dict]:

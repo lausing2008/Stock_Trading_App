@@ -1549,6 +1549,18 @@ def earnings_calendar(days_ahead: int = Query(45, ge=1, le=180), session: Sessio
 
 # ── 2026 macro event calendar (pre-announced schedules) ───────────────────────
 # Sources: FOMC=federalreserve.gov; CPI/NFP/PCE=bls.gov/bea.gov
+#
+# T249-MARKETMOVER-P0: this hand-maintained list is fragile and has already had one wrong
+# date (July 2026 CPI, off by a day — caught and fixed 2026-07-14). FOMC meeting dates stay
+# hardcoded here since FRED has no release calendar for Fed meetings (they're announced by
+# the Fed itself, not published as a data release). The CPI/PPI/NFP/GDP/PCE entries below are
+# now a FALLBACK ONLY — events_calendar() prefers the real, live release-date rows synced by
+# economic.py's sync_fred_release_dates() (event-intelligence, sourced from FRED's own
+# fred/release/dates endpoint) via _macro_events_from_db() below, and only falls back to these
+# hardcoded entries for a given (type, date-range) if the DB has no rows yet — e.g. right after
+# this fix ships, before the first sync_fred_release_dates() run has populated the table, or if
+# FRED_API_KEY is ever unset again. Once the DB sync is confirmed reliably populated going
+# forward, these hardcoded entries can be deleted outright rather than kept as a fallback.
 _MACRO_2026: list[dict] = [
     # FOMC decisions (second day of each meeting)
     {"type": "fomc", "date": "2026-01-29", "title": "FOMC Rate Decision", "description": "Federal Reserve interest rate decision — Jan meeting", "impact": "high"},
@@ -1606,6 +1618,63 @@ _MACRO_2026: list[dict] = [
 ]
 
 
+# T249-MARKETMOVER-P0: (event_type in _MACRO_2026's hardcoded "type" field) -> the real
+# {event_type}_release rows economic.py's sync_fred_release_dates() writes. Used to know which
+# hardcoded "type" values now have a live DB equivalent to prefer.
+_MACRO_TYPE_TO_RELEASE_EVENT_TYPE = {
+    "cpi": "cpi_release",
+    "nfp": "nfp_release",
+    "pce": "pce_release",
+    "gdp": "gdp_release",
+}
+
+
+def _macro_events_from_db(session: "Session", today, cutoff) -> tuple[list[dict], set[str]]:
+    """T249-MARKETMOVER-P0: read the real release-date calendar from economic_events'
+    *_release rows (synced from FRED's own fred/release/dates endpoint) for the hardcoded
+    macro types that now have a live equivalent. Returns (events, types_with_db_rows) — the
+    caller uses types_with_db_rows to decide which _MACRO_2026 entries to skip as redundant/
+    stale, falling back to the hardcoded list only for types the DB has no rows for yet.
+
+    Shape matches the fallback _MACRO_2026 path exactly (type/date/title/description/impact
+    plus the same days_to_event/symbol/name/market/sector fields events_calendar() adds to
+    every macro event below) so callers see one consistent event shape regardless of source.
+    """
+    from db import EconomicEvent as _EconomicEvent
+
+    release_event_types = list(_MACRO_TYPE_TO_RELEASE_EVENT_TYPE.values())
+    rows = session.execute(
+        select(_EconomicEvent).where(
+            _EconomicEvent.event_type.in_(release_event_types),
+            _EconomicEvent.event_date >= today,
+            _EconomicEvent.event_date <= cutoff,
+        )
+    ).scalars().all()
+
+    events: list[dict] = []
+    types_with_db_rows: set[str] = set()
+    for row in rows:
+        macro_type = next(
+            (k for k, v in _MACRO_TYPE_TO_RELEASE_EVENT_TYPE.items() if v == row.event_type),
+            row.event_type,
+        )
+        types_with_db_rows.add(macro_type)
+        ev_date = row.event_date.date()
+        events.append({
+            "type": macro_type,
+            "date": ev_date.isoformat(),
+            "title": row.title,
+            "description": f"{row.title} (FRED release calendar)",
+            "impact": row.importance or "medium",
+            "days_to_event": (ev_date - today).days,
+            "symbol": None,
+            "name": None,
+            "market": None,
+            "sector": None,
+        })
+    return events, types_with_db_rows
+
+
 @router.get("/events/calendar")
 def events_calendar(
     days_ahead: int = Query(90, ge=1, le=365),
@@ -1618,7 +1687,17 @@ def events_calendar(
     events = []
 
     # ── Macro events ─────────────────────────────────────────────────────────
+    # T249-MARKETMOVER-P0: prefer the real, live release-date rows from the DB; only fall
+    # back to the hardcoded _MACRO_2026 list for a (type, date) the DB doesn't have a row for
+    # yet (e.g. before the first successful sync_fred_release_dates() run, or if
+    # FRED_API_KEY is ever unset again). FOMC has no DB equivalent (FRED doesn't publish a
+    # release calendar for Fed meetings) so it always comes from _MACRO_2026.
+    db_macro_events, _types_with_db_rows = _macro_events_from_db(session, today, cutoff)
+    events.extend(db_macro_events)
+
     for ev in _MACRO_2026:
+        if ev["type"] in _types_with_db_rows:
+            continue  # real DB row already covers this type for this date range
         try:
             ev_date = _date.fromisoformat(ev["date"])
         except Exception:
