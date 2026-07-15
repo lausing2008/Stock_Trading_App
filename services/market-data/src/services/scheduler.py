@@ -84,7 +84,7 @@ from sqlalchemy.orm import selectinload
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, EarningsEvent, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, User, Watchlist, WatchlistItem
+from db import AlertCondition, EarningsEvent, EconomicEvent, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, User, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -1129,6 +1129,59 @@ def check_earnings_reactions() -> None:
                         log.info("signal_alert.earnings_reaction_sent", symbol=sym, user=u_obj.username)
     except Exception as exc:
         log.error("signal_alert.earnings_reaction_error", error=str(exc))
+
+
+_MACRO_REACTION_LOCK_KEY = "stockai:lock:check_macro_reaction_alerts"
+_MACRO_REACTION_LOCK_TTL = 55  # seconds — runs every 60s, same pattern as check_price_alerts
+
+
+def check_macro_reaction_alerts() -> None:
+    """T249-MARKETMOVER-P2: alert-delivery half of the macro fast-reaction feature.
+    event-intelligence's macro_reaction.py detects the release and generates the LLM reaction
+    read, writing reaction_text/reaction_generated_at into economic_events (it owns detection
+    + LLM, not delivery — same split as check_earnings_reactions() above). This job polls for
+    rows with a generated-but-unsent reaction (reaction_sent_at IS NULL) and emails them to the
+    same PriceAlert-subscribed audience as the earnings reaction alert, for audience consistency
+    across all T249 alert types rather than a new/separate opt-in preference.
+    """
+    try:
+        acquired = _get_redis().set(_MACRO_REACTION_LOCK_KEY, "1", nx=True, ex=_MACRO_REACTION_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    try:
+        with SessionLocal() as session:
+            pending = session.execute(
+                select(EconomicEvent).where(
+                    EconomicEvent.reaction_text.isnot(None),
+                    EconomicEvent.reaction_sent_at.is_(None),
+                )
+            ).scalars().all()
+            if not pending:
+                return
+
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            recipients = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            if not recipients:
+                return
+
+            from .email_service import send_email
+            for ev in pending:
+                subject = f"📈 {ev.title}: {ev.actual_value}"
+                body_text = ev.reaction_text
+                any_sent = False
+                for u_obj in recipients.values():
+                    if send_email(u_obj.email, subject, f"<p>{body_text}</p>", body_text):
+                        any_sent = True
+                        log.info("signal_alert.macro_reaction_sent", event_type=ev.event_type, user=u_obj.username)
+                if any_sent:
+                    ev.reaction_sent_at = datetime.now(timezone.utc)
+                    session.commit()
+    except Exception as exc:
+        log.error("signal_alert.macro_reaction_error", error=str(exc))
 
 
 def check_signal_alerts() -> None:
@@ -4400,6 +4453,19 @@ def start_scheduler() -> None:
         "interval",
         minutes=1,
         id="earnings_reaction_check",
+        replace_existing=True,
+        max_instances=1, coalesce=True,
+    )
+
+    # ── Macro fast-reaction alert delivery — every minute ────────────────────
+    # T249-MARKETMOVER-P2: event-intelligence's macro_reaction.py generates the reaction;
+    # this job just polls for generated-but-unsent rows and emails them. Same cadence as the
+    # other fast-reaction checkers above.
+    _scheduler.add_job(
+        check_macro_reaction_alerts,
+        "interval",
+        minutes=1,
+        id="macro_reaction_alert_check",
         replace_existing=True,
         max_instances=1, coalesce=True,
     )

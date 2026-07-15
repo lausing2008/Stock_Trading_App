@@ -1973,6 +1973,16 @@ export type CatalystLeaderItem = {
   score: number;
 };
 
+export type MacroReaction = {
+  event_type: string;
+  title: string;
+  actual_value: number | null;
+  expected_value: number | null;
+  previous_value: number | null;
+  reaction_text: string;
+  generated_at: string | null;
+};
+
 export type EventIntelOverview = {
   economic: { upcoming_count: number; fomc_days_away: number | null };
   earnings: { upcoming_count: number };
@@ -1981,6 +1991,7 @@ export type EventIntelOverview = {
   catalyst_leaders: CatalystLeaderItem[];
   risk_leaders: CatalystLeaderItem[];
   composite_leaders: CatalystLeaderItem[];
+  latest_macro_reaction: MacroReaction | null;
 };
 
 export type QuarterlyRow = {

@@ -776,6 +776,17 @@ class EconomicEvent(Base):
     importance: Mapped[str | None] = mapped_column(String(16), nullable=True)
     source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # T249-MARKETMOVER-P2: LLM-generated reaction read, written once actual_value lands for
+    # a release-day-armed fast-poll-tracked event (CPI/PPI/NFP/GDP/PCE via FRED, FOMC via the
+    # Fed's press_monetary.xml RSS feed). reaction_sent_at is separate from reaction_generated_at
+    # so market-data's alert-fan-out job (which polls this table) can tell "generated but not
+    # yet emailed" apart from "already emailed" without a third status column — NULL means
+    # not yet sent. New columns on an existing, already-populated table need a manual
+    # ALTER TABLE in every environment; create_all() will not add these automatically
+    # (see this repo's standing create_all()-gap discipline).
+    reaction_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reaction_generated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reaction_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("event_type", "country", "event_date", name="uq_economic_event"),
