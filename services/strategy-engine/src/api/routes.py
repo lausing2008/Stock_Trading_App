@@ -86,9 +86,12 @@ def delete_strategy(
         raise HTTPException(404, "Not found")
     if s.owner != username:
         raise HTTPException(403, "Not your strategy")
-    # Delete backtests first — the SQLAlchemy relationship lacks cascade="delete-orphan"
-    # so without this SQLAlchemy tries to NULL the FK, hitting the NOT NULL constraint.
-    session.query(Backtest).filter(Backtest.strategy_id == sid).delete()
+    # T247-STRATEGYENGINE-STALECOMMENT: shared/db/models.py's Strategy.backtests relationship
+    # already declares cascade="all, delete-orphan" — session.delete(s) below cascades to its
+    # backtests on its own. The stale comment previously here claimed the opposite (no cascade,
+    # manual delete required to avoid a NOT NULL FK violation), which no longer matches the
+    # schema; a future edit trusting that comment to remove the ORM cascade would have silently
+    # broken cascade deletion. No manual pre-delete needed.
     session.delete(s)
     session.commit()
     return {"status": "deleted", "id": sid}

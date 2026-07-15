@@ -15617,13 +15617,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-STRATEGYENGINE-3',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/strategy-engine/src/api/routes.py:88',
     effort: 'S',
     impact: 'Stale/incorrect comment claims the Strategy→Backtest relationship lacks `cascade="delete-orphan"` to justify a manual pre-delete, but the model actually declares it — the manual delete is redundant, masking the fact the documented rationale no longer matches the schema.',
     title: 'Stale/incorrect comment claims the Strategy→Backtest relationship lacks `cascade="delete-orphan"` to justify a manual pre-delete, but the model actually declares it — the manual delete is redundant, masking the fact the documented rationale no longer matches the schema.',
     what: 'Not a functional bug today (the manual `session.query(Backtest)...delete()` and the ORM cascade both converge on deleting the backtests, so `DELETE /strategies/{sid}` still works), but the comment is factually wrong per `shared/db/models.py` line 222 (`cascade="all, delete-orphan"` is present on `Strategy.backtests`). A future edit that trusts this comment and removes the ORM cascade (believing it was never there) combined with someone deleting the now-\'redundant\' manual query would silently break cascade deletion and hit the FK NOT NULL constraint the comment warns about.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: removed the redundant manual `session.query(Backtest).filter(...).delete()` call and replaced the stale comment with one correctly describing that `Strategy.backtests` already declares `cascade="all, delete-orphan"`, so `session.delete(s)` alone cascades to its backtests. Added tests/test_strategy_backtest_cascade.py, which asserts the model relationship\'s cascade setting directly (loads shared/db/models.py via importlib, same pattern as test_rank_symbol_market_scoping.py, since db/__init__.py triggers a real psycopg2 engine connection). Adversarially verified: removing the cascade from the model made the test fail (CascadeOptions(\'merge,save-update\') has no \'delete\'); restoring it passed all 12 tests in the suite.',
   },
 
   {
