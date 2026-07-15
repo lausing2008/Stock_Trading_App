@@ -81,12 +81,21 @@ def train_all(tasks: BackgroundTasks, style: str = "SWING", _: str = Depends(get
 
     Horizon is derived from style: SHORT=5d, SWING=10d, LONG=20d.
     """
-    from sqlalchemy import select
+    from sqlalchemy import or_, select
     from db import Stock, SessionLocal
 
+    # T14-SURVIVORSHIP-REAPPLY: re-applies the training-universe fix originally shipped in
+    # e32f9bd (2026-06-19), reverted 2 days later in 399e34e because the `delisted` column's
+    # migration hadn't reached production yet, and never re-applied once it did. Stock.delisted
+    # exists and the migration is long since live (shared/db/session.py), but nothing in this
+    # codebase currently sets delisted=True on any row — no external delisted-ticker data
+    # source is wired up yet (Tiingo/Polygon would be needed for that, tracked separately). This
+    # OR is therefore a safe no-op today (matches Stock.active.is_(True) alone until delisted
+    # rows exist) that auto-activates the moment that data source lands, instead of requiring a
+    # second manual re-fix at that point.
     with SessionLocal() as session:
         symbols = list(session.execute(
-            select(Stock.symbol).where(Stock.active.is_(True))
+            select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
         ).scalars())
 
     horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
@@ -112,12 +121,21 @@ def tune_all(tasks: BackgroundTasks, n_trials: int = 60, style: str = "SWING", _
     Horizon is derived from style: SHORT=5d, SWING=10d, LONG=20d.
     With 123 symbols × 60 trials this takes roughly 3-5 hours on EC2.
     """
-    from sqlalchemy import select
+    from sqlalchemy import or_, select
     from db import Stock, SessionLocal
 
+    # T14-SURVIVORSHIP-REAPPLY: re-applies the training-universe fix originally shipped in
+    # e32f9bd (2026-06-19), reverted 2 days later in 399e34e because the `delisted` column's
+    # migration hadn't reached production yet, and never re-applied once it did. Stock.delisted
+    # exists and the migration is long since live (shared/db/session.py), but nothing in this
+    # codebase currently sets delisted=True on any row — no external delisted-ticker data
+    # source is wired up yet (Tiingo/Polygon would be needed for that, tracked separately). This
+    # OR is therefore a safe no-op today (matches Stock.active.is_(True) alone until delisted
+    # rows exist) that auto-activates the moment that data source lands, instead of requiring a
+    # second manual re-fix at that point.
     with SessionLocal() as session:
         symbols = list(session.execute(
-            select(Stock.symbol).where(Stock.active.is_(True))
+            select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
         ).scalars())
 
     horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
@@ -244,12 +262,21 @@ def train_all_ensemble_three(tasks: BackgroundTasks, style: str = "SWING", _: st
 
     Enables 3-model ensemble predictions via POST /ml/predict_ensemble_three.
     """
-    from sqlalchemy import select
+    from sqlalchemy import or_, select
     from db import Stock, SessionLocal
 
+    # T14-SURVIVORSHIP-REAPPLY: re-applies the training-universe fix originally shipped in
+    # e32f9bd (2026-06-19), reverted 2 days later in 399e34e because the `delisted` column's
+    # migration hadn't reached production yet, and never re-applied once it did. Stock.delisted
+    # exists and the migration is long since live (shared/db/session.py), but nothing in this
+    # codebase currently sets delisted=True on any row — no external delisted-ticker data
+    # source is wired up yet (Tiingo/Polygon would be needed for that, tracked separately). This
+    # OR is therefore a safe no-op today (matches Stock.active.is_(True) alone until delisted
+    # rows exist) that auto-activates the moment that data source lands, instead of requiring a
+    # second manual re-fix at that point.
     with SessionLocal() as session:
         symbols = list(session.execute(
-            select(Stock.symbol).where(Stock.active.is_(True))
+            select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
         ).scalars())
 
     horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
@@ -275,12 +302,21 @@ def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING", _: str = De
     Enables ensemble predictions via POST /ml/predict_ensemble.
     Horizon is derived from style: SHORT=5d, SWING=10d, LONG=20d.
     """
-    from sqlalchemy import select
+    from sqlalchemy import or_, select
     from db import Stock, SessionLocal
 
+    # T14-SURVIVORSHIP-REAPPLY: re-applies the training-universe fix originally shipped in
+    # e32f9bd (2026-06-19), reverted 2 days later in 399e34e because the `delisted` column's
+    # migration hadn't reached production yet, and never re-applied once it did. Stock.delisted
+    # exists and the migration is long since live (shared/db/session.py), but nothing in this
+    # codebase currently sets delisted=True on any row — no external delisted-ticker data
+    # source is wired up yet (Tiingo/Polygon would be needed for that, tracked separately). This
+    # OR is therefore a safe no-op today (matches Stock.active.is_(True) alone until delisted
+    # rows exist) that auto-activates the moment that data source lands, instead of requiring a
+    # second manual re-fix at that point.
     with SessionLocal() as session:
         symbols = list(session.execute(
-            select(Stock.symbol).where(Stock.active.is_(True))
+            select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
         ).scalars())
 
     horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
@@ -306,12 +342,21 @@ def train_all_horizons(tasks: BackgroundTasks, _: str = Depends(get_current_user
     all three models (XGB + LGB + RF) available. Signal engine auto-routes by style.
     Run nightly after market close.
     """
-    from sqlalchemy import select
+    from sqlalchemy import or_, select
     from db import Stock, SessionLocal
 
+    # T14-SURVIVORSHIP-REAPPLY: re-applies the training-universe fix originally shipped in
+    # e32f9bd (2026-06-19), reverted 2 days later in 399e34e because the `delisted` column's
+    # migration hadn't reached production yet, and never re-applied once it did. Stock.delisted
+    # exists and the migration is long since live (shared/db/session.py), but nothing in this
+    # codebase currently sets delisted=True on any row — no external delisted-ticker data
+    # source is wired up yet (Tiingo/Polygon would be needed for that, tracked separately). This
+    # OR is therefore a safe no-op today (matches Stock.active.is_(True) alone until delisted
+    # rows exist) that auto-activates the moment that data source lands, instead of requiring a
+    # second manual re-fix at that point.
     with SessionLocal() as session:
         symbols = list(session.execute(
-            select(Stock.symbol).where(Stock.active.is_(True))
+            select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
         ).scalars())
 
     scheduled: list[dict] = []
