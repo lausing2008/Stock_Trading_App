@@ -1085,3 +1085,28 @@ class TuneHistory(Base):
     promoted: Mapped[bool] = mapped_column(Boolean)
     gate_failures: Mapped[list] = mapped_column(JSON, default=list)
     triggered_by: Mapped[str] = mapped_column(String(16), default="manual")  # manual | scheduled (Phase 5)
+
+
+class CapeReading(Base):
+    """CAPE (Shiller cyclically-adjusted P/E) ratio for the S&P 500 — macro valuation
+    context feeding the AI-bubble-warning indicator.
+
+    Source is multpl.com's shiller-pe feed/table, NOT Yale's own ie_data.xls — that file
+    is real but was found stale (Last-Modified Oct 2023, ~2.75 years old at investigation
+    time) and Shiller's site was mid-migration to a new Yale SOM page with no working
+    direct download found. multpl.com publishes a genuine, site-wide Atom feed
+    (multpl.com/{indicator}/atom, confirmed identical pattern across multiple indicator
+    pages, not a one-off) plus a stable `id="datatable"` HTML table
+    (multpl.com/shiller-pe/table/by-month) for historical backfill — both verified live
+    and current before choosing this over a same-page HTML scrape. Still an unofficial
+    third-party source (same fragility CLASS as the dead-congress-data incident, just a
+    more stable access pattern), so staleness must be monitored the same way via
+    dq_check:cape_reading, not assumed reliable forever.
+    """
+    __tablename__ = "cape_readings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    reading_date: Mapped[date] = mapped_column(Date, unique=True, index=True)
+    cape_value: Mapped[float] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String(32), default="multpl")
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

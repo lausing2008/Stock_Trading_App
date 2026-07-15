@@ -533,6 +533,7 @@ export const api = {
   // ── Event Intelligence ──────────────────────────────────────────────────
   eventsOverview: () => request<EventIntelOverview>('/events/overview'),
   eventsEconomic: (days = 14, market = 'US') => request<EconomicEventsResponse>(`/events/economic?days=${days}&market=${market}`),
+  eventsCape: (months = 24) => request<CapeResponse>(`/events/valuation/cape?months=${months}`),
   eventsEarningsCalendar: (days = 14) => request<EarningsEvent[]>(`/events/earnings/calendar?days=${days}`),
   eventsEarningsSymbol: (symbol: string) => request<EarningsEvent[]>(`/events/earnings?symbol=${symbol}`),
   eventsInsider: (symbol: string, days = 90) => request<InsiderResponse>(`/events/insider/${symbol}?days=${days}`),
@@ -1827,6 +1828,24 @@ export type EconomicEvent = {
 export type EconomicEventsResponse = {
   events: EconomicEvent[];
   fomc_days_away: number | null;
+};
+
+export type CapeReading = {
+  reading_date: string;
+  cape_value: number;
+  band?: string;
+};
+
+export type CapeLatest = CapeReading & {
+  band: string;
+  source: string;
+  age_days: number;
+  stale: boolean;
+};
+
+export type CapeResponse = {
+  latest: CapeLatest;
+  history: CapeReading[];
 };
 
 export type EarningsEvent = {
