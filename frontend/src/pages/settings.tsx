@@ -344,6 +344,22 @@ export default function SettingsPage() {
     }
   }
 
+  async function handleUnshareKey() {
+    setSharedKeyLoading(true);
+    setSharedKeyMsg(null);
+    try {
+      await api.pushConfig(
+        s.aiProvider === 'claude' ? { unshare_claude_key: true } : { unshare_deepseek_key: true }
+      );
+      setSharedKeyMsg({ ok: true, text: 'Shared key removed — other users without their own key will lose AI features.' });
+      setTimeout(() => setSharedKeyMsg(null), 4000);
+    } catch {
+      setSharedKeyMsg({ ok: false, text: 'Failed to remove shared key.' });
+    } finally {
+      setSharedKeyLoading(false);
+    }
+  }
+
   // Import / Export
   const [ioStatus, setIoStatus]   = useState<{ ok: boolean; text: string } | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -987,6 +1003,18 @@ export default function SettingsPage() {
                 }}
               >
                 {sharedKeyLoading ? '⟳ Saving…' : 'Share my key with all users'}
+              </button>
+              <button
+                onClick={handleUnshareKey}
+                disabled={sharedKeyLoading}
+                style={{
+                  padding: '8px 18px', borderRadius: '8px', fontSize: '13px', fontWeight: 600,
+                  cursor: sharedKeyLoading ? 'not-allowed' : 'pointer',
+                  background: 'transparent', border: '1px solid rgba(248,113,113,0.35)',
+                  color: '#f87171', transition: 'all 0.15s',
+                }}
+              >
+                Stop sharing
               </button>
               {sharedKeyMsg && (
                 <span style={{ fontSize: '12px', color: sharedKeyMsg.ok ? '#4ade80' : '#f87171' }}>

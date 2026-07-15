@@ -98,6 +98,13 @@ class ConfigRequest(BaseModel):
     claude_model: str | None = None
     deepseek_model: str | None = None
     broker_enabled: bool | None = None  # feature flag: show/hide broker integration UI
+    # Unshare: deletes the shared server-side key so other users' AI features fall back to
+    # their own personal key (or "no AI" if they don't have one) — the inverse of pushing
+    # claude_api_key/deepseek_api_key above. Bool, not a key value, since "clear this" is a
+    # distinct action from "set this to an empty string" (which would just fail the same as
+    # never having been set, without being an explicit/auditable action).
+    unshare_claude_key: bool | None = None
+    unshare_deepseek_key: bool | None = None
 
 
 @router.get("/feature-flags")
@@ -127,7 +134,7 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
     r = None
     if req.claude_api_key is not None or req.deepseek_api_key is not None or \
        req.claude_model is not None or req.deepseek_model is not None or \
-       req.broker_enabled is not None:
+       req.broker_enabled is not None or req.unshare_claude_key or req.unshare_deepseek_key:
         r = _get_redis()
     if req.claude_api_key is not None:
         r.set(_REDIS_CLAUDE_KEY, req.claude_api_key)
@@ -139,7 +146,12 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
         r.set(_REDIS_DEEPSEEK_MODEL, req.deepseek_model)
     if req.broker_enabled is not None:
         r.set(_REDIS_BROKER_ENABLED, "1" if req.broker_enabled else "0")
-    log.info("admin.config_updated", broker_enabled=req.broker_enabled)
+    if req.unshare_claude_key:
+        r.delete(_REDIS_CLAUDE_KEY)
+    if req.unshare_deepseek_key:
+        r.delete(_REDIS_DEEPSEEK_KEY)
+    log.info("admin.config_updated", broker_enabled=req.broker_enabled,
+              unshared_claude=bool(req.unshare_claude_key), unshared_deepseek=bool(req.unshare_deepseek_key))
     return {"status": "ok"}
 
 
