@@ -1563,6 +1563,19 @@ def _fetch_stored_signal(symbol: str, style: str = "SWING") -> dict | None:
     return None
 
 
+def _drawdown_alert_should_skip(cur_px, entry_price) -> bool:
+    """T247-MARKETDATA-DRAWDOWNALERT-FALSYPRICE: the portfolio-drawdown alert's gate previously
+    used `not cur_px`, treating a genuinely fetched price of 0 (delisted/halted ticker briefly
+    reporting 0 — the same real, documented scenario already called out for this exact
+    yfinance call elsewhere, e.g. paper_trading_engine.py's _fetch_live_prices()) the same as a
+    fetch failure, silently skipping the position for this cycle's drawdown check. A 0
+    last_price on an OPEN position is exactly the kind of extreme drawdown (-100%) this alert
+    exists to catch, not something to suppress — `cur_px is None` distinguishes a genuine fetch
+    failure from a real (if extreme) 0 price. Extracted to a module-level function so the gate
+    condition is independently unit-testable."""
+    return cur_px is None or not entry_price or entry_price <= 0
+
+
 def _is_usable_price(p) -> bool:
     """T247-MARKETDATA-PRICEALERT-FALSYPRICE: check_price_alerts() previously used a bare
     `if p:` to test a fetched live price before caching it — a legitimate price of exactly 0
@@ -1698,7 +1711,7 @@ def check_price_alerts() -> None:
                             cur_px = tickers.tickers[trade.symbol].fast_info.last_price
                         except Exception:
                             continue
-                        if not cur_px or not trade.entry_price or trade.entry_price <= 0:
+                        if _drawdown_alert_should_skip(cur_px, trade.entry_price):
                             continue
                         pct = cur_px / trade.entry_price - 1
                         if pct > -0.05:

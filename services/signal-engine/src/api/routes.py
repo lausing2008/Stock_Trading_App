@@ -5667,26 +5667,46 @@ def signal_for(
         except Exception:
             pass  # catalyst enrichment is best-effort; don't block the Refresh
 
-        today = date.today()
+        # T247-SIGNALENGINE-GETPATH-UPSERT-CONFLICT: the previous same-day guard (DI-1) only
+        # skipped the insert when the newly-computed signal was IDENTICAL to today's stored
+        # value — a plain session.add(Signal(...)) with no ON CONFLICT handling was still used
+        # for every other case. If today's stored signal (e.g. from a scheduled _bulk_persist
+        # run) differs from the freshly recomputed one — a real price move, or this same
+        # function's own catalyst-nudge re-evaluation flipping HOLD->BUY/SELL a few lines above
+        # — the insert violates the real unique index uq_signals_stock_horizon_day
+        # (stock_id, horizon, date_trunc('day', ts)), raising an unhandled IntegrityError that
+        # 500s the whole request and rolls back every horizon's signal in this same commit, not
+        # just the one that changed. Use the same INSERT ... ON CONFLICT DO UPDATE upsert
+        # _bulk_persist() already uses (CAST() avoids the SQLAlchemy text() ::type binding
+        # ambiguity — BUG-6) so this path can never violate the index regardless of whether
+        # today's stored value matches.
         for ai in all_sig.values():
-            horizon_enum = SignalHorizon(ai.horizon)
-            # Guard against same-day duplicate: skip if an identical signal was already stored today.
-            existing = session.execute(
-                select(Signal.signal, Signal.ts)
-                .where(Signal.stock_id == stock.id, Signal.horizon == horizon_enum)
-                .order_by(Signal.ts.desc())
-                .limit(1)
-            ).one_or_none()
-            if existing is not None and existing[0] == SignalType(ai.signal) and existing[1].date() == today:
-                continue
-            session.add(Signal(
-                stock_id=stock.id,
-                signal=SignalType(ai.signal),
-                horizon=horizon_enum,
-                confidence=ai.confidence,
-                bullish_probability=ai.bullish_probability,
-                reasons=ai.reasons,
-            ))
+            session.execute(
+                text("""
+                    INSERT INTO signals
+                        (stock_id, signal, horizon, confidence, bullish_probability, reasons, source)
+                    VALUES
+                        (:sid, CAST(:sig AS signaltype), CAST(:hor AS signalhorizon),
+                         :conf, :bp, CAST(:rsns AS jsonb), :src)
+                    ON CONFLICT (stock_id, horizon, date_trunc('day', ts))
+                    DO UPDATE SET
+                        signal              = EXCLUDED.signal,
+                        confidence          = EXCLUDED.confidence,
+                        bullish_probability = EXCLUDED.bullish_probability,
+                        reasons             = EXCLUDED.reasons,
+                        source              = EXCLUDED.source,
+                        ts                  = NOW()
+                """),
+                dict(
+                    sid=stock.id,
+                    sig=ai.signal,
+                    hor=ai.horizon,
+                    conf=ai.confidence,
+                    bp=ai.bullish_probability,
+                    rsns=json.dumps(ai.reasons),
+                    src="signal-engine",
+                ),
+            )
         session.commit()
 
     # Inject stability_days into each signal's reasons dict

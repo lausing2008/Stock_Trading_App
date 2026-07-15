@@ -38,8 +38,19 @@ def _find_pivots(series: pd.Series, order: int = 5) -> tuple[np.ndarray, np.ndar
 
 
 def _cluster_pivots(df: pd.DataFrame, order: int, tolerance: float) -> list[Level]:
-    """Cluster all pivot highs/lows in df into Level objects."""
-    highs_idx, lows_idx = _find_pivots(df["close"], order=order)
+    """Cluster all pivot highs/lows in df into Level objects.
+
+    T247-TA-CLUSTERPIVOTS-CLOSE-HIGH-MISMATCH: previously found pivot indices on `close`
+    (_find_pivots(df["close"], ...)) but then read the reported price from `high`/`low` at
+    those same indices — a close-based local max/min is not guaranteed to coincide with the
+    bar's actual high/low (e.g. a long wick), so the reported S/R level wasn't actually a
+    local extremum at all. Same bug class already fixed at every call site in
+    patterns/recognizer.py (T237-TA-HS-CLOSE-HIGH-MISMATCH, TA-DTB1, TA-TRI1) but missed here
+    in trendlines.py's own _find_pivots()-consuming code, which detect_support_resistance()
+    (GET /ta/{symbol}/levels) actually depends on. Find pivots on the same series being read.
+    """
+    highs_idx, _ = _find_pivots(df["high"], order=order)
+    _, lows_idx = _find_pivots(df["low"], order=order)
     highs = df["high"].values[highs_idx]
     lows = df["low"].values[lows_idx]
     levels: list[Level] = []
