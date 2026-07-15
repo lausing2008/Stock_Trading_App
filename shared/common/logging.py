@@ -11,6 +11,10 @@ def configure_logging(level: str = "INFO") -> None:
         stream=sys.stdout,
         level=getattr(logging, level.upper(), logging.INFO),
     )
+    # httpx logs the full request line (including query params) at INFO — every API key
+    # passed as a query param (FRED, BLS, etc.) ends up in plaintext in container logs.
+    # WARNING still surfaces real connection/timeout errors, just not routine request lines.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,

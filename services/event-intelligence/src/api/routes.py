@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from common.jwt_auth import get_current_username
-from db import get_session, SessionLocal, Stock
+from db import get_session, SessionLocal, Stock, EconomicEvent
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -252,6 +252,27 @@ def get_overview(_: str = Depends(get_current_username)):
     upcoming_earnings = earnings.get_upcoming_earnings(14)
     insider_leaders = insider.get_insider_leaderboard(30, 10)
     congress_leaders = congress.get_congress_leaderboard(90, 10)
+
+    # T249-MARKETMOVER-P2: latest macro fast-reaction, for the Overview tab's reaction card.
+    latest_macro_reaction = None
+    with SessionLocal() as s:
+        row = s.execute(
+            select(EconomicEvent)
+            .where(EconomicEvent.reaction_text.isnot(None))
+            .order_by(EconomicEvent.reaction_generated_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if row is not None:
+            latest_macro_reaction = {
+                "event_type": row.event_type,
+                "title": row.title,
+                "actual_value": row.actual_value,
+                "expected_value": row.expected_value,
+                "previous_value": row.previous_value,
+                "reaction_text": row.reaction_text,
+                "generated_at": row.reaction_generated_at.isoformat() if row.reaction_generated_at else None,
+            }
+
     return {
         "economic": {
             "upcoming_count": len(upcoming_economic),
@@ -273,6 +294,7 @@ def get_overview(_: str = Depends(get_current_username)):
         "risk_leaders": catalyst.get_risk_leaderboard(10),
         "composite_leaders": catalyst.get_composite_leaderboard(10),
         "political_events": political.get_political_events(30),
+        "latest_macro_reaction": latest_macro_reaction,
     }
 
 

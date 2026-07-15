@@ -7,10 +7,11 @@ from datetime import datetime, timezone
 
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 from common.config import get_settings
 
-from .services import economic, earnings, insider, congress, institutional, political, catalyst, valuation
+from .services import economic, earnings, insider, congress, institutional, political, catalyst, valuation, macro_reaction
 
 log = structlog.get_logger()
 _settings = get_settings()
@@ -61,6 +62,16 @@ async def job_sync_political():
 async def job_sync_cape():
     await _run("sync_cape_current", valuation.sync_cape_current())
     await _run("sync_cape_history", valuation.sync_cape_history())
+
+
+async def job_check_release_day_fast_poll():
+    # T249-MARKETMOVER-P2: 8:30-10:00 ET covers every BLS/BEA release time (all release-day
+    # data is published at 8:30 ET) with margin for FRED's own 15-60min typical ingestion lag.
+    await _run("check_release_day_fast_poll", macro_reaction.check_release_day_fast_poll())
+
+
+async def job_check_fomc_statement_poll():
+    await _run("check_fomc_statement_poll", macro_reaction.check_fomc_statement_poll())
 
 
 async def job_recompute_catalyst():
@@ -115,6 +126,22 @@ async def start_scheduler():
     _scheduler.add_job(job_sync_congress,      "cron", hour=7,  minute=30, id="sync_congress")
     _scheduler.add_job(job_sync_political,     "cron", hour=8,  minute=0,  id="sync_political")
     _scheduler.add_job(job_sync_cape,          "cron", hour=8,  minute=45, id="sync_cape")
+
+    # T249-MARKETMOVER-P2: release-day-armed fast polls. Both are cheap no-ops on non-release
+    # days (check_release_day_fast_poll/check_fomc_statement_poll each query the calendar/FOMC
+    # dates first and return immediately if nothing is due). America/New_York handles DST
+    # correctly without manual UTC-offset math, matching send_paper_portfolio_digest's pattern
+    # in market-data's scheduler.py.
+    _scheduler.add_job(
+        job_check_release_day_fast_poll,
+        CronTrigger(minute="*/2", hour="8-9", day_of_week="mon-fri", timezone="America/New_York"),
+        id="check_release_day_fast_poll",
+    )
+    _scheduler.add_job(
+        job_check_fomc_statement_poll,
+        CronTrigger(minute="*", hour="14", day_of_week="mon-fri", timezone="America/New_York"),
+        id="check_fomc_statement_poll",
+    )
     _scheduler.add_job(job_recompute_catalyst, "cron", hour=0,  minute=0,  id="recompute_catalyst_midnight")
     # EI-F10: was hour=6 (before earnings/insider/congress sync all complete by 07:30) — catalyst
     # score depends on all three (see catalyst.py compute_risk_score/compute_composite_score), so
