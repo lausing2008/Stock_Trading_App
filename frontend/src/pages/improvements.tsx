@@ -15569,13 +15569,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-RESEARCHENGINE-4',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/research-engine/src/api/routes.py:761',
     effort: 'S',
     impact: 'The checklist\'s \'Institutional ownership > 50%?\' item reads `ai.get(\'institutional_pct\')`, a free-form LLM-guessed top-level field with no scale/unit instruction in the prompt, instead of the real injected `held_percent_institutions` value already used elsewhere in the same report — the two can disagree on both source (guess vs. real data) and scale.',
     title: 'The checklist\'s \'Institutional ownership > 50%?\' item reads `ai.get(\'institutional_pct\')`, a free-form LLM-guessed top-level field with no scale/unit instruction in the prompt, instead of the real injected `held_percent_institutions` value already used elsewhere in the same report — the two can disagree on both source (guess vs. real data) and scale.',
     what: 'The prompt\'s final instruction (line 1143) explicitly tells Claude to use 0-100 integers for company_score/industry_score/economic_score/confidence/confidence_pct, but `institutional_pct` (schema line 1128) is not in that list and has no real data reference point in the prompt (unlike `institutional_ownership.pct` which at least has an injected literal, itself buggy per the above finding). Claude can return `institutional_pct` on an inconsistent scale or simply guess wrong versus the real known institutional ownership, causing the checklist pass/warning verdict at line 776 to disagree with the numeric institutional_ownership.pct shown elsewhere in the same report for the same stock.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: added a `raw_fund` parameter to `_build_checklist()`, threaded through from the raw fundamentals dict already in scope at the call site (the same `fund` passed to `_dcf_fair_value()`). The checklist now computes `inst_pct` via the same `_institutional_ownership_pct(raw_fund)` helper the report body itself uses (real data, correctly scaled), falling back to the AI\'s own guess only when raw fundamentals are entirely unavailable. Added tests/test_checklist_institutional_ownership.py (3 tests): real data overriding a disagreeing AI guess in both directions, and the no-fundamentals fallback. Adversarially verified: reverting to `ai.get("institutional_pct")` made both override tests fail with the exact predicted inversions (\'warning\' instead of \'pass\' and vice versa); restoring the fix passed all 3 tests (53/56 full suite; 3 pre-existing unrelated test_scoring.py failures, not caused by this change).',
   },
 
   {
