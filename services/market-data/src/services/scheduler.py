@@ -3808,6 +3808,16 @@ _DQ_CHECKS: list[dict] = [
         "query": "SELECT MAX(period_date) FROM institutional_transactions",
         "max_age_hours": 3300, "is_date": True,
     },
+    {
+        # CAPE (Shiller PE) — synced daily from multpl.com (see event-intelligence's
+        # valuation.py module docstring for why: Yale's own ie_data.xls was found stale at
+        # investigation time, Shiller's site was mid-migration with no working direct
+        # download). Still an unofficial third-party source — monitor staleness the same
+        # way as every other external feed in this table, per the congress-data lesson.
+        "name": "cape_reading", "description": "CAPE (Shiller PE) — AI-bubble-warning valuation indicator, sourced from multpl.com",
+        "query": "SELECT MAX(reading_date) FROM cape_readings",
+        "max_age_hours": 1080, "is_date": True,  # 45 days — matches valuation.py's own staleness flag
+    },
 ]
 
 

@@ -43,6 +43,7 @@ from .models import (
     CatalystScore,
     TuneHistory,
     PushSubscription,
+    CapeReading,
 )
 from .session import SessionLocal, engine, get_session, init_db
 
@@ -91,6 +92,7 @@ __all__ = [
     "CatalystScore",
     "TuneHistory",
     "PushSubscription",
+    "CapeReading",
     "SessionLocal",
     "engine",
     "get_session",

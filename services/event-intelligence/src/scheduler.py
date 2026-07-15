@@ -10,7 +10,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from common.config import get_settings
 
-from .services import economic, earnings, insider, congress, institutional, political, catalyst
+from .services import economic, earnings, insider, congress, institutional, political, catalyst, valuation
 
 log = structlog.get_logger()
 _settings = get_settings()
@@ -48,6 +48,11 @@ async def job_sync_institutional():
 
 async def job_sync_political():
     await _run("sync_political", political.sync_political_contracts())
+
+
+async def job_sync_cape():
+    await _run("sync_cape_current", valuation.sync_cape_current())
+    await _run("sync_cape_history", valuation.sync_cape_history())
 
 
 async def job_recompute_catalyst():
@@ -96,6 +101,7 @@ async def start_scheduler():
     _scheduler.add_job(job_sync_insider,       "cron", hour=7,  minute=0,  id="sync_insider")
     _scheduler.add_job(job_sync_congress,      "cron", hour=7,  minute=30, id="sync_congress")
     _scheduler.add_job(job_sync_political,     "cron", hour=8,  minute=0,  id="sync_political")
+    _scheduler.add_job(job_sync_cape,          "cron", hour=8,  minute=45, id="sync_cape")
     _scheduler.add_job(job_recompute_catalyst, "cron", hour=0,  minute=0,  id="recompute_catalyst_midnight")
     # EI-F10: was hour=6 (before earnings/insider/congress sync all complete by 07:30) — catalyst
     # score depends on all three (see catalyst.py compute_risk_score/compute_composite_score), so
