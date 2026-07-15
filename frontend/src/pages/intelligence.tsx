@@ -12,10 +12,11 @@ import {
   type CatalystScore,
   type PoliticalEvent,
   type EventIntelOverview,
+  type CapeReading,
 } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
-type Tab = 'overview' | 'economic' | 'earnings' | 'insider' | 'congress' | 'catalyst' | 'risk' | 'political';
+type Tab = 'overview' | 'economic' | 'earnings' | 'insider' | 'congress' | 'catalyst' | 'risk' | 'political' | 'valuation';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview',  label: 'Overview' },
@@ -26,6 +27,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'catalyst',  label: 'Catalyst Leaders' },
   { key: 'risk',      label: 'Risk Leaders' },
   { key: 'political', label: 'Political Contracts' },
+  { key: 'valuation', label: 'Bubble Warning' },
 ];
 
 function fmt(n: number | null | undefined, digits = 0): string {
@@ -464,6 +466,84 @@ function PoliticalTab() {
   );
 }
 
+function capeBandColor(band: string): string {
+  if (band === 'normal') return '#22c55e';
+  if (band === 'elevated') return '#f59e0b';
+  if (band === 'high') return '#f87171';
+  return '#ef4444'; // extreme
+}
+
+function ValuationTab() {
+  const { data, isLoading } = useSWR('eventsCape', () => api.eventsCape(36), { refreshInterval: 300_000 });
+
+  if (isLoading) return <p style={{ color: '#9ca3af', padding: '32px 0' }}>Loading CAPE data…</p>;
+
+  if (!data) {
+    return <p style={{ color: '#6b7280', padding: '32px 0', textAlign: 'center' }}>No CAPE data synced yet</p>;
+  }
+
+  const { latest, history } = data;
+  const bandColor = capeBandColor(latest.band);
+
+  return (
+    <div>
+      <p style={{ color: '#6b7280', fontSize: 13, marginBottom: 20 }}>
+        CAPE (Shiller cyclically-adjusted P/E) — a macro valuation indicator for the S&amp;P 500. Historically
+        elevated readings have preceded major corrections, but CAPE is a slow-moving signal that can stay
+        elevated for years — treat this as macro context, not a trade trigger. Sourced from multpl.com (an
+        unofficial third-party feed), not a live/official data provider.
+      </p>
+
+      <div style={{ background: '#1c1917', border: `1px solid ${bandColor}`, borderRadius: 8, padding: '20px 24px', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 24 }}>
+        <div>
+          <div style={{ color: '#9ca3af', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', marginBottom: 4 }}>Current CAPE</div>
+          <div style={{ color: '#f9fafb', fontSize: 36, fontWeight: 800 }}>{latest.cape_value.toFixed(2)}</div>
+        </div>
+        <div>
+          <span style={{ background: bandColor, color: '#0b0f19', borderRadius: 6, padding: '4px 14px', fontSize: 13, fontWeight: 700, textTransform: 'uppercase' }}>
+            {latest.band}
+          </span>
+        </div>
+        <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+          <div style={{ color: '#6b7280', fontSize: 12 }}>As of {latest.reading_date}</div>
+          {latest.stale && (
+            <div style={{ color: '#f87171', fontSize: 12, fontWeight: 600, marginTop: 2 }}>⚠ Data may be stale ({latest.age_days}d old)</div>
+          )}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 16, marginBottom: 20, fontSize: 12, color: '#9ca3af' }}>
+        <span><strong style={{ color: '#22c55e' }}>Normal</strong> &lt;30</span>
+        <span><strong style={{ color: '#f59e0b' }}>Elevated</strong> 30–35</span>
+        <span><strong style={{ color: '#f87171' }}>High</strong> 35–40 (1929 peak: ~32–33)</span>
+        <span><strong style={{ color: '#ef4444' }}>Extreme</strong> ≥40 (2021 peak: ~38.6; dot-com peak: 44.19)</span>
+      </div>
+
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <thead>
+          <tr style={{ borderBottom: '2px solid #1f2937' }}>
+            {['Date', 'CAPE', 'Band'].map(h => (
+              <th key={h} style={{ textAlign: 'left', padding: '8px 10px', color: '#6b7280', fontWeight: 600, fontSize: 11, textTransform: 'uppercase' }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {history.map((r: CapeReading) => (
+            <tr key={r.reading_date} style={{ borderBottom: '1px solid #111827' }}>
+              <td style={{ padding: '8px 10px', color: '#d1d5db' }}>{r.reading_date}</td>
+              <td style={{ padding: '8px 10px', color: '#f9fafb', fontWeight: 600 }}>{r.cape_value.toFixed(2)}</td>
+              <td style={{ padding: '8px 10px', color: capeBandColor(r.band ?? 'normal'), fontWeight: 600, textTransform: 'uppercase', fontSize: 11 }}>{r.band}</td>
+            </tr>
+          ))}
+          {history.length === 0 && (
+            <tr><td colSpan={3} style={{ padding: '32px', textAlign: 'center', color: '#6b7280' }}>No history yet</td></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function IntelligencePage() {
   const router = useRouter();
   const session = getSession();
@@ -520,6 +600,7 @@ export default function IntelligencePage() {
         {tab === 'catalyst'  && <LeaderboardTab fetcher={() => api.catalystLeaderboard(50)} title="Catalyst Leaderboard" scoreLabel="Catalyst Score (0–100)" />}
         {tab === 'risk'      && <LeaderboardTab fetcher={() => api.riskLeaderboard(50)} title="Risk Leaderboard" scoreLabel="Risk Score (0–100)" />}
         {tab === 'political' && <PoliticalTab />}
+        {tab === 'valuation' && <ValuationTab />}
       </div>
     </div>
   );

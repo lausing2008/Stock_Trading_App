@@ -8,7 +8,7 @@ from db import get_session, SessionLocal, Stock
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..services import economic, earnings, insider, congress, institutional, political, catalyst, edgar_8k
+from ..services import economic, earnings, insider, congress, institutional, political, catalyst, edgar_8k, valuation
 
 router = APIRouter()
 
@@ -36,6 +36,24 @@ def get_economic(
 async def sync_economic(_: str = Depends(get_current_username)):
     result = await economic.sync_fred()
     return result
+
+
+# ── CAPE / AI-Bubble-Warning Valuation Indicator ──────────────────────────────
+
+@router.get("/events/valuation/cape")
+def get_cape(months: int = Query(24, ge=1, le=600), _: str = Depends(get_current_username)):
+    latest = valuation.get_latest_cape()
+    if latest is None:
+        raise HTTPException(404, "No CAPE data synced yet")
+    history = valuation.get_cape_history(months)
+    return {"latest": latest, "history": history}
+
+
+@router.post("/events/sync/cape")
+async def sync_cape(_: str = Depends(get_current_username)):
+    current = await valuation.sync_cape_current()
+    history = await valuation.sync_cape_history()
+    return {"current": current, "history": history}
 
 
 # ── Earnings ──────────────────────────────────────────────────────────────────
