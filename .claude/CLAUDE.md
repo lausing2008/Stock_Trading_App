@@ -1162,3 +1162,162 @@ r = httpx.post('http://event-intelligence:8010/events/sync/cape', headers={'Auth
 print(r.status_code, r.text[:400])
 "
 ```
+
+---
+
+## Feature Reference: Tier 249 — Market-Mover Monitoring (P0/P1/P2)
+
+**Built 2026-07-14/15.** User's original ask: "monitor the news or any information that would
+make the market go up or down. Get current earning reports or CPI/FOMC before market starts,
+analyze the impact. Or get the results from CPI/FOMC after they announce it ASAP and predict
+the trend. Same for earnings and news." A Fable 5 consult broke this into 5 slices (P0–P4);
+P0–P2 are built and live as of this writing. P3 (pre-market brief) and P4 (news pulse card)
+are still `todo` in the tracker.
+
+### The foundational bug this whole tier fixes: reference-period vs. release-date
+
+`economic.py`'s original `sync_fred()` stores `event_date` as the observation's **reference
+period** — e.g. `event_date="2026-06-01"` for June's CPI data — not the date BLS actually
+**published** that number (July 14). These are two different axes wearing the same column
+name. Any "alert me when CPI is released" feature needs the release-date axis; the reference-
+period axis is for asking "what was June's CPI," which nothing in this tier needed. This gap
+existed silently because `FRED_API_KEY` wasn't even set in production until this tier's work
+started — `sync_fred()` had been no-op'ing (`fred_skip`) the whole time.
+
+### P0 — Real release-date calendar (done)
+
+- **FRED_API_KEY** set in production `.env` (get one free at
+  fred.stlouisfed.org/docs/api/api_key.html). Rotated once already — see the log-leak section
+  below for why.
+- `economic.py`'s new `sync_fred_release_dates()` calls FRED's `fred/release/dates` endpoint
+  (NOT `fred/series/observations`, which is what `sync_fred()` uses) per release_id in
+  `_FRED_RELEASES`, with `include_release_dates_with_no_data=true` (required to see FUTURE
+  scheduled dates — without it FRED only returns dates that already have data). Writes
+  `{event_type}_release` rows (e.g. `cpi_release`) — a distinct event_type family from
+  `sync_fred()`'s plain `cpi`/`nfp`/etc., so the two paths' rows never collide under
+  `uq_economic_event(event_type, country, event_date)`.
+- Scheduled daily at 06:15 UTC (`job_sync_fred_release_dates`) plus once at startup
+  (`asyncio.create_task`, so a fresh deploy isn't empty until tomorrow's cron).
+- market-data's `events_calendar()` now calls new `_macro_events_from_db()` first (reads the
+  real `*_release` rows), and only falls back to the hand-maintained `_MACRO_2026` list for
+  `(type, date-range)` combos the DB has no row for yet — `_MACRO_2026` is a safety net during
+  rollout, not deleted.
+- **Why BLS's own API was rejected as a data source** (relevant background for P2 below too):
+  live research found BLS's own documentation states data is available via their v2 API
+  ~1 day after the real release — disqualifying for same-day detection. FRED itself was
+  confirmed live to have same-day availability (June 2026 CPI's `realtime_start` exactly
+  equals its real July 14 release date).
+- **Not built**: `EconomicEvent.expected_value` nowcast (Cleveland Fed proxy) — investigated
+  and explicitly rejected. Cleveland Fed's inflation nowcast has no FRED series and no public
+  API; the only live data is an internal FusionCharts JSON
+  (`clevelandfed.org/-/media/files/webcharts/inflationnowcasting/nowcast_{month,quarter,year}.json`)
+  meant for their own chart widget. Fetched it directly and found real numbers, but the
+  date-axis semantics were genuinely ambiguous (MM/DD labels with no year, all three files
+  starting at the identical `08/20` regardless of month/quarter/year window) — could not
+  confirm what a label actually means without rendering the real chart. Decided not to ship a
+  data field whose correctness can't be verified. If revisited, the next step would be
+  rendering the actual chart in a headless browser or comparing against an archived snapshot
+  to pin down the axis, not re-guessing from the raw JSON.
+
+### P1 — Earnings day-of alerts (done)
+
+Two halves, both in `market-data/src/services/scheduler.py`, both scoped to `PriceAlert`-
+subscribed users (not full watchlist/portfolio membership — a deliberate v1 scope-narrowing,
+matching the existing `T230-ALERTING-EARNINGS-PROXIMITY` reminder's own audience rather than
+introducing a wider join).
+
+1. **Pre-market**: enriched the *existing* `T230-ALERTING-EARNINGS-PROXIMITY` day-of reminder
+   (previously a generic "review your position" line) via new `_earnings_reminder_body()`,
+   using `forward_eps`/`eps_beat_rate`/`eps_avg_surprise_pct` — all three already computed by
+   `GET /stocks/{symbol}/fundamentals`, so this was pure wiring, not a new data source.
+2. **Post-release**: genuinely new `check_earnings_reactions()`, a 1-minute-interval job (same
+   cadence/lock pattern as `check_price_alerts`) reading event-intelligence's shared
+   `earnings_events` table directly (same cross-service shared-table-read convention already
+   used for `Ranking`/`Signal` elsewhere in this file) for symbols with `eps_actual` populated
+   in the last 2 days. Fires one alert per `(user, symbol, report_date)` via a 7-day Redis
+   dedup key, using the already-computed `surprise_pct`/`earnings_strength_score` — no LLM.
+
+### P2 — Macro post-announcement fast reaction (done)
+
+The literal "get the results ASAP and predict the trend" ask. The honest, buildable version:
+fast detection of the real released number + an LLM reaction read — not an actual direction
+prediction, which nobody can honestly deliver for an unreleased number.
+
+**Detection — two independent, release-day-armed polls, both cheap no-ops on non-release days:**
+
+- `services/event-intelligence/src/services/macro_reaction.py`'s
+  `check_release_day_fast_poll()` — armed only 8:30–9:59am ET on weekdays
+  (`CronTrigger(minute="*/2", hour="8-9", day_of_week="mon-fri", timezone="America/New_York")`
+  — `America/New_York` handles DST correctly without manual UTC-offset math). Polls FRED's
+  `series/observations` for CPI/PPI/GDP/NFP against `economic_events` rows still missing
+  `actual_value` for today.
+- `check_fomc_statement_poll()` — armed only 2:00–2:59pm ET, and only on real FOMC dates from
+  `economic.py`'s `_FOMC_DATES`. Polls the Fed's own `press_monetary.xml` RSS feed directly
+  (confirmed live: `federalreserve.gov/feeds/press_monetary.xml` — real entries, real dates)
+  via `feedparser`, the same library already used in market-data's `news.py`. FRED's own rate
+  series lag a day and have no "statement just posted" signal — hence the direct RSS poll.
+
+**LLM reaction**: `generate_reaction()` calls Claude Haiku via raw `httpx` (same pattern as
+decision-engine's `llm_scorer.py` — API key from Redis `stockai:admin:claude_api_key`),
+fail-open (returns `None` on any error, never raises) — a missing reaction just means no email
+fires that cycle, not a broken page.
+
+**Delivery split** (same pattern as P1): event-intelligence detects + generates, writing
+`reaction_text`/`reaction_generated_at` into `economic_events`; market-data's new
+`check_macro_reaction_alerts()` (1-minute interval) polls for generated-but-unsent rows
+(`reaction_sent_at IS NULL`) and emails the same `PriceAlert`-subscribed audience. `reaction_sent_at`
+only advances inside an `if any_sent:` gate — a failed send cycle must retry next minute, not
+get silently marked done (adversarially verified: removing this gate was caught by a dedicated test).
+
+**New DB columns** (manual `ALTER TABLE` required — `create_all()` doesn't add columns to an
+existing table): `economic_events.reaction_text` (TEXT), `.reaction_generated_at` (TIMESTAMP),
+`.reaction_sent_at` (TIMESTAMP).
+
+**New UI**: `GET /events/overview` gained a `latest_macro_reaction` field; a "Latest Macro
+Reaction" card was added to `intelligence.tsx`'s Overview tab.
+
+**Not built (deferred, not silently dropped)**: `sectors_helped`/`sectors_hurt` watchlist-join
+personalization ("you hold/watch 4 rate-sensitive names") from the original design — the
+current reaction is a general market-impact paragraph, not yet joined against the user's
+specific holdings/sectors. Also not built: the per-user "macro alerts on/off" preference from
+the original design (v1 reuses the `PriceAlert`-subscriber audience instead, per explicit
+user choice to keep scope bounded).
+
+### Recurring Issue: httpx Logs Full Request URLs (Including API Keys) at INFO Level
+
+**Found 2026-07-15, while reviewing P2's deploy logs.** `httpx`'s own internal logger prints
+`HTTP Request: GET https://api.stlouisfed.org/...?api_key=<real key>...` at INFO level on every
+outbound call. Since `shared/common/logging.py`'s `configure_logging()` sets the stdlib root
+logger to INFO (and `httpx`'s logger propagates to it), **every service that calls an external
+API with a key as a query parameter had that key appear in plaintext in Docker logs** — this
+had been happening since P0's `sync_fred_release_dates()` first shipped, invisible until
+someone actually read the logs closely (42+ occurrences by the time it was caught).
+
+**Fix applied**: added `logging.getLogger("httpx").setLevel(logging.WARNING)` to
+`configure_logging()` in `shared/common/logging.py` — one shared fix covers every service.
+WARNING still surfaces real connection/timeout errors, just not routine request lines.
+Deployed by syncing `shared/common/logging.py` to all 11 backend containers and restarting
+all of them (confirmed via `docker ps` diff that recreation was intentional and total, and via
+a post-restart log grep that zero new `HTTP Request:` lines appeared).
+
+**The exposed FRED key was rotated** as a precaution (get a new one free, instant, at
+fred.stlouisfed.org/docs/api/api_key.html) — same "never embed real credential values in SSH
+command strings" discipline applied throughout: the rotation was done by piping the key line
+over SSH stdin to a remote Python script that rewrote `.env` in place, never as a `sed -i
+'s/.../<key>/'`-style command-line argument (which the permission system correctly blocked on
+the first attempt) and never written to an intermediate file on either host (a `scp`-based
+attempt was also correctly blocked for leaving a persistent plaintext artifact).
+
+**A stray terminal escape sequence corrupted EC2's `.env` during this same edit** — line 2
+became `61;7600;1cPOSTGRES_USER=stockai` instead of `POSTGRES_USER=stockai` (a leftover
+cursor-position response terminal escape code, likely from an interactive editing session on
+that file), which broke `docker compose` entirely (`unexpected character ";" in variable
+name`). Fixed by stripping the garbage prefix (confirmed via `cat -A` before AND after the
+fix, and confirmed no other line in the file had the same corruption) — **always run `docker
+compose ... config` after any manual `.env` edit** to catch this class of corruption before it
+blocks a real deploy.
+
+**What to check if a future API key needs adding**: confirm `configure_logging()` still sets
+`httpx`'s logger to WARNING (`docker exec <container> python3 -c "import logging;
+print(logging.getLogger('httpx').level)"` should print `30`) before assuming a new key-bearing
+API call is safe to add.
