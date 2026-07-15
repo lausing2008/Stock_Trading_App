@@ -261,9 +261,19 @@ def get_overview(_: str = Depends(get_current_username)):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _symbol_to_id(symbol: str) -> int:
+    """T247-EVENTINTELLIGENCE-SYMBOLEXCHANGE: the DB's real uniqueness constraint on Stock is
+    (symbol, exchange) — nothing prevents two rows sharing the same symbol on different
+    exchanges. `scalar_one_or_none()` raises an unhandled MultipleResultsFound (surfaced as a
+    raw HTTP 500) whenever that happens, instead of resolving deterministically. Prefer the
+    active listing, then the lowest id, so a lookup by symbol alone always resolves to exactly
+    one real stock rather than crashing.
+    """
     with SessionLocal() as s:
         row = s.execute(
-            select(Stock.id).where(Stock.symbol == symbol.upper())
+            select(Stock.id)
+            .where(Stock.symbol == symbol.upper())
+            .order_by(Stock.active.desc(), Stock.id.asc())
+            .limit(1)
         ).scalar_one_or_none()
     if row is None:
         raise HTTPException(404, f"Symbol {symbol.upper()} not found")

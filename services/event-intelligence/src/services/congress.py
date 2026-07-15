@@ -134,24 +134,41 @@ async def sync_congress_trades(lookback_days: int = 365) -> dict:
                     disc_date = date.fromisoformat(disc_date_str[:10]) if disc_date_str else None
                     stock_id = _ticker_to_stock_id(ticker, ticker_map)
 
-                    stmt = (
-                        pg_insert(CongressTrade)
-                        .values(
-                            politician_name=politician,
-                            party=party,
-                            chamber=chamber,
-                            state=state,
-                            ticker=ticker,
-                            stock_id=stock_id,
-                            transaction_type=txn_type,
-                            amount_range=amount_str[:64] if amount_str else None,
-                            amount_min=amount_min,
-                            amount_max=amount_max,
-                            trade_date=trade_date,
-                            disclosure_date=disc_date,
-                            source="kadoa_" + chamber.lower(),
-                        )
-                        .on_conflict_do_nothing(constraint="uq_congress_trade")
+                    insert_stmt = pg_insert(CongressTrade).values(
+                        politician_name=politician,
+                        party=party,
+                        chamber=chamber,
+                        state=state,
+                        ticker=ticker,
+                        stock_id=stock_id,
+                        transaction_type=txn_type,
+                        amount_range=amount_str[:64] if amount_str else None,
+                        amount_min=amount_min,
+                        amount_max=amount_max,
+                        trade_date=trade_date,
+                        disclosure_date=disc_date,
+                        source="kadoa_" + chamber.lower(),
+                    )
+                    # T247-EVENTINTELLIGENCE-CONGRESSAMENDMENT: on_conflict_do_nothing silently
+                    # dropped amendments — a politician correcting a previously-filed
+                    # disclosure's amount range or disclosure date (same politician/ticker/
+                    # trade_date/transaction_type, the uq_congress_trade key) never updated the
+                    # stale original row. Use do_update for the fields a real amendment can
+                    # correct; leave the identity columns (politician_name, ticker, trade_date,
+                    # transaction_type) alone since those ARE the conflict key.
+                    stmt = insert_stmt.on_conflict_do_update(
+                        constraint="uq_congress_trade",
+                        set_={
+                            "party": insert_stmt.excluded.party,
+                            "chamber": insert_stmt.excluded.chamber,
+                            "state": insert_stmt.excluded.state,
+                            "stock_id": insert_stmt.excluded.stock_id,
+                            "amount_range": insert_stmt.excluded.amount_range,
+                            "amount_min": insert_stmt.excluded.amount_min,
+                            "amount_max": insert_stmt.excluded.amount_max,
+                            "disclosure_date": insert_stmt.excluded.disclosure_date,
+                            "source": insert_stmt.excluded.source,
+                        },
                     )
                     result = s.execute(stmt)
                     total += result.rowcount
