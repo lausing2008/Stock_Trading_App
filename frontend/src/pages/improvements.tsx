@@ -15272,35 +15272,38 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-EVENTINTELLIGENCE-2',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/event-intelligence/src/api/routes.py:263',
     effort: 'S',
     impact: '`_symbol_to_id` looks up `Stock` by `symbol` alone with `scalar_one_or_none()`, but the DB\'s real uniqueness constraint is `(symbol, exchange)`, so two stocks sharing a ticker on different exchanges raise an unhandled `MultipleResultsFound` (HTTP 500) instead of resolving correctly or 404ing.',
     title: '`_symbol_to_id` looks up `Stock` by `symbol` alone with `scalar_one_or_none()`, but the DB\'s real uniqueness constraint is `(symbol, exchange)`, so two stocks sharing a ticker on different exchanges raise an unhandled `MultipleResultsFound` (HTTP 500) instead of resolving correctly or 404ing.',
     what: 'If two `Stock` rows ever exist with the identical `symbol` value but different `exchange` (nothing in the schema prevents this — `uq_stock_symbol_exch` is the only constraint), every endpoint that calls `_symbol_to_id` (e.g. `GET /events/insider/{symbol}`, `GET /events/congress/{symbol}`, `GET /catalyst/{symbol}`) throws an unhandled `sqlalchemy.exc.MultipleResultsFound` instead of the intended 404-or-resolve behavior, surfacing as a raw 500 to the frontend for that symbol.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: added `.order_by(Stock.active.desc(), Stock.id.asc()).limit(1)` to the query, so a symbol shared across exchanges deterministically resolves to the active listing (or lowest id among ties) instead of raising MultipleResultsFound. Added tests/test_symbol_to_id_exchange.py (4 tests) using a real in-memory SQLite session with a duplicate-symbol fixture, since routes.py itself can\'t be imported without a real common.jwt_auth package. Adversarially verified: reverting the query to bare `scalar_one_or_none()` (no order_by/limit) reproduced the exact real sqlalchemy.exc.MultipleResultsFound; restoring the fix passed all 4 tests (103/103 full suite).',
   },
 
   {
     id: 'AUD247-EVENTINTELLIGENCE-3',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/event-intelligence/src/services/congress.py:154',
     effort: 'S',
     impact: 'Congress trade upsert uses `on_conflict_do_nothing`, so if a politician amends a previously-filed disclosure (same politician/ticker/date/type but corrected amount range or disclosure date), the correction is silently dropped and the stale original row is kept forever.',
     title: 'Congress trade upsert uses `on_conflict_do_nothing`, so if a politician amends a previously-filed disclosure (same politician/ticker/date/type but corrected amount range or disclosure date), the correction is silently dropped and the stale original row is kept forever.',
     what: 'A politician files a STOCK Act disclosure for AAPL on 2026-06-01 with amount range "$1,001-$15,000", then later files an amendment correcting the amount to "$50,001-$100,000" for the same trade_date/transaction_type. The `uq_congress_trade` key (politician_name, ticker, trade_date, transaction_type) is identical, so `on_conflict_do_nothing` silently discards the corrected row — `compute_congress_score`/`get_congress_leaderboard` continue using the original, understated amount indefinitely with no error or log line.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: switched to `on_conflict_do_update`, overwriting the amendable fields (party, chamber, state, stock_id, amount_range, amount_min, amount_max, disclosure_date, source) on conflict, while leaving the conflict-key columns (politician_name, ticker, trade_date, transaction_type) untouched. Added tests/test_congress_upsert_amendment.py (3 tests) that compile the real statement against the actual Postgres dialect and assert it\'s a genuine DO UPDATE with the amendable fields in the SET clause. Adversarially verified: reverting to on_conflict_do_nothing made 2 of 3 tests fail, showing "DO NOTHING" in the compiled SQL instead of "DO UPDATE SET"; restoring the fix passed all 3 tests (103/103 full suite).',
   },
 
   {
     id: 'AUD247-EVENTINTELLIGENCE-4',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/event-intelligence/src/services/insider.py:154',
     effort: 'S',
     impact: '`_normalize_role`\'s for-loop over `_ROLE_WEIGHTS` is dead code — both the loop\'s return and the post-loop fallback return the identical `raw.strip()[:64]` value, so the loop can never produce a different outcome than skipping it entirely.',
     title: '`_normalize_role`\'s for-loop over `_ROLE_WEIGHTS` is dead code — both the loop\'s return and the post-loop fallback return the identical `raw.strip()[:64]` value, so the loop can never produce a different outcome than skipping it entirely.',
     what: 'For any `role_raw` input, whether or not it contains a `_ROLE_WEIGHTS` key like "ceo", `_normalize_role` returns the exact same `raw.strip()[:64]` string either way — the branch exists to look like it\'s doing role-weighted normalization but has no behavioral effect; it\'s a pure no-op loop that could be deleted with zero change in output (the actual weighting happens separately and correctly in `compute_insider_score`\'s own keyword scan, so this doesn\'t corrupt scores, but it\'s misleading dead logic that looks load-bearing and isn\'t).',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: removed the dead for-loop over _ROLE_WEIGHTS; _normalize_role now directly does `raw.strip()[:64]` (identical behavior, no misleading dead branch). Added tests/test_normalize_role.py (4 tests). Adversarially verified: mutated the function to use a deliberately wrong truncation length (8 instead of 64) — 2 of 4 tests correctly failed with the exact wrong-length symptom; restoring the fix passed all 4 tests (103/103 full suite).',
   },
 
   {
