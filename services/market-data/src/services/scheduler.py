@@ -84,7 +84,7 @@ from sqlalchemy.orm import selectinload
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, User, Watchlist, WatchlistItem
+from db import AlertCondition, EarningsEvent, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, User, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -935,6 +935,9 @@ _SIGNAL_ALERT_LOCK_TTL = 120  # seconds — prevents concurrent runs from US+HK 
 _PRICE_ALERT_LOCK_KEY = "stockai:lock:check_price_alerts"
 _PRICE_ALERT_LOCK_TTL = 55  # seconds — alert checker runs every 60s; 55s prevents overlap
 
+_EARNINGS_REACTION_LOCK_KEY = "stockai:lock:check_earnings_reactions"
+_EARNINGS_REACTION_LOCK_TTL = 55  # seconds — runs every 60s, same pattern as check_price_alerts
+
 _PAPER_TRADING_LOCK_KEY = "stockai:lock:paper_trading_step"
 # T232-PT5: was 90s against a step documented elsewhere as "typically 20-40s" — but the actual
 # step downloads regime data, batch-fetches ATR, and makes per-candidate HTTP calls (decision-
@@ -1008,6 +1011,124 @@ def _run_paper_trading_step(label: str = "refresh") -> None:
                                      "another run already acquired the lock")
             except Exception:
                 pass
+
+
+def _earnings_reminder_body(sym: str, dte_int: int, fund: dict) -> str:
+    """T249-MARKETMOVER-P1: builds the day-of earnings reminder body, enriched with the
+    estimate/beat-rate/surprise-trend data /stocks/{symbol}/fundamentals already computes
+    (eps_beat_rate, eps_avg_surprise_pct, forward_eps) — previously this reminder was a
+    generic "review your position" line with none of that context, even though the data
+    was already one field away in the same fundamentals_cache dict this function reads from.
+    Falls back to the generic line when a field is missing (e.g. a newly-listed stock with
+    no earnings_history yet), same as the pre-enrichment behavior."""
+    parts = [f"{sym} reports earnings in {dte_int} day(s)."]
+    eps_est = fund.get("forward_eps")
+    if eps_est is not None:
+        parts.append(f"Street estimate: ${eps_est:.2f}.")
+    beat_rate = fund.get("eps_beat_rate")
+    avg_surprise = fund.get("eps_avg_surprise_pct")
+    if beat_rate is not None:
+        beats = round(beat_rate * 8)
+        beat_line = f"Beat {beats} of last 8 quarters"
+        if avg_surprise is not None:
+            beat_line += f", avg surprise {avg_surprise:+.1f}%"
+        parts.append(beat_line + ".")
+    parts.append("Review your position and manage risk before the print.")
+    return " ".join(parts)
+
+
+def _earnings_reaction_body(sym: str, eps_actual: float, eps_estimate: float | None,
+                             surprise_pct: float | None, strength_score: float | None) -> str:
+    """T249-MARKETMOVER-P1: post-release fast-reaction alert body — fires once eps_actual
+    lands for a symbol that just reported, using the already-computed surprise_pct/
+    earnings_strength_score from event-intelligence's earnings_events table (no LLM needed,
+    both fields are already numeric and directly interpretable, per the tracker's own note
+    that this half needs no LLM at all unlike the macro fast-reaction slice)."""
+    verb = "beat" if (surprise_pct or 0) > 0 else "missed" if (surprise_pct or 0) < 0 else "met"
+    parts = [f"{sym} {verb} EPS estimates: actual ${eps_actual:.2f}"]
+    if eps_estimate is not None:
+        parts[0] += f" vs est ${eps_estimate:.2f}"
+    if surprise_pct is not None:
+        parts[0] += f" ({surprise_pct:+.1f}%)"
+    parts[0] += "."
+    if strength_score is not None:
+        parts.append(f"Earnings strength score: {strength_score:.0f}/100.")
+    return " ".join(parts)
+
+
+def check_earnings_reactions() -> None:
+    """T249-MARKETMOVER-P1: post-release fast-reaction alert — the missing half of the
+    "same idea for earnings" ask (T249-MARKETMOVER-P0's design doc: pre-market brief already
+    existed as T230-ALERTING-EARNINGS-PROXIMITY's day-of reminder; this is the after-the-print
+    reaction that had no code at all). Runs every minute (like check_price_alerts) so a
+    same-day EPS print is caught quickly once event-intelligence's evening earnings sync
+    writes eps_actual, rather than waiting for the next 5x/day check_signal_alerts() cycle.
+    Scoped to the same PriceAlert-subscribed users as the existing earnings reminder, for
+    audience consistency rather than a broader/unbounded watchlist join.
+    """
+    try:
+        acquired = _get_redis().set(_EARNINGS_REACTION_LOCK_KEY, "1", nx=True, ex=_EARNINGS_REACTION_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    try:
+        with SessionLocal() as session:
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            if not alerts:
+                return
+            user_symbols: dict[int, set[str]] = {}
+            for a in alerts:
+                user_symbols.setdefault(a.user_id, set()).add(a.symbol)
+            all_symbols = {sym for syms in user_symbols.values() for sym in syms}
+            if not all_symbols:
+                return
+
+            # Only symbols that reported in the last 2 days AND have eps_actual populated —
+            # a report_date alone (upcoming-calendar row) doesn't mean the print has landed yet.
+            cutoff = date.today() - timedelta(days=2)
+            rows = session.execute(
+                select(EarningsEvent, Stock.symbol)
+                .join(Stock, EarningsEvent.stock_id == Stock.id)
+                .where(
+                    Stock.symbol.in_(all_symbols),
+                    EarningsEvent.report_date >= cutoff,
+                    EarningsEvent.eps_actual.isnot(None),
+                )
+            ).all()
+            if not rows:
+                return
+
+            _rc = _get_redis()
+            for ev, sym in rows:
+                for uid, syms in user_symbols.items():
+                    if sym not in syms:
+                        continue
+                    u_obj = next((a.user for a in alerts if a.user_id == uid), None)
+                    if not u_obj or not u_obj.email:
+                        continue
+                    redis_key = f"stockai:earnings_reaction:{uid}:{sym}:{ev.report_date.isoformat()}"
+                    try:
+                        if _rc and _rc.exists(redis_key):
+                            continue
+                    except Exception:
+                        pass
+                    verb = "beat" if (ev.surprise_pct or 0) > 0 else "missed" if (ev.surprise_pct or 0) < 0 else "met"
+                    subject = f"📊 {sym} {verb} earnings"
+                    body_text = _earnings_reaction_body(
+                        sym, ev.eps_actual, ev.eps_estimate, ev.surprise_pct, ev.earnings_strength_score,
+                    )
+                    from .email_service import send_email
+                    if send_email(u_obj.email, subject, f"<p>{body_text}</p>", body_text):
+                        try:
+                            _rc and _rc.setex(redis_key, 7 * 86400, "1")  # 7-day TTL — one alert per report
+                        except Exception:
+                            pass
+                        log.info("signal_alert.earnings_reaction_sent", symbol=sym, user=u_obj.username)
+    except Exception as exc:
+        log.error("signal_alert.earnings_reaction_error", error=str(exc))
 
 
 def check_signal_alerts() -> None:
@@ -1453,7 +1574,7 @@ def check_signal_alerts() -> None:
                         except Exception:
                             pass
                         subject = f"⏰ Earnings in {dte_int}d: {sym}"
-                        body_text = f"{sym} reports earnings in {dte_int} day(s). Review your position and manage risk before the print."
+                        body_text = _earnings_reminder_body(sym, dte_int, fund)
                         from .email_service import send_email
                         if send_email(u_obj.email, subject, f"<p>{body_text}</p>", body_text):
                             try:
@@ -4267,6 +4388,18 @@ def start_scheduler() -> None:
         "interval",
         minutes=1,
         id="price_alert_check",
+        replace_existing=True,
+        max_instances=1, coalesce=True,
+    )
+
+    # ── Earnings post-release fast-reaction checker — every minute ──────────
+    # T249-MARKETMOVER-P1: same cadence as check_price_alerts so a same-day EPS print is
+    # caught quickly rather than waiting for the next 5x/day check_signal_alerts() cycle.
+    _scheduler.add_job(
+        check_earnings_reactions,
+        "interval",
+        minutes=1,
+        id="earnings_reaction_check",
         replace_existing=True,
         max_instances=1, coalesce=True,
     )
