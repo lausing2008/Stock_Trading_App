@@ -8,7 +8,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 
 from common.jwt_auth import get_current_username
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from common.config import get_settings
 from common.logging import get_logger
@@ -39,7 +39,13 @@ class OptimizeRequest(BaseModel):
     symbols: list[str]
     method: METHOD = "mean_variance"
     lookback_days: int = 365
-    min_score: float = 60.0
+    # T247-PORTFOLIOOPTIMIZER-DEADSCOREFALLBACK: previously unconstrained. ai_allocation()'s
+    # `keep = [s for s in returns.columns if scores.get(s, -1) >= min_score]` relies on -1
+    # being lower than any real score to correctly exclude symbols with no fetched score — a
+    # caller-supplied min_score <= -1 would let those symbols into `keep` via the -1 default,
+    # which then received a fabricated 50.0 "neutral" score instead of being excluded. ge=0
+    # keeps the -1 sentinel meaningfully below every valid input.
+    min_score: float = Field(60.0, ge=0)
     constraints: OptimizeConstraints | None = None
 
 
@@ -115,7 +121,14 @@ def _fetch_scores(symbols: list[str]) -> tuple[dict[str, float], list[str]]:
 def optimize(req: OptimizeRequest, _: str = Depends(get_current_username)):
     closes, dropped = _fetch_closes(req.symbols, req.lookback_days)
 
-    if closes.empty or len(closes) < MIN_ROWS:
+    # T247-PORTFOLIOOPTIMIZER-MINROWS-OFFBYONE: the actual optimizer input is
+    # `returns = closes.pct_change().dropna()`, which always has exactly one fewer row than
+    # `closes` (the first row's pct_change is NaN, dropped). Checking `len(closes) < MIN_ROWS`
+    # let a request with exactly MIN_ROWS price rows through, but only fed MIN_ROWS-1 rows of
+    # returns into the optimizer — one short of the "30 trading days" the error message and
+    # MIN_ROWS constant promise. Require MIN_ROWS+1 raw price rows so the resulting returns
+    # series actually has MIN_ROWS rows.
+    if closes.empty or len(closes) < MIN_ROWS + 1:
         detail = "Insufficient price history — need at least 30 trading days."
         if dropped:
             detail += f" Symbols with no/insufficient data: {', '.join(dropped)}"

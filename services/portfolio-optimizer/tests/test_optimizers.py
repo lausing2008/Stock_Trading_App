@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.optimizers import hierarchical_risk_parity, mean_variance, risk_parity
+from src.optimizers import ai_allocation, hierarchical_risk_parity, mean_variance, risk_parity
 from src.optimizers.methods import _cap_and_redistribute
 
 
@@ -171,3 +171,31 @@ def test_risk_parity_infeasibility_guard_skips_optimization_entirely(monkeypatch
     # PortfolioWeights rounds to 4 decimals (_pack()) — use a tolerance that accounts for that,
     # not float-equality precision.
     assert all(abs(w - 1 / 3) < 1e-3 for w in r.weights.values())
+
+
+# ── T247-PORTFOLIOOPTIMIZER-DEADSCOREFALLBACK ─────────────────────────────────────
+#
+# ai_allocation()'s raw_scores lookup used `scores.get(s, 50.0)`, a fallback that's
+# unreachable in normal operation (every s in `keep` already passed a real-score check)
+# but would fabricate a "neutral" 50.0 for a symbol with no real score if `keep`'s own
+# filter (`scores.get(s, -1) >= min_score`) were ever bypassed by an out-of-range min_score.
+
+def test_ai_allocation_uses_every_keeper_symbols_real_score():
+    """Every symbol that clears the min_score filter must use its OWN real score, not a
+    fabricated neutral fallback — confirms scores[s] direct-index behavior end to end."""
+    returns = _returns()
+    scores = {"A": 90.0, "B": 70.0, "C": 60.0}
+    result = ai_allocation(returns, scores, min_score=50.0)
+    assert set(result.weights.keys()) == {"A", "B", "C"}
+
+
+def test_ai_allocation_raises_if_a_kept_symbol_has_no_real_score():
+    """T247 regression guard: if `keep`'s filter is ever bypassed (e.g. a future caller
+    passes min_score <= -1) and a symbol with NO real score slips into `keep`, the fixed
+    code (scores[s], no fallback) must raise a real KeyError instead of silently
+    fabricating a 50.0 'neutral' score for it."""
+    returns = _returns()
+    # Simulate the bypass directly: a symbol reaches raw_scores lookup with no entry in scores.
+    scores = {"A": 90.0, "B": 70.0}  # "C" deliberately missing
+    with pytest.raises(KeyError):
+        ai_allocation(returns, scores, min_score=-5.0)

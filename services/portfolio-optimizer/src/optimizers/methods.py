@@ -306,7 +306,13 @@ def ai_allocation(
     n = len(keep)
 
     # Normalize K-Scores → [0,1] then map to return range [µ-5%, µ+15%]
-    raw_scores = np.array([scores.get(s, 50.0) for s in keep], dtype=float)
+    # T247-PORTFOLIOOPTIMIZER-DEADSCOREFALLBACK: every `s` in `keep` already passed
+    # `scores.get(s, -1) >= min_score` above, so it's guaranteed to be a real key in `scores`
+    # whenever min_score is not below the -1 sentinel — now enforced by routes.py's
+    # OptimizeRequest.min_score having ge=0. `scores[s]` (no fallback) makes that guarantee
+    # explicit: a symbol reaching this line with no real score is a bug elsewhere, not a case
+    # to paper over with a fabricated "neutral" 50.0.
+    raw_scores = np.array([scores[s] for s in keep], dtype=float)
     s_min, s_max = raw_scores.min(), raw_scores.max()
     norm = (raw_scores - s_min) / (s_max - s_min + 1e-9)
     market_avg = float(mu.mean())
