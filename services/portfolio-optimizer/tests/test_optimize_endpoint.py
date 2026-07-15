@@ -17,7 +17,7 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from src.api.routes import OptimizeConstraints, OptimizeRequest, optimize
+from src.api.routes import MIN_ROWS, OptimizeConstraints, OptimizeRequest, optimize
 
 
 def _returns_df(n=60, seed=0):
@@ -118,3 +118,37 @@ def test_unimplemented_fields_are_rejected_not_silently_dropped():
     assert "target_return" not in fields
     assert "min_weight" not in OptimizeConstraints.model_fields
     assert "max_weight" in OptimizeConstraints.model_fields
+
+
+# ── T247-PORTFOLIOOPTIMIZER-MINROWS-OFFBYONE ──────────────────────────────────────
+#
+# MIN_ROWS was checked against `closes` (raw prices), but the actual optimizer input is
+# `returns = closes.pct_change().dropna()`, which always has exactly one fewer row — a
+# request with exactly MIN_ROWS price rows passed the check but fed MIN_ROWS-1 rows of
+# returns into the optimizer, one short of the documented "30 trading days" minimum.
+
+def test_exactly_min_rows_price_history_is_rejected(monkeypatch):
+    """The exact bug scenario: exactly MIN_ROWS raw price rows must now be REJECTED (they'd
+    only yield MIN_ROWS-1 rows of returns), not silently accepted one row short."""
+    import src.api.routes as routes_mod
+
+    closes = _fake_closes(_returns_df(n=MIN_ROWS))
+    monkeypatch.setattr(routes_mod, "_fetch_closes", lambda symbols, lookback: (closes, []))
+
+    req = OptimizeRequest(symbols=["A", "B", "C"], method="mean_variance")
+    with pytest.raises(HTTPException) as exc_info:
+        optimize(req, _="testuser")
+    assert exc_info.value.status_code == 400
+
+
+def test_min_rows_plus_one_price_history_is_accepted(monkeypatch):
+    """MIN_ROWS+1 raw price rows yields exactly MIN_ROWS rows of returns — the true
+    minimum the documented invariant promises — and must be accepted."""
+    import src.api.routes as routes_mod
+
+    closes = _fake_closes(_returns_df(n=MIN_ROWS + 1))
+    monkeypatch.setattr(routes_mod, "_fetch_closes", lambda symbols, lookback: (closes, []))
+
+    req = OptimizeRequest(symbols=["A", "B", "C"], method="mean_variance")
+    result = optimize(req, _="testuser")  # must not raise
+    assert result["weights"]
