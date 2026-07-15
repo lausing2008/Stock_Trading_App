@@ -15437,24 +15437,26 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-PORTFOLIOOPTIMIZER-4',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/portfolio-optimizer/src/api/routes.py:114',
     effort: 'S',
     impact: 'MIN_ROWS=30 is checked against closes (raw prices) but the actual optimizer input is returns = closes.pct_change().dropna(), which always has exactly one fewer row, so the enforced minimum trading-day history for the covariance/return estimation is effectively 29, not the documented 30.',
     title: 'MIN_ROWS=30 is checked against closes (raw prices) but the actual optimizer input is returns = closes.pct_change().dropna(), which always has exactly one fewer row, so the enforced minimum trading-day history for the covariance/return estimation is effectively 29, not the documented 30.',
     what: 'A request with exactly 30 valid price rows for all symbols passes the `len(closes) < MIN_ROWS` check at line 105, but returns.pct_change().dropna() at line 114 yields 29 rows of returns actually fed into _prepare()/mean_variance()/etc. — one row less than the \'30 trading days\' the HTTPException message and MIN_ROWS constant promise. Low real-world impact (off-by-one on a soft minimum) but the code\'s stated invariant does not match what\'s enforced.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: changed the guard to `len(closes) < MIN_ROWS + 1`, so exactly MIN_ROWS raw price rows (which yields MIN_ROWS-1 returns rows) is now rejected, and the true minimum feed to the optimizer is genuinely MIN_ROWS rows of returns as documented. Added 2 tests to test_optimize_endpoint.py: exactly MIN_ROWS price rows is rejected, MIN_ROWS+1 is accepted. Adversarially verified: reverting to `< MIN_ROWS` made the rejection test fail (DID NOT RAISE); restoring the fix passed all 7 tests in the file (23/23 full suite).',
   },
 
   {
     id: 'AUD247-PORTFOLIOOPTIMIZER-5',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/portfolio-optimizer/src/optimizers/methods.py:236',
     effort: 'S',
     impact: 'The scores.get(s, 50.0) default on line 236 is dead code — every symbol in keep already passed scores.get(s, -1) >= min_score at line 227, so it is guaranteed to already be a real key in scores whenever min_score > -1 (always true in practice), making the fallback unreachable.',
     title: 'The scores.get(s, 50.0) default on line 236 is dead code — every symbol in keep already passed scores.get(s, -1) >= min_score at line 227, so it is guaranteed to already be a real key in scores whenever min_score > -1 (always true in practice), making the fallback unreachable.',
     what: 'Not a functional bug today (min_score defaults to 60.0 and is validated as a plain float, never negative in practice), but if min_score were ever passed as <= -1 (no input validation prevents this — OptimizeRequest.min_score has no ge= constraint), a symbol with no real score entry could enter keep via the -1 default at line 227, and then silently receive a fabricated 50.0 \'neutral\' score at line 236 instead of being excluded or flagged as a failed fetch — reintroducing exactly the score-fetch-failure-masquerading-as-real-score problem T237-PO1 was written to fix, just via an unvalidated min_score rather than the original dict-default bug.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14 with two complementary changes: (1) added `Field(60.0, ge=0)` to OptimizeRequest.min_score in routes.py, closing off the actual root cause (an out-of-range min_score) rather than just the symptom; (2) changed methods.py\'s `scores.get(s, 50.0)` to `scores[s]` (no fallback) — since `keep` already guarantees every s has a real score, a missing key now raises a real KeyError instead of silently fabricating a neutral value. Added 2 tests to test_optimizers.py. Adversarially verified: reverting to `scores.get(s, 50.0)` made the KeyError test fail (DID NOT RAISE); restoring the fix passed all 16 tests in the file (23/23 full suite).',
   },
 
   {
