@@ -15509,24 +15509,26 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-RANKINGENGINE-4',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/ranking-engine/src/api/routes.py:671',
     effort: 'S',
     impact: 'vol_ratio\'s avg5d/avg20d computation filters out zero-volume days from the volume list without re-fetching to preserve exactly 5/20 real trading-day bars, so the "5-day" and "20-day" windows can silently include stale bars older than 5/20 calendar trading days whenever any zero-volume day exists within the 35-day lookback.',
     title: 'vol_ratio\'s avg5d/avg20d computation filters out zero-volume days from the volume list without re-fetching to preserve exactly 5/20 real trading-day bars, so the "5-day" and "20-day" windows can silently include stale bars older than 5/20 calendar trading days whenever any zero-volume day exists within the 35-day lookback.',
     what: 'A stock has 2 zero-volume days (e.g. a trading halt or bad data ingestion) within its most recent 20 daily bars; _valid drops those, so _avg5 and _avg20 are computed from a mix that includes bars from further back in time than the nominal "last 5"/"last 20" trading days, silently skewing vol_ratio away from what the label describes, especially for thinly-traded HK stocks where zero-volume/no-trade days are more common.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: extracted the arithmetic into a pure, module-level `_compute_vol_ratio(vols_desc)` function that takes the literal newest 5/20 rows (including zero-volume days), matching market-data\'s own canonical vol_ratio convention (vol.iloc[-5:]/vol.iloc[-20:]) instead of filtering zeros out first. Added tests/test_vol_ratio.py (5 tests), including one that directly demonstrates the old filtered-then-sliced math pulls in a stale bar the fixed version excludes. Adversarially verified: reverting to the filter-then-slice version made the core regression test fail (0.6 != 0.44 — the exact wrong-window symptom); restoring the fix passed all 5 tests (20/21 full suite; 1 pre-existing unrelated test_kscore.py failure, not caused by this change).',
   },
 
   {
     id: 'AUD247-RANKINGENGINE-5',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/ranking-engine/src/scoring/kscore.py:130',
     effort: 'S',
     impact: 'adx_boost uses `np.clip((adx - 15) / 25, 0, 1) * 10` which only ever adds a boost between 0 and +10 — the docstring/comment on the line above says "very weak trend (<15) drags it," implying a penalty, but the clip floor of 0 means a weak/choppy trend (ADX<15) never actually subtracts anything from the technical score, it merely contributes zero.',
     title: 'adx_boost uses `np.clip((adx - 15) / 25, 0, 1) * 10` which only ever adds a boost between 0 and +10 — the docstring/comment on the line above says "very weak trend (<15) drags it," implying a penalty, but the clip floor of 0 means a weak/choppy trend (ADX<15) never actually subtracts anything from the technical score, it merely contributes zero.',
     what: 'A stock with ADX=5 (very weak/choppy trend, genuinely low-quality technical setup) receives the exact same adx_boost (0.0) as a stock with ADX=15 — both score identically on this component despite the comment implying the ADX<15 stock should be penalized relative to neutral, meaning the intended asymmetric drag for weak-trend stocks never fires and all sub-15 ADX stocks are treated as merely neutral rather than worse-than-neutral.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: widened the clip range from `np.clip(..., 0, 1)` to `np.clip(..., -1, 1)`, so ADX<15 now genuinely drags the score below neutral (symmetric with the >25 boost), matching the comment\'s stated intent. The outer `np.clip(base + adx_boost, 0, 100)` already bounds the final result, so this can\'t push a score negative. Added tests/test_technical_score_adx_boost.py (5 tests). Adversarially verified: reverting to `np.clip(..., 0, 1)` made the core regression test fail (ADX=5 scored 70.0, tied with ADX=15\'s 70.0 instead of scoring lower); restoring the fix passed all 5 tests (20/21 full suite; same 1 pre-existing unrelated failure as AUD247-RANKINGENGINE-4).',
   },
 
   {

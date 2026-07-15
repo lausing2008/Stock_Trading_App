@@ -299,6 +299,27 @@ def _clean(v):
     return v
 
 
+def _compute_vol_ratio(vols_desc: list[float]) -> float | None:
+    """avg5d / avg20d volume ratio. `vols_desc` must already be ordered newest-first
+    (ts.desc()) — the literal most-recent 5/20 rows are used, INCLUDING zero-volume days.
+
+    T247-RANKINGENGINE-VOLRATIO-STALEWINDOW: a prior version filtered out zero-volume rows
+    before slicing [:5]/[:20], which shifts every later index — a single zero-volume day
+    (halt/bad ingestion) anywhere in the window silently pulled in a bar older than the
+    nominal "last 5"/"last 20" trading days, skewing vol_ratio away from what the label
+    describes (especially for thinly-traded HK stocks where no-trade days are more common).
+    market-data's own canonical vol_ratio computation (api/routes.py's
+    vol.iloc[-5:]/vol.iloc[-20:]) takes the literal most-recent N rows including zeros —
+    matches that convention instead of filtering first. Extracted to module level so it's
+    independently unit-testable without the surrounding DB/session machinery.
+    """
+    if len(vols_desc) < 5:
+        return None
+    avg5 = sum(vols_desc[:5]) / 5
+    avg20 = sum(vols_desc[:min(len(vols_desc), 20)]) / min(len(vols_desc), 20)
+    return round(avg5 / avg20, 2) if avg20 > 0 else None
+
+
 def _load_prices(session: Session, stock_id: int, lookback: int = 300) -> pd.DataFrame:
     since = date.today() - timedelta(days=lookback * 2)
     rows = session.execute(
@@ -693,15 +714,9 @@ def leaderboard(
     _vols_by_stock: dict[int, list[float]] = _dd(list)
     for _vr in _vol_rows:
         _vols_by_stock[_vr.stock_id].append(float(_vr.volume or 0))
-    _vol_ratio_map: dict[int, float | None] = {}
-    for _sid, _vols in _vols_by_stock.items():
-        _valid = [v for v in _vols if v > 0]
-        if len(_valid) < 5:
-            _vol_ratio_map[_sid] = None
-            continue
-        _avg5  = sum(_valid[:5]) / 5
-        _avg20 = sum(_valid[:min(len(_valid), 20)]) / min(len(_valid), 20)
-        _vol_ratio_map[_sid] = round(_avg5 / _avg20, 2) if _avg20 > 0 else None
+    _vol_ratio_map: dict[int, float | None] = {
+        _sid: _compute_vol_ratio(_vols) for _sid, _vols in _vols_by_stock.items()
+    }
 
     results = [
         {
