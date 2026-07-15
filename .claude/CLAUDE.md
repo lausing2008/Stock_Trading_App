@@ -1008,3 +1008,157 @@ Both now source from the same kadoa-org feed (see the Recurring Issue section ab
 independent parsing/schema — a fix to one's data source does NOT automatically fix the other;
 they must each be checked/fixed separately, exactly as happened when the previous free source
 died for both simultaneously.
+
+---
+
+## Recurring Issue: "It's Reachable" ≠ "It's Current" — Always Check Last-Modified, Not Just HTTP 200
+
+**Symptom:** A recommended external data source returns `HTTP 200` and looks like a solid,
+official choice, but is actually not being maintained anymore — the page/file is still served,
+just frozen at some point in the past. Reachability alone gave false confidence.
+
+**Root cause (found 2026-07-14, while sourcing data for the CAPE/AI-bubble-warning feature):**
+An initial research pass recommended Robert Shiller's own Yale dataset
+(`econ.yale.edu/~shiller/data/ie_data.xls`) as the primary CAPE data source, citing that it
+returned `HTTP 200` as proof it was "verified live." A direct re-check before committing to
+that architecture found the file's `Last-Modified` header was **October 2023** — ~2.75 years
+stale at investigation time — and Shiller's own site had migrated to a new Yale SOM page with
+no working direct CAPE download found there either. The file being downloadable said nothing
+about whether its *contents* were still being updated.
+
+**What to check before trusting any "the data source is live" claim** (from an agent, a web
+search summary, or your own quick check):
+```bash
+curl -sI "<candidate-url>" -A "Mozilla/5.0" --max-time 15
+# Look at Last-Modified, not just the status code. A 200 with a Last-Modified from
+# months/years ago means the URL still resolves but the DATA behind it is frozen.
+```
+Also directly inspect a few of the most recent rows/values in the actual payload and compare
+against today's date — a `.csv`/`.xls` ending "2 years ago" is a hard stop, not a caveat.
+
+**Fix pattern applied:** Re-researched and found `multpl.com` publishes a genuine Atom feed per
+indicator (`multpl.com/{indicator}/atom`) — confirmed as a real, intentional, site-wide feature
+(identical structure across `shiller-pe`, `s-p-500-pe-ratio`, `s-p-500-dividend-yield`, not a
+one-off scrape) and verified via its own `<updated>` timestamp matching the current date, not
+just a `200` on the URL. See the CAPE feature reference below for the full source used.
+
+**Design invariant:** Before adopting ANY new external data source (especially one an agent or
+a web-search summary recommends), verify current-ness directly — `Last-Modified` header, or the
+payload's own embedded timestamp/most-recent-row — not just that the URL responds. An
+"official" or "authoritative" source that has gone stale is worse than a well-verified
+secondary source, because it looks trustworthy while silently serving frozen data.
+
+---
+
+## Process Note: Background Agents Can Drift Scope — Re-Confirm Before Deploying
+
+**Observed 2026-07-14, while re-deriving 6 audit findings lost to an earlier spend-limit
+interruption.** The user's instruction was narrow: recover those 6 specific candidates. The
+background agents dispatched for this instead ran an open-ended fresh bug hunt across
+untouched services (technical-analysis, signal-engine, market-data/strategy-engine) — a
+reasonable-sounding interpretation, but broader than what was actually asked, and one agent got
+stuck spawning further sub-agents and reporting a non-answer ("I'll wait for the other
+agents...") instead of concrete findings.
+
+Separately, once 2 of 3 resulting findings had been explicitly approved for fixing, a 3rd
+finding arrived from a still-running background agent AFTER that approval — and very nearly
+got bundled into the same deploy as the 2 approved ones, which would have shipped an
+unapproved change to production under cover of an approved one.
+
+**What to check going forward when using background/multi-agent workflows on this repo:**
+1. If a background agent's report describes doing something broader than what was literally
+   asked (e.g. "I also checked X and Y for good measure"), treat that extra output as
+   candidate findings requiring their own explicit go-ahead — not as pre-approved just because
+   they arrived attached to a task that WAS approved.
+2. Before any deploy, re-list exactly which changes are being shipped and cross-check that
+   list against what was actually approved in the conversation — especially if multiple
+   findings/fixes accumulated across several turns or background completions.
+3. If an agent's own final message describes waiting on other agents or otherwise doesn't
+   contain a real, substantive answer, treat that as a failed/incomplete run and resume or
+   re-dispatch it directly rather than assuming "no findings" or moving on.
+
+---
+
+## Feature Reference: CAPE (Shiller PE) — AI Bubble Warning Indicator
+
+**Added 2026-07-14.** A macro valuation indicator (CAPE, the cyclically-adjusted P/E ratio for
+the S&P 500) surfaced as a "Bubble Warning" tab on `frontend/src/pages/intelligence.tsx`.
+Historically elevated CAPE readings have preceded major market corrections, but CAPE is a
+slow-moving signal — it can stay "elevated"/"extreme" for years before any correction, so this
+is framed as macro context, not a trade trigger.
+
+**Data source:** `multpl.com`, NOT Yale's own `ie_data.xls` (see the Recurring Issue above for
+why that source was rejected — found stale, 2.75 years old, at investigation time). Two
+multpl.com endpoints are used:
+- `multpl.com/shiller-pe/atom` — daily-updated Atom feed, current value. Confirmed as a
+  genuine, site-wide feed pattern (same structure across every multpl indicator page).
+- `multpl.com/shiller-pe/table/by-month` — stable `id="datatable"` HTML table, full history
+  back to 1871, used for backfill/refresh of recent months.
+
+Still an **unofficial third-party source** — same fragility class as the dead
+housestockwatcher/senatestockwatcher congress-data incident, just a more stable access pattern
+(a real Atom feed + a stable table ID, vs. an arbitrary scraped `<div>`). Monitor staleness the
+same way as every other external feed in this app — see below.
+
+**Architecture:**
+- `shared/db/models.py` — `CapeReading` model, `cape_readings` table (new table; `create_all()`
+  handles this automatically, no manual migration needed — see the `create_all()`-gap Recurring
+  Issue above for when that ISN'T true).
+- `services/event-intelligence/src/services/valuation.py` — `sync_cape_current()` (Atom feed),
+  `sync_cape_history()` (by-month table), `cape_band()` (threshold classifier),
+  `get_latest_cape()`/`get_cape_history()` (read side). `_parse_atom()`/`_parse_table()` are
+  pure functions extracted specifically so they're testable against real captured fixture data
+  without needing live network access in tests.
+- `GET /events/valuation/cape` / `POST /events/sync/cape` in
+  `services/event-intelligence/src/api/routes.py`.
+- Scheduled job `sync_cape` at 08:45 UTC daily in `services/event-intelligence/src/scheduler.py`.
+- `dq_check:cape_reading` entry in market-data's `_DQ_CHECKS` (`scheduler.py`) — 1080h/45-day
+  staleness threshold, matching `valuation.py`'s own `stale` flag on the read side.
+
+**Warning bands** (sourced from real historical CAPE peaks, not guessed):
+
+| Band | CAPE range | Basis |
+|---|---|---|
+| Normal | < 30 | Long-run mean/median (1871–present) is ~16-17 |
+| Elevated | 30–35 | Above historical norm |
+| High | 35–40 | 1929 pre-crash peak was ~32-33 |
+| Extreme | ≥ 40 | 2021 post-COVID peak ~38.6; Dec 1999 dot-com peak (all-time high) 44.19 |
+
+**A real parsing bug this caught before production:** the by-month table's value cells contain
+a leading `&#x2002;` (Unicode en-space) HTML entity before the actual number. A naive
+`float(cells[1])` on the stripped cell text raises `ValueError`, which the per-row
+`except (ValueError, IndexError): continue` swallows — silently producing **zero** synced rows
+on every history-backfill run, with no error surfaced anywhere. Caught because
+`tests/test_valuation.py` was written against real fixture data captured directly from
+`multpl.com` (not hand-authored idealized HTML), which reproduced the bug immediately. Fixed by
+stripping to `[^\d.]` before calling `float()`. **Lesson:** when writing a parser test for a
+scraped/fed external source, capture and use a REAL response as the fixture — a hand-written
+"clean" HTML sample will not surface the actual whitespace/entity quirks the real site emits.
+
+**What to check if this goes stale or breaks:**
+```bash
+# Confirm both multpl endpoints are still live and current (check the date in the response, not
+# just the status code — see the Recurring Issue above):
+curl -sI "https://www.multpl.com/shiller-pe/atom" -A "Mozilla/5.0" --max-time 15
+curl -s "https://www.multpl.com/shiller-pe/atom" -A "Mozilla/5.0" --max-time 15 | grep -o '<updated>[^<]*'
+
+# Check current row count / staleness in the DB:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT COUNT(*), MAX(reading_date) FROM cape_readings;"
+
+# Check the dq_check Redis key:
+docker exec stockai-redis-1 redis-cli get dq_check:cape_reading
+
+# Manually trigger a resync:
+docker exec stockai-market-data-1 python3 -c "
+import sys, uuid, time
+sys.path.insert(0, '/app'); sys.path.insert(0, '/app/src')
+from common.config import get_settings
+from jose import jwt as _jwt
+import httpx
+s = get_settings()
+tok = _jwt.encode({'sub':'scheduler','jti':str(uuid.uuid4()),'exp':int(time.time())+86400}, s.jwt_secret, algorithm='HS256')
+r = httpx.post('http://event-intelligence:8010/events/sync/cape', headers={'Authorization': f'Bearer {tok}'}, timeout=30)
+print(r.status_code, r.text[:400])
+"
+```
