@@ -29,8 +29,15 @@ _settings = get_settings()
 _auth_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="gateway_auth")
 log = structlog.get_logger()
 
-# Prefixes that don't require a valid JWT
-_PUBLIC_PREFIXES = {"auth", "health", "docs", "openapi.json", "redoc"}
+# Prefixes that don't require a valid JWT.
+# T247-APIGATEWAY-DEADBLOCKLIST: "health"/"docs"/"openapi.json"/"redoc" are NOT listed here —
+# shared/common/service.py registers GET /health directly on the app object, and FastAPI
+# auto-registers /docs, /redoc, /openapi.json, both before this catch-all proxy router is
+# included via app.include_router(). Route dispatch is in registration order, so none of
+# those four paths can ever reach reverse_proxy() in the first place; listing them here (or
+# re-checking them inside reverse_proxy()) was dead code that could mislead a future
+# maintainer into thinking this is what protects those paths.
+_PUBLIC_PREFIXES = {"auth"}
 
 # Route-prefix → upstream URL
 _ROUTES = {
@@ -179,8 +186,6 @@ async def reverse_proxy(full_path: str, request: Request):
     if normalized in ("", ".") or normalized.startswith("../") or normalized == "..":
         raise HTTPException(400, "Invalid path")
     full_path = normalized
-    if full_path in ("health", "docs", "openapi.json", "redoc"):
-        raise HTTPException(404)
     await _require_auth_async(full_path, request)
     upstream = _upstream(full_path)
     if not upstream:
@@ -212,7 +217,11 @@ async def reverse_proxy(full_path: str, request: Request):
             r = await client.request(
                 request.method,
                 url,
-                params=dict(request.query_params),
+                # T247-APIGATEWAY-MULTIVALUEQUERY: dict(request.query_params) collapses
+                # repeated keys (?symbol=AAPL&symbol=MSFT) to only the last value. httpx
+                # accepts a list of (key, value) tuples and forwards every occurrence, same
+                # as multi_items() returns them.
+                params=request.query_params.multi_items(),
                 content=body,
                 headers=safe_headers,
             )

@@ -258,3 +258,29 @@ def test_pure_dotdot_path_would_be_rejected_by_reverse_proxy_guard():
         normalized = posixpath.normpath("/" + raw).lstrip("/")
         is_rejected = normalized in ("", ".") or normalized.startswith("../") or normalized == ".."
         assert is_rejected, f"{raw!r} normalized to {normalized!r}, which the guard would NOT reject"
+
+
+def test_health_docs_openapi_redoc_are_not_in_public_prefixes():
+    """T247-APIGATEWAY-DEADBLOCKLIST regression guard: "health"/"docs"/"openapi.json"/"redoc"
+    must NOT be listed in _PUBLIC_PREFIXES — none of those paths can ever reach reverse_proxy()
+    in the first place (FastAPI/shared/common/service.py register them before the catch-all
+    proxy router), so listing them here was dead, misleading code."""
+    for dead_prefix in ("health", "docs", "openapi.json", "redoc"):
+        assert dead_prefix not in _PUBLIC_PREFIXES
+
+
+def test_query_params_multi_items_preserves_repeated_keys():
+    """T247-APIGATEWAY-MULTIVALUEQUERY regression guard: dict(request.query_params) silently
+    collapses repeated query-string keys (?symbol=AAPL&symbol=MSFT) to only the last value.
+    reverse_proxy() must forward every occurrence via .multi_items() instead of dict()."""
+    from starlette.datastructures import QueryParams
+
+    qp = QueryParams("symbol=AAPL&symbol=MSFT&tag=a")
+    collapsed = dict(qp)
+    assert collapsed == {"symbol": "MSFT", "tag": "a"}, "sanity check: dict() really does collapse"
+
+    multi = qp.multi_items()
+    assert multi.count(("symbol", "AAPL")) == 1
+    assert multi.count(("symbol", "MSFT")) == 1
+    assert ("tag", "a") in multi
+    assert len(multi) == 3
