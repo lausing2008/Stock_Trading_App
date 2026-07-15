@@ -15317,24 +15317,26 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-MARKETDATA-2',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/paper_trading_engine.py:4107',
     effort: 'S',
     impact: 'The cash-sufficiency gate compares pre-slippage `position_value` (computed at `live_price`) against `portfolio.current_cash * 0.98`, but the actual cash deduction 14 lines later recomputes `position_value` at the higher slipped price (`live_price * (1 + entry_slippage_pct)`) — the check and the charge use two different position values.',
     title: 'The cash-sufficiency gate compares pre-slippage `position_value` (computed at `live_price`) against `portfolio.current_cash * 0.98`, but the actual cash deduction 14 lines later recomputes `position_value` at the higher slipped price (`live_price * (1 + entry_slippage_pct)`) — the check and the charge use two different position values.',
     what: 'With `entry_slippage_pct` raised above ~2% (or the 0.98 buffer lowered in a future tune), a candidate can pass the check with `position_value <= current_cash * 0.98` at `live_price`, then the post-slippage deduction at line 4121 draws down more cash than was validated, potentially leaving `current_cash` clamped to 0 rather than reflecting a true (small) negative overdraft — masked by the `max(0.0, ...)` floor so no error/log ever surfaces the shortfall. At the current default slippage (0.001) the 2% buffer absorbs this, so it is latent rather than actively firing today.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: extracted the slipped-position-value arithmetic into a pure, module-level `_slipped_position_value(shares, live_price, entry_slippage_pct)` function, and moved the cash-sufficiency gate to run AFTER this slipped value is computed instead of before — the gate and the actual deduction now always compare/charge the exact same number. Added 3 tests to test_paper_trading_engine.py, including one that reproduces the audit finding directly (a cash balance just above the pre-slippage cost but below the real slipped cost: old gate would pass, fixed gate correctly blocks). Adversarially verified: reverting `_slipped_position_value` to the pre-slippage formula made both new comparison tests fail with the exact predicted values (5000.0 not > 5150.0*0.98); restoring the fix passed all 8 tests in the file (110/110 in the full market-data suite).',
   },
 
   {
     id: 'AUD247-MARKETDATA-3',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/scheduler.py:1591',
     effort: 'S',
     impact: '`check_price_alerts()` uses `if p:` to test a fetched live price before caching it, which treats a legitimate price of exactly 0 the same as a missing/failed fetch.',
     title: '`check_price_alerts()` uses `if p:` to test a fetched live price before caching it, which treats a legitimate price of exactly 0 the same as a missing/failed fetch.',
     what: 'If `tickers.tickers[sym].fast_info.last_price` ever returns `0` or `0.0` (e.g. a delisted/halted ticker briefly reporting 0, or a data-provider glitch) instead of raising/returning None, the symbol is silently dropped from the `prices` dict at that line, and every price alert on that symbol is skipped for the cycle with no warning logged — indistinguishable in the logs from a normal yfinance coverage gap.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: extracted the price-validity check into a module-level `_is_usable_price(p)` helper (`p is not None and p > 0`) and replaced the bare `if p:` call site with it — a genuine 0/negative price is now explicitly and separately handled from a missing fetch, though both are still correctly excluded from threshold comparisons. Added tests/test_price_alert_price_check.py (3 tests), loading the pure helper directly from source via importlib since scheduler.py\'s own import chain (apscheduler + ingestion/email_service/paper_trading_engine/api.routes) isn\'t stubbed for local unit tests. Adversarially verified: reverting to `bool(p)` made the negative-price test fail (-5.0 incorrectly usable); restoring the fix passed all 3 tests (110/110 in the full market-data suite).',
   },
 
   {

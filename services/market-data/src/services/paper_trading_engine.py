@@ -2797,6 +2797,19 @@ def _clear_no_entry_summary(portfolio_id: int) -> None:
         pass
 
 
+def _slipped_position_value(shares: float, live_price: float, entry_slippage_pct: float) -> float:
+    """T247-MARKETDATA-CASHGATE-PRESLIPPAGE: the cash-sufficiency gate previously compared
+    pre-slippage position_value (at live_price) against current_cash, but the actual cash
+    deduction recomputes position_value at the higher slipped price — the check and the charge
+    used two different values, letting a candidate pass the gate and still overdraw cash
+    (silently floored to 0, no error surfaced). Extracted to a pure, module-level function
+    (unchanged behavior) so both the gate and the deduction always agree on the same value, and
+    so the arithmetic is independently unit-testable without the surrounding DB/session machinery.
+    """
+    slipped_entry = round(live_price * (1 + entry_slippage_pct), 4)
+    return round(shares * slipped_entry, 2)
+
+
 def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str, float], live_regime: dict | None = None) -> None:
     """Find fresh BUY signals and evaluate them for entry."""
     cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(portfolio.config.get("trading_style", "GROWTH"), {}), **portfolio.config}
@@ -4117,7 +4130,13 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             _skip_tally["sector_count_cap"] = _skip_tally.get("sector_count_cap", 0) + 1
             continue
 
-        # Ensure we have the cash
+        # PT-B6: Apply entry slippage — simulates spread / market impact
+        slippage = cfg.get("entry_slippage_pct", 0.001)
+        commission = round(cfg.get("commission_per_share", 0.0) * shares, 4)
+
+        # Cash gate and the actual deduction below both use this same slipped value now
+        # (see _slipped_position_value's docstring — T247-MARKETDATA-CASHGATE-PRESLIPPAGE).
+        position_value = _slipped_position_value(shares, live_price, slippage)
         if position_value > portfolio.current_cash * 0.98:
             log.info("paper.skip_insufficient_cash",
                      symbol=stock.symbol, need=position_value,
@@ -4125,13 +4144,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             _skip_tally["insufficient_cash"] = _skip_tally.get("insufficient_cash", 0) + 1
             continue
 
-        # PT-B6: Apply entry slippage — simulates spread / market impact
-        slippage = cfg.get("entry_slippage_pct", 0.001)
         slipped_entry = round(live_price * (1 + slippage), 4)
-        commission    = round(cfg.get("commission_per_share", 0.0) * shares, 4)
-
         # Deduct cash at slipped price (not live_price) so cash and cost basis are consistent
-        position_value = round(shares * slipped_entry, 2)
         portfolio.current_cash = max(0.0, round(portfolio.current_cash - position_value - commission, 2))
         trade = PaperTrade(
             portfolio_id          = portfolio.id,
