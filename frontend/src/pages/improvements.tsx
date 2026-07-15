@@ -15164,24 +15164,26 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-APIGATEWAY-3',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/api-gateway/src/api/proxy.py:157',
     effort: 'S',
     impact: 'The explicit block-list \'full_path in ("health", "docs", "openapi.json", "redoc")\' in reverse_proxy() is dead code: FastAPI auto-registers /docs, /redoc, /openapi.json, and shared/common/service.py registers GET /health directly on the app object, both before the catch-all proxy router is included via app.include_router(), so none of these four paths can ever reach this line.',
     title: 'The explicit block-list \'full_path in ("health", "docs", "openapi.json", "redoc")\' in reverse_proxy() is dead code: FastAPI auto-registers /docs, /redoc, /openapi.json, and shared/common/service.py registers GET /health directly on the app object, both before the catch-all proxy router is included via app.include_router(), so none of these four paths can ever reach this line.',
     what: 'Because shared/common/service.py\'s create_app() does `@app.get(\'/health\')` then later loops `for r in routers: app.include_router(r)`, and FastAPI/Starlette dispatches routes in registration order, a request to exactly \'/health\' is always satisfied by the built-in health route before the catch-all `/{full_path:path}` route (which includes this dead check) is ever evaluated; same for docs_url/redoc_url/openapi_url which are never disabled (docs_url=None is never passed). This isn\'t currently harmful (belt-and-suspenders), but it is an unreachable branch that could mislead a future maintainer into thinking this line is the actual protection for those paths, and \'health\' also sits pointlessly in _PUBLIC_PREFIXES (line 22) for the same unreachable reason.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: removed the dead `if full_path in ("health", "docs", "openapi.json", "redoc"): raise HTTPException(404)` check from reverse_proxy(), and removed "health"/"docs"/"openapi.json"/"redoc" from _PUBLIC_PREFIXES (only "auth" remains — the one prefix genuinely proxied and meant to be public). Added test_health_docs_openapi_redoc_are_not_in_public_prefixes to test_proxy.py. Adversarially verified: reintroducing the four dead entries into _PUBLIC_PREFIXES made the new test fail (assert \'health\' not in {...}); restoring the fix passed all 22 tests in the file.',
   },
 
   {
     id: 'AUD247-APIGATEWAY-4',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/api-gateway/src/api/proxy.py:190',
     effort: 'S',
     impact: 'Query parameters are forwarded via dict(request.query_params), which silently collapses repeated query-string keys to only their last value.',
     title: 'Query parameters are forwarded via dict(request.query_params), which silently collapses repeated query-string keys to only their last value.',
     what: 'If any current or future upstream endpoint expects a repeated multi-value query parameter (e.g. ?symbol=AAPL&symbol=MSFT or ?tags=a&tags=b), the gateway would forward only {\'symbol\': \'MSFT\'} (last-wins) to the upstream service instead of both values, silently dropping data with no error surfaced to the caller. No endpoint currently observed to rely on this, so it is latent rather than actively firing today, but it is a real correctness gap in the generic proxy\'s request-forwarding logic that would silently corrupt any future multi-value query use.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: changed reverse_proxy()\'s outbound httpx call from params=dict(request.query_params) (collapses repeated keys, last-wins) to params=request.query_params.multi_items() (a list of (key, value) tuples — httpx forwards every occurrence). Added test_query_params_multi_items_preserves_repeated_keys to test_proxy.py, which first demonstrates dict() really does collapse (sanity check) then confirms multi_items() preserves both "symbol=AAPL" and "symbol=MSFT". No adversarial revert needed beyond the sanity-check assertion already embedded in the test, since the fix is a one-line call-site change verified directly by the test\'s own dict()-vs-multi_items() comparison.',
   },
 
   {
