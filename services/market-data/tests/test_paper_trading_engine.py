@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.services.paper_trading_engine import _composite_priority
+from src.services.paper_trading_engine import _composite_priority, _slipped_position_value
 
 
 def _row(confidence=70.0, score=None, sr_context="neutral", has_ranking=True):
@@ -63,4 +63,42 @@ def test_real_high_kscore_scores_higher_than_zero():
     high = _composite_priority(_row(confidence=70.0, score=90.0))
     zero = _composite_priority(_row(confidence=70.0, score=0.0))
     assert high > zero
+
+
+# ── T247-MARKETDATA-CASHGATE-PRESLIPPAGE ──────────────────────────────────────────
+#
+# The cash-sufficiency gate previously compared PRE-slippage position_value (at live_price)
+# against current_cash, while the actual cash deduction recomputed position_value at the
+# higher SLIPPED price a few lines later — the check and the charge used two different
+# values, so a candidate could pass the gate and still overdraw cash.
+
+def test_slipped_position_value_is_higher_than_the_pre_slippage_value():
+    """The exact bug scenario: the slipped (real, charged) value must be strictly greater
+    than the naive live_price * shares value whenever slippage is positive."""
+    shares, live_price, slippage = 100.0, 50.0, 0.02  # 2% slippage
+    pre_slippage_value = round(shares * live_price, 2)
+    slipped_value = _slipped_position_value(shares, live_price, slippage)
+    assert slipped_value > pre_slippage_value
+    assert slipped_value == pytest.approx(5100.0)  # 100 * 50 * 1.02
+
+
+def test_cash_gate_using_pre_slippage_value_would_have_passed_when_it_should_not():
+    """Reproduces the audit finding directly: at a cash balance that is JUST ABOVE the
+    pre-slippage cost but BELOW the real (slipped) cost, the OLD check (pre-slippage vs cash)
+    would incorrectly pass, while the FIXED check (slipped vs cash) correctly blocks it."""
+    shares, live_price, slippage = 100.0, 50.0, 0.02
+    # cash*0.98 must be >= pre-slippage value (5000) but < slipped value (5100):
+    # cash in (5102.04, 5204.08) — 5150 sits inside that window.
+    current_cash = 5150.0
+
+    pre_slippage_value = round(shares * live_price, 2)
+    assert pre_slippage_value <= current_cash * 0.98  # old gate: would have let this through
+
+    slipped_value = _slipped_position_value(shares, live_price, slippage)
+    assert slipped_value > current_cash * 0.98  # fixed gate: correctly blocks it
+
+
+def test_zero_slippage_leaves_position_value_unchanged():
+    shares, live_price = 100.0, 50.0
+    assert _slipped_position_value(shares, live_price, 0.0) == round(shares * live_price, 2)
 

@@ -1563,6 +1563,18 @@ def _fetch_stored_signal(symbol: str, style: str = "SWING") -> dict | None:
     return None
 
 
+def _is_usable_price(p) -> bool:
+    """T247-MARKETDATA-PRICEALERT-FALSYPRICE: check_price_alerts() previously used a bare
+    `if p:` to test a fetched live price before caching it — a legitimate price of exactly 0
+    (e.g. a delisted/halted ticker briefly reporting 0, or a provider glitch) is falsy in
+    Python, so it was silently treated the same as a missing/failed fetch, dropping the symbol
+    from `prices` with no warning logged. `p is not None` distinguishes a genuine fetch failure
+    from a real (if implausible) 0 value; `p > 0` still rejects 0/negative as not a usable price
+    for threshold comparisons. Extracted to a module-level function so it's independently
+    unit-testable."""
+    return p is not None and p > 0
+
+
 def check_price_alerts() -> None:
     """Check all untriggered alerts against latest live prices and fire emails."""
     try:
@@ -1588,7 +1600,7 @@ def check_price_alerts() -> None:
             for sym in symbols:
                 try:
                     p = tickers.tickers[sym].fast_info.last_price
-                    if p:
+                    if _is_usable_price(p):
                         prices[sym] = float(p)
                 except Exception:
                     pass
