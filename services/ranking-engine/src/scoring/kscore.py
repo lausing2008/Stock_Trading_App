@@ -127,7 +127,12 @@ def _technical_score(df: pd.DataFrame) -> float:
     # ADX boost: strong trend (>25) lifts score; very weak trend (<15) drags it.
     # AUD232-014: skip entirely (no boost, positive or negative) when ADX is unknown
     # (insufficient history) rather than treating "unknown" as a real, non-neutral value.
-    adx_boost = np.clip((adx - 15) / 25, 0, 1) * 10 if adx is not None else 0.0  # 0–10 bonus
+    # T247-RANKINGENGINE-ADXBOOST-FLOOR: `np.clip(..., 0, 1)` floored the boost at 0, so a
+    # weak/choppy trend (ADX<15) only ever contributed a NEUTRAL 0, never the penalty the
+    # comment above describes ("very weak trend drags it") — an ADX=5 stock scored
+    # identically to an ADX=15 stock. Clip to [-1, 1] so ADX<15 genuinely drags the score
+    # below neutral, symmetric with the >25 boost.
+    adx_boost = np.clip((adx - 15) / 25, -1, 1) * 10 if adx is not None else 0.0  # -10..+10
 
     base = (above_sma50 + above_sma200 + sma50_above_sma200) / 3 * 60 + rsi_score * 0.4
     return float(np.clip(base + adx_boost, 0, 100))
