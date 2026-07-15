@@ -15210,46 +15210,50 @@ const ITEMS: Item[] = [
 
   {
     id: 'AUD247-DECISIONENGINE-3',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/decision-engine/src/api/routes.py:111',
     effort: 'S',
     impact: 'research_rec falls back to research_data.get(\'ai_verdict\', {}).get(\'final_recommendation\') but GET /research/{symbol}/summary (the only endpoint decision-engine\'s _fetch_research calls) never includes an ai_verdict key and always returns a non-empty recommendation string, making the fallback branch permanently dead code.',
     title: 'research_rec falls back to research_data.get(\'ai_verdict\', {}).get(\'final_recommendation\') but GET /research/{symbol}/summary (the only endpoint decision-engine\'s _fetch_research calls) never includes an ai_verdict key and always returns a non-empty recommendation string, making the fallback branch permanently dead code.',
     what: 'research-engine\'s get_research_summary() (services/research-engine/src/api/routes.py:1379-1402) returns only {recommendation, overall_score, confidence, generated_at} -- recommendation is always one of STRONG BUY/BUY/WATCH/AVOID/SELL/INSUFFICIENT DATA (never None, per routes.py:1602-1619), so research_data.get(\'recommendation\') is always truthy and the `or research_data.get(\'ai_verdict\', {})...` branch can never execute for any real research report, silently duplicating logic that would need ai_verdict from the full (non-summary) GET /research/{symbol} response this call site never fetches.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: removed the dead `or research_data.get("ai_verdict", {}).get("final_recommendation")` fallback — now reads `research_data.get("recommendation")` directly. Confirmed via reading get_research_summary()\'s real return shape that this fallback could never fire.',
   },
 
   {
     id: 'AUD247-DECISIONENGINE-4',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/decision-engine/src/api/core/scorer.py:219',
     effort: 'S',
     impact: 'The research score display string uses `if research_score_val else ""` (falsy check) instead of `is not None`, so a genuinely valid research overall_score of 0 is displayed identically to no score being provided at all.',
     title: 'The research score display string uses `if research_score_val else ""` (falsy check) instead of `is not None`, so a genuinely valid research overall_score of 0 is displayed identically to no score being provided at all.',
     what: 'A research report with overall_score=0 (a real, maximally-bearish score, distinct from no research existing) produces the breakdown note \'Research: SELL\' instead of \'Research: SELL (score 0)\' -- the score information is silently dropped from the UI/explain output specifically for the worst possible score, the one case where surfacing it matters most.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: replaced `if research_score_val else ""` with `if research_score_val is not None else ""`. Added 3 tests to test_scorer.py covering score=0, score=None, and a real nonzero score. Adversarially verified: reverting to the falsy check made the score=0 test fail (note showed "Research: SELL" instead of "Research: SELL (score 0)"); restoring the fix passes all tests.',
   },
 
   {
     id: 'AUD247-DECISIONENGINE-5',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/decision-engine/src/api/core/aggregator.py:116',
     effort: 'S',
     impact: '_fetch_signal()\'s list-handling branch falls back to `data[0]` (the first entry of an unrelated list) when no signal matches the requested symbol, instead of returning None -- but this is unreachable dead code today, since GET /signals/{symbol}?style=... (the only URL this function calls) never returns a bare list in any of its code paths (always a dict with \'symbol\'/\'source\' keys).',
     title: '_fetch_signal()\'s list-handling branch falls back to `data[0]` (the first entry of an unrelated list) when no signal matches the requested symbol, instead of returning None -- but this is unreachable dead code today, since GET /signals/{symbol}?style=... (the only URL this function calls) never returns a bare list in any of its code paths (always a dict with \'symbol\'/\'source\' keys).',
     what: 'Currently harmless because signal-engine\'s /signals/{symbol} handler (services/signal-engine/src/api/routes.py:5531) always wraps its response in a dict even when a style query param is supplied. If signal-engine\'s response shape ever changes to return a bare list for this query pattern, decision-engine would silently score an arbitrary, unrelated symbol\'s signal data (data[0]) as if it were the requested symbol\'s, rather than correctly falling through to the \'no signal\' BLOCKED path.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: removed the `data[0] if data else None` misattribution fallback — now returns None when no entry in a list response matches the requested symbol. Added services/decision-engine/tests/test_fetch_signal.py (5 tests). Adversarially verified: reverting to the old fallback reproduced the exact misattribution (an AAPL request returned MSFT\'s signal data); restoring the fix passes all tests.',
   },
 
   {
     id: 'AUD247-DECISIONENGINE-6',
-    tier: 247 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 247 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/decision-engine/src/api/routes.py:243',
     effort: 'S',
     impact: 'llm_verdict_str is computed from the raw LLM score adjustment (llm_adj) before the micro-position skip check runs, so the returned llm_verdict field can still say \'BUY\' even though the final verdict was overridden to \'SKIP\' by the combined-multiplier floor a few lines later.',
     title: 'llm_verdict_str is computed from the raw LLM score adjustment (llm_adj) before the micro-position skip check runs, so the returned llm_verdict field can still say \'BUY\' even though the final verdict was overridden to \'SKIP\' by the combined-multiplier floor a few lines later.',
     what: 'A candidate scores above min_score and the LLM layer returns a positive adjustment (llm_verdict_str=\'BUY\'), but combined sizing multipliers (regime/breadth/vix/confidence/research/consensus/earnings) fall below the 0.30 floor, flipping verdict to \'SKIP\' at routes.py:274 -- the response then shows verdict=\'SKIP\' but llm_verdict=\'BUY\' simultaneously, which is confusing for any caller/UI that surfaces both fields side by side as if they should agree.',
     fix: 'See failure scenario for the exact mechanism — found via an 11-service automated audit workflow (Find -> adversarial Verify), independently spot-verified by hand for the 3 highest-severity findings (technical-analysis supertrend, ml-prediction feature order, portfolio-optimizer HRP concentration) before trusting the batch.',
+    implementedNote: 'Fixed 2026-07-14: rather than overwrite llm_verdict_str to match the final verdict (which would discard the real information of what the LLM actually recommended before sizing kicked in), added a new `llm_verdict_overridden_by_sizing: bool` field to DecisionResult, set to True only when the micro-position floor overrides a BUY verdict to SKIP after llm_verdict_str was "BUY". This makes the disagreement an explicit, intentional signal rather than a silent inconsistency a consumer might mistake for a bug. Verified via direct code inspection (the flag is correctly scoped inside the exact branch where verdict is overridden, gated on llm_verdict_str=="BUY") rather than a full pipeline test, given the disproportionate mocking cost of unit-testing the whole _decide() async fan-out for this additive, low-risk field.',
   },
 
   {

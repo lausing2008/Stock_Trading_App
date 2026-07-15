@@ -216,7 +216,11 @@ def compute_score(
     if research_rec:
         rec_upper = research_rec.upper().replace("_", " ")
         pts = _RESEARCH_SCORE.get(rec_upper, 0)
-        rscore = f" (score {research_score_val:.0f})" if research_score_val else ""
+        # T247-DECISIONENGINE-RESEARCHSCORE-FALSY: `if research_score_val` treated a genuine
+        # overall_score of 0 (the worst possible score, distinct from no score existing) as
+        # falsy, silently dropping the score from the display note exactly when it matters
+        # most. Use `is not None` so only a genuinely missing score omits the "(score N)" suffix.
+        rscore = f" (score {research_score_val:.0f})" if research_score_val is not None else ""
         note = f"Research: {rec_upper}{rscore}"
         score += pts
         breakdown.append(ScoreItem(layer="research", pts=pts, note=note))

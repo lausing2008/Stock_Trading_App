@@ -207,6 +207,36 @@ def test_research_score_unknown_recommendation_defaults_to_zero():
     assert _layer_pts(breakdown, "research") == 0
 
 
+def _layer_note(breakdown, layer_name):
+    for item in breakdown:
+        if item.layer == layer_name:
+            return item.note
+    return None
+
+
+def test_research_score_of_zero_is_shown_in_the_note_not_dropped():
+    """T247-DECISIONENGINE-RESEARCHSCORE-FALSY regression guard: a genuine overall_score of
+    0 (the worst possible score) must still appear in the breakdown note — the previous
+    `if research_score_val else ""` falsy check silently dropped it exactly when it mattered
+    most, making SELL-with-score-0 indistinguishable from SELL-with-no-score-at-all."""
+    _, breakdown = compute_score(100.0, _game_plan(), _signal_data(), "SELL", 0.0, "neutral", {})
+    note = _layer_note(breakdown, "research")
+    assert "(score 0)" in note, f"expected score 0 to appear in the note, got: {note!r}"
+
+
+def test_research_score_of_none_omits_the_score_suffix():
+    """A genuinely absent score (None, not 0) must still omit the "(score N)" suffix."""
+    _, breakdown = compute_score(100.0, _game_plan(), _signal_data(), "SELL", None, "neutral", {})
+    note = _layer_note(breakdown, "research")
+    assert "(score" not in note
+
+
+def test_research_score_of_a_real_nonzero_value_still_shown():
+    _, breakdown = compute_score(100.0, _game_plan(), _signal_data(), "BUY", 72.0, "neutral", {})
+    note = _layer_note(breakdown, "research")
+    assert "(score 72)" in note
+
+
 # ── Layer 6: K-Score gate uses the real >=55 conviction threshold ────────────
 
 def test_kscore_at_conviction_threshold_scores_positive():

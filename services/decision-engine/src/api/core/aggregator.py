@@ -112,8 +112,15 @@ async def _fetch_signal(client: httpx.AsyncClient, symbol: str, style: str) -> d
             data = r.json()
             # Endpoint returns a list (all signals) or a single dict
             if isinstance(data, list):
+                # T247-DECISIONENGINE-FETCHSIGNAL-MISATTRIBUTION: the previous
+                # `data[0] if data else None` fallback silently returned an ARBITRARY,
+                # unrelated symbol's signal whenever no entry matched the requested symbol —
+                # currently unreachable (signal-engine's /signals/{symbol}?style=... never
+                # actually returns a bare list for this query shape), but if that upstream
+                # response shape ever changes, this would have scored the wrong symbol's
+                # signal data instead of correctly falling through to the "no signal" path.
                 matching = [s for s in data if s.get("symbol", "").upper() == symbol.upper()]
-                return matching[0] if matching else (data[0] if data else None)
+                return matching[0] if matching else None
             return data
     except Exception as exc:
         log.warning("decision.signal_fetch_failed", symbol=symbol, error=str(exc))

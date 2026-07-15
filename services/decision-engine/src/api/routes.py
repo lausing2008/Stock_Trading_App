@@ -111,7 +111,14 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
     research_rec   = None
     research_score = None
     if research_data:
-        research_rec   = research_data.get("recommendation") or research_data.get("ai_verdict", {}).get("final_recommendation")
+        # T247-DECISIONENGINE-DEAD-AIVERDICT-FALLBACK: removed the `or
+        # research_data.get("ai_verdict", {})...` fallback — research_data here always comes
+        # from GET /research/{symbol}/summary (research-engine's get_research_summary(),
+        # which returns only {recommendation, overall_score, confidence, generated_at}, never
+        # an ai_verdict key, and recommendation is always one of STRONG BUY/BUY/WATCH/AVOID/
+        # SELL/INSUFFICIENT DATA — never None/empty). The fallback branch was permanently
+        # unreachable dead code.
+        research_rec   = research_data.get("recommendation")
         research_score = research_data.get("overall_score")
         if research_score is not None:
             research_score = float(research_score)
@@ -228,6 +235,7 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
     # 10. T203: Optional LLM scoring layer (after hard rejects, before final verdict)
     llm_verdict_str: str | None = None
     llm_reasoning: str | None = None
+    llm_verdict_overridden_by_sizing = False
     if cfg.get("llm_scoring_enabled", False):
         llm_adj, llm_reasoning = await score_with_llm(
             symbol=symbol, style=style,
@@ -279,6 +287,13 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         )
         if _combined_mult < _MIN_COMBINED_MULT:
             verdict = "SKIP"
+            # T247-DECISIONENGINE-LLMVERDICT-ORDERING: llm_verdict_str was computed earlier
+            # from the LLM's own standalone view and is NOT re-derived here — this flag makes
+            # the resulting verdict/llm_verdict disagreement (e.g. llm_verdict="BUY",
+            # verdict="SKIP") an explicit, intentional signal instead of a silent
+            # inconsistency.
+            if llm_verdict_str == "BUY":
+                llm_verdict_overridden_by_sizing = True
             _micro_position_reason = (
                 f"Combined sizing multiplier {_combined_mult:.3f} below floor {_MIN_COMBINED_MULT} "
                 f"— would open a dust position, skipping instead"
@@ -298,6 +313,7 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         score=score, min_score=min_score,
         regime=regime_state, latency_ms=latency,
         llm_verdict=llm_verdict_str,
+        llm_verdict_overridden_by_sizing=llm_verdict_overridden_by_sizing,
     )
 
     return DecisionResult(
@@ -310,6 +326,7 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         latency_ms=latency,
         timestamp=datetime.now(timezone.utc).isoformat(),
         llm_verdict=llm_verdict_str,
+        llm_verdict_overridden_by_sizing=llm_verdict_overridden_by_sizing,
         llm_reasoning=llm_reasoning,
     )
 

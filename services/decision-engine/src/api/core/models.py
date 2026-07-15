@@ -94,6 +94,14 @@ class DecisionResult(BaseModel):
     # T203: LLM reasoning layer (optional — only populated when llm_scoring_enabled=True)
     llm_verdict: str | None = None            # BUY | HOLD | SKIP from Claude
     llm_reasoning: str | None = None         # one-sentence rationale
+    # T247-DECISIONENGINE-LLMVERDICT-ORDERING: llm_verdict reflects the LLM's OWN standalone
+    # view, computed before the micro-position sizing-floor check (routes.py's
+    # _MIN_COMBINED_MULT) can later override the final `verdict` to SKIP. The two fields can
+    # legitimately disagree (llm_verdict="BUY", verdict="SKIP") when the LLM liked the trade
+    # but stacked sizing multipliers made the resulting position too small to be worth taking
+    # — this flag makes that an explicit, intentional signal rather than a silent
+    # inconsistency a consumer might mistake for a bug.
+    llm_verdict_overridden_by_sizing: bool = False
 
 
 class BatchDecisionRequest(BaseModel):
