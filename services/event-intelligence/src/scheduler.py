@@ -30,6 +30,14 @@ async def job_sync_economic():
     await _run("sync_economic", economic.sync_fred())
 
 
+async def job_sync_fred_release_dates():
+    # T249-MARKETMOVER-P0: distinct from sync_fred() above — that writes reference-period-
+    # dated rows (e.g. event_date=2026-06-01 for June's CPI data). This writes the REAL
+    # publication-date calendar (e.g. 2026-07-14, when June's CPI was actually released),
+    # which is what any "alert before/after the announcement" feature needs to schedule off.
+    await _run("sync_fred_release_dates", economic.sync_fred_release_dates())
+
+
 async def job_sync_earnings():
     await _run("sync_earnings", earnings.sync_all_earnings())
 
@@ -95,8 +103,13 @@ async def start_scheduler():
     except Exception as exc:
         log.warning("event_sched.fomc_seed_fail", error=str(exc))
 
+    # T249-MARKETMOVER-P0: seed the real release-date calendar immediately at startup too,
+    # so a fresh deploy doesn't leave the calendar empty until the next 06:15 cron run.
+    asyncio.create_task(job_sync_fred_release_dates())
+
     # Daily sync jobs (UTC times)
     _scheduler.add_job(job_sync_economic,      "cron", hour=6,  minute=0,  id="sync_economic")
+    _scheduler.add_job(job_sync_fred_release_dates, "cron", hour=6, minute=15, id="sync_fred_release_dates")
     _scheduler.add_job(job_sync_earnings,      "cron", hour=6,  minute=30, id="sync_earnings")
     _scheduler.add_job(job_sync_insider,       "cron", hour=7,  minute=0,  id="sync_insider")
     _scheduler.add_job(job_sync_congress,      "cron", hour=7,  minute=30, id="sync_congress")
