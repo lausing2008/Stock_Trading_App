@@ -91,6 +91,31 @@ function OverviewTab() {
         ))}
       </div>
 
+      {/* T249-MARKETMOVER-P2: latest macro fast-reaction */}
+      {ov.latest_macro_reaction && (
+        <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: 8, padding: '16px 20px', marginBottom: 24 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+            <h3 style={{ color: '#d1d5db', fontSize: 13, fontWeight: 600, margin: 0 }}>
+              📈 LATEST MACRO REACTION — {ov.latest_macro_reaction.title}
+            </h3>
+            {ov.latest_macro_reaction.generated_at && (
+              <span style={{ color: '#6b7280', fontSize: 11 }}>
+                as of {new Date(ov.latest_macro_reaction.generated_at).toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric' })} ET
+              </span>
+            )}
+          </div>
+          <div style={{ color: '#9ca3af', fontSize: 12, marginBottom: 8 }}>
+            Actual: <strong style={{ color: '#f9fafb' }}>{ov.latest_macro_reaction.actual_value}</strong>
+            {ov.latest_macro_reaction.previous_value != null && (
+              <> · Previous: {ov.latest_macro_reaction.previous_value}</>
+            )}
+          </div>
+          <p style={{ color: '#e5e7eb', fontSize: 13, lineHeight: 1.5, margin: 0 }}>
+            {ov.latest_macro_reaction.reaction_text}
+          </p>
+        </div>
+      )}
+
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 24 }}>
         {/* Top insider buys */}
         <div>

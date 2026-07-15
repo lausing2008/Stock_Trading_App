@@ -112,3 +112,22 @@ def test_earnings_reaction_check_is_registered_as_a_scheduled_job():
     start_scheduler()'s add_job calls, not just exist as an unused function."""
     assert 'check_earnings_reactions,' in _source
     assert 'id="earnings_reaction_check"' in _source
+
+
+# ── T249-MARKETMOVER-P2: check_macro_reaction_alerts() wiring ──────────────────
+
+def test_macro_reaction_alert_check_is_registered_as_a_scheduled_job():
+    assert 'check_macro_reaction_alerts,' in _source
+    assert 'id="macro_reaction_alert_check"' in _source
+
+
+def test_macro_reaction_alerts_only_marks_sent_after_a_successful_send():
+    """The exact ordering discipline check_signal_alerts()/check_earnings_reactions() both
+    follow: reaction_sent_at must only advance inside the any_sent-gated branch, not
+    unconditionally — otherwise a fully-failed send cycle would still mark rows as sent and
+    silently drop the alert forever (no retry on the next minute's tick)."""
+    start = _source.index("def check_macro_reaction_alerts")
+    end = _source.index("\n\ndef check_signal_alerts", start)
+    body = _source[start:end]
+    assert "if any_sent:" in body
+    assert body.index("if any_sent:") < body.index("ev.reaction_sent_at = ")
