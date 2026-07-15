@@ -768,7 +768,7 @@ def _score_fundamental(fund: dict, sector: str = "Unknown", price: float = 0.0) 
 
 # ── Checklist ─────────────────────────────────────────────────────────────────
 
-def _build_checklist(tech: dict, fund: dict, ai: dict) -> dict:
+def _build_checklist(tech: dict, fund: dict, ai: dict, raw_fund: dict | None = None) -> dict:
     def item(label, status, note=""):
         return {"item": label, "status": status, "note": note}
 
@@ -784,7 +784,13 @@ def _build_checklist(tech: dict, fund: dict, ai: dict) -> dict:
     fcf_ok = (f.get("cash_flow") or {}).get("assessment") in ("Excellent", "Good")
     de = (f.get("balance_sheet") or {}).get("de_ratio")
     de_ok = de is not None and de < 2.0
-    inst_pct = ai.get("institutional_pct") or 0
+    # T247-RESEARCHENGINE-CHECKLIST-INSTOWNERSHIP: previously read ai.get("institutional_pct"),
+    # a free-form LLM-guessed field with no scale/unit instruction in the prompt — could disagree
+    # with the real institutional_ownership.pct shown elsewhere in the same report on both source
+    # (guess vs. real data) and scale. Use the real injected value via the same
+    # _institutional_ownership_pct() helper the report body itself uses, falling back to the AI
+    # guess only when the real fundamentals data (raw_fund) isn't available at all.
+    inst_pct = _institutional_ownership_pct(raw_fund) if raw_fund else (ai.get("institutional_pct") or 0)
     moat = ai.get("moat_rating", "")
 
     layer1 = [
@@ -1669,7 +1675,7 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
     if report_quality == "fallback":
         recommendation = "INSUFFICIENT DATA"
 
-    checklist = _build_checklist(tech, fund_scores, ai)
+    checklist = _build_checklist(tech, fund_scores, ai, raw_fund=fund)
     position = _position_size(tech, req.portfolio_size, req.max_risk_pct, price)
 
     report = {
