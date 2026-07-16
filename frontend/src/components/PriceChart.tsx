@@ -136,8 +136,23 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
   const [showRSI,     setShowRSI]     = useState(false);
   const [showMACD,    setShowMACD]    = useState(true);
   const [showSignals, setShowSignals] = useState(true);
-  // Volume profile: 'off' | 'session' (current trading session only) | 'range' (whole visible range)
-  const [volumeProfileMode, setVolumeProfileMode] = useState<'off' | 'session' | 'range'>('off');
+  // Volume profile: 'off' | 'session' (current trading session only) | 'range' (whole visible
+  // window) | 'fixed' (user click-selected start/end range — the real Fixed Range VP tool).
+  const [volumeProfileMode, setVolumeProfileMode] = useState<'off' | 'session' | 'range' | 'fixed'>('off');
+  // Fixed Range VP selection state: 'idle' (not selecting) -> 'picking-start' (armed, waiting
+  // for first click) -> 'picking-end' (first click done, waiting for second click) -> back to
+  // 'idle' once both points are picked and fixedRangeSelection is set. The first click's bar
+  // index is held in a ref (not state) so it doesn't trigger a chart rebuild on its own —
+  // only fixedRangeSelection (set once, on the second click) should do that.
+  const [fixedRangePickState, setFixedRangePickState] = useState<'idle' | 'picking-start' | 'picking-end'>('idle');
+  const [fixedRangeSelection, setFixedRangeSelection] = useState<{ startIdx: number; endIdx: number } | null>(null);
+  const fixedRangeStartIdxRef = useRef<number | null>(null);
+  // Bumped every time the main chart-rebuild effect creates a new chart instance, so the
+  // separate click-subscription effect below always resubscribes to the CURRENT instance —
+  // guards against the case where the user starts picking a Fixed Range, then also toggles
+  // an unrelated overlay (e.g. SMA) before finishing the 2 clicks, which would otherwise
+  // rebuild the chart out from under an already-subscribed, now-stale click handler.
+  const [chartInstanceVersion, setChartInstanceVersion] = useState(0);
 
   // ── Intraday 5m state ─────────────────────────────────────────────────────
   const [intradayPrices, setIntradayPrices] = useState<Price[] | null>(null);
@@ -203,9 +218,16 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
 
   const volumeProfile = useMemo(() => {
     if (volumeProfileMode === 'off' || activePrices.length === 0) return null;
+    if (volumeProfileMode === 'fixed') {
+      if (!fixedRangeSelection) return null;
+      const { startIdx, endIdx } = fixedRangeSelection;
+      const lo = Math.min(startIdx, endIdx), hi = Math.max(startIdx, endIdx);
+      const bars = activePrices.slice(lo, hi + 1);
+      return computeVolumeProfile(bars, 24);
+    }
     const bars = volumeProfileMode === 'session' ? sessionBars(activePrices) : activePrices;
     return computeVolumeProfile(bars, 24);
-  }, [volumeProfileMode, activePrices]);
+  }, [volumeProfileMode, activePrices, fixedRangeSelection]);
 
   useEffect(() => {
     if (!mainRef.current || activePrices.length === 0) return;
@@ -259,13 +281,21 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
     // render scope (also used by the legend readout below) rather than recomputing here.
     let vpPrimitive: VolumeProfilePrimitive | null = null;
     if (volumeProfile && activePrices.length > 0) {
-      const profileBars = volumeProfileMode === 'session' ? sessionBars(activePrices) : activePrices;
-      const anchorTime = isIntraday
-        ? toIntradayTime(profileBars[0].ts) as unknown as Time
-        : toTime(profileBars[0].ts);
-      vpPrimitive = new VolumeProfilePrimitive(chart, candles);
-      vpPrimitive.setData({ time: anchorTime, profile: volumeProfile, width: profileBars.length });
-      candles.attachPrimitive(vpPrimitive);
+      const profileBars = volumeProfileMode === 'session' ? sessionBars(activePrices)
+        : volumeProfileMode === 'fixed' && fixedRangeSelection
+          ? activePrices.slice(
+              Math.min(fixedRangeSelection.startIdx, fixedRangeSelection.endIdx),
+              Math.max(fixedRangeSelection.startIdx, fixedRangeSelection.endIdx) + 1,
+            )
+          : activePrices;
+      if (profileBars.length > 0) {
+        const anchorTime = isIntraday
+          ? toIntradayTime(profileBars[0].ts) as unknown as Time
+          : toTime(profileBars[0].ts);
+        vpPrimitive = new VolumeProfilePrimitive(chart, candles);
+        vpPrimitive.setData({ time: anchorTime, profile: volumeProfile, width: profileBars.length });
+        candles.attachPrimitive(vpPrimitive);
+      }
     }
 
     // ── Signal BUY/SELL markers (daily only, transition points only) ──────
@@ -518,6 +548,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
     }
 
     chartRef.current = chart;
+    setChartInstanceVersion(v => v + 1);
 
     function updateSrLabels() {
       if (!mainRef.current) return;
@@ -648,7 +679,37 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       chartRef.current = null;
       setSrLabels([]);
     };
-  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile]);
+  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
+
+  // ── Fixed Range VP: click-to-pick start/end selection ───────────────────
+  // Deliberately a SEPARATE, lightweight effect from the main chart-rebuild effect above —
+  // subscribing/unsubscribing a click handler on the existing chart instance (via chartRef)
+  // instead of recreating the whole chart on every click. No native drag-select gesture
+  // exists in lightweight-charts (only click/dblclick/crosshair-move) — the standard pattern
+  // (matching TradingView's own drawing tools and most community plugins) is two sequential
+  // clicks: first click records the start bar (held in a ref, no rebuild), second click
+  // finalizes fixedRangeSelection (state — this DOES trigger the main effect once, to
+  // actually draw the new profile), using `param.logical` (a bar index) rather than pixel
+  // coordinates so the selection is always bar-aligned.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || volumeProfileMode !== 'fixed' || fixedRangePickState === 'idle') return;
+
+    const clickHandler = (param: { logical?: number }) => {
+      if (param.logical == null) return;
+      const idx = Math.max(0, Math.min(activePrices.length - 1, Math.round(param.logical)));
+      if (fixedRangePickState === 'picking-start') {
+        fixedRangeStartIdxRef.current = idx;
+        setFixedRangePickState('picking-end');
+      } else if (fixedRangePickState === 'picking-end') {
+        const startIdx = fixedRangeStartIdxRef.current ?? idx;
+        setFixedRangeSelection({ startIdx, endIdx: idx });
+        setFixedRangePickState('idle');
+      }
+    };
+    chart.subscribeClick(clickHandler);
+    return () => chart.unsubscribeClick(clickHandler);
+  }, [volumeProfileMode, fixedRangePickState, activePrices, chartInstanceVersion]);
 
   const btn = (active: boolean, label: string, onClick: () => void, color?: string) => (
     <button
@@ -735,8 +796,29 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
           options={[
             { key: 'vp_session', label: 'Session VP', checked: volumeProfileMode === 'session', onToggle: () => setVolumeProfileMode(m => m === 'session' ? 'off' : 'session'), color: '#60a5fa', title: 'Profiles only today\'s bars — shows where volume concentrated during the current trading session.' },
             { key: 'vp_range',   label: 'Range VP',    checked: volumeProfileMode === 'range',   onToggle: () => setVolumeProfileMode(m => m === 'range' ? 'off' : 'range'),     color: '#fbbf24', title: 'Profiles the whole currently-visible chart window — shows where volume concentrated across the entire range you\'re looking at.' },
+            { key: 'vp_fixed',   label: 'Fixed Range VP', checked: volumeProfileMode === 'fixed', onToggle: () => {
+                if (volumeProfileMode === 'fixed') {
+                  setVolumeProfileMode('off'); setFixedRangePickState('idle'); setFixedRangeSelection(null);
+                } else {
+                  setVolumeProfileMode('fixed'); setFixedRangePickState('picking-start'); setFixedRangeSelection(null);
+                }
+              }, color: '#a78bfa', title: 'Click a start point and an end point on the chart (e.g. a swing low and swing high) to profile only that exact range — matches TradingView\'s Fixed Range Volume Profile tool.' },
           ]}
         />
+
+        {volumeProfileMode === 'fixed' && fixedRangePickState !== 'idle' && (
+          <span className="px-2 py-1 rounded bg-violet-900/40 border border-violet-500/50 text-violet-300 text-xs">
+            {fixedRangePickState === 'picking-start' ? 'Click a start point on the chart…' : 'Now click an end point…'}
+          </span>
+        )}
+        {volumeProfileMode === 'fixed' && fixedRangePickState === 'idle' && fixedRangeSelection && (
+          <button
+            onClick={() => setFixedRangePickState('picking-start')}
+            className="px-2 py-1 rounded border border-slate-700 text-slate-400 hover:border-violet-500 hover:text-violet-300 text-xs"
+          >
+            Re-pick range
+          </button>
+        )}
 
         {isIntraday && <span className="text-slate-600 ml-1">5-min</span>}
 
@@ -767,7 +849,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
           title="Volume Profile: the blue horizontal bars on the chart show how much volume traded at each price level. Longer bar = more agreement on that price."
         >
           <span className="text-slate-500 not-italic font-sans">
-            {volumeProfileMode === 'session' ? 'Session VP' : 'Range VP'}
+            {volumeProfileMode === 'session' ? 'Session VP' : volumeProfileMode === 'fixed' ? 'Fixed Range VP' : 'Range VP'}
           </span>
           <span style={{ color: '#fbbf24' }} title="Point of Control — the single price level with the most volume traded. Often acts as a magnet/support-resistance level.">
             POC {f2(volumeProfile.poc)}
