@@ -1834,6 +1834,14 @@ right now:
   below it, has nothing left to retrace into from here and is skipped. Among the remaining
   candidates, the NEAREST one to the current price is used — the one most likely to actually
   get touched next.
+- **LONG vs. SHORT is not fixed — it's derived from whichever gap wins the pick above** (a
+  user asked this directly, since the card only ever seemed to show one direction for a given
+  stock at a given moment). If the nearest actionable gap is bullish, the card shows a LONG
+  plan; if it's bearish, SHORT. It can flip for the same stock at a different time simply
+  because price moved and a different gap became the nearest actionable one. It is NOT tied to
+  the SHORT/SWING/LONG/GROWTH signal-horizon tabs elsewhere on the page — FVG is a daily-bar
+  chart structure, not a per-horizon signal, so switching horizon tabs does not change which
+  gap this card picks.
 - **Entry** = the gap's midpoint (not its exact edge — edges are rarely touched with pixel
   precision; the midpoint is the standard, more realistic fill assumption).
 - **Stop** = just past the gap's FAR edge (the bottom for a long, the top for a short) — the
