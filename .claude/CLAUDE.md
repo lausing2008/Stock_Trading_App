@@ -1321,3 +1321,110 @@ blocks a real deploy.
 `httpx`'s logger to WARNING (`docker exec <container> python3 -c "import logging;
 print(logging.getLogger('httpx').level)"` should print `30`) before assuming a new key-bearing
 API call is safe to add.
+
+---
+
+## Feature Reference: Volume Profile (Tier 250) — How to Read It
+
+**Built 2026-07-16.** User asked for a TradingView-style footprint chart on the stock detail
+page. True footprint charts (buy/sell volume split per price level) need tick/quote data no
+current data source (yfinance, Alpha Vantage, the current Polygon aggregates-only
+integration) provides without a paid Polygon upgrade — deferred as a separate, larger project.
+What's built instead is a **volume profile**: POC/VAH/VAL/HVN using the standard
+price-bucketing approximation (each bar's volume spread across its high-low range, bucketed
+by price), forked from TradingView's own official `lightweight-charts` plugin-examples
+volume-profile primitive.
+
+**How to read it** (this exact explanation is also in the UI as hover tooltips on the
+POC/VAH/VAL/HVN readout row and the Session/Range dropdown options — added after a user asked
+"how do I read this?" with no in-app explanation available):
+
+- **The blue horizontal bars are NOT tied to any single candle.** Each bar represents a
+  **price level**, and its length is the total volume summed across every bar in the profiled
+  range whose high-low span touched that price level — a sideways aggregation across time,
+  projected onto the price (y) axis. If 20 different candles all had prices passing through
+  $650-$660, all of their volume adds together into the one bucket at that price level. This
+  is exactly why the profile is drawn to the left of the price axis rather than aligned under
+  any particular candle: it collapses the time dimension entirely and only answers "how much
+  total volume traded at each price," not "when."
+- **POC (Point of Control, orange)** — the single price level with the most volume traded.
+  Usually the most important line on the profile; acts like a magnet/support-resistance level
+  since it's the price the market most agreed was "fair" for that period.
+- **VAH / VAL (Value Area High/Low, blue)** — together bracket the price range containing
+  70% of total volume (the standard value-area percentage, matching TradingView's own
+  default). Price outside this band sat in comparatively under-traded, "thin" territory.
+- **HVN (High Volume Nodes)** — specific price levels with locally peaking volume (real
+  interior peaks in the bucket histogram, not just the single POC). These tend to act as
+  support/resistance on revisit, same reasoning as POC but at a finer granularity.
+- **Low Volume Nodes (LVN)** are computed (`VolumeProfileResult.lvn`) but not currently shown
+  in the readout row — they mark price zones the market moved through quickly, which tend to
+  get moved through fast again on a revisit (the opposite behavior of HVN/POC).
+
+**Two modes** (Volume Profile dropdown in the chart toolbar):
+- **Session VP** — profiles only the current trading session's bars. Useful for intraday
+  support/resistance.
+- **Range VP** — profiles the entire currently-visible chart window (whatever date range is
+  currently selected/zoomed). This is close to but not identical to TradingView's own
+  click-and-drag Fixed Range Volume Profile tool, which lets you drag-select an arbitrary
+  sub-range — that specific interaction wasn't built in this v1 (tracked as a known gap in
+  the T250 tracker entry).
+
+**What to check if this looks wrong**: `src/lib/volumeProfile.ts`'s `computeVolumeProfile()`
+is the only place this math lives — 10 tests in `volumeProfile.test.ts` cover POC placement,
+VAH/VAL bracketing at exactly 70% volume, HVN detection, and edge cases (degenerate/zero-
+volume bars). If a specific stock's profile looks implausible, the first thing to check is
+whether `numBuckets` (currently hardcoded to 24 in `PriceChart.tsx`) is too coarse for that
+stock's price range — a stock with a very wide 52-week range bucketed into only 24 buckets
+will show chunkier, less precise bars than a narrower-range stock.
+
+---
+
+## Feature Reference: Chart Toolbar Redesign + Intraday Indicators (Tier 250 follow-up)
+
+**Built 2026-07-16**, same day as Volume Profile above, after live user feedback found the
+toolbar had become overcrowded (~15 flat SMA/EMA/BB/VWAP/Sig/RSI/MACD buttons + the new VP
+buttons, all on one wrapping row).
+
+**Toolbar**: redesigned into `frontend/src/components/ToolbarDropdown.tsx` — a reusable
+checkbox-list dropdown (open/close/outside-click pattern matches `_app.tsx`'s existing
+`NavGroup` nav dropdown). Three groups now: **Indicators** (SMA/EMA/BB/Sig), **Panels**
+(RSI/MACD), **Volume Profile** (Session/Range). Vol/VWAP stay as quick single-click toggles
+since they're the most frequently used.
+
+**Page width**: `.container-xl` in `globals.css` widened 1200px → 1700px — the whole app
+(every page, not just stock detail) was capped well below typical monitor widths.
+
+**Chart height**: main candlestick chart 420px → 600px, ahead of a future drawing-tools
+(trendline) feature the user flagged wanting next.
+
+**Intraday indicators fix**: SMA/EMA/BB/RSI/MACD previously disappeared entirely on
+intraday timeframes (5m/15m/1h/4h) because the technical-analysis service only computes
+indicator series for daily bars — the intraday API response has no `indicators` field at
+all. Fixed with new `frontend/src/lib/indicators.ts`, computing these client-side from the
+already-fetched intraday bars (same local-computation approach already used in
+`PriceChart.tsx` for VWAP/EMA200), hand-translating `shared/common/indicators.py`'s exact
+pandas formulas.
+
+**A real bug caught before shipping**: the first version of `indicators.ts` wrongly assumed
+pandas' `ewm(adjust=False, min_periods=window)` seeds its recursion with an SMA of the first
+`window` values. Cross-checked directly against a real `pandas.Series(...).ewm(...)` call
+(not just re-derived from the JS implementation's own output) and found `adjust=False`
+actually seeds at the FIRST value unconditionally (`y[0] = x[0]`) and recurses from there —
+`min_periods` only masks early output as null, it does not change the seed. This would have
+silently produced wrong EMA/RSI/MACD values on every intraday chart (e.g. `EMA[2]` of
+`[10,20,30,40,50]` with window=3: the shipped-and-caught-wrong answer was 20, the
+pandas-verified correct answer is 22.5). Rewrote all 11 `indicators.test.ts` assertions to
+check exact values captured from real pandas runs rather than internally-consistent-but-
+unverified expectations.
+
+**Design invariant**: any future hand-translated formula (pandas, numpy, or otherwise) that
+"looks right" and produces plausible-looking numbers should still be cross-checked against a
+real run of the reference implementation on a fixed, hand-picked input — a test suite that
+only re-derives its expected values from the same (possibly wrong) implementation under test
+will never catch this class of bug, no matter how many tests it has.
+
+**Test infrastructure**: this is also the first time Vitest was added to this repo (zero
+JS/TS test tooling existed before 2026-07-16) — pinned to v1.6.1 rather than the latest v4.x
+after discovering v4 requires a Node `styleText` export the local dev environment's Node
+18.19.1 doesn't have (production's Docker build uses `node:20-alpine`, where v4 would have
+worked, but v1.x was kept for local-dev compatibility). Run via `npm test` in `frontend/`.
