@@ -14,6 +14,8 @@ export type ToolbarDropdownOption = {
   checked: boolean;
   onToggle: () => void;
   color?: string;
+  /** Hover tooltip explaining what this option does — shown as a native title attribute. */
+  title?: string;
 };
 
 export function ToolbarDropdown({ label, options }: { label: string; options: ToolbarDropdownOption[] }) {
@@ -48,6 +50,7 @@ export function ToolbarDropdown({ label, options }: { label: string; options: To
           {options.map(opt => (
             <label
               key={opt.key}
+              title={opt.title}
               className="flex items-center gap-2 px-2 py-1.5 rounded text-xs text-slate-300 hover:bg-slate-800/70 cursor-pointer whitespace-nowrap"
             >
               <input type="checkbox" checked={opt.checked} onChange={opt.onToggle} className="accent-indigo-500" />

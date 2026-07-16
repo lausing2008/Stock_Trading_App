@@ -733,8 +733,8 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
         <ToolbarDropdown
           label="Volume Profile"
           options={[
-            { key: 'vp_session', label: 'Session VP', checked: volumeProfileMode === 'session', onToggle: () => setVolumeProfileMode(m => m === 'session' ? 'off' : 'session'), color: '#60a5fa' },
-            { key: 'vp_range',   label: 'Range VP',    checked: volumeProfileMode === 'range',   onToggle: () => setVolumeProfileMode(m => m === 'range' ? 'off' : 'range'),     color: '#fbbf24' },
+            { key: 'vp_session', label: 'Session VP', checked: volumeProfileMode === 'session', onToggle: () => setVolumeProfileMode(m => m === 'session' ? 'off' : 'session'), color: '#60a5fa', title: 'Profiles only today\'s bars — shows where volume concentrated during the current trading session.' },
+            { key: 'vp_range',   label: 'Range VP',    checked: volumeProfileMode === 'range',   onToggle: () => setVolumeProfileMode(m => m === 'range' ? 'off' : 'range'),     color: '#fbbf24', title: 'Profiles the whole currently-visible chart window — shows where volume concentrated across the entire range you\'re looking at.' },
           ]}
         />
 
@@ -759,17 +759,29 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
         </div>
       </div>
 
-      {/* Volume profile readout — POC / VAH / VAL */}
+      {/* Volume profile readout — POC / VAH / VAL. title= tooltips give a plain-English
+          explanation on hover since there's no other in-app documentation for this feature. */}
       {volumeProfile && (
-        <div className="flex flex-wrap items-center gap-4 px-3 py-1.5 text-xs font-mono bg-slate-900/60 border-b border-slate-800/50">
+        <div
+          className="flex flex-wrap items-center gap-4 px-3 py-1.5 text-xs font-mono bg-slate-900/60 border-b border-slate-800/50"
+          title="Volume Profile: the blue horizontal bars on the chart show how much volume traded at each price level. Longer bar = more agreement on that price."
+        >
           <span className="text-slate-500 not-italic font-sans">
             {volumeProfileMode === 'session' ? 'Session VP' : 'Range VP'}
           </span>
-          <span style={{ color: '#fbbf24' }}>POC {f2(volumeProfile.poc)}</span>
-          <span style={{ color: '#60a5fa' }}>VAH {f2(volumeProfile.vah)}</span>
-          <span style={{ color: '#60a5fa' }}>VAL {f2(volumeProfile.val)}</span>
+          <span style={{ color: '#fbbf24' }} title="Point of Control — the single price level with the most volume traded. Often acts as a magnet/support-resistance level.">
+            POC {f2(volumeProfile.poc)}
+          </span>
+          <span style={{ color: '#60a5fa' }} title="Value Area High/Low — together bracket the price range containing 70% of all traded volume. Price outside this band is comparatively under-traded.">
+            VAH {f2(volumeProfile.vah)}
+          </span>
+          <span style={{ color: '#60a5fa' }} title="Value Area High/Low — together bracket the price range containing 70% of all traded volume. Price outside this band is comparatively under-traded.">
+            VAL {f2(volumeProfile.val)}
+          </span>
           {volumeProfile.hvn.length > 0 && (
-            <span className="text-slate-500">HVN {volumeProfile.hvn.slice(0, 3).map(v => v.toFixed(2)).join(', ')}</span>
+            <span className="text-slate-500" title="High Volume Nodes — price levels with locally peaking volume. Tend to act as support/resistance since the market has 'agreed' on these prices before.">
+              HVN {volumeProfile.hvn.slice(0, 3).map(v => v.toFixed(2)).join(', ')}
+            </span>
           )}
         </div>
       )}
