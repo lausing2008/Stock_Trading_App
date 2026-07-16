@@ -40,6 +40,14 @@ type Props = {
     target1?: number | null;
     target2?: number | null;
   } | null;
+  /** T252: ATR/Position-Sizer-derived entry/stop/target — always available (no LLM call
+   * required, unlike gamePlanLevels), drawn distinctly so it doesn't visually collide with
+   * an active game plan overlay. */
+  riskRewardLevels?: {
+    entry?: number | null;
+    stop?: number | null;
+    target?: number | null;
+  } | null;
   /** T230: External intraday bars (15m/1h/4h) — when provided, forces intraday rendering mode */
   intradayOverride?: Price[] | null;
   /** T230: Comparison overlay data (daily bars for a second symbol, e.g. SPY) */
@@ -118,7 +126,7 @@ function computeVolMA(priceData: Price[], period = 20): (number | null)[] {
 type SmaVals  = { sma_20: number|null; sma_50: number|null; sma_200: number|null; ema_20: number|null; ema_50: number|null; ema_200: number|null };
 type MacdVals = { macd: number|null; signal: number|null; hist: number|null };
 
-export default function PriceChart({ symbol, prices, indicators, levels, signalMarkers, patterns, gamePlanLevels, intradayOverride, compareData }: Props) {
+export default function PriceChart({ symbol, prices, indicators, levels, signalMarkers, patterns, gamePlanLevels, riskRewardLevels, intradayOverride, compareData }: Props) {
   const mainRef = useRef<HTMLDivElement>(null);
   const rsiRef  = useRef<HTMLDivElement>(null);
   const macdRef = useRef<HTMLDivElement>(null);
@@ -552,6 +560,28 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       }
     }
 
+    // ── T252: Risk/Reward levels — ATR stop / nearest support / analyst target, the same
+    // values already shown as numbers in the Position Sizer card, drawn on the chart itself.
+    // Only shown when there's no active LLM game plan overlay (gamePlanLevels) — the two
+    // are alternative "where's my entry/stop/target" views and would visually collide if
+    // both rendered at once; gamePlanLevels (user-triggered, LLM-backed) takes priority when
+    // it exists since it's a more deliberate, specific plan than the always-on ATR default.
+    if (!isIntraday && !gamePlanLevels && riskRewardLevels) {
+      const rrl = riskRewardLevels;
+      if (rrl.entry && rrl.entry > 0) {
+        candles.createPriceLine({ price: rrl.entry, color: '#facc15', lineWidth: 2 as const, lineStyle: LineStyle.Solid, axisLabelVisible: true, title: 'Entry' });
+      }
+      if (rrl.stop && rrl.stop > 0) {
+        candles.createPriceLine({ price: rrl.stop, color: '#f87171', lineWidth: 2 as const, lineStyle: LineStyle.Solid, axisLabelVisible: true, title: 'Stop' });
+      }
+      if (rrl.target && rrl.target > 0) {
+        const rrLabel = (rrl.entry && rrl.stop && rrl.entry > 0 && Math.abs(rrl.entry - rrl.stop) > 0)
+          ? ` (${(Math.abs(rrl.target - rrl.entry) / Math.abs(rrl.entry - rrl.stop)).toFixed(1)}:1)`
+          : '';
+        candles.createPriceLine({ price: rrl.target, color: '#38bdf8', lineWidth: 1 as const, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: `Target${rrLabel}` });
+      }
+    }
+
     // ── T230: Normalized comparison overlay (daily mode only) ─────────────────
     // Renders a dashed line showing the compare symbol's % return from period start,
     // on a separate price scale so it doesn't interfere with the main price axis.
@@ -718,7 +748,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       chartRef.current = null;
       setSrLabels([]);
     };
-  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, showFVG, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
+  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, riskRewardLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, showFVG, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
 
   // ── Fixed Range VP: click-to-pick start/end selection ───────────────────
   // Deliberately a SEPARATE, lightweight effect from the main chart-rebuild effect above —

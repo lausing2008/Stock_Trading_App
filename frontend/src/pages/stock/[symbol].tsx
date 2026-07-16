@@ -1283,6 +1283,18 @@ Return ONLY valid JSON — no markdown, no prose:
                     stopLoss: gamePlan.stop_loss?.price ?? null,
                     target1: gamePlan.take_profit?.price ?? null,
                   } : null}
+                  riskRewardLevels={chartTf === '1d' ? (() => {
+                    const lpChart = allPrices?.find(p => p.symbol === symbol);
+                    const chartCurPx = lpChart?.price ?? data.prices?.at(-1)?.close ?? null;
+                    const chartNearestSupport = data.levels?.support_resistance
+                      ?.filter(l => chartCurPx == null || l.price < chartCurPx)
+                      .sort((a, b) => b.price - a.price)[0]?.price ?? null;
+                    return {
+                      entry: chartCurPx,
+                      stop: atrData?.stop_loss_2atr ?? chartNearestSupport ?? null,
+                      target: data.fundamentals?.target_price ?? null,
+                    };
+                  })() : null}
                   intradayOverride={
                     chartTf !== '1d' && chartTf !== '5m'
                       ? (tfPrices ?? null)
