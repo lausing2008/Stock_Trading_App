@@ -1879,3 +1879,32 @@ only place the detection math lives; `nearestActionableFvg()` in `fvgTradePlan.t
 place the trade-plan math lives. If a gap looks like it should be marked filled but isn't (or
 vice versa), check whether a later bar's range genuinely covers the FULL `[bottom, top]` span
 — a bar that pokes partway into the zone and reverses does NOT count as a fill by design.
+
+**Game Plan vs. FVG Trade Plan vs. T252 Risk/Reward lines — three DIFFERENT systems, not
+duplicates** (a user asked directly whether Game Plan and FVG are "the same or similar," after
+finding the chart cluttered with multiple sets of entry/stop/target lines at once):
+- **Game Plan** — on-demand, LLM-generated (Claude writes a specific plan with catalysts/risk
+  narrative in prose). `null` until a user explicitly clicks to request one.
+- **T252 Risk/Reward lines** (`riskRewardLevels` prop) — always-computed, ATR/nearest-support/
+  analyst-target-derived, the same numbers already shown as text in Position Sizer, just drawn
+  on the chart. No LLM call.
+- **Fair Value Gap Trade Plan** — always-computed, purely mechanical (3-candle imbalance
+  pattern), completely independent math from the other two, shown as its own separate card.
+
+**On-chart collision handling**: Game Plan and the T252 Risk/Reward lines are mutually
+exclusive on the chart itself — `riskRewardLevels` only renders `when !gamePlanLevels`, so
+opening a Game Plan hides the ATR-based lines rather than stacking both. The FVG Trade Plan
+card is NOT gated by either of these — it always shows independently whenever an actionable
+gap exists, since it lives in its own card below Position Sizer, not on the chart's price-line
+layer. This means a user can still see, at the same time: FVG's chart lines (toggle-controlled,
+see above) + either Game Plan's OR the T252 lines (never both) + the separate FVG Trade Plan
+card's own numbers — three distinct sources of "where's my entry" that are deliberately not
+merged into one, so a user can compare independent reads rather than have one silently pick a
+winner.
+
+**Chart decluttering (2026-07-16)**: a user reported the chart as too cluttered to read once
+S/R levels + 52-week High/Low + FVG lines + the new Risk/Reward lines + SMA/EMA curves were
+all stacking up with no way to turn any group off. Support/Resistance and 52-Week High/Low
+were changed from always-on to togglable (off by default) in the Indicators dropdown, matching
+the pattern already used for Fair Value Gaps — a user now opts into extra context instead of
+seeing everything at once unasked.

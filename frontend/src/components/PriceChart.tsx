@@ -145,6 +145,12 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
   const [showMACD,    setShowMACD]    = useState(true);
   const [showSignals, setShowSignals] = useState(true);
   const [showFVG,      setShowFVG]     = useState(true);
+  // T252-DECLUTTER: S/R levels + 52W High/Low used to always render — combined with FVG,
+  // Entry/Stop/Target, and indicator curves, this stacked up to 15+ overlapping lines with
+  // no way to turn any group off (a user reported the chart as too cluttered to read).
+  // Off by default now — a user opts into the extra context rather than seeing it unasked.
+  const [showSR,       setShowSR]      = useState(false);
+  const [show52W,      setShow52W]     = useState(false);
   // Volume profile: 'off' | 'session' (current trading session only) | 'range' (whole visible
   // window) | 'fixed' (user click-selected start/end range — the real Fixed Range VP tool).
   const [volumeProfileMode, setVolumeProfileMode] = useState<'off' | 'session' | 'range' | 'fixed'>('off');
@@ -284,7 +290,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
     }
 
     // ── 52-week high/low reference lines (daily only) ──────────────────────
-    if (!isIntraday && prices.length > 0) {
+    if (!isIntraday && show52W && prices.length > 0) {
       const bars52   = prices.slice(-252);
       const high52   = Math.max(...bars52.map(p => +p.high));
       const low52    = Math.min(...bars52.map(p => +p.low));
@@ -501,7 +507,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
 
     // ── S/R levels (daily mode only) ───────────────────────────────────────
     const lastClose = !isIntraday ? (activePrices.at(-1)?.close ?? null) : null;
-    const srLevels = !isIntraday
+    const srLevels = !isIntraday && showSR
       ? (levels?.support_resistance?.slice(0, 8) ?? []).map(lvl => ({
           ...lvl,
           kind: lastClose != null
@@ -748,7 +754,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       chartRef.current = null;
       setSrLabels([]);
     };
-  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, riskRewardLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, showFVG, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
+  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, riskRewardLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, showFVG, showSR, show52W, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
 
   // ── Fixed Range VP: click-to-pick start/end selection ───────────────────
   // Deliberately a SEPARATE, lightweight effect from the main chart-rebuild effect above —
@@ -851,6 +857,10 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
             { key: 'sig',    label: 'Signal markers',  checked: showSignals, onToggle: () => setShowSignals(v => !v), color: '#22c55e' },
             { key: 'fvg',    label: 'Fair Value Gaps', checked: showFVG, onToggle: () => setShowFVG(v => !v), color: '#22c55e',
               title: '3-candle price imbalance zones — price often retraces into these before continuing in the original direction. Solid = still open (unfilled); dotted = already filled by a later bar.' },
+            { key: 'sr',     label: 'Support/Resistance', checked: showSR, onToggle: () => setShowSR(v => !v), color: '#22c55e',
+              title: 'Pivot-clustered support (green) and resistance (red) price levels, off by default to keep the chart readable — turn on for extra context.' },
+            { key: '52w',    label: '52W High/Low', checked: show52W, onToggle: () => setShow52W(v => !v), color: '#facc15',
+              title: 'Trailing 52-week high and low reference lines, off by default to keep the chart readable — turn on for extra context.' },
           ]}
         />
 
