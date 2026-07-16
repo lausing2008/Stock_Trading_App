@@ -25,8 +25,17 @@ class IngestionError(Exception):
     pass
 
 
-def validate_ohlcv(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
-    """Reject bars with bad invariants (low>high, negative prices, etc)."""
+def validate_ohlcv(df: pd.DataFrame, symbol: str, allow_zero_volume: bool = False) -> pd.DataFrame:
+    """Reject bars with bad invariants (low>high, negative prices, etc).
+
+    allow_zero_volume: yfinance's prepost=True intraday bars (T230-CHARTING-PREMARKET) commonly
+    report volume=0 for real pre/post-market trades — a known yfinance quirk, not a sign of an
+    invalid bar the way volume=0 would be on a regular-session bar. Without this, every single
+    extended-hours bar was silently dropped, defeating the feature entirely (discovered via a
+    real ingest showing 342/576 fetched bars dropped, all zero-volume, all outside 9:30-16:00 ET).
+    Regular-session and daily bars keep the strict volume>0 check — real trading always has
+    nonzero volume there.
+    """
     if df.empty or not {"high", "low", "open", "close", "volume"}.issubset(df.columns):
         return df
     before = len(df)
@@ -34,7 +43,8 @@ def validate_ohlcv(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     df = df[(df["high"] >= df["low"]) & (df["high"] >= df["open"]) & (df["high"] >= df["close"])]
     df = df[(df["low"] <= df["open"]) & (df["low"] <= df["close"])]
     df = df[(df[["open", "high", "low", "close"]] > 0).all(axis=1)]
-    df = df[df["volume"] > 0]
+    if not allow_zero_volume:
+        df = df[df["volume"] > 0]
     dropped = before - len(df)
     if dropped:
         log.warning("ohlcv.drop_invalid", symbol=symbol, dropped=dropped)
@@ -139,12 +149,17 @@ def ingest_symbol(
         else:
             adapters = get_adapters(market, timeframe)
 
+        # T230-CHARTING-PREMARKET: only the US-intraday prepost=True path can legitimately
+        # produce real zero-volume bars (yfinance's extended-hours quirk) — daily/weekly bars
+        # and HK (no extended-hours session) keep the strict volume>0 invariant check.
+        allow_zero_volume = market == "US" and timeframe not in ("1d", "1w")
+
         last_err: Exception | None = None
         df: pd.DataFrame | None = None
         for adapter in adapters:
             try:
                 ohlcv = adapter.fetch_ohlcv(symbol, start, end, timeframe)
-                candidate = validate_ohlcv(ohlcv.df, symbol)
+                candidate = validate_ohlcv(ohlcv.df, symbol, allow_zero_volume=allow_zero_volume)
                 if not candidate.empty:
                     df = candidate
                     break
