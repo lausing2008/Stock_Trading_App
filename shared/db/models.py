@@ -1096,6 +1096,15 @@ class TuneHistory(Base):
     promoted: Mapped[bool] = mapped_column(Boolean)
     gate_failures: Mapped[list] = mapped_column(JSON, default=list)
     triggered_by: Mapped[str] = mapped_column(String(16), default="manual")  # manual | scheduled (Phase 5)
+    # SELFIMPROVE-NO-RETRO-FEEDBACK-LOOP: real win-rate/EV realized in SignalOutcome data
+    # AFTER this row's promoted change took effect — populated by a monthly backfill job,
+    # NULL until enough time + samples have accumulated to compute it (or if promoted=False,
+    # since a rejected change never affected live trading and has nothing to retro-check).
+    # This is what closes the loop from "we predicted this would help" (validation_ev_pct
+    # above) to "did it actually help" — every prior mechanism recorded only the former.
+    realized_ev_pct_after: Mapped[float | None] = mapped_column(Float, nullable=True)
+    realized_n_after: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    realized_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class CapeReading(Base):

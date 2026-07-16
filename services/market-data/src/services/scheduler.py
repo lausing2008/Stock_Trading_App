@@ -2417,6 +2417,28 @@ def _retrain_meta_model() -> None:
         _record_job_status("meta_model_retrain", "error", elapsed, str(exc))
 
 
+def _backfill_realized_ev() -> None:
+    """SELFIMPROVE-NO-RETRO-FEEDBACK-LOOP: monthly check of whether promoted tune_history
+    changes actually helped in the real trading that followed (realized_ev_pct_after).
+
+    Monthly, not weekly like the other calibration triggers in _weekly_full_refresh — the
+    endpoint's own wait floor (hold_days * 3, i.e. multiple weeks per style) means a weekly
+    call would mostly just find "too soon" for any row it hasn't already checked, so there's
+    nothing to gain from running it more often than this.
+    """
+    _t0 = time.monotonic()
+    try:
+        log.info("scheduler.backfill_realized_ev_start")
+        _post(f"{_settings.signal_engine_url}/signals/backfill_realized_ev")
+        elapsed = time.monotonic() - _t0
+        log.info("scheduler.backfill_realized_ev_triggered", elapsed_s=round(elapsed, 1))
+        _record_job_status("backfill_realized_ev", "ok", elapsed)
+    except Exception as exc:
+        elapsed = time.monotonic() - _t0
+        log.error("scheduler.backfill_realized_ev_failed", error=str(exc), exc_info=True)
+        _record_job_status("backfill_realized_ev", "error", elapsed, str(exc))
+
+
 def _retrain_position_scaling_gate() -> None:
     """T241-P5: weekly retrain of the position-scaling gate (conviction-based pullback-add
     classifier). Runs entirely in-process — mine -> label -> walk-forward train -> save to
@@ -4577,6 +4599,17 @@ def start_scheduler() -> None:
         _retrain_meta_model,
         CronTrigger(day_of_week="sun", day="1-7", hour=3, minute=0, timezone="UTC"),
         id="meta_model_monthly_retrain", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── SELFIMPROVE-NO-RETRO-FEEDBACK-LOOP: monthly realized-EV backfill ─────
+    # Checks whether tune_history rows promoted long enough ago actually helped in the real
+    # SignalOutcome data that followed. Offset an hour from meta_model_monthly_retrain (both
+    # first-Sunday-of-month) purely to avoid two cross-service POSTs firing in the same
+    # instant — no other dependency between them.
+    _scheduler.add_job(
+        _backfill_realized_ev,
+        CronTrigger(day_of_week="sun", day="1-7", hour=4, minute=0, timezone="UTC"),
+        id="backfill_realized_ev_monthly", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── T241-P5: weekly position-scaling gate retrain — every Sunday ─────────

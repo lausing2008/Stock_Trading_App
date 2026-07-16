@@ -112,6 +112,122 @@ log = get_logger("signals")
 router = APIRouter(prefix="/signals", tags=["signals"])
 
 
+# ── SELFIMPROVE-NO-RETRO-FEEDBACK-LOOP: close the loop on tune_history ────────
+# Every calibration mechanism (calibrate_ta_weights, calibrate_ml_weight, calibrate_
+# conviction_weights, tune_style_profiles, promotion_gate, signal_watchdog) writes a
+# tune_history row recording what it predicted a change would do (validation_ev_pct) — but
+# nothing ever checked whether a promoted change ACTUALLY helped in the real trading that
+# followed. This function is that check: it backfills realized_ev_pct_after on already-
+# promoted rows once enough real SignalOutcome data has accumulated after the change.
+
+_RETRO_MIN_SAMPLES = 50  # same statistical floor calibrate_ta_weights' walk-forward search uses
+_RETRO_MIN_WAIT_MULTIPLIER = 3  # wait at least 3x the style's own hold_days before checking —
+# one hold_days' worth only guarantees ONE trade cycle has closed, not enough samples to trust
+# a win rate; 3x gives room for a genuinely useful sample size to accumulate across multiple
+# signals landing over that period, without waiting so long the check becomes irrelevant.
+
+
+def _retro_ev_for(session: Session, style: str, market: str, since: "date") -> dict | None:
+    """Win-rate/EV for SignalOutcome rows in (style, market) with entry_date >= since,
+    using the exact same formula every other calibration mechanism in this file uses
+    (win_rate = wins/n, ev_pct = mean(pct_return) * 100 — see calibrate_ta_weights'
+    _stats_at() for the canonical version this mirrors). Returns None if fewer than
+    _RETRO_MIN_SAMPLES outcomes are available — not enough to trust yet, try again next run.
+    market="ALL" is this table's own documented convention for "don't filter by market"
+    (see _record_tune_history's docstring) — NOT a literal Stock.market value to match.
+    """
+    query = (
+        select(SignalOutcome)
+        .where(
+            SignalOutcome.horizon == SignalHorizon(style),
+            SignalOutcome.entry_date >= since,
+            SignalOutcome.is_correct.isnot(None),
+            SignalOutcome.pct_return.isnot(None),
+        )
+    )
+    if market != "ALL":
+        query = query.join(Stock, Stock.id == SignalOutcome.stock_id).where(Stock.market == market)
+    rows = session.execute(query).scalars().all()
+    if len(rows) < _RETRO_MIN_SAMPLES:
+        return None
+    wins = sum(1 for o in rows if o.is_correct)
+    win_rate = wins / len(rows)
+    ev_pct = (sum(o.pct_return for o in rows) / len(rows)) * 100
+    return {"n": len(rows), "win_rate": round(win_rate, 3), "ev_pct": round(ev_pct, 2)}
+
+
+@router.post("/backfill_realized_ev")
+def backfill_realized_ev(
+    session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
+):
+    """Backfill realized_ev_pct_after on promoted tune_history rows old enough that real
+    SignalOutcome data has accumulated since the change. Safe to re-run — only considers
+    rows where realized_ev_pct_after IS NULL, so an already-checked row is never re-touched
+    (each row gets exactly one realized-EV verdict, at whatever point it first clears the
+    sample floor, not a constantly-shifting rolling number).
+    """
+    candidates = session.execute(
+        select(TuneHistory).where(
+            TuneHistory.promoted.is_(True),
+            TuneHistory.realized_ev_pct_after.is_(None),
+        )
+    ).scalars().all()
+
+    checked = 0
+    updated = 0
+    skipped_too_soon = 0
+    skipped_invalid_style = 0
+    now = datetime.now(timezone.utc)
+
+    for row in candidates:
+        checked += 1
+        # BUY's hold_days (_OUTCOME_HOLD_DAYS) is used even for mechanisms that tune
+        # SELL-relevant params — it's the longer, more conservative window of the two, and
+        # this retro-check aggregates BOTH directions' outcomes together in _retro_ev_for()
+        # regardless (a tune_history row's style has no BUY/SELL split of its own), so a
+        # single, deliberately-cautious wait period is simpler and safer than trying to pick
+        # per-direction. style="ALL" (ml_fusion_weight, market-pooled mechanisms) has no
+        # single style's hold_days to use — fall back to the longest window across all
+        # styles as the most conservative wait available.
+        hold_days = _OUTCOME_HOLD_DAYS.get(row.style, max(_OUTCOME_HOLD_DAYS.values()))
+
+        row_ts = row.ts if row.ts.tzinfo else row.ts.replace(tzinfo=timezone.utc)
+        min_wait_until = row_ts + timedelta(days=hold_days * _RETRO_MIN_WAIT_MULTIPLIER)
+        if now < min_wait_until:
+            skipped_too_soon += 1
+            continue
+
+        if row.style == "ALL":
+            # style="ALL" rows (ml_fusion_weight and any other market/style-pooled mechanism)
+            # have no single SignalHorizon to query against — SignalOutcome.horizon only has
+            # real SHORT/SWING/LONG/GROWTH values, no pooled "ALL" concept of its own.
+            # Properly supporting this would mean aggregating across all 4 styles' outcomes
+            # instead of one — a real, larger follow-up (tracked, not silently ignored),
+            # not attempted in this pass since ml_fusion_weight is genuinely a single global
+            # parameter and the per-style mechanisms (the majority of tune_history rows) are
+            # the ones this closes the loop for.
+            skipped_invalid_style += 1
+            continue
+
+        stats = _retro_ev_for(session, row.style, row.market, row_ts.date())
+        if stats is None:
+            continue  # not enough samples yet — try again next run, don't mark checked-forever
+
+        row.realized_ev_pct_after = stats["ev_pct"]
+        row.realized_n_after = stats["n"]
+        row.realized_checked_at = now
+        updated += 1
+
+    session.commit()
+    log.info("backfill_realized_ev: checked=%d updated=%d skipped_too_soon=%d skipped_all_style=%d",
+              checked, updated, skipped_too_soon, skipped_invalid_style)
+    return {
+        "checked": checked, "updated": updated,
+        "skipped_too_soon": skipped_too_soon, "skipped_all_style": skipped_invalid_style,
+    }
+
+
 # ── T223: Confidence calibration — outcome-based win rate lookup ──────────────
 # Confidence band → actual win rate from signal_outcomes (Redis-cached, 1h TTL).
 # Enriches every signal response so traders know if "70 confidence" means 55% or 65% wins.
