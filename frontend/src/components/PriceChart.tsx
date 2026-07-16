@@ -21,6 +21,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, CandlestickData, IChartApi, LineData, Time, LineStyle, LogicalRange, UTCTimestamp } from 'lightweight-charts';
 import type { Price, Overview, Levels, SignalHistoryPoint, PatternSignal } from '@/lib/api';
 import { api } from '@/lib/api';
+import { computeVolumeProfile, sessionBars } from '@/lib/volumeProfile';
+import { VolumeProfilePrimitive } from './VolumeProfilePrimitive';
 
 type Props = {
   symbol: string;
@@ -132,6 +134,8 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
   const [showRSI,     setShowRSI]     = useState(false);
   const [showMACD,    setShowMACD]    = useState(true);
   const [showSignals, setShowSignals] = useState(true);
+  // Volume profile: 'off' | 'session' (current trading session only) | 'range' (whole visible range)
+  const [volumeProfileMode, setVolumeProfileMode] = useState<'off' | 'session' | 'range'>('off');
 
   // ── Intraday 5m state ─────────────────────────────────────────────────────
   const [intradayPrices, setIntradayPrices] = useState<Price[] | null>(null);
@@ -195,6 +199,12 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
     ? intradayOverride
     : isIntraday ? (intradayPrices ?? []) : visiblePrices;
 
+  const volumeProfile = useMemo(() => {
+    if (volumeProfileMode === 'off' || activePrices.length === 0) return null;
+    const bars = volumeProfileMode === 'session' ? sessionBars(activePrices) : activePrices;
+    return computeVolumeProfile(bars, 24);
+  }, [volumeProfileMode, activePrices]);
+
   useEffect(() => {
     if (!mainRef.current || activePrices.length === 0) return;
 
@@ -237,6 +247,23 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
         price: low52, color: '#fb923c66', lineWidth: 1 as const,
         lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: '52W L',
       });
+    }
+
+    // ── Volume profile: POC/VAH/VAL histogram over the session or the visible range ──
+    // No bid/ask or tick data is available (see the T249-era footprint-chart investigation
+    // — every data source here is bars-only), so this uses the standard retail-tool
+    // approximation: each bar's volume is spread across its high-low range, bucketed by
+    // price. See src/lib/volumeProfile.ts. Reuses the `volumeProfile` memo computed in
+    // render scope (also used by the legend readout below) rather than recomputing here.
+    let vpPrimitive: VolumeProfilePrimitive | null = null;
+    if (volumeProfile && activePrices.length > 0) {
+      const profileBars = volumeProfileMode === 'session' ? sessionBars(activePrices) : activePrices;
+      const anchorTime = isIntraday
+        ? toIntradayTime(profileBars[0].ts) as unknown as Time
+        : toTime(profileBars[0].ts);
+      vpPrimitive = new VolumeProfilePrimitive(chart, candles);
+      vpPrimitive.setData({ time: anchorTime, profile: volumeProfile, width: profileBars.length });
+      candles.attachPrimitive(vpPrimitive);
     }
 
     // ── Signal BUY/SELL markers (daily only, transition points only) ──────
@@ -535,7 +562,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       chartRef.current = null;
       setSrLabels([]);
     };
-  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, isIntraday, intradayOverride, compareData]);
+  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile]);
 
   const btn = (active: boolean, label: string, onClick: () => void, color?: string) => (
     <button
@@ -619,11 +646,22 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
               {btn(showRSI,  'RSI',  () => setShowRSI((v: boolean)  => !v), '#f59e0b')}
               {btn(showMACD, 'MACD', () => setShowMACD((v: boolean) => !v), '#38bdf8')}
             </div>
+            {/* Volume profile */}
+            <div className="flex items-center gap-1">
+              <span className="text-slate-500 mr-0.5">VP</span>
+              {btn(volumeProfileMode === 'session', 'Session', () => setVolumeProfileMode(m => m === 'session' ? 'off' : 'session'), '#60a5fa')}
+              {btn(volumeProfileMode === 'range', 'Range', () => setVolumeProfileMode(m => m === 'range' ? 'off' : 'range'), '#fbbf24')}
+            </div>
           </>
         ) : (
           <>
             {btn(showVol,  'Vol',  () => setShowVol((v: boolean)  => !v), '#22c55e')}
             {btn(showVWAP, 'VWAP', () => setShowVWAP((v: boolean) => !v), '#a78bfa')}
+            <div className="flex items-center gap-1 ml-2">
+              <span className="text-slate-500 mr-0.5">VP</span>
+              {btn(volumeProfileMode === 'session', 'Session', () => setVolumeProfileMode(m => m === 'session' ? 'off' : 'session'), '#60a5fa')}
+              {btn(volumeProfileMode === 'range', 'Range', () => setVolumeProfileMode(m => m === 'range' ? 'off' : 'range'), '#fbbf24')}
+            </div>
             <span className="text-slate-600 ml-1">5-min · SMA/EMA/MACD on daily only</span>
           </>
         )}
@@ -646,6 +684,21 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
           </> : null}
         </div>
       </div>
+
+      {/* Volume profile readout — POC / VAH / VAL */}
+      {volumeProfile && (
+        <div className="flex flex-wrap items-center gap-4 px-3 py-1.5 text-xs font-mono bg-slate-900/60 border-b border-slate-800/50">
+          <span className="text-slate-500 not-italic font-sans">
+            {volumeProfileMode === 'session' ? 'Session VP' : 'Range VP'}
+          </span>
+          <span style={{ color: '#fbbf24' }}>POC {f2(volumeProfile.poc)}</span>
+          <span style={{ color: '#60a5fa' }}>VAH {f2(volumeProfile.vah)}</span>
+          <span style={{ color: '#60a5fa' }}>VAL {f2(volumeProfile.val)}</span>
+          {volumeProfile.hvn.length > 0 && (
+            <span className="text-slate-500">HVN {volumeProfile.hvn.slice(0, 3).map(v => v.toFixed(2)).join(', ')}</span>
+          )}
+        </div>
+      )}
 
       {/* Crosshair readout — line values at cursor (daily only) */}
       {!isIntraday && visibleIndicators && (
