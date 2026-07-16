@@ -1066,6 +1066,24 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
         {field('max_consecutive_losses', 'Max Consec. Losses', 1, 'default 3', 1)}
       </div>
 
+      {section('LLM Reasoning (opt-in)')}
+      <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-end' }}>
+        <div style={{ fontSize: 11, color: '#64748b', width: '100%', marginBottom: 4 }}>
+          Adds a Claude/DeepSeek verdict (BUY/HOLD/SKIP + reasoning) as an extra scored layer on top of the
+          existing entry checks. Requires an AI key configured (your own, or the admin shared key) in Settings — otherwise
+          this silently has no effect.
+        </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#94a3b8' }}>
+          <input
+            type="checkbox"
+            checked={(draft.llm_scoring_enabled ?? config.llm_scoring_enabled) ?? false}
+            onChange={e => setDraft(d => ({ ...d, llm_scoring_enabled: e.target.checked }))}
+          />
+          Enable LLM reasoning layer
+        </label>
+        {field('llm_score_weight', 'Score Weight (1-5)', 1, 'default 1', 1)}
+      </div>
+
       {section('Regime Gate Override')}
       <div style={{ marginTop: 10 }}>
         <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>

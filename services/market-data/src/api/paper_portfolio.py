@@ -666,6 +666,11 @@ def configure_portfolio(
         "max_entry_gap_pct", "hold_stall_days", "max_consecutive_losses",
         "max_weekly_loss_pct", "max_open_exposure_pct", "equity_floor_pct",
         "min_ta_score", "min_volume_z", "partial_tp_pct",
+        # T203-LLMWIRE: llm_scoring_enabled existed in decision-engine's llm_scorer.py since
+        # T203 but was never threaded from portfolio config into _call_decision_engine()'s
+        # config_overrides — this was a built-but-dormant feature with no way to turn it on
+        # for any real portfolio. See paper_trading_engine.py's config_overrides dict.
+        "llm_scoring_enabled", "llm_score_weight", "llm_model",
     }
     # PT-H1: Validate decimal fraction params — reject values that look like % integers
     # (e.g. risk_per_trade_pct=1 meaning "1%" but engine expects 0.01).
@@ -697,6 +702,13 @@ def configure_portfolio(
         "max_entries_per_day": 1, "max_consecutive_losses": 1, "max_hold_days": 1,
         "hold_stall_days": 1, "wait_exit_days": 1,
     }
+    # T203-LLMWIRE: caps how many points a single LLM verdict can add/subtract from the
+    # overall entry score — scores in this codebase run in a small (roughly 0-10) integer
+    # range (see min_score_for_regime()), so an unbounded weight would let one LLM call
+    # dominate every other scored dimension combined.
+    _RANGE_CHECKS_INT: dict[str, tuple[int, int, str]] = {
+        "llm_score_weight": (1, 5, "How many points the LLM verdict adds/subtracts. Keep small relative to the ~0-10 total entry score."),
+    }
     errors: list[str] = []
     for key, val in body.items():
         if key in _RANGE_CHECKS and val is not None:
@@ -716,6 +728,15 @@ def configure_portfolio(
                 continue
             if ival < _MIN_COUNT_CHECKS[key]:
                 errors.append(f"{key}={ival}: must be at least {_MIN_COUNT_CHECKS[key]} (0 silently disables this gate rather than blocking entries — use the paused flag or an override endpoint to actually stop trading)")
+        if key in _RANGE_CHECKS_INT and val is not None:
+            lo, hi, hint = _RANGE_CHECKS_INT[key]
+            try:
+                ival = int(val)
+            except (TypeError, ValueError):
+                errors.append(f"{key}: expected an integer")
+                continue
+            if not (lo <= ival <= hi):
+                errors.append(f"{key}={ival}: out of valid range [{lo}, {hi}]. {hint}")
     if errors:
         raise HTTPException(status_code=400, detail={"errors": errors})
 
