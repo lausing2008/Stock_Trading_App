@@ -1403,6 +1403,11 @@ export type PaperPortfolioConfig = {
   // Regime gate
   regime_risk_off_gate?: boolean;
   regime_risk_off_override_until?: string | null;
+  // T203-LLMWIRE: LLM reasoning layer (decision-engine's llm_scorer.py) — opt-in per portfolio.
+  // Requires a Claude/DeepSeek key configured (personal or shared server key, see Settings).
+  llm_scoring_enabled?: boolean;
+  llm_score_weight?: number;
+  llm_model?: string;
 };
 
 export type PaperPortfolioSummary = {

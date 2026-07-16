@@ -2443,6 +2443,14 @@ def _call_decision_engine(
                     # the fundamental weakness. Threaded through config_overrides, matching the
                     # existing recent_win_rate/consec_losses extension pattern.
                     **( {"kscore": kscore} if kscore is not None else {} ),
+                    # T203-LLMWIRE: llm_scoring_enabled existed in decision-engine's
+                    # llm_scorer.py since T203 but was never threaded from portfolio config
+                    # into this request — a built-but-dormant feature with no way to turn it
+                    # on for any real portfolio. Opt-in per portfolio via the Config Panel;
+                    # requires a Claude/DeepSeek key configured (personal or shared server key).
+                    **( {"llm_scoring_enabled": True, "llm_score_weight": cfg.get("llm_score_weight", 1),
+                         **( {"llm_model": cfg["llm_model"]} if cfg.get("llm_model") else {} )}
+                        if cfg.get("llm_scoring_enabled") else {} ),
                 },
             },
             headers={"Authorization": f"Bearer {_svc_token()}"},
