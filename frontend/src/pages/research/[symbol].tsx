@@ -646,7 +646,7 @@ export default function ResearchPage() {
                   </Section>
 
                   <Section title="Institutional Ownership">
-                    <DataRow label="Owned by Institutions" value={c.institutional_ownership?.pct != null ? `${(c.institutional_ownership.pct * 100 > 1 ? c.institutional_ownership.pct : c.institutional_ownership.pct * 100).toFixed(1)}%` : '—'} />
+                    <DataRow label="Owned by Institutions" value={c.institutional_ownership?.pct != null ? `${c.institutional_ownership.pct.toFixed(1)}%` : '—'} />
                     <DataRow label="Trend" value={c.institutional_ownership?.trend ?? '—'} />
                     <p style={{ fontSize: '12px', color: '#64748b', lineHeight: 1.6, marginTop: '10px', marginBottom: 0 }}>{c.institutional_ownership?.interpretation}</p>
                   </Section>

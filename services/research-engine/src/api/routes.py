@@ -790,6 +790,12 @@ def _build_checklist(tech: dict, fund: dict, ai: dict, raw_fund: dict | None = N
     # (guess vs. real data) and scale. Use the real injected value via the same
     # _institutional_ownership_pct() helper the report body itself uses, falling back to the AI
     # guess only when the real fundamentals data (raw_fund) isn't available at all.
+    # AUD-RE-INSTPCT-ZERO-DISPLAY: _institutional_ownership_pct() always returns a float
+    # (0.0 for both "genuinely zero" and "no data"), so track whether real fundamentals data
+    # was actually available separately — a verified real 0% must render as "0.0%", not
+    # "Unknown", now that this field carries real precisely-scaled data instead of an
+    # LLM free-text guess with no distinction between the two cases.
+    _inst_pct_is_real = bool(raw_fund)
     inst_pct = _institutional_ownership_pct(raw_fund) if raw_fund else (ai.get("institutional_pct") or 0)
     moat = ai.get("moat_rating", "")
 
@@ -806,7 +812,7 @@ def _build_checklist(tech: dict, fund: dict, ai: dict, raw_fund: dict | None = N
              moat or "Unknown"),
         item("Insiders buying or holding?", ai.get("insider_status_checklist", "warning")),
         item("Institutional ownership > 50%?", "pass" if inst_pct >= 50 else "warning",
-             f"{inst_pct:.1f}%" if inst_pct else "Unknown"),
+             f"{inst_pct:.1f}%" if (inst_pct or _inst_pct_is_real) else "Unknown"),
     ]
 
     # Layer 2: Industry

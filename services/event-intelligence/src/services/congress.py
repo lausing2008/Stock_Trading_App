@@ -7,7 +7,7 @@ from datetime import date, timedelta
 
 import httpx
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func as _func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db import get_session, SessionLocal, CongressTrade, Stock
@@ -156,13 +156,17 @@ async def sync_congress_trades(lookback_days: int = 365) -> dict:
                     # stale original row. Use do_update for the fields a real amendment can
                     # correct; leave the identity columns (politician_name, ticker, trade_date,
                     # transaction_type) alone since those ARE the conflict key.
+                    # AUD-EI-CONGRESS-STOCKID-NULL: don't let a failed re-resolution (stock_id
+                    # None this run) overwrite a previously-resolved stock_id — coalesce to the
+                    # existing row's value so a transient ticker-lookup miss can't regress a
+                    # trade that was correctly linked on an earlier sync.
                     stmt = insert_stmt.on_conflict_do_update(
                         constraint="uq_congress_trade",
                         set_={
                             "party": insert_stmt.excluded.party,
                             "chamber": insert_stmt.excluded.chamber,
                             "state": insert_stmt.excluded.state,
-                            "stock_id": insert_stmt.excluded.stock_id,
+                            "stock_id": _func.coalesce(insert_stmt.excluded.stock_id, CongressTrade.stock_id),
                             "amount_range": insert_stmt.excluded.amount_range,
                             "amount_min": insert_stmt.excluded.amount_min,
                             "amount_max": insert_stmt.excluded.amount_max,
