@@ -1135,8 +1135,10 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
 function MLIntelligencePanel() {
   const { data: rl, mutate: mutateRl } = useSWR('rl-status', () => api.rlStatus(), { revalidateOnFocus: false });
   const { data: ef, mutate: mutateEf } = useSWR('entry-factors', () => api.entryFactors(), { revalidateOnFocus: false });
+  const { data: rrCal, mutate: mutateRrCal } = useSWR('min-rr-calibration', () => api.minRrCalibration(), { revalidateOnFocus: false });
   const [trainMsg, setTrainMsg] = useState('');
   const [calMsg, setCalMsg] = useState('');
+  const [rrCalMsg, setRrCalMsg] = useState('');
 
   async function trainRl() {
     setTrainMsg('Starting...');
@@ -1147,6 +1149,11 @@ function MLIntelligencePanel() {
     setCalMsg('Starting...');
     try { await api.calibrateEntry(); setCalMsg('Calibration started in background'); setTimeout(() => mutateEf(), 5000); }
     catch { setCalMsg('Failed'); }
+  }
+  async function calibrateRr() {
+    setRrCalMsg('Starting...');
+    try { await api.calibrateMinRr(); setRrCalMsg('Calibration started in background'); setTimeout(() => mutateRrCal(), 5000); }
+    catch { setRrCalMsg('Failed'); }
   }
 
   const cardStyle: React.CSSProperties = { background: '#0f172a', borderRadius: 8, padding: '12px 16px', border: '1px solid #334155', flex: 1, minWidth: 200 };
@@ -1207,6 +1214,31 @@ function MLIntelligencePanel() {
             <div style={{ fontSize: 11, color: '#475569' }}>Not calibrated — runs Sunday after close when ≥100 closed trades exist.</div>
           )}
         </div>
+
+        {/* Min R:R Calibration */}
+        <div style={cardStyle} title="Calibrates the R:R hard-reject floor (_should_enter()'s min_rr_ratio/regime_min_rr_ratio) against real closed-trade outcomes, replacing the permanently-hardcoded 2.0/3.0 defaults. An explicit min_rr_ratio set in a portfolio's own config always overrides this — this only replaces the FALLBACK default.">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#22d3ee' }}>Min R:R Calibration</span>
+            <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4,
+              background: rrCal?.status === 'calibrated' ? 'rgba(34,197,94,0.15)' : 'rgba(100,116,139,0.15)',
+              color: rrCal?.status === 'calibrated' ? '#4ade80' : '#64748b' }}>
+              {rrCal?.status ?? '...'}
+            </span>
+          </div>
+          {rrCal?.status === 'calibrated' ? (
+            <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.8 }}>
+              <div><span style={labelStyle}>Trades used:</span> <span style={valStyle}>{rrCal.n_trades}</span></div>
+              <div><span style={labelStyle}>Min R:R:</span> <span style={valStyle}>{rrCal.min_rr_ratio?.toFixed(2) ?? '—'}:1</span></div>
+              <div><span style={labelStyle}>Regime min R:R:</span> <span style={valStyle}>{rrCal.regime_min_rr_ratio?.toFixed(2) ?? '—'}:1</span></div>
+              <div style={{ marginTop: 6, fontSize: 11, color: '#64748b' }}>
+                Validation EV ${rrCal.candidate_validation_ev?.toFixed(2) ?? '—'} vs. baseline ${rrCal.baseline_validation_ev?.toFixed(2) ?? '—'} (threshold {rrCal.baseline_threshold?.toFixed(2) ?? '—'}:1)
+              </div>
+              {rrCal.calibrated_at && <div style={{ fontSize: 10, color: '#475569', marginTop: 4 }}>Updated {new Date(rrCal.calibrated_at).toLocaleDateString()}</div>}
+            </div>
+          ) : (
+            <div style={{ fontSize: 11, color: '#475569' }}>{rrCal?.note ?? 'Not calibrated — run manually below.'}</div>
+          )}
+        </div>
       </div>
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
@@ -1218,12 +1250,17 @@ function MLIntelligencePanel() {
           style={{ background: '#b45309', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 14px', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}>
           Calibrate Entry Now
         </button>
-        <button onClick={() => { mutateRl(); mutateEf(); }}
+        <button onClick={calibrateRr}
+          style={{ background: '#0e7490', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 14px', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}>
+          Calibrate Min R:R Now
+        </button>
+        <button onClick={() => { mutateRl(); mutateEf(); mutateRrCal(); }}
           style={{ background: '#1e293b', border: '1px solid #334155', color: '#94a3b8', borderRadius: 6, padding: '6px 12px', cursor: 'pointer', fontSize: 12 }}>
           Refresh
         </button>
         {trainMsg && <span style={{ fontSize: 11, color: '#f59e0b' }}>{trainMsg}</span>}
         {calMsg && <span style={{ fontSize: 11, color: '#f59e0b' }}>{calMsg}</span>}
+        {rrCalMsg && <span style={{ fontSize: 11, color: '#f59e0b' }}>{rrCalMsg}</span>}
       </div>
     </div>
   );

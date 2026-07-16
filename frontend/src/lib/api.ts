@@ -520,6 +520,13 @@ export const api = {
     calibrated_at?: string;
   }>('/paper-portfolio/entry_factors'),
   calibrateEntry: () => request<{ status: string }>('/paper-portfolio/calibrate-entry', { method: 'POST' }),
+  minRrCalibration: () => request<{
+    status: 'calibrated' | 'not_calibrated';
+    min_rr_ratio?: number; regime_min_rr_ratio?: number; n_trades?: number;
+    baseline_threshold?: number; candidate_validation_ev?: number; baseline_validation_ev?: number;
+    calibrated_at?: string; is_running?: boolean; note?: string;
+  }>('/paper-portfolio/min_rr_calibration'),
+  calibrateMinRr: () => request<{ status: string }>('/paper-portfolio/calibrate-min-rr', { method: 'POST' }),
   schedulerStatus: () => request<{ jobs: SchedulerJob[] }>('/admin/scheduler-status'),
   dqStatus: () => request<{ checks: DataQualityCheck[] }>('/admin/dq-status'),
   promotionHistory: () => request<{

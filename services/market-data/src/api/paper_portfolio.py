@@ -1710,6 +1710,196 @@ def trigger_entry_calibration(
     return {"status": "started", "min_trades": _MIN_CALIBRATION_TRADES}
 
 
+# ── SELFIMPROVE-NEVER-CALIBRATED-PARAMS: min_rr_ratio calibration ────────────
+# min_rr_ratio (2.0) and regime_min_rr_ratio (3.0) — the R:R hard-reject floor
+# _should_enter() uses whenever a portfolio hasn't explicitly set its own value — were
+# permanently hardcoded literals with no feedback loop from real trade outcomes at all.
+# Same 70/30 chronological split + validation-beats-baseline gate as calibrate_entry_weights()
+# above and signal-engine's calibrate_ta_weights/calibrate_ml_weight — proven pattern, not a
+# new design. Writes a validated replacement DEFAULT (not a hard override — an explicit
+# portfolio.config value always wins, exactly as it does today against the 2.0/3.0 literals).
+
+_MIN_RR_OVERRIDE_PATH = Path(_settings.model_dir) / "min_rr_calibration.json"
+_MIN_RR_MIN_TRADES = 100  # same floor as calibrate_entry_weights — real R:R spread needs volume
+_MIN_RR_MIN_VAL_TRADES = 20
+_MIN_RR_CANDIDATES = [1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.5, 4.0]
+_MIN_RR_MIN_CANDIDATE_N = 15  # a candidate threshold needs enough qualifying trades to trust its EV
+
+
+def calibrate_min_rr_ratio() -> dict:
+    """Sweep candidate min_rr_ratio floors against real closed-trade R:R/PnL data.
+
+    For each candidate threshold T, "qualifying" trades are those whose rr_ratio_at_entry >= T
+    (i.e. trades _should_enter() would have allowed through under that floor) — mean pnl over
+    those trades is that threshold's EV. Picks the train-slice EV-maximizing threshold (subject
+    to _MIN_RR_MIN_CANDIDATE_N, so a threshold surviving on 3 lucky trades can't win), then only
+    applies it if it ALSO beats the CURRENT default threshold's own validation-slice EV — the
+    same held-out-data discipline as calibrate_entry_weights(), not an in-sample pick.
+    """
+    from ..services.paper_trading_engine import _default_min_rr_ratio, reload_min_rr_override
+
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(PaperTrade.rr_ratio_at_entry, PaperTrade.pnl, PaperTrade.entry_date)
+            .where(
+                PaperTrade.stage == "closed",
+                PaperTrade.pnl.is_not(None),
+                PaperTrade.rr_ratio_at_entry.is_not(None),
+            ).order_by(PaperTrade.entry_date)
+        ).all()
+
+    if len(rows) < _MIN_RR_MIN_TRADES:
+        return {"error": f"Need >={_MIN_RR_MIN_TRADES} closed trades with rr_ratio_at_entry; have {len(rows)}"}
+
+    split = max(1, int(len(rows) * 0.7))
+    train_rows, val_rows = rows[:split], rows[split:]
+    if len(val_rows) < _MIN_RR_MIN_VAL_TRADES:
+        return {"error": f"Need >={_MIN_RR_MIN_VAL_TRADES} validation-slice trades after a 70/30 split; have {len(val_rows)}"}
+
+    def _ev_at(threshold, rset):
+        qualifying = [float(r.pnl) for r in rset if float(r.rr_ratio_at_entry) >= threshold]
+        if len(qualifying) < _MIN_RR_MIN_CANDIDATE_N:
+            return None, len(qualifying)
+        return sum(qualifying) / len(qualifying), len(qualifying)
+
+    curve = []
+    best_ev = None
+    best_threshold = None
+    for t in _MIN_RR_CANDIDATES:
+        train_ev, train_n = _ev_at(t, train_rows)
+        curve.append({"threshold": t, "train_ev": round(train_ev, 4) if train_ev is not None else None, "train_n": train_n})
+        if train_ev is not None and (best_ev is None or train_ev > best_ev):
+            best_ev = train_ev
+            best_threshold = t
+
+    if best_threshold is None:
+        return {"error": "no candidate threshold has enough qualifying train-slice trades", "curve": curve}
+
+    # Current default (whatever calibration has already applied, or the original 2.0 literal)
+    # is the baseline this candidate must beat on validation — never compared against an
+    # arbitrary fixed number, always against whatever is ACTUALLY live right now.
+    baseline_threshold = _default_min_rr_ratio("neutral")
+    candidate_ev, candidate_n = _ev_at(best_threshold, val_rows)
+    baseline_ev, baseline_n = _ev_at(baseline_threshold, val_rows)
+
+    if candidate_ev is None or baseline_ev is None or candidate_ev <= baseline_ev:
+        log.info(
+            "paper.min_rr_calibration_rejected",
+            n_trades=len(rows), val_n=len(val_rows),
+            candidate_threshold=best_threshold, candidate_ev=round(candidate_ev, 4) if candidate_ev is not None else None,
+            baseline_threshold=baseline_threshold, baseline_ev=round(baseline_ev, 4) if baseline_ev is not None else None,
+            reason="candidate did not beat the current default threshold's own validation-slice EV",
+        )
+        return {
+            "error": "candidate threshold did not beat the current default on the validation slice",
+            "candidate_threshold": best_threshold,
+            "candidate_validation_ev": round(candidate_ev, 4) if candidate_ev is not None else None,
+            "baseline_threshold": baseline_threshold,
+            "baseline_validation_ev": round(baseline_ev, 4) if baseline_ev is not None else None,
+            "val_n": len(val_rows),
+            "curve": curve,
+        }
+
+    result = {
+        "min_rr_ratio": best_threshold,
+        # T190's regime-stiffened floor keeps its own +50% relative bump over the calibrated
+        # base rather than a second independent sweep — no real per-regime R:R/PnL volume
+        # exists yet to calibrate choppy/risk_off separately from neutral.
+        "regime_min_rr_ratio": round(best_threshold * 1.5, 2),
+        "n_trades": len(rows),
+        "validation_n": len(val_rows),
+        "candidate_validation_ev": round(candidate_ev, 4),
+        "baseline_threshold": baseline_threshold,
+        "baseline_validation_ev": round(baseline_ev, 4),
+        "curve": curve,
+        "calibrated_at": datetime.utcnow().isoformat(),
+    }
+
+    _MIN_RR_OVERRIDE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _MIN_RR_OVERRIDE_PATH.write_text(json.dumps(result, indent=2))
+    log.info("paper.min_rr_calibration_applied", threshold=best_threshold,
+             validation_ev=round(candidate_ev, 4), baseline_validation_ev=round(baseline_ev, 4),
+             n_trades=len(rows))
+
+    try:
+        from db import TuneHistory
+        with SessionLocal() as session:
+            import uuid as _uuid
+            session.add(TuneHistory(
+                run_id=str(_uuid.uuid4()), parameter_class="entry_gate", parameter_name="min_rr_ratio",
+                style="ALL", market="ALL",
+                old_value={"min_rr_ratio": baseline_threshold},
+                new_value={"min_rr_ratio": best_threshold, "regime_min_rr_ratio": result["regime_min_rr_ratio"]},
+                train_window_start=train_rows[0].entry_date, train_window_end=train_rows[-1].entry_date,
+                validation_window_start=val_rows[0].entry_date, validation_window_end=val_rows[-1].entry_date,
+                train_ev_pct=round(best_ev, 4), validation_ev_pct=round(candidate_ev, 4),
+                baseline_validation_ev_pct=round(baseline_ev, 4), validation_n=candidate_n,
+                promoted=True, gate_failures=[], triggered_by="manual",
+            ))
+            session.commit()
+    except Exception as exc:
+        log.warning("paper.min_rr_calibration_tune_history_failed", error=str(exc))
+
+    reload_min_rr_override()
+    return result
+
+
+_min_rr_calibration_lock = threading.Lock()
+_min_rr_calibration_running = False
+
+
+def _calibrate_min_rr_and_save() -> None:
+    global _min_rr_calibration_running
+    try:
+        result = calibrate_min_rr_ratio()
+        if "error" in result:
+            log.warning("paper.min_rr_calibration_failed", error=result["error"])
+        else:
+            log.info("paper.min_rr_calibration_done", n_trades=result["n_trades"])
+    except Exception as exc:
+        log.exception("paper.min_rr_calibration_exception", exc=str(exc))
+    finally:
+        _min_rr_calibration_running = False
+
+
+@router.get("/min_rr_calibration")
+def get_min_rr_calibration(
+    _: User = Depends(get_current_user),
+) -> dict:
+    """Return the calibrated min_rr_ratio/regime_min_rr_ratio defaults (or status if none yet)."""
+    if not _MIN_RR_OVERRIDE_PATH.exists():
+        return {
+            "status": "not_calibrated",
+            "note": f"Need >={_MIN_RR_MIN_TRADES} closed trades. POST /calibrate-min-rr to run.",
+            "is_running": _min_rr_calibration_running,
+        }
+    try:
+        data = json.loads(_MIN_RR_OVERRIDE_PATH.read_text())
+        data["status"] = "calibrated"
+        data["is_running"] = _min_rr_calibration_running
+        return data
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@router.post("/calibrate-min-rr")
+def trigger_min_rr_calibration(
+    background_tasks: BackgroundTasks,
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """Sweep candidate min_rr_ratio floors against closed paper trades.
+
+    Runs in the background. Check GET /min_rr_calibration for results.
+    """
+    global _min_rr_calibration_running
+    with _min_rr_calibration_lock:
+        if _min_rr_calibration_running:
+            return {"status": "already_running"}
+        _min_rr_calibration_running = True
+    background_tasks.add_task(_calibrate_min_rr_and_save)
+    return {"status": "started", "min_trades": _MIN_RR_MIN_TRADES}
+
+
 # ── Decision Engine shadow audit ──────────────────────────────────────────────
 
 @router.get("/de-divergences")

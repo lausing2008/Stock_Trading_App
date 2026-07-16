@@ -276,6 +276,49 @@ def reload_entry_weights() -> None:
     _entry_weights_cache = None
 
 
+# ── SELFIMPROVE-NEVER-CALIBRATED-PARAMS: calibrated min_rr_ratio fallback default ──
+# min_rr_ratio (2.0) and regime_min_rr_ratio (3.0) were permanently hardcoded module
+# defaults with no feedback loop — see the tracker entry's own "what" field. Calibration
+# writes a validated replacement DEFAULT here (same file-cache + reload pattern as entry
+# weights above), consulted only when a portfolio's own config doesn't explicitly set the
+# key — an explicit per-portfolio min_rr_ratio (settable via paper-portfolio.tsx's Settings
+# UI) always wins, exactly as it does today against the hardcoded 2.0/3.0 literals.
+_MIN_RR_OVERRIDE_FILE = Path("/data/models/min_rr_calibration.json")
+_min_rr_override_cache: dict | None = None  # None = not loaded yet; {} = no file
+
+
+def _load_min_rr_override() -> dict:
+    """Load calibrated min_rr_ratio/regime_min_rr_ratio defaults from disk. Cached after first load."""
+    global _min_rr_override_cache
+    if _min_rr_override_cache is not None:
+        return _min_rr_override_cache
+    try:
+        if _MIN_RR_OVERRIDE_FILE.exists():
+            _min_rr_override_cache = json.loads(_MIN_RR_OVERRIDE_FILE.read_text())
+            log.info("paper.min_rr_override_loaded", n_trades=_min_rr_override_cache.get("n_trades"))
+        else:
+            _min_rr_override_cache = {}
+    except Exception as exc:
+        log.warning("paper.min_rr_override_load_failed", error=str(exc))
+        _min_rr_override_cache = {}
+    return _min_rr_override_cache
+
+
+def reload_min_rr_override() -> None:
+    """Force reload of the calibrated min_rr default on next _should_enter() call."""
+    global _min_rr_override_cache
+    _min_rr_override_cache = None
+
+
+def _default_min_rr_ratio(regime_state: str) -> float:
+    """The calibrated default for a portfolio that hasn't explicitly set min_rr_ratio/
+    regime_min_rr_ratio in its own config — falls back to the original hardcoded 2.0/3.0
+    literals if no calibration has ever been applied yet."""
+    override = _load_min_rr_override()
+    key = "regime_min_rr_ratio" if regime_state in ("choppy", "risk_off") else "min_rr_ratio"
+    return float(override.get(key) or (3.0 if key == "regime_min_rr_ratio" else 2.0))
+
+
 # ── Default portfolio config ──────────────────────────────────────────────────
 
 _DEFAULT_CONFIG: dict[str, Any] = {
@@ -1379,15 +1422,18 @@ def _should_enter(
             f"(distance ${stop_dist:.2f} < min ${min_stop_dist:.2f}) — invalid setup"
         ]
     rr = (take_profit - live_price) / stop_dist
-    min_rr = cfg.get("min_rr_ratio", 2.0)
     # AUD232-060: decision-engine's hard_rejects.py (the "primary" gate) requires a stricter
     # R:R in choppy/risk_off regimes (T190) — this fallback had no regime-aware check at all,
     # so it was measurably looser than DE in exactly the regimes where DE is strictest, right
     # when this fallback is most likely to be the only thing standing between a candidate and
     # a real paper entry (DE unreachable).
     regime_state = (live_regime.get("state", "neutral") if live_regime else "neutral")
+    # SELFIMPROVE-NEVER-CALIBRATED-PARAMS: cfg.get(..., 2.0)'s literal fallback is now the
+    # calibrated default (falls back further to the original 2.0/3.0 literals if calibration
+    # has never run) — an explicit portfolio.config value still always wins.
+    min_rr = cfg.get("min_rr_ratio", _default_min_rr_ratio("neutral"))
     if regime_state in ("choppy", "risk_off"):
-        min_rr = max(min_rr, cfg.get("regime_min_rr_ratio", 3.0))
+        min_rr = max(min_rr, cfg.get("regime_min_rr_ratio", _default_min_rr_ratio(regime_state)))
     if rr < min_rr:
         return False, -99, [f"R:R {rr:.1f}:1 below minimum {min_rr:.1f}:1 at ${live_price:.2f}"]
 

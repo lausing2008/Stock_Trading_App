@@ -2347,6 +2347,20 @@ def _weekly_full_refresh() -> None:
         log.error("scheduler.calibrate_entry_weights_failed", error=str(_exc))
         _record_job_status("calibrate_entry_weights", "error", 0.0, str(_exc))
 
+    # SELFIMPROVE-NEVER-CALIBRATED-PARAMS: calibrate the min_rr_ratio/regime_min_rr_ratio
+    # fallback default from closed paper trades — same "called directly, not via HTTP" reasoning
+    # as calibrate_entry_weights above (admin-user dependency, no DB user record for the
+    # scheduler's service token).
+    try:
+        log.info("scheduler.calibrate_min_rr_ratio_start")
+        from ..api.paper_portfolio import calibrate_min_rr_ratio as _cal_min_rr
+        _rr_result = _cal_min_rr()
+        _rr_status = "ok" if "error" not in _rr_result else _rr_result["error"]
+        _record_job_status("calibrate_min_rr_ratio", _rr_status, 0.0)
+    except Exception as _exc:
+        log.error("scheduler.calibrate_min_rr_ratio_failed", error=str(_exc))
+        _record_job_status("calibrate_min_rr_ratio", "error", 0.0, str(_exc))
+
     # SELFIMPROVE-PROMOTION-GATES-INCOMPLETE: promotion_gate.py's evaluate_and_record() already
     # has a real validation gate (walk-forward EV-lift + an approximate worst-trade regression
     # check) and writes every attempt (promoted or not) to tune_history — its own module

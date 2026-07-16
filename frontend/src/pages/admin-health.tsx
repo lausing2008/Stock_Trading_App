@@ -40,6 +40,7 @@ const JOB_META: Record<string, { label: string; maxAgeDays: number; desc: string
   tune_all_sent:             { label: 'Optuna Tune-All',             maxAgeDays: 8,  desc: 'Weekly XGBoost hyperparameter tuning sent to ML service (Optuna search)' },
   calibrate_ta_weights_sent: { label: 'TA Weight Calibration',       maxAgeDays: 8,  desc: 'Weekly TA logistic regression calibration — updates ta_weights.json' },
   calibrate_ml_weight_sent:  { label: 'ML Weight Calibration',       maxAgeDays: 8,  desc: 'Weekly ML/TA fusion weight sweep — applies only if it beats a neutral 0.5 baseline on held-out data' },
+  calibrate_min_rr_ratio:    { label: 'Min R:R Calibration',         maxAgeDays: 8,  desc: 'Weekly R:R hard-reject floor sweep against closed paper trades — replaces the fallback default only if it beats the current threshold on held-out data; an explicit per-portfolio min_rr_ratio always wins' },
   rl_agent_train:            { label: 'RL Agent Train',              maxAgeDays: 8,  desc: 'Contextual bandit (Ridge Q-function) trained on closed paper trades. Requires ≥50 closed trades — shows "skipped" until paper trading accumulates enough history.' },
   // Model promotion gates (SELFIMPROVE-PROMOTION-GATES-INCOMPLETE, see
   // docs/DESIGN_MODEL_PROMOTION_GATES_2026-07-12.md) — a "skipped" status here means the
