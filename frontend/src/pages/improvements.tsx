@@ -15827,6 +15827,126 @@ const ITEMS: Item[] = [
     what: 'IMPORTANT SCOPING NOTE, confirmed by direct grep across all backend services: volume profile computation is 100% client-side today (frontend/src/lib/volumeProfile.ts\'s computeVolumeProfile(), built alongside the Fixed Range VP chart feature) — there is no server-side POC/VAH/VAL computation, persistence, or scheduled job anywhere. This means the feature is NOT "wire an existing value into the alert pipeline" the way T249\'s earnings/macro alerts were (those reused already-computed backend values) — it requires porting the same bucket/expand-from-POC value-area algorithm to Python, running it on a schedule per symbol, and persisting the result before any alert can read it. The existing alert fan-out (check_earnings_reactions()/check_macro_reaction_alerts() in scheduler.py — query PriceAlert-subscribed users, dedupe via Redis, send_email + optional webhook) is directly reusable once that gap is closed, but the gap itself is real backend work, not just wiring.',
     fix: 'Port computeVolumeProfile()\'s bucketing/POC/value-area-expansion logic to Python (services/market-data or a new module), run it on a schedule (e.g. daily, using the prior session\'s or a rolling N-day range\'s bars) per actively-tracked symbol, persist POC/VAH/VAL per symbol/date. New scheduled job (matching check_earnings_reactions()\'s 1-minute-interval, PriceAlert-subscriber-audience pattern) checks each tracked symbol\'s live/last close against its persisted VAH/VAL and fires one alert per breakdown/breakout event with a Redis dedup key (same discipline as every other T249-era alert, to avoid re-firing every check cycle while price sits below VAL).',
   },
+
+  {
+    id: 'AUD250-WATCHLIST-ROTATION-NAMEERROR',
+    tier: 253 as const, severity: 'critical', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/scheduler.py:_run_watchlist_auto_rotation()',
+    effort: 'XS',
+    impact: 'Critical — the weekly watchlist auto-rotation job (Sunday 17:00 ET) had two independent NameErrors and had never successfully completed since being merged 2026-07-13; this coming Sunday would have been its first live-scheduled fire, still broken, with zero visible symptom beyond an error log line.',
+    title: 'Watchlist auto-rotation used Market.US and desc() with neither imported — silently failed every run via its own except Exception',
+    what: 'Found via a full multi-agent deep-audit workflow reviewing the real git diff of this week\'s 73 commits. Market.US (market tie-break for dominant_market selection) had no Market import anywhere in scheduler.py\'s ~4,700 lines. desc(Ranking.score) (candidate ranking sort) had no desc import — the function\'s own local `from sqlalchemy import func as _func, case as _case, delete as _delete` omitted it. Both raise NameError, caught by the function\'s own except Exception, which logs watchlist_auto_rotation_failed and records job status "error" — no adds, no drops, silent from the outside. Zero test coverage existed, and conftest.py stubs sqlalchemy/db as MagicMock() for local tests — MagicMock() attribute access never raises, so even a direct test import would not have caught either bug.',
+    fix: 'Added Market to the module-level db import and desc to the function\'s local sqlalchemy import.',
+    implementedNote: 'Fixed 2026-07-16, same day as discovery, before the coming Sunday\'s first scheduled fire. Verified by CALLING the real function live in the production container immediately after deploying (not just re-running the still-stubbed pytest suite) — confirmed a real watchlist_auto_rotation_complete log line (dropped=8, no exception) where before it would have logged _failed every time. Added services/market-data/tests/test_scheduler_static_names.py — two narrow, source-text regression checks for these two specific names (a general "does every name resolve" static analyzer was attempted and abandoned: nested closures/lambdas/comprehensions in this file produced more false positives than real signal from a hand-rolled scope resolver). Adversarially verified both checks by reverting each import and confirming the test caught it before restoring. All 148 market-data tests pass. Full writeup in .claude/CLAUDE.md\'s AUD250 section, including the "MagicMock() masks NameError" design invariant for any future heavily-stubbed test file in this repo.',
+  },
+
+  {
+    id: 'AUD250-EVENTINTEL-MACRO-REACTION-BLOCKING',
+    tier: 253 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/event-intelligence/src/services/macro_reaction.py',
+    effort: 'S',
+    impact: 'High — every concurrent request to event-intelligence during a CPI/PPI/GDP/NFP release window or an FOMC statement window would hang for up to each blocked call\'s own timeout (8-10s), on a service that is a single-process FastAPI app with its scheduler jobs on the SAME event loop as real-time request handling.',
+    title: 'check_release_day_fast_poll(), check_fomc_statement_poll(), and generate_reaction() were async def but called blocking httpx.get()/feedparser.parse() directly',
+    what: 'Found via the same deep-audit workflow. This is the exact bug class already fixed once in this repo for decision-engine\'s regime.py (_regime_executor) — the fix was never ported when this newer T249-P2 service was built. Confirmed main.py runs start_scheduler inside the same FastAPI app (on_startup=start_scheduler), not a separate process, so this genuinely blocks real user-facing requests during a release window, not just internal jobs.',
+    fix: 'Added a dedicated _macro_reaction_executor = ThreadPoolExecutor(max_workers=2) and routed all three blocking calls through loop.run_in_executor(...), matching regime.py\'s established pattern exactly.',
+    implementedNote: 'Fixed 2026-07-16. New test_macro_reaction_not_blocking.py (4 source-text checks, since httpx is stubbed as MagicMock() in this service\'s conftest.py too — a dynamic test would not catch blocking-vs-async either) confirms the executor exists and each of the three call sites uses it. Adversarially verified by reverting one call site to its direct blocking form and confirming the test caught it before restoring. All 131 event-intelligence tests pass. Deployed to production, confirmed clean restart and only the intended container recreated.',
+  },
+
+  {
+    id: 'AUD250-RESEARCHENGINE-INFLIGHT-REREGISTER',
+    tier: 253 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/research-engine/src/api/routes.py:generate_research()',
+    effort: 'XS',
+    impact: 'Medium — a narrow-window race that defeats the in-flight LLM-call dedup\'s own purpose: a third concurrent request for the same symbol during the exact window between a second caller\'s mismatch-fallthrough and its own completion would start a full duplicate LLM generation (upstream fetches + LLM call) instead of deduping.',
+    title: 'A second concurrent research request that fell through after a portfolio-params mismatch never re-registered itself as in-flight',
+    what: 'The first caller pops its own _inflight_research[sym] entry right before firing its completion event. A second, concurrent caller waiting on that event, whose own portfolio_size/max_risk_pct didn\'t match the just-finished report (T247-RESEARCHENGINE-CACHEKEY\'s own fix, working as intended), falls through to compute its own report — but never re-registers itself in _inflight_research. A third request arriving in that exact window sees the symbol as not-in-flight and starts its own duplicate generation.',
+    fix: 'Re-register _inflight_research[sym] = asyncio.Event() on the mismatch-fallthrough path, matching the else branch\'s own registration.',
+    implementedNote: 'Fixed 2026-07-16. Not covered by a new automated test — generate_research() has heavy runtime dependencies (httpx gather across 6+ services, DB, LLM call) that make a real behavioral test for this specific race expensive to build safely for a narrow-window fix; documented in .claude/CLAUDE.md instead. Deployed to production, confirmed clean restart.',
+  },
+
+  {
+    id: 'AUD250-CONGRESS-STOCKID-NULL-REGRESSION',
+    tier: 253 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'services/event-intelligence/src/services/congress.py',
+    effort: 'XS',
+    impact: 'Low — a transient ticker-to-stock lookup failure on a re-sync could silently null out a previously-correct stock_id link on an existing congress_trades row.',
+    title: 'Congress trade re-sync\'s on_conflict_do_update overwrote a previously-resolved stock_id with NULL on a failed re-resolution',
+    what: 'The T247-EVENTINTELLIGENCE-CONGRESSAMENDMENT fix (upsert-not-ignore for amendments) correctly included stock_id in its SET clause so a corrected disclosure updates its link — but this also means ANY re-sync where _ticker_to_stock_id() fails that run (transient DB issue, a delisted/renamed ticker) regresses an already-correctly-linked row back to NULL.',
+    fix: 'COALESCE(excluded.stock_id, congress_trades.stock_id) in the SET clause so a failed re-resolution can\'t regress an already-correct link.',
+    implementedNote: 'Fixed 2026-07-16. Caught and fixed a second NameError bug class while writing this exact fix — sqlalchemy.func wasn\'t imported in this file either; added it alongside the coalesce. All 131 event-intelligence tests pass. Deployed to production.',
+  },
+
+  {
+    id: 'AUD250-RESEARCHENGINE-INSTPCT-ZERO-DISPLAY',
+    tier: 253 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'services/research-engine/src/api/routes.py, frontend/src/pages/research/[symbol].tsx',
+    effort: 'XS',
+    impact: 'Low — a genuinely verified 0% institutional ownership (real data) rendered as "Unknown" in the fundamentals checklist, a classic falsy-zero bug newly reachable now that this field carries real precisely-scaled data (T247-RESEARCHENGINE-INSTOWNERSHIP-SCALE) instead of an LLM free-text guess that almost never landed on an exact 0.',
+    title: 'Institutional ownership checklist item showed "Unknown" for a real, verified 0% — falsy-zero display bug',
+    what: 'f"{inst_pct:.1f}%" if inst_pct else "Unknown" treats a real 0.0 the same as missing data. Also found: the frontend\'s pct * 100 > 1 ? pct : pct * 100 scale-detection heuristic in research/[symbol].tsx is now dead weight — it existed specifically to compensate for the OLD unscaled backend behavior the T247 fix already corrected, and was never removed.',
+    fix: 'Track whether real fundamentals data was actually available separately from the numeric value (which is always a float, never None, from _institutional_ownership_pct()). Removed the now-dead frontend scale heuristic.',
+    implementedNote: 'Fixed 2026-07-16. Frontend typechecks clean; backend syntax-checked clean; both deployed to production.',
+  },
+
+  {
+    id: 'AUD250-SIGNALENGINE-ROLLBACK-EXPIRES-IDENTITY-MAP',
+    tier: 253 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/signal-engine/src/api/routes.py:evaluate_signal_outcomes()',
+    effort: 'M',
+    impact: 'Medium — a real N+1 query performance regression (not silent data corruption) on every per-signal exception during outcome evaluation: SQLAlchemy\'s Session.rollback() expires every ORM object in the session\'s identity map by default, including every already-bulk-loaded Signal row in pending_signals, a list iterated across potentially thousands of loop iterations.',
+    title: 'evaluate_signal_outcomes()\'s per-signal try/except calls session.rollback() mid-loop, which expires every Signal object in the bulk-loaded pending_signals list used by every later iteration',
+    what: 'Found via the AUD250 deep-audit workflow. After any single signal\'s exception, every SUBSEQUENT loop iteration\'s sig.xxx attribute access silently triggers a fresh per-attribute SELECT against the DB, since the object was expired by the rollback. Signal rows aren\'t otherwise concurrently mutated by anything else, so the re-fetched values should still be correct — this is a performance regression, not a correctness bug, but a real one on any run that hits even one failure in a large batch.',
+    fix: 'Use session.begin_nested() (a SAVEPOINT) around each signal\'s own processing instead of a full session.rollback() — rolls back only that one signal\'s session.add(), without expiring the whole identity map. Textbook-correct fix for exactly this case.',
+    implementedNote: 'Deliberately NOT fixed this pass — the function is 250+ lines with multiple exit paths and existing counters (_since_commit, evaluated/censored/skipped_*), and a rushed structural change to a function this delicate carries real risk of introducing a new bug while fixing a performance-only one. Revisit as its own focused task with proper test coverage first.',
+  },
+
+  {
+    id: 'AUD250-MACRO-CALENDAR-FALLBACK-GRANULARITY',
+    tier: 253 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/api/routes.py:_macro_events_from_db(), services/event-intelligence/src/services/economic.py:sync_fred_release_dates()',
+    effort: 'M',
+    impact: 'Medium in theory, low in practice today — GET /stocks/events/calendar?days_ahead=365 is a valid, allowed request, but the frontend only ever requests the 90-day default (under sync_fred_release_dates()\'s 180-day sync window), so this gap has not yet produced a visible symptom.',
+    title: '_macro_events_from_db()\'s per-type (not per-date-range) fallback tracking can silently suppress hardcoded calendar fallback beyond the DB sync\'s real coverage window',
+    what: 'Found via the AUD250 deep-audit workflow. types_with_db_rows is a plain set[str] — if the DB has even ONE release-date row for a macro type anywhere in the requested window, ALL _MACRO_2026 hardcoded fallback entries for that type are skipped across the ENTIRE window, including date ranges sync_fred_release_dates() (180-day default lookahead) never actually reached. A caller requesting days_ahead=300 could see a real near-term DB row suppress fallback coverage for months 181-300 that the DB genuinely has no data for.',
+    fix: 'Track covered date-ranges per type, not just a type-level boolean, so the fallback loop only skips a _MACRO_2026 entry when the DB genuinely has coverage for that entry\'s specific date, not merely for the same type anywhere in the window.',
+    implementedNote: 'Deliberately NOT fixed this pass given low current real-world exposure (frontend default usage never triggers it) — documented as a real, scoped follow-up rather than rushed.',
+  },
+
+  {
+    id: 'AUD250-DECISIONENGINE-GAMEPLAN-SHARED-EXECUTOR',
+    tier: 253 as const, severity: 'low', defaultStatus: 'todo' as const,
+    file: 'services/decision-engine/src/api/core/aggregator.py:abuild_game_plan()',
+    effort: 'S',
+    impact: 'Low — undercuts (but doesn\'t defeat) the parallelism a batch POST /decide/batch request is supposed to get; tasks queue behind each other on a shared 4-worker pool rather than stalling the event loop outright.',
+    title: 'abuild_game_plan() shares the yfinance-price-fallback thread pool instead of its own dedicated executor, unlike regime.py\'s sibling fix',
+    what: 'Found via the AUD250 deep-audit workflow. _yf_executor (max_workers=4, built for yfinance price-fallback work) is also used by abuild_game_plan() for a cold _STYLE_PARAMS_CACHE\'s blocking httpx.get() to market-data — a distinct, unrelated kind of blocking work sharing the same small pool. regime.py\'s own parallel fix correctly created a dedicated _regime_executor specifically to avoid this kind of cross-purpose contention.',
+    fix: 'Give abuild_game_plan() its own small dedicated ThreadPoolExecutor, matching regime.py\'s pattern, instead of reusing _yf_executor.',
+    implementedNote: 'Deliberately NOT fixed this pass — low severity, real but narrow-impact (batch endpoint tail latency only, never a full stall).',
+  },
+
+  {
+    id: 'AUD250-PORTFOLIOOPTIMIZER-SILENT-FALLBACK-NO-FLAG',
+    tier: 253 as const, severity: 'low', defaultStatus: 'todo' as const,
+    file: 'services/portfolio-optimizer/src/optimizers/methods.py, services/portfolio-optimizer/src/api/routes.py',
+    effort: 'S',
+    impact: 'Low — a user-supplied constraints.max_weight that makes the mean-variance/risk-parity SLSQP optimization infeasible silently falls back to flat equal-weight with an HTTP 200 and no indication in the response that the requested constraint was effectively ignored; only visible via a log.warning.',
+    title: 'Newly-exposed constraints.max_weight can trigger the pre-existing silent equal-weight fallback with no user-visible signal',
+    what: 'Found via the AUD250 deep-audit workflow. T247-PORTFOLIOOPTIMIZER-SLSQP-SILENT already added a log line for this exact fallback, but PortfolioWeights (the response dataclass) has no field for it at all — a real gap that predates max_weight being exposed in the request schema, now more likely to actually trigger since a user can directly supply an infeasible constraint.',
+    fix: 'Add a field to PortfolioWeights (e.g. fallback_reason: str | None) set whenever the equal-weight fallback fires, and surface it in the frontend portfolio-optimizer UI so a user knows their constraint wasn\'t actually applied.',
+    implementedNote: 'Deliberately NOT fixed this pass — requires a small API response schema change plus a frontend consumer update, a genuine (if small) API-contract change better done as its own scoped task than rushed into an audit-fix pass.',
+  },
+
+  {
+    id: 'AUD250-RANKINGENGINE-TEST-HAND-DUPLICATED-QUERY',
+    tier: 253 as const, severity: 'low', defaultStatus: 'todo' as const,
+    file: 'services/ranking-engine/tests/test_rank_symbol_market_scoping.py',
+    effort: 'S',
+    impact: 'Low — the underlying PRODUCTION fix (T247-RANKINGENGINE-CROSSMARKET) is real and already verified working; this is a test-infrastructure quality gap (the regression test could pass even if the real routes.py regresses), not a live bug.',
+    title: 'CROSSMARKET regression test hand-duplicates rank_symbol()\'s query construction instead of extracting and exercising the real source',
+    what: 'Found via the AUD250 deep-audit workflow. This repo has an established, working pattern for this exact constraint (routes.py can\'t be imported directly due to db/__init__.py\'s eager engine creation) — source-text extraction + exec() against real sqlalchemy/models, used successfully in test_backfill_realized_ev.py and test_price_alert_price_check.py. This test instead hand-copies the query logic, the same self-referential-test risk already documented elsewhere in this repo\'s history (the EMA formula bug).',
+    fix: 'Rewrite using the source-text-extraction pattern: pull rank_symbol()\'s real universe-query construction out of routes.py via string slicing and exec() it against real sqlalchemy + shared/db/models.py, matching the established convention.',
+    implementedNote: 'Deliberately NOT fixed this pass — test-infrastructure-only change, no live bug risk; documented as a follow-up to improve regression-test fidelity.',
+  },
 ];
 
 
@@ -16086,6 +16206,7 @@ const TIER_LABEL: Record<Tier, string> = {
   250: 'Tier 250 — Volume Profile Chart (2026-07-16). User asked for a TradingView-style footprint chart. Investigated first: true footprint (buy/sell volume per price level) needs tick/quote data no current data source provides without a paid Polygon upgrade — deferred. Volume profile (POC/VAH/VAL/HVN/LVN, Session VP, Fixed Range VP) needs only OHLCV+volume — built using the standard price-bucketing approximation, forked from TradingView\'s own official lightweight-charts plugin-examples volume-profile primitive. Also set up this repo\'s first-ever frontend test infrastructure (Vitest) along the way.',
   251: 'Tier 251 — Mobile Responsive Design (2026-07-16, found during chart width investigation, not yet built). Full mobile-friendliness audit found the app is effectively desktop-only: nav bar has no hamburger variant and will overflow on phone screens; ~57 page/component files have zero working responsive breakpoints; most pages use rigid fixed-pixel-width grids. Scoped as a future two-phase project (nav bar first, then page-by-page breakpoints) — not started this session.',
   252: 'Tier 252 — Chart Entry/Exit Analysis Tools (2026-07-16, requested right after Fixed Range VP shipped, not yet built). Four features to help find entry/exit points: Anchored VWAP (click a point, VWAP recalculates forward — reuses Fixed Range VP\'s click-subscription pattern), Auto-Detected Swing Highs/Lows (technical-analysis\'s existing _find_pivots() needs a new API surface or client port — not new detection logic), Chart Risk/Reward Lines (draws the ATR-stop/target values PositionSizer.tsx already computes, using the exact createPriceLine() pattern gamePlanLevels already proves), and a Value-Area Breakdown Alert (the one genuinely bigger item — volume profile is 100% client-side today, so this needs a real backend port of the value-area algorithm before any alert can read it, not just wiring an existing value into the alert pipeline).',
+  253: 'Tier 253 — AUD250 Deep Audit of the 2026-07-11 to 2026-07-16 Work Window (2026-07-16). A multi-agent workflow reviewed the real git diff of every one of 73 commits across 11 services from this 5-day window (the Tier 247 full-system audit plus Tiers 248-250\'s new features) for logic bugs in the changes themselves, not a generic fresh bug hunt. 16 findings, all adversarially verified; 2 were refuted immediately by checking live production Postgres directly (both already-applied ALTER TABLEs the audit could only reason about from inconsistent commit-message language). 1 critical (watchlist auto-rotation had two NameErrors and had never successfully run since being merged — fixed same-day, before its first Sunday scheduled fire), 1 high (event-intelligence blocking I/O on its own single-process event loop, same bug class already fixed once elsewhere in this repo), plus several medium/low fixes and a few real findings documented for future, larger-scoped work. Full writeup in .claude/CLAUDE.md\'s "AUD250" section.',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -16337,6 +16458,7 @@ const TIER_COLOR: Record<Tier, string> = {
   250: '#ec4899',
   251: '#84cc16',
   252: '#06b6d4',
+  253: '#dc2626',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
