@@ -1449,3 +1449,46 @@ JS/TS test tooling existed before 2026-07-16) — pinned to v1.6.1 rather than t
 after discovering v4 requires a Node `styleText` export the local dev environment's Node
 18.19.1 doesn't have (production's Docker build uses `node:20-alpine`, where v4 would have
 worked, but v1.x was kept for local-dev compatibility). Run via `npm test` in `frontend/`.
+
+---
+
+## Design Reference: Why a BUY Signal Can Show Low Confidence
+
+**A user asked this directly (2026-07-16)** after seeing a stock (6682.HK) show `AI Signal:
+BUY` with only `13% Confidence` — worth documenting since it looks contradictory but is
+working as designed, and the same question will come up again for other stocks.
+
+**Confidence and the BUY/SELL/HOLD decision are two entirely independent calculations:**
+
+- **Confidence** = `abs(fused_probability - 0.5) * 200`
+  (`services/signal-engine/src/generators/signals.py:2118`, also duplicated at
+  `services/signal-engine/src/api/routes.py:556` and `:5666`). This is purely "how far from a
+  50/50 coin-flip is the model's probability" — a `fused_probability` of 56% bullish is barely
+  above a toss-up, so confidence is mechanically forced to `abs(0.56-0.5)*200 = 12%` no matter
+  what else is true about the stock. **Confidence measures conviction in the probability
+  estimate itself, not trade quality.**
+- **BUY/SELL/HOLD** is decided separately by `_decide_style()`
+  (`services/signal-engine/src/generators/signals.py:1556`) — whether that same
+  `fused_probability` clears a **threshold** (`buy_threshold`, `_STYLE_PROFILES`, varies by
+  style + market regime, e.g. SWING/bull ≈ 0.60-0.63) that can itself be self-tuned over time
+  by the watchdog/calibration jobs (see "Tier 85-86" in the tier-history section above —
+  `_get_dynamic_buy_threshold()` reads a Redis-cached, empirically-tuned value before falling
+  back to the hardcoded default).
+
+**The practical read**: a BUY signal with low confidence means the probability barely cleared
+the bar to be called BUY at all — a marginal, low-conviction call, not a strong one. **This is
+exactly what the other panels on the stock detail page are for** — they're deliberately more
+reliable signals of "should I actually enter" than the top-line BUY/SELL label alone:
+- **Confluence Score** (weighted blend of AI signal + K-Score + technical + momentum,
+  `frontend/src/lib/confluence.ts`) — a low/"Weak" score with "signals conflict" is a stronger
+  real-world signal to heed than the BUY label.
+- **Conviction Gate** (`_is_conviction_buy()` in `paper_trading_engine.py`, 7-layer check:
+  K-Score, Uptrend, RSI, MACD, OBV, ADX, ML — see the existing Conviction Gate documentation
+  elsewhere in this file) — "✗ Gate not met" with multiple failed layers means the paper
+  trading engine itself would NOT have entered this position even though the top-line label
+  says BUY. The gate exists specifically to catch cases like this one.
+
+**Design invariant**: never treat the top-line AI Signal label (BUY/SELL/HOLD) as sufficient
+justification to enter a real position on its own — always cross-check the Confluence Score
+and Conviction Gate panels on the same page, which are deliberately independent, stricter
+checks that can (and are meant to) disagree with the headline label.
