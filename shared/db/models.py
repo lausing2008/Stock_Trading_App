@@ -139,6 +139,11 @@ class Price(Base):
     close: Mapped[float] = mapped_column(Float)
     volume: Mapped[float] = mapped_column(Float)
     adj_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # T230-CHARTING-PREMARKET: 'PRE' | 'REGULAR' | 'POST' for intraday timeframes (yfinance
+    # prepost=True bars); always 'REGULAR' for daily/weekly bars. Plain String, not a new
+    # Postgres enum type, to keep the ALTER TABLE this needs (existing, populated table —
+    # create_all() won't add it) a single column add with no new type to manage.
+    session: Mapped[str] = mapped_column(String(8), default="REGULAR", server_default="REGULAR")
 
     stock: Mapped[Stock] = relationship(back_populates="prices")
 

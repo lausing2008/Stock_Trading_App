@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from datetime import time as dtime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from sqlalchemy import delete, select
@@ -37,6 +39,30 @@ def validate_ohlcv(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     if dropped:
         log.warning("ohlcv.drop_invalid", symbol=symbol, dropped=dropped)
     return df
+
+
+_PREMARKET_OPEN_ET = dtime(4, 0)
+_MARKET_OPEN_ET = dtime(9, 30)
+_MARKET_CLOSE_ET = dtime(16, 0)
+_POSTMARKET_CLOSE_ET = dtime(20, 0)
+
+
+# T230-CHARTING-PREMARKET: classify each intraday bar's timestamp as PRE/REGULAR/POST.
+# US only — HK has no pre/post-market session concept (a pure cash-open market), and
+# ingest_symbol always routes HK through yfinance with prepost=True harmlessly returning
+# only regular-session bars for HK tickers (yfinance simply has no extended-hours data to add).
+# ts here is UTC-naive (see adapters/base.py's _to_canonical intraday branch), so it's
+# converted to US Eastern before comparing against the regular-session clock boundaries.
+def _classify_session(ts: datetime, market: str) -> str:
+    if market != "US":
+        return "REGULAR"
+    et = ts.replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("America/New_York"))
+    t = et.time()
+    if t < _PREMARKET_OPEN_ET or t >= _POSTMARKET_CLOSE_ET:
+        return "REGULAR"  # outside yfinance's extended-hours window entirely — treat as regular
+    if _MARKET_OPEN_ET <= t < _MARKET_CLOSE_ET:
+        return "REGULAR"
+    return "PRE" if t < _MARKET_OPEN_ET else "POST"
 
 
 def _last_bar_ts(session, stock_id: int, timeframe: TimeFrame) -> datetime | None:
@@ -137,7 +163,7 @@ def ingest_symbol(
         rows = [
             {
                 "stock_id": stock.id,
-                "ts": r.ts.to_pydatetime() if hasattr(r.ts, "to_pydatetime") else r.ts,
+                "ts": (_ts := r.ts.to_pydatetime() if hasattr(r.ts, "to_pydatetime") else r.ts),
                 "timeframe": tf,
                 "open": float(r.open),
                 "high": float(r.high),
@@ -145,6 +171,7 @@ def ingest_symbol(
                 "close": float(r.close),
                 "volume": float(r.volume),
                 "adj_close": float(r.adj_close) if pd.notna(r.adj_close) else None,
+                "session": _classify_session(_ts, market) if timeframe not in ("1d", "1w") else "REGULAR",
             }
             for r in df.itertuples(index=False)
         ]
@@ -159,6 +186,7 @@ def ingest_symbol(
                 "close": stmt.excluded.close,
                 "volume": stmt.excluded.volume,
                 "adj_close": stmt.excluded.adj_close,
+                "session": stmt.excluded.session,
             },
         )
         result = session.execute(stmt)

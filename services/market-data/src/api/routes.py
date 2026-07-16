@@ -43,6 +43,7 @@ from common.config import get_settings
 from common.logging import get_logger
 from db import Fundamental, Price, Stock, TimeFrame, get_session
 from .auth import get_current_user
+from ..services.ingestion import _classify_session
 
 log = get_logger("routes")
 router = APIRouter(prefix="/stocks", tags=["stocks"])
@@ -85,6 +86,7 @@ class PriceOut(BaseModel):
     close: float
     volume: float
     adj_close: float | None = None
+    session: str = "REGULAR"
 
 
 @router.get("", response_model=list[StockOut])
@@ -2533,6 +2535,7 @@ class PriceTfOut(BaseModel):
     low: float
     close: float
     volume: float
+    session: str = "REGULAR"
 
 
 @router.get("/{symbol}/prices_tf", response_model=list[PriceTfOut])
@@ -2570,9 +2573,13 @@ def get_prices_tf(
     elif tf == "4h":
         yf_params = {"period": "120d", "interval": "60m"}
 
+    # T230-CHARTING-PREMARKET: US only, same as the DB-backed ingestion path — HK has no
+    # pre/post-market session, so there's nothing extra for prepost=True to surface there.
+    market = "HK" if symbol.upper().endswith(".HK") else "US"
+
     try:
         ticker = yf.Ticker(symbol)
-        hist = ticker.history(**yf_params, auto_adjust=True)
+        hist = ticker.history(**yf_params, auto_adjust=True, prepost=(market == "US"))
         if hist.empty:
             return []
 
@@ -2599,6 +2606,7 @@ def get_prices_tf(
                 "low": float(row["Low"]),
                 "close": float(row["Close"]),
                 "volume": float(row["Volume"]),
+                "session": _classify_session(ts.tz_convert("UTC").replace(tzinfo=None), market),
             })
 
         try:
@@ -2658,6 +2666,7 @@ def get_prices(
             close=r.close,
             volume=r.volume,
             adj_close=r.adj_close,
+            session=r.session,
         )
         for r in rows
     ]

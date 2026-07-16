@@ -216,6 +216,11 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
     ? intradayOverride
     : isIntraday ? (intradayPrices ?? []) : visiblePrices;
 
+  // T230-CHARTING-PREMARKET: only show the "Extended Hours" legend swatch when the current
+  // intraday data actually contains a dimmed pre/post-market bar — no point explaining a
+  // visual that isn't present (e.g. HK symbols, or a US symbol with no extended-hours trades).
+  const hasExtendedHoursBars = isIntraday && activePrices.some(p => p.session === 'PRE' || p.session === 'POST');
+
   const volumeProfile = useMemo(() => {
     if (volumeProfileMode === 'off' || activePrices.length === 0) return null;
     if (volumeProfileMode === 'fixed') {
@@ -247,10 +252,21 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
     });
 
     if (isIntraday) {
-      candles.setData(activePrices.map<CandlestickData<Time>>(p => ({
-        time: toIntradayTime(p.ts) as unknown as Time,
-        open: +p.open, high: +p.high, low: +p.low, close: +p.close,
-      })));
+      // T230-CHARTING-PREMARKET: dim pre/post-market bars so extended-hours activity is
+      // visible (earnings gaps, overnight moves) without being confused for regular-session
+      // volume — same up/down hue, lower opacity, distinguishing them at a glance.
+      candles.setData(activePrices.map<CandlestickData<Time>>(p => {
+        const isExtended = p.session === 'PRE' || p.session === 'POST';
+        return {
+          time: toIntradayTime(p.ts) as unknown as Time,
+          open: +p.open, high: +p.high, low: +p.low, close: +p.close,
+          ...(isExtended ? {
+            color: +p.close >= +p.open ? '#22c55e66' : '#ef444466',
+            borderColor: +p.close >= +p.open ? '#22c55e66' : '#ef444466',
+            wickColor: +p.close >= +p.open ? '#22c55e66' : '#ef444466',
+          } : {}),
+        };
+      }));
     } else {
       candles.setData(activePrices.map<CandlestickData<Time>>(p => ({
         time: toTime(p.ts),
@@ -826,6 +842,14 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
         <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-400">
           <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-green-500 opacity-80" />Up</span>
           <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-500 opacity-80" />Down</span>
+          {hasExtendedHoursBars && (
+            <span
+              className="flex items-center gap-1"
+              title="Dimmed bars are pre-market (4:00-9:30am ET) or after-hours (4:00-8:00pm ET) trades — lower liquidity than the regular session, shown to surface earnings gaps and overnight moves."
+            >
+              <span className="inline-block w-2.5 h-2.5 rounded-sm bg-green-500 opacity-40" />Extended Hours
+            </span>
+          )}
           {showSMA20   && <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-sky-400" />SMA 20</span>}
           {showSMA50   && <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-amber-400" />SMA 50</span>}
           {showSMA200  && <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-violet-400" />SMA 200</span>}

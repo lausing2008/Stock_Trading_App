@@ -50,11 +50,16 @@ class YFinanceAdapter(DataAdapter):
         # Daily bars: auto_adjust=True so Close is already split+dividend-adjusted.
         # Intraday bars: auto_adjust=False (yfinance does not reliably adjust intraday).
         use_adjusted = (timeframe == "1d")
+        # T230-CHARTING-PREMARKET: prepost=True on intraday fetches includes pre/post-market
+        # bars in the same dataframe (yfinance's normal behavior, no separate call needed).
+        # Daily bars never carry a prepost concept — leave those requests untouched.
+        is_intraday = timeframe != "1d" and timeframe != "1w"
         df = ticker.history(
             start=start.isoformat(),
             end=end.isoformat(),
             interval=interval,
             auto_adjust=use_adjusted,
+            prepost=is_intraday,
         )
         if df is None or df.empty:
             return OHLCV(symbol, timeframe, pd.DataFrame(columns=["ts"]))

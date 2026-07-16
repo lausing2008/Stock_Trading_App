@@ -687,6 +687,7 @@ export type Price = {
   low: number;
   close: number;
   volume: number;
+  session?: 'PRE' | 'REGULAR' | 'POST';
 };
 
 /** Typed subset of signal reasons returned by signal-engine _bulk_persist. */

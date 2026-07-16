@@ -7778,13 +7778,13 @@ const ITEMS: Item[] = [
   {
     id: 'T230-CHARTING-PREMARKET',
     title: 'No pre-market / after-hours price data',
-    tier: 230 as const, severity: 'high', defaultStatus: 'todo' as const,
-    file: 'services/market-data/src/api/routes.py',
+    tier: 230 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/ingestion.py, services/market-data/src/adapters/yfinance_adapter.py, services/market-data/src/api/routes.py, frontend/src/components/PriceChart.tsx',
     effort: 'M',
     impact: 'High — Critical for earnings gap analysis on earnings days. US traders check pre-market every morning. yfinance supports prePost=True parameter.',
     what: 'No pre/post market OHLCV available. Earnings gaps appear as unexplained overnight jumps on the chart. Users can\'t evaluate gap risk before market open.',
     fix: 'Fetch pre/post market bars via yfinance prepost=True or Polygon extended hours endpoint. Store in separate prices_premarket table or flag in prices. Show on chart as lighter-colored bars.',
-    implementedNote: 'Deferred — requires a new DB table or flag column, ingest scheduler job, and chart rendering changes for lighter-colored bars. Estimated 1 day.',
+    implementedNote: 'Fixed 2026-07-16. Chose the flag-column approach over a separate table (simpler queries, no new join, and the existing (stock_id, ts, timeframe) unique constraint already keeps pre/post bars distinct from regular ones since their real timestamps differ). Added a `session` column (\'PRE\'|\'REGULAR\'|\'POST\', default REGULAR) to the existing, populated `prices` table — required a manual ALTER TABLE against production Postgres per this repo\'s own create_all()-gap discipline, applied and verified via \\d prices before deploying the code that writes to it. yfinance_adapter.py now passes prepost=True for intraday timeframes only (daily/weekly bars have no prepost concept — left untouched). New `_classify_session()` in ingestion.py buckets each bar\'s UTC timestamp against US regular-session boundaries (4:00am premarket open, 9:30am regular open, 4:00pm regular close, 8:00pm postmarket close, all ET) — HK always returns REGULAR since HK has no extended-hours session at all. Wired into both intraday price paths: the DB-backed ingest_symbol() (5m bars) and the separate on-demand prices_tf endpoint (15m/1h/4h, not DB-backed — derives market from the .HK symbol suffix convention already used elsewhere). GET /prices and /prices_tf both now return the session field; frontend Price type extended to match. PriceChart.tsx dims pre/post-market candles (40% opacity, same up/down hue) only on intraday charts, plus a conditional "Extended Hours" legend swatch with an explanatory hover tooltip (only rendered when the current data actually contains an extended-hours bar — no point explaining a visual that isn\'t present for e.g. HK symbols). New tests/test_premarket_session_classify.py (8 tests) covering both session boundaries, the inclusive/exclusive edges, and the HK always-REGULAR case; adversarially verified by swapping the PRE/POST branches and confirming 4 tests failed with the exact predicted symptom before restoring. All 143 market-data tests pass (135 pre-existing + 8 new); frontend typechecks clean and all 21 Vitest tests pass.',
   },
   {
     id: 'T230-SCREENER-PRESETS',
@@ -15705,7 +15705,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'T249-MARKETMOVER-P0-CALENDAR-FOUNDATION',
-    tier: 249 as const, severity: 'high', defaultStatus: 'todo' as const,
+    tier: 249 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/event-intelligence/src/services/economic.py, services/market-data/src/api/routes.py:1552',
     effort: 'S',
     impact: 'Foundation for every other item in this tier. FRED_API_KEY is not set in production, so sync_fred() silently no-ops (economic.fred_skip) and economic_events has zero CPI/PPI/GDP/NFP rows today — confirmed via docker logs showing the skip reason. Nothing macro-related in this tier works until this is set.',
