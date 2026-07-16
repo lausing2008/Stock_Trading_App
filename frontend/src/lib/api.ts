@@ -184,6 +184,7 @@ export const api = {
     claude_api_key?: string; deepseek_api_key?: string;
     claude_model?: string; deepseek_model?: string;
     broker_enabled?: boolean;
+    unshare_claude_key?: boolean; unshare_deepseek_key?: boolean;
   }) => request<{ status: string }>(`/admin/config`, { method: 'POST', body: JSON.stringify(keys) }),
   getFeatureFlags: () => request<{ broker_enabled: boolean }>(`/admin/feature-flags/public`),
 
