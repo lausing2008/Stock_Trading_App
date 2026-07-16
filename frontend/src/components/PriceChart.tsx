@@ -25,6 +25,7 @@ import { computeVolumeProfile, sessionBars } from '@/lib/volumeProfile';
 import { VolumeProfilePrimitive } from './VolumeProfilePrimitive';
 import { ToolbarDropdown } from './ToolbarDropdown';
 import { computeSMA, computeEMA, computeRSI, computeMACD, computeBollingerBands } from '@/lib/indicators';
+import { loadDrawings, addDrawing, removeDrawing, clearDrawings, nextDrawingId, type ChartDrawing } from '@/lib/chartDrawings';
 
 type Props = {
   symbol: string;
@@ -171,6 +172,21 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
   // rebuild the chart out from under an already-subscribed, now-stale click handler.
   const [chartInstanceVersion, setChartInstanceVersion] = useState(0);
 
+  // ── T230-CHARTING-DRAWING-TOOLS: horizontal lines + trendlines, persisted per symbol ──
+  // Same picking-state architecture as Fixed Range VP above (idle -> picking -> idle), reusing
+  // the same chart.subscribeClick()-in-a-separate-effect pattern rather than inventing a new
+  // mechanism. 'horizontal' needs only 1 click (price only, x position is irrelevant to a
+  // horizontal ray); 'trendline' needs 2 (start point + end point, both bar-index AND price).
+  const [drawTool, setDrawTool] = useState<'off' | 'horizontal' | 'trendline'>('off');
+  const [drawPickState, setDrawPickState] = useState<'idle' | 'picking-start' | 'picking-end'>('idle');
+  const [drawings, setDrawings] = useState<ChartDrawing[]>([]);
+  const drawStartRef = useRef<{ idx: number; price: number } | null>(null);
+
+  // Load this symbol's saved drawings on mount / symbol change.
+  useEffect(() => {
+    setDrawings(loadDrawings(symbol));
+  }, [symbol]);
+
   // ── Intraday 5m state ─────────────────────────────────────────────────────
   const [intradayPrices, setIntradayPrices] = useState<Price[] | null>(null);
   const [intradayLoading, setIntradayLoading] = useState(false);
@@ -227,6 +243,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
   type LabelPos = { price: number; y: number; kind: 'support' | 'resistance'; strength: number };
   const [srLabels, setSrLabels] = useState<LabelPos[]>([]);
   const chartRef = useRef<IChartApi | null>(null);
+  const candlesRef = useRef<ReturnType<IChartApi['addCandlestickSeries']> | null>(null);
 
   // Active price data: intradayOverride > internal 5m > daily
   const activePrices = intradayOverride != null && intradayOverride.length > 0
@@ -267,6 +284,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       upColor: '#22c55e', downColor: '#ef4444',
       borderVisible: false, wickUpColor: '#22c55e', wickDownColor: '#ef4444',
     });
+    candlesRef.current = candles;
 
     if (isIntraday) {
       // T230-CHARTING-PREMARKET: dim pre/post-market bars so extended-hours activity is
@@ -559,6 +577,35 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       });
     }
 
+    // ── T230-CHARTING-DRAWING-TOOLS: user-drawn horizontal lines + trendlines ──────
+    // Horizontal lines reuse createPriceLine (same mechanism as every other flat level on
+    // this chart). Trendlines need a genuine 2-point line, which createPriceLine can't do
+    // (it only draws flat horizontal lines) — a dedicated 2-point LineSeries per trendline
+    // is the standard lightweight-charts approach for this, same technique used for the
+    // Normalized Comparison overlay below.
+    for (const d of drawings) {
+      if (d.type === 'horizontal') {
+        candles.createPriceLine({
+          price: d.price, color: '#facc15', lineWidth: 2 as const, lineStyle: LineStyle.Solid,
+          axisLabelVisible: true, title: '',
+        });
+      } else {
+        const startTime = isIntraday
+          ? toIntradayTime(activePrices[d.startIdx]?.ts ?? activePrices[0]?.ts ?? '') as unknown as Time
+          : toTime(activePrices[d.startIdx]?.ts ?? activePrices[0]?.ts ?? '');
+        const endTime = isIntraday
+          ? toIntradayTime(activePrices[d.endIdx]?.ts ?? activePrices.at(-1)?.ts ?? '') as unknown as Time
+          : toTime(activePrices[d.endIdx]?.ts ?? activePrices.at(-1)?.ts ?? '');
+        const trendSeries = chart.addLineSeries({
+          color: '#facc15', lineWidth: 2 as const, lastValueVisible: false, priceLineVisible: false,
+        });
+        trendSeries.setData([
+          { time: startTime, value: d.startPrice },
+          { time: endTime, value: d.endPrice },
+        ]);
+      }
+    }
+
     // ── Game Plan levels (daily only) ─────────────────────────────────────
     if (!isIntraday && gamePlanLevels) {
       const gpl = gamePlanLevels;
@@ -767,7 +814,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       chartRef.current = null;
       setSrLabels([]);
     };
-  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, riskRewardLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, showFVG, showSR, show52W, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
+  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, riskRewardLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, showFVG, showSR, show52W, drawings, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
 
   // ── Fixed Range VP: click-to-pick start/end selection ───────────────────
   // Deliberately a SEPARATE, lightweight effect from the main chart-rebuild effect above —
@@ -798,6 +845,51 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
     chart.subscribeClick(clickHandler);
     return () => chart.unsubscribeClick(clickHandler);
   }, [volumeProfileMode, fixedRangePickState, activePrices, chartInstanceVersion]);
+
+  // ── T230-CHARTING-DRAWING-TOOLS: click-to-place horizontal lines / trendlines ──────
+  // Same picking-state + separate-effect pattern as Fixed Range VP above. Needs the actual
+  // PRICE at the click point (not just the bar index), which createPriceLine-style features
+  // don't need — reads it via the candlestick series' own coordinateToPrice(), the standard
+  // lightweight-charts v4 way to convert a click's pixel Y coordinate into a price value.
+  useEffect(() => {
+    const chart = chartRef.current;
+    const candles = candlesRef.current;
+    if (!chart || !candles || drawTool === 'off' || drawPickState === 'idle') return;
+
+    const clickHandler = (param: { logical?: number; point?: { x: number; y: number } }) => {
+      if (param.logical == null || param.point == null) return;
+      const idx = Math.max(0, Math.min(activePrices.length - 1, Math.round(param.logical)));
+      const price = candles.coordinateToPrice(param.point.y);
+      if (price == null) return;
+
+      if (drawTool === 'horizontal') {
+        // Horizontal lines only need 1 click — no picking-end phase.
+        const next = addDrawing(symbol, { id: nextDrawingId(), type: 'horizontal', price });
+        setDrawings(next);
+        setDrawPickState('idle');
+        setDrawTool('off');
+        return;
+      }
+
+      // Trendline — 2 clicks.
+      if (drawPickState === 'picking-start') {
+        drawStartRef.current = { idx, price };
+        setDrawPickState('picking-end');
+      } else if (drawPickState === 'picking-end') {
+        const start = drawStartRef.current ?? { idx, price };
+        const next = addDrawing(symbol, {
+          id: nextDrawingId(), type: 'trendline',
+          startIdx: start.idx, startPrice: start.price,
+          endIdx: idx, endPrice: price,
+        });
+        setDrawings(next);
+        setDrawPickState('idle');
+        setDrawTool('off');
+      }
+    };
+    chart.subscribeClick(clickHandler);
+    return () => chart.unsubscribeClick(clickHandler);
+  }, [drawTool, drawPickState, activePrices, symbol, chartInstanceVersion]);
 
   const btn = (active: boolean, label: string, onClick: () => void, color?: string) => (
     <button
@@ -912,6 +1004,55 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
           >
             Re-pick range
           </button>
+        )}
+
+        {/* T230-CHARTING-DRAWING-TOOLS: horizontal line (1 click) + trendline (2 clicks),
+            persisted per symbol via localStorage (see @/lib/chartDrawings.ts). */}
+        <ToolbarDropdown
+          label="Draw"
+          options={[
+            { key: 'draw_h', label: 'Horizontal Line', checked: drawTool === 'horizontal', onToggle: () => {
+                if (drawTool === 'horizontal') { setDrawTool('off'); setDrawPickState('idle'); }
+                else { setDrawTool('horizontal'); setDrawPickState('picking-start'); }
+              }, color: '#facc15', title: 'Click once on the chart to drop a horizontal price line at that level.' },
+            { key: 'draw_t', label: 'Trendline', checked: drawTool === 'trendline', onToggle: () => {
+                if (drawTool === 'trendline') { setDrawTool('off'); setDrawPickState('idle'); }
+                else { setDrawTool('trendline'); setDrawPickState('picking-start'); drawStartRef.current = null; }
+              }, color: '#facc15', title: 'Click a start point, then an end point, to draw a line between two points on the chart.' },
+          ]}
+        />
+        {drawTool !== 'off' && (
+          <span className="px-2 py-1 rounded bg-amber-900/40 border border-amber-500/50 text-amber-300 text-xs">
+            {drawTool === 'horizontal'
+              ? 'Click the chart to place the line…'
+              : (drawPickState === 'picking-start' ? 'Click a start point…' : 'Now click an end point…')}
+          </span>
+        )}
+        {drawings.length > 0 && (
+          <div className="flex items-center gap-1 flex-wrap">
+            {drawings.map((d, i) => (
+              <span
+                key={d.id}
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-900/20 border border-amber-700/40 text-amber-300 text-[11px]"
+              >
+                {d.type === 'horizontal' ? `Line @ $${d.price.toFixed(2)}` : `Trend #${i + 1}`}
+                <button
+                  onClick={() => setDrawings(removeDrawing(symbol, d.id))}
+                  className="text-amber-400 hover:text-red-400 font-bold leading-none"
+                  title="Delete this drawing"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            <button
+              onClick={() => { clearDrawings(symbol); setDrawings([]); }}
+              className="px-2 py-1 rounded border border-slate-700 text-slate-400 hover:border-red-500 hover:text-red-300 text-xs"
+              title="Remove all drawings on this chart"
+            >
+              Clear all
+            </button>
+          </div>
         )}
 
         {isIntraday && <span className="text-slate-600 ml-1">5-min</span>}
