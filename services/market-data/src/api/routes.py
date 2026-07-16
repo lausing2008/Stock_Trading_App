@@ -1126,6 +1126,30 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
     from datetime import datetime as _dt
     data.fetched_at = _dt.utcnow().isoformat() + "Z"
 
+    # AUD-MD-FUNDAMENTALS-EMPTY-OVERWRITE: a transient yfinance failure (rate-limit, timeout,
+    # empty response) makes ticker.info == {} — every _safe(info, ...) call above then returns
+    # None, producing a `data` that's entirely null fields but still gets treated as a normal
+    # successful response: cached for 24h AND upserted into the DB, silently overwriting
+    # yesterday's real values (confirmed happening in production 2026-07-16: AAPL/MU's
+    # fundamentals row went from real values to 100% NULL after one bad nightly batch run,
+    # blanking the stock detail page's Company Financials section and P/E/EV/Beta cards for
+    # every symbol until the next successful refresh). marketCap/trailingPE/totalRevenue are
+    # present on essentially every real yfinance response, even for thinly-covered stocks —
+    # their combined absence is a reliable signal the fetch itself failed, not that this
+    # particular stock genuinely has none of the three.
+    fetch_looks_empty = (
+        data.market_cap is None and data.trailing_pe is None and data.total_revenue is None
+    )
+    if fetch_looks_empty:
+        log.warning("fundamentals.empty_fetch_skip_write", symbol=symbol)
+        try:
+            stale = _get_redis().get(cache_key)
+            if stale:
+                return json.loads(stale)
+        except Exception:
+            pass
+        return data
+
     try:
         _get_redis().setex(cache_key, _FUND_TTL, data.model_dump_json())
     except Exception:
