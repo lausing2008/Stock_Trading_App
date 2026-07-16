@@ -1565,7 +1565,13 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
                 if (datetime.now(timezone.utc) - ts).total_seconds() < _waiter_ttl and _position_sizing_matches(report, req):
                     return report
             # Fell through (first caller had an error, or portfolio params didn't match) —
-            # proceed to compute ourselves
+            # proceed to compute ourselves. AUD-RE-INFLIGHT-REREGISTER: the first caller
+            # already popped this symbol's entry from _inflight_research right before firing
+            # its event (see the pop()+set() pair below), so a THIRD concurrent request
+            # arriving right now would see `sym not in _inflight_research` and start its own
+            # duplicate generation instead of deduping against the one we're about to run.
+            # Re-register so any later arrival waits on OUR generation instead.
+            _inflight_research[sym] = asyncio.Event()
     else:
         _inflight_research[sym] = asyncio.Event()
 
