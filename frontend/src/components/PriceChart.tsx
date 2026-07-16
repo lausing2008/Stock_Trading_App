@@ -147,9 +147,11 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
   const [showFVG,      setShowFVG]     = useState(false);
   // T252-DECLUTTER: S/R levels + 52W High/Low used to always render — combined with FVG,
   // Entry/Stop/Target, and indicator curves, this stacked up to 15+ overlapping lines with
-  // no way to turn any group off (a user reported the chart as too cluttered to read).
-  // Off by default now — a user opts into the extra context rather than seeing it unasked.
-  const [showSR,       setShowSR]      = useState(false);
+  // no way to turn any group off (a user reported the chart as too cluttered to read). 52W
+  // High/Low off by default (least commonly needed); S/R back on by default per explicit
+  // user request — it's the most broadly useful of the three, FVG stays off by default since
+  // it was the actual source of the reported clutter (up to 20 gaps rendered as 40 lines).
+  const [showSR,       setShowSR]      = useState(true);
   const [show52W,      setShow52W]     = useState(false);
   // Volume profile: 'off' | 'session' (current trading session only) | 'range' (whole visible
   // window) | 'fixed' (user click-selected start/end range — the real Fixed Range VP tool).
