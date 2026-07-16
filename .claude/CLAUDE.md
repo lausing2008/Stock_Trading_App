@@ -1360,14 +1360,23 @@ POC/VAH/VAL/HVN readout row and the Session/Range dropdown options — added aft
   in the readout row — they mark price zones the market moved through quickly, which tend to
   get moved through fast again on a revisit (the opposite behavior of HVN/POC).
 
-**Two modes** (Volume Profile dropdown in the chart toolbar):
+**Three modes** (Volume Profile dropdown in the chart toolbar):
 - **Session VP** — profiles only the current trading session's bars. Useful for intraday
   support/resistance.
 - **Range VP** — profiles the entire currently-visible chart window (whatever date range is
-  currently selected/zoomed). This is close to but not identical to TradingView's own
-  click-and-drag Fixed Range Volume Profile tool, which lets you drag-select an arbitrary
-  sub-range — that specific interaction wasn't built in this v1 (tracked as a known gap in
-  the T250 tracker entry).
+  currently selected/zoomed).
+- **Fixed Range VP** (added 2026-07-16, after a user asked how to use POC as an entry point
+  anchored to a specific swing high/low) — click a start point on the chart, then an end
+  point, and the profile computes for exactly that bar range. `lightweight-charts` has no
+  native drag-select gesture, so this uses the standard two-sequential-clicks pattern instead
+  (same approach TradingView's own drawing tools and most community plugins use), reading
+  `param.logical` (a bar index, not a pixel coordinate) from `chart.subscribeClick()` so the
+  selection is always bar-aligned. Implemented as a separate, lightweight `useEffect` from
+  the main chart-rebuild effect — subscribing on the existing chart instance via `chartRef`
+  rather than recreating the whole chart on the first of the two picking clicks, which would
+  otherwise flash/reset zoom on every click. A `chartInstanceVersion` counter guards the edge
+  case where the user starts picking a range, then also toggles an unrelated overlay before
+  finishing — without it, the click effect could stay subscribed to a since-replaced chart.
 
 **What to check if this looks wrong**: `src/lib/volumeProfile.ts`'s `computeVolumeProfile()`
 is the only place this math lives — 10 tests in `volumeProfile.test.ts` cover POC placement,
