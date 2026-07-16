@@ -1378,6 +1378,18 @@ POC/VAH/VAL/HVN readout row and the Session/Range dropdown options — added aft
   case where the user starts picking a range, then also toggles an unrelated overlay before
   finishing — without it, the click effect could stay subscribed to a since-replaced chart.
 
+  **How to redo or clear a selection** (a user asked this directly after first using the
+  feature — worth documenting since it's not obvious from the UI alone):
+  - **To pick a new range**: once a selection exists, a **"Re-pick range"** button appears in
+    the toolbar next to the Volume Profile dropdown (only visible when
+    `fixedRangePickState === 'idle' && fixedRangeSelection` is set). Clicking it re-arms
+    `picking-start` without touching `volumeProfileMode` — the old selection/profile stays
+    visible on the chart until the two new clicks land and replace it.
+  - **To turn it off entirely**: open the Volume Profile dropdown and uncheck "Fixed Range
+    VP" — this resets `volumeProfileMode` to `'off'` and clears both `fixedRangePickState`
+    and `fixedRangeSelection`. Unchecking-then-rechecking also works (same reset path) but
+    isn't necessary just to redo a range — "Re-pick range" is the one-click way to do that.
+
 **What to check if this looks wrong**: `src/lib/volumeProfile.ts`'s `computeVolumeProfile()`
 is the only place this math lives — 10 tests in `volumeProfile.test.ts` cover POC placement,
 VAH/VAL bracketing at exactly 70% volume, HVN detection, and edge cases (degenerate/zero-
