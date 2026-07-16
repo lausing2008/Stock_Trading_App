@@ -23,6 +23,16 @@ class Trendline:
     anchor_idx: list[int]
 
 
+@dataclass
+class FairValueGap:
+    top: float          # upper edge of the gap (always the higher price, regardless of kind)
+    bottom: float       # lower edge of the gap (always the lower price)
+    kind: str           # "bullish" | "bearish"
+    idx: int            # index of the middle candle (the one whose range IS the gap)
+    filled: bool        # has price traded back through the full gap since it formed?
+    filled_idx: int | None  # index of the bar that completed the fill, or None if still open
+
+
 def _find_pivots(series: pd.Series, order: int = 5) -> tuple[np.ndarray, np.ndarray]:
     """Simple pivot detection: local max/min within +-order bars."""
     vals = series.values
@@ -152,3 +162,60 @@ def detect_trendlines(df: pd.DataFrame, order: int = 5) -> list[Trendline]:
                 )
             )
     return out
+
+
+def detect_fair_value_gaps(
+    df: pd.DataFrame, lookback: int = 200, min_gap_pct: float = 0.001, max_gaps: int = 20,
+) -> list[FairValueGap]:
+    """Detect Fair Value Gaps (FVG) — a 3-candle price-action imbalance.
+
+    Bullish FVG: bar[i-1].high < bar[i+1].low — the gap is bar[i]'s own high-low range that
+    sits entirely between the two neighbors, meaning bar[i]'s move up was so decisive that
+    bar[i-1] and bar[i+1] never overlap it at all. Bearish FVG is the mirror: bar[i-1].low >
+    bar[i+1].high. The "gap" itself is [bar[i-1].high, bar[i+1].low] for bullish (bar[i]'s own
+    high/low are NOT the gap boundary — the two OUTER bars define it; this is the standard
+    ICT/smart-money-concepts definition, not a naive single-bar gap).
+
+    Price often "fills" (retraces back into) an FVG before continuing in the original
+    direction — traders use the gap as a probable entry zone on a pullback. filled=True once
+    any later bar's range fully covers [bottom, top].
+
+    Only scans the last `lookback` bars (FVGs older than a few hundred bars are rarely still
+    relevant — the same "recent structure first" reasoning detect_support_resistance() already
+    uses for its 90-bar local pass). min_gap_pct filters out near-zero, noise-level gaps that
+    aren't real imbalances (guards against divide-by-zero/float noise on very low-priced or
+    illiquid symbols).
+    """
+    start = max(0, len(df) - lookback)
+    highs = df["high"].values
+    lows = df["low"].values
+    gaps: list[FairValueGap] = []
+
+    for i in range(max(1, start), len(df) - 1):
+        prev_high, prev_low = highs[i - 1], lows[i - 1]
+        next_high, next_low = highs[i + 1], lows[i + 1]
+
+        if prev_high < next_low:
+            top, bottom, kind = float(next_low), float(prev_high), "bullish"
+        elif prev_low > next_high:
+            top, bottom, kind = float(prev_low), float(next_high), "bearish"
+        else:
+            continue
+
+        mid = (top + bottom) / 2 or 1e-9
+        if (top - bottom) / abs(mid) < min_gap_pct:
+            continue
+
+        filled = False
+        filled_idx = None
+        for j in range(i + 2, len(df)):
+            if lows[j] <= bottom and highs[j] >= top:
+                filled = True
+                filled_idx = j
+                break
+
+        gaps.append(FairValueGap(
+            top=top, bottom=bottom, kind=kind, idx=i, filled=filled, filled_idx=filled_idx,
+        ))
+
+    return gaps[-max_gaps:]

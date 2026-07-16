@@ -39,6 +39,7 @@ import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
 import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult, type OutcomesSummary, type QuarterlyRow } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
+import { nearestActionableFvg } from '@/lib/fvgTradePlan';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
 import { activeNewsSources, loadSettings } from '@/lib/settings';
@@ -2393,6 +2394,43 @@ Return ONLY valid JSON — no markdown, no prose:
                 stopLoss={nearestSupport}
                 takeProfit={data.fundamentals?.target_price ?? undefined}
               />
+            );
+          })()}
+
+          {/* Fair Value Gap trade plan — a distinct, structural-level-based alternative to the
+              ATR/support-based Position Sizer above. Shown as its own reference, not silently
+              merged into PositionSizer's numbers, so a user can compare the two approaches
+              rather than have one invisibly override the other. */}
+          {(() => {
+            const lp3 = allPrices?.find(p => p.symbol === symbol);
+            const curPx = lp3?.price ?? data.prices?.at(-1)?.close ?? undefined;
+            const plan = nearestActionableFvg(data.levels?.fair_value_gaps, curPx ?? null);
+            if (!plan) return null;
+            const isLong = plan.gap.kind === 'bullish';
+            return (
+              <div style={{ background: '#1e293b', borderRadius: 10, padding: '14px 18px', border: '1px solid #334155', marginTop: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <span style={{ fontWeight: 600, color: '#f1f5f9', fontSize: 13 }}>Fair Value Gap Trade Plan</span>
+                  <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4,
+                    background: isLong ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
+                    color: isLong ? '#4ade80' : '#f87171' }}>
+                    {isLong ? 'LONG (bullish gap)' : 'SHORT (bearish gap)'}
+                  </span>
+                </div>
+                <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>
+                  Based on the nearest unfilled {isLong ? 'bullish' : 'bearish'} gap {isLong ? 'below' : 'above'} the
+                  current price (${curPx?.toFixed(2)}) — a 3-candle imbalance price often retraces into before
+                  continuing. Entry = gap midpoint; stop = just past the gap's far edge (a full fill invalidates
+                  the setup); target = {plan.rr.toFixed(1)}:1 reward:risk from the gap's own size.
+                </div>
+                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12 }}>
+                  <div><span style={{ color: '#64748b' }}>Gap zone:</span> <span style={{ color: '#f1f5f9', fontWeight: 600 }}>${plan.gap.bottom.toFixed(2)} – ${plan.gap.top.toFixed(2)}</span></div>
+                  <div><span style={{ color: '#64748b' }}>Entry:</span> <span style={{ color: '#4ade80', fontWeight: 600 }}>${plan.entry.toFixed(2)}</span></div>
+                  <div><span style={{ color: '#64748b' }}>Stop:</span> <span style={{ color: '#f87171', fontWeight: 600 }}>${plan.stop.toFixed(2)}</span></div>
+                  <div><span style={{ color: '#64748b' }}>Target:</span> <span style={{ color: '#a78bfa', fontWeight: 600 }}>${plan.target.toFixed(2)}</span></div>
+                  <div><span style={{ color: '#64748b' }}>R:R:</span> <span style={{ color: '#f1f5f9', fontWeight: 600 }}>{plan.rr.toFixed(1)}:1</span></div>
+                </div>
+              </div>
             );
           })()}
 

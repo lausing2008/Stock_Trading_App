@@ -860,9 +860,15 @@ export type FearGreed = { score: number; rating: string; previous_close: number 
 export type MarketBreadth = { breadth_pct: number | null; above_200ma: number; below_200ma: number; total: number; label: string; color: string; updated_at: string };
 
 export type SRLevel = { price: number; strength: number; kind: 'support' | 'resistance' };
+export type FairValueGap = {
+  top: number; bottom: number; kind: 'bullish' | 'bearish';
+  idx: number; filled: boolean; filled_idx: number | null;
+};
+
 export type Levels = {
   support_resistance: SRLevel[];
   trendlines: { slope: number; intercept: number; r2: number; direction: string; start_idx: number; end_idx: number }[];
+  fair_value_gaps?: FairValueGap[];
   fibonacci: Record<string, number>;
 } | null;
 

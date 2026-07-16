@@ -1398,6 +1398,45 @@ whether `numBuckets` (currently hardcoded to 24 in `PriceChart.tsx`) is too coar
 stock's price range — a stock with a very wide 52-week range bucketed into only 24 buckets
 will show chunkier, less precise bars than a narrower-range stock.
 
+**How to trade it — breakouts and direction** (a user asked this directly on 2026-07-16,
+separately from "how do I read this" — worth keeping distinct since reading the levels and
+trading them are different questions):
+
+- **Breakout above VAH** — price has left the "accepted"/fair-value range into thin,
+  low-volume territory above it. Thin territory means less resistance overhead, so price can
+  move fast — read as bullish continuation, especially if price holds above VAH on a retest
+  (old resistance flipping to new support is the confirming signal, not the initial break
+  itself).
+- **Breakdown below VAL** — the mirror case, bearish. Price rejected the value area from
+  below and is now in thin air below it — commonly used as an exit/reduce-position trigger
+  (this is exactly what `T252-VALUE-AREA-BREAKDOWN-ALERT`, still `todo` in the tracker, would
+  automate as a real alert instead of a manual chart read).
+- **Failed breakout (rejection back into the value area)** — if price pokes above VAH or
+  below VAL and then closes back inside, that's often a false breakout / reversal signal —
+  the market "tested" outside fair value and the market rejected it. Treat a poke-and-reject
+  as the opposite signal from a genuine breakout, not a weaker version of the same one.
+- **POC as a magnet** — price far from POC often gets pulled back toward it. A stock trading
+  well above POC can be extended/due for a pullback to POC before continuing, rather than an
+  immediate reversal signal on its own.
+- **HVN vs LVN as a roadmap** — HVNs (thick bars) act like speed bumps: price tends to slow
+  down, consolidate, or reverse there. LVNs (thin bars/gaps) are zones the market moved
+  through fast the first time — expect a quick move back through them too if price revisits
+  (much less "friction" than an HVN revisit).
+- **Practical entry read**: a higher-quality long setup is often price pulling back toward
+  POC or an HVN from above (acting as support), holding there, with volume drying up on the
+  pullback itself (thin selling pressure) — generally a better-quality entry than chasing a
+  breakout with no pullback at all.
+- **Which mode fits which read**: Session VP for intraday direction (where today's volume
+  actually concentrated); Range VP for the current visible swing's context; Fixed Range VP
+  for judging whether a SPECIFIC prior rally/decline had "real" volume support underneath it
+  (HVN-heavy = well-supported move; LVN-heavy = thin/fragile move, more likely to fully
+  retrace).
+- **Standing caveat**: this is still the bucketing approximation described above, not a true
+  buy/sell-split tick footprint — it tells you WHERE volume concentrated, not whether that
+  volume was aggressive buying or selling at each level. Directional reads above lean on
+  price behavior AROUND the profile (holds vs. rejects a level), not on the profile's volume
+  alone distinguishing buyers from sellers.
+
 ---
 
 ## Feature Reference: Chart Toolbar Redesign + Intraday Indicators (Tier 250 follow-up)
@@ -1752,3 +1791,83 @@ Filed here as a reminder of the "verify against live state, not git history" dis
 documented elsewhere in this file — a commit's own language can be internally contradictory
 (one part says "pending," another part of the SAME commit says "verified live") and only a
 direct check of the real running system resolves which half was actually true.
+
+---
+
+## Feature Reference: Fair Value Gap (FVG) — What It Is and How to Use It
+
+**Built 2026-07-16.** User asked for Fair Value Gap zones specifically to help set entry,
+target, and stop — the same underlying goal as Volume Profile (real structural price levels
+instead of eyeballing a chart), but a different pattern with a sharper, more mechanical
+entry/stop read than POC/VAH/VAL.
+
+**What it is**: a standard ICT / smart-money-concepts 3-candle pattern. Look at any 3
+consecutive candles — call them bar 1, bar 2, bar 3:
+- **Bullish FVG**: bar 1's high is BELOW bar 3's low. Bar 2 (the middle candle) moved up so
+  decisively that bars 1 and 3 never overlap its range at all — there's a real price zone,
+  bounded by bar 1's high (bottom) and bar 3's low (top), that NO candle actually traded
+  through. That's the "gap" / "imbalance."
+- **Bearish FVG**: the mirror — bar 1's low is ABOVE bar 3's high, leaving an untraded zone
+  between bar 3's high (bottom) and bar 1's low (top).
+- **Important**: the gap boundary is bar 1 and bar 3's edges, NOT bar 2's own high/low. Bar 2
+  is the candle whose move CREATED the gap, but its own range is not the gap itself.
+
+**Why it matters**: an untraded price zone is considered "unfair" — the market moved through
+it too fast for real two-sided trading to happen there. Price frequently comes back to
+"rebalance" (retrace into) that zone before continuing in the original direction — this makes
+the gap a plausible pullback entry zone, not just a curiosity.
+
+**How to read it on the chart**: toggle "Fair Value Gaps" in the chart toolbar's Indicators
+dropdown (on by default). Each gap is drawn as a pair of horizontal lines (top edge + bottom
+edge of the zone) — solid/dashed and bold green (▲) for an unfilled bullish gap, bold red (▼)
+for an unfilled bearish gap. Once a later candle has traded all the way through a gap (fully
+closing it, not just dipping partway in), the pair dims to a thin dotted line and its label
+disappears — the zone already "did its job" as support/resistance on that revisit and is no
+longer an open, actionable target for a NEW entry.
+
+**How to use it for entry/stop/target** — a new "Fair Value Gap Trade Plan" card on the stock
+detail page (below Position Sizer) does this automatically for the single most relevant gap
+right now:
+- **Which gap it picks**: only a bullish gap that sits BELOW the current price (room to
+  retrace down into it — a long setup) or a bearish gap ABOVE current price (room to retrace
+  up into it — a short setup). A bullish gap already above price, or a bearish gap already
+  below it, has nothing left to retrace into from here and is skipped. Among the remaining
+  candidates, the NEAREST one to the current price is used — the one most likely to actually
+  get touched next.
+- **Entry** = the gap's midpoint (not its exact edge — edges are rarely touched with pixel
+  precision; the midpoint is the standard, more realistic fill assumption).
+- **Stop** = just past the gap's FAR edge (the bottom for a long, the top for a short) — the
+  reasoning: if price fully closes the entire gap and keeps going past it, the "unfair, will
+  get rebalanced" thesis has failed and the setup is invalidated, not just pulled back further
+  than expected.
+- **Target** = a configurable reward:risk floor (1.5:1 by default) measured off the gap's own
+  real size, not an arbitrary fixed dollar/percent distance — the target scales naturally with
+  how big the actual imbalance is.
+- **This is shown as its own separate card, not merged into Position Sizer's numbers** —
+  Position Sizer's own entry/stop/target (ATR-based stop, nearest support, analyst target
+  price) stays exactly as it was; the FVG plan is an independent, comparable alternative a user
+  can weigh against it, not a silent override of one system by the other.
+- **No candidate gap** = the card simply doesn't render (no error, no placeholder) — this
+  happens whenever there's no unfilled gap positioned to be retraced into from the current
+  price, which is a normal, common state, not a bug.
+
+**Architecture**: `services/technical-analysis/src/indicators/trendlines.py`'s
+`detect_fair_value_gaps()` (same module and `@dataclass` convention as the existing `Level`/
+`Trendline` detectors) scans the last 200 bars, filters out near-zero noise-level gaps, and
+tracks `filled`/`filled_idx` by checking every later bar for a FULL cover of `[bottom, top]`
+(a bar that only partially dips into the zone does not count as filled). Folded into the
+existing `GET /ta/{symbol}/levels` endpoint as a new `fair_value_gaps` field, alongside
+`support_resistance`/`trendlines`/`fibonacci` — not a new route, since FVG is conceptually
+just another kind of level. `frontend/src/components/PriceChart.tsx` renders it via the exact
+same `createPriceLine`-per-level pattern already used for S/R and `gamePlanLevels` — no new
+chart primitive was introduced. `frontend/src/lib/fvgTradePlan.ts`'s `nearestActionableFvg()`
+is a small, pure, independently-testable function (9 Python detection tests + 10 TypeScript
+trade-plan tests, both adversarially verified) — the entry/stop/target math has no server
+round-trip of its own; it runs entirely off the same `levels.fair_value_gaps` array already
+being fetched for the chart.
+
+**What to check if this looks wrong**: `detect_fair_value_gaps()` in `trendlines.py` is the
+only place the detection math lives; `nearestActionableFvg()` in `fvgTradePlan.ts` is the only
+place the trade-plan math lives. If a gap looks like it should be marked filled but isn't (or
+vice versa), check whether a later bar's range genuinely covers the FULL `[bottom, top]` span
+— a bar that pokes partway into the zone and reverses does NOT count as a fill by design.

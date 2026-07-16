@@ -136,6 +136,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
   const [showRSI,     setShowRSI]     = useState(false);
   const [showMACD,    setShowMACD]    = useState(true);
   const [showSignals, setShowSignals] = useState(true);
+  const [showFVG,      setShowFVG]     = useState(true);
   // Volume profile: 'off' | 'session' (current trading session only) | 'range' (whole visible
   // window) | 'fixed' (user click-selected start/end range — the real Fixed Range VP tool).
   const [volumeProfileMode, setVolumeProfileMode] = useState<'off' | 'session' | 'range' | 'fixed'>('off');
@@ -509,6 +510,28 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       });
     }
 
+    // ── Fair Value Gaps (daily mode only) — 3-candle imbalance zones price often
+    // retraces into before continuing. Only unfilled gaps are actionable as entry zones,
+    // but filled ones are still shown dimmed so a user can see which levels already "did
+    // their job" as support/resistance on revisit. Two price lines per gap (top/bottom
+    // edge), matching the same createPriceLine-per-level pattern as S/R and gamePlanLevels
+    // above rather than introducing a new rendering mechanism for one more level type.
+    const fvgs = !isIntraday && showFVG ? (levels?.fair_value_gaps ?? []) : [];
+    for (const g of fvgs) {
+      const bullColor = g.filled ? '#22c55e33' : '#22c55eaa';
+      const bearColor = g.filled ? '#ef444433' : '#ef4444aa';
+      const color = g.kind === 'bullish' ? bullColor : bearColor;
+      const style = g.filled ? LineStyle.Dotted : LineStyle.Dashed;
+      candles.createPriceLine({
+        price: g.top, color, lineWidth: 1 as const, lineStyle: style,
+        axisLabelVisible: false, title: g.filled ? '' : `FVG ${g.kind === 'bullish' ? '▲' : '▼'}`,
+      });
+      candles.createPriceLine({
+        price: g.bottom, color, lineWidth: 1 as const, lineStyle: style,
+        axisLabelVisible: false, title: '',
+      });
+    }
+
     // ── Game Plan levels (daily only) ─────────────────────────────────────
     if (!isIntraday && gamePlanLevels) {
       const gpl = gamePlanLevels;
@@ -695,7 +718,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       chartRef.current = null;
       setSrLabels([]);
     };
-  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
+  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, showFVG, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
 
   // ── Fixed Range VP: click-to-pick start/end selection ───────────────────
   // Deliberately a SEPARATE, lightweight effect from the main chart-rebuild effect above —
@@ -796,6 +819,8 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
             { key: 'ema200', label: 'EMA 200', checked: showEMA200, onToggle: () => setShowEMA200(v => !v), color: '#e879f9' },
             { key: 'bb',     label: 'Bollinger Bands', checked: showBB, onToggle: () => setShowBB(v => !v), color: '#6366f1' },
             { key: 'sig',    label: 'Signal markers',  checked: showSignals, onToggle: () => setShowSignals(v => !v), color: '#22c55e' },
+            { key: 'fvg',    label: 'Fair Value Gaps', checked: showFVG, onToggle: () => setShowFVG(v => !v), color: '#22c55e',
+              title: '3-candle price imbalance zones — price often retraces into these before continuing in the original direction. Solid = still open (unfilled); dotted = already filled by a later bar.' },
           ]}
         />
 

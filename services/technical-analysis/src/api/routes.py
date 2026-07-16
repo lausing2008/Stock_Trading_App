@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from db import Price, Stock, TimeFrame, get_session
 
 from ..indicators import bollinger_bands, cog, ema, fibonacci_retracement, macd, rsi, sma, supertrend
-from ..indicators.trendlines import detect_support_resistance, detect_trendlines
+from ..indicators.trendlines import detect_fair_value_gaps, detect_support_resistance, detect_trendlines
 from ..patterns import detect_patterns
 
 router = APIRouter(prefix="/ta", tags=["technical-analysis"])
@@ -177,6 +177,7 @@ def get_levels(
     df = _load_prices(session, symbol, timeframe, days)
     levels = detect_support_resistance(df)
     lines = detect_trendlines(df)
+    fvgs = detect_fair_value_gaps(df)
     swing = df.tail(90)
     swing_high = swing["high"].max()
     swing_low = swing["low"].min()
@@ -186,5 +187,6 @@ def get_levels(
         "symbol": symbol,
         "support_resistance": [vars(L) for L in levels],
         "trendlines": [vars(T) for T in lines],
+        "fair_value_gaps": [vars(G) for G in fvgs],
         "fibonacci": fib,
     }
