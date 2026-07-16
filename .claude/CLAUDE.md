@@ -1492,3 +1492,46 @@ reliable signals of "should I actually enter" than the top-line BUY/SELL label a
 justification to enter a real position on its own — always cross-check the Confluence Score
 and Conviction Gate panels on the same page, which are deliberately independent, stricter
 checks that can (and are meant to) disagree with the headline label.
+
+---
+
+## Recurring Issue: Stale Tracker Entries Can Point Either Direction — Verify Before Trusting Severity/Status
+
+**Found 2026-07-16, while looking for "the next critical improvement to build."** A tracker
+survey flagged `SE-F2-SAME-DAY-CLOSE-LOOKAHEAD` (tier 147, `severity: 'critical'`, no
+`defaultStatus` field, `implementedNote: 'Deferred'`) as the top candidate — signal outcome
+evaluation allegedly still used the same-day close as entry price, corrupting every
+accuracy/calibration metric. Before building anything, checked the actual code first: the fix
+had already shipped 2026-06-30 (`services/signal-engine/src/api/routes.py:5056-5059`,
+explicit "T+1 entry... avoid same-day look-ahead bias" comment) as part of an unrelated
+broader audit commit, and was confirmed byte-identical between the local checkout and the
+live production container. The tracker entry itself was simply never updated to reflect it.
+
+**This is the mirror image of the T203 incident** documented earlier in this file (T203 was
+marked `done` but was actually never wired up/functional) — here, the entry was marked
+effectively `todo`/deferred but the fix was actually live. **Both directions of staleness are
+real and both have occurred in this tracker** — a tracker entry's `severity`/`defaultStatus`
+tags are a starting hint for where to look, never a substitute for reading the actual current
+code before deciding what to build or report as still-broken.
+
+**A second real issue was found underneath the stale tracker entry**: 3,808
+`signal_outcomes` rows (`signal_date < 2026-06-30`) still carried the pre-fix same-day-close
+bias and were still feeding the self-tuning watchdog/calibration thresholds even after the
+code fix landed — the code fix only affects evaluation going forward, it does not retroactively
+correct already-written rows. Fixed by backing up the 3,808 rows to
+`signal_outcomes_prefix_backup_20260716`, deleting them from the live table (explicit user
+confirmation obtained naming the specific table before the DELETE), and re-running
+`POST /signals/outcomes/evaluate` to regenerate them with the corrected T+1 entry price —
+verified `COUNT(*) FILTER (WHERE entry_date = signal_date) = 0` across all 4,742 resulting
+rows, and spot-checked several regenerated rows against their pre-fix backups to confirm
+materially different (and correct) entry prices.
+
+**Design invariant**: a code fix for a data-integrity bug (lookahead bias, wrong formula,
+etc.) fixes future writes only — always check whether historical rows written before the fix
+need a separate backfill/re-evaluation pass, and don't assume "the code is fixed" means "the
+data is fixed." When surveying this tracker for "what's the next critical thing," always
+verify a candidate's actual current code state directly before trusting its severity/status
+tags in either direction — an entry can be wrong by claiming something is still broken
+(costing you nothing but a wasted verification pass) or by claiming something is fixed when
+it silently isn't (costing real time debugging a "mysterious" recurrence of an already-known
+bug). Verify first, in both directions.
