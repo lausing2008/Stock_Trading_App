@@ -23,8 +23,10 @@ with a generated-but-unsent reaction.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import httpx
@@ -38,6 +40,15 @@ from .economic import _FRED_RELEASES, _FRED_SERIES, _FOMC_DATES
 
 log = structlog.get_logger()
 _settings = get_settings()
+
+# AUD-EI-MACRO-REACTION-BLOCKING: this service is a single-process FastAPI app whose
+# AsyncIOScheduler jobs run on the SAME event loop that serves real-time HTTP requests (see
+# main.py: start_scheduler runs inside the FastAPI app, not a separate process). The FRED/Fed
+# HTTP calls and feedparser's own internal fetch below are all blocking I/O — calling them
+# directly from an `async def` would stall every concurrent request to this service for up to
+# each call's timeout. Same fix pattern as decision-engine/src/api/core/regime.py's
+# _regime_executor: a small dedicated thread pool + loop.run_in_executor().
+_macro_reaction_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="macro_reaction")
 
 _REDIS_CLAUDE_KEY = "stockai:admin:claude_api_key"
 
@@ -95,7 +106,8 @@ async def generate_reaction(event_type: str, actual_value: float, expected_value
         log.info("macro_reaction.no_api_key", event_type=event_type)
         return None
 
-    regime = _get_market_regime()
+    loop = asyncio.get_running_loop()
+    regime = await loop.run_in_executor(_macro_reaction_executor, _get_market_regime)
     prompt = (
         f"Indicator: {title} ({event_type})\n"
         f"Actual: {actual_value}\n"
@@ -154,19 +166,23 @@ async def check_release_day_fast_poll() -> dict:
             )
         ).scalars().all()
 
+        loop = asyncio.get_running_loop()
         for ev in due_today:
             series_id = _RELEASE_TO_FRED_SERIES.get(ev.event_type)
             if not series_id:
                 continue
             checked += 1
             try:
-                r = httpx.get(
-                    "https://api.stlouisfed.org/fred/series/observations",
-                    params={
-                        "series_id": series_id, "api_key": api_key, "file_type": "json",
-                        "sort_order": "desc", "limit": 2,
-                    },
-                    timeout=10,
+                r = await loop.run_in_executor(
+                    _macro_reaction_executor,
+                    lambda sid=series_id: httpx.get(
+                        "https://api.stlouisfed.org/fred/series/observations",
+                        params={
+                            "series_id": sid, "api_key": api_key, "file_type": "json",
+                            "sort_order": "desc", "limit": 2,
+                        },
+                        timeout=10,
+                    ),
                 )
                 if r.status_code != 200:
                     continue
@@ -204,7 +220,11 @@ async def check_fomc_statement_poll() -> dict:
 
     import feedparser
     try:
-        feed = feedparser.parse("https://www.federalreserve.gov/feeds/press_monetary.xml")
+        loop = asyncio.get_running_loop()
+        feed = await loop.run_in_executor(
+            _macro_reaction_executor,
+            feedparser.parse, "https://www.federalreserve.gov/feeds/press_monetary.xml",
+        )
     except Exception as exc:
         log.warning("macro_reaction.fomc_feed_failed", error=str(exc))
         return {"checked": 1, "found": 0, "skipped": "feed_error"}
