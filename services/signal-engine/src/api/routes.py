@@ -5191,7 +5191,6 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
                 # concluding the price is permanently gone — otherwise a stock that's merely a
                 # few days behind on ingestion gets wrongly censored as delisted.
                 if today - exit_target > timedelta(days=_OUTCOME_CENSOR_GRACE_DAYS):
-                    censored += 1
                     outcome = SignalOutcome(
                         signal_id=sig.id,
                         stock_id=sig.stock_id,
@@ -5209,7 +5208,18 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
                         entry_price=entry_price,
                         skip_reason="no_exit_price",
                     )
-                    session.add(outcome)
+                    # AUD250-SIGNALENGINE-ROLLBACK-EXPIRES-IDENTITY-MAP: flush inside a SAVEPOINT
+                    # (begin_nested) rather than deferring to the periodic/end-of-loop commit —
+                    # any IntegrityError (e.g. a duplicate signal_id from a raced overlapping
+                    # request) now surfaces and rolls back immediately, on ONLY this row's
+                    # savepoint, without expiring every other Signal object already loaded in
+                    # pending_signals (a plain session.rollback() expires the WHOLE identity map
+                    # by default, forcing a silent per-attribute re-SELECT on every later
+                    # iteration's sig.xxx access — a real N+1 regression, not just this row).
+                    with session.begin_nested():
+                        session.add(outcome)
+                        session.flush()
+                    censored += 1
                     evaluated_ids.add(sig.id)
                     evaluated_sighd.add(sighd_key)
                     _since_commit += 1
@@ -5265,7 +5275,12 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
                     research_rec=res_rec,
                     research_score=res_score,
                 )
-                session.add(outcome)
+                # AUD250-SIGNALENGINE-ROLLBACK-EXPIRES-IDENTITY-MAP: see the censored branch
+                # above for the full rationale — flush inside its own SAVEPOINT so a failure
+                # here rolls back only this row, not the whole session's identity map.
+                with session.begin_nested():
+                    session.add(outcome)
+                    session.flush()
                 evaluated_ids.add(sig.id)
                 evaluated_sighd.add(sighd_key)
                 evaluated += 1
