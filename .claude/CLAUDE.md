@@ -1908,3 +1908,17 @@ all stacking up with no way to turn any group off. Support/Resistance and 52-Wee
 were changed from always-on to togglable (off by default) in the Indicators dropdown, matching
 the pattern already used for Fair Value Gaps — a user now opts into extra context instead of
 seeing everything at once unasked.
+
+**Follow-up same day — FVG itself was still the real culprit.** After the S/R/52W fix, the
+user reported the chart looked identical and still cluttered. The dense stack of thin
+horizontal lines across the whole chart turned out to be FVG, not S/R — `detect_fair_value_gaps()`
+can return up to 20 gaps (its own `max_gaps` default), rendered as 2 `createPriceLine()` calls
+each = up to 40 lines, and FVG's own toggle had shipped defaulting to **on**, unlike every
+other opt-in overlay added in the same decluttering pass. Two fixes: (1) `showFVG` now
+defaults to `false`, matching S/R/52W's just-added off-by-default convention instead of being
+the one exception; (2) even when a user does turn FVG on, `PriceChart.tsx` now caps rendering
+to the 6 most relevant gaps — all unfilled ones (up to 6, since those are the only ones
+actionable for a NEW entry) plus the most recent filled ones if there's room left in the cap,
+never all 20 at once. The backend's own `fair_value_gaps` array is unchanged (still returns up
+to 20 — useful for the "FVG Trade Plan" card's `nearestActionableFvg()`, which only ever picks
+one gap anyway and isn't affected by this cap); this is purely a chart-rendering-density fix.

@@ -144,7 +144,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
   const [showRSI,     setShowRSI]     = useState(false);
   const [showMACD,    setShowMACD]    = useState(true);
   const [showSignals, setShowSignals] = useState(true);
-  const [showFVG,      setShowFVG]     = useState(true);
+  const [showFVG,      setShowFVG]     = useState(false);
   // T252-DECLUTTER: S/R levels + 52W High/Low used to always render — combined with FVG,
   // Entry/Stop/Target, and indicator curves, this stacked up to 15+ overlapping lines with
   // no way to turn any group off (a user reported the chart as too cluttered to read).
@@ -530,7 +530,18 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
     // their job" as support/resistance on revisit. Two price lines per gap (top/bottom
     // edge), matching the same createPriceLine-per-level pattern as S/R and gamePlanLevels
     // above rather than introducing a new rendering mechanism for one more level type.
-    const fvgs = !isIntraday && showFVG ? (levels?.fair_value_gaps ?? []) : [];
+    // T252-DECLUTTER: the backend can return up to 20 gaps (detect_fair_value_gaps' own
+    // max_gaps) — rendering all of them as 40 price lines was the actual cause of a chart
+    // a user reported as unreadable. Cap to the 6 most relevant: unfilled gaps first (the
+    // only ones that matter for a NEW entry), then the most recent filled ones to fill out
+    // the cap if there aren't 6 unfilled.
+    const _FVG_MAX_RENDERED = 6;
+    const allFvgs = !isIntraday && showFVG ? (levels?.fair_value_gaps ?? []) : [];
+    const unfilledFvgs = allFvgs.filter(g => !g.filled).slice(-_FVG_MAX_RENDERED);
+    const filledFvgs = unfilledFvgs.length < _FVG_MAX_RENDERED
+      ? allFvgs.filter(g => g.filled).slice(-(_FVG_MAX_RENDERED - unfilledFvgs.length))
+      : [];
+    const fvgs = [...unfilledFvgs, ...filledFvgs];
     for (const g of fvgs) {
       const bullColor = g.filled ? '#22c55e33' : '#22c55eaa';
       const bearColor = g.filled ? '#ef444433' : '#ef4444aa';
