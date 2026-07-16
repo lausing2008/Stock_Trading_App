@@ -84,7 +84,7 @@ from sqlalchemy.orm import selectinload
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, EarningsEvent, EconomicEvent, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, User, Watchlist, WatchlistItem
+from db import AlertCondition, EarningsEvent, EconomicEvent, Market, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, User, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -2809,7 +2809,7 @@ def _run_watchlist_auto_rotation() -> None:
     import uuid as _uuid
     from datetime import date as _date, timedelta as _timedelta
     from db import TuneHistory
-    from sqlalchemy import func as _func, case as _case, delete as _delete
+    from sqlalchemy import func as _func, case as _case, delete as _delete, desc
 
     _MIN_SAMPLES_FOR_DROP = 15  # matches signal_watchdog's own raised floor (AUD232-018)
     _WIN_RATE_FLOOR = 0.40
