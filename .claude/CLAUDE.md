@@ -1922,3 +1922,189 @@ actionable for a NEW entry) plus the most recent filled ones if there's room lef
 never all 20 at once. The backend's own `fair_value_gaps` array is unchanged (still returns up
 to 20 — useful for the "FVG Trade Plan" card's `nearestActionableFvg()`, which only ever picks
 one gap anyway and isn't affected by this cap); this is purely a chart-rendering-density fix.
+
+---
+
+## Research: Per-Horizon AI Signal Strategy Tuning (2026-07-16)
+
+**Ask:** tune and find the best strategy for AI Signal, per horizon (SHORT/SWING/LONG/GROWTH).
+Research-only pass (no code written yet) — documents current state, gaps, and a phased plan.
+
+### Current per-horizon strategy (`_STYLE_PROFILES`, `services/signal-engine/src/generators/signals.py:1278`)
+
+| Param (hardcoded fallback) | SHORT | SWING | LONG | GROWTH |
+|---|---|---|---|---|
+| buy_threshold (bull/high_vol/bear/unknown regime) | .63/.65/.68/.62 | .72/.74/.76/.72 | .60/.65/.70/.62 | .60/.65/.68/.60 |
+| hold_threshold (bull regime) | .46 | .50 | .46 | .45 |
+| ml_weight_cap / ml_weight_floor | .30 / .10 | .65 / .15 | .45 / .12 | .60 / .20 |
+| adx_min | 27 | 15 | None | 12 |
+| min_pillars_for_buy | — | 3 | 3 | — |
+| max_compress_ratio | .70 | .55 | .65 | .60 |
+| BUY hold_days (`_OUTCOME_HOLD_DAYS`, routes.py:4958) | 7 | 14 | 28 | 14 |
+| SELL hold_days (`_SELL_OUTCOME_HOLD_DAYS`) | 5 | 7 | 10 | 7 |
+
+SELL threshold is a flat `_SELL_THRESHOLD_FALLBACK = 0.35` — no regime tiers (unlike BUY).
+Live values are Redis overlays with 30-day TTLs, priority order: `stockai:watchdog:{STYLE}:threshold`
+→ `stockai:signal_thresholds:{STYLE}` (+ `:SELL:{STYLE}`) → hardcoded fallback above; separately
+`stockai:style_tune:{STYLE}:{param}` for ml_weight_cap/adx_min/high_vol_compression/breadth_compression.
+All Redis-written values silently revert to the hardcoded table on TTL expiry with no alert.
+
+### What's scheduled vs. manual-only
+
+**Weekly (Sun 14:00 PT, `market-data/scheduler.py` `_weekly_full_refresh`):** `/ml/tune_all`
+(AUC-only, not P&L), `calibrate_ta_weights`, `calibrate_conviction_weights`,
+`outcomes/calibrate/apply` (per-horizon BUY+SELL threshold sweep, 0.55–0.85, routes.py:3614),
+`tune_style_profiles` (ml_weight_cap 0.15–0.75, adx_min 10–40, compression on/off; routes.py:4031),
+`calibrate_entry_weights` (paper-trading), RL training, `calibrate_min_rr_ratio` (see the
+SELFIMPROVE-NEVER-CALIBRATED-PARAMS section elsewhere in this file).
+
+**Daily:** `signal_watchdog` (06:10 ET — emergency ±0.02–0.03 nudge, 7-day TTL, max 3 tightenings
+before flagging for manual review).
+
+**Manual-only (never scheduled):** `calibrate_ml_weight`, the gate harness
+(`GET /paper-portfolio/backtest/min-entry-score` + `/promote`), `gate_backtest`,
+`backfill_realized_ev`.
+
+**Never tuned anywhere, permanently hardcoded:** `hold_threshold`, SELL's regime tiers (SELL has
+none at all — BUY does), earnings/news/RS/weekly compression maps, `max_compress_ratio`,
+`min_pillars_for_buy`, `ml_weight_floor`, the `hold_days` windows themselves, and every regime
+tier is applied as a flat delta off the bull baseline (`_get_dynamic_buy_threshold()`) — the
+calibration mechanisms themselves are regime-agnostic.
+
+### Data volume — a real constraint
+
+Per `docs/SELF_IMPROVEMENT_LOOP.md` (2026-07-06 snapshot), resolved `is_correct_10d` outcome
+rows: SHORT ≈120, SWING ≈115, LONG ≈77, GROWTH ≈94. **LONG and GROWTH fall below
+`outcomes/calibrate/apply`'s 100-sample floor and are silently skipped every single week** —
+this has presumably been true continuously since that snapshot; a fresher count needs a live DB
+query, not available in a read-only research pass.
+
+### Established conventions every existing sweep already follows (any new tuner must too)
+
+Chronological 70/30 split (never random — avoids look-ahead leakage), a per-slice minimum
+sample floor, candidate must beat the CURRENT LIVE baseline's own validation-slice EV (never a
+fixed number — repeated tuning runs compare against the truth, not a stale target),
+`EV = mean(pct_return)` (never `avg_return × win_rate` — T232-OC4, a documented double-counting
+bug fixed elsewhere), unconditional rejection of negative EV lift (a real past incident applied
+a worse SELL:GROWTH threshold before this gate existed), one `TuneHistory` row per attempt via
+`_record_tune_history()` regardless of outcome (promoted or rejected), and Redis reads always
+clamp to sane bounds in case of a corrupted/stale cached value.
+
+### Design-doc delta
+
+`docs/DESIGN_SELF_IMPROVEMENT_LOOP_2026-07-04.md` (248 lines) plus the living
+`docs/SELF_IMPROVEMENT_LOOP.md` — Phases 1–3 are done (walk-forward everywhere, the
+`min_entry_score` gate harness, the promotion gate + `tune_history` table). NOT done: Phase 2b
+(equity-curve replay for `min_kscore`/`min_ta_score`/`min_volume_z` — needed to test LOOSENING a
+parameter, not just tightening), Phase 2c (decision-engine path), Phase 4 (ML-hyperparameter
+P&L gate, position sizing), Phase 5 (scheduling the harness itself). **The key gap vs. "find the
+best strategy per horizon": every existing mechanism tunes ONE parameter at a time in
+isolation — there is no joint per-horizon sweep, no hold_days tuning, and `calibrate_ml_weight` +
+the gate harness aren't scheduled or fully `TuneHistory`-integrated.**
+
+### Phased plan (not yet built)
+
+**Phase 1 (one session)** — `POST /signals/tune_strategy` in signal-engine `routes.py`: per
+horizon, a joint grid sweep over **(buy_threshold × ml_weight_cap)** — the two highest-leverage
+parameters, both re-derivable from already-stored `SignalOutcome.fused_prob` +
+`Signal.reasons["ml_weight"]` with NO signal regeneration needed (a real speed advantage — this
+is pure re-filtering of history that already happened, not a re-simulation). Keep the grid small
+(~31×13 candidates) to limit multiple-comparison overfit risk against an n≈100-120 sample
+baseline; require min_samples=15 per slice, validation-beats-current-live-baseline, unconditional
+negative-lift rejection — all matching the conventions above exactly. Apply through the EXISTING
+Redis keys (`stockai:signal_thresholds:{H}`, `stockai:style_tune:{H}:ml_weight_cap`) so the READ
+side (`_decide_style()`, `_get_style_tuned_param()`) needs zero changes. One `TuneHistory` row
+per horizon per run. Companion `GET /signals/strategy_status` reporting live-vs-hardcoded values
+per horizon side by side. LONG/GROWTH will skip until enough data accumulates — surface that
+explicitly in the response rather than silently.
+
+**Phase 2** — sweep `hold_days` per horizon using the ALREADY-POPULATED `return_5d/10d/20d`
+columns as three candidate exit windows (vs. today's single hardcoded `_OUTCOME_HOLD_DAYS`
+value) — same no-regeneration speed advantage as Phase 1.
+
+**Phase 3** — once a few manual cycles look sane, add to the Sunday scheduler (replacing/
+augmenting the existing calibrate/apply + tune_style_profiles steps), and fold in
+`calibrate_ml_weight` (currently manual-only) into the same run.
+
+**Phase 4 (honest limitation, not silently glossed over)**: stored-outcome sweeps can only ever
+evaluate TIGHTENING an existing parameter (re-filtering signals that already fired under the
+CURRENT threshold) — simulating a LOOSER threshold or a different compression-map value would
+require actually regenerating signals against historical price data, which is exactly what the
+design doc's own deferred Phase 2b (equity-curve replay) is for. Phase 1-3 above are real,
+buildable, and valuable, but they are fundamentally a re-filtering exercise, not a full backtest.
+
+**Key files for implementation**: `services/signal-engine/src/api/routes.py` (existing sweep
+functions at :3614, :4031, :4302, :4958 — the new tuner should sit alongside these, following
+their exact structure), `generators/signals.py:1278-1577` (`_STYLE_PROFILES`, the read side),
+`docs/SELF_IMPROVEMENT_LOOP.md`, `docs/DESIGN_SELF_IMPROVEMENT_LOOP_2026-07-04.md`,
+`services/market-data/src/backtest/gate_harness.py` (the Phase 2b equity-replay precedent).
+
+---
+
+## Research: Reports Tab — Per-Market (US/HK) Report Aggregation (2026-07-16)
+
+**Ask:** a Reports tab covering, per market: market trend, key asset performance, top-performing
+stocks, money-flow-by-sector + recommended best stocks in that sector, news-sentiment
+monitoring, and self-tuning/backtesting reports. Research-only pass — documents what already
+exists (to maximize reuse) vs. what needs new backend work.
+
+**User clarification (important, changes report #4's scope):** "best stocks in the sector"
+means discovery across the WHOLE MARKET, not just symbols already in this app's ~150-stock
+universe — with a one-click "add to my system" action once a good candidate is found. This is
+a genuinely new capability (market-wide screening), not just aggregating existing per-symbol
+data, and is the one part of this feature that can't be pure reuse.
+
+### Per-report-type inventory (build-vs-reuse verdict)
+
+| # | Report type | Verdict | Key existing endpoints/tables |
+|---|---|---|---|
+| 1 | Market trend | **Reuse** (near-complete) | `GET /stocks/regime?market=`, `/stocks/market_overview`, `/stocks/fear_greed` (includes `sp500_regime`/`sp500_vs_ma200_pct`), `/stocks/market_breadth` (US only — gap), `/stocks/regime-state` (HMM), `/events/valuation/cape` |
+| 2 | Key asset performance | **Reuse** | `market_overview`'s `_INDICES` (^GSPC/^IXIC/^DJI/VIX/HSI), `GET /stocks/sector_rotation` (US sector ETFs vs SPY, 1w/1m/3m, leading/lagging) — gap: no HK sector-ETF equivalent |
+| 3 | Top performing stocks | **Reuse** | `GET /rankings?market=` (K-Score), `/stocks/sector_performance` (per-sector day-change), `/rankings/screen`, `/admin/watchlist-performance` |
+| 4 | Money-flow-by-sector + best stocks | **Reuse + 1 new endpoint + NEW market-wide screener** | `GET /stocks/sector-rotation` (Redis-cached K-Score momentum per sector, written weekly by `_compute_sector_rotation()`), `/stocks/hk-connect-flow/{symbol}` (per-symbol only — gap: no market-level top-N aggregation), `/{symbol}/options-flow`, `/{symbol}/institutional`, event-intelligence's insider/congress/institutional leaderboards, `/catalyst/leaderboard`. **NEW (per user clarification): a whole-market screener + "add to my system" action — see below.** |
+| 5 | News sentiment (market-level) | **Mostly build** | Today's `news.py` (`_google_news`/`_claude_sentiment`) is per-symbol only. `T249-MARKETMOVER-P4-MARKET-PULSE-NEWS-CARD` (tracker, `todo`, effort S) is exactly this design — market-level queries through the existing pipeline, 30-min cache. `GET /events/overview`'s `latest_macro_reaction` field is already live and reusable now. |
+| 6 | Self-tuning/backtest reports | **Reuse** (rich, already built) | `GET /signals/tune_status` (already rendered by `signal-tuning.tsx`), `/signals/outcomes/summary`, `/signals/accuracy`, `/signals/rolling_accuracy`, `/signals/gate_backtest`, `/admin/promotion-history`, `/admin/watchlist-rotation-history`, `/admin/scheduler-status`, `/paper-portfolio/entry_factors`, `/paper-portfolio/min_rr_calibration` |
+
+### New capability needed for report #4 (per user's "whole market" clarification)
+
+A market-wide stock screener is needed — NOT limited to this app's existing ~150-symbol
+universe. yfinance itself has a screening capability (`yf.screen()` / predefined + custom
+screener queries against Yahoo's own screener backend, still free-tier) that could surface
+candidates by sector + performance without needing a paid screener API. Design: once
+sector-rotation identifies a leading sector, run a market-wide screen scoped to that sector,
+rank candidates by a simple momentum/volume heuristic (full K-Score requires data this app
+doesn't have for a symbol not yet in the universe), and surface each with an **"Add to my
+system"** button — reusing this app's EXISTING add-stock/ingest pipeline (the same one driving
+manual symbol additions today) to seed the new symbol, trigger initial ingestion, and optionally
+add it to a chosen watchlist in one action.
+
+### Page structure precedent
+
+`frontend/src/pages/intelligence.tsx` is the model to follow: a `type Tab` union + a `TABS`
+array + `useState<Tab>` + one component per tab, backed by a single aggregate fetch
+(`eventsOverview()`). Nav: add a `Reports` entry to the `Markets` group in `_app.tsx`'s
+`NAV_GROUPS`.
+
+### Phased plan (not yet built)
+
+**Phase 1 — frontend-only, composing existing endpoints** (covers report types 1, 2, 3,
+4-partial, 5-partial via the macro-reaction field, and 6 in full): new
+`frontend/src/pages/reports.tsx` with a US/HK market toggle + tabs (Trend / Assets / Top Stocks
+/ Money Flow / News & Macro / Self-Tuning), composing `regime`, `marketOverview`, `fearGreed`,
+`marketBreadth`, CAPE, `sectorRotationEtf`, `sectorRotation` (K-Score momentum), `rankings`,
+`sectorPerformance`, `eventsOverview`, `signalTuneStatus`, `outcomesSummary`,
+`promotionHistory`, `schedulerStatus`, `minRrCalibration`, `entryFactors`. Touches:
+`frontend/src/pages/reports.tsx` (new), `frontend/src/pages/_app.tsx` (nav entry),
+`frontend/src/lib/api.ts` (a few missing wrappers — `hkConnectFlow`, `gateBacktest`,
+insider/congress/institutional leaderboards if not already present).
+
+**Phase 2 — new backend, ranked by effort:**
+1. HK southbound money-flow top-N endpoint (simple SQL over the already-existing
+   `hk_connect_flows` table) — S.
+2. HK market breadth (extend `market_breadth` with a `market` param) — S.
+3. T249-P4 market-level news-pulse endpoint (design already written in the tracker) — S/M.
+4. Whole-market sector screener + "Add to my system" action (per the user's clarification
+   above — the one genuinely new discovery capability, not just aggregation) — M.
+5. HK sector-ETF rotation equivalent to the existing US one — M.
+6. `/stocks/top_movers?market=` N-day gainers/losers convenience endpoint (optional — largely
+   already composable from rankings + sector_performance client-side) — S/M.
