@@ -1650,6 +1650,47 @@ def _should_enter(
             score += 1
             notes.append(f"Congress net buying (score {_congress_sc:.0f}) — informed capital inflow")
 
+    # ── T232-DL-DUALSCORER: pre-regime early-warning score (F11) ─────────────
+    # Ported from decision-engine's scorer.py (compute_score() Layer 3g) — this fallback had
+    # no equivalent, so during a DE outage in a pre-choppy/pre-risk-off window a candidate got
+    # zero score penalty here even though DE (when reachable) would already be subtracting 1.
+    # _scan_for_entries already reads live_regime["is_pre_choppy"/"is_pre_risk_off"] one level
+    # up (for min_entry_score/regime_size_mult adjustments) — this only adds the missing direct
+    # score layer, it does not duplicate those separate threshold/sizing effects.
+    if live_regime and live_regime.get("is_pre_risk_off"):
+        score -= 1
+        notes.append("Pre-risk-off: VIX rising into warning zone — conditions deteriorating")
+    elif live_regime and live_regime.get("is_pre_choppy"):
+        score -= 1
+        notes.append("Pre-choppy: SPY hugging EMA50 — trend weakening, raise bar")
+
+    # ── T232-DL-DUALSCORER: market regime as a direct score layer ────────────
+    # Ported from decision-engine's scorer.py (compute_score() Layer 5, _REGIME_SCORE). This
+    # fallback previously only used regime_state to raise min_entry_score/min_rr (thresholds)
+    # and dampen regime_size_mult (sizing, in the caller) — never as a direct additive/
+    # subtractive score component. In choppy/risk_off, DE subtracts from the RAW score before
+    # comparing to its floor; this fallback's raw score was untouched by regime at all, a real
+    # boundary difference for candidates sitting exactly at the threshold.
+    _regime_score_map = {"bull": 1, "neutral": 0, "choppy": -1, "risk_off": -2, "bear": -99}
+    _regime_pts = _regime_score_map.get(regime_state_h, 0)
+    if _regime_pts != 0:
+        score += _regime_pts
+        notes.append(f"Regime: {regime_state_h}")
+
+    # ── T232-DL-DUALSCORER (AUD232-042 parity): K-Score as a direct ±1 layer ──
+    # Ported from decision-engine's scorer.py (compute_score() Layer 6). This fallback already
+    # receives `kscore` (threaded into the RL call and the calibrated-logistic branch below),
+    # but — unlike DE — never scored it directly. A portfolio with <100 closed trades (still on
+    # the plain additive path, no calibration yet) got zero score adjustment for a weak K-Score
+    # in this fallback, while DE penalizes the identical candidate -1 for the same input.
+    if kscore is not None:
+        if kscore >= 55:
+            score += 1
+            notes.append(f"K-Score {kscore:.0f} — conviction positive")
+        else:
+            score -= 1
+            notes.append(f"K-Score {kscore:.0f} below 55 — weak fundamental/momentum case")
+
     # ── Decision ─────────────────────────────────────────────────────────────
 
     # PT-3: Use calibrated logistic weights when available (>=100 closed trades).

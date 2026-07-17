@@ -2352,4 +2352,61 @@ why the nav bar (no such fallback) was prioritized first.
 logic lives — if the hamburger doesn't appear or the desktop row doesn't hide at phone width,
 check the compiled CSS actually contains the `max-width:767px` block (a stale cached build could
 serve pre-change CSS, same class of bug as the frontend build-cache issues documented above).
-```
+
+---
+
+## Feature Reference: `_should_enter()` / decision-engine Score Parity (T232-DL-DUALSCORER-DEBT, partial)
+
+**Built 2026-07-17.** `T232-DL-DUALSCORER-DEBT` documents ~34 dimensions where
+`paper_trading_engine._should_enter()` (the fallback gate, used only when decision-engine is
+unreachable — `decision_engine_mode="primary"` is the live default, so DE's `/decide/{symbol}`
+verdict drives real entries whenever it responds) diverges from decision-engine's
+`scorer.py`/`hard_rejects.py`. That item remains open as a whole; this was a narrow, verified
+slice of it.
+
+**Corrected assumption before writing any code:** research-recommendation gating looked like a
+live divergence at first read (DE's `hard_rejects.py`/`scorer.py` accept a `research_rec`
+param that `_should_enter()`'s signature doesn't have at all) — but decision-engine's `/decide`
+route independently fetches research itself via `aggregator.py`'s `fetch_all()` ->
+`_fetch_research()`, rather than relying on `paper_trading_engine` to forward it in the
+request body. So DE's research hard-reject and research-score layer already work correctly
+whenever DE is reachable — not a real gap, despite how it read on first pass.
+
+**Three genuinely-open gaps, all safely portable (pure functions of data `_should_enter()`
+already receives), ported into `paper_trading_engine.py`'s `_should_enter()`:**
+1. **Pre-regime early-warning score (F11)** — `-1` for `is_pre_choppy`/`is_pre_risk_off`.
+   `_should_enter()` previously only used these flags one level up in `_scan_for_entries` (for
+   `min_entry_score`/sizing), never as a direct score component the way DE's `scorer.py` does.
+2. **Market regime as a direct score layer** — bull `+1` / choppy `-1` / risk_off `-2`.
+   Previously `_should_enter()` only used `regime_state` to raise thresholds (`min_entry_score`,
+   `min_rr`) and dampen sizing — a different mechanism from DE's direct score adjustment that
+   does not necessarily land on the same pass/fail boundary for a borderline candidate.
+3. **K-Score as a direct ±1 layer** — `_should_enter()` already received `kscore` (used inside
+   its RL-adjustment and calibrated-logistic-bypass branches) but never scored it directly like
+   DE does. A portfolio without 100+ closed trades' calibration got zero adjustment for a weak
+   K-Score during exactly the DE-outage window when the fallback's quality matters most.
+
+**Deliberately NOT ported** (per the same research pass's own recommendation): RL policy
+adjustment and the calibrated-logistic-regression bypass remain `_should_enter()`-only — both
+depend on `market-data`-local file state (`rl_agent.py`'s trained Q-function, `entry_weights.json`)
+that decision-engine has no access to as a separate service. Porting either would mean a new
+cross-service callback on DE's hot path or duplicating model-loading logic in a second service
+— both worse than documenting the asymmetry. `sizer.py` also untouched — it's explicitly
+illustrative-only and never consumed by real trades (its own module docstring says so).
+
+**Tests:** `services/market-data/tests/test_should_enter_de_parity.py` (13 tests) isolates
+exactly the three new layers using otherwise-neutral inputs (a candidate that clears every
+hard reject and scores 0 on every pre-existing layer). Adversarially verified: temporarily
+disabled the K-Score layer and confirmed 3 tests correctly failed before re-enabling it. Full
+existing 174-test `market-data` suite stays green.
+
+**A real test-writing gotcha hit along the way:** `conftest.py` stubs `SessionLocal` as a bare
+`MagicMock()` — its chained `.execute().fetchone()` is truthy by default, which silently trips
+`_should_enter()`'s macro-blackout hard reject in every test unless `signal_data["reasons"]`
+explicitly sets `"macro_blackout": False` to hit the fast-path check before the DB fallback
+query ever runs. Also: choppy/risk_off regimes raise the R:R hard-reject floor and separately
+trigger the pre-existing cross-horizon-consensus score penalty — a naive "neutral baseline"
+input isn't actually regime-neutral in this function, so isolating just the new regime-score
+layer required bumping `take_profit` (to clear the raised R:R floor) and setting
+`cross_style_buys=2` (to neutralize the unrelated pre-existing consensus layer) in those
+specific tests.
