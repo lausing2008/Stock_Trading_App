@@ -1175,12 +1175,12 @@ print(r.status_code, r.text[:400])
 
 ## Feature Reference: Tier 249 — Market-Mover Monitoring (P0/P1/P2)
 
-**Built 2026-07-14/15.** User's original ask: "monitor the news or any information that would
-make the market go up or down. Get current earning reports or CPI/FOMC before market starts,
-analyze the impact. Or get the results from CPI/FOMC after they announce it ASAP and predict
-the trend. Same for earnings and news." A Fable 5 consult broke this into 5 slices (P0–P4);
-P0–P2 are built and live as of this writing. P3 (pre-market brief) and P4 (news pulse card)
-are still `todo` in the tracker.
+**Built 2026-07-14/15, P3 added 2026-07-17.** User's original ask: "monitor the news or any
+information that would make the market go up or down. Get current earning reports or CPI/FOMC
+before market starts, analyze the impact. Or get the results from CPI/FOMC after they announce
+it ASAP and predict the trend. Same for earnings and news." A Fable 5 consult broke this into 5
+slices (P0–P4); P0–P3 are built and live as of this writing. P4 (news pulse card) is still
+`todo` in the tracker.
 
 ### The foundational bug this whole tier fixes: reference-period vs. release-date
 
@@ -1329,6 +1329,74 @@ blocks a real deploy.
 `httpx`'s logger to WARNING (`docker exec <container> python3 -c "import logging;
 print(logging.getLogger('httpx').level)"` should print `30`) before assuming a new key-bearing
 API call is safe to add.
+
+### P3 — Pre-market brief (done 2026-07-17)
+
+The "before market starts" half of the original ask, generalized once P0–P2 existed. New
+`send_premarket_brief()` job in `services/market-data/src/services/scheduler.py`, registered
+as `premarket_brief_us`/`premarket_brief_hk` at 8:00 local (50 min ahead of the existing
+`morning_digest_us`/`_hk` at 8:50, so catalyst context arrives before the opportunities digest).
+`send_premarket_brief_email()` builder in `email_service.py` matches
+`send_morning_digest_email()`'s section-composition HTML style.
+
+**Deliberate scope narrowing from the original design doc**: no new LLM call. The original P3
+fix note proposed generating a fresh conditional-scenario paragraph per brief ("if CPI prints
+above X: historically pressures rate-sensitive names...") for an event that hasn't happened
+yet. Built instead as pure composition of three already-computed sources, zero new LLM cost/
+latency/hallucination risk per send:
+1. Today's high/critical-importance macro releases — reuses P0's own `_macro_events_from_db()`
+   (imported directly from `routes.py`, not re-queried).
+2. Which of the recipient's own watched symbols report earnings today — `EarningsEvent.report_date
+   == today` (the day-of window, vs. `check_earnings_reactions()`'s post-release `>=today-2d,
+   eps_actual IS NOT NULL` window), same `user_symbols` construction pattern as P1.
+3. Macro reactions generated in the last 18h — reuses P2's own already-LLM-generated
+   `reaction_text` on real releases that already happened. This is the section that actually
+   satisfies the "historically reacted" framing goal, and is more honest than a hypothetical
+   pre-release scenario paragraph would have been — it reports what really happened, not what
+   might. This required a genuinely new query (`reaction_generated_at >= now - 18h`); no
+   existing helper covered this shape (`check_macro_reaction_alerts()` only tracks
+   sent-vs-unsent, a queue, not a time window).
+
+Audience: same `PriceAlert`-subscribed recipients as P1/P2 (`check_earnings_reactions()`/
+`check_macro_reaction_alerts()`), deliberately narrower than `send_morning_digest()`'s all-`User`
+audience, for consistency within the T249 alert family rather than introducing a third audience
+model.
+
+**Testing constraint hit again**: `send_premarket_brief()` itself can't be imported under the
+local pytest harness — `scheduler.py`'s import chain pulls in `apscheduler` (and
+`ingestion.py`/`paper_trading_engine.py`/`api/routes.py`), none of which `conftest.py` stubs,
+matching the same constraint already documented in `test_price_alert_price_check.py` and
+`test_earnings_alert_bodies.py`. `send_premarket_brief_email()` has no such problematic imports
+(only `smtplib`/`common.config`/`common.logging`, all stubbed or stdlib) so it's tested directly
+with real inputs — 9 tests covering empty-state notes in every section, impact-color
+distinctness between critical/high, None-safe EPS-estimate formatting (adversarially verified:
+temporarily removed the `is not None` guard and confirmed the resulting `TypeError` was caught
+before restoring it), a 5-item cap on rendered reactions, and disclaimer presence. The job
+function itself gets 5 source-text regression checks (matching `test_scheduler_static_names.py`'s
+established pattern for the exact "MagicMock masks a real NameError" risk this repo has hit
+before) plus a genuine live-verification call against the real deployed container:
+```python
+# Run inside stockai-market-data-1 with send_email monkeypatched to a no-op logger —
+# calling the real function unpatched would email every real PriceAlert-subscribed user.
+import sys; sys.path.insert(0, '/app')
+import src.services.email_service as es
+es.send_email = lambda *a, **kw: (print('WOULD SEND to', a[0], '| subject:', a[1]) or True)
+from src.services.scheduler import send_premarket_brief
+send_premarket_brief(['US'])
+```
+Ran clean on the real deployed container immediately after the `docker cp` + restart deploy:
+no exceptions, real DB queries executed (P0/P1/P2 tables), logged
+`premarket_brief.nothing_to_report` (a legitimate state — no high/critical macro releases
+scheduled and no matching earnings/reactions at verification time), and
+`scheduler:job:premarket_brief_us` recorded `{"status": "ok", "error": null}` in Redis —
+confirming `_record_job_status()` wiring is correct too, not just the absence of a crash.
+
+**Design invariant reinforced by this feature**: when a new scheduler.py function would send
+real emails/pushes to real users, verify it live by monkeypatching the SEND function to a no-op
+logger, never by calling the real function unpatched against production data — this is a
+stricter version of the "verify against live state, not just tests" discipline already
+documented elsewhere in this file, adapted for the case where the live verification itself has
+a real-world side effect that must be neutralized first.
 
 ---
 
