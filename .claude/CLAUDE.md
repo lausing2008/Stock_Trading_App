@@ -1610,6 +1610,48 @@ checks that can (and are meant to) disagree with the headline label.
 
 ---
 
+## Design Reference: The ↑/↓ Percentage Arrows on the Daily Chart
+
+**A user asked "what's the percentage on the graph like 50%" (2026-07-17)** after seeing small
+green ↑ and red ↓ arrows above/below certain candles on the daily chart, each labeled with a
+number like `46%`, `47%`, or `50%` — worth documenting since it's easy to confuse with the
+sidebar's live `Confidence`/`Bullish` percentages, but it's a completely different, historical
+signal.
+
+**What they are**: `frontend/src/components/PriceChart.tsx:353-373` — these arrows mark **AI
+Signal transition points** in the SWING horizon's stored signal history, daily timeframe only
+(`!isIntraday`, line 353). The code takes every stored `signalMarkers` point, keeps only the
+last entry per calendar date (signals fire every 5 min while stable — line 355-359), then
+filters down to just the **transitions**: the first day a new signal direction appears,
+compared to the previous day's stored signal (line 364,
+`sorted.filter((m, i) => i === 0 || m.signal !== sorted[i-1].signal)`). Every day the signal
+just *held* its existing direction is skipped — only the day it *flipped* gets a marker.
+
+**What the percentage means**: `text: `${Math.round(m.confidence ?? 0)}%`` (line 370) — the
+label is that stored signal's own **confidence at the moment it flipped**, using the exact
+same `confidence = abs(fused_probability - 0.5) * 200` formula documented above. It is NOT
+today's live confidence (shown separately in the sidebar) — it's a frozen historical value
+from whichever day that specific transition happened.
+
+**Visual encoding**: green `arrowUp` below the bar for a flip to BUY, red `arrowDown` above the
+bar for a flip to SELL (line 367-369) — color and shape indicate direction, the number
+indicates how confident that particular flip was.
+
+**Practical read**: a marker with a low percentage (e.g. a red ↓ at "50%") means the signal
+flipped to SELL on that day, but only barely cleared the bar to be called SELL at all —
+matching the same "confidence measures conviction in the probability estimate, not trade
+quality" caveat as the design reference above. A cluster of low-confidence flip markers close
+together often reflects a choppy period where the signal was oscillating near its decision
+threshold, not a series of strong directional calls.
+
+**What to check if this looks wrong**: the transition-filtering logic is the only place this
+renders — if arrows are missing entirely, confirm `!isIntraday` (daily timeframe only) and
+`showSignals` is enabled; if a percentage looks inconsistent with the sidebar's current
+reading, that's expected — they're deliberately different values (historical flip-moment vs.
+live-today).
+
+---
+
 ## Recurring Issue: Stale Tracker Entries Can Point Either Direction — Verify Before Trusting Severity/Status
 
 **Found 2026-07-16, while looking for "the next critical improvement to build."** A tracker
