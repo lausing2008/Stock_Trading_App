@@ -9,7 +9,7 @@
  * calibration is global) and News & Macro is currently US-only at the source (economic
  * calendar / macro reactions are US Fed/BLS data).
  */
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import { api, type RankingRow, type SectorGroup } from '@/lib/api';
@@ -479,6 +479,13 @@ function TuningTab() {
   );
 }
 
+const VALID_TABS: Tab[] = ['trend', 'assets', 'top', 'flow', 'news', 'tuning'];
+
+function tabFromQuery(q: string | string[] | undefined): Tab {
+  const v = Array.isArray(q) ? q[0] : q;
+  return (VALID_TABS as string[]).includes(v ?? '') ? (v as Tab) : 'trend';
+}
+
 export default function ReportsPage() {
   const router = useRouter();
   const session = getSession();
@@ -488,7 +495,16 @@ export default function ReportsPage() {
     return null;
   }
 
-  const [tab, setTab] = useState<Tab>('trend');
+  // Deep-linked from the Reports nav dropdown (/reports?tab=X) — each nav item lands
+  // directly on its tab instead of always opening to Trend. router.query isn't populated
+  // until after hydration on first render (Next.js), so this can't be read in useState's
+  // initializer the way _app.tsx's auth check reads localStorage synchronously; a one-time
+  // effect syncing tab from the query once it's available is the correct pattern here.
+  const [tab, setTab] = useState<Tab>(() => tabFromQuery(router.query.tab));
+  useEffect(() => {
+    if (router.isReady) setTab(tabFromQuery(router.query.tab));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router.isReady, router.query.tab]);
   const [market, setMarket] = useState<Market>('US');
 
   return (
@@ -524,7 +540,7 @@ export default function ReportsPage() {
           {TABS.map(t => (
             <button
               key={t.key}
-              onClick={() => setTab(t.key)}
+              onClick={() => { setTab(t.key); router.replace({ pathname: '/reports', query: { tab: t.key } }, undefined, { shallow: true }); }}
               style={{
                 background: 'none', border: 'none', cursor: 'pointer', padding: '12px 16px', fontSize: 13, fontWeight: 500,
                 color: tab === t.key ? '#f9fafb' : '#6b7280',

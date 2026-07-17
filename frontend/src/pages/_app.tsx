@@ -23,6 +23,13 @@ function hasGateCookie() {
 // ── Nav group definitions ─────────────────────────────────────────────────────
 
 type NavItem = { label: string; href: string; color?: string; tag?: string };
+
+// Strips a query string for path-prefix matching — most NavItem hrefs are plain paths, but
+// Reports' items use ?tab= query params to deep-link into a single page's tabs, and
+// currentPath (router.pathname) never includes a query string to compare against.
+function navPath(href: string): string {
+  return href.split('?')[0];
+}
 type NavGroupDef = { label: string; items: NavItem[]; adminOnly?: boolean };
 
 const NAV_GROUPS: NavGroupDef[] = [
@@ -34,7 +41,17 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Rankings',         href: '/rankings' },
       { label: 'Sector Rotation',  href: '/sector-rotation', color: '#38bdf8' },
       { label: 'Forecast',     href: '/forecast',     color: '#4ade80' },
-      { label: 'Reports',      href: '/reports',      color: '#6d28d9', tag: 'new' },
+    ],
+  },
+  {
+    label: 'Reports',
+    items: [
+      { label: 'Market Trend',   href: '/reports?tab=trend',  color: '#6d28d9', tag: 'new' },
+      { label: 'Key Assets',     href: '/reports?tab=assets', color: '#6d28d9', tag: 'new' },
+      { label: 'Top Stocks',     href: '/reports?tab=top',    color: '#6d28d9', tag: 'new' },
+      { label: 'Money Flow',     href: '/reports?tab=flow',   color: '#6d28d9', tag: 'new' },
+      { label: 'News & Macro',   href: '/reports?tab=news',   color: '#6d28d9', tag: 'new' },
+      { label: 'Self-Tuning',    href: '/reports?tab=tuning', color: '#6d28d9', tag: 'new' },
     ],
   },
   {
@@ -225,7 +242,7 @@ function NavGroup({ group, currentPath, userRole }: { group: NavGroupDef; curren
   const ref = useRef<HTMLDivElement>(null);
 
   const isActive = items.some(item =>
-    item.href === '/' ? currentPath === '/' : currentPath.startsWith(item.href)
+    item.href === '/' ? currentPath === '/' : currentPath.startsWith(navPath(item.href))
   );
 
   function enter() {
@@ -286,7 +303,7 @@ function NavGroup({ group, currentPath, userRole }: { group: NavGroupDef; curren
           {items.map(item => {
             const isCurrent = item.href === '/'
               ? currentPath === '/'
-              : currentPath.startsWith(item.href);
+              : currentPath.startsWith(navPath(item.href));
             return (
               <Link
                 key={item.href}

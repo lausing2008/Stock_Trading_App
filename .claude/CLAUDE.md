@@ -2172,6 +2172,34 @@ baked into a real image via `docker compose build` / `docker build` at some poin
 until that rebuild actually happens — this incident is the proof that the gap between
 "hotfixed" and "durably deployed" is not hypothetical.
 
+**CORRECTED same day — the first recovery pass above was itself incomplete.** It only diffed
+files this session specifically remembered `docker cp`'ing (the ones tied to fixes made
+earlier in the same conversation), not an exhaustive sweep of every `.py` file in every
+service. The user then reported two NEW-looking bugs in the just-built Reports page — CAPE
+stuck loading forever, News & Macro not working — which traced back to the SAME root cause,
+just in files the first pass never checked: `event-intelligence`'s `routes.py`, `scheduler.py`,
+`economic.py`, and `services/valuation.py` had ALSO reverted. `valuation.py` (the entire CAPE
+feature, Tier 249) was missing from the container **entirely** — its image predates the file's
+creation, meaning `docker cp` had been the ONLY way that feature was ever deployed, the whole
+time since it was built. A genuinely exhaustive re-sweep (every `.py` file under every
+`services/*/src/`, not a remembered subset) found **31 reverted files across 9 services**
+total: `event-intelligence` (7 files + 1 missing entirely — worst offender), `ranking-engine`
+(2), `ml-prediction` (5), `decision-engine` (6 — its whole core scoring pipeline), `strategy-
+engine` (3), `portfolio-optimizer` (2), `market-data`'s `admin.py` + 2 more, `signal-engine`'s
+`generators/signals.py`, `technical-analysis`'s `indicators/core.py`. Only `research-engine`
+and `api-gateway` were genuinely fully clean. All 31 re-synced, verified byte-identical,
+restarted, and confirmed live (`GET /events/valuation/cape` returns real data; `GET
+/events/overview` includes `latest_macro_reaction`).
+
+**The lesson under the lesson:** after an incident like this, a "fixed" claim based on
+checking only the files you personally remember touching is itself unverified — the same
+"verify in both directions, don't trust a status claim" discipline this file already applies
+to stale tracker entries (see the SE-F2 section) applies just as much to your OWN prior
+"done" claim within the same session. The only reliable check is exhaustive: every file, every
+service, not a remembered subset. A dedicated sweep agent doing `find services/<svc>/src -name
+'*.py'` then diffing each one against the container is cheap enough to just always do fully,
+rather than trying to reconstruct "which files did I touch this session" from memory.
+
 ---
 
 ## Recurring Issue: api-gateway Crash-Loops on `ModuleNotFoundError: No module named 'numpy'`
