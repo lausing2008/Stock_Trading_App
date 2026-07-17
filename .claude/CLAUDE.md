@@ -2108,3 +2108,110 @@ insider/congress/institutional leaderboards if not already present).
 5. HK sector-ETF rotation equivalent to the existing US one — M.
 6. `/stocks/top_movers?market=` N-day gainers/losers convenience endpoint (optional — largely
    already composable from rankings + sector_performance client-side) — S/M.
+
+---
+
+## Recurring Issue: A Full EC2 Instance Reboot Reverts EVERY `docker cp` Hotfix Across ALL Containers At Once
+
+**Symptom (2026-07-17):** the EC2 instance became completely unreachable (no SSH, no HTTPS,
+100% ping loss) for an unknown external reason (not caused by anything deployed this session —
+last confirmed action before the outage was a routine frontend image build). On recovery, every
+container had been recreated fresh — `api-gateway` crash-looped immediately
+(`ModuleNotFoundError: No module named 'numpy'`, a real, separately-documented bug below), and
+a systematic check found **12 service-local files across 5 services, plus `shared/db/models.py`
+and `shared/common/logging.py` across all 10 other backend containers, had silently reverted**
+to whatever was baked into each image at its last real build — every fix applied via `docker cp`
+during this entire session (T230-CHARTING-PREMARKET's ingestion.py/yfinance_adapter.py,
+AUD250's scheduler.py/routes.py fixes across 4 services, SELFIMPROVE-NEVER-CALIBRATED-PARAMS'
+paper_portfolio.py/paper_trading_engine.py, T254's trendlines.py FVG detector, and both
+`shared/` files) was gone. One file (`event-intelligence`'s `macro_reaction.py`) didn't exist
+in the image AT ALL — that container's image predates the file's creation and it had only ever
+lived via `docker cp`, never a real rebuild.
+
+**Root cause:** this is the exact risk already documented elsewhere in this file under
+"`docker compose up -d --force-recreate <one-service>` Can Recreate EVERY Service — And
+Recreation Silently Reverts `docker cp`-Patched Files" — except at MAXIMUM scale. That entry
+was about ONE `docker compose up` sweeping in unintended sibling services. A full instance
+reboot recreates **literally every container**, all at once, with no warning and no way to
+`docker ps`-diff "before" against "after" the way that entry's own mitigation describes — there
+is no "before" snapshot when the whole machine went down external to any action taken here.
+
+**Fix applied:** systematically diffed every `docker cp`-patched file this session had touched,
+service-by-service, against the git checkout (`diff <(docker exec ... cat ...) <local path>`)
+for all 11 backend services — not just the ones that crashed. Found and re-`docker cp`'d 12
+service-local files + `shared/db/models.py` + `shared/common/logging.py` to every affected
+container, cleared `__pycache__`, restarted, verified clean startup logs and a live functional
+check (confirmed `fair_value_gaps` still returns real data from technical-analysis post-restart).
+
+**What to check after ANY event that force-restarts the whole instance (reboot, host
+maintenance, an EC2 status check failure, `docker compose down && up` at the compose-file
+level) — not just after a single-service `--force-recreate`:**
+```bash
+# For EVERY service you've ever docker cp'd a fix into this session (check your own session
+# history, not just what crashed) — diff the running container against the git checkout:
+for f in <list of every file you docker cp'd this session>; do
+  diff <(docker exec stockai-<service>-1 cat /app/<path>) <local repo path>
+done
+# Also check shared/db/ and shared/common/ across ALL 11 containers, not just the ones you
+# personally touched — a shared file synced to container A during today's work is just as
+# reverted as one synced to container B.
+for c in market-data signal-engine ranking-engine technical-analysis event-intelligence \
+         research-engine api-gateway ml-prediction decision-engine strategy-engine portfolio-optimizer; do
+  diff <(docker exec stockai-$c-1 cat /app/shared/db/models.py) shared/db/models.py
+  diff <(docker exec stockai-$c-1 cat /app/shared/common/logging.py) shared/common/logging.py
+done
+```
+
+**Design invariant, stated more strongly than the earlier single-service version of this
+entry:** `docker cp` is fundamentally a SESSION-SCOPED hotfix, not a deployment. ANY event that
+recreates a container — a targeted `--force-recreate`, a full `docker compose down/up`, or an
+entire instance reboot outside anyone's control — reverts it back to whatever the image was
+built with. The only way a fix survives across an unplanned full-instance event is if it was
+baked into a real image via `docker compose build` / `docker build` at some point. Every
+`docker cp` fix applied in a session should be treated as "still owed a real image rebuild"
+until that rebuild actually happens — this incident is the proof that the gap between
+"hotfixed" and "durably deployed" is not hypothetical.
+
+---
+
+## Recurring Issue: api-gateway Crash-Loops on `ModuleNotFoundError: No module named 'numpy'`
+
+**Symptom (found during the reboot-recovery above):** `stockai-api-gateway-1` crash-looped
+immediately on every fresh start with `ModuleNotFoundError: No module named 'numpy'`, traced
+through `shared/common/__init__.py` → `from .indicators import ...` → `shared/common/indicators.py`'s
+`import numpy as np`.
+
+**Root cause:** `T233-ARCH-INDICATOR-DEDUP` (2026-07-09, commit `6a6de85`) added
+`shared/common/indicators.py` and wired it into `shared/common/__init__.py`'s unconditional
+top-level imports — meaning EVERY service that does `from common import ...` (or transitively
+triggers `common/__init__.py`, which is essentially all of them) now requires `numpy` and
+`pandas`, whether that service actually uses indicators or not. Every other service's
+`requirements.txt` already had `numpy` (it's a common transitive need for a data-heavy trading
+app), but `api-gateway` — originally a thin auth/routing proxy with no data-science
+dependencies by design — never did. This was a DORMANT bug for over a week: the running
+`api-gateway` process had already successfully imported everything before the fix landed (or
+survived on a build predating it), so nothing crashed until this session's unrelated instance
+reboot forced a genuinely fresh container start and the import ran for real for the first time.
+
+**Fix applied (2026-07-17):** added `numpy==1.26.4` and `pandas>=2.0.0` to
+`services/api-gateway/requirements.txt` (matching every sibling service's exact numpy pin) and
+rebuilt the image via `docker compose -f docker/docker-compose.yml build api-gateway` (a real
+rebuild was required here — this is a dependency addition, not a code hotfix, so `docker cp`
+cannot fix it). Verified clean startup and live traffic post-recreate.
+
+**Systemic risk not fixed here (documented, not silently dropped):** `shared/common/__init__.py`
+importing `indicators.py` unconditionally means ANY future service added to this repo, or any
+existing thin service, could hit this same class of bug the moment it touches `shared/common/`
+at all — the dependency is invisible until a cold start actually exercises the import chain.
+The more robust fix would be making the `indicators` import lazy (deferred until a caller
+actually requests `sma`/`ema`/etc.) so services that never touch indicators never pay the
+numpy/pandas cost — not done here under incident-recovery time pressure, since it touches a
+file imported by all 11 services and deserves its own careful, non-incident-driven change.
+
+**What to check if a similar crash-loop appears in a different service:**
+```bash
+docker logs stockai-<service>-1 --tail 40 | grep -A3 "ModuleNotFoundError"
+# If the traceback bottoms out in shared/common/__init__.py -> indicators.py -> numpy/pandas,
+# check that services/<service>/requirements.txt actually has numpy + pandas pinned — compare
+# against a sibling service's requirements.txt (they should all match on these two).
+```
