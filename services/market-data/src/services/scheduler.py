@@ -1184,6 +1184,121 @@ def check_macro_reaction_alerts() -> None:
         log.error("signal_alert.macro_reaction_error", error=str(exc))
 
 
+def send_premarket_brief(markets: list | None = None) -> None:
+    """T249-MARKETMOVER-P3: pre-market brief — combines the three already-shipped MarketMover
+    pieces (P0 release-date calendar, P1 earnings day-of reminders, P2 macro fast-reactions)
+    into one "here's what could move the market today" email, sent before the open. This is
+    NOT a new detection mechanism — every section reads data P0/P1/P2 already write; this job
+    only composes and delivers. Framed as historical-scenario education (what these events have
+    caused before), never a prediction of today's outcome.
+
+    Scoped to the same PriceAlert-subscribed audience as check_earnings_reactions() and
+    check_macro_reaction_alerts(), for audience consistency across the whole T249 family —
+    deliberately narrower than send_morning_digest()'s all-User audience, since this is really
+    the same alert family as those two, not a second, unrelated digest.
+
+    Sections: (1) today's high/critical-importance macro releases (P0's DB-backed calendar,
+    reusing _macro_events_from_db() rather than re-querying), (2) which of the recipient's
+    watched symbols report earnings today (same EarningsEvent/Stock join pattern as
+    check_earnings_reactions(), just report_date == today instead of the post-release window),
+    (3) macro reactions generated in the last 18h (a new query — no existing helper covers this
+    "recent window" shape; P2's own check_macro_reaction_alerts() only tracks
+    sent-vs-unsent, not a time window).
+
+    Called once per day per market, ~30-40 min before that market's open — mirrors
+    send_morning_digest's own cadence choice for the same reason (enough lead time to read
+    before market open, not so early the calendar could still shift).
+    """
+    if markets is None:
+        markets = ["US"]
+    _job_name = "premarket_brief_" + "_".join(m.lower() for m in markets)
+    _t0 = time.monotonic()
+    try:
+        from ..api.routes import _macro_events_from_db
+
+        today = date.today()
+        with SessionLocal() as session:
+            # ── Recipients — same PriceAlert-subscribed audience as P1/P2 ──────────
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            if not alerts:
+                _record_job_status(_job_name, "ok", time.monotonic() - _t0)
+                log.info("premarket_brief.no_recipients", markets=markets)
+                return
+            user_symbols: dict[int, set[str]] = {}
+            recipients: dict[int, "User"] = {}
+            for a in alerts:
+                if a.user and a.user.email:
+                    user_symbols.setdefault(a.user_id, set()).add(a.symbol)
+                    recipients[a.user_id] = a.user
+            if not recipients:
+                _record_job_status(_job_name, "ok", time.monotonic() - _t0)
+                return
+
+            # ── Section 1: today's high/critical macro releases ────────────────────
+            macro_events, _ = _macro_events_from_db(session, today, today)
+            macro_today = [e for e in macro_events if e.get("impact") in ("high", "critical")]
+
+            # ── Section 2: recipients' symbols reporting earnings today ────────────
+            all_symbols = {sym for syms in user_symbols.values() for sym in syms}
+            earnings_by_symbol: dict[str, EarningsEvent] = {}
+            if all_symbols:
+                rows = session.execute(
+                    select(EarningsEvent, Stock.symbol)
+                    .join(Stock, EarningsEvent.stock_id == Stock.id)
+                    .where(
+                        Stock.symbol.in_(all_symbols),
+                        EarningsEvent.report_date == today,
+                    )
+                ).all()
+                earnings_by_symbol = {sym: ev for ev, sym in rows}
+
+            # ── Section 3: macro reactions generated in the last 18h ───────────────
+            # No existing helper covers this "recent window" shape — check_macro_reaction_alerts()
+            # only tracks sent-vs-unsent (a queue), not a time-windowed read for a digest.
+            since = datetime.now(timezone.utc) - timedelta(hours=18)
+            recent_reactions = session.execute(
+                select(EconomicEvent).where(
+                    EconomicEvent.reaction_text.isnot(None),
+                    EconomicEvent.reaction_generated_at.isnot(None),
+                    EconomicEvent.reaction_generated_at >= since,
+                ).order_by(EconomicEvent.reaction_generated_at.desc())
+            ).scalars().all()
+
+            if not macro_today and not any(sym in earnings_by_symbol for syms in user_symbols.values() for sym in syms) and not recent_reactions:
+                _record_job_status(_job_name, "ok", time.monotonic() - _t0)
+                log.info("premarket_brief.nothing_to_report", markets=markets)
+                return
+
+            from .email_service import send_premarket_brief_email
+            date_str = today.strftime("%a, %b %-d")
+            sent = 0
+            for uid, user in recipients.items():
+                my_earnings = [
+                    {"symbol": sym, "event": earnings_by_symbol[sym]}
+                    for sym in sorted(user_symbols.get(uid, set()))
+                    if sym in earnings_by_symbol
+                ]
+                ok = send_premarket_brief_email(
+                    to=user.email,
+                    date_str=date_str,
+                    market=markets[0] if len(markets) == 1 else "/".join(markets),
+                    macro_events=macro_today,
+                    my_earnings=my_earnings,
+                    recent_reactions=recent_reactions,
+                )
+                if ok:
+                    sent += 1
+
+            _record_job_status(_job_name, "ok", time.monotonic() - _t0)
+            log.info("premarket_brief.done", markets=markets, sent=sent, recipients=len(recipients),
+                      macro_events=len(macro_today), reactions=len(recent_reactions))
+    except Exception as exc:
+        log.error("premarket_brief.failed", markets=markets, error=str(exc), exc_info=True)
+        _record_job_status(_job_name, "error", time.monotonic() - _t0, str(exc))
+
+
 def check_signal_alerts() -> None:
     """Fire conviction BUY alerts when all 5 layers align; fire exit warnings unconditionally.
 
@@ -4430,6 +4545,19 @@ def start_scheduler() -> None:
         lambda: send_morning_digest(["HK"]),
         CronTrigger(hour=8, minute=50, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
         id="morning_digest_hk", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── T249-MARKETMOVER-P3: pre-market brief — 8:00 local, ahead of the morning digest's
+    # 8:50 so the macro/earnings catalyst context arrives before the opportunities digest.
+    _scheduler.add_job(
+        lambda: send_premarket_brief(["US"]),
+        CronTrigger(hour=8, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
+        id="premarket_brief_us", replace_existing=True, **_JOB_DEFAULTS,
+    )
+    _scheduler.add_job(
+        lambda: send_premarket_brief(["HK"]),
+        CronTrigger(hour=8, minute=0, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+        id="premarket_brief_hk", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── Post-open digests — 30 min after open, then hourly for 4 more checks ───

@@ -934,6 +934,116 @@ def send_morning_digest_email(
     return send_email(to, subject, body_html, body_text)
 
 
+def send_premarket_brief_email(
+    to: str,
+    date_str: str,
+    market: str,
+    macro_events: list[dict],
+    my_earnings: list,
+    recent_reactions: list,
+) -> bool:
+    """T249-MARKETMOVER-P3: pre-market brief — combines P0 (today's macro releases), P1
+    (recipient's own symbols reporting earnings today), and P2 (macro reactions generated in
+    the last 18h) into one email. Framed as historical-scenario education, not a prediction —
+    every section describes what these kinds of events HAVE caused before, never what today's
+    will do. `macro_events` items are the dict shape _macro_events_from_db() returns
+    (type/date/title/description/impact/days_to_event); `my_earnings` items are
+    {"symbol": str, "event": EarningsEvent}; `recent_reactions` items are EconomicEvent rows
+    with reaction_text/reaction_generated_at populated.
+    """
+    subject = f"🔔 Pre-Market Brief — {market} — {date_str}"
+
+    _impact_color = {"critical": "#ef4444", "high": "#f97316", "medium": "#facc15"}
+
+    # ── Section 1: today's macro releases ─────────────────────────────────────
+    macro_rows_html = ""
+    macro_rows_text = ""
+    for e in macro_events:
+        c = _impact_color.get(e.get("impact"), "#94a3b8")
+        macro_rows_html += (
+            f'<div style="padding:8px 0;border-bottom:1px solid #f1f5f9">'
+            f'<span style="background:{c}22;color:{c};font-size:10px;font-weight:700;'
+            f'padding:1px 6px;border-radius:4px;text-transform:uppercase">{e.get("impact","")}</span> '
+            f'<strong style="font-size:13px">{e.get("title","")}</strong>'
+            f'<div style="font-size:11px;color:#64748b;margin-top:2px">{e.get("description","")}</div>'
+            f'</div>'
+        )
+        macro_rows_text += f'  [{(e.get("impact") or "").upper()}] {e.get("title","")}\n'
+
+    # ── Section 2: recipient's own symbols reporting today ─────────────────────
+    earnings_rows_html = ""
+    earnings_rows_text = ""
+    for item in my_earnings:
+        sym, ev = item["symbol"], item["event"]
+        est = f"${ev.eps_estimate:.2f}" if ev.eps_estimate is not None else "—"
+        earnings_rows_html += (
+            f'<div style="padding:8px 0;border-bottom:1px solid #f1f5f9">'
+            f'<strong style="font-size:13px">{sym}</strong> reports today '
+            f'<span style="font-size:11px;color:#64748b">(EPS est. {est})</span>'
+            f'</div>'
+        )
+        earnings_rows_text += f"  {sym} reports today (EPS est. {est})\n"
+
+    # ── Section 3: recent macro reactions (last 18h) ────────────────────────────
+    reaction_rows_html = ""
+    reaction_rows_text = ""
+    for ev in recent_reactions[:5]:
+        reaction_rows_html += (
+            f'<div style="padding:8px 0;border-bottom:1px solid #f1f5f9">'
+            f'<strong style="font-size:13px">{ev.title}</strong>'
+            f'<div style="font-size:12px;color:#64748b;margin-top:3px;line-height:1.5">{ev.reaction_text}</div>'
+            f'</div>'
+        )
+        reaction_rows_text += f"  {ev.title}: {ev.reaction_text}\n"
+
+    def _section(title: str, rows_html: str, empty_note: str) -> str:
+        if not rows_html:
+            return (
+                f'<div style="margin-top:20px">'
+                f'<div style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;'
+                f'letter-spacing:.07em;margin-bottom:6px">{title}</div>'
+                f'<div style="font-size:12px;color:#94a3b8">{empty_note}</div>'
+                f'</div>'
+            )
+        return (
+            f'<div style="margin-top:20px">'
+            f'<div style="font-size:11px;font-weight:700;color:#6366f1;text-transform:uppercase;'
+            f'letter-spacing:.07em;margin-bottom:6px">{title}</div>'
+            f'{rows_html}'
+            f'</div>'
+        )
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:520px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <h2 style="margin:0;font-size:18px;color:#0f172a">🔔 Pre-Market Brief — {market}</h2>
+      <span style="font-size:13px;color:#94a3b8">{date_str}</span>
+    </div>
+
+    {_section("Today's Macro Releases", macro_rows_html, "No high/critical-importance releases scheduled today.")}
+    {_section("Your Symbols Reporting Today", earnings_rows_html, "None of your watched symbols report earnings today.")}
+    {_section("Recent Macro Reactions (18h)", reaction_rows_html, "No macro reactions generated in the last 18 hours.")}
+
+    <p style="font-size:11px;color:#94a3b8;margin-top:28px;border-top:1px solid #e2e8f0;padding-top:14px">
+      Historical-scenario context only — not a prediction of today's outcome, not financial advice.
+      StockAI · {date_str}
+    </p>
+  </div>
+</body></html>"""
+
+    body_text = (
+        f"StockAI Pre-Market Brief — {market} — {date_str}\n\n"
+        f"TODAY'S MACRO RELEASES\n"
+        + (macro_rows_text or "  None scheduled today.\n")
+        + f"\nYOUR SYMBOLS REPORTING TODAY\n"
+        + (earnings_rows_text or "  None.\n")
+        + f"\nRECENT MACRO REACTIONS (18h)\n"
+        + (reaction_rows_text or "  None.\n")
+        + "\nHistorical-scenario context only — not a prediction, not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_price_alert_email(to: str, symbol: str, condition: str, threshold: float, price: float, note: str | None) -> bool:
     direction = "risen above" if condition == "above" else "fallen below"
     subject = f"Price Alert: {symbol} has {direction} {threshold}"
