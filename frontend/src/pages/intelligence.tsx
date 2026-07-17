@@ -7,6 +7,8 @@ import {
   type EarningsEvent,
   type InsiderLeaderItem,
   type CongressLeaderItem,
+  type OverviewInsiderTopBuy,
+  type OverviewCongressTopBuy,
   type CongressTrade,
   type CatalystLeaderItem,
   type CatalystScore,
@@ -121,10 +123,10 @@ function OverviewTab() {
         <div>
           <h3 style={{ color: '#d1d5db', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>TOP INSIDER BUYS</h3>
           <div style={{ background: '#111827', borderRadius: 8, border: '1px solid #1f2937', overflow: 'hidden' }}>
-            {(ov.insider?.top_buys ?? []).slice(0, 8).map((item: InsiderLeaderItem) => (
+            {(ov.insider?.top_buys ?? []).slice(0, 8).map((item: OverviewInsiderTopBuy) => (
               <div key={item.symbol} style={{ padding: '8px 12px', borderBottom: '1px solid #1f2937', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ color: '#60a5fa', fontWeight: 600 }}>{item.symbol}</span>
-                <span style={{ color: '#22c55e', fontSize: 13 }}>{fmt(item.score)}</span>
+                <span style={{ color: '#22c55e', fontSize: 13 }}>{item.net_value != null ? fmtUsd(item.net_value) : `${item.purchases} buys`}</span>
               </div>
             ))}
             {(ov.insider?.top_buys ?? []).length === 0 && (
@@ -137,7 +139,7 @@ function OverviewTab() {
         <div>
           <h3 style={{ color: '#d1d5db', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>TOP CONGRESS BUYS</h3>
           <div style={{ background: '#111827', borderRadius: 8, border: '1px solid #1f2937', overflow: 'hidden' }}>
-            {(ov.congress?.top_buys ?? []).slice(0, 8).map((item: CongressLeaderItem) => (
+            {(ov.congress?.top_buys ?? []).slice(0, 8).map((item: OverviewCongressTopBuy) => (
               <div key={item.symbol} style={{ padding: '8px 12px', borderBottom: '1px solid #1f2937', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ color: '#60a5fa', fontWeight: 600 }}>{item.symbol}</span>
                 <span style={{ color: '#22c55e', fontSize: 13 }}>${Math.round(item.net_amount).toLocaleString()}</span>

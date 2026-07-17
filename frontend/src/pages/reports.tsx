@@ -16,7 +16,7 @@ import { api, type RankingRow, type SectorGroup } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 type Market = 'US' | 'HK';
-type Tab = 'trend' | 'assets' | 'top' | 'flow' | 'news' | 'tuning';
+type Tab = 'trend' | 'assets' | 'top' | 'flow' | 'news' | 'cape' | 'tuning';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'trend',  label: 'Market Trend' },
@@ -24,6 +24,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'top',    label: 'Top Stocks' },
   { key: 'flow',   label: 'Money Flow' },
   { key: 'news',   label: 'News & Macro' },
+  { key: 'cape',   label: 'CAPE / Bubble Warning' },
   { key: 'tuning', label: 'Self-Tuning' },
 ];
 
@@ -50,7 +51,6 @@ function TrendTab({ market }: { market: Market }) {
   const { data: regime } = useSWR(`regime-${market}`, () => api.regime(market));
   const { data: fearGreed } = useSWR('fear-greed', () => api.fearGreed());
   const { data: breadth } = useSWR('breadth', () => api.marketBreadth());
-  const { data: cape } = useSWR('cape', () => api.eventsCape());
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
@@ -97,17 +97,61 @@ function TrendTab({ market }: { market: Market }) {
           </>
         ) : <div style={{ color: '#6b7280' }}>Loading…</div>}
       </div>
+    </div>
+  );
+}
 
+// ── CAPE / Bubble Warning ─────────────────────────────────────────────────────
+// Promoted from a card inside TrendTab to its own tab (2026-07-16) — a user asked "where is
+// the CAPE tab?", expecting a dedicated tab matching intelligence.tsx's "Bubble Warning" tab
+// precedent rather than a card buried inside Market Trend.
+function CapeTab() {
+  const { data: cape } = useSWR('cape', () => api.eventsCape());
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={card}>
         <div style={sectionTitle}>CAPE / Bubble Warning</div>
         {cape?.latest ? (
           <>
-            <div style={{ fontSize: 22, fontWeight: 700, color: cape.latest.band === 'extreme' ? '#f87171' : cape.latest.band === 'high' ? '#fb923c' : cape.latest.band === 'elevated' ? '#f59e0b' : '#4ade80' }}>
-              {cape.latest.cape_value.toFixed(1)} <span style={{ fontSize: 14, fontWeight: 400, color: '#9ca3af', textTransform: 'capitalize' }}>{cape.latest.band}</span>
+            <div style={{ fontSize: 32, fontWeight: 700, color: cape.latest.band === 'extreme' ? '#f87171' : cape.latest.band === 'high' ? '#fb923c' : cape.latest.band === 'elevated' ? '#f59e0b' : '#4ade80' }}>
+              {cape.latest.cape_value.toFixed(1)} <span style={{ fontSize: 16, fontWeight: 400, color: '#9ca3af', textTransform: 'capitalize' }}>{cape.latest.band}</span>
             </div>
-            <div style={{ fontSize: 12, color: '#6b7280', marginTop: 8 }}>Shiller CAPE — a slow-moving macro valuation signal, not a trade trigger.</div>
+            <div style={{ fontSize: 13, color: '#6b7280', marginTop: 10 }}>
+              Shiller CAPE (cyclically-adjusted P/E, S&amp;P 500) — a slow-moving macro valuation
+              signal. Historically elevated readings have preceded major corrections, but CAPE can
+              stay elevated for years before any correction — this is macro context, not a trade
+              trigger.
+            </div>
           </>
         ) : <div style={{ color: '#6b7280' }}>Loading…</div>}
+      </div>
+
+      <div style={card}>
+        <div style={sectionTitle}>Warning Bands</div>
+        <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ color: '#9ca3af', textAlign: 'left' }}>
+              <th style={{ padding: '6px 8px' }}>Band</th>
+              <th style={{ padding: '6px 8px' }}>CAPE Range</th>
+              <th style={{ padding: '6px 8px' }}>Basis</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[
+              { band: 'Normal', color: '#4ade80', range: '< 30', basis: 'Long-run mean/median (1871–present) is ~16-17' },
+              { band: 'Elevated', color: '#f59e0b', range: '30–35', basis: 'Above historical norm' },
+              { band: 'High', color: '#fb923c', range: '35–40', basis: '1929 pre-crash peak was ~32-33' },
+              { band: 'Extreme', color: '#f87171', range: '≥ 40', basis: '2021 post-COVID peak ~38.6; Dec 1999 dot-com peak (all-time high) 44.19' },
+            ].map(row => (
+              <tr key={row.band} style={{ borderTop: '1px solid #1f2937', background: cape?.latest?.band?.toLowerCase() === row.band.toLowerCase() ? 'rgba(255,255,255,0.04)' : undefined }}>
+                <td style={{ padding: '6px 8px', fontWeight: 700, color: row.color }}>{row.band}</td>
+                <td style={{ padding: '6px 8px' }}>{row.range}</td>
+                <td style={{ padding: '6px 8px', color: '#9ca3af' }}>{row.basis}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -345,7 +389,7 @@ function NewsTab() {
               {data.insider.top_buys.slice(0, 6).map(b => (
                 <div key={b.symbol} style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ fontWeight: 600 }}>{b.symbol}</span>
-                  <span style={{ color: '#9ca3af' }}>{b.buy_count} buys / score {b.score.toFixed(0)}</span>
+                  <span style={{ color: '#9ca3af' }}>{b.purchases} buys{b.net_value != null ? ` / $${(b.net_value / 1000).toFixed(0)}k` : ''}</span>
                 </div>
               ))}
             </div>
@@ -479,7 +523,7 @@ function TuningTab() {
   );
 }
 
-const VALID_TABS: Tab[] = ['trend', 'assets', 'top', 'flow', 'news', 'tuning'];
+const VALID_TABS: Tab[] = ['trend', 'assets', 'top', 'flow', 'news', 'cape', 'tuning'];
 
 function tabFromQuery(q: string | string[] | undefined): Tab {
   const v = Array.isArray(q) ? q[0] : q;
@@ -515,7 +559,7 @@ export default function ReportsPage() {
             ← Back
           </button>
           <h1 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Reports</h1>
-          <span style={{ color: '#6b7280', fontSize: 13 }}>Trend · Assets · Top Stocks · Money Flow · News · Self-Tuning</span>
+          <span style={{ color: '#6b7280', fontSize: 13 }}>Trend · Assets · Top Stocks · Money Flow · News · CAPE · Self-Tuning</span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
             {(['US', 'HK'] as Market[]).map(m => (
               <button
@@ -559,6 +603,7 @@ export default function ReportsPage() {
         {tab === 'top'    && <TopStocksTab market={market} />}
         {tab === 'flow'   && <FlowTab market={market} />}
         {tab === 'news'   && <NewsTab />}
+        {tab === 'cape'   && <CapeTab />}
         {tab === 'tuning' && <TuningTab />}
       </div>
     </div>

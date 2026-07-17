@@ -51,6 +51,7 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Top Stocks',     href: '/reports?tab=top',    color: '#6d28d9', tag: 'new' },
       { label: 'Money Flow',     href: '/reports?tab=flow',   color: '#6d28d9', tag: 'new' },
       { label: 'News & Macro',   href: '/reports?tab=news',   color: '#6d28d9', tag: 'new' },
+      { label: 'CAPE / Bubble Warning', href: '/reports?tab=cape', color: '#6d28d9', tag: 'new' },
       { label: 'Self-Tuning',    href: '/reports?tab=tuning', color: '#6d28d9', tag: 'new' },
     ],
   },

@@ -2003,14 +2003,30 @@ export type MacroReaction = {
   generated_at: string | null;
 };
 
+// NOT the same shape as InsiderLeaderItem/CongressLeaderItem (those come from the dedicated
+// /events/insider/leaderboard and /events/congress/leaderboard endpoints) — /events/overview
+// builds its own top_buys from insider.get_insider_leaderboard()/congress leaderboard helpers,
+// which return a distinct field set (company/purchases/sales/net_value, not score/buy_count/
+// sell_count). Confirmed against the real live response after a "News & Macro not working"
+// report traced to this exact type mismatch silently rendering blank fields.
+export type OverviewInsiderTopBuy = {
+  stock_id: number; symbol: string; company: string | null;
+  purchases: number; sales: number; net_value: number | null;
+};
+export type OverviewCongressTopBuy = {
+  stock_id: number; symbol: string; company: string | null;
+  purchases: number; sales: number; net_amount: number; unique_politicians: number;
+};
+
 export type EventIntelOverview = {
-  economic: { upcoming_count: number; fomc_days_away: number | null };
-  earnings: { upcoming_count: number };
-  insider: { top_buys: InsiderLeaderItem[] };
-  congress: { top_buys: CongressLeaderItem[] };
+  economic: { upcoming_count: number; fomc_days_away: number | null; events?: EconomicEvent[] };
+  earnings: { upcoming_count: number; events?: EarningsEvent[] };
+  insider: { top_buys: OverviewInsiderTopBuy[] };
+  congress: { top_buys: OverviewCongressTopBuy[]; recent?: CongressTrade[] };
   catalyst_leaders: CatalystLeaderItem[];
   risk_leaders: CatalystLeaderItem[];
   composite_leaders: CatalystLeaderItem[];
+  political_events?: PoliticalEvent[];
   latest_macro_reaction: MacroReaction | null;
 };
 
