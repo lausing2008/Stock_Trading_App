@@ -125,3 +125,107 @@ def test_returns_fair_value_gap_dataclass_instances():
     df.loc[16, ["high", "low"]] = [112.0, 106.0]
     gaps = detect_fair_value_gaps(df)
     assert all(isinstance(g, FairValueGap) for g in gaps)
+
+
+# ── AUD-FVG-SINGLEBARFILL: multi-bar cumulative fill ─────────────────────────────────────
+
+def test_gap_traded_through_gradually_over_multiple_bars_is_marked_filled():
+    """A gap fully traded through over SEVERAL bars (no single bar spans the whole range)
+    must still be marked filled — this is the exact regression the audit found: the old
+    single-bar check left gaps like this permanently filled=False."""
+    df = _flat_df(40)
+    df.loc[14, ["high", "low"]] = [100.5, 99.5]
+    df.loc[15, ["high", "low"]] = [110.0, 105.0]
+    df.loc[16, ["high", "low"]] = [112.0, 106.0]  # gap = [100.5, 106.0]
+    # Bar 20 covers the bottom half [100.5, 103.0]; bar 21 covers the top half [102.5, 106.0]
+    # (overlapping slightly at 102.5-103.0 so the two covered runs are contiguous) — together
+    # they fully cover [100.5, 106.0], but neither bar alone does.
+    df.loc[20, ["high", "low"]] = [103.0, 100.5]
+    df.loc[21, ["high", "low"]] = [106.0, 102.5]
+
+    gaps = detect_fair_value_gaps(df)
+    g = next(g for g in gaps if g.idx == 15)
+    assert g.filled is True
+    assert g.filled_idx == 21
+
+
+def test_gap_traded_through_by_disjoint_bars_with_a_gap_in_the_middle_stays_unfilled():
+    """Two bars each cover part of the range but leave an untouched middle strip — the
+    covered sub-ranges are NOT contiguous, so the gap is genuinely still open in the middle
+    and must stay filled=False."""
+    df = _flat_df(40)
+    df.loc[14, ["high", "low"]] = [100.5, 99.5]
+    df.loc[15, ["high", "low"]] = [113.0, 105.0]
+    df.loc[16, ["high", "low"]] = [115.0, 106.0]  # gap = [100.5, 106.0]
+    # Bar 20 only touches the very bottom [100.5, 101.5]; bar 21 only touches the very top
+    # [104.5, 106.0] — a real untouched strip [101.5, 104.5] remains in the middle.
+    df.loc[20, ["high", "low"]] = [101.5, 100.5]
+    df.loc[21, ["high", "low"]] = [106.0, 104.5]
+
+    gaps = detect_fair_value_gaps(df)
+    g = next(g for g in gaps if g.idx == 15)
+    assert g.filled is False
+
+
+def test_a_bar_entirely_above_or_below_the_gap_does_not_falsely_mark_it_filled():
+    """Regression for a real bug caught while fixing this: a bar whose full range sits
+    entirely ABOVE the gap's top (never dips down into the gap at all) must not be treated
+    as 'covering' the gap just because its high exceeds the gap's top."""
+    df = _flat_df(40)
+    df.loc[14, ["high", "low"]] = [100.5, 99.5]
+    df.loc[15, ["high", "low"]] = [110.0, 105.0]
+    df.loc[16, ["high", "low"]] = [112.0, 106.0]  # gap = [100.5, 106.0]
+    # Every bar after stays well ABOVE the gap (low=112 > gap top=106) — never touches it.
+    for i in range(17, 40):
+        df.loc[i, ["high", "low"]] = [115.0, 112.0]
+
+    gaps = detect_fair_value_gaps(df)
+    g = next(g for g in gaps if g.idx == 15)
+    assert g.filled is False
+
+
+# ── AUD-FVG-CAPORDERING: max_gaps prioritizes nearest-unfilled, not most-recent ──────────
+
+def test_max_gaps_cap_keeps_the_nearest_unfilled_gap_over_a_more_recent_far_gap():
+    """When more gaps exist than max_gaps allows, the cap must keep the gap NEAREST to
+    current price (and prioritize unfilled over filled), not just the most recently formed
+    ones by bar index — the exact regression the audit found."""
+    df = _flat_df(200, price=100.0)
+    # An OLD gap near current price (100.0), left unfilled — the genuinely actionable one.
+    df.loc[9,  ["high", "low"]] = [100.5, 99.5]
+    df.loc[10, ["high", "low"]] = [102.0, 101.0]
+    df.loc[11, ["high", "low"]] = [104.0, 101.5]  # gap idx=10, [100.5, 101.5], near price=100
+    # 20 NEWER gaps, all far away from current price and all filled immediately after forming,
+    # so none of them are actually actionable — but by bar index they're all more "recent"
+    # than idx=10.
+    for k in range(20):
+        base = 50 + k * 5
+        df.loc[base,     ["high", "low"]] = [200.5 + k, 199.5 + k]
+        df.loc[base + 1, ["high", "low"]] = [220.0 + k, 215.0 + k]
+        df.loc[base + 2, ["high", "low"]] = [222.0 + k, 216.0 + k]  # far-away gap
+        df.loc[base + 3, ["high", "low"]] = [225.0 + k, 214.0 + k]  # immediately fills it
+
+    gaps = detect_fair_value_gaps(df, max_gaps=20)
+    assert any(g.idx == 10 for g in gaps), (
+        "the nearest, still-unfilled gap must survive the max_gaps cap even though 20 "
+        "more-recent (but filled, far-away) gaps exist"
+    )
+
+
+def test_max_gaps_cap_output_is_chronologically_ordered():
+    """Even after re-prioritizing for the cap, the returned list must be restored to
+    chronological (by idx) order — callers/renderers expect a stable time-ordered list."""
+    df = _flat_df(200, price=100.0)
+    df.loc[9,  ["high", "low"]] = [100.5, 99.5]
+    df.loc[10, ["high", "low"]] = [102.0, 101.0]
+    df.loc[11, ["high", "low"]] = [104.0, 101.5]
+    for k in range(20):
+        base = 50 + k * 5
+        df.loc[base,     ["high", "low"]] = [200.5 + k, 199.5 + k]
+        df.loc[base + 1, ["high", "low"]] = [220.0 + k, 215.0 + k]
+        df.loc[base + 2, ["high", "low"]] = [222.0 + k, 216.0 + k]
+        df.loc[base + 3, ["high", "low"]] = [225.0 + k, 214.0 + k]
+
+    gaps = detect_fair_value_gaps(df, max_gaps=20)
+    idxs = [g.idx for g in gaps]
+    assert idxs == sorted(idxs)

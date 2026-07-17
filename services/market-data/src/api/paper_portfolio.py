@@ -1529,6 +1529,18 @@ def calibrate_entry_weights() -> dict:
 
     from ..services.paper_trading_engine import _DEFAULT_CONFIG
 
+    # AUD-CALIBRATION-SCORESCALE: T232-DL-DUALSCORER-DEBT's 2026-07-17 fix added 3 new
+    # scoring layers to _should_enter() (pre-regime warning, regime-as-score, K-Score ±1),
+    # shifting entry_score's scale/distribution for every trade scored from that date
+    # forward. entry_score is persisted verbatim and this fit previously mixed pre- and
+    # post-change trades under one w_score coefficient with no distinction — a real, if
+    # bounded and self-correcting (next fit after enough post-change trades accumulate),
+    # calibration-drift risk. Exclude pre-change trades so every fit going forward trains on
+    # a single, internally-consistent score scale. This cutoff is retired once _MIN_CALIBRATION_TRADES
+    # worth of post-change trades exist on their own (the WHERE clause naturally excludes
+    # nothing extra once all trades in the table postdate the cutoff).
+    _SCORE_SCALE_CUTOFF = date(2026, 7, 17)
+
     with SessionLocal() as session:
         rows = session.execute(
             select(
@@ -1544,6 +1556,7 @@ def calibrate_entry_weights() -> dict:
                 PaperTrade.rr_ratio_at_entry.is_not(None),
                 PaperTrade.confidence_at_entry.is_not(None),
                 PaperTrade.entry_score.is_not(None),
+                PaperTrade.entry_date >= _SCORE_SCALE_CUTOFF,
             ).order_by(PaperTrade.entry_date)
         ).all()
 

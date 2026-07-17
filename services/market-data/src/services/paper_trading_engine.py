@@ -3301,15 +3301,23 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      state=regime_state, size_mult=regime_size_mult,
                      min_score=cfg.get("min_entry_score"), vix=live_regime.get("vix"))
 
-        # RE-9: Pre-emptive early warning — apply stricter thresholds BEFORE the regime flips
+        # RE-9: Pre-emptive early warning — apply stricter SIZING before the regime flips.
+        # AUD-PREREGIME-DOUBLEPENALTY: this used to ALSO raise min_entry_score here, while
+        # _should_enter() (below) independently subtracts -1/-2 from the score for the exact
+        # same is_pre_choppy/is_pre_risk_off flags — a candidate got hit twice for one signal
+        # (raised floor AND lowered score), a 2-point swing at the boundary with zero backtest
+        # coverage (gate_harness.py replays with live_regime=None, so this interaction was
+        # never validated). decision-engine's own min_score_for_regime() takes only
+        # regime_state, never these pre-regime flags — DE applies the pre-regime effect
+        # exactly once, via the score layer. Matching that: sizing still tightens
+        # preemptively here (a real, independent effect), but the threshold raise is removed
+        # so the score-layer subtraction is the ONLY pre-regime effect, same as DE.
         if live_regime.get("is_pre_choppy"):
-            cfg["min_entry_score"] = max(cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]), cfg.get("regime_choppy_min_score", 4))
             regime_size_mult = min(regime_size_mult, cfg.get("regime_choppy_size_mult", 0.75))
             log.warning("paper.pre_choppy_warning", vix_5d_trend=live_regime.get("vix_5d_trend"),
                         spy_pct_above_ema20=live_regime.get("spy_pct_above_ema20"),
-                        note="applying choppy thresholds preemptively — regime deteriorating")
+                        note="applying choppy sizing preemptively — regime deteriorating")
         elif live_regime.get("is_pre_risk_off"):
-            cfg["min_entry_score"] = max(cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]), cfg.get("regime_risk_off_min_score", 5))
             regime_size_mult = min(regime_size_mult, cfg.get("regime_risk_off_size_mult", 0.50))
             log.warning("paper.pre_risk_off_warning", vix=live_regime.get("vix"),
                         note="applying risk_off sizing preemptively — VIX elevated near 50EMA")

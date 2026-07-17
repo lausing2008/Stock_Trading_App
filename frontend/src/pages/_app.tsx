@@ -30,6 +30,20 @@ type NavItem = { label: string; href: string; color?: string; tag?: string };
 function navPath(href: string): string {
   return href.split('?')[0];
 }
+
+// AUD-NAV-REPORTSTAB-ALLCURRENT: navPath() strips the query string for GROUP-level active
+// matching (correct — the whole Reports group should highlight regardless of which tab),
+// but item-level "isCurrent" also used navPath(), so all 7 Reports items (which only differ
+// by ?tab=) collapsed to the same pathname and ALL highlighted as current simultaneously.
+// This checks the query string too, when the href actually has one — a no-op for every
+// plain-path href elsewhere in NAV_GROUPS (none of them have a '?').
+function isItemCurrent(href: string, currentPath: string, currentSearch: string): boolean {
+  if (href === '/') return currentPath === '/';
+  const [hrefPath, hrefQuery] = href.split('?');
+  if (!currentPath.startsWith(hrefPath)) return false;
+  if (hrefQuery === undefined) return true;
+  return currentSearch.replace(/^\?/, '') === hrefQuery;
+}
 type NavGroupDef = { label: string; items: NavItem[]; adminOnly?: boolean };
 
 const NAV_GROUPS: NavGroupDef[] = [
@@ -236,7 +250,7 @@ function GlobalSearch() {
 
 // ── NavGroup component ────────────────────────────────────────────────────────
 
-function NavGroup({ group, currentPath, userRole }: { group: NavGroupDef; currentPath: string; userRole: string | null }) {
+function NavGroup({ group, currentPath, currentSearch, userRole }: { group: NavGroupDef; currentPath: string; currentSearch: string; userRole: string | null }) {
   const items = group.items;
   const [open, setOpen] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -302,9 +316,7 @@ function NavGroup({ group, currentPath, userRole }: { group: NavGroupDef; curren
           animation: 'dropIn 0.12s ease',
         }}>
           {items.map(item => {
-            const isCurrent = item.href === '/'
-              ? currentPath === '/'
-              : currentPath.startsWith(navPath(item.href));
+            const isCurrent = isItemCurrent(item.href, currentPath, currentSearch);
             return (
               <Link
                 key={item.href}
@@ -349,8 +361,8 @@ function NavGroup({ group, currentPath, userRole }: { group: NavGroupDef; curren
 // Click-to-expand accordion (not hover, which has no equivalent on touch) covering the same
 // NAV_GROUPS data as the desktop dropdown row, shown only below the 768px breakpoint.
 function MobileNavDrawer({
-  groups, currentPath, onNavigate,
-}: { groups: NavGroupDef[]; currentPath: string; onNavigate: () => void }) {
+  groups, currentPath, currentSearch, onNavigate,
+}: { groups: NavGroupDef[]; currentPath: string; currentSearch: string; onNavigate: () => void }) {
   const [expanded, setExpanded] = useState<string | null>(null);
 
   return (
@@ -378,7 +390,7 @@ function MobileNavDrawer({
             {isOpen && (
               <div style={{ display: 'flex', flexDirection: 'column', paddingBottom: '8px' }}>
                 {group.items.map(item => {
-                  const isCurrent = item.href === '/' ? currentPath === '/' : currentPath.startsWith(navPath(item.href));
+                  const isCurrent = isItemCurrent(item.href, currentPath, currentSearch);
                   return (
                     <Link
                       key={item.href}
@@ -627,7 +639,7 @@ export default function App({ Component, pageProps }: AppProps) {
           <div className="desktop-nav-row" style={{ alignItems: 'center', gap: '32px', flex: 1 }}>
             <nav style={{ display: 'flex', alignItems: 'center', gap: '2px', flex: 1 }}>
               {NAV_GROUPS.filter(g => !g.adminOnly || role === 'admin').map(group => (
-                <NavGroup key={group.label} group={group} currentPath={router.pathname} userRole={role} />
+                <NavGroup key={group.label} group={group} currentPath={router.pathname} currentSearch={router.asPath.split('?')[1] ?? ''} userRole={role} />
               ))}
             </nav>
 
@@ -694,6 +706,7 @@ export default function App({ Component, pageProps }: AppProps) {
             <MobileNavDrawer
               groups={NAV_GROUPS.filter(g => !g.adminOnly || role === 'admin')}
               currentPath={router.pathname}
+              currentSearch={router.asPath.split('?')[1] ?? ''}
               onNavigate={() => setMobileMenuOpen(false)}
             />
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px' }}>

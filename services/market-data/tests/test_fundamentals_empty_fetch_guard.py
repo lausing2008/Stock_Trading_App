@@ -63,3 +63,23 @@ def test_guard_returns_early_without_falling_through_to_writes():
     write_start = body.index("_get_redis().setex(cache_key, _FUND_TTL, data.model_dump_json())")
     guard_block = body[guard_start:write_start]
     assert "return data" in guard_block or "return json.loads(stale)" in guard_block
+
+
+def test_etf_carveout_exists_and_precedes_the_guard():
+    """AUD-FUNDAMENTALS-ETF-FALSEPOSITIVE regression: ETFs (GLD, SPY, sector ETFs)
+    legitimately have null market_cap/trailing_pe/total_revenue on a genuinely SUCCESSFUL
+    fetch — without a carve-out, the guard above trips on every real ETF fetch, permanently
+    disabling caching/persistence for the entire ETF universe. quoteType=="ETF"/"MUTUALFUND"
+    or a present totalAssets field (yfinance-populated only for real fund-type responses)
+    must be checked and must be part of the `fetch_looks_empty` condition, not a separate
+    dead branch."""
+    body = _get_fundamentals_body()
+    assert '_is_fund_type' in body
+    assert 'quoteType' in body
+    assert 'totalAssets' in body
+    fund_type_pos = body.index("_is_fund_type = ")
+    guard_pos = body.index("fetch_looks_empty = (")
+    assert fund_type_pos < guard_pos, "_is_fund_type must be computed before fetch_looks_empty uses it"
+    guard_end = body.index(")", guard_pos)
+    guard_expr = body[guard_pos:guard_end]
+    assert "_is_fund_type" in guard_expr, "fetch_looks_empty must actually reference _is_fund_type"

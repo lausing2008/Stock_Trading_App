@@ -206,10 +206,34 @@ def detect_fair_value_gaps(
         if (top - bottom) / abs(mid) < min_gap_pct:
             continue
 
+        # AUD-FVG-SINGLEBARFILL: the old check required ONE bar's range to span the entire
+        # [bottom, top] gap (lows[j] <= bottom and highs[j] >= top). A gap traded through
+        # gradually over several bars — each covering only part of the range — never
+        # satisfied that single-bar condition and stayed filled=False forever, showing a
+        # long-dead gap as a live, actionable level. Track the CUMULATIVE union of each bar's
+        # overlap with [bottom, top] instead: filled once the union of those overlaps fully
+        # covers the gap. Tracked as a single [covered_lo, covered_hi] contiguous run
+        # extended from either edge — correct because a gap can only ever be covered
+        # starting from its bottom edge upward or its top edge downward (there is no bar
+        # that touches the gap's interior without also touching at least one edge first,
+        # since the gap itself is untraded territory the first bar to enter must cross an
+        # edge to reach).
         filled = False
         filled_idx = None
+        covered_lo = covered_hi = None  # the contiguous covered sub-range within [bottom, top], or None
         for j in range(i + 2, len(df)):
-            if lows[j] <= bottom and highs[j] >= top:
+            lo, hi = max(lows[j], bottom), min(highs[j], top)
+            if lo > hi:
+                continue  # this bar's range doesn't overlap the gap at all
+            if covered_lo is None:
+                covered_lo, covered_hi = lo, hi
+            else:
+                # extend the covered run only if this bar's overlap is contiguous with
+                # (touches or overlaps) what's already covered — otherwise it's a separate,
+                # disconnected touch that doesn't bridge the remaining uncovered middle.
+                if lo <= covered_hi and hi >= covered_lo:
+                    covered_lo, covered_hi = min(covered_lo, lo), max(covered_hi, hi)
+            if covered_lo is not None and covered_lo <= bottom and covered_hi >= top:
                 filled = True
                 filled_idx = j
                 break
@@ -218,4 +242,20 @@ def detect_fair_value_gaps(
             top=top, bottom=bottom, kind=kind, idx=i, filled=filled, filled_idx=filled_idx,
         ))
 
-    return gaps[-max_gaps:]
+    # AUD-FVG-CAPORDERING: max_gaps used to be a pure gaps[-max_gaps:] slice — the most
+    # RECENT gaps by bar index, mixing filled/unfilled with no regard for which are actually
+    # near the current price. A genuinely nearest, still-unfilled, actionable gap formed
+    # earlier than 20 other (possibly already-filled or far-away) gaps was silently dropped
+    # before the frontend's nearestActionableFvg() ever saw it. Prioritize unfilled gaps over
+    # filled ones, then nearest-to-current-price within each group, before capping — then
+    # restore chronological order (by idx) so rendering/consumers see a stable, time-ordered
+    # list, matching the pre-fix contract.
+    if len(gaps) > max_gaps:
+        current_price = float(df["close"].values[-1])
+        def _relevance_key(g: FairValueGap) -> tuple[bool, float]:
+            dist = min(abs(g.top - current_price), abs(g.bottom - current_price))
+            return (g.filled, dist)  # False (unfilled) sorts before True (filled)
+        gaps = sorted(gaps, key=_relevance_key)[:max_gaps]
+        gaps.sort(key=lambda g: g.idx)
+
+    return gaps

@@ -2405,6 +2405,7 @@ Return ONLY valid JSON — no markdown, no prose:
                 atr={atrData?.atr ?? null}
                 stopLoss={nearestSupport}
                 takeProfit={data.fundamentals?.target_price ?? undefined}
+                currency={lp2?.currency}
               />
             );
           })()}

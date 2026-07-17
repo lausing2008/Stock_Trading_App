@@ -229,3 +229,25 @@ def test_premarket_brief_imports_macro_events_from_db_locally():
     body = _SCHEDULER_SOURCE[start:end]
     assert "from ..api.routes import _macro_events_from_db" in body
     assert "from .email_service import send_premarket_brief_email" in body
+
+
+def test_premarket_brief_recipients_are_scoped_to_the_requested_market():
+    """AUD-PREMARKET-DUPLICATE regression: recipients were originally an unfiltered
+    PriceAlert query, so premarket_brief_us and premarket_brief_hk emailed the identical
+    full subscriber list. Must now filter by _sym_market(a.symbol) in markets before adding
+    a user to recipients/user_symbols."""
+    start = _SCHEDULER_SOURCE.index("def send_premarket_brief(")
+    end = _SCHEDULER_SOURCE.index("\ndef ", start + 1)
+    body = _SCHEDULER_SOURCE[start:end]
+    assert "_sym_market(a.symbol) in markets" in body
+
+
+def test_premarket_brief_macro_sections_are_gated_to_us_only():
+    """Macro releases (P0) and macro reactions (P2) are both US-only data sources (FRED/
+    FOMC) — the HK brief must not carry US content under a misleading HK-labeled subject."""
+    start = _SCHEDULER_SOURCE.index("def send_premarket_brief(")
+    end = _SCHEDULER_SOURCE.index("\ndef ", start + 1)
+    body = _SCHEDULER_SOURCE[start:end]
+    assert 'if "US" in markets:' in body
+    # both macro sections (releases + reactions) must be behind a US-only gate — 2 occurrences
+    assert body.count('if "US" in markets:') >= 2

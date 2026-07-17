@@ -2478,3 +2478,160 @@ input isn't actually regime-neutral in this function, so isolating just the new 
 layer required bumping `take_profit` (to clear the raised R:R floor) and setting
 `cross_style_buys=2` (to neutralize the unrelated pre-existing consensus layer) in those
 specific tests.
+
+---
+
+## Deep Audit: Trading Gate / Chart / Reports (2026-07-17) — 10 Confirmed Bugs, All Fixed
+
+**Trigger:** user asked for a full audit of everything touched recently, with explicit focus
+on "paper trading, decision engine, market regime, ai signal, FVG, entry point, stop loss,
+target price." Process: 6 parallel agents each independently reviewed a real `git diff`
+against a fixed base commit for their area (chart/FVG/drawing tools; Reports/nav/API types;
+market-data backend; docs/tracker consistency; decision-engine+paper-trading gate; AI-signal-
+to-entry/stop/target pipeline), reading the actual current code, not just diff text. 3
+adversarial verification agents then tried to REFUTE the highest-stakes candidates before
+anything was reported — one verified the date-vs-datetime claim by querying the real
+production Postgres container directly. All 10 reported findings were CONFIRMED.
+
+**Two of the ten broke features shipped in the SAME session** — a reminder that shipping a
+feature and auditing it are genuinely different activities; neither the original build nor its
+own tests (which mock/stub the exact boundary the bug lived in) caught either one.
+
+### 1. Pre-market brief's macro section could never show anything (date-vs-datetime)
+
+`_macro_events_from_db(session, today, today)` compared `EconomicEvent.event_date`
+(DateTime, rows land at e.g. 08:30 UTC) against a bare `date` cutoff. Postgres coerces the
+date to midnight for the comparison — confirmed live: `'2026-07-17 08:30:00'::timestamp <=
+'2026-07-17'::date` returns `false`. Invisible for `events_calendar()`'s existing 90-day-ahead
+window (the exclusion only clipped the far edge); fatal for the brief's `cutoff==today` call,
+which excluded literally every same-day release. **Fix:** widen the upper bound to end-of-day
+via `datetime.combine(cutoff, datetime.max.time())` inside `_macro_events_from_db()` itself —
+a no-op for the wide-window caller, fixes the same-day case.
+
+### 2. US and HK pre-market briefs were near-duplicates
+
+The recipient query (`select(PriceAlert).where(triggered.is_(False))`) had no market filter at
+all — both jobs emailed the identical full subscriber list, and macro content (US-only FRED/
+FOMC data) was identical in both, useless at 8am HKT. **Fix:** recipients now filtered by
+`_sym_market(a.symbol) in markets` (only users watching a symbol in THIS market get THIS
+market's brief); macro-releases and macro-reactions sections both gated behind `if "US" in
+markets`, so the HK brief only ever contains real HK earnings data or doesn't send.
+
+### 3. Pre-regime double-penalty (introduced by this session's own T232 DE-parity fix)
+
+`_scan_for_entries` already raised `min_entry_score` for `is_pre_choppy`/`is_pre_risk_off`
+(the pre-existing `RE-9` mechanism). Adding a score-layer subtraction for the same flags (this
+session's earlier T232-DL-DUALSCORER-DEBT parity fix) meant a pre-regime window now hit twice
+— raised floor AND lowered score — a discontinuous 2-point swing at the boundary with zero
+backtest coverage (`gate_harness.py` replays with `live_regime=None`). Checked decision-engine's
+own `min_score_for_regime()`: it only reads `regime_state`, never the pre-regime flags — DE
+applies the effect exactly once, via score only. **Fix:** removed the `min_entry_score` raise
+from `RE-9`'s pre-regime block, kept only its sizing tighten — the score-layer subtraction is
+now the sole pre-regime effect, matching DE exactly instead of over-correcting past it.
+
+### 4/5. Inverted-looking R:R + no currency handling (PositionSizer, PriceChart)
+
+Both `PositionSizer.tsx` and `PriceChart.tsx`'s risk-reward label computed `Math.abs()` on
+both the risk leg AND the reward leg — a take-profit on the wrong side of entry (e.g. an
+analyst `target_price` below current price, a bearish signal) still produced a positive-
+looking R:R, displayed as if it were a favorable long. Separately, `PositionSizer` has one
+global USD account-size setting with no currency awareness at all — HK stock entry/stop/
+target (HKD) were silently sized as if USD, off by the FX rate (~7.8x) with zero indication.
+**Fix:** direction is now inferred from stop-vs-entry (this tool has no explicit long/short
+toggle); when target lands on the wrong side for that inferred direction, the R:R figure is
+suppressed entirely with a visible warning instead of showing a misleading ratio. For
+currency: no FX-conversion data source exists anywhere in this app, so rather than guess an
+exchange rate, a `currency` prop (from the stock detail page's live-price data) now drives a
+mismatch warning banner and relabels "Account Size ($)" to the stock's real currency when it
+isn't USD — surfacing the problem honestly rather than pretending to solve it.
+
+### 6. ETF fundamentals permanently uncached (this session's OWN empty-fetch guard, over-applied)
+
+The `fetch_looks_empty` guard added earlier this session (to fix a real null-overwrite
+incident) checked `market_cap is None and trailing_pe is None and total_revenue is None` —
+exactly the three fields genuinely absent from every real, successful ETF fetch (GLD/SPY/
+sector ETFs report `totalAssets` instead). Every ETF request tripped the guard, permanently
+skipping caching and DB persistence, re-hitting yfinance on every page view with zero cache
+protection — the guard couldn't tell "yfinance failed" from "this ETF genuinely has none of
+these three." **Fix:** added `quoteType in ("ETF", "MUTUALFUND") or totalAssets is not None`
+as a fund-type carve-out — a genuinely failed fetch (`info == {}`) still correctly trips the
+guard since neither signal would be present either.
+
+### 7. All 7 Reports nav items highlighted as "current" simultaneously
+
+`NavGroup`'s item-level `isCurrent` used `navPath(item.href)` (strips the query string) — the
+7 Reports items differ ONLY by `?tab=`, so they all reduced to the same pathname and all
+highlighted at once regardless of which tab was actually open. **Fix:** new `isItemCurrent()`
+helper compares the query string too when an href actually has one (a no-op for every other
+plain-path `NAV_GROUPS` entry); `currentSearch` (from `router.asPath`) threaded through both
+`NavGroup` and `MobileNavDrawer`. Group-level `isActive` (the whole Reports group highlighting
+regardless of tab) was already correct and untouched.
+
+### 8/9. Fair Value Gap detection: cap ordering and single-bar fill requirement
+
+`detect_fair_value_gaps()`'s `max_gaps` cap was a pure `gaps[-max_gaps:]` slice — the most
+RECENTLY FORMED gaps by bar index, mixing filled/unfilled with no regard for actual relevance.
+A genuinely nearest, still-actionable OLDER gap could be silently dropped if 20+ newer (even
+already-filled, far-away) gaps had formed since. Separately, the fill check required a SINGLE
+bar's range to span the entire gap — a gap traded through gradually over several bars (each
+covering only part of the range) never satisfied that and stayed "unfilled" forever, rendering
+a long-dead gap as a live level. **Fix (8):** gaps are now sorted by `(filled, distance-to-
+last-close)` before the cap is applied — unfilled-and-nearest survives over filled-and-recent
+— then restored to chronological order for stable rendering. **Fix (9):** replaced the single-
+bar check with a cumulative contiguous-coverage tracker: extends a covered `[lo, hi]` sub-range
+only when a new bar's overlap with the gap is itself contiguous with what's already covered.
+Caught a real bug while implementing this fix — a first version incorrectly marked a gap
+"filled" just because a LATER bar's high exceeded the gap's top, even though that bar's full
+range sat entirely ABOVE the gap and never actually touched it; a dedicated test
+(`test_a_bar_entirely_above_or_below_the_gap_does_not_falsely_mark_it_filled`) catches this
+distinct failure mode from the "disjoint touches with an untraded middle strip" case.
+
+### 10. Calibration mixing two score scales under one coefficient
+
+This session's own T232 DE-parity fix (added 2026-07-17, earlier in the day) shifted
+`_should_enter()`'s score scale for every trade entered from that point forward.
+`calibrate_entry_weights()` persists `entry_score` verbatim and fits `w_score` across the FULL
+closed-trade history with no distinction — pre- and post-change trades, on two different
+score scales, mixed under one coefficient. Assessed as real but bounded (self-correcting once
+enough post-change trades accumulate; the fit is already gated by "must beat baseline EV on a
+held-out validation slice," which would catch a badly-mis-fit model, just not necessarily a
+subtly-biased one). **Fix:** added `PaperTrade.entry_date >= date(2026, 7, 17)` to the query —
+every future calibration run now trains on a single, internally-consistent score scale. Not a
+schema change or a new `score_version` column — the existing `entry_date` column plus a fixed
+cutoff constant was sufficient and far less invasive.
+
+### Verification discipline applied throughout
+
+Every fix with a plausible sabotage point was adversarially self-verified DURING
+implementation, not just claimed: temporarily broke the FVG contiguity check (removed the
+`lo <= covered_hi and hi >= covered_lo` guard) and confirmed the disjoint-gap test correctly
+failed before restoring it; temporarily removed the K-Score `is not None` guard from an
+earlier fix in the same file and confirmed 3 tests caught it (repeat of the same discipline
+already documented above for `_should_enter_de_parity.py`). 24 new/updated test cases across
+4 files, all passing; full existing suites (193 `market-data`, 26 `technical-analysis`, 42
+frontend) stay green; frontend typecheck and a full `next build` both clean.
+
+**Not fixed this pass — documented as known, lower-priority gaps, not silently dropped:**
+`regime_min_rr_ratio` is never forwarded from `paper_trading_engine` to decision-engine (DE
+falls back to a hardcoded 3.0, the fallback path uses the calibrated value) — a real
+asymmetry, but assessed lower-impact than the 10 fixed here, deserving its own focused pass
+rather than a rushed addition to an already-large batch. `_monitor_positions` can compute exit
+logic against a stale cached price during a multi-cycle live-quote gap (a data-gap-driven
+phantom stop/target, not a logic bug in the boundary check itself). The pre-market brief has
+no send-state dedup (a restart within the 60s misfire-grace window could re-email every
+recipient) and no per-user error isolation in its send loop (one bad address aborts the rest).
+The mobile nav drawer doesn't lock body scroll, ignores the impersonation banner's height in
+its `maxHeight` calc, and duplicates `GlobalSearch` (two keydown listeners, one of which tries
+to focus a CSS-hidden desktop input). Trendline drawings can break across timeframe switches
+(bar indices captured on one `activePrices` array reused against a different one). "Top Buys"
+cards can display net-negative (net-selling) rows under a "buys" heading. `CapeResponse.latest`
+is typed non-nullable but the backend can return `null` — currently harmless since the one call
+site guards it, but a real type-safety gap for a future consumer.
+
+**Standing exposure, unchanged by this pass:** 5 backend files remain hotfix-only in
+production (deployed via `docker cp` during this session, never baked into a rebuilt image) —
+`scheduler.py`, `email_service.py`, `paper_trading_engine.py`,
+`technical-analysis/src/indicators/trendlines.py`, and its `routes.py`. Per the standing
+"docker cp is a session-scoped hotfix, owed a real image rebuild" invariant documented
+elsewhere in this file — this audit's own fixes to these same files are ALSO currently hotfix-
+only until a real image build happens.

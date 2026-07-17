@@ -1216,9 +1216,17 @@ def send_premarket_brief(markets: list | None = None) -> None:
     try:
         from ..api.routes import _macro_events_from_db
 
+        def _sym_market(sym: str) -> str:
+            return "HK" if sym.upper().endswith(".HK") else "US"
+
         today = date.today()
         with SessionLocal() as session:
-            # ── Recipients — same PriceAlert-subscribed audience as P1/P2 ──────────
+            # ── Recipients — same PriceAlert-subscribed audience as P1/P2, scoped to THIS
+            # brief's market. AUD-PREMARKET-DUPLICATE: previously unfiltered, so US and HK
+            # both emailed the identical full subscriber list with identical (US-only) macro
+            # content — a user with only an HK alert got two near-duplicate emails a day, and
+            # the "HK" one carried irrelevant US Fed/BLS data. Now only recipients who watch at
+            # least one symbol in THIS market get THIS market's brief.
             alerts = session.execute(
                 select(PriceAlert).where(PriceAlert.triggered.is_(False))
             ).scalars().all()
@@ -1229,16 +1237,20 @@ def send_premarket_brief(markets: list | None = None) -> None:
             user_symbols: dict[int, set[str]] = {}
             recipients: dict[int, "User"] = {}
             for a in alerts:
-                if a.user and a.user.email:
+                if a.user and a.user.email and _sym_market(a.symbol) in markets:
                     user_symbols.setdefault(a.user_id, set()).add(a.symbol)
                     recipients[a.user_id] = a.user
             if not recipients:
                 _record_job_status(_job_name, "ok", time.monotonic() - _t0)
                 return
 
-            # ── Section 1: today's high/critical macro releases ────────────────────
-            macro_events, _ = _macro_events_from_db(session, today, today)
-            macro_today = [e for e in macro_events if e.get("impact") in ("high", "critical")]
+            # ── Section 1: today's high/critical macro releases — US-only data source
+            # (FRED/FOMC), so only include it in the US brief; the HK brief would otherwise
+            # carry the same irrelevant US Fed/BLS content at a useless local hour.
+            macro_today: list[dict] = []
+            if "US" in markets:
+                macro_events, _ = _macro_events_from_db(session, today, today)
+                macro_today = [e for e in macro_events if e.get("impact") in ("high", "critical")]
 
             # ── Section 2: recipients' symbols reporting earnings today ────────────
             all_symbols = {sym for syms in user_symbols.values() for sym in syms}
@@ -1254,17 +1266,19 @@ def send_premarket_brief(markets: list | None = None) -> None:
                 ).all()
                 earnings_by_symbol = {sym: ev for ev, sym in rows}
 
-            # ── Section 3: macro reactions generated in the last 18h ───────────────
-            # No existing helper covers this "recent window" shape — check_macro_reaction_alerts()
-            # only tracks sent-vs-unsent (a queue), not a time-windowed read for a digest.
-            since = datetime.now(timezone.utc) - timedelta(hours=18)
-            recent_reactions = session.execute(
-                select(EconomicEvent).where(
-                    EconomicEvent.reaction_text.isnot(None),
-                    EconomicEvent.reaction_generated_at.isnot(None),
-                    EconomicEvent.reaction_generated_at >= since,
-                ).order_by(EconomicEvent.reaction_generated_at.desc())
-            ).scalars().all()
+            # ── Section 3: macro reactions generated in the last 18h — also US-only data
+            # (P2's macro_reaction.py only detects US CPI/PPI/GDP/NFP/FOMC), same reasoning
+            # as Section 1 for gating to the US brief only.
+            recent_reactions: list = []
+            if "US" in markets:
+                since = datetime.now(timezone.utc) - timedelta(hours=18)
+                recent_reactions = session.execute(
+                    select(EconomicEvent).where(
+                        EconomicEvent.reaction_text.isnot(None),
+                        EconomicEvent.reaction_generated_at.isnot(None),
+                        EconomicEvent.reaction_generated_at >= since,
+                    ).order_by(EconomicEvent.reaction_generated_at.desc())
+                ).scalars().all()
 
             if not macro_today and not any(sym in earnings_by_symbol for syms in user_symbols.values() for sym in syms) and not recent_reactions:
                 _record_job_status(_job_name, "ok", time.monotonic() - _t0)

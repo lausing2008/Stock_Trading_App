@@ -1137,8 +1137,18 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
     # present on essentially every real yfinance response, even for thinly-covered stocks —
     # their combined absence is a reliable signal the fetch itself failed, not that this
     # particular stock genuinely has none of the three.
+    # AUD-FUNDAMENTALS-ETF-FALSEPOSITIVE: ETFs (GLD, SPY, sector ETFs) legitimately have none
+    # of market_cap/trailing_pe/total_revenue on a genuinely SUCCESSFUL yfinance fetch — they
+    # report totalAssets/fundFamily instead, since those three fields are equity-specific
+    # concepts. Without this carve-out, the guard above tripped on every real ETF fetch,
+    # never caching or persisting fundamentals for any ETF and re-hitting yfinance on every
+    # request with zero cache protection. quoteType=="ETF" (or the presence of totalAssets,
+    # a field ONLY yfinance populates for a real successful fund-type response) distinguishes
+    # a genuinely-sparse-but-successful ETF fetch from an actually-failed one.
+    _is_fund_type = info.get("quoteType") in ("ETF", "MUTUALFUND") or info.get("totalAssets") is not None
     fetch_looks_empty = (
-        data.market_cap is None and data.trailing_pe is None and data.total_revenue is None
+        not _is_fund_type
+        and data.market_cap is None and data.trailing_pe is None and data.total_revenue is None
     )
     if fetch_looks_empty:
         log.warning("fundamentals.empty_fetch_skip_write", symbol=symbol)
@@ -1668,12 +1678,20 @@ def _macro_events_from_db(session: "Session", today, cutoff) -> tuple[list[dict]
     """
     from db import EconomicEvent as _EconomicEvent
 
+    # AUD-PREMARKET-DATECUTOFF: event_date is a DateTime column (rows land at e.g.
+    # 08:30 UTC on release day, not midnight). Comparing it against a bare `date` makes
+    # Postgres coerce cutoff to midnight, silently excluding every same-day row with a
+    # nonzero time-of-day — invisible for callers passing a multi-day-ahead cutoff
+    # (events_calendar()'s default 90-day window), but fatal for a same-day cutoff==today
+    # call (send_premarket_brief()), where it excluded literally every release. Widen the
+    # upper bound to end-of-day so a bare `date` cutoff still includes the whole day.
+    cutoff_end_of_day = datetime.combine(cutoff, datetime.max.time())
     release_event_types = list(_MACRO_TYPE_TO_RELEASE_EVENT_TYPE.values())
     rows = session.execute(
         select(_EconomicEvent).where(
             _EconomicEvent.event_type.in_(release_event_types),
             _EconomicEvent.event_date >= today,
-            _EconomicEvent.event_date <= cutoff,
+            _EconomicEvent.event_date <= cutoff_end_of_day,
         )
     ).scalars().all()
 
