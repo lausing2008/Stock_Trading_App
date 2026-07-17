@@ -2677,3 +2677,164 @@ production (deployed via `docker cp` during this session, never baked into a reb
 "docker cp is a session-scoped hotfix, owed a real image rebuild" invariant documented
 elsewhere in this file — this audit's own fixes to these same files are ALSO currently hotfix-
 only until a real image build happens.
+
+---
+
+## Research: Tier 257 — Four Feature Designs (2026-07-17, design-only, no code yet)
+
+User ask, verbatim intent: (1a) a per-minute abnormal-volume alert with a breakout-or-breakdown
+read; (1b) a per-minute "top 3 stocks about to move, very very high confidence" buy/sell email;
+(3) overnight options-flow + futures-flow analysis to read whether the market opens high/low
+and lay out the day; (4) prod E*Trade "using client secret but why still login — make it more
+systematic." All four researched against the actual codebase (3 parallel mapping agents,
+file:line-verified) before designing. Tracker: T257-* entries.
+
+### 1a. Abnormal-Volume Alert (T257-VOLUME-ANOMALY-ALERT)
+
+**The data path already exists and is the ONLY viable one at 1-minute cadence:**
+`stockai:live_prices` (refreshed every 1 min by `_live_price_refresh_job`, scheduler.py:4657 —
+one bulk yf.download for the whole universe; carries current-day cumulative `volume` +
+`change_pct`) and `stockai:avg_volume` (`_AVG_VOLUME_KEY`, 20-day mean, refreshed 4-hourly).
+A new 1-min job MUST read only these two Redis keys — per-symbol yfinance or `/rvol` DB calls
+at 150-symbols/minute would rate-limit or hammer the DB (yfinance was observed rate-limited
+this very day). Precedent: the post-open digest's vol_surge scan (scheduler.py:3838) already
+does exactly this Redis-only universe sweep, just at 5-6×/day instead of every minute.
+
+**Abnormality math — reuse T241's session-elapsed scaling, don't invent new math:** raw
+`volume/avg_volume` compares partial-day cumulative volume against a FULL-day average — at
+10:00 ET even a normal day looks "low" and a slightly-busy open looks normal. The already-fixed
+form (T241-AUDIT-RVOL-INTRADAY-BIAS, scheduler.py:3881-3887) scales the threshold by session
+elapsed fraction: `surge_threshold = max(1.05, BASE × elapsed_frac)`. New job uses the same,
+with a higher BASE (e.g. 2.5-3.0× for "abnormal/huge" vs. the digest's 1.5×) — exact value to
+tune after observing a week of candidate counts.
+
+**Direction + breakout/breakdown read (honest version):** direction from `change_pct` sign.
+For the handful of symbols that actually trigger (not universe-wide): compare live price
+against the stored game-plan `breakout` level (already computed into signal reasons,
+scheduler.py:843) and stop level → label "pressing its breakout level ($X) on Nx volume" /
+"breaking below stop/support ($Y) on Nx volume." One technical-analysis `/levels` HTTP call
+per TRIGGERED symbol is acceptable (few/day); never in the universe loop. Framing per repo
+discipline: the email reports the measured fact (volume ratio + which level price is testing)
+and historical context — it does NOT claim "this WILL break out"; nobody can honestly deliver
+that, and the repo's T249-P3 precedent explicitly rejects prediction claims.
+
+**Job shape:** every-minute `add_job(..., "interval", minutes=1, max_instances=1,
+coalesce=True)`, 55s Redis lock (`stockai:lock:...` — same pattern as check_price_alerts),
+market-hours-gated (the live-price cache is only fresh during market hours anyway). Recipients:
+the established PriceAlert-subscriber audience (consistent with the whole T249/T230 alert
+family). Dedup: `stockai:vol_anomaly:{uid}:{sym}:{date}` with a same-day TTL, PLUS an
+escalation re-fire if RVOL later doubles again from the alerted level (a 3× alert shouldn't
+suppress a later 6× climax). Daily cap per user (e.g. 10) to bound spam on broad-market
+high-volume days when many symbols trigger simultaneously.
+
+**Extend, don't duplicate:** `AlertCondition.VOLUME_SPIKE` (models.py:325) exists but is
+daily-bar, per-subscribed-symbol, ~5-min cadence via check_technical_alerts — a different
+product (subscribed-symbol technical alert) from this universe-wide anomaly scan. Keep both;
+name the new job distinctly (`check_volume_anomalies`).
+
+### 1b. Top-3 High-Confidence Movers Alert (T257-TOP3-CONVICTION-ALERT)
+
+**The honest version of "very very high confidence" already exists as data:** signal-engine's
+confidence calibration (`_build_confidence_calibration`, signal-engine routes.py:260) buckets
+REAL measured win rates from signal_outcomes by (horizon, direction, market, confidence-band),
+min n=30, cached in Redis (`signal:confidence_calibration`, 1h TTL) — this is the number shown
+as "Historical win rate (n=85)" on stock pages. **The design gates on MEASURED bucket win rate,
+not raw model confidence**: a pick qualifies only if its bucket's tracked win rate ≥ threshold
+(propose 70% to start) AND n ≥ 30 AND `conviction_tier == "full"` (the 7-layer/4-layer
+`_is_conviction_buy` gate, scheduler.py:585) AND K-Score ≥ 55 AND regime not bear/risk_off for
+BUYs. Rank all qualifying candidates by bucket win rate (tiebreak: confidence), hard-cap 3.
+
+**What's genuinely new vs. today's check_signal_alerts:** (a) cross-symbol ranking + cap — the
+existing alert fires per-symbol independently with no selection step; (b) wiring
+calibrated_win_rate into the FIRE decision — today it's display-only; (c) cadence honesty:
+signals regenerate on the 5-minute refresh bursts, so a 1-minute loop would mostly re-scan
+unchanged data — run the scan every minute (cheap Redis/DB reads) but fire only when the
+qualifying set CHANGES (new symbol qualifies, or direction flips), dedup per
+(user, symbol, direction, day), max one email per composition change.
+
+**Expectation to set explicitly with the user (put it in the email footer too):** on most days
+ZERO picks will clear a 70%-measured-win-rate bar — an empty day means the bar is working, not
+that the feature is broken. The email includes each pick's measured win rate + sample size
+("this setup class won 72% over the last 41 tracked outcomes") — never an unbacked confidence
+claim. If the user later wants more alerts, the threshold is one Redis-tunable knob; lowering
+it trades accuracy for frequency, and the email's own printed win-rate keeps that trade-off
+visible.
+
+### 3. Overnight Options/Futures Flow → Morning Day-Plan (T257-OVERNIGHT-FLOW-BRIEF)
+
+**Current state (mapped, verified):** ZERO futures data exists anywhere (no ES=F/NQ=F/YM=F/
+RTY=F references; market_overview._INDICES is spot-only ^GSPC/^IXIC/^DJI/^VIX/^HSI).
+Options-flow exists per-symbol (`GET /stocks/{symbol}/options-flow` — call/put volume,
+cp_ratio, whale premiums >$500K) but is live-only via yfinance option chains, rate-limit
+fragile, with NO historical persistence — nothing can currently answer "what did flow look
+like yesterday/overnight." Premarket bars ARE ingested and labeled (T230-CHARTING-PREMARKET's
+`_classify_session`) but only for charting. The 8:00 local `send_premarket_brief` (T249-P3) is
+the natural delivery vehicle — an overnight-flow section slots in as section 4.
+
+**Phase 1 (cheap, buildable immediately): overnight futures + premarket read.** New ~7:15 ET
+job fetching ES=F, NQ=F, YM=F, RTY=F + VIX via one bulk yfinance call → overnight change vs.
+prior settle; top premarket gappers in the universe from already-ingested PRE-session bars;
+both added to the pre-market brief. Framing: futures ARE the market's own live expectation of
+the open — "ES +0.8% overnight" is a measurement, and reporting it as "futures point to a
+higher open" is honest because that's literally what futures prices mean; predicting whether
+that holds through the open is not claimed. Optionally later: compute and print the tracked
+historical stat "on days futures were up >0.5% overnight, SPY's open was green X% of the time
+(n=...)" from our own stored data — only once actually measured, never asserted from intuition.
+
+**Phase 2: options-flow snapshots (the "where investors put money" half).** New
+`options_flow_snapshots` table + an end-of-day job persisting per-symbol cp_ratio, call/put
+premium, whale_count for a bounded set (PriceAlert-subscribed + top-K by K-Score, NOT the whole
+universe — yfinance option chains are the most rate-limited endpoint we touch), spread over
+minutes with backoff. The morning brief can then report "yesterday's late-day flow was
+call-heavy on X/Y/Z (cp_ratio 3.2, $1.4M whale premium)" — real observed positioning, which is
+what "see where the investors putting money" actually asks for. True OVERNIGHT options flow
+(index options trading in Globex hours) is not available from yfinance at all — that would
+need a paid data source (documented as a known limitation, not silently faked with stale data).
+
+**Phase 3: the "day layout" — an attention list, not a plan-of-trades.** Brief section listing
+symbols scoring on ≥2 of: premarket gap beyond threshold, unusual prior-day options flow
+(Phase 2), earnings today (P1 data), macro release today (P0 data) — "pay attention to these
+today, here's why," each reason a measured fact. Explicitly NOT auto-generated buy/sell
+instructions — that's what the signal pipeline + T257-TOP3 alert are for, with their tracked
+accuracy; duplicating direction calls here with no outcome tracking would be the dishonest
+version.
+
+### 4. Systematic Prod E*Trade Auth (T257-ETRADE-PROD-SYSTEMATIC)
+
+**Direct answer to "using client secret but why still login":** E*Trade uses OAuth 1.0a. The
+consumer key + client secret only identify THE APP — they cannot produce an access token by
+themselves (there is no client-credentials or refresh-token grant in OAuth 1.0a, by design).
+The browser login + PIN (verifier) step is E*Trade's mandated way for the ACCOUNT HOLDER to
+authorize the app. This step cannot be legitimately automated (scripting their login page
+violates their API agreement), and E*Trade access tokens **hard-expire at midnight US Eastern
+every day** — plus go inactive after ~2h of no API activity intraday (reactivatable via
+renew). So some periodic re-auth is an E*Trade platform constraint, not an app bug.
+
+**What IS ours to fix (mapped against the real code):**
+1. **`renew_access_token()` exists (etrade_broker.py:115) but is NEVER scheduled** — only a
+   manual "Reconnect" button calls it. Fix: an intraday keepalive cron (e.g. every 90 min,
+   market hours) renewing all authorized E*Trade connections so tokens never go 2h-idle-dead
+   mid-session. This is the single highest-value change.
+2. **Silent intraday failure:** on a dead token, paper trading's broker calls silently no-op
+   (`_get_portfolio_broker` returns None / exceptions logged as warnings) until the ONCE-DAILY
+   08:30 ET `_check_broker_auth` health check notices. Fix: in-loop 401/token_rejected
+   detection in `_place_broker_entry`/`_place_broker_exit`/`poll_broker_order_fills` →
+   immediately mark `is_authorized=False` + fire the (already-existing)
+   `send_broker_reauth_email` with a fresh authorize URL, instead of waiting for tomorrow's
+   cron.
+3. **One-tap morning re-auth UX:** the daily re-auth email already exists and already embeds a
+   fresh authorize URL; streamline the landing so Settings auto-focuses the PIN input (and
+   auto-completes on paste) — the human step shrinks to: click email link, log in, copy PIN,
+   paste. That's the floor OAuth 1.0a allows.
+4. **Prod switch itself is config-only:** broker_type `etrade` (vs `etrade_sandbox`) with prod
+   consumer key/secret entered in Settings — OAuth endpoints already always hit the prod base
+   (etrade_broker.py:73,101,118); data/order calls swap base by flag. Prerequisite is E*Trade's
+   own portal approval for a prod API key.
+5. **If daily-login is unacceptable for full automation:** the structural answer is
+   TIER84-BROKER-ALPACA (already in the tracker) — Alpaca auths with a plain API key/secret,
+   no PIN, no daily expiry. E*Trade's daily midnight expiry is a hard platform limit for
+   unattended trading; document the trade-off rather than fighting it.
+
+**Also flagged during research:** T205-ETRADE-SANDBOX's tracker text is stale (describes
+"OAuth 2.0" and claims no live calls exist — the full 1.0a flow shipped in Tier 18); fold its
+correction into the T257 work when built.
