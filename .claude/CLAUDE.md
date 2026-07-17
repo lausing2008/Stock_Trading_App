@@ -2311,3 +2311,45 @@ docker logs stockai-<service>-1 --tail 40 | grep -A3 "ModuleNotFoundError"
 # check that services/<service>/requirements.txt actually has numpy + pandas pinned — compare
 # against a sibling service's requirements.txt (they should all match on these two).
 ```
+
+---
+
+## Feature Reference: Mobile Nav Drawer (T251-MOBILE-RESPONSIVE-DESIGN, Phase 1)
+
+**Built 2026-07-17.** A 2026-07-16 audit found the whole app effectively desktop-only — zero
+`isMobile`/`useMediaQuery`/`matchMedia` usage anywhere, and the shared nav bar in `_app.tsx`
+(logo + up to 6 dropdown groups + search box + user controls, one non-wrapping flex row) is the
+single worst offender: it will visibly clip/overflow on any phone-width screen with no fallback
+at all, unlike most page bodies which at least degrade to horizontally-scrollable tables.
+
+**What shipped (Phase 1 only — the nav bar, the one component every page shares):**
+- `frontend/src/styles/globals.css` — a `.desktop-nav-row`/`.mobile-nav-toggle` CSS pair, swapped
+  by a single `@media (max-width: 767px)` block. Above 768px this is a no-op (`.desktop-nav-row`
+  is `display:flex` unconditionally, `.mobile-nav-toggle` is `display:none`) — the desktop layout
+  is pixel-identical to before this change.
+- `frontend/src/pages/_app.tsx` — a new `mobileMenuOpen` state + hamburger button (☰ / ✕,
+  `.mobile-nav-toggle`, only visible below 768px) and a new `MobileNavDrawer` component: a
+  click-to-expand accordion (not hover — hover has no touch equivalent) over the same
+  `NAV_GROUPS` data the desktop dropdowns use, so there is exactly one source of truth for nav
+  structure. The drawer also repeats the search box and user controls (settings/logout) at the
+  bottom, since those live in the same now-hidden desktop row. The drawer auto-closes on route
+  change (a `useEffect` keyed on `router.pathname`) and on any item click, so it never lingers
+  open behind a freshly-navigated page.
+- Verified via a full `npx next build` (all pages compiled clean, not just the changed one) and
+  by grepping the actual compiled `.next/static/css`/`.next/static/chunks` output for the new
+  class names, the `max-width:767px` rule, and the hamburger's aria-label — confirming the
+  change is really present in what would ship, not just correct-looking in source.
+
+**Not yet built (Phase 2, tracked as the remaining scope on the same tracker item):** per-page
+responsive breakpoints for the ~57 files using rigid fixed-pixel-width grids (stock detail's
+`1fr 320px` sidebar, positions/insider's 8-column tables, strategies.tsx's `240px 1fr`, etc.).
+These pages still don't collapse to single-column on a phone — most are at least wrapped in
+`overflowX:auto` so they degrade to scrollable tables rather than breaking outright, which is
+why the nav bar (no such fallback) was prioritized first.
+
+**What to check if the mobile nav looks wrong:** `_app.tsx`'s `MobileNavDrawer` function and the
+`.desktop-nav-row`/`.mobile-nav-toggle` rules in `globals.css` are the only two places this
+logic lives — if the hamburger doesn't appear or the desktop row doesn't hide at phone width,
+check the compiled CSS actually contains the `max-width:767px` block (a stale cached build could
+serve pre-change CSS, same class of bug as the frontend build-cache issues documented above).
+```

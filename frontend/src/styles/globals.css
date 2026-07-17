@@ -5,6 +5,17 @@ a { color: inherit; text-decoration: none; }
 
 /* Layout */
 .container-xl { max-width: 1700px; margin: 0 auto; padding: 16px; }
+
+/* Mobile nav — the desktop group nav/search/hamburger toggle visibility swap. Below 768px the
+   inline flex nav row (5+ dropdown groups + search box + user controls) has no room and will
+   clip/overflow with no fallback; above 768px the drawer trigger stays hidden so desktop is
+   pixel-identical to before this was added. */
+.desktop-nav-row { display: flex; }
+.mobile-nav-toggle { display: none; }
+@media (max-width: 767px) {
+  .desktop-nav-row { display: none; }
+  .mobile-nav-toggle { display: flex; }
+}
 .fixed { position: fixed; }
 .absolute { position: absolute; }
 .relative { position: relative; }

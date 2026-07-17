@@ -345,6 +345,74 @@ function NavGroup({ group, currentPath, userRole }: { group: NavGroupDef; curren
   );
 }
 
+// ── Mobile nav drawer ──────────────────────────────────────────────────────────
+// Click-to-expand accordion (not hover, which has no equivalent on touch) covering the same
+// NAV_GROUPS data as the desktop dropdown row, shown only below the 768px breakpoint.
+function MobileNavDrawer({
+  groups, currentPath, onNavigate,
+}: { groups: NavGroupDef[]; currentPath: string; onNavigate: () => void }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
+      {groups.map(group => {
+        const isOpen = expanded === group.label;
+        const isActive = group.items.some(item =>
+          item.href === '/' ? currentPath === '/' : currentPath.startsWith(navPath(item.href))
+        );
+        return (
+          <div key={group.label} style={{ borderBottom: '1px solid #1e293b' }}>
+            <button
+              onClick={() => setExpanded(isOpen ? null : group.label)}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                width: '100%', background: 'none', border: 'none', cursor: 'pointer',
+                padding: '14px 16px', fontSize: '15px',
+                fontWeight: isActive ? 700 : 500,
+                color: isActive ? '#e2e8f0' : '#94a3b8',
+              }}
+            >
+              {group.label}
+              <span style={{ fontSize: '11px', color: '#475569', transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}>▾</span>
+            </button>
+            {isOpen && (
+              <div style={{ display: 'flex', flexDirection: 'column', paddingBottom: '8px' }}>
+                {group.items.map(item => {
+                  const isCurrent = item.href === '/' ? currentPath === '/' : currentPath.startsWith(navPath(item.href));
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      onClick={onNavigate}
+                      style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                        gap: '8px', padding: '11px 16px 11px 28px', fontSize: '14px',
+                        fontWeight: isCurrent ? 700 : 400,
+                        color: isCurrent ? '#e2e8f0' : (item.color ?? '#94a3b8'),
+                        background: isCurrent ? 'rgba(99,102,241,0.12)' : 'transparent',
+                        textDecoration: 'none',
+                      }}
+                    >
+                      <span>{item.label}</span>
+                      {item.tag && (
+                        <span style={{
+                          fontSize: '9px', fontWeight: 700, padding: '1px 5px',
+                          borderRadius: '3px', textTransform: 'uppercase', letterSpacing: '0.05em',
+                          background: 'rgba(99,102,241,0.15)', color: '#818cf8', flexShrink: 0,
+                        }}>{item.tag}</span>
+                      )}
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 
 export default function App({ Component, pageProps }: AppProps) {
@@ -367,6 +435,12 @@ export default function App({ Component, pageProps }: AppProps) {
   );
   const alertTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [freshness, setFreshness] = useState<{ hours_ago: number | null; status: string } | null>(null);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // Close the mobile drawer on route change so it doesn't stay open behind the new page.
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [router.pathname]);
 
   useEffect(() => {
     if (!username) return; // Only poll freshness when logged in to avoid 401s on public pages
@@ -549,52 +623,105 @@ export default function App({ Component, pageProps }: AppProps) {
             <span style={{ fontSize: '17px', fontWeight: 800, color: '#e2e8f0', letterSpacing: '-0.02em' }}>AI</span>
           </Link>
 
-          {/* Group nav */}
-          <nav style={{ display: 'flex', alignItems: 'center', gap: '2px', flex: 1 }}>
-            {NAV_GROUPS.filter(g => !g.adminOnly || role === 'admin').map(group => (
-              <NavGroup key={group.label} group={group} currentPath={router.pathname} userRole={role} />
-            ))}
-          </nav>
+          {/* Desktop group nav + search + right-side controls — hidden below 768px */}
+          <div className="desktop-nav-row" style={{ alignItems: 'center', gap: '32px', flex: 1 }}>
+            <nav style={{ display: 'flex', alignItems: 'center', gap: '2px', flex: 1 }}>
+              {NAV_GROUPS.filter(g => !g.adminOnly || role === 'admin').map(group => (
+                <NavGroup key={group.label} group={group} currentPath={router.pathname} userRole={role} />
+              ))}
+            </nav>
 
-          {/* Global search */}
-          <GlobalSearch />
+            <GlobalSearch />
 
-          {/* Right side controls */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-            {freshness && freshness.hours_ago != null && (
-              <span title={`Last price ingest: ${freshness.hours_ago}h ago`} style={{
-                fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px',
-                background: freshness.status === 'fresh' ? 'rgba(74,222,128,0.1)' : freshness.status === 'stale' ? 'rgba(251,191,36,0.1)' : 'rgba(248,113,113,0.1)',
-                border: `1px solid ${freshness.status === 'fresh' ? 'rgba(74,222,128,0.3)' : freshness.status === 'stale' ? 'rgba(251,191,36,0.3)' : 'rgba(248,113,113,0.3)'}`,
-                color: freshness.status === 'fresh' ? '#4ade80' : freshness.status === 'stale' ? '#fbbf24' : '#f87171',
-                cursor: 'default', letterSpacing: '0.02em',
-              }}>
-                {freshness.hours_ago < 1 ? '<1h' : `${freshness.hours_ago.toFixed(0)}h`} ago
-              </span>
-            )}
-            <NotificationBell />
-            <div style={{ width: '1px', height: '20px', background: '#1e293b' }} />
-            <span style={{ fontSize: '12px', color: '#64748b', display: 'flex', alignItems: 'center', gap: '5px' }}>
-              <span style={{ color: '#94a3b8' }}>{username}</span>
-              {role === 'admin' && (
-                <span style={{ fontSize: '9px', color: '#fb7185', padding: '1px 5px', borderRadius: '3px', background: 'rgba(225,29,72,0.15)', border: '1px solid rgba(225,29,72,0.3)', fontWeight: 700, letterSpacing: '0.04em' }}>
-                  ADMIN
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+              {freshness && freshness.hours_ago != null && (
+                <span title={`Last price ingest: ${freshness.hours_ago}h ago`} style={{
+                  fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px',
+                  background: freshness.status === 'fresh' ? 'rgba(74,222,128,0.1)' : freshness.status === 'stale' ? 'rgba(251,191,36,0.1)' : 'rgba(248,113,113,0.1)',
+                  border: `1px solid ${freshness.status === 'fresh' ? 'rgba(74,222,128,0.3)' : freshness.status === 'stale' ? 'rgba(251,191,36,0.3)' : 'rgba(248,113,113,0.3)'}`,
+                  color: freshness.status === 'fresh' ? '#4ade80' : freshness.status === 'stale' ? '#fbbf24' : '#f87171',
+                  cursor: 'default', letterSpacing: '0.02em',
+                }}>
+                  {freshness.hours_ago < 1 ? '<1h' : `${freshness.hours_ago.toFixed(0)}h`} ago
                 </span>
               )}
-            </span>
-            <Link
-              href="/settings"
-              title="Settings"
-              style={{ background: 'transparent', border: '1px solid #1e293b', color: '#475569', padding: '4px 10px', borderRadius: '6px', fontSize: '13px', textDecoration: 'none', lineHeight: 1 }}
-            >⚙</Link>
-            <button
-              onClick={handleLogout}
-              style={{ background: 'transparent', border: '1px solid #1e293b', color: '#475569', padding: '4px 12px', borderRadius: '6px', fontSize: '12px', cursor: 'pointer' }}
-            >
-              Logout
-            </button>
+              <NotificationBell />
+              <div style={{ width: '1px', height: '20px', background: '#1e293b' }} />
+              <span style={{ fontSize: '12px', color: '#64748b', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <span style={{ color: '#94a3b8' }}>{username}</span>
+                {role === 'admin' && (
+                  <span style={{ fontSize: '9px', color: '#fb7185', padding: '1px 5px', borderRadius: '3px', background: 'rgba(225,29,72,0.15)', border: '1px solid rgba(225,29,72,0.3)', fontWeight: 700, letterSpacing: '0.04em' }}>
+                    ADMIN
+                  </span>
+                )}
+              </span>
+              <Link
+                href="/settings"
+                title="Settings"
+                style={{ background: 'transparent', border: '1px solid #1e293b', color: '#475569', padding: '4px 10px', borderRadius: '6px', fontSize: '13px', textDecoration: 'none', lineHeight: 1 }}
+              >⚙</Link>
+              <button
+                onClick={handleLogout}
+                style={{ background: 'transparent', border: '1px solid #1e293b', color: '#475569', padding: '4px 12px', borderRadius: '6px', fontSize: '12px', cursor: 'pointer' }}
+              >
+                Logout
+              </button>
+            </div>
           </div>
+
+          {/* Mobile hamburger trigger — hidden at/above 768px */}
+          <button
+            className="mobile-nav-toggle"
+            onClick={() => setMobileMenuOpen(o => !o)}
+            aria-label={mobileMenuOpen ? 'Close menu' : 'Open menu'}
+            aria-expanded={mobileMenuOpen}
+            style={{
+              alignItems: 'center', justifyContent: 'center',
+              marginLeft: 'auto', background: 'none', border: '1px solid #1e293b',
+              borderRadius: '6px', width: '36px', height: '36px', cursor: 'pointer',
+              color: '#94a3b8', fontSize: '18px', flexShrink: 0,
+            }}
+          >
+            {mobileMenuOpen ? '✕' : '☰'}
+          </button>
         </div>
+
+        {mobileMenuOpen && (
+          <div style={{ borderTop: '1px solid #1e293b', maxHeight: 'calc(100vh - 52px)', overflowY: 'auto' }}>
+            <div style={{ padding: '10px 16px', borderBottom: '1px solid #1e293b' }}>
+              <GlobalSearch />
+            </div>
+            <MobileNavDrawer
+              groups={NAV_GROUPS.filter(g => !g.adminOnly || role === 'admin')}
+              currentPath={router.pathname}
+              onNavigate={() => setMobileMenuOpen(false)}
+            />
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px' }}>
+              <span style={{ fontSize: '13px', color: '#64748b', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ color: '#94a3b8' }}>{username}</span>
+                {role === 'admin' && (
+                  <span style={{ fontSize: '9px', color: '#fb7185', padding: '1px 5px', borderRadius: '3px', background: 'rgba(225,29,72,0.15)', border: '1px solid rgba(225,29,72,0.3)', fontWeight: 700, letterSpacing: '0.04em' }}>
+                    ADMIN
+                  </span>
+                )}
+              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Link
+                  href="/settings"
+                  onClick={() => setMobileMenuOpen(false)}
+                  title="Settings"
+                  style={{ background: 'transparent', border: '1px solid #1e293b', color: '#475569', padding: '6px 12px', borderRadius: '6px', fontSize: '14px', textDecoration: 'none', lineHeight: 1 }}
+                >⚙</Link>
+                <button
+                  onClick={handleLogout}
+                  style={{ background: 'transparent', border: '1px solid #1e293b', color: '#475569', padding: '6px 14px', borderRadius: '6px', fontSize: '13px', cursor: 'pointer' }}
+                >
+                  Logout
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </header>
 
       <main className="container-xl">
