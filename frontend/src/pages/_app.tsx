@@ -34,6 +34,7 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Rankings',         href: '/rankings' },
       { label: 'Sector Rotation',  href: '/sector-rotation', color: '#38bdf8' },
       { label: 'Forecast',     href: '/forecast',     color: '#4ade80' },
+      { label: 'Reports',      href: '/reports',      color: '#6d28d9', tag: 'new' },
     ],
   },
   {
