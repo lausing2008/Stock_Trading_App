@@ -102,6 +102,29 @@ def _get_portfolio_broker(session, portfolio: "PaperPortfolio"):
         return None
 
 
+def _handle_broker_error_if_token_rejected(session, portfolio: "PaperPortfolio", exc: Exception) -> bool:
+    """T257-ETRADE-PROD-SYSTEMATIC: detect an expired/rejected OAuth token from a broker
+    call's exception and immediately mark the connection unauthorized + notify the user,
+    rather than silently swallowing it and waiting for tomorrow's 08:30 ET health check
+    (scheduler.py's _check_broker_auth) to notice. Returns True if this WAS a token
+    rejection (caller can skip logging its own generic warning in that case — the notify
+    path already logs). Lazy-imports scheduler.py's shared helpers to avoid a module-load
+    cycle (scheduler.py imports several names from this module at its own top level).
+    """
+    try:
+        from .scheduler import _is_token_rejected_error, _mark_broker_unauthorized_and_notify
+        if not _is_token_rejected_error(exc):
+            return False
+        from db.models import BrokerConnection
+        conn = session.get(BrokerConnection, portfolio.broker_connection_id)
+        if conn and conn.is_authorized:
+            _mark_broker_unauthorized_and_notify(session, conn)
+        return True
+    except Exception as _detect_err:
+        log.warning("broker.token_rejection_detect_failed", error=str(_detect_err))
+        return False
+
+
 def _place_broker_entry(session, trade: "PaperTrade", portfolio: "PaperPortfolio") -> None:
     """Submit a market BUY to the linked broker (US only — HK skipped).
 
@@ -139,7 +162,8 @@ def _place_broker_entry(session, trade: "PaperTrade", portfolio: "PaperPortfolio
         except Exception:
             pass  # polling job will update fill later
     except Exception as exc:
-        log.warning("broker.entry_order_failed", symbol=trade.symbol, error=str(exc))
+        if not _handle_broker_error_if_token_rejected(session, portfolio, exc):
+            log.warning("broker.entry_order_failed", symbol=trade.symbol, error=str(exc))
 
 
 def _place_broker_exit(session, trade: "PaperTrade", portfolio: "PaperPortfolio") -> None:
@@ -187,7 +211,8 @@ def _place_broker_exit(session, trade: "PaperTrade", portfolio: "PaperPortfolio"
         except Exception:
             pass
     except Exception as exc:
-        log.warning("broker.exit_order_failed", symbol=trade.symbol, error=str(exc))
+        if not _handle_broker_error_if_token_rejected(session, portfolio, exc):
+            log.warning("broker.exit_order_failed", symbol=trade.symbol, error=str(exc))
 
 
 def poll_broker_order_fills(session=None) -> None:
@@ -235,8 +260,9 @@ def poll_broker_order_fills(session=None) -> None:
                         log.info("broker.poll_fill_updated",
                                  symbol=trade.symbol, fill_price=fill_p)
             except Exception as exc:
-                log.debug("broker.poll_check_failed",
-                          order_id=trade.broker_order_id, error=str(exc))
+                if not _handle_broker_error_if_token_rejected(session, port, exc):
+                    log.debug("broker.poll_check_failed",
+                              order_id=trade.broker_order_id, error=str(exc))
         if updated:
             session.commit()
             log.info("broker.poll_fills_updated", count=updated)

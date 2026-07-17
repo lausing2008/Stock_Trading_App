@@ -1319,9 +1319,17 @@ export default function SettingsPage() {
                           </a>
                           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                             <input
+                              // T257-ETRADE-PROD-SYSTEMATIC: auto-focus the moment the authorize
+                              // URL appears, so the flow is click link -> switch back -> paste PIN
+                              // -> Enter, with no extra click to focus the field. A callback ref
+                              // (not a ref map) is correct here since this input only exists once
+                              // oauthUrl[b.id] is set — it mounts fresh, so autoFocus-on-mount via
+                              // the ref callback fires exactly when the field first appears.
+                              ref={el => el?.focus()}
                               placeholder="2. Enter the PIN/verifier E*Trade showed you"
                               value={oauthVerifier[b.id] || ''}
                               onChange={e => setOauthVerifier(prev => ({ ...prev, [b.id]: e.target.value }))}
+                              onKeyDown={e => { if (e.key === 'Enter') handleOAuthComplete(b.id); }}
                               style={{ ...inpKey, maxWidth: 300 }}
                             />
                             <button onClick={() => handleOAuthComplete(b.id)} style={{ padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: 'pointer', background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.3)', color: '#4ade80', whiteSpace: 'nowrap' }}>

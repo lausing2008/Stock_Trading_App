@@ -3318,19 +3318,69 @@ def _refresh_5m(market: str) -> None:
     _check_short_intraday_triggers(market)
 
 
+def _is_token_rejected_error(err: Exception) -> bool:
+    """True if a broker API exception looks like an expired/rejected OAuth token.
+
+    T257-ETRADE-PROD-SYSTEMATIC: factored out of _check_broker_auth so the same
+    detection can also run in-loop (place_order/get_order/poll calls), not just once
+    a day — previously a dead token failed SILENTLY at every broker call site
+    (_place_broker_entry/_place_broker_exit/poll_broker_order_fills all just log.warning
+    and swallow the exception) until this same string-matching logic, duplicated only
+    here, ran at the next 08:30 ET cron — up to a full trading day of silent broker
+    failures with no user-visible signal.
+    """
+    err_str = str(err).lower()
+    return "token_rejected" in err_str or "401" in err_str or "unauthorized" in err_str
+
+
+def _mark_broker_unauthorized_and_notify(session, conn) -> None:
+    """Flip a BrokerConnection to unauthorized, mint a fresh authorize URL, and email
+    the owner immediately. Shared by the daily health check, the intraday renewal
+    cron, and in-loop call-site failure detection — previously this notify logic only
+    ever ran from _check_broker_auth's own try/except, so any OTHER caller that
+    detected a dead token had no way to actually notify the user.
+    """
+    from db.models import User
+    from ..api.broker import _decrypt_config, _encrypt_config
+    from ..services.broker import get_broker
+
+    conn.is_authorized = False
+    session.commit()
+    try:
+        cfg2 = _decrypt_config(conn.config)
+        broker2 = get_broker(conn.broker_type, cfg2)
+        auth_url = broker2.start_oauth()
+        # start_oauth() stores request_token into cfg2 — persist it
+        conn.config = _encrypt_config(cfg2)
+        session.commit()
+        user = session.get(User, conn.user_id)
+        email = user.email if user else None
+        if email:
+            send_broker_reauth_email(email, conn.name, auth_url)
+            log.info("broker.auth_expired_notified",
+                     conn=conn.name, user=user.username if user else "?")
+    except Exception as _notify_err:
+        log.error("broker.auth_notify_failed", conn=conn.name, error=str(_notify_err))
+
+
 def _check_broker_auth() -> None:
     """Check all active broker connections for expired OAuth tokens.
 
     Runs at 08:30 ET each trading day — before market open. If any connection's
     tokens are rejected (ETrade expires daily at midnight ET), marks it unauthorized
     and emails the user a fresh authorize URL so they can re-auth before trading starts.
+
+    Also see _renew_broker_tokens (T257-ETRADE-PROD-SYSTEMATIC) — an intraday keepalive
+    cron that proactively renews tokens so they ideally never reach this health check
+    already dead; this job remains as the pre-open safety net for the daily midnight-ET
+    hard expiry, which renewal cannot prevent.
     """
     _t0 = time.monotonic()
     try:
         from db import SessionLocal
-        from db.models import BrokerConnection, User
+        from db.models import BrokerConnection
         from sqlalchemy import select
-        from ..api.broker import _decrypt_config, _encrypt_config
+        from ..api.broker import _decrypt_config
         from ..services.broker import get_broker
         checked = expired = 0
         with SessionLocal() as s:
@@ -3348,28 +3398,9 @@ def _check_broker_auth() -> None:
                         conn.is_authorized = True
                         s.commit()
                 except Exception as _err:
-                    err_str = str(_err).lower()
-                    if "token_rejected" in err_str or "401" in err_str or "unauthorized" in err_str:
+                    if _is_token_rejected_error(_err):
                         expired += 1
-                        conn.is_authorized = False
-                        s.commit()
-                        # Generate a fresh authorize URL and email the user
-                        try:
-                            cfg2 = _decrypt_config(conn.config)
-                            broker2 = get_broker(conn.broker_type, cfg2)
-                            auth_url = broker2.start_oauth()
-                            # start_oauth() stores request_token into cfg2 — persist it
-                            conn.config = _encrypt_config(cfg2)
-                            s.commit()
-                            # Find the connection owner
-                            user = s.get(User, conn.user_id)
-                            email = user.email if user else None
-                            if email:
-                                send_broker_reauth_email(email, conn.name, auth_url)
-                                log.info("broker.auth_expired_notified",
-                                         conn=conn.name, user=user.username if user else "?")
-                        except Exception as _notify_err:
-                            log.error("broker.auth_notify_failed", conn=conn.name, error=str(_notify_err))
+                        _mark_broker_unauthorized_and_notify(s, conn)
         elapsed = time.monotonic() - _t0
         _record_job_status("broker_auth_check", "ok", elapsed)
         log.info("broker.auth_check_done", checked=checked, expired=expired, elapsed=round(elapsed, 2))
@@ -3377,6 +3408,57 @@ def _check_broker_auth() -> None:
         elapsed = time.monotonic() - _t0
         _record_job_status("broker_auth_check", "error", elapsed, str(exc))
         log.error("broker.auth_check_failed", error=str(exc), exc_info=True)
+
+
+def _renew_broker_tokens() -> None:
+    """T257-ETRADE-PROD-SYSTEMATIC: proactively renew all active/authorized broker
+    connections' OAuth tokens every ~90 min during market hours, so a token never goes
+    2h-idle-dead mid-session. renew_access_token() has existed on EtradeBroker since
+    its original OAuth implementation but was previously only ever called from a manual
+    Settings "Reconnect" button — nothing scheduled it, so intraday inactivity (no API
+    calls for >2h — e.g. a quiet portfolio with no entries/exits that cycle) could kill
+    a token hours before the 08:30 ET health check would next notice.
+
+    Renewal failure here (token already fully dead — not just idle) is expected and
+    handled the same way the daily check does: mark unauthorized + notify immediately,
+    rather than waiting for 08:30 ET tomorrow.
+    """
+    _t0 = time.monotonic()
+    try:
+        from db import SessionLocal
+        from db.models import BrokerConnection
+        from sqlalchemy import select
+        from ..api.broker import _decrypt_config
+        from ..services.broker import get_broker
+        renewed = failed = 0
+        with SessionLocal() as s:
+            conns = s.execute(
+                select(BrokerConnection).where(
+                    BrokerConnection.is_active == True,  # noqa: E712
+                    BrokerConnection.is_authorized == True,  # noqa: E712
+                )
+            ).scalars().all()
+            for conn in conns:
+                if not conn.broker_type.startswith("etrade"):
+                    continue  # renew_access_token is an E*Trade OAuth 1.0a concept only
+                try:
+                    cfg = _decrypt_config(conn.config)
+                    broker = get_broker(conn.broker_type, cfg)
+                    broker.renew_access_token()
+                    renewed += 1
+                except Exception as _err:
+                    failed += 1
+                    if _is_token_rejected_error(_err):
+                        _mark_broker_unauthorized_and_notify(s, conn)
+                    else:
+                        log.warning("broker.renew_failed", conn=conn.name, error=str(_err))
+        elapsed = time.monotonic() - _t0
+        _record_job_status("broker_token_renewal", "ok", elapsed)
+        log.info("broker.renew_done", renewed=renewed, failed=failed, elapsed=round(elapsed, 2))
+    except Exception as exc:
+        elapsed = time.monotonic() - _t0
+        _record_job_status("broker_token_renewal", "error", elapsed, str(exc))
+        log.error("broker.renew_check_failed", error=str(exc), exc_info=True)
 
 
 def send_morning_digest(markets: list | None = None) -> None:
@@ -4546,6 +4628,20 @@ def start_scheduler() -> None:
         CronTrigger(hour=8, minute=30, day_of_week="mon-fri", timezone="America/New_York"),
         id="broker_auth_check", replace_existing=True, **_JOB_DEFAULTS,
     )
+
+    # ── T257-ETRADE-PROD-SYSTEMATIC: intraday token keepalive — every ~90 min ──────
+    # during market hours. Proactively renews E*Trade tokens so 2h intraday
+    # inactivity never kills a session mid-day; the 08:30 check above remains the
+    # pre-open safety net for the daily midnight-ET hard expiry, which renewal cannot
+    # prevent. Fixed clock times (not a raw minute-field interval — cron's minute
+    # field only spans 0-59, so "*/90" would silently never fire) spanning the full
+    # 9:30-16:00 ET session at roughly 90-minute spacing.
+    for _hour, _minute in ((9, 45), (11, 15), (12, 45), (14, 15), (15, 45)):
+        _scheduler.add_job(
+            _renew_broker_tokens,
+            CronTrigger(hour=_hour, minute=_minute, day_of_week="mon-fri", timezone="America/New_York"),
+            id=f"broker_token_renewal_{_hour}{_minute:02d}", replace_existing=True, **_JOB_DEFAULTS,
+        )
 
     # ── Morning digests — one email per market, 40 min before that market opens ─────
     # US 08:50 ET (open 09:30 ET); HK 08:50 HKT (open 09:30 HKT). Each covers only its

@@ -2838,3 +2838,55 @@ renew). So some periodic re-auth is an E*Trade platform constraint, not an app b
 **Also flagged during research:** T205-ETRADE-SANDBOX's tracker text is stale (describes
 "OAuth 2.0" and claims no live calls exist — the full 1.0a flow shipped in Tier 18); fold its
 correction into the T257 work when built.
+
+### T257-ETRADE-PROD-SYSTEMATIC — Built 2026-07-17
+
+Items (1)-(3) above shipped same-day; item (4) (Alpaca) remains documented only.
+
+**Shared helpers** (`scheduler.py`) factored out of `_check_broker_auth`'s previously-inline
+logic so the new keepalive cron and in-loop detection don't duplicate (and risk drifting
+from) the same checks: `_is_token_rejected_error(err)` — pure string-matching on
+`token_rejected`/`401`/`unauthorized`, case-insensitive; `_mark_broker_unauthorized_and_notify
+(session, conn)` — flips `is_authorized=False`, mints a fresh `start_oauth()` URL, emails via
+the existing `send_broker_reauth_email`.
+
+**New keepalive cron** `_renew_broker_tokens()`, registered at 5 fixed ET clock times spanning
+the trading session — `(9,45), (11,15), (12,45), (14,15), (15,45)` — **not** a raw cron
+`minute="*/90"` interval. Caught this exact mistake while implementing: APScheduler's
+`CronTrigger` minute field only spans 0-59, so `*/90` would silently register a job that never
+fires — a genuinely dangerous silent failure for something meant to prevent silent failures.
+Calls the existing (previously never-scheduled) `renew_access_token()` on every
+active+authorized `etrade`/`etrade_sandbox` connection; skips other broker types (Alpaca, when
+it exists, doesn't have this OAuth 1.0a concept). On a genuine rejection (not just idle),
+immediately hands off to `_mark_broker_unauthorized_and_notify` rather than waiting for the
+08:30 ET check.
+
+**In-loop detection** — new `_handle_broker_error_if_token_rejected(session, portfolio, exc)`
+in `paper_trading_engine.py`, wired into all three previously-silent broker call sites
+(`_place_broker_entry`, `_place_broker_exit`, `poll_broker_order_fills`). Each now distinguishes
+a token rejection (immediate mark-unauthorized + reauth email) from a transient/unrelated
+error (still just logged — a network timeout must NOT flip a healthy connection to
+unauthorized, which would be its own new bug). **Lazily imports** `scheduler.py`'s two helpers
+inside the function body, not at module top — `scheduler.py` already imports several names
+from `paper_trading_engine.py` at its own module level (`get_last_regime`,
+`paper_trading_step`, etc.), so a top-level import in the reverse direction would create a
+circular import. A dedicated test asserts the import stays lazy; adversarially verified by
+temporarily moving it to module-top and confirming the test caught it.
+
+**Settings UX**: the PIN/verifier input auto-focuses via a callback ref (`ref={el =>
+el?.focus()}`) the instant the authorize URL appears — correct here specifically because this
+input only mounts once `oauthUrl[b.id]` is set, so ref-callback-on-mount fires exactly when the
+field first exists, no separate ref map needed for the per-broker-row case. Enter now submits
+too. Net flow: click the emailed/on-screen link → log in on E*Trade → copy PIN → switch back
+(already focused) → paste → Enter. That's the floor OAuth 1.0a's mandated human-authorization
+step allows — there is no way to remove it entirely without abandoning E*Trade for a
+key-only broker like Alpaca (see design section above, item 5).
+
+**Tests**: `services/market-data/tests/test_etrade_token_renewal.py`, 12 cases.
+`_is_token_rejected_error` is pure/dependency-free (no DB/HTTP), loaded directly via the
+exec()-from-source technique (matching `test_earnings_alert_bodies.py`) and tested with real
+inputs — including the important negative case that a timeout or 500 must NOT match, which
+would silently misfire the whole feature (flipping healthy connections unauthorized on any
+transient error). The scheduling/wiring is source-text-checked (`scheduler.py` can't be
+imported in this test environment — its import chain pulls in `apscheduler` — matching
+`test_scheduler_static_names.py`'s established pattern for exactly this constraint).
