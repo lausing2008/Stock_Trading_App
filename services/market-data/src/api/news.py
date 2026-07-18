@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.parse
 from datetime import datetime, timezone
@@ -100,6 +101,12 @@ def _get_claude_key() -> str:
     return _ANTHROPIC_KEY
 
 
+def _strip_markdown_fence(text: str) -> str:
+    """Claude sometimes wraps JSON in ```json ... ``` despite being told not to —
+    matching risk_agent.py's own established stripping pattern before json.loads()."""
+    return re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.DOTALL).strip()
+
+
 class NewsItem(BaseModel):
     title: str
     url: str
@@ -154,7 +161,7 @@ def _claude_sentiment(symbol: str, titles: list[str]) -> float | None:
                 },
             )
         if r.status_code == 200:
-            text = r.json()["content"][0]["text"].strip()
+            text = _strip_markdown_fence(r.json()["content"][0]["text"])
             score = float(json.loads(text).get("score", 50))
             score = max(0.0, min(100.0, score))
             try:
@@ -375,7 +382,7 @@ def _claude_market_themes(titles: list[str]) -> dict | None:
                 },
             )
         if r.status_code == 200:
-            text = r.json()["content"][0]["text"].strip()
+            text = _strip_markdown_fence(r.json()["content"][0]["text"])
             parsed = json.loads(text)
             score = max(0.0, min(100.0, float(parsed.get("score", 50))))
             themes = [str(t).strip() for t in (parsed.get("themes") or []) if str(t).strip()][:3]

@@ -149,6 +149,46 @@ def test_market_pulse_caps_themes_at_three():
     assert result["themes"] == ["Theme A", "Theme B", "Theme C"]
 
 
+def test_claude_market_themes_strips_markdown_fence_before_parsing():
+    """Real production bug (2026-07-18): Claude sometimes wraps its JSON response in
+    ```json ... ``` despite the system prompt saying not to. json.loads() on the raw fenced
+    text raises, which was silently swallowed and produced a None result — the deployed
+    Market Pulse card always fell back to VADER with no themes, even with a valid, correctly
+    configured API key, because every real response happened to come back fenced."""
+    class _FakeResp:
+        status_code = 200
+        def json(self):
+            return {"content": [{"text": '```json\n{"score": 72, "themes": ["Fed rate-cut hopes"]}\n```'}]}
+
+    class _FakeClient:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def post(self, *a, **kw):
+            return _FakeResp()
+
+    with patch.object(news, "_get_claude_key", return_value="fake-key"), \
+         patch.object(news.httpx, "Client", return_value=_FakeClient()):
+        result = news._claude_market_themes(["headline 1"])
+
+    assert result is not None
+    assert result["score"] == 72.0
+    assert result["themes"] == ["Fed rate-cut hopes"]
+
+
+def test_strip_markdown_fence_handles_plain_json_unchanged():
+    assert news._strip_markdown_fence('{"score": 50}') == '{"score": 50}'
+
+
+def test_strip_markdown_fence_strips_json_language_tag():
+    assert news._strip_markdown_fence('```json\n{"score": 50}\n```') == '{"score": 50}'
+
+
+def test_strip_markdown_fence_strips_bare_fence_without_language_tag():
+    assert news._strip_markdown_fence('```\n{"score": 50}\n```') == '{"score": 50}'
+
+
 def test_claude_market_themes_returns_none_without_api_key():
     with patch.object(news, "_get_claude_key", return_value=""), \
          patch.object(news.httpx, "Client") as mock_client:

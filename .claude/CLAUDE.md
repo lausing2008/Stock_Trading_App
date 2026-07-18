@@ -3811,7 +3811,34 @@ and adding an explicit `mock_client.assert_not_called()` to the no-key test so a
 fails on the right assertion instead of coincidentally landing on the same return value via a
 different code path. Re-verified: the same sabotage now correctly fails this test.
 
-**Tests**: `services/market-data/tests/test_market_pulse.py`, 15 cases — Claude-available vs.
+**A second real bug found live, right after the first fix deployed**: with the Redis key now
+correctly found, the endpoint STILL returned `source: "vader"` — live-calling
+`_claude_market_themes()` directly against the real Anthropic API in the production container
+showed the HTTP call itself succeeded (`200 OK`) but `json.loads(text)` raised `Expecting value:
+line 1 column 1 (char 0)`, silently swallowed by the function's own `except Exception` fail-open
+contract. Root cause: Claude sometimes wraps its JSON response in `` ```json ... ``` `` markdown
+fences despite the system prompt explicitly saying not to — `risk_agent.py` already strips this
+via `re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL)` before its own `json.loads()`,
+but `news.py`'s two Claude call sites (`_claude_sentiment()`, the pre-existing per-symbol
+endpoint, and the new `_claude_market_themes()`) never had this stripping — the per-symbol
+endpoint's silent VADER fallback made this identical, pre-existing gap invisible until Market
+Pulse's live verification actually inspected the real failure reason instead of just checking
+`source: "vader"` and assuming "no key configured" was still the cause. Fixed by adding a shared
+`_strip_markdown_fence()` helper (matching `risk_agent.py`'s regex exactly) and applying it at
+both `json.loads(text)` call sites in `news.py`. Adversarially verified by reverting one call
+site to its unstripped form and confirming the new
+`test_claude_market_themes_strips_markdown_fence_before_parsing` test correctly failed
+(`result is None` instead of a populated dict) before restoring it.
+
+**Lesson reinforced**: after a fix ships, "check that it returns 200 / doesn't error" is not the
+same verification bar as "check that it returns the CORRECT thing for the CORRECT reason" — the
+first live check here only confirmed `source: "vader"` was still showing, which could have
+several different causes, and assuming it was still the already-diagnosed Redis-key issue would
+have been wrong. Calling the actual failing function directly and reading its real exception
+(rather than its swallowed, logged-only failure) found the true, different root cause in under a
+minute.
+
+**Tests**: `services/market-data/tests/test_market_pulse.py`, 19 cases — Claude-available vs.
 VADER-fallback scoring paths, neutral-with-no-headlines, confirming all three market-level
 queries are actually issued, Redis cache write + warm-cache read (no re-fetch when cache is
 warm), themes capped at 3, `_claude_market_themes()`'s own fail-open cases (missing API key —
@@ -3826,7 +3853,9 @@ cap (test caught 5 themes surviving instead of 3); disabling the warm-cache earl
 the real module-level constant rather than a hardcoded duplicate that could silently drift from
 it — the exact failure mode documented in the T258-TRADE-POSTMORTEM entry above); and the
 Redis-priority order in `_get_claude_key()` (test caught the env-var value winning instead of
-the Redis value). Full 309-test market-data suite and frontend typecheck green.
+the Redis value); and the markdown-fence stripping (test caught a `None` result instead of a
+populated dict when a call site's stripping was reverted). Full 313-test market-data suite and
+frontend typecheck green.
 
 **What to check if this looks wrong**:
 ```bash
