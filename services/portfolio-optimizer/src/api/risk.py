@@ -1,43 +1,73 @@
-"""Portfolio risk analytics — correlation, VaR, beta, sector concentration."""
-from datetime import datetime, timedelta
+"""Portfolio risk analytics — correlation, VaR, beta, sector concentration.
 
+T233-ARCH-PORTFOLIO-CONSOLIDATE: moved verbatim (same route path, same response shape — zero
+frontend changes needed) from services/market-data/src/api/portfolio.py. market-data had direct
+DB access to Price/Stock; portfolio-optimizer has none (it's a pure HTTP-consumer service, see
+routes.py's own _fetch_closes()), so the two DB queries this endpoint used
+(select(Price...).join(Stock...) for closes, select(Stock.symbol, Stock.sector, Stock.market)
+for metadata) are replaced with HTTP calls to market-data's already-existing GET /stocks/{symbol}
+and GET /stocks/{symbol}/prices — the exact same two endpoints routes.py's own _fetch_closes()
+already calls for the /portfolio/optimize path, so this isn't a new integration pattern for this
+service, just applying the one it already has to a second endpoint.
+"""
+from datetime import date, timedelta
+
+import httpx
 import numpy as np
 import pandas as pd
 import yfinance as yf
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
-from db import Price, Stock, TimeFrame, get_session
-from .auth import get_current_user
+from common.config import get_settings
+from common.jwt_auth import get_current_username
 
-router = APIRouter(prefix="/portfolio-risk", tags=["portfolio"])
+router = APIRouter(prefix="/portfolio-risk", tags=["portfolio-risk"])
+_settings = get_settings()
 
 # Market benchmark tickers
 _BENCH = {"US": "SPY", "HK": "^HSI"}
 
 
-def _fetch_returns(symbols: list[str], session: Session, days: int = 60) -> pd.DataFrame:
-    """Load daily closes from DB and return a DataFrame of daily % returns."""
-    cutoff = datetime.utcnow() - timedelta(days=days)
+def _fetch_returns(symbols: list[str], days: int = 60) -> pd.DataFrame:
+    """Fetch daily closes from market-data's own prices endpoint and return a DataFrame of
+    daily % returns — same shape/behavior as the original direct-DB version, just fetched over
+    HTTP instead (this service has no DB access of its own)."""
+    start = (date.today() - timedelta(days=days)).isoformat()
     series: dict[str, pd.Series] = {}
-    for sym in symbols:
-        stmt = (
-            select(Price.ts, Price.close)
-            .join(Stock, Price.stock_id == Stock.id)
-            .where(Stock.symbol == sym)
-            .where(Price.timeframe == TimeFrame.D1)
-            .where(Price.ts >= cutoff)
-            .order_by(Price.ts)
-        )
-        rows = session.execute(stmt).all()
-        if len(rows) >= 5:
-            closes = pd.Series({r.ts: float(r.close) for r in rows})
-            series[sym] = closes.pct_change().dropna()
+    with httpx.Client(timeout=30) as c:
+        for sym in symbols:
+            try:
+                r = c.get(f"{_settings.market_data_url}/stocks/{sym}/prices", params={"start": start, "limit": 5000})
+                if r.status_code != 200:
+                    continue
+                data = r.json()
+                if not data or len(data) < 5:
+                    continue
+                df = pd.DataFrame(data)
+                df["ts"] = pd.to_datetime(df["ts"])
+                closes = df.set_index("ts")["close"].astype(float)
+                series[sym] = closes.pct_change().dropna()
+            except Exception:
+                continue
     if not series:
         return pd.DataFrame()
-    df = pd.DataFrame(series).dropna()
-    return df
+    return pd.DataFrame(series).dropna()
+
+
+def _fetch_stock_meta(symbols: list[str]) -> dict[str, dict]:
+    """Fetch sector/market for each symbol via market-data's GET /stocks/{symbol} — the same
+    endpoint _fetch_closes-adjacent code elsewhere in this service already relies on."""
+    meta: dict[str, dict] = {}
+    with httpx.Client(timeout=15) as c:
+        for sym in symbols:
+            try:
+                r = c.get(f"{_settings.market_data_url}/stocks/{sym}")
+                if r.status_code == 200:
+                    d = r.json()
+                    meta[sym] = {"sector": d.get("sector") or "Unknown", "market": d.get("market", "")}
+            except Exception:
+                continue
+    return meta
 
 
 def _beta(stock_rets: pd.Series, bench_rets: pd.Series) -> float:
@@ -56,8 +86,7 @@ def _beta(stock_rets: pd.Series, bench_rets: pd.Series) -> float:
 def portfolio_risk(
     symbols: str = Query(..., description="Comma-separated stock symbols"),
     weights: str | None = Query(None, description="Comma-separated position weights (any units, auto-normalised)"),
-    session: Session = Depends(get_session),
-    _user=Depends(get_current_user),
+    _user: str = Depends(get_current_username),
 ):
     sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     if len(sym_list) < 2:
@@ -76,7 +105,7 @@ def portfolio_risk(
     w_list = [w / total_w for w in raw_w]
 
     # Fetch price history
-    df = _fetch_returns(sym_list, session)
+    df = _fetch_returns(sym_list)
     available = [s for s in sym_list if s in df.columns]
     if len(available) < 2:
         raise HTTPException(status_code=422, detail="Insufficient price history for at least 2 symbols")
@@ -92,11 +121,9 @@ def portfolio_risk(
     corr = df.corr()
 
     # Determine benchmark — if any HK stock, use HSI; else SPY
-    stocks_rows = session.execute(
-        select(Stock.symbol, Stock.sector, Stock.market).where(Stock.symbol.in_(available))
-    ).all()
-    market_map = {r.symbol: str(r.market) for r in stocks_rows}
-    sector_map = {r.symbol: (r.sector or "Unknown") for r in stocks_rows}
+    stock_meta = _fetch_stock_meta(available)
+    market_map = {s: stock_meta.get(s, {}).get("market", "") for s in available}
+    sector_map = {s: stock_meta.get(s, {}).get("sector", "Unknown") for s in available}
     hk_count = sum(1 for m in market_map.values() if "HK" in m.upper())
     bench_ticker = _BENCH["HK"] if hk_count > len(available) // 2 else _BENCH["US"]
 
