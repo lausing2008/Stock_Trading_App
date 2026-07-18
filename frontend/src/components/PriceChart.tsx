@@ -22,6 +22,7 @@ import { createChart, CandlestickData, IChartApi, LineData, Time, LineStyle, Log
 import type { Price, Overview, Levels, SignalHistoryPoint, PatternSignal } from '@/lib/api';
 import { api } from '@/lib/api';
 import { computeVolumeProfile, sessionBars } from '@/lib/volumeProfile';
+import { detectSwingPivots, nearestPivot } from '@/lib/swingPivots';
 import { VolumeProfilePrimitive } from './VolumeProfilePrimitive';
 import { ToolbarDropdown } from './ToolbarDropdown';
 import { computeSMA, computeEMA, computeRSI, computeMACD, computeBollingerBands } from '@/lib/indicators';
@@ -154,6 +155,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
   // it was the actual source of the reported clutter (up to 20 gaps rendered as 40 lines).
   const [showSR,       setShowSR]      = useState(true);
   const [show52W,      setShow52W]     = useState(false);
+  const [showSwingPivots, setShowSwingPivots] = useState(false);
   // Volume profile: 'off' | 'session' (current trading session only) | 'range' (whole visible
   // window) | 'fixed' (user click-selected start/end range — the real Fixed Range VP tool).
   const [volumeProfileMode, setVolumeProfileMode] = useState<'off' | 'session' | 'range' | 'fixed'>('off');
@@ -268,6 +270,14 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
     return computeVolumeProfile(bars, 24);
   }, [volumeProfileMode, activePrices, fixedRangeSelection]);
 
+  // T252-AUTO-SWING-PIVOTS: computed whenever pivots might be needed for rendering OR for
+  // snapping a Fixed Range VP click, not gated behind showSwingPivots alone — the click-snap
+  // benefit should apply even if the user never turns the marker overlay on.
+  const swingPivots = useMemo(() => {
+    if (isIntraday || activePrices.length === 0) return [];
+    return detectSwingPivots(activePrices, 5);
+  }, [activePrices, isIntraday]);
+
   useEffect(() => {
     if (!mainRef.current || activePrices.length === 0) return;
 
@@ -349,28 +359,53 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       }
     }
 
-    // ── Signal BUY/SELL markers (daily only, transition points only) ──────
-    if (!isIntraday && showSignals && signalMarkers && signalMarkers.length > 0) {
-      // Step 1: keep last entry per calendar date (signals fire every 5 min while stable)
-      const byDate = new Map<string, SignalHistoryPoint>();
-      for (const m of signalMarkers) {
-        if (!m.ts || (m.signal !== 'BUY' && m.signal !== 'SELL')) continue;
-        byDate.set(m.ts.slice(0, 10), m);
+    // ── Chart markers: signal BUY/SELL transitions + swing pivots ─────────
+    // setMarkers() replaces the whole marker set on each call — both marker sources are
+    // accumulated here and set together in ONE call rather than two, which would silently
+    // clobber whichever ran first.
+    {
+      const allMarkers: { time: Time; position: 'belowBar' | 'aboveBar'; color: string; shape: 'arrowUp' | 'arrowDown' | 'circle'; text?: string; size?: number }[] = [];
+
+      if (!isIntraday && showSignals && signalMarkers && signalMarkers.length > 0) {
+        // Step 1: keep last entry per calendar date (signals fire every 5 min while stable)
+        const byDate = new Map<string, SignalHistoryPoint>();
+        for (const m of signalMarkers) {
+          if (!m.ts || (m.signal !== 'BUY' && m.signal !== 'SELL')) continue;
+          byDate.set(m.ts.slice(0, 10), m);
+        }
+        const sorted = Array.from(byDate.entries())
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([, m]) => m);
+        // Step 2: keep only transition points (first day a new signal direction appears)
+        const transitions = sorted.filter((m, i) => i === 0 || m.signal !== sorted[i - 1].signal);
+        for (const m of transitions) {
+          allMarkers.push({
+            time: m.ts!.slice(0, 10) as Time,
+            position: m.signal === 'BUY' ? 'belowBar' : 'aboveBar',
+            color: m.signal === 'BUY' ? '#22c55e' : '#ef4444',
+            shape: m.signal === 'BUY' ? 'arrowUp' : 'arrowDown',
+            text: `${Math.round(m.confidence ?? 0)}%`,
+            size: 1,
+          });
+        }
       }
-      const sorted = Array.from(byDate.entries())
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([, m]) => m);
-      // Step 2: keep only transition points (first day a new signal direction appears)
-      const transitions = sorted.filter((m, i) => i === 0 || m.signal !== sorted[i - 1].signal);
-      const markers = transitions.map(m => ({
-        time: m.ts!.slice(0, 10) as Time,
-        position: (m.signal === 'BUY' ? 'belowBar' : 'aboveBar') as 'belowBar' | 'aboveBar',
-        color: m.signal === 'BUY' ? '#22c55e' : '#ef4444',
-        shape: (m.signal === 'BUY' ? 'arrowUp' : 'arrowDown') as 'arrowUp' | 'arrowDown',
-        text: `${Math.round(m.confidence ?? 0)}%`,
-        size: 1,
-      }));
-      if (markers.length > 0) candles.setMarkers(markers);
+
+      // T252-AUTO-SWING-PIVOTS: small dot markers on real local swing highs/lows, so Fixed
+      // Range VP's two clicks can be aimed at an actual extremum instead of eyeballed. Off by
+      // default (matching every other opt-in overlay's decluttering convention).
+      if (!isIntraday && showSwingPivots && swingPivots.length > 0) {
+        for (const p of swingPivots) {
+          allMarkers.push({
+            time: (isIntraday ? toIntradayTime(p.ts) : toTime(p.ts)) as unknown as Time,
+            position: p.kind === 'high' ? 'aboveBar' : 'belowBar',
+            color: '#94a3b8',
+            shape: 'circle',
+            size: 0,
+          });
+        }
+      }
+
+      if (allMarkers.length > 0) candles.setMarkers(allMarkers);
     }
 
     // ── Volume histogram + 20-day MA line ─────────────────────────────────
@@ -822,7 +857,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       chartRef.current = null;
       setSrLabels([]);
     };
-  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, riskRewardLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, showFVG, showSR, show52W, drawings, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
+  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, riskRewardLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, showFVG, showSR, show52W, showSwingPivots, swingPivots, drawings, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
 
   // ── Fixed Range VP: click-to-pick start/end selection ───────────────────
   // Deliberately a SEPARATE, lightweight effect from the main chart-rebuild effect above —
@@ -840,7 +875,12 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
 
     const clickHandler = (param: { logical?: number }) => {
       if (param.logical == null) return;
-      const idx = Math.max(0, Math.min(activePrices.length - 1, Math.round(param.logical)));
+      const rawIdx = Math.max(0, Math.min(activePrices.length - 1, Math.round(param.logical)));
+      // T252-AUTO-SWING-PIVOTS: snap the raw click to the nearest real swing high/low within
+      // a small tolerance, so a click that's a few bars off the actual extremum still lands
+      // precisely on it — pixel-perfect manual clicking is no longer required.
+      const snapped = nearestPivot(swingPivots, rawIdx, 3);
+      const idx = snapped ? snapped.idx : rawIdx;
       if (fixedRangePickState === 'picking-start') {
         fixedRangeStartIdxRef.current = idx;
         setFixedRangePickState('picking-end');
@@ -852,7 +892,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
     };
     chart.subscribeClick(clickHandler);
     return () => chart.unsubscribeClick(clickHandler);
-  }, [volumeProfileMode, fixedRangePickState, activePrices, chartInstanceVersion]);
+  }, [volumeProfileMode, fixedRangePickState, activePrices, swingPivots, chartInstanceVersion]);
 
   // ── T230-CHARTING-DRAWING-TOOLS: click-to-place horizontal lines / trendlines ──────
   // Same picking-state + separate-effect pattern as Fixed Range VP above. Needs the actual
@@ -974,6 +1014,8 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
               title: 'Pivot-clustered support (green) and resistance (red) price levels, off by default to keep the chart readable — turn on for extra context.' },
             { key: '52w',    label: '52W High/Low', checked: show52W, onToggle: () => setShow52W(v => !v), color: '#facc15',
               title: 'Trailing 52-week high and low reference lines, off by default to keep the chart readable — turn on for extra context.' },
+            { key: 'pivots', label: 'Swing Pivots', checked: showSwingPivots, onToggle: () => setShowSwingPivots(v => !v), color: '#94a3b8',
+              title: 'Small dot markers on real local swing highs/lows (daily chart only). Fixed Range VP\'s two clicks always snap to the nearest pivot within a few bars, whether or not this overlay is shown — turn it on to see exactly where those snap points are.' },
           ]}
         />
 

@@ -3999,3 +3999,63 @@ print('game_plan_executor is yf_executor:', aggregator._game_plan_executor is ag
 print('game_plan_executor workers:', aggregator._game_plan_executor._max_workers)
 "
 ```
+
+---
+
+## Feature Reference: T252-AUTO-SWING-PIVOTS — Chart Swing Pivot Markers + Click-Snap (Built 2026-07-19)
+
+**Gap this closes**: `services/technical-analysis/src/indicators/trendlines.py` already had
+`_find_pivots(series, order=5)` — real, tested local-max/local-min detection, used internally
+to anchor server-side trendlines and support/resistance levels — but it was never exposed as a
+standalone list of pivot points, and nothing client-side ever called it. Fixed Range VP (built
+2026-07-16) requires two manual clicks to pick a swing high and swing low, and eyeballing the
+exact extremum bar is imprecise.
+
+**Chose a client-side port over a new backend endpoint**: Fixed Range VP's click handler already
+reads bar indices out of `activePrices[]`, the exact array PriceChart.tsx has in memory — a new
+backend endpoint would need its own index-alignment logic against whatever bar window the
+frontend happens to be showing, a real synchronization risk. This matches the established
+convention (`volumeProfile.ts`, `indicators.ts`) of doing chart-only computation locally instead
+of adding a network round-trip.
+
+**New `frontend/src/lib/swingPivots.ts`**: `detectSwingPivots(bars, order=5)` ports
+`_find_pivots()`'s exact algorithm — detecting on `high`/`low`, NOT `close`. This deliberately
+matches `trendlines.py`'s own `T247-TA-CLUSTERPIVOTS-CLOSE-HIGH-MISMATCH` fix (a genuine swing
+high/low is the bar's actual extremum, not wherever it happened to close) rather than
+`detect_trendlines()`'s close-based pivots, which serve an unrelated purpose (trendline
+least-squares fitting) and would give the wrong answer for "where's the real swing high."
+`nearestPivot(pivots, targetIdx, maxDistance)` snaps an arbitrary clicked bar index to the
+closest real pivot within tolerance.
+
+**Verified against the real Python reference**, not just internally-consistent TS expectations —
+per this repo's own standing lesson from the Tier 250 EMA/RSI/MACD port (a hand-translated
+formula that "looks right" can still be wrong in a way only a real reference run catches). Ran
+the identical zigzag fixture through both the real `_find_pivots(pd.Series(highs), order=3)`
+and `detectSwingPivots()`: both produced the identical pivot indices (high at idx 4, low at idx
+8), confirming the port is faithful.
+
+**PriceChart.tsx wiring**:
+- A new "Swing Pivots" toggle in the Indicators dropdown (off by default, daily-only), rendering
+  small dot markers via `candles.setMarkers()`.
+- **A real clobbering bug avoided during implementation, not shipped**: `setMarkers()` replaces
+  the ENTIRE marker set on each call — the existing signal-transition-arrow code already called
+  it once. Adding a second `setMarkers()` call for pivot dots would have silently erased
+  whichever ran second. Restructured both marker sources to accumulate into one array and call
+  `setMarkers()` exactly once.
+- Fixed Range VP's click handler now always snaps the raw clicked bar index to the nearest pivot
+  within 3 bars, regardless of whether the pivot-marker overlay itself is toggled on — the
+  snap-to-precision benefit shouldn't require turning on the visual dots.
+
+**Tests**: `frontend/src/lib/swingPivots.test.ts`, 10 cases — empty/too-short input, correct
+high/low identification on a zigzag fixture (cross-checked against the real Python function as
+described above), no false positives on a strictly monotonic run (a monotonic series has no
+interior local extremum at all), the `+-order` edge-exclusion matching Python's
+`range(order, n-order)`, `ts` pass-through, and `nearestPivot`'s within-tolerance / out-of-range
+/ tie-break / empty-list behavior. Full 52-test frontend vitest suite, typecheck, and a full
+`next build` all green.
+
+**What to check if this looks wrong**: `detectSwingPivots()` in `swingPivots.ts` is the only
+place this logic lives — if a marker looks like it's not a real local extremum, or Fixed Range
+VP's clicks aren't landing where expected, re-run the cross-check above (`_find_pivots()` in
+`trendlines.py` vs. `detectSwingPivots()` on the same fixture) to confirm the two haven't
+drifted apart.
