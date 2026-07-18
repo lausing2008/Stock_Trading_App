@@ -126,6 +126,11 @@ export default function PortfolioPage() {
       });
       if (r.dropped_symbols && r.dropped_symbols.length > 0) {
         setWarning(`Skipped ${r.dropped_symbols.join(', ')} — insufficient price history for the selected lookback. Optimized with remaining symbols.`);
+      } else if (r.fallback_reason) {
+        // AUD250-PORTFOLIOOPTIMIZER-SILENT-FALLBACK-NO-FLAG: the optimizer fell back to
+        // flat equal weight (an infeasible constraint or SLSQP non-convergence) — surface
+        // it so a user doesn't mistake the flat weights for a genuine optimization result.
+        setWarning(`Optimization fell back to equal weight: ${r.fallback_reason}`);
       }
       setResult(r);
       // Fetch sector breakdown in background (non-blocking)

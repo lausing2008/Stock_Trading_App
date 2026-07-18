@@ -32,6 +32,13 @@ class PortfolioWeights:
     sharpe_ratio: float | None = None
     max_drawdown: float | None = None
     diversification: float | None = None
+    # AUD250-PORTFOLIOOPTIMIZER-SILENT-FALLBACK-NO-FLAG: every equal-weight fallback below
+    # (SLSQP non-convergence, an infeasible max_weight*n<1.0 constraint, or HRP's cap-and-
+    # redistribute hitting the same infeasibility) previously only logged a warning — the
+    # response itself was indistinguishable from a genuine optimization result, so a caller
+    # had no way to know their requested max_weight was effectively ignored. Set whenever a
+    # fallback fires; None on a genuine optimizer result.
+    fallback_reason: str | None = None
 
 
 # ─── Covariance & return estimators ──────────────────────────────────────────
@@ -91,10 +98,10 @@ def _normalize(w: np.ndarray) -> np.ndarray:
 
 def _pack(symbols: list[str], w: np.ndarray, method: str,
           mu: np.ndarray, cov: np.ndarray, returns: pd.DataFrame,
-          cash: float = 0.0) -> PortfolioWeights:
+          cash: float = 0.0, fallback_reason: str | None = None) -> PortfolioWeights:
     m = _metrics(w, mu, cov, returns)
     weights = {s: float(round(wi, 4)) for s, wi in zip(symbols, w)}
-    return PortfolioWeights(method, weights, cash=round(cash, 4), **m)
+    return PortfolioWeights(method, weights, cash=round(cash, 4), fallback_reason=fallback_reason, **m)
 
 
 # ─── Method 1: Mean-Variance (Sharpe-maximizing tangency portfolio) ───────────
@@ -116,8 +123,13 @@ def mean_variance(returns: pd.DataFrame, max_weight: float = 0.40) -> PortfolioW
     # error surfaced — every 2-symbol mean_variance request was silently forced to 50/50
     # regardless of actual expected returns/risk. Skip optimization outright when infeasible,
     # matching the existing n==1 bypass already used in ai_allocation for the same root cause.
+    fallback_reason: str | None = None
     if n * max_weight < 1.0:
         w = np.full(n, 1.0 / n)
+        fallback_reason = (
+            f"max_weight={max_weight} is infeasible for {n} symbols (max_weight*n < 1.0) — "
+            "fell back to equal weight"
+        )
     else:
         x0 = np.full(n, 1 / n)
         res = minimize(
@@ -137,7 +149,8 @@ def mean_variance(returns: pd.DataFrame, max_weight: float = 0.40) -> PortfolioW
             log.warning("portfolio.slsqp_failed_fallback_to_equal_weight", method="mean_variance",
                         n_symbols=n, message=res.message)
             w = np.full(n, 1.0 / n)
-    return _pack(symbols, w, "mean_variance", mu, cov, returns)
+            fallback_reason = f"SLSQP optimization did not converge ({res.message}) — fell back to equal weight"
+    return _pack(symbols, w, "mean_variance", mu, cov, returns, fallback_reason=fallback_reason)
 
 
 # ─── Method 2: Equal-Risk-Contribution (Risk Parity) ─────────────────────────
@@ -162,8 +175,13 @@ def risk_parity(returns: pd.DataFrame, max_weight: float = 0.60) -> PortfolioWei
     # received this guard when TA-PO1 was applied elsewhere, so a smaller max_weight (direct
     # call, future request-schema field per skill.md's documented-but-unimplemented contract)
     # would silently hit the exact same SLSQP-infeasible-so-flat-1/n bug this guard prevents.
+    fallback_reason: str | None = None
     if n * max_weight < 1.0:
         w = np.full(n, 1.0 / n)
+        fallback_reason = (
+            f"max_weight={max_weight} is infeasible for {n} symbols (max_weight*n < 1.0) — "
+            "fell back to equal weight"
+        )
     else:
         x0 = np.full(n, 1 / n)
         res = minimize(
@@ -180,12 +198,13 @@ def risk_parity(returns: pd.DataFrame, max_weight: float = 0.60) -> PortfolioWei
             log.warning("portfolio.slsqp_failed_fallback_to_equal_weight", method="risk_parity",
                         n_symbols=n, message=res.message)
             w = np.full(n, 1.0 / n)
-    return _pack(symbols, w, "risk_parity", mu, cov, returns)
+            fallback_reason = f"SLSQP optimization did not converge ({res.message}) — fell back to equal weight"
+    return _pack(symbols, w, "risk_parity", mu, cov, returns, fallback_reason=fallback_reason)
 
 
 # ─── Method 3: Hierarchical Risk Parity (HRP) ────────────────────────────────
 
-def _cap_and_redistribute(w: np.ndarray, max_weight: float) -> np.ndarray:
+def _cap_and_redistribute(w: np.ndarray, max_weight: float) -> tuple[np.ndarray, str | None]:
     """Clip any weight above max_weight down to it, redistributing the excess proportionally
     across the still-uncapped positions — a standard "water-filling" cap. Once a position is
     capped it is FROZEN at max_weight for the rest of the pass; only never-yet-capped
@@ -197,10 +216,14 @@ def _cap_and_redistribute(w: np.ndarray, max_weight: float) -> np.ndarray:
     cap). Freezing guarantees each iteration either finishes or permanently caps at least one
     more position, so this always converges in at most n iterations.
     Falls back to equal weight if max_weight * n < 1.0 (capping alone can never reach 100%
-    invested — same infeasibility condition TA-PO1 already guards for the SLSQP methods)."""
+    invested — same infeasibility condition TA-PO1 already guards for the SLSQP methods).
+    Returns (weights, fallback_reason) — fallback_reason is None on a genuine capped result."""
     n = len(w)
     if max_weight * n < 1.0:
-        return np.full(n, 1.0 / n)
+        return np.full(n, 1.0 / n), (
+            f"max_weight={max_weight} is infeasible for {n} symbols (max_weight*n < 1.0) — "
+            "fell back to equal weight"
+        )
     w = w.copy()
     frozen = np.zeros(n, dtype=bool)
     for _ in range(n):
@@ -220,7 +243,7 @@ def _cap_and_redistribute(w: np.ndarray, max_weight: float) -> np.ndarray:
                 w[free] = excess / free.sum()
             break
         w[free] += excess * (w[free] / free_total)
-    return _normalize(w)
+    return _normalize(w), None
 
 
 def hierarchical_risk_parity(returns: pd.DataFrame, max_weight: float = 0.40) -> PortfolioWeights:
@@ -279,8 +302,8 @@ def hierarchical_risk_parity(returns: pd.DataFrame, max_weight: float = 0.40) ->
     raw = _bisect(sorted_syms)
     w = np.array([raw.get(s, 0.0) for s in symbols])
     w = _normalize(w)
-    w = _cap_and_redistribute(w, max_weight)
-    return _pack(symbols, w, "hierarchical_risk_parity", mu, cov, returns)
+    w, fallback_reason = _cap_and_redistribute(w, max_weight)
+    return _pack(symbols, w, "hierarchical_risk_parity", mu, cov, returns, fallback_reason=fallback_reason)
 
 
 # ─── Method 4: AI Allocation (K-Score views + Sharpe maximization) ───────────
@@ -329,8 +352,13 @@ def ai_allocation(
     # TA-PO1: generalized from the original n==1-only check — sum(w)=1.0 is infeasible
     # whenever n * max_weight < 1.0 (e.g. n=2, max_weight=0.40 -> max feasible sum 0.80),
     # not just n==1. See the identical fix/comment in mean_variance() above.
+    fallback_reason: str | None = None
     if n * max_weight < 1.0:
         w = np.full(n, 1.0 / n)
+        fallback_reason = (
+            f"max_weight={max_weight} is infeasible for {n} symbols (max_weight*n < 1.0) — "
+            "fell back to equal weight"
+        )
     else:
         x0 = np.full(n, 1 / n)
         res = minimize(
@@ -347,6 +375,7 @@ def ai_allocation(
             log.warning("portfolio.slsqp_failed_fallback_to_equal_weight", method="ai_allocation",
                         n_symbols=n, message=res.message)
             w = np.full(n, 1.0 / n)
+            fallback_reason = f"SLSQP optimization did not converge ({res.message}) — fell back to equal weight"
     w_scaled = w * (1 - cash_floor)
     cash = round(1 - float(w_scaled.sum()), 4)
     # Compute risk/return metrics on w (fully invested, sums to 1.0) so they are
@@ -355,4 +384,4 @@ def ai_allocation(
     m = _metrics(w, blended_mu, cov, ret_sub)
     return PortfolioWeights("ai_allocation",
                             {s: float(round(wi, 4)) for s, wi in zip(keep, w_scaled)},
-                            cash=cash, **m)
+                            cash=cash, fallback_reason=fallback_reason, **m)

@@ -90,6 +90,38 @@ def test_no_constraints_uses_the_methods_own_default(monkeypatch):
     assert all(w <= 0.40 + 1e-6 for w in result["weights"].values()), result["weights"]
 
 
+def test_infeasible_max_weight_surfaces_fallback_reason_through_the_endpoint(monkeypatch):
+    """AUD250-PORTFOLIOOPTIMIZER-SILENT-FALLBACK-NO-FLAG end-to-end: a caller-supplied
+    max_weight that makes n*max_weight<1.0 must produce a visible fallback_reason in the
+    actual HTTP response dict, not just internally on the dataclass."""
+    import src.api.routes as routes_mod
+
+    closes = _fake_closes(_returns_df())
+    monkeypatch.setattr(routes_mod, "_fetch_closes", lambda symbols, lookback: (closes, []))
+
+    # 3 symbols * 0.2 max_weight = 0.6 < 1.0 -> infeasible, must fall back to equal weight.
+    req = OptimizeRequest(
+        symbols=["A", "B", "C"], method="mean_variance",
+        constraints=OptimizeConstraints(max_weight=0.2),
+    )
+    result = optimize(req, _="testuser")
+    assert result.get("fallback_reason") is not None
+    assert "infeasible" in result["fallback_reason"]
+
+
+def test_feasible_request_has_no_fallback_reason_in_the_endpoint_response(monkeypatch):
+    """The common, non-fallback path must NOT carry a fallback_reason key with a truthy
+    value — confirms this fix didn't regress the normal response shape."""
+    import src.api.routes as routes_mod
+
+    closes = _fake_closes(_returns_df())
+    monkeypatch.setattr(routes_mod, "_fetch_closes", lambda symbols, lookback: (closes, []))
+
+    req = OptimizeRequest(symbols=["A", "B", "C"], method="mean_variance")
+    result = optimize(req, _="testuser")
+    assert result.get("fallback_reason") is None
+
+
 def test_max_weight_out_of_range_is_rejected(monkeypatch):
     """constraints.max_weight must be in (0, 1] — a caller-supplied value outside that range
     should raise a clear error, not silently misbehave."""

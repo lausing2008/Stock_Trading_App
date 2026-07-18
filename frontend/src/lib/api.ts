@@ -796,6 +796,7 @@ export type PortfolioWeights = {
   max_drawdown?: number | null;
   diversification?: number | null;
   dropped_symbols?: string[];
+  fallback_reason?: string | null;
 };
 export type LatestPrice = { symbol: string; price: number; prev_close: number | null; change_pct: number | null; currency: string; volume: number | null; avg_volume: number | null };
 export type MarketIndex = { name: string; ticker: string; market: string; price: number | null; change_pct: number | null };

@@ -13,6 +13,15 @@ from common.config import get_settings
 
 _yf_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="yf_price")
 
+# AUD250-DECISIONENGINE-GAMEPLAN-SHARED-EXECUTOR: abuild_game_plan()'s blocking
+# _get_style_params() httpx.get() (on a cold _STYLE_PARAMS_CACHE) previously shared
+# _yf_executor with the unrelated yfinance-price-fallback path above — a distinct kind of
+# blocking work contending for the same small 4-worker pool undercuts the parallelism a
+# batch POST /decide/batch request is supposed to get (tasks queue behind each other on the
+# shared pool rather than stalling the event loop outright). Dedicated pool, matching
+# regime.py's own _regime_executor fix for the identical cross-purpose-contention pattern.
+_game_plan_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="game_plan")
+
 log = structlog.get_logger()
 _settings = get_settings()
 
@@ -230,4 +239,4 @@ async def abuild_game_plan(live_price: float, style: str, signal_data: dict | No
     game-plan reasons (the common case — no network call at all), so wrap the whole function
     in the executor rather than threading async through every internal call site."""
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_yf_executor, build_game_plan, live_price, style, signal_data)
+    return await loop.run_in_executor(_game_plan_executor, build_game_plan, live_price, style, signal_data)
