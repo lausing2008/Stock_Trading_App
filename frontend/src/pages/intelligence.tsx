@@ -15,6 +15,7 @@ import {
   type PoliticalEvent,
   type EventIntelOverview,
   type CapeReading,
+  type MarketPulse,
 } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
@@ -68,6 +69,51 @@ function ScoreBar({ score, max = 100 }: { score: number | null; max?: number }) 
   );
 }
 
+function pulseColor(label: string): string {
+  if (label === 'positive') return '#4ade80';
+  if (label === 'negative') return '#f87171';
+  return '#9ca3af';
+}
+
+function MarketPulseCard() {
+  // 30-min cadence, same TTL as the backend's Redis cache — a passive dashboard card, not a
+  // real-time alert feed (see T249-MARKETMOVER-P4's tracker note for why real-time breaking
+  // news is an explicit non-goal for the free-tier data sources this reads from).
+  const { data, isLoading } = useSWR('marketPulse', () => api.marketPulse(), { refreshInterval: 300_000 });
+
+  if (isLoading) return null;
+  if (!data) return null;
+
+  const pulse = data as MarketPulse;
+  const color = pulseColor(pulse.label);
+
+  return (
+    <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: 8, padding: '16px 20px', marginBottom: 24 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+        <h3 style={{ color: '#d1d5db', fontSize: 13, fontWeight: 600, margin: 0 }}>
+          📰 MARKET PULSE
+        </h3>
+        <span style={{ color: '#6b7280', fontSize: 11 }}>
+          as of {new Date(pulse.generated_at * 1000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} · refreshes every 30 min
+        </span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: pulse.themes.length ? 10 : 0 }}>
+        <span style={{ color, fontWeight: 700, fontSize: 15, textTransform: 'capitalize' }}>{pulse.label}</span>
+        <span style={{ color: '#6b7280', fontSize: 12 }}>({fmt(pulse.score)}/100 · {pulse.source})</span>
+      </div>
+      {pulse.themes.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {pulse.themes.map(t => (
+            <span key={t} style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10, color: '#d1d5db', background: 'rgba(148,163,184,0.12)', border: '1px solid rgba(148,163,184,0.3)' }}>
+              {t}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function OverviewTab() {
   const { data, isLoading } = useSWR('eventsOverview', () => api.eventsOverview(), { refreshInterval: 300_000 });
 
@@ -92,6 +138,9 @@ function OverviewTab() {
           </div>
         ))}
       </div>
+
+      {/* T249-MARKETMOVER-P4: market-level news pulse card */}
+      <MarketPulseCard />
 
       {/* T249-MARKETMOVER-P2: latest macro fast-reaction */}
       {ov.latest_macro_reaction && (

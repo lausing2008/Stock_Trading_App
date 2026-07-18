@@ -307,6 +307,115 @@ def get_news(
     return results
 
 
+_PULSE_QUERIES = ["stock market", "S&P 500", "Federal Reserve"]
+_PULSE_TTL = 30 * 60  # 30 min — same cadence as the per-symbol news cache
+_PULSE_CACHE_KEY = "stockai:market_pulse"
+
+
+class MarketPulseResponse(BaseModel):
+    score: float          # 0-100, 50 = neutral — same scale as SentimentResponse
+    label: str            # positive | negative | neutral
+    source: str            # claude | vader
+    themes: list[str]      # top ~3 recurring themes across the sampled headlines
+    headlines: list[NewsItem]
+    generated_at: int
+
+
+def _claude_market_themes(titles: list[str]) -> dict | None:
+    """One Haiku call: market-mood score (0-100) + up to 3 recurring themes.
+
+    Mirrors _claude_sentiment()'s call shape exactly (same model, same fail-open
+    contract) but asks for themes too since this is a market-level digest, not
+    a per-symbol score — themes are the part a headline list alone doesn't
+    surface at a glance.
+    """
+    if not _ANTHROPIC_KEY or not titles:
+        return None
+    headlines = "\n".join(f"- {t}" for t in titles[:10])
+    try:
+        with httpx.Client(timeout=10) as client:
+            r = client.post(
+                "https://api.anthropic.com/v1/messages",
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 150,
+                    "system": (
+                        "You are a financial news analyst. Given market-level news headlines, "
+                        "return JSON only: {\"score\": <integer 0-100>, \"themes\": [<up to 3 short "
+                        "theme strings>]} where score 0=very negative for the overall market, "
+                        "50=neutral, 100=very positive. Themes should be short (3-6 words) "
+                        "recurring topics across the headlines, e.g. \"Fed rate-cut expectations\" "
+                        "or \"AI capex spending\". No other text."
+                    ),
+                    "messages": [{"role": "user", "content": f"Headlines:\n{headlines}"}],
+                },
+                headers={
+                    "x-api-key": _ANTHROPIC_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+            )
+        if r.status_code == 200:
+            text = r.json()["content"][0]["text"].strip()
+            parsed = json.loads(text)
+            score = max(0.0, min(100.0, float(parsed.get("score", 50))))
+            themes = [str(t).strip() for t in (parsed.get("themes") or []) if str(t).strip()][:3]
+            log.info("news.market_pulse_claude", score=score, themes=themes)
+            return {"score": score, "themes": themes}
+        log.warning("news.market_pulse_claude_error", status=r.status_code)
+    except Exception as exc:
+        log.warning("news.market_pulse_claude_failed", error=str(exc))
+    return None
+
+
+@router.get("/market/pulse", response_model=MarketPulseResponse)
+def get_market_pulse():
+    """Market-level (not per-symbol) news sentiment digest.
+
+    Explicitly a passive 30-min-cadence dashboard card, NOT a real-time
+    breaking-news alert feature — see T249-MARKETMOVER-P4's tracker note for
+    why: free sources (Google News RSS here) are 15-60 min stale with no
+    materiality signal, so this is deliberately not wired into any
+    notification path.
+    """
+    try:
+        cached = _get_redis().get(_PULSE_CACHE_KEY)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    all_items: list[NewsItem] = []
+    for q in _PULSE_QUERIES:
+        all_items.extend(_google_news(q, limit=10))
+    headlines = _merge(all_items, [], limit=10)
+
+    titles = [h.title for h in headlines]
+    claude_result = _claude_market_themes(titles) if titles else None
+
+    if claude_result is not None:
+        score = claude_result["score"]
+        themes = claude_result["themes"]
+        source = "claude"
+    else:
+        scores = [max(0.0, min(100.0, h.sentiment * 50 + 50)) for h in headlines]
+        score = round(sum(scores) / len(scores), 1) if scores else 50.0
+        themes = []
+        source = "vader"
+
+    label = "positive" if score >= 60 else ("negative" if score <= 40 else "neutral")
+
+    result = MarketPulseResponse(
+        score=score, label=label, source=source, themes=themes,
+        headlines=headlines, generated_at=int(time.time()),
+    )
+    try:
+        _get_redis().setex(_PULSE_CACHE_KEY, _PULSE_TTL, result.model_dump_json())
+    except Exception:
+        pass
+    return result
+
+
 @router.get("/{symbol}/news/sentiment", response_model=SentimentResponse)
 def get_news_sentiment(symbol: str, session: Session = Depends(get_session)):
     """Aggregate news sentiment score for a symbol (0-100, 50=neutral).

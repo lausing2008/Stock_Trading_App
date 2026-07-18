@@ -105,6 +105,7 @@ export const api = {
   listModels: () => request<string[]>(`/ml/models`),
   getNews: (symbol: string, sources = 'yfinance,google') =>
     request<NewsItem[]>(`/stocks/${symbol}/news?sources=${encodeURIComponent(sources)}`),
+  marketPulse: () => request<MarketPulse>(`/stocks/market/pulse`),
   createStrategy: (body: unknown) => request<{ id: number }>(`/strategies`, { method: 'POST', body: JSON.stringify(body) }),
   listStrategies: () => request<{ id: number; name: string; description?: string }[]>(`/strategies`),
   getStrategy: (sid: number) => request<{ id: number; name: string; rule_dsl: { entry: object; exit?: object }; description?: string }>(`/strategies/${sid}`),
@@ -801,6 +802,7 @@ export type MarketIndex = { name: string; ticker: string; market: string; price:
 export type WatchlistItem = { symbol: string; name: string; name_zh?: string | null; market: string; exchange: string; sector?: string; currency: string; added_at: string; note?: string | null };
 export type WatchlistMeta = { id: number; name: string; item_count: number; trading_style: string | null; created_at: string };
 export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };
+export type MarketPulse = { score: number; label: 'positive' | 'negative' | 'neutral'; source: 'claude' | 'vader'; themes: string[]; headlines: NewsItem[]; generated_at: number };
 export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; email?: string | null; notification_webhook?: string | null; created_at: string };
 export type CompoundCondition = { metric: 'volume_ratio' | 'rsi' | 'signal'; op: 'gte' | 'lte' | 'eq'; value: number | string };
 export type PriceAlert = { id: number; symbol: string; condition: string; threshold: number; email: string; note: string | null; triggered: boolean; triggered_at: string | null; recurring: boolean; last_sent_at: string | null; webhook_url: string | null; created_at: string; compound_conditions: CompoundCondition[] | null };

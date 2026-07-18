@@ -3744,3 +3744,66 @@ r = httpx.get('http://api-gateway:8000/paper-portfolio/trades/<real_trade_id>/po
 print(r.status_code, r.json())
 "
 ```
+
+---
+
+## Feature Reference: T249-MARKETMOVER-P4 — Market Pulse Card (Built 2026-07-18)
+
+**The last unbuilt slice of Tier 249's original ask** ("monitor the news or any information
+that would make the market go up or down") — P0-P3 covered the structured, high-signal half
+(CPI/FOMC/NFP/earnings releases and reactions); this is the deliberately lower-signal,
+free-headline half, framed from the start as an honest MVP rather than a real-time
+breaking-news engine (that would need a paid data source — Benzinga/Polygon news tier — and
+remains an explicit non-goal here).
+
+**New endpoint**: `GET /stocks/market/pulse` (`services/market-data/src/api/news.py`), reusing
+the existing per-symbol news pipeline's exact building blocks rather than a new one: three
+market-level `_google_news()` queries (`"stock market"`, `"S&P 500"`, `"Federal Reserve"`),
+merged/deduped via the existing `_merge()`, top ~10 headlines piped through a new
+`_claude_market_themes()` — same Haiku-call shape as `_claude_sentiment()` (same model, same
+fail-open contract) but additionally asks for up to 3 recurring themes, since a market-level
+digest needs more than a bare score to be useful. Falls back to a plain VADER average with no
+themes if Claude is unavailable or fails. Cached 30 min in Redis
+(`stockai:market_pulse`), matching the per-stock news cache's own TTL.
+
+**Deliberately NOT wired into any alert/notification path** — 30-minute cadence and unranked
+headlines are too noisy to page someone about; this is a passive dashboard card only, rendered
+as `MarketPulseCard` on `intelligence.tsx`'s Overview tab (above the existing Latest Macro
+Reaction card).
+
+**Test environment gap found and fixed**: `feedparser` and `vaderSentiment` are both real,
+pinned `services/market-data/requirements.txt` dependencies that `news.py` imports at module
+level, but neither was installed in this local dev environment nor stubbed by `conftest.py` —
+attempting to import `news.py` for testing raised `ModuleNotFoundError` on both in turn. Fixed
+by a local `pip install feedparser==6.0.11 vaderSentiment==3.3.2` (matching the exact pinned
+versions) rather than adding them to conftest's stub list — same class of gap already
+documented for `jose`/`requests_oauthlib`/`redis` elsewhere in this file, and the same
+resolution: prefer running tests against the real library over stubbing it, so `_google_news()`
+RSS parsing and the VADER fallback path are exercised for real, not mocked.
+
+**Tests**: `services/market-data/tests/test_market_pulse.py`, 11 cases — Claude-available vs.
+VADER-fallback scoring paths, neutral-with-no-headlines, confirming all three market-level
+queries are actually issued, Redis cache write + warm-cache read (no re-fetch when cache is
+warm), themes capped at 3, and `_claude_market_themes()`'s own fail-open cases (missing API
+key, non-200 response, malformed JSON). Adversarially verified three guards by sabotage,
+confirmed each caught the induced failure, then reverted: removing the `[:3]` themes cap (test
+caught 5 themes surviving instead of 3); disabling the warm-cache early-return in
+`get_market_pulse()` (test caught 3 live re-fetch calls instead of the expected 0); appending a
+4th entry to `_PULSE_QUERIES` (test caught the extra query appearing, confirming the test reads
+the real module-level constant rather than a hardcoded duplicate that could silently drift from
+it — the exact failure mode documented in the T258-TRADE-POSTMORTEM entry above). Full
+305-test market-data suite and frontend typecheck green.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 python3 -c 'from jose import jwt' 2>/dev/null  # sanity: jose still present
+docker exec stockai-redis-1 redis-cli get stockai:market_pulse
+docker exec stockai-market-data-1 python3 -c "
+import sys, uuid, time; sys.path.insert(0,'/app'); sys.path.insert(0,'/app/src')
+from common.config import get_settings; from jose import jwt as _jwt; import httpx
+s = get_settings()
+tok = _jwt.encode({'sub':'lauwing2','jti':str(uuid.uuid4()),'exp':int(time.time())+86400}, s.jwt_secret, algorithm='HS256')
+r = httpx.get('http://api-gateway:8000/stocks/market/pulse', headers={'Authorization': f'Bearer {tok}'}, timeout=20)
+print(r.status_code, r.json())
+"
+```
