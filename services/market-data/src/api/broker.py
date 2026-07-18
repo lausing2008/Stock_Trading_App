@@ -9,6 +9,7 @@ Endpoints:
   POST /broker/connections/{id}/oauth/complete — E*Trade OAuth step 2 (verifier → tokens)
   POST /broker/connections/{id}/reconnect      — renew E*Trade access token (daily)
   GET  /broker/connections/{id}/account        — live account summary (balance + positions)
+  GET  /broker/connections/{id}/orders         — real order history from the broker itself
 
   GET  /broker/paper-portfolios/{portfolio_id}/broker  — get assigned broker
   PUT  /broker/paper-portfolios/{portfolio_id}/broker  — assign / unassign broker
@@ -323,6 +324,53 @@ def get_account_info(
                 "unrealized_pnl_pct": round(p.unrealized_pnl_pct * 100, 2),
             }
             for p in acct.open_positions
+        ],
+    }
+
+
+@router.get("/connections/{conn_id}/orders")
+def get_order_history(
+    conn_id: int,
+    status: str = "all",
+    current: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """T257-BROKER-ORDER-HISTORY: real order history from the broker itself (E*Trade's
+    orders.json endpoint, sandbox or prod depending on the connection), not just orders this
+    app happens to have a broker_order_id for. status: "all" (default) | "open" | "filled" |
+    "cancelled" | "rejected" — matches EtradeBroker.list_orders()'s own vocabulary.
+
+    Returns 501 for broker types that don't implement list_orders (e.g. fidelity_manual,
+    which has no real API at all) — matches BrokerInterface's own "raise NotImplementedError
+    for unsupported features" convention rather than silently returning an empty list, which
+    would look identical to "authorized but genuinely zero orders."
+    """
+    conn = _fetch(conn_id, current, session)
+    if not conn.is_authorized:
+        raise HTTPException(400, "Broker not yet authorized")
+
+    from src.services.broker import get_broker
+    broker = get_broker(conn.broker_type, _decrypt_config(conn.config))
+    try:
+        orders = broker.list_orders(conn.account_id or None, status=status)
+    except NotImplementedError:
+        raise HTTPException(501, f"{conn.broker_type} does not support order history")
+    except Exception as exc:
+        raise HTTPException(502, f"Broker order history fetch failed: {exc}")
+
+    return {
+        "orders": [
+            {
+                "order_id":         o.order_id,
+                "symbol":           o.symbol,
+                "side":             o.side.value if hasattr(o.side, "value") else o.side,
+                "qty":              o.qty,
+                "status":           o.status,
+                "filled_qty":       o.filled_qty,
+                "filled_avg_price": o.filled_avg_price,
+                "placed_at":        o.placed_at,
+            }
+            for o in orders
         ],
     }
 

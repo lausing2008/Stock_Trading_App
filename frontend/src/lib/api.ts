@@ -580,6 +580,8 @@ export const api = {
     request<{ status: string }>(`/broker/connections/${id}/reconnect`, { method: 'POST' }),
   brokerAccount: (id: number) =>
     request<BrokerAccountInfo>(`/broker/connections/${id}/account`),
+  brokerOrderHistory: (id: number, status: 'all' | 'open' | 'filled' | 'cancelled' | 'rejected' = 'all') =>
+    request<{ orders: BrokerOrderHistoryItem[] }>(`/broker/connections/${id}/orders?status=${status}`),
   brokerGetPortfolioBroker: (portfolioId: number) =>
     request<{ broker_connection_id: number | null; broker: BrokerConnection | null }>(`/broker/paper-portfolios/${portfolioId}/broker`),
   brokerAssignPortfolio: (portfolioId: number, brokerConnectionId: number | null) =>
@@ -1687,6 +1689,17 @@ export type BrokerAccountInfo = {
     unrealized_pnl: number;
     unrealized_pnl_pct: number;
   }[];
+};
+
+export type BrokerOrderHistoryItem = {
+  order_id: string;
+  symbol: string;
+  side: 'buy' | 'sell';
+  qty: number;
+  status: string;
+  filled_qty: number;
+  filled_avg_price: number | null;
+  placed_at: string | null;
 };
 
 // ── Decision Engine types ────────────────────────────────────────────────────

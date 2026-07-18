@@ -1313,6 +1313,386 @@ def send_premarket_brief(markets: list | None = None) -> None:
         _record_job_status(_job_name, "error", time.monotonic() - _t0, str(exc))
 
 
+_VOL_ANOMALY_LOCK_KEY = "stockai:lock:check_volume_anomalies"
+_VOL_ANOMALY_LOCK_TTL = 55  # seconds — runs every 60s, same pattern as check_price_alerts
+_VOL_ANOMALY_DAILY_CAP = 10  # per-user cap so a broad-market high-volume day doesn't spam
+
+
+def check_volume_anomalies() -> None:
+    """T257-VOLUME-ANOMALY-ALERT: universe-wide abnormal-volume scan, every minute.
+
+    MUST read only stockai:live_prices / stockai:avg_volume (the same Redis caches the
+    screener/stock-detail RVOL column and the post-open digest's vol_surge scan already use)
+    — never yfinance or a per-symbol DB query in this loop. A 150-symbol/minute sweep hitting
+    yfinance directly would rate-limit (observed happening in this exact repo this same week);
+    a per-symbol /rvol DB query at 150 symbols x 60 times/hour would hammer Postgres for no
+    reason when the Redis caches already carry everything this scan needs.
+
+    Reuses T241-AUDIT-RVOL-INTRADAY-BIAS's session-elapsed-scaled threshold (raw volume/
+    avg_volume compares partial-day cumulative volume against a FULL-day average and over-
+    triggers early in the session) with a higher base multiplier than the digest's 1.5x,
+    since this alert is meant to catch genuinely "abnormal/huge" volume, not the digest's
+    softer "worth a mention" bar.
+
+    For symbols that actually trigger (a small subset, not the universe), attaches a
+    breakout/breakdown context read: nearest support/resistance level from technical-analysis
+    (one HTTP call per triggered symbol — cheap at this volume, unlike per-symbol yfinance/DB
+    calls in the main loop). Reports the MEASURED fact (Nx volume, which level price is
+    testing, direction from change_pct) — never a "this WILL break out" prediction claim, per
+    this repo's established T249-P3 honesty discipline (nobody can honestly predict whether a
+    level actually breaks).
+    """
+    try:
+        acquired = _get_redis().set(_VOL_ANOMALY_LOCK_KEY, "1", nx=True, ex=_VOL_ANOMALY_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    _t0 = time.monotonic()
+    try:
+        import json as _json
+
+        try:
+            _live_raw = _json.loads(_get_redis().get("stockai:live_prices") or "[]")
+            _avg_vol_cache = _json.loads(_get_redis().get("stockai:avg_volume") or "{}")
+        except Exception:
+            _live_raw, _avg_vol_cache = [], {}
+        if not _live_raw:
+            _record_job_status("check_volume_anomalies", "ok", time.monotonic() - _t0)
+            return
+
+        # Same session-elapsed scaling as the post-open digest's vol_surge (T241-AUDIT-
+        # RVOL-INTRADAY-BIAS), computed once per market since HK/US have different session
+        # lengths and open at different UTC times — cheap, no DB query needed for this.
+        _now_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
+        _now_hkt = datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Hong_Kong"))
+        _us_elapsed_min = max(0.0, (_now_et.hour * 60 + _now_et.minute) - (9 * 60 + 30))
+        _hk_elapsed_min = max(0.0, (_now_hkt.hour * 60 + _now_hkt.minute) - (9 * 60 + 30))
+        _us_frac = min(1.0, _us_elapsed_min / 390.0)
+        _hk_frac = min(1.0, _hk_elapsed_min / 330.0)
+        # Higher base than the digest's 1.5x — this alert is for "abnormal/huge" volume
+        # specifically, not the softer "worth a mention in today's digest" bar.
+        _ABNORMAL_BASE = 2.5
+        _us_threshold = max(1.5, _ABNORMAL_BASE * _us_frac)
+        _hk_threshold = max(1.5, _ABNORMAL_BASE * _hk_frac)
+
+        with SessionLocal() as session:
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            if not alerts:
+                _record_job_status("check_volume_anomalies", "ok", time.monotonic() - _t0)
+                return
+            recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            if not recipients:
+                _record_job_status("check_volume_anomalies", "ok", time.monotonic() - _t0)
+                return
+
+            triggered: list[dict] = []
+            for row in _live_raw:
+                sym = row.get("symbol")
+                vol = row.get("volume")
+                avg_vol = _avg_vol_cache.get(sym)
+                price = row.get("price")
+                prev_close = row.get("prev_close")
+                if not sym or not vol or not avg_vol:
+                    continue
+                threshold = _hk_threshold if sym.upper().endswith(".HK") else _us_threshold
+                rvol = float(vol) / float(avg_vol)
+                if rvol < threshold:
+                    continue
+                change_pct = ((float(price) - float(prev_close)) / float(prev_close) * 100
+                              if price and prev_close else None)
+                triggered.append({
+                    "symbol": sym, "rvol": round(rvol, 2),
+                    "price": price, "change_pct": round(change_pct, 2) if change_pct is not None else None,
+                })
+            if not triggered:
+                _record_job_status("check_volume_anomalies", "ok", time.monotonic() - _t0)
+                return
+            triggered.sort(key=lambda t: t["rvol"], reverse=True)
+
+            # Breakout/breakdown context — one HTTP call per TRIGGERED symbol only, never
+            # in the universe loop above. Cheap at the small volume of symbols that actually
+            # trigger on any given minute.
+            from urllib.parse import quote
+            for t in triggered:
+                t["level_note"] = None
+                try:
+                    tok = _service_token()
+                    r = httpx.get(
+                        f"{_settings.technical_analysis_url}/ta/{quote(t['symbol'])}/levels",
+                        headers={"Authorization": f"Bearer {tok}"} if tok else {},
+                        timeout=4,
+                    )
+                    if r.status_code == 200:
+                        levels = r.json().get("support_resistance", [])
+                        price = float(t["price"]) if t["price"] else None
+                        if price and levels:
+                            # nearest level ABOVE price if direction is up, nearest BELOW if down
+                            is_up = (t["change_pct"] or 0) >= 0
+                            candidates = [
+                                L for L in levels
+                                if (L["price"] > price) == is_up
+                            ]
+                            if candidates:
+                                nearest = min(candidates, key=lambda L: abs(L["price"] - price))
+                                kind = "resistance" if is_up else "support"
+                                t["level_note"] = f"testing {kind} at ${nearest['price']:.2f}"
+                except Exception:
+                    pass  # context is best-effort — the volume fact itself is still reported
+
+            _rc = _get_redis()
+            today = date.today().isoformat()
+            from .email_service import send_volume_anomaly_email
+            sent = 0
+            for uid, user in recipients.items():
+                daily_cap_key = f"stockai:vol_anomaly_cap:{uid}:{today}"
+                try:
+                    already_today = int(_rc.get(daily_cap_key) or 0)
+                except Exception:
+                    already_today = 0
+                if already_today >= _VOL_ANOMALY_DAILY_CAP:
+                    continue
+                my_alerts = []
+                for t in triggered:
+                    dedup_key = f"stockai:vol_anomaly:{uid}:{t['symbol']}:{today}:{int(t['rvol'] // 1)}"
+                    try:
+                        if _rc.exists(dedup_key):
+                            continue
+                    except Exception:
+                        pass
+                    my_alerts.append(t)
+                    try:
+                        _rc.setex(dedup_key, 20 * 3600, "1")  # same-magnitude dedup for the rest of today
+                    except Exception:
+                        pass
+                if not my_alerts:
+                    continue
+                room = _VOL_ANOMALY_DAILY_CAP - already_today
+                my_alerts = my_alerts[:room]
+                if send_volume_anomaly_email(user.email, my_alerts):
+                    sent += 1
+                    try:
+                        _rc.incrby(daily_cap_key, len(my_alerts))
+                        _rc.expire(daily_cap_key, 26 * 3600)
+                    except Exception:
+                        pass
+
+            _record_job_status("check_volume_anomalies", "ok", time.monotonic() - _t0)
+            log.info("volume_anomaly.done", triggered=len(triggered), sent=sent, recipients=len(recipients))
+    except Exception as exc:
+        log.error("volume_anomaly.failed", error=str(exc), exc_info=True)
+        _record_job_status("check_volume_anomalies", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        try:
+            _get_redis().delete(_VOL_ANOMALY_LOCK_KEY)
+        except Exception:
+            pass
+
+
+_TOP3_LOCK_KEY = "stockai:lock:check_top3_conviction"
+_TOP3_LOCK_TTL = 55
+_TOP3_MIN_WIN_RATE = 0.70   # measured historical win rate floor — Redis-tunable, see below
+_TOP3_MIN_COUNT = 30        # matches signal-engine's own _CONF_CAL_MIN_COUNT floor
+_TOP3_MIN_KSCORE = 55
+
+
+def check_top3_conviction() -> None:
+    """T257-TOP3-CONVICTION-ALERT: the honest version of "3 stocks moving with very very
+    high confidence" — gates on the MEASURED historical win rate for this exact setup class
+    (signal-engine's confidence-calibration buckets, built from real signal_outcomes), not
+    raw model confidence. A raw "95% confidence" number only means the fused probability was
+    far from a coin-flip; it says nothing about how often that kind of call has actually been
+    right. This scan asks the honest question instead: "of every past signal that looked like
+    THIS one (same horizon, same direction, same market, same confidence band), what fraction
+    actually won?" — and only fires when that measured rate clears a high bar with a real
+    sample size behind it.
+
+    Runs every minute (cheap: one bulk signals fetch + one bulk calibration fetch, no
+    per-symbol calls) but only EMAILS when the qualifying top-3 set changes composition —
+    signals themselves only regenerate on the 5-10 min refresh cycle, so re-scanning
+    unchanged data every minute would otherwise re-alert on nothing new.
+
+    On most days this will qualify ZERO picks — a 70%-measured-win-rate bar with a 30-sample
+    floor is a genuinely high bar, and it should be. An empty day means the bar is working,
+    not that the feature is broken. The threshold is a single Redis-tunable knob
+    (stockai:top3_min_win_rate) if a lower bar / higher frequency is ever wanted — the printed
+    win rate in the email keeps that trade-off visible rather than laundering it away.
+    """
+    try:
+        acquired = _get_redis().set(_TOP3_LOCK_KEY, "1", nx=True, ex=_TOP3_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    _t0 = time.monotonic()
+    try:
+        _rc = _get_redis()
+        try:
+            min_win_rate = float(_rc.get("stockai:top3_min_win_rate") or _TOP3_MIN_WIN_RATE)
+        except Exception:
+            min_win_rate = _TOP3_MIN_WIN_RATE
+
+        tok = _service_token()
+        _hdrs = {"Authorization": f"Bearer {tok}"} if tok else {}
+
+        # One bulk fetch across ALL horizons — all_latest_signals(style=None) already
+        # picks the best-available style per stock (SWING>LONG>GROWTH>SHORT), but we need
+        # every horizon's own signal to gate per-horizon calibration correctly, so fetch
+        # per-style explicitly (4 calls total, not per-symbol — still cheap).
+        all_signals: list[dict] = []
+        for style in ("SHORT", "SWING", "LONG", "GROWTH"):
+            try:
+                r = httpx.get(
+                    f"{_settings.signal_engine_url}/signals",
+                    params={"style": style}, headers=_hdrs, timeout=10,
+                )
+                if r.status_code == 200:
+                    for row in r.json():
+                        row["horizon"] = style
+                        all_signals.append(row)
+            except Exception:
+                continue
+        if not all_signals:
+            _record_job_status("check_top3_conviction", "ok", time.monotonic() - _t0)
+            return
+
+        try:
+            cal_r = httpx.get(
+                f"{_settings.signal_engine_url}/signals/confidence-calibration",
+                headers=_hdrs, timeout=10,
+            )
+            cal_buckets = cal_r.json().get("buckets", {}) if cal_r.status_code == 200 else {}
+        except Exception:
+            cal_buckets = {}
+        if not cal_buckets:
+            # No calibration data at all — cannot honestly gate on measured win rate, so
+            # this scan must produce zero picks rather than fall back to raw confidence.
+            _record_job_status("check_top3_conviction", "ok", time.monotonic() - _t0)
+            return
+
+        def _conf_band(confidence: float) -> str | None:
+            for lo, hi, band in ((0, 40, "0-40"), (40, 55, "40-55"), (55, 70, "55-70"), (70, 85, "70-85"), (85, 101, "85+")):
+                if lo <= confidence < hi:
+                    return band
+            return None
+
+        # Bulk K-Score fetch — same amortized-single-call pattern check_signal_alerts already
+        # uses, not a per-symbol call.
+        kscores: dict[str, float] = {}
+        try:
+            kr = httpx.get(f"{_settings.ranking_engine_url}/rankings", headers=_hdrs, timeout=10)
+            if kr.status_code == 200:
+                for row in kr.json().get("rankings", []):
+                    if row.get("score") is not None:
+                        kscores[row["symbol"]] = float(row["score"])
+        except Exception:
+            pass
+
+        # Same-process regime lookup — scheduler.py already imports get_last_regime() at
+        # module level and runs inside market-data itself, so this is a direct function call
+        # (Redis-cached, no HTTP round-trip), not the fragile URL-string-hack an earlier
+        # draft of this function used.
+        try:
+            us_regime = (get_last_regime() or {}).get("state", "neutral")
+        except Exception:
+            us_regime = "neutral"
+        try:
+            from .paper_trading_engine import get_last_hk_regime
+            hk_regime = (get_last_hk_regime() or {}).get("state", "neutral")
+        except Exception:
+            hk_regime = "neutral"
+
+        qualifying: list[dict] = []
+        for row in all_signals:
+            sig = row.get("signal")
+            if sig not in ("BUY", "SELL"):
+                continue
+            sym = row.get("symbol")
+            horizon = row.get("horizon")
+            confidence = row.get("confidence")
+            if sym is None or horizon is None or confidence is None:
+                continue
+            market = "HK" if sym.upper().endswith(".HK") else "US"
+            if sig == "BUY":
+                regime = hk_regime if market == "HK" else us_regime
+                if regime in ("bear", "risk_off"):
+                    continue
+                kscore = kscores.get(sym)
+                if kscore is None or kscore < _TOP3_MIN_KSCORE:
+                    continue
+            band = _conf_band(float(confidence))
+            if band is None:
+                continue
+            entry = cal_buckets.get(f"{horizon}|{sig}|{market}|{band}") or cal_buckets.get(f"{horizon}|{sig}|{band}")
+            if not entry or entry.get("count", 0) < _TOP3_MIN_COUNT:
+                continue
+            win_rate = entry["win_rate"]
+            if win_rate < min_win_rate:
+                continue
+            qualifying.append({
+                "symbol": sym, "horizon": horizon, "direction": sig,
+                "confidence": float(confidence), "win_rate": win_rate, "count": entry["count"],
+            })
+
+        # Rank by measured win rate (the actual accuracy claim), tiebreak by confidence.
+        qualifying.sort(key=lambda q: (q["win_rate"], q["confidence"]), reverse=True)
+        top3 = qualifying[:3]
+
+        composition_key = ",".join(sorted(f"{q['symbol']}:{q['direction']}" for q in top3))
+        prev_key = _rc.get("stockai:top3_last_composition") or ""
+        if isinstance(prev_key, bytes):
+            prev_key = prev_key.decode()
+        if composition_key == prev_key:
+            # Same qualifying set as last cycle — nothing new to report.
+            _record_job_status("check_top3_conviction", "ok", time.monotonic() - _t0)
+            return
+        try:
+            _rc.set("stockai:top3_last_composition", composition_key, ex=6 * 3600)
+        except Exception:
+            pass
+
+        if not top3:
+            _record_job_status("check_top3_conviction", "ok", time.monotonic() - _t0)
+            log.info("top3_conviction.no_qualifiers", scanned=len(all_signals))
+            return
+
+        with SessionLocal() as session:
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            if not recipients:
+                _record_job_status("check_top3_conviction", "ok", time.monotonic() - _t0)
+                return
+
+            from .email_service import send_top3_conviction_email
+            sent = 0
+            for uid, user in recipients.items():
+                dedup_key = f"stockai:top3_sent:{uid}:{composition_key}"
+                try:
+                    if _rc.exists(dedup_key):
+                        continue
+                    _rc.setex(dedup_key, 6 * 3600, "1")
+                except Exception:
+                    pass
+                if send_top3_conviction_email(user.email, top3):
+                    sent += 1
+
+            _record_job_status("check_top3_conviction", "ok", time.monotonic() - _t0)
+            log.info("top3_conviction.done", qualifying=len(qualifying), sent=sent,
+                     recipients=len(recipients), picks=[q["symbol"] for q in top3])
+    except Exception as exc:
+        log.error("top3_conviction.failed", error=str(exc), exc_info=True)
+        _record_job_status("check_top3_conviction", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        try:
+            _get_redis().delete(_TOP3_LOCK_KEY)
+        except Exception:
+            pass
+
+
 def check_signal_alerts() -> None:
     """Fire conviction BUY alerts when all 5 layers align; fire exit warnings unconditionally.
 
@@ -4715,6 +5095,30 @@ def start_scheduler() -> None:
         "interval",
         minutes=1,
         id="price_alert_check",
+        replace_existing=True,
+        max_instances=1, coalesce=True,
+    )
+
+    # ── T257-VOLUME-ANOMALY-ALERT: universe-wide abnormal-volume scan — every minute ──
+    # Reads only the existing stockai:live_prices/stockai:avg_volume Redis caches (no
+    # yfinance/DB calls in the loop) — see check_volume_anomalies()'s own docstring.
+    _scheduler.add_job(
+        check_volume_anomalies,
+        "interval",
+        minutes=1,
+        id="volume_anomaly_check",
+        replace_existing=True,
+        max_instances=1, coalesce=True,
+    )
+
+    # ── T257-TOP3-CONVICTION-ALERT: measured-win-rate-gated top-3 scan — every minute ──
+    # Cheap (a handful of bulk HTTP calls, no per-symbol requests); only emails when the
+    # qualifying set actually changes — see check_top3_conviction()'s own docstring.
+    _scheduler.add_job(
+        check_top3_conviction,
+        "interval",
+        minutes=1,
+        id="top3_conviction_check",
         replace_existing=True,
         max_instances=1, coalesce=True,
     )

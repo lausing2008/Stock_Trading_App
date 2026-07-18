@@ -300,6 +300,69 @@ class EtradeBroker(BrokerInterface):
             filled_avg_price  = float(detail.get("averageExecutionPrice", 0)) or None,
         )
 
+    def list_orders(self, account_id: str | None = None, status: str = "open") -> list[BrokerOrder]:
+        """T257-BROKER-ORDER-HISTORY: full order history via E*Trade's own real orders-list
+        endpoint (the same /v1/accounts/{key}/orders.json get_order() already uses, without
+        the orderId filter — E*Trade's API defaults to the last 90 days when no fromDate is
+        given). status: "open" (E*Trade's OPEN marker), "executed"/"filled" (mapped to
+        E*Trade's EXECUTED), "cancelled", "rejected", or "all" (no status filter — E*Trade's
+        API param is literal, not our internal status vocabulary, so map it here rather than
+        pushing that mapping onto callers).
+        """
+        key = self._account_id_key(account_id)
+        _status_param_map = {
+            "open": "OPEN", "pending": "OPEN",
+            "filled": "EXECUTED", "executed": "EXECUTED",
+            "cancelled": "CANCELLED", "canceled": "CANCELLED",
+            "rejected": "REJECTED",
+        }
+        params: dict = {"count": 50}
+        etrade_status = _status_param_map.get(status.lower())
+        if etrade_status:
+            params["status"] = etrade_status
+        resp = requests.get(
+            f"{self._base}/v1/accounts/{key}/orders.json",
+            params=params,
+            auth=self._oauth1(),
+            headers={"Content-Type": "application/json"},
+            timeout=15,
+        )
+        if not resp.ok:
+            raise RuntimeError(f"E*Trade list_orders failed: {resp.status_code} {resp.text}")
+        orders_resp = resp.json().get("OrdersResponse", {})
+        raw_orders = orders_resp.get("Order", [])
+        status_map = {
+            "OPEN": "pending", "EXECUTED": "filled",
+            "CANCELLED": "cancelled", "REJECTED": "rejected",
+            "PARTIAL": "partially_filled",
+        }
+        results: list[BrokerOrder] = []
+        for o in raw_orders:
+            detail = o.get("OrderDetail", [{}])[0]
+            instr  = detail.get("Instrument", [{}])[0]
+            raw_status = o.get("orderStatus", "OPEN")
+            # E*Trade's placedTime is epoch milliseconds on the OrderDetail — convert to ISO8601
+            # so the frontend never has to know the broker-native format.
+            placed_at = None
+            _placed_ms = detail.get("placedTime")
+            if _placed_ms:
+                try:
+                    placed_at = datetime.fromtimestamp(int(_placed_ms) / 1000, tz=timezone.utc).isoformat()
+                except (ValueError, TypeError, OSError):
+                    placed_at = None
+            results.append(BrokerOrder(
+                order_id          = str(o.get("orderId", "")),
+                symbol            = instr.get("Product", {}).get("symbol", ""),
+                side              = OrderSide.BUY if instr.get("orderAction") == "BUY" else OrderSide.SELL,
+                qty               = float(instr.get("quantity", 0)),
+                order_type        = OrderType.MARKET,
+                status            = status_map.get(raw_status, raw_status.lower()),
+                filled_qty        = float(instr.get("filledQuantity", 0)),
+                filled_avg_price  = float(detail.get("averageExecutionPrice", 0)) or None,
+                placed_at         = placed_at,
+            ))
+        return results
+
     def is_market_open(self) -> bool:
         now = datetime.now(timezone.utc)
         # US market hours: Mon–Fri 14:30–21:00 UTC (9:30am–4pm ET, ignoring DST for simplicity)

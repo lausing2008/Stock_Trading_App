@@ -31,6 +31,7 @@ class BrokerOrder:
     limit_price: float | None = None
     stop_price: float | None = None
     message: str = ""        # broker-specific status message
+    placed_at: str | None = None  # ISO8601 or broker-native timestamp string, when available
 
 
 @dataclass

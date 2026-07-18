@@ -1044,6 +1044,112 @@ def send_premarket_brief_email(
     return send_email(to, subject, body_html, body_text)
 
 
+def send_volume_anomaly_email(to: str, alerts: list[dict]) -> bool:
+    """T257-VOLUME-ANOMALY-ALERT: one email per recipient listing every symbol that tripped
+    the abnormal-volume scan this cycle (already capped/deduped by the caller). Each alert
+    dict: {symbol, rvol, price, change_pct, level_note (optional, e.g. "testing resistance
+    at $105.00")}. Reports MEASURED facts only — never a "this WILL break out" prediction,
+    matching this repo's established honesty discipline for alerts of this kind.
+    """
+    n = len(alerts)
+    subject = f"📊 Abnormal Volume — {n} stock{'s' if n != 1 else ''} trading unusually heavy"
+
+    rows_html = ""
+    rows_text = ""
+    for a in alerts:
+        sym = a["symbol"]
+        rvol = a["rvol"]
+        chg = a.get("change_pct")
+        chg_color = "#22c55e" if (chg or 0) >= 0 else "#ef4444"
+        chg_str = f"{'+' if chg is not None and chg >= 0 else ''}{chg:.2f}%" if chg is not None else "—"
+        price_str = f"${a['price']:.2f}" if a.get("price") else "—"
+        level_note = a.get("level_note")
+        level_html = f'<div style="font-size:11px;color:#94a3b8;margin-top:2px">{level_note}</div>' if level_note else ""
+        level_text = f" ({level_note})" if level_note else ""
+        rows_html += (
+            f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
+            f'<strong style="font-size:14px">{sym}</strong>'
+            f'<span style="font-size:13px;color:{chg_color};font-weight:700">{chg_str}</span>'
+            f'</div>'
+            f'<div style="font-size:12px;color:#64748b;margin-top:2px">{price_str} · <strong style="color:#f59e0b">{rvol:.1f}x</strong> normal volume</div>'
+            f'{level_html}'
+            f'</div>'
+        )
+        rows_text += f"  {sym}: {price_str}, {chg_str}, {rvol:.1f}x normal volume{level_text}\n"
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:#f59e0b">📊 Abnormal Volume Detected</h2>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} stock{'s' if n != 1 else ''} trading at an unusual multiple of normal volume this cycle.</p>
+    <div style="margin-top:12px">{rows_html}</div>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      Volume ratio and price level are measured facts as of this scan — not a prediction of
+      whether any level actually breaks. Not financial advice.
+    </p>
+  </div>
+</body></html>"""
+    body_text = (
+        f"Abnormal Volume Detected — {n} stock{'s' if n != 1 else ''}\n\n"
+        + rows_text
+        + "\nMeasured facts as of this scan, not a prediction. Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
+def send_top3_conviction_email(to: str, picks: list[dict]) -> bool:
+    """T257-TOP3-CONVICTION-ALERT: up to 3 picks, each gated on a MEASURED historical win
+    rate (not raw model confidence) — the email's whole point is to make that accuracy claim
+    concrete and auditable. Each pick dict: {symbol, horizon, direction ("BUY"/"SELL"),
+    confidence, win_rate (0-1), count}. The printed win rate + sample size IS the accuracy
+    claim — never assert a stronger one than what's actually measured.
+    """
+    n = len(picks)
+    subject = f"🎯 Top {n} High-Conviction Pick{'s' if n != 1 else ''} — measured win rate ≥70%"
+
+    rows_html = ""
+    rows_text = ""
+    for p in picks:
+        sym, direction, horizon = p["symbol"], p["direction"], p["horizon"]
+        wr_pct = p["win_rate"] * 100
+        dir_color = "#22c55e" if direction == "BUY" else "#ef4444"
+        rows_html += (
+            f'<div style="padding:12px 0;border-bottom:1px solid #f1f5f9">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
+            f'<strong style="font-size:15px">{sym}</strong>'
+            f'<span style="background:{dir_color}22;color:{dir_color};font-size:12px;font-weight:700;padding:2px 8px;border-radius:4px">{direction}</span>'
+            f'</div>'
+            f'<div style="font-size:12px;color:#64748b;margin-top:4px">{horizon} horizon · confidence {p["confidence"]:.0f}%</div>'
+            f'<div style="font-size:13px;color:#4ade80;font-weight:700;margin-top:4px">{wr_pct:.0f}% measured win rate <span style="color:#94a3b8;font-weight:400;font-size:11px">(n={p["count"]} tracked outcomes)</span></div>'
+            f'</div>'
+        )
+        rows_text += f"  {sym} ({direction}, {horizon}): {wr_pct:.0f}% measured win rate over {p['count']} tracked outcomes, confidence {p['confidence']:.0f}%\n"
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:#6366f1">🎯 Top {n} High-Conviction Pick{'s' if n != 1 else ''}</h2>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">
+      Ranked by measured historical win rate for this exact setup (horizon + direction +
+      market + confidence band) — not raw model confidence.
+    </p>
+    <div style="margin-top:12px">{rows_html}</div>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      Win rate is measured from real tracked outcomes (signal_outcomes, last 180 days) for
+      setups matching this exact horizon/direction/market/confidence-band combination — it is
+      NOT a prediction that this specific trade will win. Most cycles qualify zero picks; an
+      empty scan means the accuracy bar is working as intended. Not financial advice.
+    </p>
+  </div>
+</body></html>"""
+    body_text = (
+        f"Top {n} High-Conviction Pick{'s' if n != 1 else ''} — measured win rate, not raw confidence\n\n"
+        + rows_text
+        + "\nWin rate is measured from real tracked outcomes for this exact setup class — not a "
+        + "prediction of this specific trade. Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_price_alert_email(to: str, symbol: str, condition: str, threshold: float, price: float, note: str | None) -> bool:
     direction = "risen above" if condition == "above" else "fallen below"
     subject = f"Price Alert: {symbol} has {direction} {threshold}"

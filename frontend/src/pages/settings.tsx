@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { loadSettings, saveSettings, type AppSettings } from '@/lib/settings';
 import { getSession, changePassword, startImpersonation } from '@/lib/auth';
-import { api, type AppUser, type BrokerConnection, type BrokerType } from '@/lib/api';
+import { api, type AppUser, type BrokerConnection, type BrokerType, type BrokerOrderHistoryItem } from '@/lib/api';
 import { storage } from '@/lib/storage';
 import { isPushSupported, getExistingSubscription, enablePushNotifications, disablePushNotifications } from '@/lib/push';
 
@@ -240,6 +240,9 @@ export default function SettingsPage() {
   const [oauthUrl, setOauthUrl] = useState<Record<number, string>>({});
   const [oauthVerifier, setOauthVerifier] = useState<Record<number, string>>({});
   const [brokerAccount, setBrokerAccount] = useState<Record<number, { equity: number; cash: number; buying_power: number } | null>>({});
+  // T257-BROKER-ORDER-HISTORY: null = not yet loaded, [] = loaded and genuinely empty,
+  // 'unsupported' = the broker type returned 501 (e.g. fidelity_manual has no real API).
+  const [brokerOrders, setBrokerOrders] = useState<Record<number, BrokerOrderHistoryItem[] | 'unsupported' | null>>({});
 
   useEffect(() => {
     if (!session) return;
@@ -314,6 +317,21 @@ export default function SettingsPage() {
       setBrokerAccount(prev => ({ ...prev, [id]: { equity: acct.equity, cash: acct.cash_available, buying_power: acct.buying_power } }));
     } catch (err: unknown) {
       setBrokerMsg({ ok: false, text: err instanceof Error ? err.message : 'Failed to load account.' });
+    }
+  }
+
+  async function handleLoadOrderHistory(id: number) {
+    try {
+      const res = await api.brokerOrderHistory(id, 'all');
+      setBrokerOrders(prev => ({ ...prev, [id]: res.orders }));
+    } catch (err: unknown) {
+      // 501 = broker type doesn't support order history (e.g. fidelity_manual) — a real,
+      // expected state, not a failure to surface as an error message.
+      if (err instanceof Error && err.message.includes('501')) {
+        setBrokerOrders(prev => ({ ...prev, [id]: 'unsupported' }));
+        return;
+      }
+      setBrokerMsg({ ok: false, text: err instanceof Error ? err.message : 'Failed to load order history.' });
     }
   }
 
@@ -1291,6 +1309,7 @@ export default function SettingsPage() {
                 fidelity_manual: 'Fidelity (Manual)',
               };
               const acct = brokerAccount[b.id];
+              const orders = brokerOrders[b.id];
               return (
                 <div key={b.id} style={{ background: '#0f172a', borderRadius: 8, padding: '12px 14px', marginBottom: 10, border: '1px solid #1e293b' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
@@ -1355,6 +1374,14 @@ export default function SettingsPage() {
                       Load Balance
                     </button>
                   )}
+                  {/* T257-BROKER-ORDER-HISTORY: real order history from the broker itself
+                      (sandbox or live, whichever this connection points at), not just orders
+                      this app happens to have a stored broker_order_id for. */}
+                  {b.is_authorized && (
+                    <button onClick={() => handleLoadOrderHistory(b.id)} style={{ padding: '5px 12px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer', background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.2)', color: '#34d399', marginRight: 6 }}>
+                      Order History
+                    </button>
+                  )}
                   <button onClick={() => handleDeleteBroker(b.id)} style={{ padding: '5px 12px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171' }}>
                     Remove
                   </button>
@@ -1364,6 +1391,45 @@ export default function SettingsPage() {
                       <span>Equity: <strong style={{ color: '#e2e8f0' }}>${acct.equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong></span>
                       <span>Cash: <strong style={{ color: '#e2e8f0' }}>${acct.cash.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong></span>
                       <span>Buying power: <strong style={{ color: '#e2e8f0' }}>${acct.buying_power.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong></span>
+                    </div>
+                  )}
+
+                  {orders === 'unsupported' && (
+                    <p style={{ fontSize: 11, color: '#475569', marginTop: 8, marginBottom: 0 }}>
+                      {typeLabel[b.broker_type] ?? b.broker_type} does not support order history via API.
+                    </p>
+                  )}
+                  {orders && orders !== 'unsupported' && orders.length === 0 && (
+                    <p style={{ fontSize: 11, color: '#475569', marginTop: 8, marginBottom: 0 }}>
+                      No orders found.
+                    </p>
+                  )}
+                  {orders && orders !== 'unsupported' && orders.length > 0 && (
+                    <div style={{ marginTop: 10, overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                        <thead>
+                          <tr style={{ color: '#64748b', textAlign: 'left' }}>
+                            <th style={{ padding: '4px 8px' }}>Symbol</th>
+                            <th style={{ padding: '4px 8px' }}>Side</th>
+                            <th style={{ padding: '4px 8px' }}>Qty</th>
+                            <th style={{ padding: '4px 8px' }}>Status</th>
+                            <th style={{ padding: '4px 8px' }}>Filled Price</th>
+                            <th style={{ padding: '4px 8px' }}>Placed</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {orders.map(o => (
+                            <tr key={o.order_id} style={{ borderTop: '1px solid #1e293b' }}>
+                              <td style={{ padding: '4px 8px', fontWeight: 600 }}>{o.symbol}</td>
+                              <td style={{ padding: '4px 8px', color: o.side === 'buy' ? '#4ade80' : '#f87171', textTransform: 'uppercase' }}>{o.side}</td>
+                              <td style={{ padding: '4px 8px' }}>{o.qty}</td>
+                              <td style={{ padding: '4px 8px', textTransform: 'capitalize' }}>{o.status.replace('_', ' ')}</td>
+                              <td style={{ padding: '4px 8px' }}>{o.filled_avg_price != null ? `$${o.filled_avg_price.toFixed(2)}` : '—'}</td>
+                              <td style={{ padding: '4px 8px', color: '#94a3b8' }}>{o.placed_at ? new Date(o.placed_at).toLocaleString() : '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                   )}
 

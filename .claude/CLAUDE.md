@@ -2890,3 +2890,183 @@ would silently misfire the whole feature (flipping healthy connections unauthori
 transient error). The scheduling/wiring is source-text-checked (`scheduler.py` can't be
 imported in this test environment — its import chain pulls in `apscheduler` — matching
 `test_scheduler_static_names.py`'s established pattern for exactly this constraint).
+
+---
+
+## Feature Reference: T257-VOLUME-ANOMALY-ALERT — Abnormal Volume Detection (Built 2026-07-17)
+
+**User ask:** "I want a volume alert, check every min on the volume, if you see some abnormal
+vol or huge vol going up or down, send me the stock details and will it breakout or breakdown."
+
+**Design constraint carried over from this repo's established rate-limit discipline:** a
+1-minute universe-wide scan must NEVER call yfinance or hit per-symbol DB rows in the main
+loop — this repo has hit yfinance rate-limiting before from exactly this class of tight loop.
+`check_volume_anomalies()` (`services/market-data/src/services/scheduler.py`) reads only the
+pre-existing Redis caches `stockai:live_prices` and `stockai:avg_volume`, both already
+maintained by other jobs for other purposes. Only for the small subset of symbols that
+actually trigger does it make a per-symbol HTTP call — to technical-analysis's
+`GET /ta/{symbol}/levels` — to find the nearest support/resistance level in the move's
+direction, for the "will it breakout or breakdown" part of the ask.
+
+**Threshold — session-elapsed-scaled, not a flat multiple**, reusing the same principle
+already documented for T241-AUDIT-RVOL-INTRADAY-BIAS elsewhere in this file: comparing a
+partial trading day's cumulative volume against a full day's average volume would produce
+false triggers in the first hour of trading even on a perfectly normal day. Computes separate
+US/HK session-elapsed fractions via `ZoneInfo`, then `threshold = max(1.5, 2.5 * elapsed_fraction)`
+— early in the session the bar is lower (in raw multiple terms) but the absolute volume
+required to clear it is still proportionally reasonable for how much of the day has passed.
+
+**Gating and delivery**: Redis lock (`_VOL_ANOMALY_LOCK_KEY`, 55s TTL) prevents overlapping runs
+if one cycle runs long. Triggered symbols sort by RVOL descending. Delivery is scoped to the
+`PriceAlert`-subscriber audience (same narrower v1 scope already established for P1/P2 of
+Tier 249's Market-Mover Monitoring — not the full watchlist/portfolio membership). Per-recipient
+dedup + a daily cap prevent spam: `stockai:vol_anomaly_cap:{uid}:{today}` caps total emails per
+user per day; `stockai:vol_anomaly:{uid}:{symbol}:{today}:{int(rvol//1)}` dedups the same
+symbol at materially the same RVOL magnitude within the same day (a stock climbing from RVOL 3
+to RVOL 8 over the day fires again — a stock oscillating between RVOL 3.1 and 3.3 does not).
+
+**Honesty note on "will it breakout or breakdown"**: the email includes the nearest S/R level
+and which side of it price sits on, framed as context, not a prediction — matching this
+repo's standing disclaimer convention (see the Top-3 Conviction Alert below for the same
+principle applied more strongly). No model claims to know the outcome; it surfaces the
+structural level a trader would want to know about before deciding for themselves.
+
+**Files**: `services/market-data/src/services/scheduler.py` (`check_volume_anomalies()`,
+registered `id="volume_anomaly_check"`, `"interval"`, `minutes=1`, right after
+`price_alert_check`), `services/market-data/src/services/email_service.py`
+(`send_volume_anomaly_email`).
+
+**Tests**: `services/market-data/tests/test_volume_anomaly_alert.py`, 11 cases.
+`send_volume_anomaly_email` is tested directly; the scan logic (Redis-only reads, no
+yfinance/DB calls in the loop, threshold math, dedup/cap keys) is source-text-checked, matching
+the established pattern for functions with heavy Docker-only dependencies. One false-positive
+caught while writing these: an early assertion checked `"yfinance" not in body`, which failed
+because the function's own docstring legitimately explains why yfinance is avoided — fixed to
+check `"import yfinance" not in body` (actual usage, not word presence).
+
+**What to check if this looks wrong**: `docker logs stockai-market-data-1 --since 1h | grep
+'volume_anomaly'` for scan activity; confirm the Redis caches it reads are actually fresh
+(`docker exec stockai-redis-1 redis-cli get stockai:live_prices` — if stale, the alert is
+comparing against old prices, not a bug in this feature itself but in whatever job populates
+that cache).
+
+---
+
+## Feature Reference: T257-TOP3-CONVICTION-ALERT — High-Conviction Pick Alert (Built 2026-07-17)
+
+**User ask:** "I want to get email when you think 3 top stocks will be going up or down with
+very very high confidence, I will buy or sell the stock as you recommended, I need it to be
+very accurate and confident." Because the user explicitly said they'd act on these picks
+directly, the gating design deliberately optimizes for honesty over pick frequency — most
+1-minute cycles are expected to qualify zero picks, by design, not as a bug.
+
+**Why measured win rate, not raw model confidence**: raw signal confidence
+(`abs(fused_probability - 0.5) * 200`, see the "Why a BUY Signal Can Show Low Confidence"
+design reference elsewhere in this file) measures distance from a coin-flip, not real-world
+accuracy. Given the user's explicit intent to act on these directly, `check_top3_conviction()`
+instead gates on signal-engine's existing confidence-calibration cache — real historical
+bucket win rates keyed `"{horizon}|{direction}|{market}|{band}"`, built from actual
+`signal_outcomes` rows, requiring a minimum sample count before a bucket counts at all
+(`_TOP3_MIN_COUNT = 30`). **If the calibration cache is empty for any reason, the function
+returns zero picks rather than silently falling back to raw confidence** — this fallback-to-
+zero is deliberate and adversarially verified (temporarily replaced the guard with `pass` and
+confirmed the dedicated test caught it before reverting). A default minimum win rate of 0.70
+(`_TOP3_MIN_WIN_RATE`, Redis-tunable via `stockai:top3_min_win_rate` without a redeploy) is the
+"very very high confidence" bar; BUY additionally requires regime not bear/risk-off and
+K-Score ≥ 55 (`_TOP3_MIN_KSCORE`).
+
+**Deliberately NOT the full 7-layer Conviction Gate**: `_is_conviction_buy()` (K-Score/Uptrend/
+RSI/MACD/OBV/ADX/ML) would require per-symbol signal-detail fetches for the whole universe
+every minute — reintroducing exactly the rate-limit cost problem this feature has to avoid.
+Instead built a lighter gate directly from data already fetchable in bulk: `GET /signals?
+style=X` for all 4 horizons, `GET /signals/confidence-calibration`, `GET /rankings` for
+K-Scores — 3 bulk calls total per cycle, not N per-symbol calls.
+
+**Regime lookup is a direct function call, not HTTP** — an earlier draft had this reaching back
+into market-data's own `/stocks/regime` endpoint via a hacky URL string substitution
+(`_settings.signal_engine_url.replace('signal-engine', 'market-data')`); caught and fixed to
+call `get_last_regime()` / a locally-imported `get_last_hk_regime()` directly, since
+`scheduler.py` already runs inside market-data itself — no HTTP round-trip needed for a
+same-process call.
+
+**Delivery**: sorts qualifying candidates by `(win_rate, confidence)` descending, caps to the
+top 3. Tracks the last-sent composition (`stockai:top3_last_composition`) so an unchanged set
+of 3 picks doesn't re-email every single minute — only fires again when the actual composition
+changes.
+
+**Files**: `services/market-data/src/services/scheduler.py` (`check_top3_conviction()`,
+registered `id="top3_conviction_check"`, `"interval"`, `minutes=1`),
+`services/market-data/src/services/email_service.py` (`send_top3_conviction_email`, subject
+line explicitly says "measured win rate ≥70%" rather than implying a company-endorsed
+prediction, and the body disclaimer explicitly states "not a prediction... Most cycles qualify
+zero picks" so a user seeing an empty inbox for days understands that's expected, not broken).
+
+**Tests**: `services/market-data/tests/test_top3_conviction_alert.py`, 15 cases, including
+dedicated checks for the no-fallback-to-raw-confidence guard, the regime-lookup-is-a-direct-
+call-not-HTTP property, and the ranked-by-win-rate-not-confidence ordering. One false positive
+fixed during writing: a 300-character slice window used to isolate the calibration-empty-guard
+source text cut off before the word "return" appeared — widened to 400 characters.
+
+**What to check if this looks wrong**: `docker logs stockai-market-data-1 --since 1h | grep
+'top3_conviction'`; if zero emails have fired in a long time, check
+`docker exec stockai-redis-1 redis-cli get stockai:top3_min_win_rate` (confirm no stale
+override) and whether `GET /signals/confidence-calibration` is actually returning populated
+buckets — an empty calibration cache means this feature will correctly, silently produce zero
+picks forever until enough `signal_outcomes` accumulate.
+
+---
+
+## Feature Reference: T257-BROKER-ORDER-HISTORY — E*Trade Sandbox/Prod Order History (Built 2026-07-17)
+
+**User ask, surfaced mid-session while checking the E*Trade sandbox connection**: "how can I
+see all the history from sandbox?" — clarified to mean E*Trade's own order/trade history (not
+this app's separate paper-trading history, which already has its own dedicated UI elsewhere).
+
+**What existed already**: `BrokerInterface.list_orders()` was already defined as an optional
+method defaulting to `NotImplementedError` (the same pattern used for other broker-specific-
+only capabilities), but no concrete broker implemented it, and there was no API route or UI
+surface for it at all.
+
+**Implementation**: `EtradeBroker.list_orders(account_id=None, status="open")` calls E*Trade's
+real `GET /v1/accounts/{key}/orders.json` — the same endpoint `get_order()` already used with
+an `orderId` filter, just called without one to get the full list. An explicit status-vocabulary
+map translates this app's internal terms to E*Trade's own literal params (`open`→`OPEN`,
+`filled`→`EXECUTED`, `cancelled`→`CANCELLED`, `rejected`→`REJECTED`); `status="all"` omits the
+param entirely rather than passing something E*Trade wouldn't recognize (which would silently
+return zero rows, not an error). Parses `OrdersResponse.Order[]` into `BrokerOrder` instances;
+E*Trade's epoch-millisecond `placedTime` is converted to ISO8601 inside a try/except so a
+missing or malformed timestamp degrades to `None` rather than crashing the whole call. Added a
+new optional `placed_at` field to the shared `BrokerOrder` dataclass (backward-compatible,
+defaults to `None` for every other broker).
+
+**API**: new `GET /broker/connections/{id}/orders` in `services/market-data/src/api/broker.py`
+— verifies the connection is authorized, calls `list_orders()`, and specifically distinguishes
+`NotImplementedError` (→ HTTP 501, "this broker doesn't support this") from any other failure
+(→ HTTP 502, a real error) rather than collapsing both into one generic error response.
+
+**UI**: `frontend/src/pages/settings.tsx` gained an "Order History" button per broker
+connection, next to the existing "Load Balance" button. Three distinct states are rendered,
+not collapsed into one blank screen: a specific "not supported by this broker" message on a
+501, an empty-state message when the account genuinely has zero orders, and a full table
+(Symbol/Side/Qty/Status/Filled Price/Placed) otherwise. `frontend/src/lib/api.ts` gained
+`brokerOrderHistory()` and the `BrokerOrderHistoryItem` type.
+
+**Tests**: `services/market-data/tests/test_broker_order_history.py`, 9 cases, run directly
+against the real `EtradeBroker` class with `requests.get` mocked — `EtradeBroker` only depends
+on `requests`/`requests_oauthlib`, both real installed packages (not part of this repo's
+`conftest.py` stub list), so no source-text-extraction workaround was needed here. Covers
+multi-order parsing, status-vocabulary translation, epoch-ms-to-ISO8601 conversion, graceful
+`None` on a missing `placedTime`, `status="open"` correctly mapping to `"OPEN"`, `status="all"`
+omitting the param, an HTTP failure raising `RuntimeError`, an empty response returning `[]`
+(not `None`), and `ManualBroker` correctly inheriting the base interface's `NotImplementedError`
+rather than silently returning empty (which would look identical to "authorized but genuinely
+zero orders" to a caller). Adversarially verified the status-mapping test by temporarily
+passing the internal vocabulary straight through unmapped and confirming the dedicated test
+failed (`'open' == 'OPEN'`) before reverting. `requests_oauthlib` needed a local `pip install`
+to run these tests in this dev environment (already a real pinned dependency in
+`requirements.txt`, just missing locally — not a stubbed dependency).
+
+**What to check if this looks wrong**: a 501 response means the connected broker type doesn't
+implement `list_orders()` (currently only E*Trade does — `ManualBroker`/Fidelity-manual does
+not, by design, since it has no real API at all); a 502 means the E*Trade call itself failed —
+check `docker logs stockai-market-data-1 --since 10m | grep 'orders'` for the underlying error.
