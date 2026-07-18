@@ -4298,6 +4298,284 @@ def tune_style_profiles(
     return {"applied": applied, "skipped": skipped, "n_outcomes_analyzed": len(outcomes), "redis_ttl_days": 30}
 
 
+# T255-STRATEGY-TUNER-PER-HORIZON: every existing calibration mechanism above
+# (outcomes_calibrate_apply, tune_style_profiles) tunes exactly ONE parameter at a time in
+# isolation, against its own independent train/validation split. Neither has ever searched for
+# the best COMBINATION of buy_threshold + ml_weight_cap together — a candidate that looks best
+# for buy_threshold alone need not be the best pairing once ml_weight_cap also shifts which
+# outcomes clear the bar (a lower ml_weight_cap changes fused_prob for every outcome in the
+# sweep, which changes which of them clear any given buy_threshold). Phase 1 of the design in
+# .claude/CLAUDE.md's "Research: Per-Horizon AI Signal Strategy Tuning" section — the grid is
+# kept small (31 buy_threshold levels x 13 ml_weight_cap levels = 403 cells) specifically to
+# bound multiple-comparison overfit risk against the ~n=100-120-outcome baseline documented
+# there for SHORT/SWING; LONG/GROWTH are expected to skip until more data accumulates, and the
+# response says so explicitly rather than silently omitting them.
+_TUNE_STRATEGY_BUY_GRID = [i / 100.0 for i in range(55, 86)]        # 0.55-0.85 step 0.01 (31)
+_TUNE_STRATEGY_ML_CAP_GRID = [i / 100.0 for i in range(15, 76, 5)]  # 0.15-0.75 step 0.05 (13)
+_TUNE_STRATEGY_MIN_SAMPLES = 15  # per train/validation slice at a given grid cell — looser than
+# outcomes_calibrate_apply's 50 (single-parameter sweep) since a 2D grid already spreads a
+# smaller pool of outcomes across 403 cells; this is the floor for a cell to be considered at
+# all, not a claim that 15 is as reliable as 50 — the validation-beats-baseline gate below is
+# what actually protects against a noisy cell being promoted.
+_TUNE_STRATEGY_BUY_BOUNDS = (0.55, 0.85)
+_TUNE_STRATEGY_ML_CAP_BOUNDS = (0.15, 0.75)
+
+
+@router.post("/tune_strategy")
+def tune_strategy(
+    days: int = Query(180, description="Look-back window in calendar days"),
+    min_samples: int = Query(_TUNE_STRATEGY_MIN_SAMPLES, description="Minimum outcomes required per grid cell, per slice"),
+    _: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
+    """Joint per-horizon grid sweep over (buy_threshold x ml_weight_cap) — Phase 1 of
+    T255-STRATEGY-TUNER-PER-HORIZON. Re-filters ALREADY-STORED SignalOutcome.fused_prob +
+    Signal.reasons["ml_weight"] — no signal regeneration needed, matching outcomes_calibrate_apply
+    and tune_style_profiles' own no-regeneration speed advantage.
+
+    For each horizon, searches the (buy_threshold, ml_weight_cap) grid cell that maximises
+    expected value on the OLDER 70% of the window (train), then only applies it if it ALSO
+    beats the CURRENT LIVE baseline's own EV on the NEWER, never-searched 30% (validation) —
+    the same chronological walk-forward split, negative-lift rejection, and per-attempt
+    TuneHistory recording every other mechanism in this file uses. Applies through the SAME
+    Redis keys outcomes_calibrate_apply/tune_style_profiles already write
+    (stockai:signal_thresholds:{H}, stockai:style_tune:{H}:ml_weight_cap) — the read side
+    (_get_dynamic_buy_threshold, _get_style_tuned_param) needs zero changes.
+
+    A grid cell's fused_prob depends on ml_weight_cap only through Signal.reasons["ml_weight"]
+    already recorded at signal-generation time (the ORIGINAL ml_weight actually used, not a
+    replay of what it would have been under a different cap) — this sweep answers "if we had
+    filtered to signals whose actual ml_weight was already <= this cap, which (threshold, cap)
+    combination would have looked best," a re-filtering exercise, not a full re-simulation.
+    See the design doc's own Phase 4 for why this can only ever evaluate TIGHTENING, never a
+    looser cap or threshold than what was actually live when the outcome was recorded.
+    """
+    import statistics as _stats
+    from ..generators.signals import _STYLE_PROFILES
+
+    CURRENT_BUY: dict[str, float] = {
+        h: _STYLE_PROFILES[h]["buy_threshold"]["bull"] for h in ("SHORT", "SWING", "LONG", "GROWTH")
+    }
+    CURRENT_ML_CAP: dict[str, float] = {
+        h: _STYLE_PROFILES[h]["ml_weight_cap"] for h in ("SHORT", "SWING", "LONG", "GROWTH")
+    }
+
+    cutoff = date.today() - timedelta(days=days)
+    all_outcomes = session.execute(
+        select(SignalOutcome).where(
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.signal_direction == "BUY",
+        )
+    ).scalars().all()
+
+    # Join to Signal.reasons for ml_weight — same pattern tune_style_profiles already uses.
+    signal_ids = [o.signal_id for o in all_outcomes if o.signal_id]
+    signals_map: dict[int, dict] = {}
+    if signal_ids:
+        rows = session.execute(
+            select(Signal.id, Signal.reasons).where(Signal.id.in_(signal_ids))
+        ).all()
+        for row in rows:
+            if row.reasons:
+                signals_map[row.id] = row.reasons
+
+    redis_client = _get_redis()
+    _REDIS_TTL = 30 * 86400
+    applied: list[dict] = []
+    skipped: list[dict] = []
+    import uuid as _uuid
+    _run_id = str(_uuid.uuid4())
+
+    def _ev_at(subset: list) -> dict | None:
+        if len(subset) < min_samples:
+            return None
+        wins = sum(1 for o in subset if o.is_correct)
+        rets = [o.pct_return for o in subset if o.pct_return is not None]
+        acc = wins / len(subset)
+        avg_ret = _stats.mean(rets) if rets else 0.0
+        # T232-OC4 convention: avg_ret already IS the expected value (mean return across all
+        # trades, wins and losses) — do not multiply by acc again (double-counts win probability).
+        return {"n": len(subset), "win_rate": round(acc, 3), "ev_pct": round(avg_ret * 100, 2)}
+
+    for h in ("SHORT", "SWING", "LONG", "GROWTH"):
+        current_buy = CURRENT_BUY[h]
+        current_cap = CURRENT_ML_CAP[h]
+
+        with_reasons = sorted(
+            [
+                (o, signals_map[o.signal_id])
+                for o in all_outcomes
+                if o.horizon.value == h and o.signal_id in signals_map and o.fused_prob is not None
+            ],
+            key=lambda pair: pair[0].signal_date,
+        )
+        # Need enough for BOTH a train slice and a validation slice to each independently have a
+        # chance at clearing min_samples in the best cell — mirrors outcomes_calibrate_apply's
+        # own "insufficient_total_samples" floor, doubled for the same reason (a lopsided split
+        # of an already-small pool produces two under-powered halves).
+        if len(with_reasons) < min_samples * 2:
+            skipped.append({
+                "horizon": h,
+                "reason": f"only {len(with_reasons)} outcomes with reasons JSON (need {min_samples * 2} for a valid train/validation split)",
+            })
+            _bucket_dates = (
+                (with_reasons[0][0].signal_date, with_reasons[-1][0].signal_date)
+                if with_reasons else (date.today(), date.today())
+            )
+            _record_tune_history(
+                session, _run_id, "joint_strategy", "buy_threshold+ml_weight_cap", h, "ALL",
+                old_value={"buy_threshold": current_buy, "ml_weight_cap": current_cap}, new_value={},
+                train_window=_bucket_dates, validation_window=_bucket_dates,
+                train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=None, promoted=False,
+                gate_failures=[f"insufficient_total_samples:{len(with_reasons)}<{min_samples * 2}"],
+            )
+            continue
+
+        split = max(1, int(len(with_reasons) * 0.7))
+        train_wr = with_reasons[:split]
+        val_wr = with_reasons[split:]
+        _train_window = (train_wr[0][0].signal_date, train_wr[-1][0].signal_date)
+        _val_window = (val_wr[0][0].signal_date, val_wr[-1][0].signal_date)
+
+        # Search the full (buy_threshold x ml_weight_cap) grid on TRAIN only. A cell's subset is
+        # every outcome whose recorded ml_weight was already <= cap AND whose fused_prob clears
+        # threshold — both filters applied on the SAME already-recorded fused_prob (see docstring
+        # for why this is a re-filter, not a re-simulation).
+        best_ev = -999.0
+        best_buy: float | None = None
+        best_cap: float | None = None
+        for cap in _TUNE_STRATEGY_ML_CAP_GRID:
+            cap_subset = [o for o, r in train_wr if r.get("ml_weight", 0) <= cap + 0.05]
+            if len(cap_subset) < min_samples:
+                continue
+            for buy_t in _TUNE_STRATEGY_BUY_GRID:
+                cell = [o for o in cap_subset if o.fused_prob >= buy_t]
+                st = _ev_at(cell)
+                if st is not None and st["ev_pct"] > best_ev:
+                    best_ev = st["ev_pct"]
+                    best_buy = buy_t
+                    best_cap = cap
+
+        if best_buy is None or best_cap is None:
+            skipped.append({"horizon": h, "reason": "no grid cell met sample/EV criteria on the train slice"})
+            _record_tune_history(
+                session, _run_id, "joint_strategy", "buy_threshold+ml_weight_cap", h, "ALL",
+                old_value={"buy_threshold": current_buy, "ml_weight_cap": current_cap}, new_value={},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=len(val_wr), promoted=False,
+                gate_failures=["no_candidate_met_train_criteria"],
+            )
+            continue
+
+        # Validate: both the candidate cell AND the current live baseline must be independently
+        # measurable on the VALIDATION slice — data the grid search never saw.
+        val_cap_subset = [o for o, r in val_wr if r.get("ml_weight", 0) <= best_cap + 0.05]
+        val_cell = [o for o in val_cap_subset if o.fused_prob >= best_buy]
+        candidate_stats = _ev_at(val_cell)
+
+        baseline_cap_subset = [o for o, r in val_wr if r.get("ml_weight", 0) <= current_cap + 0.05]
+        baseline_cell = [o for o in baseline_cap_subset if o.fused_prob >= current_buy]
+        baseline_stats = _ev_at(baseline_cell)
+
+        _new_value = {"buy_threshold": best_buy, "ml_weight_cap": best_cap}
+        _old_value = {"buy_threshold": current_buy, "ml_weight_cap": current_cap}
+
+        if candidate_stats is None:
+            skipped.append({"horizon": h, "reason": "candidate cell unmeasurable on validation slice (insufficient samples)"})
+            _record_tune_history(
+                session, _run_id, "joint_strategy", "buy_threshold+ml_weight_cap", h, "ALL",
+                old_value=_old_value, new_value=_new_value,
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=len(val_wr), promoted=False,
+                gate_failures=["candidate_unmeasurable_on_validation"],
+            )
+            continue
+
+        if baseline_stats is None:
+            # T232-OC3 convention: no honest baseline measurable on validation — do not assume
+            # EV 0 (would overstate lift and apply too eagerly). Skip instead.
+            skipped.append({"horizon": h, "reason": "current live baseline unmeasurable on validation slice (insufficient samples)"})
+            _record_tune_history(
+                session, _run_id, "joint_strategy", "buy_threshold+ml_weight_cap", h, "ALL",
+                old_value=_old_value, new_value=_new_value,
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=candidate_stats["ev_pct"], baseline_validation_ev_pct=None,
+                validation_n=candidate_stats["n"], promoted=False,
+                gate_failures=["baseline_unmeasurable_on_validation"],
+            )
+            continue
+
+        ev_lift = round(candidate_stats["ev_pct"] - baseline_stats["ev_pct"], 2)
+
+        # Unconditional rejection of negative EV lift, matching every sibling mechanism's
+        # convention — never apply a worse combination regardless of how large the grid shift is.
+        if ev_lift < 0:
+            skipped.append({
+                "horizon": h, "reason": f"validation-slice EV lift {ev_lift}% is negative — never apply a worse combination",
+                "candidate": _new_value, "current": _old_value,
+            })
+            _record_tune_history(
+                session, _run_id, "joint_strategy", "buy_threshold+ml_weight_cap", h, "ALL",
+                old_value=_old_value, new_value=_new_value,
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=candidate_stats["ev_pct"],
+                baseline_validation_ev_pct=baseline_stats["ev_pct"], validation_n=candidate_stats["n"],
+                promoted=False, gate_failures=["ev_lift_negative"],
+            )
+            continue
+
+        if not (_TUNE_STRATEGY_BUY_BOUNDS[0] <= best_buy <= _TUNE_STRATEGY_BUY_BOUNDS[1]) or \
+           not (_TUNE_STRATEGY_ML_CAP_BOUNDS[0] <= best_cap <= _TUNE_STRATEGY_ML_CAP_BOUNDS[1]):
+            skipped.append({"horizon": h, "reason": f"candidate {_new_value} outside sane bounds"})
+            _record_tune_history(
+                session, _run_id, "joint_strategy", "buy_threshold+ml_weight_cap", h, "ALL",
+                old_value=_old_value, new_value=_new_value,
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=candidate_stats["ev_pct"],
+                baseline_validation_ev_pct=baseline_stats["ev_pct"], validation_n=candidate_stats["n"],
+                promoted=False, gate_failures=["suggested_outside_sane_bounds"],
+            )
+            continue
+
+        # Apply through the EXISTING Redis keys — buy_threshold as a bull-baseline-relative
+        # write (read side applies per-regime via _get_dynamic_buy_threshold), ml_weight_cap as
+        # a flat value (read side via _get_style_tuned_param) — exact same keys/semantics the
+        # single-parameter mechanisms already write, so _decide_style()/signal generation code
+        # needs zero changes to pick this up.
+        redis_client.setex(f"stockai:signal_thresholds:{h}", _REDIS_TTL, str(round(best_buy, 4)))
+        redis_client.setex(f"stockai:style_tune:{h}:ml_weight_cap", _REDIS_TTL, str(round(best_cap, 2)))
+        _record_tune_history(
+            session, _run_id, "joint_strategy", "buy_threshold+ml_weight_cap", h, "ALL",
+            old_value=_old_value, new_value=_new_value,
+            train_window=_train_window, validation_window=_val_window,
+            train_ev_pct=best_ev, validation_ev_pct=candidate_stats["ev_pct"],
+            baseline_validation_ev_pct=baseline_stats["ev_pct"], validation_n=candidate_stats["n"],
+            promoted=True, gate_failures=[],
+        )
+        applied.append({
+            "horizon": h,
+            "previous": _old_value,
+            "new": _new_value,
+            "train_ev_pct": best_ev,
+            "validation_ev_pct": candidate_stats["ev_pct"],
+            "validation_baseline_ev_pct": baseline_stats["ev_pct"],
+            "ev_lift_pct": ev_lift,
+            "validation_n": candidate_stats["n"],
+        })
+
+    return {
+        "applied": applied,
+        "skipped": skipped,
+        "n_outcomes_analyzed": len(all_outcomes),
+        "grid_size": len(_TUNE_STRATEGY_BUY_GRID) * len(_TUNE_STRATEGY_ML_CAP_GRID),
+        "redis_ttl_days": 30,
+    }
+
+
 @router.post("/watchdog")
 def signal_watchdog(
     _: str = Depends(get_current_username),

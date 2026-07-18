@@ -3070,3 +3070,106 @@ to run these tests in this dev environment (already a real pinned dependency in
 implement `list_orders()` (currently only E*Trade does — `ManualBroker`/Fidelity-manual does
 not, by design, since it has no real API at all); a 502 means the E*Trade call itself failed —
 check `docker logs stockai-market-data-1 --since 10m | grep 'orders'` for the underlying error.
+
+---
+
+## Feature Reference: T255-STRATEGY-TUNER-PER-HORIZON — Joint Buy-Threshold x ML-Weight-Cap Tuner (Phase 1, Built 2026-07-18)
+
+**Gap this closes**: every self-tuning mechanism in signal-engine (`calibrate_ta_weights`,
+`calibrate_ml_weight`, `outcomes_calibrate_apply`, `tune_style_profiles`) tunes exactly ONE
+parameter at a time, against its own independent train/validation split. None had ever
+searched for the best COMBINATION of `buy_threshold` + `ml_weight_cap` together — a real gap,
+since a candidate that looks best for `buy_threshold` alone need not be the best pairing once
+`ml_weight_cap` also shifts (a lower cap changes which outcomes even clear a given threshold,
+because it changes the effective `fused_prob` population being swept).
+
+**New endpoint**: `POST /signals/tune_strategy` in
+`services/signal-engine/src/api/routes.py`, placed right after `tune_style_profiles`. For each
+of SHORT/SWING/LONG/GROWTH: joins already-stored `SignalOutcome.fused_prob` to
+`Signal.reasons["ml_weight"]` (same join pattern `tune_style_profiles` already uses), then
+grid-searches 31 `buy_threshold` levels (0.55-0.85) x 13 `ml_weight_cap` levels (0.15-0.75) —
+403 cells — on the chronological OLDER 70% of the joined rows (train), and only applies the
+winning cell if it ALSO beats the CURRENT LIVE baseline's own EV on the NEWER 30% (validation)
+that the search never saw. This is a **re-filtering exercise, not a re-simulation** — a grid
+cell's `fused_prob` still reflects whatever `ml_weight` was ACTUALLY used when the signal was
+originally generated, not a replay of what it would have been under a different cap. This
+means the sweep can only ever evaluate TIGHTENING an existing threshold/cap combination, never
+a looser one — the same explicit limitation the design doc's own deferred Phase 2b
+(equity-curve replay) exists to eventually address.
+
+**Reuses every existing convention exactly**, so this new mechanism can't silently violate a
+safety property its siblings already enforce:
+- Chronological 70/30 split (never random — avoids look-ahead leakage).
+- `min_samples=15` per grid cell per slice (looser than `outcomes_calibrate_apply`'s 50,
+  deliberately — a 403-cell 2D grid already spreads a smaller outcome pool thin; the
+  validation-beats-baseline gate below, not this floor, is what actually protects against a
+  noisy cell being promoted).
+- Unconditional rejection of negative EV lift, regardless of how large the grid shift looks.
+- `EV = mean(pct_return)` (never `avg_return × win_rate` — the T232-OC4 double-counting fix
+  documented elsewhere in this file).
+- One `TuneHistory` row per horizon per run via `_record_tune_history()`, regardless of
+  promoted-or-skipped outcome (`parameter_class="joint_strategy"`,
+  `parameter_name="buy_threshold+ml_weight_cap"` — a new value in that column, but it's a plain
+  `String(32)`, not an enum, so no schema/migration was needed).
+- Sane-bounds clamp on both dimensions before ever writing to Redis.
+
+**Applies through the EXISTING Redis keys** — `stockai:signal_thresholds:{H}` (same key
+`outcomes_calibrate_apply` already writes, read via `_get_dynamic_buy_threshold()` as a
+bull-baseline-relative delta applied per-regime) and `stockai:style_tune:{H}:ml_weight_cap`
+(same key `tune_style_profiles` already writes, read via `_get_style_tuned_param()` as a flat
+value). **Zero changes needed anywhere on the read side** — `_decide_style()`, the signal
+generator, and the existing `GET /signals/tune_status` status-reporting endpoint all already
+handle these keys. Checked whether a new companion status endpoint was warranted (per the
+original design doc's Phase 1 sketch, `GET /signals/strategy_status`) and did NOT build one —
+`tune_status` already reports `effective`/`redis_overrides` for both `buy_threshold` and
+`ml_weight_cap` per horizon, so a dedicated new endpoint would have been pure duplication.
+
+**Tests**: `services/signal-engine/tests/test_tune_strategy.py`, 9 cases, using the
+exec()-from-source extraction technique already established for functions in `routes.py` this
+environment can't import directly (`conftest.py` stubs `common`/`db` wholesale) — run against a
+REAL in-memory SQLite session and the REAL `shared/db/models.py`, with only `_get_redis`/
+`_record_tune_history` stubbed, so these tests exercise the actual grid-search/gating logic,
+not a hand-copied reimplementation that could silently drift from it.
+
+Adversarially verified twice during implementation: (1) disabled the negative-EV-lift
+rejection gate (`if ev_lift < 0:` → `if False:`) and confirmed the validation-slice-loser test
+caught a wrongly-promoted candidate (`ev_lift_pct: -7.0` still applied) before reverting;
+(2) disabled the min-sample-floor gate and confirmed 4 tests failed with a real `IndexError`
+(an empty train/validation split crashing on `train_wr[0][0].signal_date`) before reverting.
+
+**A real test-design trap hit while building the "genuinely better combination" fixture**: an
+initial dataset alternated `fused_prob`/`ml_weight` so cleanly that BOTH the candidate's
+tighter cap and the baseline's wider cap selected the IDENTICAL subset via their respective
+`cap + 0.05` tolerance windows — `ev_lift_pct` came out to exactly `0.0` every time, not
+because the code was wrong but because the fixture never actually exercised a cap-driven
+distinction (only a threshold-driven one, which both cells shared identically). Fixed by
+deliberately placing the losing rows' `ml_weight` WITHIN the baseline's tolerance window but
+OUTSIDE the candidate's — only then did the sweep have a real cap-driven signal to find.
+**Lesson for any future 2D-grid test fixture in this codebase**: check that each axis of the
+grid actually produces a DIFFERENT selected subset between the candidate and the baseline —
+two axes that happen to collapse onto the same filtered rows will always show zero lift
+regardless of whether the underlying logic is correct.
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the endpoint exists and run it manually (needs a valid JWT — see any other
+# _service_token()-style example elsewhere in this file for the pattern):
+docker exec stockai-signal-engine-1 curl -s -X POST 'http://localhost:8005/signals/tune_strategy?days=180' \
+  -H "Authorization: Bearer <token>" | head -c 500
+
+# Confirm a promoted change is visible via the EXISTING status endpoint (no new endpoint to check):
+docker exec stockai-signal-engine-1 curl -s 'http://localhost:8005/signals/tune_status' \
+  -H "Authorization: Bearer <token>"
+
+# Check TuneHistory rows this mechanism wrote:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT style, old_value, new_value, promoted, gate_failures FROM tune_history WHERE parameter_class='joint_strategy' ORDER BY ts DESC LIMIT 10;"
+```
+
+**Not yet built (Phases 2-4, documented not silently dropped)**: Phase 2 — sweep `hold_days`
+per horizon using the already-populated `return_5d/10d/20d` columns (same no-regeneration
+speed advantage). Phase 3 — schedule this weekly once a few manual cycles look sane, folding
+in `calibrate_ml_weight` (currently manual-only). Phase 4 — the explicit limitation that any
+stored-outcome sweep (this one included) can only evaluate TIGHTENING an existing parameter;
+testing a genuinely LOOSER threshold or a different compression map needs the design doc's own
+deferred Phase 2b equity-curve replay, a separate and larger project.
