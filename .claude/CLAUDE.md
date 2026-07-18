@@ -3150,6 +3150,25 @@ grid actually produces a DIFFERENT selected subset between the candidate and the
 two axes that happen to collapse onto the same filtered rows will always show zero lift
 regardless of whether the underlying logic is correct.
 
+**A real bug caught by triggering this live against real production data (not just tests) on
+first deploy**: the initial version only had the hard `ev_lift < 0` rejection — no soft
+min-lift floor like `outcomes_calibrate_apply`'s own `min_ev_lift` + shift-size convention.
+Running it live against 2,782 real outcomes immediately surfaced SHORT applying a real
+`(0.63->0.55, 0.30->0.25)` shift with `ev_lift_pct` EXACTLY `0.0` — a tie, not an improvement.
+Fixed by adding an unconditional `ev_lift <= 0` rejection independent of shift size
+(deliberately STRICTER than the sibling mechanism's own shift-size escape hatch — a large
+parameter shift with a genuinely-measured zero lift against 2,782 real samples means the
+tested parameters don't matter for this outcome distribution, not that measurement noise is
+masking a real edge worth keeping anyway), plus the sibling's own soft `min_ev_lift`
++ trivial-shift floor for small-but-positive lifts. The bad pre-fix live write was manually
+cleared (`redis-cli del stockai:signal_thresholds:SHORT stockai:style_tune:SHORT:ml_weight_cap`)
+before the fixed code was deployed; SWING's write from that same initial run (a genuine
+`ev_lift_pct=1.57` improvement) was left in place, confirmed against the corrected gate logic.
+**Lesson reinforced**: live-verifying a new self-tuning mechanism against real production data
+immediately, rather than trusting a synthetic test suite alone, caught a real gate gap within
+minutes of first deploy — the same "verify against live state" discipline documented elsewhere
+in this file, applied to a brand-new mechanism's very first run instead of an existing one.
+
 **What to check if this looks wrong**:
 ```bash
 # Confirm the endpoint exists and run it manually (needs a valid JWT — see any other

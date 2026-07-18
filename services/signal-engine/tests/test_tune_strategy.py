@@ -179,10 +179,11 @@ def test_records_one_tune_history_row_per_horizon_regardless_of_outcome():
     start = _ROUTES_SOURCE.index("def tune_strategy(")
     end = _ROUTES_SOURCE.index('@router.post("/watchdog")', start)
     body = _ROUTES_SOURCE[start:end]
-    # 6 skip/reject gates (insufficient_total_samples, no_candidate_met_train_criteria,
+    # 7 skip/reject gates (insufficient_total_samples, no_candidate_met_train_criteria,
     # candidate_unmeasurable_on_validation, baseline_unmeasurable_on_validation,
-    # ev_lift_negative, suggested_outside_sane_bounds) + 1 success/applied path = 7.
-    assert body.count("_record_tune_history(") == 7
+    # ev_lift_negative, ev_lift_below_min_and_shift_too_small, suggested_outside_sane_bounds)
+    # + 1 success/applied path = 8.
+    assert body.count("_record_tune_history(") == 8
 
 
 # ── behavioral checks against the real, extracted tune_strategy() ─────────────
@@ -214,6 +215,30 @@ def test_promotes_a_genuinely_better_combination_on_a_clean_dataset():
     # Applied through the existing keys, not new ones.
     assert "stockai:signal_thresholds:SWING" in fake_redis.writes
     assert "stockai:style_tune:SWING:ml_weight_cap" in fake_redis.writes
+
+
+def test_never_promotes_a_tied_or_near_zero_lift_with_a_trivial_grid_shift():
+    """T255-MINLIFT-PARITY regression: caught live in production during this feature's own
+    initial deploy — a candidate with ev_lift_pct exactly 0.0 (a tie, not an improvement) was
+    applied because only the hard `< 0` floor existed. A dataset where every outcome behaves
+    identically regardless of threshold/cap (constant fused_prob/ml_weight/return) produces
+    an exact tie between any candidate and the baseline — this must be rejected as noise, not
+    promoted just because it isn't negative."""
+    session = _make_session()
+    tune_history_calls = []
+    fake_redis = _FakeRedis()
+    func = _extract_tune_strategy(fake_redis, tune_history_calls)
+    base_date = date(2026, 1, 1)
+    for i in range(200):
+        d = base_date + timedelta(days=i // 3)
+        _add_pair(session, i, "SHORT", d, fused_prob=0.90, ml_weight=0.05, is_correct=True, pct_return=0.04)
+    session.commit()
+    result = func(days=3650, min_samples=15, session=session)
+    assert not any(a["horizon"] == "SHORT" for a in result["applied"]), (
+        f"a tied (ev_lift_pct == 0) candidate with only a trivial grid shift must never be applied: {result}"
+    )
+    short_skip = next(s for s in result["skipped"] if s["horizon"] == "SHORT")
+    assert "below min" in short_skip["reason"]
 
 
 def test_never_promotes_when_candidate_does_not_beat_baseline_on_validation():

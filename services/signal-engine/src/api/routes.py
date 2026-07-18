@@ -4528,6 +4528,38 @@ def tune_strategy(
             )
             continue
 
+        # T255-MINLIFT-PARITY: found live in production during this feature's own initial
+        # deploy verification — SHORT applied a (0.63->0.55, 0.30->0.25) shift with
+        # ev_lift_pct=0.0 (an exact tie, not an improvement) because only the hard `< 0` floor
+        # existed. outcomes_calibrate_apply's own soft floor combines a min-lift check with a
+        # "shift is big enough to keep anyway" escape hatch — deliberately NOT mirrored here
+        # for the exact-zero-or-negative case: a real production dataset producing a genuine
+        # tie (not just a small-but-positive lift) means the grid found literally no measured
+        # difference between the candidate and the current baseline, no matter how far apart
+        # the two parameter sets look — a large parameter shift with zero measured benefit is
+        # not "a real edge that measurement noise is hiding," it's evidence the parameters
+        # tested don't matter for this outcome distribution. min_ev_lift stays a soft floor
+        # (with the shift escape hatch) ONLY for genuinely positive-but-small lifts; lift <= 0
+        # is unconditionally rejected regardless of shift size, same as the `< 0` gate above.
+        _MIN_EV_LIFT = 0.1
+        _buy_shift = abs(best_buy - current_buy)
+        _cap_shift = abs(best_cap - current_cap)
+        if ev_lift <= 0 or (ev_lift < _MIN_EV_LIFT and _buy_shift < 0.03 and _cap_shift < 0.05):
+            skipped.append({
+                "horizon": h,
+                "reason": f"validation-slice EV lift {ev_lift}% below min {_MIN_EV_LIFT}% and grid shift too small",
+                "candidate": _new_value, "current": _old_value,
+            })
+            _record_tune_history(
+                session, _run_id, "joint_strategy", "buy_threshold+ml_weight_cap", h, "ALL",
+                old_value=_old_value, new_value=_new_value,
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=candidate_stats["ev_pct"],
+                baseline_validation_ev_pct=baseline_stats["ev_pct"], validation_n=candidate_stats["n"],
+                promoted=False, gate_failures=["ev_lift_below_min_and_shift_too_small"],
+            )
+            continue
+
         if not (_TUNE_STRATEGY_BUY_BOUNDS[0] <= best_buy <= _TUNE_STRATEGY_BUY_BOUNDS[1]) or \
            not (_TUNE_STRATEGY_ML_CAP_BOUNDS[0] <= best_cap <= _TUNE_STRATEGY_ML_CAP_BOUNDS[1]):
             skipped.append({"horizon": h, "reason": f"candidate {_new_value} outside sane bounds"})
