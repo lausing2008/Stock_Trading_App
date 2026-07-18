@@ -3781,18 +3781,52 @@ documented for `jose`/`requests_oauthlib`/`redis` elsewhere in this file, and th
 resolution: prefer running tests against the real library over stubbing it, so `_google_news()`
 RSS parsing and the VADER fallback path are exercised for real, not mocked.
 
-**Tests**: `services/market-data/tests/test_market_pulse.py`, 11 cases — Claude-available vs.
+**A real bug found live, right after first deploy**: production returned `source: "vader"` with
+empty `themes` even though the user had already set a Claude API key on the admin Settings
+page. Root cause: `news.py`'s `_ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")` reads a
+plain environment variable set once at import time — but nothing in this app ever writes
+`ANTHROPIC_API_KEY` into a container's env. The Settings page instead writes to
+`stockai:admin:claude_api_key` in Redis, the SAME key `llm_scorer.py`/`risk_agent.py` already
+read via their own `_get_api_key()`/`_get_claude_key()` helpers — `news.py`'s per-symbol
+`_claude_sentiment()` had this identical gap the whole time, just never noticed because the
+per-symbol sentiment endpoint's VADER fallback is unremarkable-looking either way. Fixed by
+adding `news._get_claude_key()` (Redis-first via `_get_redis().get(_REDIS_CLAUDE_KEY)`, falling
+back to the env var only if Redis has nothing or errors), matching `llm_scorer.py`'s exact
+established pattern, and switching every `_ANTHROPIC_KEY` read site (`_claude_sentiment()`,
+`_claude_market_themes()`, `get_news_sentiment()`) to call it instead of reading the module-level
+constant directly.
+
+**A real test-writing gotcha hit while wiring this up**: the existing tests patched
+`news._ANTHROPIC_KEY` directly to simulate "no key configured" — but once the code called
+`_get_claude_key()`, which itself calls `_get_redis()` first, the conftest-stubbed `MagicMock`
+Redis client returned a truthy `MagicMock` from `.get(...).strip()`, silently defeating the "no
+key" test case (it kept passing, but for the wrong reason — the code proceeded past the
+guard into a stubbed `httpx.Client()` call that itself degraded to `None` via the non-200 path,
+not via the intended early-return). Caught by adversarially disabling the real guard
+(`if not api_key or not titles` → `if False or not titles`) and finding the test still passed —
+the same "still passes after sabotage" red flag already documented for the correlation
+self-exclusion finding elsewhere in this file. Fixed by replacing all `patch.object(news,
+"_ANTHROPIC_KEY", ...)` call sites with `patch.object(news, "_get_claude_key", return_value=...)`
+and adding an explicit `mock_client.assert_not_called()` to the no-key test so a regression here
+fails on the right assertion instead of coincidentally landing on the same return value via a
+different code path. Re-verified: the same sabotage now correctly fails this test.
+
+**Tests**: `services/market-data/tests/test_market_pulse.py`, 15 cases — Claude-available vs.
 VADER-fallback scoring paths, neutral-with-no-headlines, confirming all three market-level
 queries are actually issued, Redis cache write + warm-cache read (no re-fetch when cache is
-warm), themes capped at 3, and `_claude_market_themes()`'s own fail-open cases (missing API
-key, non-200 response, malformed JSON). Adversarially verified three guards by sabotage,
-confirmed each caught the induced failure, then reverted: removing the `[:3]` themes cap (test
-caught 5 themes surviving instead of 3); disabling the warm-cache early-return in
+warm), themes capped at 3, `_claude_market_themes()`'s own fail-open cases (missing API key —
+now asserting the HTTP client is never constructed, not just that the result is `None` — non-200
+response, malformed JSON), and 4 new cases for `_get_claude_key()` itself (Redis value preferred
+over the env var, env-var fallback when Redis is empty, env-var fallback on a Redis connection
+error, whitespace-only Redis value treated as absent). Adversarially verified four guards by
+sabotage, confirmed each caught the induced failure, then reverted: removing the `[:3]` themes
+cap (test caught 5 themes surviving instead of 3); disabling the warm-cache early-return in
 `get_market_pulse()` (test caught 3 live re-fetch calls instead of the expected 0); appending a
 4th entry to `_PULSE_QUERIES` (test caught the extra query appearing, confirming the test reads
 the real module-level constant rather than a hardcoded duplicate that could silently drift from
-it — the exact failure mode documented in the T258-TRADE-POSTMORTEM entry above). Full
-305-test market-data suite and frontend typecheck green.
+it — the exact failure mode documented in the T258-TRADE-POSTMORTEM entry above); and the
+Redis-priority order in `_get_claude_key()` (test caught the env-var value winning instead of
+the Redis value). Full 309-test market-data suite and frontend typecheck green.
 
 **What to check if this looks wrong**:
 ```bash

@@ -9,9 +9,10 @@ Strategy:
 
 Sentiment:
   - Per-article: VADER with financial-domain lexicon corrections.
-  - Aggregate (GET /stocks/{symbol}/news/sentiment): Claude Haiku if
-    ANTHROPIC_API_KEY is in environment, else enhanced VADER average.
-    Claude result cached 4h in Redis.
+  - Aggregate (GET /stocks/{symbol}/news/sentiment): Claude Haiku if a key is
+    configured (admin Settings page's stockai:admin:claude_api_key in Redis,
+    or the ANTHROPIC_API_KEY env var as a fallback), else enhanced VADER
+    average. Claude result cached 4h in Redis.
 """
 from __future__ import annotations
 
@@ -71,6 +72,12 @@ _analyzer.lexicon.update({
 })
 
 # ── Claude configuration (optional — falls back to VADER if key absent) ───────
+# ANTHROPIC_API_KEY env var is a last-resort fallback only — the primary source is the
+# same Redis key every other LLM feature in this app reads (set via the admin Settings
+# page), matching llm_scorer.py/risk_agent.py's established _get_api_key() pattern. A bare
+# env-var-only lookup here meant this feature silently fell back to VADER even with a key
+# configured in Settings, since nothing writes ANTHROPIC_API_KEY into this container's env.
+_REDIS_CLAUDE_KEY = "stockai:admin:claude_api_key"
 _ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 _redis: redis_lib.Redis | None = None
@@ -81,6 +88,16 @@ def _get_redis() -> redis_lib.Redis:
     if _redis is None:
         _redis = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
     return _redis
+
+
+def _get_claude_key() -> str:
+    try:
+        key = _get_redis().get(_REDIS_CLAUDE_KEY) or ""
+        if key.strip():
+            return key.strip()
+    except Exception:
+        pass
+    return _ANTHROPIC_KEY
 
 
 class NewsItem(BaseModel):
@@ -105,7 +122,8 @@ def _claude_sentiment(symbol: str, titles: list[str]) -> float | None:
     Returns 0-100 score (50=neutral), or None if key absent / call fails.
     Result cached in Redis for 4h under stockai:news_sentiment:{symbol}.
     """
-    if not _ANTHROPIC_KEY or not titles:
+    api_key = _get_claude_key()
+    if not api_key or not titles:
         return None
     cache_key = f"stockai:news_sentiment:{symbol.upper()}"
     try:
@@ -130,7 +148,7 @@ def _claude_sentiment(symbol: str, titles: list[str]) -> float | None:
                     "messages": [{"role": "user", "content": f"Headlines:\n{headlines}"}],
                 },
                 headers={
-                    "x-api-key": _ANTHROPIC_KEY,
+                    "x-api-key": api_key,
                     "anthropic-version": "2023-06-01",
                     "content-type": "application/json",
                 },
@@ -329,7 +347,8 @@ def _claude_market_themes(titles: list[str]) -> dict | None:
     a per-symbol score — themes are the part a headline list alone doesn't
     surface at a glance.
     """
-    if not _ANTHROPIC_KEY or not titles:
+    api_key = _get_claude_key()
+    if not api_key or not titles:
         return None
     headlines = "\n".join(f"- {t}" for t in titles[:10])
     try:
@@ -350,7 +369,7 @@ def _claude_market_themes(titles: list[str]) -> dict | None:
                     "messages": [{"role": "user", "content": f"Headlines:\n{headlines}"}],
                 },
                 headers={
-                    "x-api-key": _ANTHROPIC_KEY,
+                    "x-api-key": api_key,
                     "anthropic-version": "2023-06-01",
                     "content-type": "application/json",
                 },
@@ -420,12 +439,13 @@ def get_market_pulse():
 def get_news_sentiment(symbol: str, session: Session = Depends(get_session)):
     """Aggregate news sentiment score for a symbol (0-100, 50=neutral).
 
-    Uses Claude Haiku if ANTHROPIC_API_KEY is set in environment (4h cache),
-    otherwise falls back to enhanced VADER average (financial lexicon corrections
-    applied — significantly more accurate than stock VADER for financial headlines).
+    Uses Claude Haiku if a key is configured (admin Settings page, or the
+    ANTHROPIC_API_KEY env var as a fallback) — 4h cache — otherwise falls back to
+    enhanced VADER average (financial lexicon corrections applied — significantly
+    more accurate than stock VADER for financial headlines).
     """
     # Try per-symbol Claude cache first (avoids repeat yfinance fetches)
-    if _ANTHROPIC_KEY:
+    if _get_claude_key():
         cache_key = f"stockai:news_sentiment:{symbol.upper()}"
         try:
             cached = _get_redis().get(cache_key)

@@ -140,7 +140,7 @@ def test_market_pulse_caps_themes_at_three():
         def post(self, *a, **kw):
             return _FakeResp()
 
-    with patch.object(news, "_ANTHROPIC_KEY", "fake-key"), \
+    with patch.object(news, "_get_claude_key", return_value="fake-key"), \
          patch.object(news.httpx, "Client", return_value=_FakeClient()):
         result = news._claude_market_themes(["headline 1", "headline 2"])
 
@@ -150,9 +150,11 @@ def test_market_pulse_caps_themes_at_three():
 
 
 def test_claude_market_themes_returns_none_without_api_key():
-    with patch.object(news, "_ANTHROPIC_KEY", ""):
+    with patch.object(news, "_get_claude_key", return_value=""), \
+         patch.object(news.httpx, "Client") as mock_client:
         result = news._claude_market_themes(["some headline"])
     assert result is None
+    mock_client.assert_not_called()  # must short-circuit before any HTTP call
 
 
 def test_claude_market_themes_returns_none_on_non_200():
@@ -169,7 +171,7 @@ def test_claude_market_themes_returns_none_on_non_200():
         def post(self, *a, **kw):
             return _FakeResp()
 
-    with patch.object(news, "_ANTHROPIC_KEY", "fake-key"), \
+    with patch.object(news, "_get_claude_key", return_value="fake-key"), \
          patch.object(news.httpx, "Client", return_value=_FakeClient()):
         result = news._claude_market_themes(["some headline"])
     assert result is None
@@ -189,7 +191,7 @@ def test_claude_market_themes_returns_none_on_malformed_json():
         def post(self, *a, **kw):
             return _FakeResp()
 
-    with patch.object(news, "_ANTHROPIC_KEY", "fake-key"), \
+    with patch.object(news, "_get_claude_key", return_value="fake-key"), \
          patch.object(news.httpx, "Client", return_value=_FakeClient()):
         result = news._claude_market_themes(["some headline"])
     assert result is None
@@ -204,3 +206,37 @@ def test_market_pulse_label_boundaries():
              patch.object(news, "_claude_market_themes", return_value={"score": score, "themes": []}):
             result = news.get_market_pulse()
         assert result.label == expected_label, f"score={score} expected {expected_label}, got {result.label}"
+
+
+# ── _get_claude_key() — Redis-first, env-var-fallback (matches llm_scorer.py's pattern) ──
+
+def test_get_claude_key_prefers_redis_over_env_var():
+    fake_redis = _FakeRedis()
+    fake_redis.store[news._REDIS_CLAUDE_KEY] = "redis-key"
+    with patch.object(news, "_get_redis", return_value=fake_redis), \
+         patch.object(news, "_ANTHROPIC_KEY", "env-key"):
+        assert news._get_claude_key() == "redis-key"
+
+
+def test_get_claude_key_falls_back_to_env_var_when_redis_empty():
+    fake_redis = _FakeRedis()  # no key set
+    with patch.object(news, "_get_redis", return_value=fake_redis), \
+         patch.object(news, "_ANTHROPIC_KEY", "env-key"):
+        assert news._get_claude_key() == "env-key"
+
+
+def test_get_claude_key_falls_back_to_env_var_on_redis_error():
+    class _BrokenRedis:
+        def get(self, key):
+            raise ConnectionError("redis unavailable")
+    with patch.object(news, "_get_redis", return_value=_BrokenRedis()), \
+         patch.object(news, "_ANTHROPIC_KEY", "env-key"):
+        assert news._get_claude_key() == "env-key"
+
+
+def test_get_claude_key_ignores_whitespace_only_redis_value():
+    fake_redis = _FakeRedis()
+    fake_redis.store[news._REDIS_CLAUDE_KEY] = "   "
+    with patch.object(news, "_get_redis", return_value=fake_redis), \
+         patch.object(news, "_ANTHROPIC_KEY", "env-key"):
+        assert news._get_claude_key() == "env-key"
