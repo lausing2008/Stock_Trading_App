@@ -1494,6 +1494,80 @@ def _composite_priority(row) -> float:
     return 0.5 * conf_score + 0.3 * kscore_score + 0.2 * breakout_bonus
 
 
+# ── T258-PORTFOLIO-CORRELATION-PREENTRY: pairwise correlation vs. the open book ────────────
+# market-data has direct DB access to Price/Stock (unlike portfolio-optimizer, which fetches
+# over HTTP for the same math in its own /portfolio-risk/risk endpoint — see that endpoint's
+# own module docstring for why it has to). Reimplementing the same df.corr() math here as a
+# local, direct DB query avoids an HTTP round-trip on the hottest, most capital-sensitive
+# code path in the system.
+
+_CORR_LOOKBACK_DAYS = 30
+_CORR_MIN_OVERLAP_ROWS = 10  # both series need at least this many overlapping days to trust
+
+
+def _bulk_fetch_daily_closes(session, stock_ids: list[int]) -> "pd.DataFrame":
+    """One bulk query for daily closes across all given stock_ids, pivoted into a wide
+    DataFrame (columns = stock_id, index = date, values = close). Called ONCE per scan cycle
+    for the open book, not once per candidate — see _scan_for_entries' call site."""
+    if not stock_ids:
+        return pd.DataFrame()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_CORR_LOOKBACK_DAYS)
+    rows = session.execute(
+        select(Price.stock_id, Price.ts, Price.close).where(
+            Price.stock_id.in_(stock_ids),
+            Price.timeframe == TimeFrame.D1,
+            Price.ts >= cutoff,
+        ).order_by(Price.stock_id, Price.ts)
+    ).all()
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows, columns=["stock_id", "ts", "close"])
+    df["ts"] = pd.to_datetime(df["ts"]).dt.date
+    wide = df.pivot_table(index="ts", columns="stock_id", values="close", aggfunc="last")
+    return wide
+
+
+def _max_correlation_with_open_positions(
+    session, candidate_stock_id: int, open_stock_ids: list[int], open_closes_cache: "pd.DataFrame",
+) -> float | None:
+    """Return the highest pairwise daily-return correlation between the candidate and any
+    currently-open position, or None if it can't be computed (no open positions, insufficient
+    overlapping history, etc.) — None means "don't apply the score layer", not zero
+    correlation, since the two have very different implications for _should_enter()'s score.
+
+    open_closes_cache is the ALREADY bulk-fetched wide DataFrame for every open position's
+    stock_id (built once per scan cycle by _bulk_fetch_daily_closes — see _scan_for_entries'
+    call site), not re-fetched here. Only the candidate's own closes are fetched fresh per call.
+    """
+    open_stock_ids = [sid for sid in open_stock_ids if sid != candidate_stock_id]
+    if not open_stock_ids or open_closes_cache.empty:
+        return None
+    try:
+        cand_wide = _bulk_fetch_daily_closes(session, [candidate_stock_id])
+        if cand_wide.empty or candidate_stock_id not in cand_wide.columns:
+            return None
+        combined = open_closes_cache.join(cand_wide[[candidate_stock_id]], how="outer")
+        returns = combined.pct_change().dropna(how="all")
+        cand_rets = returns[candidate_stock_id].dropna()
+        best: float | None = None
+        for open_id in open_stock_ids:
+            if open_id not in returns.columns:
+                continue
+            open_rets = returns[open_id].dropna()
+            aligned = pd.concat([cand_rets, open_rets], axis=1, join="inner")
+            if len(aligned) < _CORR_MIN_OVERLAP_ROWS:
+                continue
+            c = float(aligned.iloc[:, 0].corr(aligned.iloc[:, 1]))
+            if pd.isna(c):
+                continue
+            if best is None or abs(c) > abs(best):
+                best = c
+        return best
+    except Exception as exc:
+        log.warning("paper.correlation_check_failed", error=str(exc))
+        return None
+
+
 # ── Entry qualifier ───────────────────────────────────────────────────────────
 
 def _should_enter(
@@ -1504,12 +1578,20 @@ def _should_enter(
     cfg: dict,
     live_regime: dict | None = None,
     kscore: float | None = None,
+    max_open_corr: float | None = None,
 ) -> tuple[bool, int, list[str]]:
     """Score current conditions to decide if NOW is a good time to enter.
 
     Returns (should_enter, score, notes_list).
     Score >= cfg['min_entry_score'] → ENTER.
     Hard-reject conditions return (False, -99, [reason]) regardless of score.
+
+    max_open_corr (T258-PORTFOLIO-CORRELATION-PREENTRY): the highest pairwise daily-return
+    correlation between this candidate and any currently-open position in the SAME portfolio,
+    or None if it couldn't be computed (insufficient price history, no open positions, etc.).
+    Advisory only — same -1/+0 shape as the other score layers here, never a hard reject. The
+    correlation math itself lives in _max_correlation_with_open_positions() below and is
+    computed once per scan cycle by the caller (_scan_for_entries), not per candidate here.
     """
     style = cfg.get("trading_style", "GROWTH")
     reasons = signal_data.get("reasons") or {}
@@ -1834,6 +1916,25 @@ def _should_enter(
         else:
             score -= 1
             notes.append(f"K-Score {kscore:.0f} below 55 — weak fundamental/momentum case")
+
+    # ── T258-PORTFOLIO-CORRELATION-PREENTRY: advisory penalty for high correlation
+    # with an already-open position ──────────────────────────────────────────
+    # Ten individually-good trades that are all highly correlated (e.g. semis + high-beta
+    # software) are effectively one position wearing many tickers. This mirrors the same
+    # 0.8 "high correlation" warning threshold portfolio-optimizer's own /portfolio-risk/risk
+    # endpoint already uses for its warnings list — advisory only (score -1), never a hard
+    # reject, since a single correlation snapshot from a short lookback window is too noisy a
+    # signal to block a trade outright on its own (matching this repo's established
+    # discipline of promoting a soft penalty to a hard gate only after outcome data justifies
+    # it — see the DE-parity hard-reject ports elsewhere in this file for the sibling case
+    # where that promotion WAS already justified).
+    _HIGH_CORR_THRESHOLD = 0.8
+    if max_open_corr is not None and max_open_corr > _HIGH_CORR_THRESHOLD:
+        score -= 1
+        notes.append(
+            f"High correlation ({max_open_corr:.2f}) with an open position — "
+            f"reduces effective diversification"
+        )
 
     # ── Decision ─────────────────────────────────────────────────────────────
 
@@ -3596,6 +3697,12 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         (st.sector or "unclassified") for _, st in _prefetched_open
     ))
 
+    # T258-PORTFOLIO-CORRELATION-PREENTRY: bulk-fetch daily closes for the open book ONCE per
+    # scan cycle (not once per candidate) — each candidate's own correlation check below reuses
+    # this same cache, only adding its own single stock_id's closes on top.
+    _open_stock_ids = [st.id for _, st in _prefetched_open]
+    _open_closes_cache = _bulk_fetch_daily_closes(session, _open_stock_ids) if _open_stock_ids else pd.DataFrame()
+
     # T221-B: Market cluster cap — block new entries when at the per-market position limit.
     # HK stocks are highly correlated: a market-wide down day stops out all positions simultaneously.
     _max_mkt_pos = cfg.get("max_market_positions", 4)
@@ -4144,9 +4251,12 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             consec_losses=_consec_losses,              # T187: streak gate
             kscore=kscore_f,                           # AUD232-042: K-Score visibility
         )
+        _max_corr = _max_correlation_with_open_positions(
+            session, stock.id, _open_stock_ids, _open_closes_cache,
+        )
         se_result = _should_enter(
             stock.symbol, signal_data, live_price, game_plan, cfg, live_regime,
-            kscore=kscore_f,
+            kscore=kscore_f, max_open_corr=_max_corr,
         )
 
         if de_mode == "primary":

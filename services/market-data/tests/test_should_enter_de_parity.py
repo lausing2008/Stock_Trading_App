@@ -54,7 +54,7 @@ def _neutral_inputs():
 
 
 def _score_only(live_regime=None, kscore=None, cfg_overrides=None, game_plan_overrides=None,
-                 signal_data_overrides=None):
+                 signal_data_overrides=None, max_open_corr=None):
     live_price, game_plan, signal_data, cfg = _neutral_inputs()
     if cfg_overrides:
         cfg.update(cfg_overrides)
@@ -64,6 +64,7 @@ def _score_only(live_regime=None, kscore=None, cfg_overrides=None, game_plan_ove
         signal_data.update(signal_data_overrides)
     should_enter, score, notes = _should_enter(
         "TEST", signal_data, live_price, game_plan, cfg, live_regime, kscore=kscore,
+        max_open_corr=max_open_corr,
     )
     return should_enter, score, notes
 
@@ -345,3 +346,46 @@ def test_choppy_regime_rr_floor_can_be_cleared_with_a_wider_take_profit():
         "TEST", signal_data, live_price, game_plan, cfg, {"state": "choppy"},
     )
     assert not any("below minimum" in n for n in notes)
+
+
+# ── T258-PORTFOLIO-CORRELATION-PREENTRY: advisory correlation penalty ────────────────
+
+def test_high_correlation_with_open_position_subtracts_one_point():
+    _, score_high, notes = _score_only(max_open_corr=0.85)
+    _, score_none, _ = _score_only(max_open_corr=None)
+    assert score_high == score_none - 1
+    assert any("High correlation" in n and "0.85" in n for n in notes)
+
+
+def test_correlation_at_exactly_the_threshold_does_not_penalize():
+    _, score, notes = _score_only(max_open_corr=0.8)
+    assert not any("High correlation" in n for n in notes)
+
+
+def test_correlation_below_threshold_does_not_penalize():
+    _, score_low, notes = _score_only(max_open_corr=0.3)
+    _, score_none, _ = _score_only(max_open_corr=None)
+    assert score_low == score_none
+    assert not any("High correlation" in n for n in notes)
+
+
+def test_no_correlation_data_leaves_score_untouched():
+    _, score, notes = _score_only(max_open_corr=None)
+    assert not any("High correlation" in n for n in notes)
+
+
+def test_strongly_negative_correlation_does_not_penalize():
+    """Only a strong POSITIVE correlation reduces diversification — a hedge (negative
+    correlation) with an open position is the opposite of a concentration risk."""
+    _, score, notes = _score_only(max_open_corr=-0.9)
+    assert not any("High correlation" in n for n in notes)
+
+
+def test_correlation_layer_stacks_with_kscore_and_regime_independently():
+    _, score, notes = _score_only(live_regime={"state": "bull"}, kscore=60.0, max_open_corr=0.9)
+    _, score_base, _ = _score_only(live_regime=None, kscore=None, max_open_corr=None)
+    # bull (+1) + high kscore (+1) + high correlation (-1) = +1 over the fully-neutral baseline
+    assert score == score_base + 1
+    assert any("Regime: bull" in n for n in notes)
+    assert any("K-Score 60" in n for n in notes)
+    assert any("High correlation" in n for n in notes)

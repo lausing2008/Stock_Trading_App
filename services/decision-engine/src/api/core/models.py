@@ -76,6 +76,18 @@ class Multipliers(BaseModel):
     vix: float = 1.0
 
 
+class RiskFlag(BaseModel):
+    """T258-WHATCOULDGOWRONG-AGENT: one adversarial-check finding.
+
+    category/severity are the LLM's own classification of a concrete failure mode it was
+    asked to argue FOR (not evidence the trade will actually fail — see risk_agent.py's
+    module docstring for why no probability_of_failure number is emitted here).
+    """
+    category: str      # macro | sector | company | technical
+    severity: str      # low | medium | high
+    note: str          # one concise sentence
+
+
 # ── Main response ──────────────────────────────────────────────────────────────
 
 class DecisionResult(BaseModel):
@@ -102,6 +114,13 @@ class DecisionResult(BaseModel):
     # — this flag makes that an explicit, intentional signal rather than a silent
     # inconsistency a consumer might mistake for a bug.
     llm_verdict_overridden_by_sizing: bool = False
+    # T258-WHATCOULDGOWRONG-AGENT: optional adversarial pre-trade risk enumeration (only
+    # populated when risk_check_enabled=True). None (not []) means the check didn't run at
+    # all — a real finding of "no risks identified" is not a case the LLM is asked to report,
+    # since a forced-adversarial prompt asking it to argue against the trade will essentially
+    # always find something to say; distinguishing "didn't run" from "found nothing" would
+    # invite over-trusting an empty list as a clean bill of health.
+    risks: list[RiskFlag] | None = None
 
 
 class BatchDecisionRequest(BaseModel):

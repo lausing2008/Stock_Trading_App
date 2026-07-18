@@ -19,12 +19,14 @@ from .core.models import (
     Factors,
     Multipliers,
     PositionPlan,
+    RiskFlag,
     ScoreItem,
 )
 from .core.regime import aget_regime, get_regime
 from .core.scorer import compute_score, min_score_for_regime
 from .core.sizer import combined_market_mult, compute_position
 from .llm_scorer import score_with_llm
+from .risk_agent import check_risks
 
 router = APIRouter()
 log = structlog.get_logger()
@@ -257,6 +259,22 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
             ))
         llm_verdict_str = ("BUY" if llm_adj > 0 else "SKIP" if llm_adj < 0 else "HOLD")
 
+    # 10b. T258-WHATCOULDGOWRONG-AGENT: optional adversarial risk enumeration (advisory only —
+    # never affects score/verdict, matching the design's own explicit "no unvalidated
+    # probability_of_failure gating anything" stance).
+    risks: list[dict] | None = None
+    if cfg.get("risk_check_enabled", False):
+        _vz = reasons.get("volume_z")
+        risks = await check_risks(
+            symbol=symbol, style=style,
+            sig_direction=sig_direction, confidence=confidence,
+            game_plan=game_plan, regime_state=regime_state, regime=regime,
+            is_pre_choppy=is_pre_choppy, is_pre_risk_off=is_pre_risk_off,
+            research_rec=research_rec, research_score=research_score,
+            days_to_earnings=dte_int, volume_z=float(_vz) if _vz is not None else None,
+            reasons=reasons, sig_ts=sig_ts, cfg=cfg,
+        )
+
     # 11. Verdict
     if score >= min_score:
         verdict = "BUY"
@@ -328,6 +346,7 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         llm_verdict=llm_verdict_str,
         llm_verdict_overridden_by_sizing=llm_verdict_overridden_by_sizing,
         llm_reasoning=llm_reasoning,
+        risks=[RiskFlag(**r) for r in risks] if risks else None,
     )
 
 

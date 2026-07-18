@@ -3433,3 +3433,168 @@ inside the container — all 27 should pass. If any of the 4 hard-reject tests f
 future edit to `_should_enter()`, that's a real regression in DE parity, not a flaky test (all
 4 groups were adversarially confirmed to fail correctly when their underlying condition is
 disabled).
+
+---
+
+## Feature Reference: T258-WHATCOULDGOWRONG-AGENT — Adversarial Pre-Trade Risk Check (Built 2026-07-18)
+
+**What this is**: the one genuinely-new agent from the "Combined Agent Catalog" fit-gap
+analysis (see T258-FITGAP-AGENT-CATALOG). Before this, nothing in the codebase argued AGAINST
+a proposed entry — research reports have risk sections but are slow, on-demand, per-report;
+decision-engine's hard rejects block on rules but never enumerate concrete failure modes for
+a trade that clears every gate.
+
+**Implementation**: `services/decision-engine/src/api/risk_agent.py`, deliberately mirroring
+`llm_scorer.py`'s exact established pattern rather than inventing a new LLM-call convention —
+same `stockai:admin:claude_api_key` Redis lookup, same `httpx.AsyncClient` call to
+`api.anthropic.com/v1/messages`, same fail-open-returns-None contract, same 6h Redis cache
+keyed by symbol+style+date. Opt-in via `risk_check_enabled` config (default `False`, same
+convention as `llm_scoring_enabled`). Called from `_decide()` in `routes.py` right after the
+existing LLM-scoring step, using ONLY context `_decide()` already has in scope (game_plan,
+regime, research_rec/score, `reasons` dict fields) — zero new fetches.
+
+**Deliberately does NOT emit a probability_of_failure number.** Per the source design doc's
+own honest-answer section and this repo's established "don't let a rubric that sounds right
+stay in production unvalidated" discipline: an LLM narrating "73% chance of failure" is not
+evidence of a 73% edge — it's evidence the model followed formatting instructions. The value
+is the forced, concrete risk *enumeration* a human reads before entering, not an unvalidated
+confidence number attached to it.
+
+**Also deliberately returns `None`, not `[]`, when zero risks pass validation** — a forced-
+adversarial prompt asking the model to argue against a trade will essentially always find
+something to say, so an empty list is never a real "clean bill of health" finding worth
+reporting; distinguishing "didn't run" from "found nothing" would invite over-trusting a rare,
+likely-spurious empty response.
+
+**Response shape**: new `RiskFlag` pydantic model (`category: macro|sector|company|technical`,
+`severity: low|medium|high`, `note: str`) and a `risks: list[RiskFlag] | None` field on
+`DecisionResult`. Frontend: `decide.tsx` gained a `RisksCard` component rendered only when
+`risks` is a non-empty list, styled to match the existing `PositionCard`'s "illustrative only"
+warning convention. `frontend/src/lib/api.ts`'s `DecisionResult` type also gained
+`llm_verdict`/`llm_reasoning`/`llm_verdict_overridden_by_sizing` — these were real backend
+fields the TypeScript type had been missing since T203, found while extending this type for
+the new `risks` field.
+
+**Tests**: `services/decision-engine/tests/test_risk_agent.py`, 16 cases — opt-in gate,
+missing-API-key fail-open, successful parse, non-200/network-exception/malformed-JSON
+fail-open, markdown-fence stripping, per-risk category/severity/note validation (invalid
+entries filtered, not silently accepted), the all-invalid-degrades-to-`None` case, cache
+hit/write behavior, pure prompt-construction checks. `redis` needed a local `pip install` to
+run these tests (already a real pinned dependency in `requirements.txt`, just missing from
+this local dev environment — same class of gap as the jose/requests_oauthlib incidents
+documented elsewhere in this file).
+
+**A real adversarial-verification gotcha worth remembering**: the first version of
+`test_returns_none_when_risk_check_disabled` used `cfg={"risk_check_enabled": False}` alone
+and passed — but sabotaging the opt-in gate itself (`if not cfg.get("risk_check_enabled",
+False):` → `if False:`) did NOT make this test fail, because the sabotaged code path fell
+through to the SEPARATE no-api-key early return (the test's cfg had no API key either), which
+also returns `None`. Two different guards returning the same value can mask each other in a
+naive test. Fixed by supplying a valid API key and asserting the API is never called — that
+version correctly failed with the gate disabled before being fixed.
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the opt-in gate: risk_check_enabled must be explicitly set in portfolio config
+docker exec stockai-decision-engine-1 python3 -c "
+from src.api.risk_agent import check_risks
+print('module loads OK')"
+
+# Check cache state for a specific symbol/style/date:
+docker exec stockai-redis-1 redis-cli get "de:risk:AAPL:SWING:2026-07-18"
+```
+
+---
+
+## Feature Reference: T258-PORTFOLIO-CORRELATION-PREENTRY — Correlation-Aware Entry Scoring (Built 2026-07-18)
+
+**What this is**: wires the ALREADY-EXISTING portfolio-risk correlation math
+(`/portfolio-risk/risk`, portfolio-optimizer) into the pre-entry decision as an advisory score
+layer — a candidate highly correlated with an already-open position now scores -1 in
+`_should_enter()`, the DE-outage fallback gate. Never a hard reject, matching this repo's
+established discipline of promoting a soft penalty to a hard gate only after outcome data
+justifies it.
+
+**Why the fallback gate, not decision-engine itself**: decision-engine's `scorer.py` scores
+each candidate in complete isolation — `DecisionRequest.open_positions` is only a COUNT, never
+a symbol list, by design. Extending decision-engine to accept and score against a real symbol
+list (and the price history needed to correlate against it) would be a materially bigger,
+more invasive change than "port an advisory layer" — this repo already treats `_should_enter()`
+as the place to harden DE-parity behaviors (see the T232-DL-DUALSCORER-DEBT hard-reject ports
+above), so the correlation layer landed there too, at the same M-effort scope as the tracker
+item called for.
+
+**Why local DB math, not an HTTP call to portfolio-optimizer**: market-data has direct DB
+access to `Price`/`Stock`; portfolio-optimizer's own `/portfolio-risk/risk` endpoint fetches
+prices over HTTP specifically BECAUSE it lacks that access (see that endpoint's own module
+docstring). Calling out to portfolio-optimizer from `_should_enter()`'s hot path would add a
+network round-trip to the single most capital-sensitive code path in the system for math this
+service can already do directly — so the `df.corr()` logic was reimplemented locally instead
+of reused via HTTP.
+
+**Implementation**: two new functions in `paper_trading_engine.py`.
+`_bulk_fetch_daily_closes(session, stock_ids)` — one bulk query (30-day lookback,
+`Price.stock_id.in_(...)`) pivoted into a wide DataFrame, called ONCE per scan cycle for the
+whole open book (not once per candidate). `_max_correlation_with_open_positions(session,
+candidate_stock_id, open_stock_ids, open_closes_cache)` — fetches only the candidate's own
+closes fresh, joins onto the pre-fetched open-book cache, returns the highest absolute
+pairwise daily-return correlation or `None` if incomputable (no open positions, insufficient
+overlapping history — matching the repo's convention that `None` and a real "no correlation"
+value have different implications for the score layer, so they must be distinguishable).
+`_should_enter()` gained a `max_open_corr` parameter and penalizes -1 when it exceeds `0.8` —
+the SAME threshold portfolio-optimizer's own risk endpoint already uses for its "high
+correlation" warning, chosen for consistency rather than picked fresh.
+
+**Not built in this pass**: beta-weighted book exposure (the other half of the original
+catalog design) — correlation was the higher-value, more tractable half for a per-candidate
+score layer; beta-weighted exposure is more naturally a book-level dashboard readout than a
+per-entry-decision score component, and is left as a smaller, separately-scoped follow-up.
+
+**Tests**: 6 new cases in `test_should_enter_de_parity.py` (score-layer behavior: penalizes
+`>0.8`, not at exactly `0.8`, not below, not on negative/hedge correlation, stacks
+independently with the pre-existing regime/K-Score layers) plus 11 new cases in
+`services/market-data/tests/test_correlation_preentry.py`, extending
+`test_broker_position_sync.py`'s established real-sqlalchemy-via-stub-pop-and-restore
+technique to the `Stock`/`Price` models — covers the bulk fetch, lookback-window exclusion,
+high/low/insufficient-history correlation detection, and picking the highest absolute
+correlation across multiple open positions.
+
+**A real adversarial-verification finding worth remembering** (a near-miss on false test
+confidence, not a shipped bug): the first version of the "candidate excluded from its own
+open-position list" test built `open_closes_cache` from `[candidate_stock_id]` alone. Disabling
+the actual self-exclusion filter in the source did NOT make this test fail — because with the
+candidate's own column already present in `open_closes_cache`, the subsequent
+`open_closes_cache.join(cand_wide[[candidate_stock_id]], how="outer")` call raises a plain
+pandas `ValueError` (duplicate column name) on ANY code path, self-exclusion filter present or
+not, which the function's own `except Exception` silently catches and returns `None` from —
+the exact same return value the test expected, but for a completely different, coincidental
+reason. Caught by disabling the filter and getting a passing test back (a red flag — the test
+should have failed), then rewriting it to build a cache that does NOT contain the candidate's
+column, with the candidate ID separately duplicated into `open_stock_ids` — that version
+correctly produces a spurious `1.0` self-correlation and fails when the filter is removed.
+**Lesson**: an adversarial-verification pass that produces "still passes" for a supposedly
+protective guard is itself a finding — investigate why, don't just conclude the guard is
+redundant, the way the broker-position-sync case earlier in this file genuinely was.
+
+**A SQLite/BigInteger test-harness quirk hit again** (same class already documented for
+`SignalOutcome` elsewhere in this file): `Price.id` is a `BigInteger` primary key, which
+doesn't get SQLite's implicit `INTEGER PRIMARY KEY` autoincrement — test fixtures inserting
+`Price` rows must assign `id` explicitly (a real Postgres sequence handles this in production;
+this is a test-harness-only workaround).
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the correlation layer is actually computing values (not silently always None):
+docker logs stockai-market-data-1 --since 1h | grep 'correlation_check_failed'
+# Absence of this log line does NOT confirm success on its own — it only means no EXCEPTION
+# occurred; None is also the normal, expected return for a portfolio with 0-1 open positions.
+
+# Spot-check the bulk fetch + correlation math directly against real data:
+docker exec stockai-market-data-1 python3 -c "
+import sys; sys.path.insert(0, '/app')
+from src.services.paper_trading_engine import _bulk_fetch_daily_closes
+from db import SessionLocal
+s = SessionLocal()
+df = _bulk_fetch_daily_closes(s, [1, 2, 3])  # real stock_ids
+print(df.tail())"
+```

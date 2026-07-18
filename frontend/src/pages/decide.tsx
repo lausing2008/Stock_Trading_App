@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import Head from 'next/head';
-import { api, DecisionResult, ScoreItem, PositionPlan, DecisionFactors, DecisionMultipliers } from '../lib/api';
+import { api, DecisionResult, ScoreItem, PositionPlan, DecisionFactors, DecisionMultipliers, DecisionRiskFlag } from '../lib/api';
 
 const VERDICT_COLOR: Record<string, string> = {
   BUY:     '#22c55e',
@@ -146,6 +146,51 @@ function PositionCard({ pos }: { pos: PositionPlan }) {
   );
 }
 
+const SEVERITY_COLOR: Record<string, string> = {
+  low: '#64748b',
+  medium: '#f59e0b',
+  high: '#ef4444',
+};
+
+const CATEGORY_LABEL: Record<string, string> = {
+  macro: 'Macro',
+  sector: 'Sector',
+  company: 'Company',
+  technical: 'Technical',
+};
+
+function RisksCard({ risks }: { risks: DecisionRiskFlag[] }) {
+  return (
+    <div style={{ marginTop: 16, padding: 14, background: '#0f172a', borderRadius: 8, border: '1px solid #1e293b' }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 2 }}>
+        What Could Go Wrong?
+      </div>
+      <div style={{ fontSize: 11, color: '#f97316', marginBottom: 10 }}>
+        AI-generated adversarial check, arguing against this trade using only the data above — not a prediction or a calibrated probability. Read as concrete risks to weigh, not a verdict.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {risks.map((r, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '8px 10px', background: '#020617', borderRadius: 6 }}>
+            <div style={{
+              flexShrink: 0, padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 700,
+              color: SEVERITY_COLOR[r.severity] ?? '#94a3b8',
+              background: `${SEVERITY_COLOR[r.severity] ?? '#334155'}22`,
+              border: `1px solid ${SEVERITY_COLOR[r.severity] ?? '#334155'}`,
+              textTransform: 'uppercase',
+            }}>
+              {r.severity}
+            </div>
+            <div style={{ flexShrink: 0, fontSize: 11, fontWeight: 700, color: '#64748b', minWidth: 64 }}>
+              {CATEGORY_LABEL[r.category] ?? r.category}
+            </div>
+            <div style={{ fontSize: 13, color: '#e2e8f0' }}>{r.note}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const STYLES = ['SWING', 'GROWTH', 'SCALP', 'INCOME'];
 
 export default function DecidePage() {
@@ -278,6 +323,9 @@ export default function DecidePage() {
 
               {/* Position plan */}
               {result.position && <PositionCard pos={result.position} />}
+
+              {/* What Could Go Wrong? — adversarial risk check, only when risk_check_enabled */}
+              {result.risks && result.risks.length > 0 && <RisksCard risks={result.risks} />}
             </div>
           )}
         </div>

@@ -1743,6 +1743,12 @@ export type DecisionMultipliers = {
   earnings: number;
 };
 
+export type DecisionRiskFlag = {
+  category: 'macro' | 'sector' | 'company' | 'technical';
+  severity: 'low' | 'medium' | 'high';
+  note: string;
+};
+
 export type DecisionResult = {
   symbol: string;
   style: string;
@@ -1756,6 +1762,12 @@ export type DecisionResult = {
   blocked_reason: string | null;
   latency_ms: number;
   timestamp: string;
+  llm_verdict?: 'BUY' | 'HOLD' | 'SKIP' | null;
+  llm_reasoning?: string | null;
+  llm_verdict_overridden_by_sizing?: boolean;
+  // T258-WHATCOULDGOWRONG-AGENT: null/absent means the check didn't run (opt-in, disabled by
+  // default) — never means "no risks were found" (see risk_agent.py's own docstring for why).
+  risks?: DecisionRiskFlag[] | null;
   explanation?: string;
   result?: DecisionResult;
 };
