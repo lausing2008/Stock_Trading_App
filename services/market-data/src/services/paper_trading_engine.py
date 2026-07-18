@@ -41,8 +41,8 @@ import pandas as pd
 from common.logging import get_logger
 from common.indicators import atr as _canon_atr
 from db import (
-    Indicator, PaperEquityCurve, PaperPortfolio, PaperTrade, Price, TimeFrame,
-    Ranking, SessionLocal, Signal, SignalAlert, Stock, User, Watchlist, WatchlistItem,
+    BrokerConnection, Indicator, PaperEquityCurve, PaperPortfolio, PaperTrade, Price, TimeFrame,
+    Ranking, SessionLocal, Signal, SignalAlert, Stock, User, UserPosition, Watchlist, WatchlistItem,
 )
 from sqlalchemy import desc, func, select
 from .email_service import send_trade_exit_email
@@ -271,6 +271,114 @@ def poll_broker_order_fills(session=None) -> None:
     finally:
         if own_session:
             session.close()
+
+
+# ── T230-PORTFOLIO-BROKER-SYNC ─────────────────────────────────────────────────
+# GET /connections/{id}/account (src/api/broker.py) already round-trips a real broker's live
+# positions end-to-end — the whole OAuth + fetch + parse chain already works. The gap was
+# purely that nothing ever PERSISTED that into UserPosition (positions.tsx's data source) —
+# every broker-linked user still had to hand-copy their real E*Trade holdings into the manual
+# positions tracker. This closes that gap by piggybacking on the same already-scheduled cycle
+# poll_broker_order_fills() runs on, rather than adding new cron plumbing.
+
+def sync_broker_positions(session=None) -> None:
+    """Sync each authorized BrokerConnection's live positions into UserPosition.
+
+    Upserts by (user_id, symbol), matching UserPosition's own unique constraint. Only ever
+    touches rows this sync itself owns (broker_connection_id == this connection's id) — a
+    manually-entered position (broker_connection_id IS NULL) for the same symbol is left
+    untouched and this sync logs a conflict instead of silently overwriting it, since the
+    user's manually-tracked cost basis/share count could differ from what the broker reports
+    (e.g. a partial manual entry made before ever linking the account).
+    """
+    own_session = session is None
+    if own_session:
+        session = SessionLocal()
+    try:
+        conns = session.execute(
+            select(BrokerConnection).where(
+                BrokerConnection.is_active.is_(True),
+                BrokerConnection.is_authorized.is_(True),
+            )
+        ).scalars().all()
+        if not conns:
+            return
+        synced, conflicts = 0, 0
+        for conn in conns:
+            try:
+                from src.api.broker import _decrypt_config
+                from src.services.broker import get_broker
+                broker = get_broker(conn.broker_type, _decrypt_config(conn.config))
+                acct = broker.get_account(conn.account_id or None)
+            except Exception as exc:
+                if not _handle_broker_error_if_token_rejected(session, _FakePortfolioForConn(conn), exc):
+                    log.warning("broker.position_sync_fetch_failed", conn_id=conn.id, error=str(exc))
+                continue
+
+            existing_by_symbol = {
+                p.symbol: p for p in session.execute(
+                    select(UserPosition).where(UserPosition.user_id == conn.user_id)
+                ).scalars().all()
+            }
+            live_symbols = {p.symbol.upper() for p in acct.open_positions}
+
+            for bp in acct.open_positions:
+                sym = bp.symbol.upper()
+                row = existing_by_symbol.get(sym)
+                if row is not None and row.broker_connection_id is None:
+                    # A manual entry already exists for this symbol — never silently overwrite
+                    # a user's own hand-entered cost basis/share count with the broker's numbers.
+                    conflicts += 1
+                    log.warning("broker.position_sync_conflict_skipped",
+                                conn_id=conn.id, symbol=sym,
+                                reason="manual position already exists for this symbol")
+                    continue
+                if row is not None and row.broker_connection_id != conn.id:
+                    # Owned by a DIFFERENT broker connection (same user linked two accounts
+                    # that both hold the same symbol) — same non-clobber rule applies.
+                    conflicts += 1
+                    log.warning("broker.position_sync_conflict_skipped",
+                                conn_id=conn.id, symbol=sym,
+                                reason=f"already synced from connection {row.broker_connection_id}")
+                    continue
+                if row is None:
+                    row = UserPosition(
+                        user_id=conn.user_id, symbol=sym, shares=bp.qty, avg_cost=bp.avg_cost,
+                        currency="USD", broker_connection_id=conn.id,
+                    )
+                    session.add(row)
+                else:
+                    row.shares = bp.qty
+                    row.avg_cost = bp.avg_cost
+                row.broker_synced_at = datetime.now(timezone.utc)
+                synced += 1
+
+            # A position this sync previously created is now gone from the broker (closed
+            # externally, e.g. sold directly on E*Trade's own site) — remove the synced row so
+            # positions.tsx doesn't keep showing a position the user no longer actually holds.
+            # Only rows THIS connection owns are eligible; a manual/other-connection row is
+            # never touched here regardless of what symbols the broker currently reports.
+            for sym, row in existing_by_symbol.items():
+                if row.broker_connection_id == conn.id and sym not in live_symbols:
+                    session.delete(row)
+
+        session.commit()
+        if synced or conflicts:
+            log.info("broker.position_sync_done", synced=synced, conflicts=conflicts)
+    except Exception as exc:
+        log.warning("broker.position_sync_error", error=str(exc))
+    finally:
+        if own_session:
+            session.close()
+
+
+class _FakePortfolioForConn:
+    """_handle_broker_error_if_token_rejected() expects a PaperPortfolio-shaped object with a
+    broker_connection_id attribute — sync_broker_positions() has a BrokerConnection directly
+    (no portfolio in the loop at all), so this adapts the shape rather than changing that
+    shared helper's signature for every other caller."""
+    def __init__(self, conn: "BrokerConnection"):
+        self.broker_connection_id = conn.id
 
 
 # ── PT-3: Entry score calibration — learned weights from closed paper trades ──

@@ -3192,3 +3192,135 @@ in `calibrate_ml_weight` (currently manual-only). Phase 4 — the explicit limit
 stored-outcome sweep (this one included) can only evaluate TIGHTENING an existing parameter;
 testing a genuinely LOOSER threshold or a different compression map needs the design doc's own
 deferred Phase 2b equity-curve replay, a separate and larger project.
+
+---
+
+## Feature Reference: T230-PORTFOLIO-BROKER-SYNC — Automatic Broker Position Sync (Built 2026-07-18)
+
+**Gap this closes**: `GET /connections/{id}/account` (`src/api/broker.py`) already round-trips a
+real broker's live positions end-to-end — the whole OAuth + fetch + parse chain already worked.
+Nothing ever PERSISTED that fetch into `UserPosition` (`positions.tsx`'s actual data source),
+so every broker-linked user still had to hand-copy their real E*Trade holdings into the manual
+positions tracker. This was originally tracked as a critical/XL item ("complete a broker
+integration sprint") — re-scoping against the actual code before building found the hard parts
+already done, shrinking it to "call the already-working fetch and persist the result."
+
+**New function**: `sync_broker_positions()` in
+`services/market-data/src/services/paper_trading_engine.py`, piggybacking on the SAME
+already-scheduled/locked cycle `poll_broker_order_fills()` runs on inside
+`_run_paper_trading_step()` (`scheduler.py`) — no new cron job, no new Redis lock.
+
+**Provenance marker, not a separate table**: `UserPosition` gained two nullable columns —
+`broker_connection_id` (FK to `broker_connections`, `ON DELETE SET NULL`) and
+`broker_synced_at`. `NULL` = manually entered (every existing row, unchanged behavior).
+Non-`NULL` = owned by that sync; the row will be silently overwritten on the next cycle if
+hand-edited, which is exactly why the manual CRUD routes now reject edits to it (see below).
+
+**Conflict semantics — the one real risk this design has to get right**: a symbol the sync
+wants to write is only ever created fresh (no existing row) or updated in place (existing row
+already owned by THIS connection). A manual entry (`broker_connection_id IS NULL`) or a row
+owned by a DIFFERENT connection for the same symbol is left **completely untouched** and
+logged as a conflict — never silently overwritten with the broker's numbers, since the user's
+manually-tracked cost basis/share count could genuinely differ (e.g. a partial manual entry
+made before ever linking the account). A synced row whose symbol the broker no longer reports
+(sold externally, e.g. directly on E*Trade's own site) is removed — but ONLY rows this sync
+itself owns; a manual row is never auto-removed just because the broker reports nothing for it.
+
+**API + UI**: `positions.py`'s `buy`/`sell`/`remove` endpoints now return `409` on a
+broker-synced row ("this position is synced from a linked broker account... manage it through
+your broker instead") rather than silently accepting an edit the next sync cycle would just
+revert. `positions.tsx` shows a "SYNCED" badge next to the symbol and hides the BUY/SELL/remove
+controls for those rows (the ★ watch and trade-history-expand controls stay — those aren't
+broker-owned state).
+
+**Tests**: `services/market-data/tests/test_broker_position_sync.py`, 10 cases, against a real
+in-memory SQLite session + the real `shared/db/models.py` — `paper_trading_engine.py` can't be
+imported directly in this test environment (`conftest.py` stubs `sqlalchemy` itself as a
+`MagicMock`), so the test pops the stub, builds ONE shared engine, then restores the stub
+immediately. **A real test-isolation bug was caught and fixed while writing these**: an
+earlier version of this technique left the real `sqlalchemy` swapped in globally for the rest
+of the pytest session, silently breaking 7 OTHER test files' collection (they passed in
+isolation, failed only in the full suite) — fixed by building the engine BEFORE restoring the
+stub (`sqlalchemy`'s `create_engine()` does a dynamic dialect-plugin lookup at CALL time, not
+just import time, so it can't be deferred past the restore point) and sharing that one engine
+across all 10 tests with a per-test row cleanup instead of a fresh engine each time.
+
+Adversarially verified by disabling BOTH conflict guards (manual-row, different-connection)
+simultaneously and confirming 3 tests correctly failed (a real data-loss scenario) before
+reverting — disabling just ONE guard alone was insufficient to trigger any test failure, since
+the two guards turned out to be redundant-safe (a bug in one doesn't cause data loss because
+the other still catches it via its own `!= conn.id` branch). That's a genuinely good defensive
+property, caught only by investigating why the single-guard sabotage didn't produce the
+expected failure rather than assuming the test was simply wrong.
+
+**What to check if this looks wrong**:
+```bash
+docker logs stockai-market-data-1 --since 1h | grep 'broker.position_sync'
+# broker.position_sync_done {synced, conflicts} on a normal cycle with active connections;
+# broker.position_sync_conflict_skipped per-symbol if a manual/other-connection row blocked a write;
+# broker.position_sync_error only on a genuine unexpected failure (fetch failures for one
+# connection are caught per-connection and don't abort the whole sync — check
+# broker.position_sync_fetch_failed for those instead).
+
+# Check a specific user's positions and their provenance directly:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT symbol, shares, avg_cost, broker_connection_id, broker_synced_at FROM user_positions WHERE user_id = <id>;"
+```
+
+---
+
+## Feature Reference: T233-ARCH-PORTFOLIO-CONSOLIDATE — portfolio.py Moved to portfolio-optimizer (Built 2026-07-18)
+
+**What moved**: market-data's `api/portfolio.py` (correlation matrix, beta, parametric VaR,
+sector concentration — `GET /portfolio-risk/risk`) relocated verbatim to
+`services/portfolio-optimizer/src/api/risk.py`. Same route path, same response shape — the
+frontend (`board.tsx`, `portfolio.tsx`, both via `api.portfolioRisk()`) needed **zero changes**.
+
+**This does NOT consolidate the two correlation implementations into one** — portfolio.py's
+simple `df.corr()` and portfolio-optimizer's own `methods.py` (Ledoit-Wolf shrinkage
+covariance, used by `/portfolio/optimize`) remain two separate implementations, just now both
+living in the same service. Replacing one with the other is a separate, riskier numerical-
+methods change deliberately not bundled into this architectural relocation.
+
+**The real complication this move had to solve**: portfolio-optimizer has **no direct DB
+access at all** (confirmed via grep — zero `from db import` anywhere in it; it's a pure
+HTTP-consumer service). market-data's original `portfolio.py` queried `Price`/`Stock` directly
+via SQLAlchemy. The moved version's `_fetch_returns()`/`_fetch_stock_meta()` instead call
+market-data's own `GET /stocks/{symbol}/prices` and `GET /stocks/{symbol}` over HTTP — the
+SAME two endpoints this service's pre-existing `_fetch_closes()` (in `routes.py`, backing
+`/portfolio/optimize`) already relies on, so this isn't a new integration pattern for this
+service, just reusing an existing one for a second endpoint.
+
+**New runtime dependency**: `yfinance>=0.2.54` added to portfolio-optimizer's
+`requirements.txt` (needed for the SPY/HSI benchmark-beta fetch, wasn't there before) — this
+means the deploy needs a real image rebuild (`docker compose build portfolio-optimizer`), not
+just a `docker cp` hotfix, per this repo's own "new dependency needs a real rebuild" rule
+(same class of gap as the api-gateway numpy incident documented elsewhere in this file).
+
+**Routing**: api-gateway's `proxy.py` route table's `"portfolio-risk"` entry repointed from
+`market_data_url` to `portfolio_optimizer_url` — one line, since the path itself didn't change.
+market-data's `main.py` had `portfolio_router` removed; the old file was deleted outright
+(`git rm`), not deprecated in place.
+
+**Tests**: `services/portfolio-optimizer/tests/test_portfolio_risk.py`, 8 cases, direct function
+calls with `monkeypatch` on the module's own `_fetch_returns`/`_fetch_stock_meta`/`yf` —
+matching this service's existing `test_optimize_endpoint.py` convention exactly (`fastapi`/
+`httpx`/`pandas`/`numpy` are all real, installed packages in this test environment per
+`conftest.py`'s own docstring, so no stub workaround was needed). Covers the 2/10-symbol
+bounds, mismatched-weights rejection, insufficient-history `422`, full correlation/beta/
+sector-weight computation, the HK-vs-US benchmark selection rule, high-correlation/
+concentration warning triggers, and a graceful `beta=1.0` fallback when the yfinance benchmark
+fetch itself fails. Adversarially verified the high-correlation warning check by disabling it
+and confirming the dedicated test caught it before reverting.
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the route resolves to portfolio-optimizer, not a stale market-data instance:
+docker exec stockai-api-gateway-1 python3 -c "
+from src.api.proxy import _ROUTES
+print(_ROUTES['portfolio-risk'])"
+
+# Live check against a real deployed container:
+docker exec stockai-portfolio-optimizer-1 curl -s \
+  'http://localhost:8007/portfolio-risk/risk?symbols=AAPL,MSFT' -H "Authorization: Bearer <token>"
+```

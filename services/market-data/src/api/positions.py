@@ -28,6 +28,8 @@ class PositionOut(BaseModel):
     currency: str
     added_at: str
     trades: list[TradeOut]
+    broker_synced: bool = False
+    broker_connection_id: int | None = None
 
 
 class AddPositionIn(BaseModel):
@@ -63,6 +65,8 @@ def _pos_out(p: UserPosition) -> PositionOut:
         currency=p.currency,
         added_at=p.added_at.isoformat(),
         trades=[_trade_out(t) for t in sorted_trades],
+        broker_synced=p.broker_connection_id is not None,
+        broker_connection_id=p.broker_connection_id,
     )
 
 
@@ -162,6 +166,8 @@ def buy_more(
     if body.shares <= 0 or body.price <= 0:
         raise HTTPException(status_code=400, detail="shares and price must be positive")
     pos = _fetch_pos(position_id, current.id, session)
+    if pos.broker_connection_id is not None:
+        raise HTTPException(409, "This position is synced from a linked broker account and can't be manually edited — the next sync would overwrite the change. Manage this position through your broker instead.")
     total = pos.shares + body.shares
     pos.avg_cost = (pos.shares * pos.avg_cost + body.shares * body.price) / total
     pos.shares = total
@@ -184,6 +190,8 @@ def sell_shares(
     session: Session = Depends(get_session),
 ):
     pos = _fetch_pos(position_id, current.id, session)
+    if pos.broker_connection_id is not None:
+        raise HTTPException(409, "This position is synced from a linked broker account and can't be manually edited — the next sync would overwrite the change. Manage this position through your broker instead.")
     if body.shares > pos.shares:
         raise HTTPException(status_code=400, detail=f"Cannot sell {body.shares} shares — only {pos.shares} owned")
     remaining = pos.shares - body.shares
@@ -214,6 +222,8 @@ def remove_position(
     ).scalar_one_or_none()
     if not pos:
         raise HTTPException(404, "Position not found")
+    if pos.broker_connection_id is not None:
+        raise HTTPException(409, "This position is synced from a linked broker account and can't be manually removed — sell it through your broker and the next sync will clear it here automatically.")
     session.delete(pos)
     session.commit()
     return {"status": "deleted", "id": position_id}

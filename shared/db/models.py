@@ -407,6 +407,16 @@ class UserPosition(Base):
     avg_cost: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
     currency: Mapped[str] = mapped_column(String(8), default="USD")
     added_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # T230-PORTFOLIO-BROKER-SYNC: NULL = manually entered by the user (default, unchanged
+    # behavior for every existing row). Non-NULL = this row is synced FROM that broker
+    # connection's live positions and must not be hand-edited via the manual CRUD routes —
+    # the next sync cycle will just overwrite it. This is the provenance marker that lets a
+    # sync job tell "safe to overwrite" (already broker-owned) apart from "would silently
+    # clobber a manual entry" (NULL) without needing a separate table.
+    broker_connection_id: Mapped[int | None] = mapped_column(
+        ForeignKey("broker_connections.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    broker_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="positions")
     trades: Mapped[list["PositionTrade"]] = relationship(

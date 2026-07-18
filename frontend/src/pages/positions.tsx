@@ -527,6 +527,7 @@ export default function Positions() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <Link href={`/stock/${r.symbol}`} style={{ fontWeight: 700, fontSize: '14px', color: '#f1f5f9', fontFamily: 'monospace' }}>{r.symbol}</Link>
                       {ss && r.sig && <span style={{ fontSize: '9px', fontWeight: 800, padding: '2px 6px', borderRadius: '4px', color: ss.color, background: ss.bg, border: `1px solid ${ss.border}`, letterSpacing: '0.05em' }}>{r.sig}</span>}
+                      {r.broker_synced && <span title="Synced from your linked broker account — manage it there, not here" style={{ fontSize: '9px', fontWeight: 800, padding: '2px 6px', borderRadius: '4px', color: '#38bdf8', background: 'rgba(56,189,248,0.12)', border: '1px solid rgba(56,189,248,0.3)', letterSpacing: '0.05em' }}>SYNCED</span>}
                     </div>
                     <div style={{ fontSize: '10px', color: '#334155', marginTop: '2px', display: 'flex', gap: '6px', alignItems: 'center' }}>
                       <span>{r.currency}</span>
@@ -544,11 +545,11 @@ export default function Positions() {
 
                   {/* Actions */}
                   <div style={{ display: 'flex', gap: '3px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-                    <button onClick={() => setModal({ mode: 'buy', posId: r.id })} style={{ padding: '3px 7px', borderRadius: '4px', background: 'rgba(79,70,229,0.15)', border: '1px solid rgba(79,70,229,0.3)', color: '#818cf8', fontSize: '9px', fontWeight: 800, cursor: 'pointer' }}>BUY</button>
-                    <button onClick={() => setModal({ mode: 'sell', posId: r.id })} style={{ padding: '3px 7px', borderRadius: '4px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#f87171', fontSize: '9px', fontWeight: 800, cursor: 'pointer' }}>SELL</button>
+                    {!r.broker_synced && <button onClick={() => setModal({ mode: 'buy', posId: r.id })} style={{ padding: '3px 7px', borderRadius: '4px', background: 'rgba(79,70,229,0.15)', border: '1px solid rgba(79,70,229,0.3)', color: '#818cf8', fontSize: '9px', fontWeight: 800, cursor: 'pointer' }}>BUY</button>}
+                    {!r.broker_synced && <button onClick={() => setModal({ mode: 'sell', posId: r.id })} style={{ padding: '3px 7px', borderRadius: '4px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#f87171', fontSize: '9px', fontWeight: 800, cursor: 'pointer' }}>SELL</button>}
                     <button onClick={() => toggleWatch(r.symbol)} title={watchedSet.has(r.symbol) ? 'Unwatch' : 'Watch'} style={{ padding: '3px 6px', borderRadius: '4px', background: watchedSet.has(r.symbol) ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.04)', border: `1px solid ${watchedSet.has(r.symbol) ? 'rgba(99,102,241,0.3)' : 'rgba(255,255,255,0.08)'}`, color: watchedSet.has(r.symbol) ? '#818cf8' : '#475569', fontSize: '11px', cursor: 'pointer' }}>★</button>
                     <button onClick={() => setShowTradesFor(showTradesFor === r.id ? null : r.id)} style={{ padding: '3px 6px', borderRadius: '4px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#64748b', fontSize: '10px', cursor: 'pointer' }}>{showTradesFor === r.id ? '▲' : '▼'}</button>
-                    {confirmRemoveId === r.id ? (
+                    {!r.broker_synced && (confirmRemoveId === r.id ? (
                       <>
                         <span style={{ fontSize: '10px', color: '#f87171' }}>Remove?</span>
                         <button onClick={() => removePosition(r.id)} style={{ padding: '2px 6px', borderRadius: '4px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.4)', color: '#f87171', fontSize: '9px', fontWeight: 800, cursor: 'pointer' }}>Yes</button>
@@ -556,7 +557,7 @@ export default function Positions() {
                       </>
                     ) : (
                       <button onClick={() => setConfirmRemoveId(r.id)} style={{ background: 'transparent', border: 'none', color: '#334155', cursor: 'pointer', fontSize: '11px', padding: '3px 4px' }} className="del-btn">✕</button>
-                    )}
+                    ))}
                   </div>
                 </div>
 

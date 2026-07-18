@@ -981,6 +981,8 @@ export type UserPosition = {
   currency: string;
   added_at: string;
   trades: PositionTrade[];
+  broker_synced: boolean;
+  broker_connection_id: number | null;
 };
 
 export type AppNotification = {

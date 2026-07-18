@@ -51,7 +51,9 @@ _ROUTES = {
     "backtest": _settings.strategy_engine_url,
     "backtests": _settings.strategy_engine_url,
     "portfolio": _settings.portfolio_optimizer_url,
-    "portfolio-risk": _settings.market_data_url,
+    # T233-ARCH-PORTFOLIO-CONSOLIDATE: moved from market-data to portfolio-optimizer 2026-07-18
+    # (route path unchanged — no frontend change needed).
+    "portfolio-risk": _settings.portfolio_optimizer_url,
     "research": _settings.research_engine_url,
     # T233-ARCH-AIPROXY-EXTRACT: ai_proxy.py moved to research-engine 2026-07-04 — was
     # previously served locally by this gateway's own ai_router, not proxied at all.

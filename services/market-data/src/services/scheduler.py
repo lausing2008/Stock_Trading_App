@@ -89,7 +89,7 @@ from db import AlertCondition, EarningsEvent, EconomicEvent, Market, PaperPortfo
 
 from .ingestion import ingest_universe
 from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification, send_post_open_digest_email, send_data_quality_alert_email, is_quota_exceeded
-from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists, poll_broker_order_fills
+from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists, poll_broker_order_fills, sync_broker_positions
 from ..api.routes import refresh_live_price_cache, refresh_avg_volume_cache, _AVG_VOLUME_KEY
 
 log = get_logger("scheduler")
@@ -998,6 +998,13 @@ def _run_paper_trading_step(label: str = "refresh") -> None:
             poll_broker_order_fills()
         except Exception as _bpe:
             log.warning("broker.poll_step_failed", error=str(_bpe))
+        # T230-PORTFOLIO-BROKER-SYNC: same cycle as the order-fill poll above — piggybacks on
+        # the already-scheduled/locked step rather than adding a new cron job. No-op if no
+        # BrokerConnection is active+authorized.
+        try:
+            sync_broker_positions()
+        except Exception as _bse:
+            log.warning("broker.position_sync_step_failed", error=str(_bse))
     finally:
         if acquired:
             try:
