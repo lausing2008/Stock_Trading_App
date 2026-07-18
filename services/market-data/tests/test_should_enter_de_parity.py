@@ -25,9 +25,28 @@ from src.services.paper_trading_engine import _should_enter
 @pytest.fixture(autouse=True)
 def _always_market_hours(monkeypatch):
     """_should_enter()'s first hard-reject depends on wall-clock time via _is_market_hours()
-    — pin it to always pass so these tests aren't flaky depending on when they run."""
+    — pin it to always pass so these tests aren't flaky depending on when they run.
+
+    Also pins `datetime.now()` to a fixed, safe mid-session instant (noon ET on a Monday) —
+    NOT just _is_market_hours(). A real flakiness was found here: any test that doesn't
+    explicitly test the time-of-day gate (i.e. every test EXCEPT the ones in the "AUD232-005:
+    time-of-day gate" section below, which use _mock_local_time to test specific times) was
+    still vulnerable to the REAL wall-clock landing inside the 9:30-10:00 or 15:45-16:00 ET
+    gate windows — this fixture mocking _is_market_hours alone does not protect against the
+    separate, later time-of-day-gate check, which reads real time directly. Caught when this
+    test file started failing at exactly 9:48 AM ET on a real run, unrelated to any code
+    change in that session."""
     import src.services.paper_trading_engine as pte
     monkeypatch.setattr(pte, "_is_market_hours", lambda market="US": True)
+
+    _safe_noon = datetime(2026, 6, 15, 17, 0, tzinfo=timezone.utc)  # noon ET on a Monday
+
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _safe_noon.astimezone(tz) if tz else _safe_noon
+
+    monkeypatch.setattr(pte, "datetime", _FixedDatetime)
 
 
 def _neutral_inputs():

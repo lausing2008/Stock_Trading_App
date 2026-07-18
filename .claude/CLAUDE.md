@@ -3598,3 +3598,149 @@ s = SessionLocal()
 df = _bulk_fetch_daily_closes(s, [1, 2, 3])  # real stock_ids
 print(df.tail())"
 ```
+
+---
+
+## Feature Reference: T258-MACRO-SECTOR-IMPACT — Structured Sector Chips on Macro Reactions
+
+**Built 2026-07-18.** Finishes what T249-P2 (macro post-announcement fast reaction) explicitly
+deferred: `generate_reaction()` (`services/event-intelligence/src/services/macro_reaction.py`)
+previously returned only a narrative `reaction_text` paragraph. It now also asks the same
+single Haiku call for a structured `{sectors_helped: [], sectors_hurt: []}` block (0-4
+GICS-style sector names each) — no second LLM call, same fail-open contract as before.
+
+**Validation**: new `_clean_sector_list(raw: object) -> list[str]` — non-list input becomes
+`[]`, non-string/empty entries are filtered, surviving strings are whitespace-stripped, capped
+at 6. `generate_reaction()`'s return type changed from `str | None` to `dict | None` (`
+{"reaction_text": ..., "sectors_helped": [...], "sectors_hurt": [...]}`); both
+`check_release_day_fast_poll()` and `check_fomc_statement_poll()` were updated to unpack the
+new shape.
+
+**Storage**: two new nullable `EconomicEvent` columns, `sectors_helped`/`sectors_hurt` (both
+`Text`), JSON-encoded strings — matching `reaction_text`'s existing TEXT-column convention
+rather than introducing a new Postgres array/JSONB type for consistency with the sibling
+columns on the same table. **Requires a manual `ALTER TABLE economic_events ADD COLUMN IF NOT
+EXISTS sectors_helped TEXT, ADD COLUMN IF NOT EXISTS sectors_hurt TEXT;`** in every environment
+— per this file's own `create_all()`-gap invariant (new columns on an existing, already-
+populated table are never auto-applied).
+
+**Read side**: `GET /events/overview` (`services/event-intelligence/src/api/routes.py`) parses
+both columns defensively via an inline `_parse_sectors()` helper (degrades to `[]` on any parse
+failure) into the `latest_macro_reaction` field. `frontend/src/pages/intelligence.tsx`'s
+"Latest Macro Reaction" card renders green ▲ chips for `sectors_helped` and red ▼ chips for
+`sectors_hurt`, between the actual/previous value line and the reaction paragraph.
+
+**Deliberately not built this pass**: watchlist-join personalization ("you watch 3 names in a
+sector this release pressures", from the original T249-P2 design) — scoped to the structured-
+data half only; the chips already let a user do that cross-reference visually without a new
+per-recipient query in `check_macro_reaction_alerts()`.
+
+**Tests**: 21 new cases in `services/event-intelligence/tests/test_macro_reaction.py` (full
+suite 143 passed) — `_clean_sector_list` validation (valid list, non-list, non-string
+filtering, whitespace stripping, 6-entry cap, empty list), `generate_reaction()`'s new dict
+shape via a `_FakeAsyncClient` async-context-manager pattern (mirroring `risk_agent.py`'s own
+test technique, since `httpx` is a `MagicMock` in this test environment), and source-text
+checks confirming both poll functions write the new columns. Adversarially verified
+`_clean_sector_list` by replacing its body with `return raw` — 5 of 7 tests correctly failed,
+then reverted.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c "\d economic_events" | grep sectors
+docker exec stockai-market-data-1 python3 -c "
+import sys, uuid, time; sys.path.insert(0,'/app'); sys.path.insert(0,'/app/src')
+from common.config import get_settings; from jose import jwt as _jwt; import httpx
+s = get_settings()
+tok = _jwt.encode({'sub':'scheduler','jti':str(uuid.uuid4()),'exp':int(time.time())+86400}, s.jwt_secret, algorithm='HS256')
+r = httpx.get('http://api-gateway:8000/events/overview', headers={'Authorization': f'Bearer {tok}'}, timeout=15)
+print(r.json().get('latest_macro_reaction'))
+"
+```
+
+---
+
+## Feature Reference: T258-TRADE-POSTMORTEM — Per-Closed-Trade Plan-vs-Actual Review
+
+**Built 2026-07-18.** The aggregate learning loop already existed and is validated
+(`calibrate_entry_weights` learns from closed trades, `entry_factors` does per-factor win-rate
+analysis, retro-feedback backfills realized EV onto `TuneHistory`) — but there was no per-trade
+review: looking at one closed trade couldn't answer "did entry match plan, was the stop
+respected, was the exit early vs. the time-stop, did price run further after exit." v1 is
+mechanical only (no LLM) — `PaperTrade` already stores both the plan (entry/stop/take_profit at
+entry) and the actuals (exit price/reason/pnl), so this is mostly presentation over existing
+data plus one new bar-data query.
+
+**Endpoint**: `GET /paper-portfolio/trades/{trade_id}/postmortem`
+(`services/market-data/src/api/paper_portfolio.py`) — 404 if the trade doesn't exist, 400 if
+`trade.stage != "closed"` (post-mortems only make sense on a finished trade). Computes:
+- `is_mechanical_exit` — whether `exit_reason` is in `_MECHANICAL_EXIT_REASONS = {"stop_hit",
+  "breakeven_stop", "target_reached", "time_stop"}` (plan-consistent) vs. anything else
+  (discretionary/manual/decay).
+- `plan_adherence.exit_vs_stop_pct` / `.exit_vs_target_pct` — actual exit price vs. the stored
+  plan levels, as a percent.
+- `hold_window.hold_days_vs_expected` — actual `hold_days` vs. the trading style's
+  `_STYLE_OVERRIDES` `max_hold_days` (SHORT=10, GROWTH=60, SWING=20, LONG=90; unknown style
+  falls back to 60) — a different concept from signal-engine's `_OUTCOME_HOLD_DAYS` (that one
+  labels signal outcomes; this one is the paper-trade time-stop horizon).
+- `max_favorable_excursion` — the highest daily `Price.high` between `entry_time` and
+  `exit_time` for the trade's linked `stock_id`, vs. the actual exit price. One indexed range
+  query against the same daily `Price` table already used elsewhere in this file — not a new
+  data source.
+- `entry_slippage_pct` — currently a placeholder, always `0.0`. Pure paper trades fill exactly
+  at the signal's live price with no separate "planned" entry to diverge from; the field is
+  kept in the response shape for forward compatibility with real-broker-synced trades
+  (T257-BROKER-ORDER-HISTORY), where an actual fill CAN diverge from the paper-simulated
+  `entry_price`.
+
+**UI**: `frontend/src/pages/paper-portfolio.tsx`'s `PostmortemPanel` renders as an expandable
+row under each closed trade in the trade history table — click a row to toggle
+(`expandedTradeId`, the same pattern already used elsewhere on this page). Shows a
+plan-consistent/discretionary badge plus 5 stat cells, with a callout when price ran more than
+5% above the exit price afterward ("worth reviewing whether the exit was early").
+
+**Deliberately not built this pass**: a v2 LLM call generating `what_went_right`/
+`what_went_wrong`/`lessons` prose per trade — v1's mechanical fields are what this repo's own
+calibration-loop discipline says to trust first; an LLM narrative layer is a later, optional
+addition, not a prerequisite.
+
+**Two real bugs caught in my own test-writing process during adversarial verification** (not
+in the shipped feature — both were self-caught before either could ship with false test
+confidence):
+1. An early version of the test extraction hardcoded `_MECHANICAL_EXIT_REASONS` as a literal
+   dict in the test namespace instead of pulling it from real source. Sabotaging the REAL
+   constant in `paper_portfolio.py` (emptying the set) still passed the test — because the test
+   was reading its own hardcoded duplicate, not the sabotaged value. Fixed by extracting the
+   real constant's source line via string search and `exec()`-ing it into the namespace before
+   the function body runs; re-verified the sabotage is now correctly caught.
+2. Separately (unrelated to this feature, discovered while running the full suite in
+   isolation): a genuine pre-existing wall-clock flakiness bug in
+   `test_should_enter_de_parity.py` — its autouse `_always_market_hours` fixture only patched
+   `_is_market_hours()`, never the separate time-of-day gate's own `datetime.now()` call. 13
+   tests failed for real when run at 9:48 AM ET (inside the "first 30 min of market open" gate
+   window). Fixed by also pinning `datetime.now()` to a fixed, safe mid-session instant (noon
+   ET on a Monday) inside the same fixture; confirmed the per-test time-of-day-gate tests (which
+   use their own local `_mock_local_time` override) still correctly take precedence over the
+   fixture default.
+
+**Tests**: 13 new cases in `services/market-data/tests/test_trade_postmortem.py`, using the
+established real-sqlalchemy-via-stub-pop-and-restore technique (same as
+`test_broker_position_sync.py`/`test_correlation_preentry.py`) to load real
+`PaperPortfolio`/`PaperTrade`/`Stock`/`Price` models against an in-memory SQLite engine —
+covering the 404/400 guards, mechanical-vs-discretionary exit-reason classification,
+exit-vs-stop/target math, hold-days-vs-expected per style (including the unknown-style
+fallback), and max-favorable-excursion (highest high within the hold window, ignoring prices
+outside it — the specific case the entry_time-lower-bound sabotage above targets). Full
+294-test market-data suite and frontend typecheck green.
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the endpoint returns real data for a known closed trade:
+docker exec stockai-market-data-1 python3 -c "
+import sys, uuid, time; sys.path.insert(0,'/app'); sys.path.insert(0,'/app/src')
+from common.config import get_settings; from jose import jwt as _jwt; import httpx
+s = get_settings()
+tok = _jwt.encode({'sub':'scheduler','jti':str(uuid.uuid4()),'exp':int(time.time())+86400}, s.jwt_secret, algorithm='HS256')
+r = httpx.get('http://api-gateway:8000/paper-portfolio/trades/<real_trade_id>/postmortem', headers={'Authorization': f'Bearer {tok}'}, timeout=15)
+print(r.status_code, r.json())
+"
+```

@@ -56,10 +56,17 @@ _SYSTEM = """You are a macro analyst producing a brief reaction read for a retai
 You will receive the actual released value, expected/previous values, recent print history,
 current market regime, and current VIX for a just-released US economic indicator.
 Respond ONLY with valid JSON (no markdown, no explanation outside JSON) in this exact format:
-{"surprise_direction":"above","magnitude":"mild","one_paragraph":"<2-3 sentences>"}
+{"surprise_direction":"above","magnitude":"mild","one_paragraph":"<2-3 sentences>","sectors_helped":["Technology"],"sectors_hurt":["Utilities"]}
 surprise_direction must be "above", "below", or "in_line" (relative to expected/previous).
 magnitude must be "in_line", "mild", or "large".
-one_paragraph must be 2-3 plain-English sentences a retail trader can act on, max 400 chars."""
+one_paragraph must be 2-3 plain-English sentences a retail trader can act on, max 400 chars.
+sectors_helped and sectors_hurt: 0-4 GICS-style sector names each (e.g. "Technology",
+"Financials", "Energy", "Utilities", "Consumer Discretionary", "Healthcare", "Industrials",
+"Materials", "Real Estate", "Communication Services", "Consumer Staples") that this specific
+release plausibly helps or hurts, based ONLY on the standard macro-to-sector relationship for
+this indicator type (e.g. hot CPI hurts rate-sensitive sectors like Real Estate/Utilities;
+strong GDP helps cyclicals). Use empty lists if you have no concrete basis — never pad these
+lists to look complete."""
 
 # event_type (from _FRED_RELEASES/_FRED_SERIES) -> the reference-period FRED series_id used to
 # fetch actual_value fast. Distinct from _FRED_SERIES' own event_type keys (e.g. "cpi") since
@@ -96,11 +103,19 @@ def _get_market_regime() -> dict:
 
 
 async def generate_reaction(event_type: str, actual_value: float, expected_value: float | None,
-                             previous_value: float | None, title: str) -> str | None:
+                             previous_value: float | None, title: str) -> dict | None:
     """Calls Claude for a structured reaction read. Fail-open: returns None on any error —
     the caller stores None as "no reaction available" rather than blocking the actual_value
     write, matching decision-engine's llm_scorer.py fail-open discipline (advisory, not
-    gate-blocking)."""
+    gate-blocking).
+
+    T258-MACRO-SECTOR-IMPACT: returns a dict {"reaction_text": str, "sectors_helped": list[str],
+    "sectors_hurt": list[str]} — was previously a bare `str | None` (just the paragraph); the
+    surprise_direction/magnitude fields the LLM already returned were silently discarded before
+    this change and remain so (only reaction_text and the two new sector lists are persisted).
+    Callers must be updated for the new shape — see check_release_day_fast_poll() and
+    check_fomc_statement_poll() below, both already updated in this same commit.
+    """
     api_key = _api_key()
     if not api_key:
         log.info("macro_reaction.no_api_key", event_type=event_type)
@@ -137,10 +152,31 @@ async def generate_reaction(event_type: str, actual_value: float, expected_value
         raw = r.json()["content"][0]["text"].strip()
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
         data = json.loads(raw)
-        return (data.get("one_paragraph") or "")[:500] or None
+        reaction_text = (data.get("one_paragraph") or "")[:500] or None
+        if reaction_text is None:
+            return None
+        sectors_helped = _clean_sector_list(data.get("sectors_helped"))
+        sectors_hurt = _clean_sector_list(data.get("sectors_hurt"))
+        return {
+            "reaction_text": reaction_text,
+            "sectors_helped": sectors_helped,
+            "sectors_hurt": sectors_hurt,
+        }
     except Exception as exc:
         log.warning("macro_reaction.call_failed", event_type=event_type, error=str(exc))
         return None
+
+
+def _clean_sector_list(raw: object) -> list[str]:
+    """Validates the LLM's sectors_helped/sectors_hurt output — must be a list of non-empty
+    strings, capped at a sane length. Malformed input (wrong type, non-string entries) degrades
+    to an empty list rather than raising, matching this function's own fail-open contract for
+    the whole reaction (a bad sector list must never take down the reaction_text it's paired
+    with)."""
+    if not isinstance(raw, list):
+        return []
+    cleaned = [str(s).strip() for s in raw if isinstance(s, str) and str(s).strip()]
+    return cleaned[:6]
 
 
 async def check_release_day_fast_poll() -> dict:
@@ -195,7 +231,9 @@ async def check_release_day_fast_poll() -> dict:
                 ev.actual_value = actual
                 ev.previous_value = previous
                 reaction = await generate_reaction(ev.event_type, actual, ev.expected_value, previous, ev.title)
-                ev.reaction_text = reaction
+                ev.reaction_text = reaction["reaction_text"] if reaction else None
+                ev.sectors_helped = json.dumps(reaction["sectors_helped"]) if reaction else None
+                ev.sectors_hurt = json.dumps(reaction["sectors_hurt"]) if reaction else None
                 ev.reaction_generated_at = datetime.now(timezone.utc)
                 s.commit()
                 found += 1
@@ -252,7 +290,9 @@ async def check_fomc_statement_poll() -> dict:
                 reaction = await generate_reaction(
                     "fomc_meeting", 1.0, None, None, title,
                 )
-                ev.reaction_text = reaction or f"FOMC statement posted: {title}"
+                ev.reaction_text = reaction["reaction_text"] if reaction else f"FOMC statement posted: {title}"
+                ev.sectors_helped = json.dumps(reaction["sectors_helped"]) if reaction else None
+                ev.sectors_hurt = json.dumps(reaction["sectors_hurt"]) if reaction else None
                 ev.reaction_generated_at = datetime.now(timezone.utc)
                 s.commit()
                 log.info("macro_reaction.fomc_detected", title=title)

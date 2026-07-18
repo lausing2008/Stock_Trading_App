@@ -802,6 +802,14 @@ class EconomicEvent(Base):
     reaction_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     reaction_generated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     reaction_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # T258-MACRO-SECTOR-IMPACT: structured sector-impact lists from the SAME LLM call that
+    # produces reaction_text (no second call) — JSON-encoded string lists, matching
+    # reaction_text's TEXT-column style rather than a Postgres array/JSONB type, since this
+    # repo's other LLM-output columns (reasons/entry_decision_notes elsewhere) already use this
+    # JSON-in-TEXT convention. Same manual-ALTER-TABLE requirement as reaction_text above — a
+    # new column on an existing, already-populated table.
+    sectors_helped: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sectors_hurt: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("event_type", "country", "event_date", name="uq_economic_event"),

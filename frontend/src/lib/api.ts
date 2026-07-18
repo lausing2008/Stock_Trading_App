@@ -447,6 +447,8 @@ export const api = {
     const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
     return `${BASE}/paper-portfolio/trades/csv${q}`;
   },
+  paperTradePostmortem: (tradeId: number) =>
+    request<TradePostmortem>(`/paper-portfolio/trades/${tradeId}/postmortem`),
   paperEquityCurve: (days = 180, portfolioId?: number | null) => {
     const q = portfolioId ? `&portfolio_id=${portfolioId}` : '';
     return request<PaperEquityPoint[]>(`/paper-portfolio/equity-curve?days=${days}${q}`);
@@ -1528,6 +1530,31 @@ export type PaperTradesResponse = {
   items: PaperTrade[];
 };
 
+// T258-TRADE-POSTMORTEM: mechanical (no LLM) plan-vs-actual review for one closed trade.
+export type TradePostmortem = {
+  trade_id: number;
+  symbol: string;
+  trading_style: string;
+  exit_reason: string;
+  is_mechanical_exit: boolean;
+  plan_adherence: {
+    entry_slippage_pct: number | null;
+    exit_vs_stop_pct: number | null;
+    exit_vs_target_pct: number | null;
+  };
+  hold_window: {
+    actual_hold_days: number | null;
+    expected_hold_days: number;
+    hold_days_vs_expected: number | null;
+  };
+  max_favorable_excursion: {
+    price: number | null;
+    vs_exit_pct: number | null;
+  };
+  pnl: number | null;
+  pct_return: number | null;
+};
+
 export type PaperEquityPoint = {
   date: string;
   equity: number;
@@ -2028,6 +2055,10 @@ export type MacroReaction = {
   previous_value: number | null;
   reaction_text: string;
   generated_at: string | null;
+  // T258-MACRO-SECTOR-IMPACT: always present as an array (possibly empty) — never undefined,
+  // since the backend defensively parses to [] on a NULL/malformed column.
+  sectors_helped: string[];
+  sectors_hurt: string[];
 };
 
 // NOT the same shape as InsiderLeaderItem/CongressLeaderItem (those come from the dedicated

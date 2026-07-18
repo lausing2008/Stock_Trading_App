@@ -112,6 +112,20 @@ function OverviewTab() {
               <> · Previous: {ov.latest_macro_reaction.previous_value}</>
             )}
           </div>
+          {(ov.latest_macro_reaction.sectors_helped.length > 0 || ov.latest_macro_reaction.sectors_hurt.length > 0) && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+              {ov.latest_macro_reaction.sectors_helped.map(s => (
+                <span key={`helped-${s}`} style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10, color: '#4ade80', background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.3)' }}>
+                  ▲ {s}
+                </span>
+              ))}
+              {ov.latest_macro_reaction.sectors_hurt.map(s => (
+                <span key={`hurt-${s}`} style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10, color: '#f87171', background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.3)' }}>
+                  ▼ {s}
+                </span>
+              ))}
+            </div>
+          )}
           <p style={{ color: '#e5e7eb', fontSize: 13, lineHeight: 1.5, margin: 0 }}>
             {ov.latest_macro_reaction.reaction_text}
           </p>

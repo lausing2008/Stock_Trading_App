@@ -123,3 +123,170 @@ def test_release_day_poll_is_armed_only_during_the_830_to_1000_et_window():
     window = _scheduler_source[start - 300:start]
     assert 'hour="8-9"' in window
     assert "America/New_York" in window
+
+
+# ── T258-MACRO-SECTOR-IMPACT: _clean_sector_list() ─────────────────────────────
+
+from src.services.macro_reaction import _clean_sector_list  # noqa: E402
+
+
+def test_clean_sector_list_passes_through_a_valid_list():
+    assert _clean_sector_list(["Technology", "Financials"]) == ["Technology", "Financials"]
+
+
+def test_clean_sector_list_returns_empty_for_non_list_input():
+    assert _clean_sector_list("Technology") == []
+    assert _clean_sector_list(None) == []
+    assert _clean_sector_list(42) == []
+
+
+def test_clean_sector_list_filters_non_string_entries():
+    assert _clean_sector_list(["Technology", 42, None, "Energy"]) == ["Technology", "Energy"]
+
+
+def test_clean_sector_list_filters_empty_and_whitespace_strings():
+    assert _clean_sector_list(["Technology", "", "   ", "Energy"]) == ["Technology", "Energy"]
+
+
+def test_clean_sector_list_strips_whitespace():
+    assert _clean_sector_list(["  Technology  "]) == ["Technology"]
+
+
+def test_clean_sector_list_caps_at_six_entries():
+    long_list = [f"Sector{i}" for i in range(10)]
+    result = _clean_sector_list(long_list)
+    assert len(result) == 6
+
+
+def test_clean_sector_list_handles_empty_list():
+    assert _clean_sector_list([]) == []
+
+
+# ── generate_reaction()'s new dict return shape ────────────────────────────────
+
+def _mock_anthropic_response(sectors_helped=None, sectors_hurt=None, one_paragraph="Test reaction."):
+    import json as _json
+    from unittest.mock import MagicMock
+
+    payload = {
+        "surprise_direction": "above", "magnitude": "mild",
+        "one_paragraph": one_paragraph,
+        "sectors_helped": sectors_helped if sectors_helped is not None else [],
+        "sectors_hurt": sectors_hurt if sectors_hurt is not None else [],
+    }
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = {"content": [{"text": _json.dumps(payload)}]}
+    return resp
+
+
+class _FakeAsyncClient:
+    def __init__(self, response, exc=None):
+        self._response = response
+        self._exc = exc
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, *a, **kw):
+        if self._exc:
+            raise self._exc
+        return self._response
+
+
+def _run(coro):
+    import asyncio
+    return asyncio.run(coro)
+
+
+def test_generate_reaction_returns_dict_with_sector_lists(monkeypatch):
+    import src.services.macro_reaction as mr
+
+    monkeypatch.setattr(mr, "_api_key", lambda: "test-key")
+    monkeypatch.setattr(mr, "_get_market_regime", lambda: {"state": "bull", "vix": 15.0})
+    fake_client = _FakeAsyncClient(_mock_anthropic_response(
+        sectors_helped=["Technology"], sectors_hurt=["Utilities"],
+    ))
+    monkeypatch.setattr(mr.httpx, "AsyncClient", lambda **kw: fake_client)
+
+    result = _run(mr.generate_reaction("cpi_release", 3.2, 3.0, 3.1, "CPI"))
+    assert result == {
+        "reaction_text": "Test reaction.",
+        "sectors_helped": ["Technology"],
+        "sectors_hurt": ["Utilities"],
+    }
+
+
+def test_generate_reaction_returns_empty_sector_lists_when_llm_provides_none(monkeypatch):
+    import src.services.macro_reaction as mr
+
+    monkeypatch.setattr(mr, "_api_key", lambda: "test-key")
+    monkeypatch.setattr(mr, "_get_market_regime", lambda: {})
+    fake_client = _FakeAsyncClient(_mock_anthropic_response(sectors_helped=[], sectors_hurt=[]))
+    monkeypatch.setattr(mr.httpx, "AsyncClient", lambda **kw: fake_client)
+
+    result = _run(mr.generate_reaction("gdp_release", 2.5, 2.0, None, "GDP"))
+    assert result["sectors_helped"] == []
+    assert result["sectors_hurt"] == []
+
+
+def test_generate_reaction_returns_none_when_reaction_text_is_missing(monkeypatch):
+    """A response with sector lists but no usable one_paragraph must still degrade to None —
+    the sector fields are additive to the existing reaction, never a substitute for it."""
+    import json as _json
+    from unittest.mock import MagicMock
+    import src.services.macro_reaction as mr
+
+    monkeypatch.setattr(mr, "_api_key", lambda: "test-key")
+    monkeypatch.setattr(mr, "_get_market_regime", lambda: {})
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = {"content": [{"text": _json.dumps({
+        "surprise_direction": "above", "magnitude": "mild", "one_paragraph": "",
+        "sectors_helped": ["Technology"], "sectors_hurt": [],
+    })}]}
+    fake_client = _FakeAsyncClient(resp)
+    monkeypatch.setattr(mr.httpx, "AsyncClient", lambda **kw: fake_client)
+
+    result = _run(mr.generate_reaction("cpi_release", 3.2, 3.0, 3.1, "CPI"))
+    assert result is None
+
+
+def test_generate_reaction_returns_none_on_malformed_sector_field_types(monkeypatch):
+    """The LLM returning sectors_helped as a bare string (not a list) must not crash the whole
+    reaction — _clean_sector_list degrades it to [] and the reaction_text still comes through."""
+    import json as _json
+    from unittest.mock import MagicMock
+    import src.services.macro_reaction as mr
+
+    monkeypatch.setattr(mr, "_api_key", lambda: "test-key")
+    monkeypatch.setattr(mr, "_get_market_regime", lambda: {})
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = {"content": [{"text": _json.dumps({
+        "surprise_direction": "above", "magnitude": "mild", "one_paragraph": "Valid text.",
+        "sectors_helped": "Technology",  # malformed: should be a list
+        "sectors_hurt": [],
+    })}]}
+    fake_client = _FakeAsyncClient(resp)
+    monkeypatch.setattr(mr.httpx, "AsyncClient", lambda **kw: fake_client)
+
+    result = _run(mr.generate_reaction("cpi_release", 3.2, 3.0, 3.1, "CPI"))
+    assert result is not None
+    assert result["reaction_text"] == "Valid text."
+    assert result["sectors_helped"] == []
+
+
+# ── source-text: both call sites updated for the new dict shape ───────────────
+
+def test_both_call_sites_write_sectors_helped_and_hurt_columns():
+    fast_poll_start = _source.index("async def check_release_day_fast_poll")
+    fast_poll_end = _source.index("\n\ndef _is_fomc_day", fast_poll_start)
+    fast_poll_body = _source[fast_poll_start:fast_poll_end]
+    assert "ev.sectors_helped" in fast_poll_body
+    assert "ev.sectors_hurt" in fast_poll_body
+
+    fomc_start = _source.index("async def check_fomc_statement_poll")
+    fomc_body = _source[fomc_start:]
+    assert "ev.sectors_helped" in fomc_body
+    assert "ev.sectors_hurt" in fomc_body

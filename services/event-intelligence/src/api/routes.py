@@ -1,6 +1,8 @@
 """Event Intelligence API routes."""
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from common.jwt_auth import get_current_username
@@ -263,6 +265,19 @@ def get_overview(_: str = Depends(get_current_username)):
             .limit(1)
         ).scalar_one_or_none()
         if row is not None:
+            # T258-MACRO-SECTOR-IMPACT: sectors_helped/sectors_hurt are JSON-encoded TEXT
+            # columns (see EconomicEvent's own docstring for why) — parse defensively, since a
+            # row written before this feature shipped has both columns NULL, and a malformed
+            # value must never break the whole overview endpoint.
+            def _parse_sectors(raw: str | None) -> list[str]:
+                if not raw:
+                    return []
+                try:
+                    parsed = json.loads(raw)
+                    return parsed if isinstance(parsed, list) else []
+                except Exception:
+                    return []
+
             latest_macro_reaction = {
                 "event_type": row.event_type,
                 "title": row.title,
@@ -271,6 +286,8 @@ def get_overview(_: str = Depends(get_current_username)):
                 "previous_value": row.previous_value,
                 "reaction_text": row.reaction_text,
                 "generated_at": row.reaction_generated_at.isoformat() if row.reaction_generated_at else None,
+                "sectors_helped": _parse_sectors(row.sectors_helped),
+                "sectors_hurt": _parse_sectors(row.sectors_hurt),
             }
 
     return {

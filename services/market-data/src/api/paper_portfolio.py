@@ -494,6 +494,105 @@ def get_trades(
     }
 
 
+# ── T258-TRADE-POSTMORTEM: per-closed-trade plan-vs-actual review ────────────
+# Mechanical only (no LLM) — every field here is derived directly from PaperTrade's own
+# stored plan (entry_price/stop_loss/take_profit/entry_time) and actuals (exit_price/
+# exit_time/exit_reason), plus a single Price range-query for max-favorable-excursion. This
+# was the fit-gap analysis's own explicit v1 scope: the mechanical fields are what the
+# self-improvement/calibration-loop discipline documented elsewhere in this repo says to
+# trust first, before adding an LLM-generated prose layer on top in a later version.
+
+_MECHANICAL_EXIT_REASONS = {"stop_hit", "breakeven_stop", "target_reached", "time_stop"}
+
+
+@router.get("/trades/{trade_id}/postmortem")
+def get_trade_postmortem(
+    trade_id: int,
+    _: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Plan-vs-actual review for one closed trade — entry/exit adherence to the stored plan,
+    exit-reason classification (mechanical vs discretionary), and max favorable excursion
+    (the best price reached during the hold vs. the actual exit price)."""
+    from ..services.paper_trading_engine import _STYLE_OVERRIDES
+
+    trade = session.get(PaperTrade, trade_id)
+    if trade is None:
+        raise HTTPException(404, "Trade not found")
+    if trade.stage != "closed":
+        raise HTTPException(400, "Post-mortem is only available for closed trades")
+
+    expected_hold_days = _STYLE_OVERRIDES.get(trade.trading_style, {}).get("max_hold_days", 60)
+    exit_reason = trade.exit_reason or "unknown"
+    is_mechanical_exit = exit_reason in _MECHANICAL_EXIT_REASONS
+
+    entry_slippage_pct = None
+    if trade.entry_price:
+        # Plan-vs-actual entry price is the SAME value today (paper trading fills at the
+        # signal's own live_price at entry time — there is no separate "planned entry" that
+        # can diverge from the fill) — this field is a placeholder for the real-broker case
+        # (T230-PORTFOLIO-BROKER-SYNC), where a synced position's actual fill CAN differ from
+        # the paper-simulated entry_price. Left at 0.0 for pure-paper trades rather than
+        # omitted, so the API response shape doesn't change between broker and non-broker
+        # trades — a future broker-fill-vs-plan comparison can populate this without a
+        # breaking schema change.
+        entry_slippage_pct = 0.0
+
+    exit_vs_stop_pct = None
+    if trade.exit_price and trade.stop_loss:
+        exit_vs_stop_pct = round((trade.exit_price - trade.stop_loss) / trade.stop_loss * 100, 2)
+    exit_vs_target_pct = None
+    if trade.exit_price and trade.take_profit:
+        exit_vs_target_pct = round((trade.exit_price - trade.take_profit) / trade.take_profit * 100, 2)
+
+    hold_days_vs_expected = None
+    if trade.hold_days is not None:
+        hold_days_vs_expected = trade.hold_days - expected_hold_days
+
+    # Max favorable excursion: highest price reached during the hold window, from the SAME
+    # daily Price table already used elsewhere in this file — a single indexed range query,
+    # not a new data source.
+    mfe_price = None
+    mfe_vs_exit_pct = None
+    if trade.stock_id is not None and trade.entry_time and trade.exit_time:
+        highs = session.execute(
+            select(func.max(Price.high)).where(
+                Price.stock_id == trade.stock_id,
+                Price.timeframe == TimeFrame.D1,
+                Price.ts >= trade.entry_time,
+                Price.ts <= trade.exit_time,
+            )
+        ).scalar()
+        if highs is not None:
+            mfe_price = float(highs)
+            if trade.exit_price:
+                mfe_vs_exit_pct = round((mfe_price - trade.exit_price) / trade.exit_price * 100, 2)
+
+    return {
+        "trade_id": trade.id,
+        "symbol": trade.symbol,
+        "trading_style": trade.trading_style,
+        "exit_reason": exit_reason,
+        "is_mechanical_exit": is_mechanical_exit,
+        "plan_adherence": {
+            "entry_slippage_pct": entry_slippage_pct,
+            "exit_vs_stop_pct": exit_vs_stop_pct,
+            "exit_vs_target_pct": exit_vs_target_pct,
+        },
+        "hold_window": {
+            "actual_hold_days": trade.hold_days,
+            "expected_hold_days": expected_hold_days,
+            "hold_days_vs_expected": hold_days_vs_expected,
+        },
+        "max_favorable_excursion": {
+            "price": mfe_price,
+            "vs_exit_pct": mfe_vs_exit_pct,
+        },
+        "pnl": trade.pnl,
+        "pct_return": trade.pct_return,
+    }
+
+
 # ── Trades CSV export ─────────────────────────────────────────────────────────
 
 @router.get("/trades/csv")

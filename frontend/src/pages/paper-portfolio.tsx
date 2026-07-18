@@ -89,6 +89,56 @@ function ExitBadge({ reason }: { reason: string | null }) {
   );
 }
 
+function PostmortemPanel({ tradeId }: { tradeId: number }) {
+  const { data, error, isLoading } = useSWR(
+    `postmortem:${tradeId}`,
+    () => api.paperTradePostmortem(tradeId),
+  );
+
+  if (isLoading) return <div style={{ padding: '10px 14px', color: '#64748b', fontSize: 12 }}>Loading post-mortem…</div>;
+  if (error || !data) return <div style={{ padding: '10px 14px', color: '#f87171', fontSize: 12 }}>Failed to load post-mortem.</div>;
+
+  const row = (label: string, value: string, color?: string) => (
+    <div key={label} style={{ textAlign: 'center' }}>
+      <div style={{ fontSize: 10, color: '#64748b', marginBottom: 2, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
+      <div style={{ fontSize: 13, fontWeight: 700, color: color ?? '#e2e8f0' }}>{value}</div>
+    </div>
+  );
+
+  const fmtPctVal = (v: number | null) => v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+  const pctColor = (v: number | null) => v == null ? '#475569' : v >= 0 ? '#22c55e' : '#ef4444';
+
+  return (
+    <div style={{ padding: '12px 14px', background: '#020617', borderRadius: 6, margin: '4px 0' }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+        Post-Mortem — Plan vs. Actual
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+        <span style={{
+          fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10,
+          color: data.is_mechanical_exit ? '#22c55e' : '#f59e0b',
+          background: data.is_mechanical_exit ? 'rgba(34,197,94,0.12)' : 'rgba(245,158,11,0.12)',
+          border: `1px solid ${data.is_mechanical_exit ? 'rgba(34,197,94,0.3)' : 'rgba(245,158,11,0.3)'}`,
+        }}>
+          {data.is_mechanical_exit ? 'Plan-consistent exit' : 'Discretionary exit'}
+        </span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
+        {row('Exit vs Stop', fmtPctVal(data.plan_adherence.exit_vs_stop_pct), pctColor(data.plan_adherence.exit_vs_stop_pct))}
+        {row('Exit vs Target', fmtPctVal(data.plan_adherence.exit_vs_target_pct), pctColor(data.plan_adherence.exit_vs_target_pct))}
+        {row('Hold Days', `${data.hold_window.actual_hold_days ?? '—'}d / ${data.hold_window.expected_hold_days}d expected`)}
+        {row('vs Expected Hold', data.hold_window.hold_days_vs_expected == null ? '—' : `${data.hold_window.hold_days_vs_expected >= 0 ? '+' : ''}${data.hold_window.hold_days_vs_expected}d`)}
+        {row('Best Price vs Exit', fmtPctVal(data.max_favorable_excursion.vs_exit_pct), pctColor(data.max_favorable_excursion.vs_exit_pct != null ? -data.max_favorable_excursion.vs_exit_pct : null))}
+      </div>
+      {data.max_favorable_excursion.vs_exit_pct != null && data.max_favorable_excursion.vs_exit_pct > 5 && (
+        <div style={{ marginTop: 10, fontSize: 11, color: '#f97316' }}>
+          Price ran {data.max_favorable_excursion.vs_exit_pct.toFixed(1)}% above the exit price after this trade closed — worth reviewing whether the exit was early.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StatCard({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
   return (
     <div style={{
@@ -1377,6 +1427,7 @@ export default function PaperPortfolioPage() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [authed, setAuthed] = useState(false);
   const [tradesPage, setTradesPage] = useState(1);
+  const [expandedTradeId, setExpandedTradeId] = useState<number | null>(null);
   const [decPage, setDecPage] = useState(1);
   const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -2467,29 +2518,41 @@ export default function PaperPortfolioPage() {
                   </thead>
                   <tbody>
                     {trades.items.map(t => (
-                      <tr key={t.id} style={{ borderBottom: '1px solid #1e293b' }}>
-                        <td style={{ padding: '9px 10px' }}>
-                          <Link href={`/stock/${t.symbol}`} style={{ color: '#60a5fa', fontWeight: 600, textDecoration: 'none' }}>{t.symbol}</Link>
-                        </td>
-                        <td style={{ padding: '9px 10px', color: '#94a3b8', fontSize: 11 }}>{t.trading_style ?? '—'}</td>
-                        <td style={{ padding: '9px 10px', color: '#64748b' }}>{fmtDate(t.entry_date)}</td>
-                        <td style={{ padding: '9px 10px', color: '#64748b' }}>{fmtDate(t.exit_time)}</td>
-                        <td style={{ padding: '9px 10px' }}>${t.entry_price.toFixed(2)}</td>
-                        <td style={{ padding: '9px 10px' }}>{t.exit_price != null ? `$${t.exit_price.toFixed(2)}` : '—'}</td>
-                        <td style={{ padding: '9px 10px', color: (t.pct_return ?? 0) >= 0 ? '#22c55e' : '#ef4444', fontWeight: 700 }}>
-                          {fmtPct(t.pct_return)}
-                        </td>
-                        <td style={{ padding: '9px 10px', color: (t.pnl ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>
-                          {t.pnl != null ? `$${t.pnl.toFixed(0)}` : '—'}
-                        </td>
-                        <td style={{ padding: '9px 10px' }}>{t.hold_days}d</td>
-                        <td style={{ padding: '9px 10px' }}><ExitBadge reason={t.exit_reason} /></td>
-                        <td style={{ padding: '9px 10px' }}>{t.rr_ratio_at_entry != null ? `${t.rr_ratio_at_entry.toFixed(1)}:1` : '—'}</td>
-                        <td style={{ padding: '9px 10px' }}>{t.entry_score ?? '—'}</td>
-                        <td style={{ padding: '9px 10px', color: t.confidence_at_entry != null ? (t.confidence_at_entry >= 50 ? '#94a3b8' : '#f97316') : '#475569', fontSize: 11 }}>
-                          {t.confidence_at_entry != null ? `${t.confidence_at_entry.toFixed(0)}%` : '—'}
-                        </td>
-                      </tr>
+                      <React.Fragment key={t.id}>
+                        <tr
+                          onClick={() => setExpandedTradeId(id => id === t.id ? null : t.id)}
+                          style={{ borderBottom: expandedTradeId === t.id ? 'none' : '1px solid #1e293b', cursor: 'pointer' }}
+                        >
+                          <td style={{ padding: '9px 10px' }}>
+                            <Link href={`/stock/${t.symbol}`} onClick={e => e.stopPropagation()} style={{ color: '#60a5fa', fontWeight: 600, textDecoration: 'none' }}>{t.symbol}</Link>
+                          </td>
+                          <td style={{ padding: '9px 10px', color: '#94a3b8', fontSize: 11 }}>{t.trading_style ?? '—'}</td>
+                          <td style={{ padding: '9px 10px', color: '#64748b' }}>{fmtDate(t.entry_date)}</td>
+                          <td style={{ padding: '9px 10px', color: '#64748b' }}>{fmtDate(t.exit_time)}</td>
+                          <td style={{ padding: '9px 10px' }}>${t.entry_price.toFixed(2)}</td>
+                          <td style={{ padding: '9px 10px' }}>{t.exit_price != null ? `$${t.exit_price.toFixed(2)}` : '—'}</td>
+                          <td style={{ padding: '9px 10px', color: (t.pct_return ?? 0) >= 0 ? '#22c55e' : '#ef4444', fontWeight: 700 }}>
+                            {fmtPct(t.pct_return)}
+                          </td>
+                          <td style={{ padding: '9px 10px', color: (t.pnl ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>
+                            {t.pnl != null ? `$${t.pnl.toFixed(0)}` : '—'}
+                          </td>
+                          <td style={{ padding: '9px 10px' }}>{t.hold_days}d</td>
+                          <td style={{ padding: '9px 10px' }}><ExitBadge reason={t.exit_reason} /></td>
+                          <td style={{ padding: '9px 10px' }}>{t.rr_ratio_at_entry != null ? `${t.rr_ratio_at_entry.toFixed(1)}:1` : '—'}</td>
+                          <td style={{ padding: '9px 10px' }}>{t.entry_score ?? '—'}</td>
+                          <td style={{ padding: '9px 10px', color: t.confidence_at_entry != null ? (t.confidence_at_entry >= 50 ? '#94a3b8' : '#f97316') : '#475569', fontSize: 11 }}>
+                            {t.confidence_at_entry != null ? `${t.confidence_at_entry.toFixed(0)}%` : '—'}
+                          </td>
+                        </tr>
+                        {expandedTradeId === t.id && (
+                          <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                            <td colSpan={13} style={{ padding: '0 10px 10px' }}>
+                              <PostmortemPanel tradeId={t.id} />
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
                     ))}
                   </tbody>
                 </table>
