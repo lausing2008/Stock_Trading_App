@@ -3324,3 +3324,112 @@ print(_ROUTES['portfolio-risk'])"
 docker exec stockai-portfolio-optimizer-1 curl -s \
   'http://localhost:8007/portfolio-risk/risk?symbols=AAPL,MSFT' -H "Authorization: Bearer <token>"
 ```
+
+---
+
+## Recurring Issue: A Redundant Local `from datetime import datetime` Made Two Hard Rejects Dead Code (BUG232-DEADCODE)
+
+**Symptom (found 2026-07-18, while writing regression tests for T232-DL-DUALSCORER-DEBT's
+already-ported DE-only hard rejects):** `_should_enter()`'s AUD232-005 time-of-day gate
+(blocks the first 30 min / last 15 min of the trading session) and its extended-move 6% hard
+block never actually fired in production, despite the code looking correctly ported and
+passing code review. No visible symptom otherwise — the fallback gate silently ran with two
+fewer protections than intended, only during a decision-engine outage (its normal reachable
+state never exercises this fallback path at all).
+
+**Root cause:** the macro-blackout hard-reject block (a few lines earlier in the same
+function) has `if _macro_evt is None: try: ... from datetime import datetime, timezone,
+timedelta ...` — a REDUNDANT local import, since `datetime`/`timezone` are already imported at
+module level (line ~34). Per normal Python scoping rules, the mere PRESENCE of a local `import`
+statement anywhere in a function body makes that name local for the ENTIRE function, even on
+code paths that never execute the import. Since `reasons.get("macro_blackout")` is normally an
+explicit `True`/`False` (never bare `None`) thanks to signal-engine's T220-D fast path, the
+`if _macro_evt is None:` block — and its local import — is SKIPPED on essentially every real
+call. The LATER time-of-day-gate code's `datetime.now(timezone.utc)` call then raises
+`UnboundLocalError: cannot access local variable 'datetime' where it is not associated with a
+value` — silently swallowed by that block's own `except Exception: pass` (a deliberate
+fail-open pattern for tz-lookup failures, which this wasn't).
+
+**Fix applied:** deleted the redundant local `from datetime import datetime, timezone,
+timedelta` — the module-level import already covers every use in the function.
+
+**How this was caught:** NOT by code review (the code had already passed review once) — by
+writing a direct behavioral test for the time-of-day gate using a custom `datetime` subclass
+overriding `.now()` to return a fixed instant, which immediately surfaced the `UnboundLocalError`
+in the test output when the mocked call actually executed.
+
+**Design invariant, generalized beyond this one function:** a local `import` statement inside
+an `if`/`try` block that is normally SKIPPED will silently shadow the SAME name at module level
+for the rest of that function, on every call — not just the branch containing the import. This
+is a real, non-obvious Python gotcha (not specific to this codebase), and it is invisible to
+static review because the local import LOOKS harmless in isolation ("just re-importing
+something already available") — the bug only manifests as an `UnboundLocalError` on a
+DIFFERENT code path, and only if that path is reached without the import's own block having
+run first. **Grep for `from datetime import` (or any local re-import of an already-module-
+level name) inside conditional blocks in any function with multiple hard-reject/early-return
+branches** — this exact pattern could recur anywhere a name is imported locally "just in case"
+inside one conditional branch of a large function.
+
+**What to check if a similar silently-dead-code bug is suspected:**
+```bash
+# Grep for local re-imports of already-module-level names inside conditional blocks:
+grep -n "^from datetime import\|^import datetime" services/market-data/src/services/paper_trading_engine.py
+# Then check whether any local `from datetime import ...` (or similar) exists deeper in the
+# same file, inside an if/try block — that's the shape of this bug class.
+
+# Confirm the two hard rejects actually fire when they should (needs a real live-triggered
+# UnboundLocalError to have been fixed — a stale deploy would silently still no-op):
+docker exec stockai-market-data-1 python3 -c "
+import sys; sys.path.insert(0, '/app')
+from datetime import datetime, timezone
+from src.services.paper_trading_engine import _should_enter
+# a candidate whose game_plan/signal_data trips the time-of-day gate at whatever the
+# real current time is would confirm this live; easier to just re-run the test suite:
+"
+docker exec stockai-market-data-1 python3 -m pytest tests/test_should_enter_de_parity.py -q
+```
+
+## Feature Reference: T232-DL-DUALSCORER-DEBT — 4 DE-Only Hard Rejects, Test Coverage Added (2026-07-18)
+
+**What this session found**: the 4 "decision-engine-only hard rejects" this tracker item
+listed as a safe next porting step (market-hours/holiday guard, time-of-day gate, extended-
+move 6% block, regime-based R:R stiffening) were ALL already present in `_should_enter()` —
+ported in an earlier session, tagged `AUD232-021`/`AUD232-005`/`AUD232-060` in code comments.
+The tracker text describing them as still-portable was stale in the "code doesn't exist yet"
+direction — the mirror image of the SE-F2/aud14 staleness pattern already documented elsewhere
+in this file (where a tracker entry claimed something was fixed that wasn't). **Always verify
+against the actual current code before assuming a tracker's "todo" status is accurate — in
+either direction.**
+
+**The real remaining gap was test coverage, not code** — `test_should_enter_de_parity.py` only
+had tests for the 3 score-layer ports from the 2026-07-17 partial fix; none of the 4 hard
+rejects had a single dedicated test. Writing those tests is what surfaced BUG232-DEADCODE
+(above) — 2 of the 4 "already-ported" hard rejects were actually silently non-functional.
+
+**Test additions** (`services/market-data/tests/test_should_enter_de_parity.py`, 27 tests
+total now, 17 new): market-hours (mocks `_is_market_hours` directly via monkeypatch, since
+real wall-clock time can't be safely controlled from a test); time-of-day gate (a custom
+`datetime` subclass overriding `.now()` to return a fixed instant in the target market's
+timezone — this is the exact mechanism that caught BUG232-DEADCODE); extended-move 6% block
+(above/at/below the threshold, plus a configurable-threshold case); regime-based R:R
+stiffening (choppy/risk_off raising the floor from 2.0 to 3.0, clearable with a wider
+take_profit). All adversarially verified by sabotaging each condition (`if <cond>:` →
+`if False:`) one at a time and confirming exactly the expected test subset fails, then
+reverting.
+
+**Two real test-writing gotchas hit along the way** (both fixed in the final test file, worth
+knowing if extending these tests further): (1) changing `live_price` to exercise the
+extended-move/time-of-day checks without also re-deriving `stop`/`take_profit` for that new
+price causes the EARLIER R:R hard-reject to fire first and mask the check actually under test
+— every new fixture explicitly recomputes stop/take_profit to keep R:R comfortably clear at
+its own live_price. (2) floating-point imprecision: `(105.999.../100.0 - 1) * 100` can compute
+to `6.000000000000005`, not exactly `6.0` — a test asserting "exactly at the threshold does
+not reject" is inherently flaky on an exact boundary; use a comfortably-below value instead of
+chasing an exact float boundary.
+
+**What to check if this looks wrong**: run
+`docker exec stockai-market-data-1 python3 -m pytest tests/test_should_enter_de_parity.py -v`
+inside the container — all 27 should pass. If any of the 4 hard-reject tests fail after a
+future edit to `_should_enter()`, that's a real regression in DE parity, not a flaky test (all
+4 groups were adversarially confirmed to fail correctly when their underlying condition is
+disabled).

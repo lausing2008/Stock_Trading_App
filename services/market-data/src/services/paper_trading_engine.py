@@ -1597,7 +1597,17 @@ def _should_enter(
         try:
             from db import SessionLocal
             from sqlalchemy import text
-            from datetime import datetime, timezone, timedelta
+            # BUG232-DEADCODE: this redundant local `from datetime import datetime, timezone,
+            # timedelta` (datetime/timezone are already imported at module level, line ~34)
+            # made Python treat `datetime` as a LOCAL name for the ENTIRE _should_enter()
+            # function — meaning the later AUD232-005 time-of-day-gate/extended-move hard
+            # reject's `datetime.now(timezone.utc)` call raised UnboundLocalError whenever
+            # THIS if-block was skipped (i.e. whenever reasons.get("macro_blackout") is not
+            # exactly None — the normal case, since signal-engine's T220-D fast path sets it
+            # to an explicit True/False). That exception was silently swallowed by the time-
+            # of-day gate's OWN try/except, making both AUD232-005 hard rejects dead code in
+            # production despite looking correctly ported. Found while writing regression
+            # tests for T232-DL-DUALSCORER-DEBT's already-ported DE-only hard rejects.
             _now = datetime.now(timezone.utc)
             _window_end = _now + timedelta(hours=2)
             with SessionLocal() as _evsess:

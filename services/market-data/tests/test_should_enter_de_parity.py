@@ -8,8 +8,14 @@ verdict is only used when DE is unreachable — but during exactly that outage w
 fallback was measurably weaker than DE for the same inputs. These tests isolate just the
 three new layers with otherwise-neutral inputs so a regression in any one of them is caught
 without needing to reconstruct decision-engine's full request/response cycle.
+
+Also covers the 4 DE-only hard rejects (AUD232-021 market-hours/holiday guard, AUD232-005
+time-of-day gate + extended-move block, AUD232-060 regime-based R:R stiffening) — these were
+already ported into _should_enter() in an earlier pass but had no dedicated regression tests
+of their own (the tracker text describing them as still "todo" was stale; the code was not).
 """
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -182,3 +188,160 @@ def test_all_three_new_layers_stack_independently():
     assert score == score_base + 2
     assert any("Regime: bull" in n for n in notes)
     assert any("K-Score 60" in n for n in notes)
+
+
+# ── AUD232-021: market-hours/holiday hard reject (DE-only, ported) ───────────────────
+
+def test_market_closed_hard_rejects_with_score_negative_99_and_no_further_checks(monkeypatch):
+    import src.services.paper_trading_engine as pte
+    monkeypatch.setattr(pte, "_is_market_hours", lambda market="US": False)
+    live_price, game_plan, signal_data, cfg = _neutral_inputs()
+    should_enter, score, notes = pte._should_enter("TEST", signal_data, live_price, game_plan, cfg, None)
+    assert should_enter is False
+    assert score == -99
+    assert any("Market closed" in n for n in notes)
+
+
+def test_market_open_does_not_hard_reject_on_this_check():
+    # The autouse fixture already pins _is_market_hours to True — a neutral candidate must
+    # clear this specific check (though other hard rejects/score floor still apply downstream).
+    should_enter, score, notes = _score_only()
+    assert not any("Market closed" in n for n in notes)
+
+
+# ── AUD232-005: time-of-day gate hard reject (DE-only, ported) ───────────────────────
+
+def _mock_local_time(monkeypatch, hour, minute, market="US"):
+    """_should_enter()'s time-of-day gate calls datetime.now(timezone.utc).astimezone(tz) —
+    patch the module's `datetime` so `.now()` returns a fixed instant that converts to the
+    given local hour:minute in the target market's timezone."""
+    tz = ZoneInfo("America/New_York") if market != "HK" else ZoneInfo("Asia/Hong_Kong")
+    local_dt = datetime(2026, 6, 15, hour, minute, tzinfo=tz)  # a Monday, not a holiday
+    utc_dt = local_dt.astimezone(timezone.utc)
+
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return utc_dt.astimezone(tz) if tz else utc_dt
+
+    import src.services.paper_trading_engine as pte
+    monkeypatch.setattr(pte, "datetime", _FixedDatetime)
+
+
+def test_first_30_minutes_of_session_is_a_hard_reject(monkeypatch):
+    _mock_local_time(monkeypatch, 9, 45)  # 09:45 ET -> 15 min after 09:30 open
+    should_enter, score, notes = _score_only()
+    assert should_enter is False
+    assert score == -99
+    assert any("Time-of-day gate" in n and "first 30 min" in n for n in notes)
+
+
+def test_last_15_minutes_of_session_is_a_hard_reject(monkeypatch):
+    _mock_local_time(monkeypatch, 15, 50)  # 15:50 ET -> 10 min before 16:00 close
+    should_enter, score, notes = _score_only()
+    assert should_enter is False
+    assert score == -99
+    assert any("Time-of-day gate" in n and "last 15 min" in n for n in notes)
+
+
+def test_mid_session_time_does_not_hit_the_time_of_day_gate(monkeypatch):
+    _mock_local_time(monkeypatch, 12, 0)  # noon ET -> comfortably mid-session
+    should_enter, score, notes = _score_only()
+    assert not any("Time-of-day gate" in n for n in notes)
+
+
+def test_time_of_day_gate_boundary_is_exclusive_of_the_safe_side(monkeypatch):
+    # 570 mins = 09:30 exactly (market open) must NOT be gated; 600 mins = 10:00 exactly is
+    # the first minute that's safe again.
+    _mock_local_time(monkeypatch, 10, 0)
+    _, _, notes_at_1000 = _score_only()
+    assert not any("Time-of-day gate" in n for n in notes_at_1000)
+
+    _mock_local_time(monkeypatch, 9, 59)
+    _, score_at_959, notes_at_959 = _score_only()
+    assert score_at_959 == -99
+    assert any("first 30 min" in n for n in notes_at_959)
+
+
+# ── AUD232-005: extended-move 6% hard reject (DE-only, ported) ───────────────────────
+
+def test_price_more_than_6_percent_above_breakout_is_a_hard_reject():
+    # Widen stop/take_profit so R:R still clears its own floor at the new, higher live_price —
+    # the extended-move check runs AFTER the R:R hard reject, so a stale stop/take_profit left
+    # over from a lower live_price would trip that earlier check first and mask this one.
+    live_price, game_plan, signal_data, cfg = _neutral_inputs()
+    game_plan.update({"breakout": 100.0, "stop": 100.0, "take_profit": 130.0})
+    should_enter, score, notes = _should_enter(
+        "TEST", signal_data, 107.0, game_plan, cfg, None,
+    )
+    assert should_enter is False
+    assert score == -99
+    assert any("extended move" in n for n in notes)
+
+
+def test_price_comfortably_below_the_6_percent_threshold_does_not_reject():
+    # 5.5% above breakout — deliberately not exactly 6.0% (floating-point (live/breakout-1)*100
+    # can land a hair on either side of an exact boundary; a clearly-below value is what
+    # actually matters here, not pinning the exact boundary).
+    live_price, game_plan, signal_data, cfg = _neutral_inputs()
+    game_plan.update({"breakout": 100.0, "stop": 96.5, "take_profit": 125.5})
+    should_enter, score, notes = _should_enter(
+        "TEST", signal_data, 105.5, game_plan, cfg, None,
+    )
+    assert not any("extended move" in n for n in notes)
+
+
+def test_price_below_breakout_does_not_hit_the_extension_check():
+    should_enter, score, notes = _score_only()  # default game_plan has breakout=103, live_price=100
+    assert not any("extended move" in n for n in notes)
+
+
+def test_extension_threshold_is_configurable_via_cfg():
+    live_price, game_plan, signal_data, cfg = _neutral_inputs()
+    game_plan.update({"breakout": 100.0, "stop": 98.0, "take_profit": 116.0})  # rr = 13/5 = 2.6
+    cfg["max_breakout_extension_pct"] = 2.0
+    should_enter, score, notes = _should_enter(
+        "TEST", signal_data, 103.0, game_plan, cfg, None,  # 3% above breakout
+    )
+    assert should_enter is False
+    assert any("extended move" in n for n in notes)
+
+
+# ── AUD232-060: regime-based R:R stiffening hard reject (DE-only, ported) ────────────
+
+def test_choppy_regime_raises_the_minimum_rr_floor():
+    # Baseline R:R of 2.0 (from _neutral_inputs: stop_dist=5, take_profit-live_price=10)
+    # clears the neutral-regime floor (2.0) but not the choppy-regime floor (3.0 uncalibrated).
+    live_price, game_plan, signal_data, cfg = _neutral_inputs()
+    should_enter, score, notes = _should_enter(
+        "TEST", signal_data, live_price, game_plan, cfg, {"state": "choppy"},
+    )
+    assert should_enter is False
+    assert score == -99
+    assert any("R:R" in n and "below minimum" in n for n in notes)
+
+
+def test_risk_off_regime_also_raises_the_minimum_rr_floor():
+    live_price, game_plan, signal_data, cfg = _neutral_inputs()
+    should_enter, score, notes = _should_enter(
+        "TEST", signal_data, live_price, game_plan, cfg, {"state": "risk_off"},
+    )
+    assert should_enter is False
+    assert any("R:R" in n and "below minimum" in n for n in notes)
+
+
+def test_same_rr_passes_in_neutral_regime_that_fails_in_choppy():
+    live_price, game_plan, signal_data, cfg = _neutral_inputs()
+    should_enter_neutral, score_neutral, notes_neutral = _should_enter(
+        "TEST", signal_data, live_price, game_plan, cfg, {"state": "neutral"},
+    )
+    assert not any("below minimum" in n for n in notes_neutral)
+
+
+def test_choppy_regime_rr_floor_can_be_cleared_with_a_wider_take_profit():
+    live_price, game_plan, signal_data, cfg = _neutral_inputs()
+    game_plan["take_profit"] = 130.0  # rr = (130-100)/5 = 6.0, clears the 3.0 choppy floor
+    should_enter, score, notes = _should_enter(
+        "TEST", signal_data, live_price, game_plan, cfg, {"state": "choppy"},
+    )
+    assert not any("below minimum" in n for n in notes)
