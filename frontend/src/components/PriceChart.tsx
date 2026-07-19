@@ -272,11 +272,14 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
 
   // T252-AUTO-SWING-PIVOTS: computed whenever pivots might be needed for rendering OR for
   // snapping a Fixed Range VP click, not gated behind showSwingPivots alone — the click-snap
-  // benefit should apply even if the user never turns the marker overlay on.
+  // benefit should apply even if the user never turns the marker overlay on. Works on both
+  // daily and intraday bars — unlike S/R/FVG/game-plan levels (which come from the backend's
+  // daily-only /ta/{symbol}/levels endpoint), pivot detection runs client-side on whatever
+  // activePrices already holds, so there's no structural reason to exclude intraday views.
   const swingPivots = useMemo(() => {
-    if (isIntraday || activePrices.length === 0) return [];
+    if (activePrices.length === 0) return [];
     return detectSwingPivots(activePrices, 5);
-  }, [activePrices, isIntraday]);
+  }, [activePrices]);
 
   useEffect(() => {
     if (!mainRef.current || activePrices.length === 0) return;
@@ -392,8 +395,9 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
 
       // T252-AUTO-SWING-PIVOTS: small dot markers on real local swing highs/lows, so Fixed
       // Range VP's two clicks can be aimed at an actual extremum instead of eyeballed. Off by
-      // default (matching every other opt-in overlay's decluttering convention).
-      if (!isIntraday && showSwingPivots && swingPivots.length > 0) {
+      // default (matching every other opt-in overlay's decluttering convention). Available on
+      // both daily and intraday charts.
+      if (showSwingPivots && swingPivots.length > 0) {
         for (const p of swingPivots) {
           allMarkers.push({
             time: (isIntraday ? toIntradayTime(p.ts) : toTime(p.ts)) as unknown as Time,
