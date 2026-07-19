@@ -4230,3 +4230,79 @@ it's untouched by this feature — if the anchored line looks wrong, first confi
 slicing (`activePrices.slice(anchoredVwapIdx)`) is the only new logic here. If the anchor point
 seems to have moved from where you actually clicked, check the swing-pivot snap radius (3 bars)
 — clicking near, but not on, a real pivot will snap to that pivot instead of your exact click.
+
+---
+
+## Feature Reference: T233-ARCH-INSERVICE-SPLITS (research-engine half) — Scoring Functions Extracted to scoring.py (Built 2026-07-19)
+
+**Gap this closes**: `services/research-engine/src/api/routes.py` had grown to 1,877 lines,
+bundling report aggregation/orchestration (Claude calls, caching, route handlers) with three
+independently-testable quant subsystems (technical scoring, fundamental scoring, DCF
+valuation). `tests/test_scoring.py` already imported several of these functions directly with
+zero FastAPI/network dependency, proving they were already decoupled in practice — just not in
+file layout, making the file a review hazard (a change to Claude-prompt-building code sits in
+the same diff/file as a change to DCF math, with no structural signal separating the two).
+
+**What moved**: a verified, genuinely self-contained block — `_last`, `_second_last`, `_atr`,
+`_institutional_ownership_pct`, `_fmt_cap`, `_score_technical` (+ its `_rsi_interp`/
+`_macd_interp`/`_hist_interp` helpers), `_sector_bench`, `_score_fundamental`,
+`_build_checklist`, `_position_sizing_matches`, `_position_size`, `_dcf_fair_value` — into a
+new `services/research-engine/src/scoring.py`. Verified before moving that this block has zero
+`httpx`/`log`/`async`/network dependency (a plain `grep` across the extracted range came back
+empty) — confirming it's pure computation, not orchestration wearing a scoring-sounding name.
+`_call_claude()` and `_fallback_ai()` — which sit immediately after this block in the original
+file and DO make a real `httpx.AsyncClient` call — were deliberately NOT moved; they're
+orchestration, not scoring, despite living in the same neighborhood of the original file.
+
+**`routes.py` re-imports all 15 names from `..scoring`**, so every existing `from
+src.api.routes import X` call site — both the real route handlers below and every test file in
+`tests/` — keeps working completely unchanged. This was a deliberate choice: an alternative
+("update every test file's import path to `from src.scoring import X`") would have touched 4
+test files for zero behavioral benefit, just to avoid one import-forwarding block in `routes.py`.
+
+**Result**: `routes.py` went from 1,877 → 1,018 lines; `scoring.py` is a new, self-contained
+893-line module with no FastAPI/network/logging dependency at all — genuinely independently
+testable and reviewable now, not just in principle.
+
+**signal-engine's half of this same tracker item was deliberately NOT done this session** —
+`services/signal-engine/src/api/routes.py` is 6,190 lines across 34 routes (grown from the
+tracker's stale 4,805-line citation), and is the single most safety-critical service in this
+app (live signal generation, self-tuning, backtesting). A split there is a materially larger
+and riskier undertaking than research-engine's clean, already-isolated 15-function extraction
+— it doesn't fit the "about as safe as a refactor gets" framing the tracker's own impact note
+uses for the pair. Left as its own separately-scoped follow-up (enumerate the 24 self-tuning/
+analytics routes vs. 8 hot-path routes by `@router` decorator, split into `outcomes.py` +
+`calibration.py`) rather than rushed into the same session as the low-risk half.
+
+**Verification performed**:
+1. **Zero test regression**: ran `python3 -m pytest tests/` on research-engine both before and
+   after the split (via `git stash`/`git stash pop` to compare the exact same test run against
+   the unmodified file) — identical result both times: 53 passed, 3 failed. The 3 failures
+   (`test_fundamental_empty_returns_neutral_50` and two balance-sheet assessment tests) are a
+   **real, pre-existing bug** unrelated to this split — confirmed by reproducing them on the
+   completely unmodified original `routes.py` — left uninvestigated as genuinely out of scope
+   for a pure file-layout task (a fix would need to determine whether `_score_fundamental`'s
+   empty-input early return or the test fixtures themselves are wrong, a separate decision).
+2. **Import chain verified directly**: `from src.api.routes import router, _score_technical,
+   _score_fundamental, _build_checklist, _dcf_fair_value, _position_size,
+   _position_sizing_matches, _atr, _last, _second_last, _institutional_ownership_pct,
+   _fmt_cap` — all 15 re-exported names resolve correctly under the same stubbed test harness
+   `main.py` itself would use in production (conftest.py's `pydantic`/`fastapi`-as-MagicMock
+   stubbing), not just "the file parses."
+
+**What to check if this looks wrong**: if a route handler in `routes.py` throws
+`NameError`/`ImportError` on one of the 15 moved names, check the `from ..scoring import (...)`
+block near the top of `routes.py` first — it's the only place those names re-enter this
+file's namespace. If a scoring function itself looks wrong, it lives in `scoring.py` now, not
+`routes.py` — the extraction was verbatim (no logic changes), so a bug found there was
+already present before this split, not introduced by it.
+
+```bash
+# Confirm the split is live and both files parse in production:
+docker exec stockai-research-engine-1 python3 -c "
+import sys; sys.path.insert(0, '/app')
+from src.api.routes import router, _score_technical, _dcf_fair_value
+print('routes.py + scoring.py import chain OK')
+"
+docker exec stockai-research-engine-1 wc -l /app/src/api/routes.py /app/src/scoring.py
+```
