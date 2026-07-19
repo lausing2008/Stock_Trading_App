@@ -4058,4 +4058,117 @@ interior local extremum at all), the `+-order` edge-exclusion matching Python's
 place this logic lives — if a marker looks like it's not a real local extremum, or Fixed Range
 VP's clicks aren't landing where expected, re-run the cross-check above (`_find_pivots()` in
 `trendlines.py` vs. `detectSwingPivots()` on the same fixture) to confirm the two haven't
-drifted apart.
+drifted apart. Extended 2026-07-19 to also run on intraday timeframes (5m/15m/1h/4h), not just
+daily — the client-side computation has no dependency on the backend's daily-only
+`/ta/{symbol}/levels` endpoint, so the earlier daily-only restriction wasn't structurally
+necessary. A separate bug (pivot markers set to `size: 0`, making them invisible even with the
+toggle on) was found and fixed the same day.
+
+---
+
+## Design Reference: Swing Pivots + Fixed Range VP — What Each One Finds, and How to Use Them Together
+
+**What a "swing pivot" is finding.** A swing high is a bar whose high is the highest point
+within a window of nearby bars on both sides (`+-order`, default 5) — i.e. a real local top,
+not just "a candle that went up." A swing low is the mirror: a real local bottom. These are
+the same reference points every discretionary trader means when they say "draw your trendline
+from swing low to swing low" or "the market made a lower high" — this feature just finds them
+mechanically instead of eyeballing the chart. The small gray dots (▾ toggle: Indicators →
+"Swing Pivots") mark every such point currently detected on the chart.
+
+**What Fixed Range VP is finding.** Fixed Range VP answers a completely different question:
+"of all the volume that traded between these two exact points I pick, where did most of it
+concentrate?" It needs two clicks — a start bar and an end bar — and computes POC/VAH/VAL/HVN
+(see the Volume Profile section above for what those mean) using ONLY the bars between those
+two points. Unlike Session VP or Range VP (which profile a fixed calendar window), Fixed
+Range VP is deliberately structure-anchored: the two points you pick define what "this move"
+means, and the profile tells you how the market actually traded during it.
+
+**Why they're built to be used together, not separately.** Fixed Range VP's whole value
+depends on picking a *meaningful* start/end pair — profiling from a random Tuesday to a random
+Friday tells you very little. Profiling from one real swing low to the next real swing high
+(or vice versa) tells you exactly how a specific, identifiable move built its volume structure.
+Before this feature, picking those two points meant zooming in and clicking as close as
+possible to what looked like the swing extreme by eye. Now: turn on Swing Pivots to see the
+dots, then use Fixed Range VP as normal — every click is silently snapped to the nearest real
+pivot within 3 bars, whether or not the dots themselves are visually toggled on. You don't have
+to be pixel-perfect anymore; clicking near a dot is enough.
+
+**A concrete example of what this combination is trying to help you find**: suppose a stock
+ran from a swing low at $80 to a swing high at $110, then pulled back to $95. Turn on Swing
+Pivots, Fixed Range VP the $80→$110 leg specifically (snap-clicking near each dot), and read
+the profile:
+- If POC/HVN cluster near $95-98, that's telling you the pullback has landed almost exactly on
+  the price level the market spent the most volume agreeing was fair DURING that specific
+  rally — a materially stronger signal than "price is near a round number" or "price touched
+  the 50-day MA," because it's derived from real, structural volume during the exact move in
+  question, not a generic indicator.
+- If the pullback has instead landed in a thin, low-volume gap of that same profile (an LVN
+  region, or clearly below VAL), that tells you the current price wasn't a place the market
+  spent much time agreeing on last time it was here — a weaker-conviction support level, more
+  likely to be sliced through than held.
+- If POC/HVN sit much higher (say, near $105), that tells you most of the rally's volume
+  happened late and high, near the top — often a sign the move was thin/fast on the way up
+  (a LVN-heavy rally per the "how to trade it" section above) and more fragile than it looked
+  candle-by-candle alone.
+
+**In one sentence**: Swing Pivots finds the real structural anchor points a discretionary
+trader would draw lines between; Fixed Range VP tells you how volume actually distributed
+across the specific move between two such points — together they replace "eyeball the chart
+and guess where support is" with "profile the exact swing you care about, anchored precisely."
+
+---
+
+## Feature Reference: T252-FVG-COMBINATION-BADGES — Pivot-Anchor + Volume-Context Badges on FVG Trade Plan (Built 2026-07-19)
+
+**Direct follow-on from the swing-pivots + Fixed-Range-VP combination above** — after the user
+said they liked that pattern and asked for more, this closes the two cheapest, purely-wiring
+proposals: cross-referencing the existing Fair Value Gap Trade Plan pick against two OTHER
+already-computed features it had never been checked against.
+
+**`nearestActionableFvg()`'s pick is pure price-distance** — the nearest unfilled gap to the
+current price, nothing more. Two new pure functions in `frontend/src/lib/fvgTradePlan.ts`
+corroborate (or don't) that pick:
+
+- **`nearestPivotToFvg(gap, pivots, tolerancePct=0.015)`** — compares the gap's FAR edge (the
+  one the stop sits beyond) against every `detectSwingPivots()`-detected swing pivot's price.
+  Returns the closest one within tolerance (a % of price, so it scales sensibly across a $5
+  stock and a $500 stock) or `null`. Deliberately compares the FAR edge, not the near edge —
+  the far edge is the one whose structural significance actually matters to the trade thesis
+  (it's where the stop sits and where the setup would be invalidated), not wherever price
+  happens to be retracing from right now.
+- **`classifyFvgVolumeContext(gap, profile, tolerancePct=0.005)`** — checks the gap's
+  `[bottom, top]` range against a `computeVolumeProfile()` result: `'poc'` if it contains the
+  Point of Control, `'hvn'` if it contains a High Volume Node (checked second, since POC is
+  itself always also technically a volume peak — POC takes priority), `'thin'` if it overlaps
+  the profiled range but hits neither, `'unknown'` if the gap falls entirely outside what was
+  profiled (a different range was profiled — NOT the same as "definitely thin").
+
+**UI**: `frontend/src/pages/stock/[symbol].tsx`'s existing "Fair Value Gap Trade Plan" card now
+computes `detectSwingPivots()` and `computeVolumeProfile()` from the same `data.prices` already
+on the page, and shows up to two extra badges next to the existing LONG/SHORT one: "⚓
+Pivot-anchored" and one of "📊 At POC" / "📊 At HVN" / "📊 Thin zone" — each with a hover
+tooltip explaining what it means, matching the card's existing badge convention.
+
+**Tests**: 12 new cases in `fvgTradePlan.test.ts` — 10 for `nearestPivotToFvg` (the far-vs-near
+edge distinction, tolerance behavior, closest-pivot tie-breaking among several candidates), 5
+for `classifyFvgVolumeContext` (all four return states, including the POC-over-HVN priority
+ordering). Adversarially verified 3 guards by sabotage, all caught and reverted: swapping the
+far/near edge comparison (4 tests caught it — a bearish gap's pivot match landed on the wrong
+edge entirely); disabling the `'thin'` fallback classification (1 test caught it); swapping
+POC's priority over HVN (1 test caught it, correctly expecting `'poc'` and getting `'hvn'`
+instead). **A real test-writing bug of my own was caught and fixed before it could ship**: the
+first version of the volume-profile test fixture built its `poc`/`hvn` fields by re-deriving
+the max-volume bucket generically regardless of which spike the test intended, which silently
+produced a fixture where the "HVN, not POC" test case actually had POC land inside the gap too
+— caught immediately by the test failing for the RIGHT reason (asserting `'hvn'`, getting
+`'poc'`), fixed by rewriting the fixture to take an explicit, distinct POC price and a separate
+list of HVN prices rather than inferring one from the other. Full 63-test frontend vitest
+suite, typecheck, and a full `next build` all green.
+
+**What to check if this looks wrong**: both functions live in `fvgTradePlan.ts` — if a badge
+looks wrong, check `nearestPivotToFvg()`'s edge selection (`gap.kind === 'bullish' ? gap.bottom
+: gap.top`) and `classifyFvgVolumeContext()`'s POC-then-HVN-then-thin ordering directly; both
+are pure functions with no network/state dependency, so a wrong badge on a real symbol should
+be reproducible by feeding that symbol's actual gap/pivot/profile data into either function
+directly in a REPL.

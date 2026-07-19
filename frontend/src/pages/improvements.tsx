@@ -15815,6 +15815,18 @@ const ITEMS: Item[] = [
   },
 
   {
+    id: 'T252-FVG-COMBINATION-BADGES',
+    tier: 252 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'frontend/src/lib/fvgTradePlan.ts, frontend/src/lib/fvgTradePlan.test.ts, frontend/src/pages/stock/[symbol].tsx',
+    effort: 'S',
+    impact: 'Low-medium — user explicitly asked for more feature combinations like the swing-pivots + Fixed-Range-VP pattern (pivots give Fixed Range VP a real structural anchor instead of an eyeballed click). This closes the two cheapest, most-wiring proposals from that discussion: corroborating an FVG pick with real swing structure, and with real historical volume conviction — both were previously computed independently and never cross-referenced, despite running on the exact same bar data already in memory on the same page.',
+    title: 'DONE 2026-07-19: Fair Value Gap Trade Plan now shows whether its pick is pivot-anchored and/or sits at real volume conviction (POC/HVN) vs. a thin zone',
+    what: 'nearestActionableFvg() already picks a gap by pure price-distance to the current price — it says nothing about whether that gap is ALSO a real structural level. Two independently-computed feature outputs (detectSwingPivots() from T252-AUTO-SWING-PIVOTS, computeVolumeProfile() from Tier 250) were both already available on the stock detail page but never cross-referenced against the FVG pick.',
+    fix: 'Two new pure functions in fvgTradePlan.ts. nearestPivotToFvg(gap, pivots, tolerancePct=0.015) compares the gap\'s FAR edge (the one the stop sits beyond — a bullish gap\'s bottom or a bearish gap\'s top) against every detected swing pivot\'s price, returning the closest one within tolerance (expressed as a % of price, not an absolute distance, so it scales across differently-priced stocks) — or null if nothing qualifies. classifyFvgVolumeContext(gap, profile, tolerancePct=0.005) checks whether the gap\'s [bottom, top] range contains the profile\'s POC, one of its HVN levels, overlaps the profiled range at a low-volume level ("thin"), or falls entirely outside the profiled range ("unknown" — a different range was profiled, not "definitely thin"). Wired into stock/[symbol].tsx\'s existing "Fair Value Gap Trade Plan" card: an "⚓ Pivot-anchored" badge when the gap is pivot-corroborated, and a "📊 At POC" / "📊 At HVN" / "📊 Thin zone" badge for the volume-context read — both with hover tooltips explaining what they mean, matching the card\'s existing badge convention (the LONG/SHORT badge was already there).',
+    implementedNote: 'Done 2026-07-19. 12 new tests in fvgTradePlan.test.ts (10 for nearestPivotToFvg, covering the far-vs-near-edge distinction — a real bug class this repo has hit before with FVG boundaries — tolerance behavior, and closest-pivot tie-breaking; 5 for classifyFvgVolumeContext, covering all four return states including the poc-vs-hvn priority ordering when a gap could match either). Adversarially verified 3 guards by sabotage, all caught and reverted: swapping the far/near edge comparison in nearestPivotToFvg (4 tests caught it), disabling the "thin" fallback classification (1 test caught it), and swapping POC\'s priority over HVN in classifyFvgVolumeContext (1 test caught it). Full 63-test frontend vitest suite, typecheck, and a full next build all green. See the new "Feature Combinations" artifact/reference for the full worked example of reading these badges together with the underlying Volume Profile and Swing Pivot features.',
+  },
+
+  {
     id: 'T252-CHART-RISK-REWARD-LINES',
     tier: 252 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'frontend/src/components/PriceChart.tsx, frontend/src/pages/stock/[symbol].tsx',

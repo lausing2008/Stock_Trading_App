@@ -39,7 +39,9 @@ import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
 import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult, type OutcomesSummary, type QuarterlyRow } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
-import { nearestActionableFvg } from '@/lib/fvgTradePlan';
+import { nearestActionableFvg, nearestPivotToFvg, classifyFvgVolumeContext } from '@/lib/fvgTradePlan';
+import { detectSwingPivots } from '@/lib/swingPivots';
+import { computeVolumeProfile } from '@/lib/volumeProfile';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
 import { activeNewsSources, loadSettings } from '@/lib/settings';
@@ -2420,15 +2422,53 @@ Return ONLY valid JSON — no markdown, no prose:
             const plan = nearestActionableFvg(data.levels?.fair_value_gaps, curPx ?? null);
             if (!plan) return null;
             const isLong = plan.gap.kind === 'bullish';
+
+            // Combination 1: is this gap's far edge also a real swing pivot? (corroborating
+            // structure, not just "the nearest untraded pocket"). Combination 2: does this gap
+            // overlap real volume-profile conviction (POC/HVN), or sit in a thin/untraded zone?
+            // Both computed here (not inside PriceChart.tsx) since this card is the trade-plan
+            // decision surface — see the "Feature Combinations" reference for the full rationale.
+            const bars = data.prices ?? [];
+            const pivots = bars.length > 0 ? detectSwingPivots(bars, 5) : [];
+            const pivotAnchor = nearestPivotToFvg(plan.gap, pivots);
+            const profile = bars.length > 0 ? computeVolumeProfile(bars, 24) : null;
+            const volumeContext = classifyFvgVolumeContext(plan.gap, profile);
+
             return (
               <div style={{ background: '#1e293b', borderRadius: 10, padding: '14px 18px', border: '1px solid #334155', marginTop: 12 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontWeight: 600, color: '#f1f5f9', fontSize: 13 }}>Fair Value Gap Trade Plan</span>
                   <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4,
                     background: isLong ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
                     color: isLong ? '#4ade80' : '#f87171' }}>
                     {isLong ? 'LONG (bullish gap)' : 'SHORT (bearish gap)'}
                   </span>
+                  {pivotAnchor && (
+                    <span
+                      title={`This gap's far edge ($${(isLong ? plan.gap.bottom : plan.gap.top).toFixed(2)}) sits within ${(pivotAnchor.distancePct * 100).toFixed(1)}% of a real swing ${pivotAnchor.pivot.kind} at $${pivotAnchor.pivot.price.toFixed(2)} — corroborating structure, not just the nearest untraded pocket.`}
+                      style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: 'rgba(96,165,250,0.15)', color: '#60a5fa', cursor: 'help' }}
+                    >
+                      ⚓ Pivot-anchored
+                    </span>
+                  )}
+                  {(volumeContext === 'poc' || volumeContext === 'hvn') && (
+                    <span
+                      title={volumeContext === 'poc'
+                        ? 'This gap zone contains the Point of Control — the single price level with the most historical volume. Real conviction behind this level, a stronger candidate to hold on retest.'
+                        : 'This gap zone contains a High Volume Node — a local volume peak. Real historical conviction behind this level, a stronger candidate to hold on retest.'}
+                      style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: 'rgba(250,204,21,0.15)', color: '#facc15', cursor: 'help' }}
+                    >
+                      {volumeContext === 'poc' ? '📊 At POC' : '📊 At HVN'}
+                    </span>
+                  )}
+                  {volumeContext === 'thin' && (
+                    <span
+                      title="This gap zone overlaps the volume profile, but at a comparatively low-volume price level — thinner historical conviction, more likely to be sliced through than held."
+                      style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: 'rgba(148,163,184,0.15)', color: '#94a3b8', cursor: 'help' }}
+                    >
+                      📊 Thin zone
+                    </span>
+                  )}
                 </div>
                 <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>
                   Based on the nearest unfilled {isLong ? 'bullish' : 'bearish'} gap {isLong ? 'below' : 'above'} the
