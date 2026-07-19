@@ -174,6 +174,13 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
   // rebuild the chart out from under an already-subscribed, now-stale click handler.
   const [chartInstanceVersion, setChartInstanceVersion] = useState(0);
 
+  // ── T252-ANCHORED-VWAP: click a bar, VWAP recalculates forward from that point ──────
+  // Same picking-state architecture as Fixed Range VP/drawing tools above, but only needs
+  // ONE click (unlike Fixed Range VP's start+end pair) — an anchor point, not a range.
+  const [showAnchoredVwap, setShowAnchoredVwap] = useState(false);
+  const [anchoredVwapPickState, setAnchoredVwapPickState] = useState<'idle' | 'picking'>('idle');
+  const [anchoredVwapIdx, setAnchoredVwapIdx] = useState<number | null>(null);
+
   // ── T230-CHARTING-DRAWING-TOOLS: horizontal lines + trendlines, persisted per symbol ──
   // Same picking-state architecture as Fixed Range VP above (idle -> picking -> idle), reusing
   // the same chart.subscribeClick()-in-a-separate-effect pattern rather than inventing a new
@@ -451,6 +458,22 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       }));
       const vwapLine = chart.addLineSeries({ color: '#a78bfa', lineWidth: 1 as const, lineStyle: LineStyle.Dashed });
       vwapLine.setData(vwapData);
+    }
+
+    // ── T252-ANCHORED-VWAP: VWAP recalculated from a user-chosen anchor bar forward ─────
+    // Reuses the exact same computeVwap() — the only difference from the rolling VWAP above
+    // is which slice of activePrices it's fed (from the anchor index onward, not the whole
+    // visible window), and that the resulting line only draws starting at the anchor's own
+    // time rather than from the first visible bar.
+    if (showAnchoredVwap && anchoredVwapIdx != null && anchoredVwapIdx < activePrices.length) {
+      const anchorBars = activePrices.slice(anchoredVwapIdx);
+      const anchoredVals = computeVwap(anchorBars);
+      const anchoredData: LineData<Time>[] = anchorBars.map((p, i) => ({
+        time: isIntraday ? toIntradayTime(p.ts) as unknown as Time : toTime(p.ts),
+        value: anchoredVals[i],
+      }));
+      const anchoredLine = chart.addLineSeries({ color: '#22d3ee', lineWidth: 2 as const, lineStyle: LineStyle.Solid, title: 'Anchored VWAP' });
+      anchoredLine.setData(anchoredData);
     }
 
     // ── Line overlays (SMA / EMA / BB + EMA 200) ──────────────────────────
@@ -861,7 +884,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       chartRef.current = null;
       setSrLabels([]);
     };
-  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, riskRewardLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, showFVG, showSR, show52W, showSwingPivots, swingPivots, drawings, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
+  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, riskRewardLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showAnchoredVwap, anchoredVwapIdx, showRSI, showMACD, showSignals, showFVG, showSR, show52W, showSwingPivots, swingPivots, drawings, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
 
   // ── Fixed Range VP: click-to-pick start/end selection ───────────────────
   // Deliberately a SEPARATE, lightweight effect from the main chart-rebuild effect above —
@@ -897,6 +920,28 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
     chart.subscribeClick(clickHandler);
     return () => chart.unsubscribeClick(clickHandler);
   }, [volumeProfileMode, fixedRangePickState, activePrices, swingPivots, chartInstanceVersion]);
+
+  // ── Anchored VWAP: click-to-pick a single anchor bar ────────────────────
+  // Same separate-effect pattern as Fixed Range VP above, but only ONE click (an anchor
+  // point, not a range) — sets anchoredVwapIdx directly instead of a two-phase picking state.
+  // Snaps to the nearest swing pivot too, same reasoning as Fixed Range VP: an anchor is far
+  // more useful planted on a real swing high/low (an earnings gap, a breakout day) than on
+  // an arbitrary bar a few pixels off from the one the user actually meant to click.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || anchoredVwapPickState !== 'picking') return;
+
+    const clickHandler = (param: { logical?: number }) => {
+      if (param.logical == null) return;
+      const rawIdx = Math.max(0, Math.min(activePrices.length - 1, Math.round(param.logical)));
+      const snapped = nearestPivot(swingPivots, rawIdx, 3);
+      const idx = snapped ? snapped.idx : rawIdx;
+      setAnchoredVwapIdx(idx);
+      setAnchoredVwapPickState('idle');
+    };
+    chart.subscribeClick(clickHandler);
+    return () => chart.unsubscribeClick(clickHandler);
+  }, [anchoredVwapPickState, activePrices, swingPivots, chartInstanceVersion]);
 
   // ── T230-CHARTING-DRAWING-TOOLS: click-to-place horizontal lines / trendlines ──────
   // Same picking-state + separate-effect pattern as Fixed Range VP above. Needs the actual
@@ -1043,20 +1088,47 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
                   setVolumeProfileMode('fixed'); setFixedRangePickState('picking-start'); setFixedRangeSelection(null);
                 }
               }, color: '#a78bfa', title: 'Click a start point and an end point on the chart (e.g. a swing low and swing high) to profile only that exact range — matches TradingView\'s Fixed Range Volume Profile tool.' },
+            { key: 'anchored_vwap', label: 'Anchored VWAP', checked: showAnchoredVwap, onToggle: () => {
+                if (showAnchoredVwap) {
+                  setShowAnchoredVwap(false); setAnchoredVwapPickState('idle'); setAnchoredVwapIdx(null);
+                } else {
+                  setShowAnchoredVwap(true); setAnchoredVwapPickState('picking');
+                }
+              }, color: '#22d3ee', title: 'Click a single point on the chart (e.g. an earnings date, a breakout day, a swing low) — VWAP recalculates forward from that bar instead of the fixed rolling window the regular VWAP uses. Answers "is price still above VWAP from the day I would have entered?"' },
           ]}
         />
 
+        {/* Inline styles here, not Tailwind opacity-modifier/color-variant classes — this repo
+            has no live Tailwind pipeline (no tailwind.config.js/postcss.config.js), so classes
+            like bg-violet-900/40 or hover:border-cyan-500 have no matching rule in globals.css
+            and silently no-op (same root cause already fixed in ToolbarDropdown.tsx). */}
         {volumeProfileMode === 'fixed' && fixedRangePickState !== 'idle' && (
-          <span className="px-2 py-1 rounded bg-violet-900/40 border border-violet-500/50 text-violet-300 text-xs">
+          <span className="rounded" style={{ padding: '4px 8px', fontSize: 12, background: 'rgba(76, 29, 149, 0.4)', border: '1px solid rgba(167, 139, 250, 0.5)', color: '#c4b5fd' }}>
             {fixedRangePickState === 'picking-start' ? 'Click a start point on the chart…' : 'Now click an end point…'}
           </span>
         )}
         {volumeProfileMode === 'fixed' && fixedRangePickState === 'idle' && fixedRangeSelection && (
           <button
             onClick={() => setFixedRangePickState('picking-start')}
-            className="px-2 py-1 rounded border border-slate-700 text-slate-400 hover:border-violet-500 hover:text-violet-300 text-xs"
+            className="rounded"
+            style={{ padding: '4px 8px', fontSize: 12, border: '1px solid #334155', color: '#94a3b8', background: 'transparent' }}
           >
             Re-pick range
+          </button>
+        )}
+
+        {showAnchoredVwap && anchoredVwapPickState === 'picking' && (
+          <span className="rounded" style={{ padding: '4px 8px', fontSize: 12, background: 'rgba(22, 78, 99, 0.4)', border: '1px solid rgba(34, 211, 238, 0.5)', color: '#67e8f9' }}>
+            Click an anchor point on the chart…
+          </span>
+        )}
+        {showAnchoredVwap && anchoredVwapPickState === 'idle' && anchoredVwapIdx != null && (
+          <button
+            onClick={() => setAnchoredVwapPickState('picking')}
+            className="rounded"
+            style={{ padding: '4px 8px', fontSize: 12, border: '1px solid #334155', color: '#94a3b8', background: 'transparent' }}
+          >
+            Re-pick anchor
           </button>
         )}
 
@@ -1130,7 +1202,8 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
           {showEMA50   && <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-pink-400" />EMA 50</span>}
           {showEMA200  && <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-fuchsia-400" />EMA 200</span>}
           {showBB      && <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-indigo-400 opacity-70" />BB</span>}
-          {showVWAP                   && <span className="flex items-center gap-1"><span className="inline-block w-4 border-t border-dashed border-violet-400" />VWAP</span>}
+          {showVWAP                   && <span className="flex items-center gap-1"><span className="inline-block w-4" style={{ borderTop: '1px dashed #a78bfa' }} />VWAP</span>}
+          {showAnchoredVwap && anchoredVwapIdx != null && <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5" style={{ background: '#22d3ee' }} />Anchored VWAP</span>}
           {!isIntraday && levels?.support_resistance?.length ? <>
             <span className="flex items-center gap-1"><span className="inline-block w-4 border-t border-dashed border-green-500 opacity-70" />Support</span>
             <span className="flex items-center gap-1"><span className="inline-block w-4 border-t border-dashed border-red-500 opacity-70" />Resist.</span>

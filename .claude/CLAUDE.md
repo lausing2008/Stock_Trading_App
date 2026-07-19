@@ -4172,3 +4172,61 @@ looks wrong, check `nearestPivotToFvg()`'s edge selection (`gap.kind === 'bullis
 are pure functions with no network/state dependency, so a wrong badge on a real symbol should
 be reproducible by feeding that symbol's actual gap/pivot/profile data into either function
 directly in a REPL.
+
+---
+
+## Feature Reference: T252-ANCHORED-VWAP — Click-to-Anchor VWAP Recalculation (Built 2026-07-19)
+
+**Gap this closes**: `PriceChart.tsx` already computed VWAP (`computeVwap()` — cumulative
+typical-price×volume / cumulative volume), but only ever anchored to the start of whatever
+date-range window was currently selected. There was no way to anchor it to an arbitrary bar a
+user picks — an earnings gap, a breakout day, a swing low — the standard "is price still above
+VWAP from the day I would have entered" trend-continuation check.
+
+**Implementation**: reuses `computeVwap()` completely unchanged — the only difference from the
+existing rolling VWAP is which slice of `activePrices` it's fed
+(`activePrices.slice(anchoredVwapIdx)` instead of the full array) and that the resulting line
+only draws starting at the anchor bar's own time, not from the first visible bar. New
+`showAnchoredVwap`/`anchoredVwapPickState`/`anchoredVwapIdx` state, a new "Anchored VWAP" entry
+in the existing Volume Profile toolbar dropdown, and a dedicated click-subscribe `useEffect`
+(same separate-effect-from-the-main-chart-rebuild pattern already established for Fixed Range
+VP and the drawing tools) — one click sets the anchor directly, unlike Fixed Range VP's
+two-click start/end pair. The click snaps to the nearest `detectSwingPivots()` pivot within 3
+bars, same reasoning as Fixed Range VP's snap: an anchor planted on a real swing high/low is
+far more useful than one landing a few pixels off from what the user actually meant to click.
+Rendered as a solid cyan line, visually distinct from the existing dashed violet rolling VWAP,
+plus its own legend entry.
+
+**Correctness check performed** (this repo's own established discipline of verifying
+hand-translated/derived math against a real computed reference, not just "it compiles"):
+manually ran a 4-bar fixture through `computeVwap()` twice — once on the full series, once on
+`.slice(2)` — and confirmed the anchored version's first value correctly resets to bar 2's own
+typical price (115) and diverges meaningfully from the full-window VWAP at that same point
+(107.2 vs. 115), proving the anchor genuinely changes the underlying calculation, not just
+which portion of an unchanged line gets drawn.
+
+**A real, PRE-EXISTING bug found and fixed while touching this code, unrelated to Anchored
+VWAP itself**: this repo has no live Tailwind pipeline (no `tailwind.config.js`/
+`postcss.config.js` — the same root cause already documented for `ToolbarDropdown.tsx`'s
+fully-transparent-dropdown bug earlier this session). Fixed Range VP's own click-picking status
+pill (`bg-violet-900/40`, `border-violet-500/50`, `text-violet-300`) and the VWAP legend
+swatch (`border-violet-400`) both used classes with zero matching rule anywhere in
+`globals.css` — silently no-oping in production the whole time, just less noticeably than the
+fully-invisible dropdown (a missing border/background tint on a small status pill is easy to
+miss; a fully see-through dropdown panel is not). Fixed both to inline styles while implementing
+the new Anchored VWAP status pill and legend swatch, using them as the reference for what the
+broken ones were supposed to look like.
+
+**No dedicated test file** — `computeVwap()` lives inline in `PriceChart.tsx`, which has no
+test file at all (same seam gap as every other `PriceChart.tsx`-only change in this repo, e.g.
+the marker-clobbering fix documented in the Swing Pivots entry above). Correctness relies on the
+manual verification above plus the fact that `computeVwap()` itself is unchanged — only its
+input slice is new. Full 63-test frontend vitest suite (unaffected — none of it imports
+`PriceChart.tsx` directly), typecheck, and a full `next build` all green.
+
+**What to check if this looks wrong**: `computeVwap()` is the only place the math lives, and
+it's untouched by this feature — if the anchored line looks wrong, first confirm
+`anchoredVwapIdx` is the bar index you expect (log it, or check via React DevTools), since the
+slicing (`activePrices.slice(anchoredVwapIdx)`) is the only new logic here. If the anchor point
+seems to have moved from where you actually clicked, check the swing-pivot snap radius (3 bars)
+— clicking near, but not on, a real pivot will snap to that pivot instead of your exact click.
