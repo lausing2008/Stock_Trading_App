@@ -400,7 +400,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
             position: p.kind === 'high' ? 'aboveBar' : 'belowBar',
             color: '#94a3b8',
             shape: 'circle',
-            size: 0,
+            size: 1,
           });
         }
       }
