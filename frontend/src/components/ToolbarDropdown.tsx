@@ -32,29 +32,58 @@ export function ToolbarDropdown({ label, options }: { label: string; options: To
     return () => document.removeEventListener('mousedown', onClickOutside);
   }, [open]);
 
+  // This repo has no tailwind.config.js/postcss.config.js — globals.css is a hand-authored,
+  // fixed set of utility classes rather than a live JIT compiler, so arbitrary-value and
+  // opacity-modifier classes (bg-indigo-600/20, text-[10px], border-indigo-500/50, etc.) have
+  // NO matching rule anywhere and silently no-op. Using inline styles here instead of chasing
+  // each missing class individually, since nearly every class this component used turned out
+  // to be unresolved — most visibly bg-[#0d1424] on the panel, which made it fully transparent
+  // over the chart in production despite looking correct in source.
+  const [hovered, setHovered] = useState<string | null>(null);
+
   return (
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(o => !o)}
-        className={`flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
-          activeCount > 0 ? 'bg-indigo-600/20 border border-indigo-500/50 text-indigo-300' : 'border border-slate-700 text-slate-400 hover:border-indigo-500 hover:text-indigo-300'
-        }`}
+        className="flex items-center gap-1 rounded"
+        style={{
+          padding: '4px 10px',
+          fontSize: 12,
+          fontWeight: 500,
+          transition: 'colors 0.15s',
+          background: activeCount > 0 ? 'rgba(79, 70, 229, 0.2)' : 'transparent',
+          border: `1px solid ${activeCount > 0 ? 'rgba(99, 102, 241, 0.5)' : '#334155'}`,
+          color: activeCount > 0 ? '#a5b4fc' : '#94a3b8',
+        }}
       >
         {label}
-        {activeCount > 0 && <span className="text-[10px] text-indigo-400 font-mono">({activeCount})</span>}
-        <span className={`text-[9px] transition-transform ${open ? 'rotate-180' : ''}`}>▾</span>
+        {activeCount > 0 && <span style={{ fontSize: 10, color: '#818cf8', fontFamily: 'monospace' }}>({activeCount})</span>}
+        <span style={{ fontSize: 9, display: 'inline-block', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}>▾</span>
       </button>
 
       {open && (
-        <div className="absolute top-[calc(100%+6px)] left-0 z-50 min-w-[160px] rounded-lg border border-slate-700 bg-[#0d1424] p-1.5 shadow-2xl">
+        <div
+          className="absolute z-50 rounded-lg"
+          style={{
+            top: 'calc(100% + 6px)', left: 0, minWidth: 160, padding: 6,
+            border: '1px solid #334155', backgroundColor: '#0d1424',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.8)',
+          }}
+        >
           {options.map(opt => (
             <label
               key={opt.key}
               title={opt.title}
-              className="flex items-center gap-2 px-2 py-1.5 rounded text-xs text-slate-300 hover:bg-slate-800/70 cursor-pointer whitespace-nowrap"
+              className="flex items-center gap-2 rounded cursor-pointer"
+              style={{
+                padding: '6px 8px', fontSize: 12, color: '#cbd5e1', whiteSpace: 'nowrap',
+                background: hovered === opt.key ? 'rgba(30, 41, 59, 0.7)' : 'transparent',
+              }}
+              onMouseEnter={() => setHovered(opt.key)}
+              onMouseLeave={() => setHovered(null)}
             >
-              <input type="checkbox" checked={opt.checked} onChange={opt.onToggle} className="accent-indigo-500" />
-              {opt.color && <span className="inline-block w-3 h-0.5 rounded-full flex-shrink-0" style={{ backgroundColor: opt.color }} />}
+              <input type="checkbox" checked={opt.checked} onChange={opt.onToggle} style={{ accentColor: '#6366f1' }} />
+              {opt.color && <span className="inline-block flex-shrink-0 rounded-full" style={{ width: 12, height: 2, backgroundColor: opt.color }} />}
               {opt.label}
             </label>
           ))}

@@ -957,7 +957,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
   const f3 = (v: number|null) => v != null ? v.toFixed(3) : '—';
 
   return (
-    <div className="rounded-md border border-slate-800 bg-[#0b1020] overflow-hidden">
+    <div className="rounded-md border border-slate-800 overflow-hidden" style={{ backgroundColor: '#0b1020' }}>
 
       {/* Range selector + toolbar row */}
       <div className="flex flex-wrap items-center gap-x-1 gap-y-1 px-3 pt-2 pb-1.5 border-b border-slate-800">
