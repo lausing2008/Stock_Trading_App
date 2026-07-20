@@ -223,30 +223,59 @@ def get_insider_for_symbol(stock_id: int, days: int = 90) -> list[dict]:
         return [_txn_to_dict(t) for t in rows]
 
 
+def _build_insider_leaderboard(rows: list[dict], limit: int) -> list[dict]:
+    """Pure aggregation: given already-fetched per-transaction dicts (stock_id/symbol/company/
+    transaction_type/total_value), return the top `limit` stocks by net insider buying.
+
+    AUD-INSIDERTOPBUYS-NETNEGATIVE: this is named/consumed everywhere as a "Top Buys"
+    leaderboard (route name /events/insider/leaderboard, reports.tsx's "Insider Top Buys" card,
+    intelligence.tsx's Overview tab) — but previously returned the top N stocks by net_value
+    with NO floor at zero. A stock with heavy net SELLING (net_value < 0) could still appear
+    under a "Top Buys" heading whenever fewer than `limit` stocks had genuinely positive net
+    buying in the window — net-negative flow mislabeled as a buy signal. Filtering to
+    net_value > 0 before truncating to `limit` means every returned row is a REAL net buyer;
+    a window with fewer than `limit` genuine buyers now correctly returns fewer rows instead
+    of padding out to `limit` with net sellers.
+    """
+    result: dict[int, dict] = {}
+    for row in rows:
+        sid = row["stock_id"]
+        if sid not in result:
+            result[sid] = {
+                "stock_id": sid, "symbol": row["symbol"], "company": row["company"],
+                "purchases": 0, "sales": 0, "net_value": 0.0,
+            }
+        if row["transaction_type"] == "purchase":
+            result[sid]["purchases"] += 1
+            result[sid]["net_value"] += row["total_value"] or 0
+        elif row["transaction_type"] == "sale":
+            result[sid]["sales"] += 1
+            result[sid]["net_value"] -= row["total_value"] or 0
+
+    net_buyers = [v for v in result.values() if v["net_value"] > 0]
+    sorted_results = sorted(net_buyers, key=lambda x: x["net_value"], reverse=True)
+    return sorted_results[:limit]
+
+
 def get_insider_leaderboard(days: int = 30, limit: int = 20) -> list[dict]:
-    """Stocks with most net insider buying in last N days."""
+    """Stocks with most net insider buying in last N days — every returned row is a genuine
+    net buyer (net_value > 0); see _build_insider_leaderboard()'s own docstring."""
     since = date.today() - timedelta(days=days)
     with SessionLocal() as s:
-        result: dict[int, dict] = {}
         all_txns = s.execute(
             select(InsiderTransaction, Stock.symbol, Stock.name)
             .join(Stock, InsiderTransaction.stock_id == Stock.id)
             .where(InsiderTransaction.transaction_date >= since)
             .order_by(InsiderTransaction.transaction_date.desc())
         ).all()
-        for txn, symbol, name in all_txns:
-            sid = txn.stock_id
-            if sid not in result:
-                result[sid] = {"stock_id": sid, "symbol": symbol, "company": name, "purchases": 0, "sales": 0, "net_value": 0.0}
-            if txn.transaction_type == "purchase":
-                result[sid]["purchases"] += 1
-                result[sid]["net_value"] += txn.total_value or 0
-            elif txn.transaction_type == "sale":
-                result[sid]["sales"] += 1
-                result[sid]["net_value"] -= txn.total_value or 0
-
-        sorted_results = sorted(result.values(), key=lambda x: x["net_value"], reverse=True)
-        return sorted_results[:limit]
+        rows = [
+            {
+                "stock_id": txn.stock_id, "symbol": symbol, "company": name,
+                "transaction_type": txn.transaction_type, "total_value": txn.total_value,
+            }
+            for txn, symbol, name in all_txns
+        ]
+        return _build_insider_leaderboard(rows, limit)
 
 
 def compute_insider_score(stock_id: int, days: int = 90) -> float:

@@ -4606,3 +4606,55 @@ decision-engine still seems to use a stale 3.0 regardless of calibration, confir
 ```bash
 docker exec stockai-market-data-1 cat /data/models/min_rr_calibration.json 2>/dev/null
 ```
+
+---
+
+## Feature Reference: AUD256 — "Top Buys" Leaderboards No Longer Show Net Sellers (Built 2026-07-20)
+
+**The gap**: `services/event-intelligence/src/services/insider.py`'s `get_insider_leaderboard()`
+and `congress.py`'s `get_congress_leaderboard()` sorted every stock with any activity in the
+window by `net_value`/`net_amount` descending, with no floor at zero. Both are named and
+consumed everywhere as "Top Buys" leaderboards — `GET /events/insider/leaderboard` /
+`GET /events/congress/leaderboard`, `reports.tsx`'s "Insider Top Buys"/"Congress Top Buys"
+cards, `intelligence.tsx`'s Overview tab — but a stock with heavy net SELLING (a negative
+`net_value`/`net_amount`) could still appear under a "Top Buys" heading whenever fewer than
+`limit` stocks had genuinely positive net buying in the requested window.
+
+**Fix**: extracted the aggregation logic into two new pure functions,
+`_build_insider_leaderboard()` / `_build_congress_leaderboard()` — taking already-fetched row
+dicts, no DB dependency — each now filtering to `net_value > 0` / `net_amount > 0` **before**
+truncating to `limit`. A window with fewer than `limit` genuine buyers now correctly returns
+fewer rows instead of padding out the list with net sellers. The original DB-querying functions
+are now thin wrappers: fetch rows via the same query/joins as before, convert to plain dicts,
+delegate to the pure function. Nothing else about the query changed.
+
+**Why extract to pure functions instead of just adding an inline filter**: this service's
+`conftest.py` stubs `sqlalchemy` itself as a bare `MagicMock` — heavier than ranking-engine's
+stubbing (which allows a real in-memory SQLite session in tests, see
+`test_rank_symbol_market_scoping.py`). Here, only pure logic with zero DB dependency can be
+exercised directly in this test environment, so the fix needed the aggregation logic separated
+from the DB I/O to be testable at all.
+
+**Tests**: `services/event-intelligence/tests/test_insider_leaderboard.py` (8 cases) and
+`test_congress_leaderboard.py` (8 cases) — a net-negative stock is excluded even when it would
+otherwise fill out the list, a window with fewer genuine buyers than `limit` returns fewer
+rows (not padded), exactly-zero net value/amount is also excluded (strict `> 0`, not `>= 0`),
+genuine buyers are still sorted correctly, `limit` still applies after filtering,
+purchases/sales/`unique_politicians` counts on surviving rows are unaffected by the new filter,
+and `None` amounts are treated as zero without crashing.
+
+**Adversarial verification**: sabotaged both filters (replacing each list comprehension with
+an unfiltered `list(result.values())`) and confirmed exactly 4 of 8 tests in each file failed
+correctly before reverting.
+
+Full 159-test event-intelligence suite (up from 143) green; frontend typecheck clean — no
+frontend files needed changes, since `reports.tsx`/`intelligence.tsx` already just render
+whatever the backend returns.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-event-intelligence-1 grep -n "net_buyers = \[v for v" /app/src/services/insider.py /app/src/services/congress.py
+```
+Both should show the `net_value > 0` / `net_amount > 0` filter. If a "Top Buys" card still
+shows what looks like a net seller, check the actual returned `net_value`/`net_amount` directly
+against a live call to `GET /events/insider/leaderboard` or `GET /events/congress/leaderboard`.

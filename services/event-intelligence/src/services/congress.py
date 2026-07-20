@@ -194,7 +194,48 @@ def get_congress_for_symbol(stock_id: int, days: int = 90) -> list[dict]:
         return [_trade_to_dict(t) for t in rows]
 
 
+def _build_congress_leaderboard(rows: list[dict], limit: int) -> list[dict]:
+    """Pure aggregation: given already-fetched per-trade dicts (stock_id/symbol/company/
+    transaction_type/amount_min/amount_max/politician_name), return the top `limit` stocks by
+    net congress buying.
+
+    AUD-INSIDERTOPBUYS-NETNEGATIVE: same bug class as insider.py's leaderboard (see that
+    function's docstring) — this is named/consumed everywhere as a "Top Buys" leaderboard
+    (route name /events/congress/leaderboard, reports.tsx's "Congress Top Buys" card) but
+    previously had no floor at zero, so a stock with heavy net SELLING by politicians could
+    still appear under a "Top Buys" heading. Filtering to net_amount > 0 before truncating
+    means every returned row is a real net buyer.
+    """
+    result: dict[int, dict] = {}
+    for row in rows:
+        sid = row["stock_id"]
+        if sid not in result:
+            result[sid] = {
+                "stock_id": sid, "symbol": row["symbol"], "company": row["company"],
+                "purchases": 0, "sales": 0, "net_amount": 0.0,
+                "politicians": set(),
+            }
+        mid = ((row["amount_min"] or 0) + (row["amount_max"] or 0)) / 2
+        if row["transaction_type"] == "purchase":
+            result[sid]["purchases"] += 1
+            result[sid]["net_amount"] += mid
+        elif row["transaction_type"] == "sale":
+            result[sid]["sales"] += 1
+            result[sid]["net_amount"] -= mid
+        result[sid]["politicians"].add(row["politician_name"])
+
+    for v in result.values():
+        v["unique_politicians"] = len(v["politicians"])
+        del v["politicians"]
+
+    net_buyers = [v for v in result.values() if v["net_amount"] > 0]
+    sorted_result = sorted(net_buyers, key=lambda x: x["net_amount"], reverse=True)
+    return sorted_result[:limit]
+
+
 def get_congress_leaderboard(days: int = 90, limit: int = 20) -> list[dict]:
+    """Stocks with most net congress buying in last N days — every returned row is a genuine
+    net buyer (net_amount > 0); see _build_congress_leaderboard()'s own docstring."""
     since = date.today() - timedelta(days=days)
     with SessionLocal() as s:
         all_rows = s.execute(
@@ -206,31 +247,16 @@ def get_congress_leaderboard(days: int = 90, limit: int = 20) -> list[dict]:
             )
             .order_by(CongressTrade.trade_date.desc())
         ).all()
-
-    result: dict[int, dict] = {}
-    for trade, symbol, name in all_rows:
-        sid = trade.stock_id
-        if sid not in result:
-            result[sid] = {
-                "stock_id": sid, "symbol": symbol, "company": name,
-                "purchases": 0, "sales": 0, "net_amount": 0.0,
-                "politicians": set(),
+        rows = [
+            {
+                "stock_id": trade.stock_id, "symbol": symbol, "company": name,
+                "transaction_type": trade.transaction_type,
+                "amount_min": trade.amount_min, "amount_max": trade.amount_max,
+                "politician_name": trade.politician_name,
             }
-        mid = ((trade.amount_min or 0) + (trade.amount_max or 0)) / 2
-        if trade.transaction_type == "purchase":
-            result[sid]["purchases"] += 1
-            result[sid]["net_amount"] += mid
-        elif trade.transaction_type == "sale":
-            result[sid]["sales"] += 1
-            result[sid]["net_amount"] -= mid
-        result[sid]["politicians"].add(trade.politician_name)
-
-    for v in result.values():
-        v["unique_politicians"] = len(v["politicians"])
-        del v["politicians"]
-
-    sorted_result = sorted(result.values(), key=lambda x: x["net_amount"], reverse=True)
-    return sorted_result[:limit]
+            for trade, symbol, name in all_rows
+        ]
+        return _build_congress_leaderboard(rows, limit)
 
 
 def get_recent_congress_trades(
