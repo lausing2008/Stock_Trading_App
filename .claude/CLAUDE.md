@@ -4547,3 +4547,62 @@ from the calendar, check `sync_fred_release_dates()`'s actual sync coverage dire
 production Postgres (`SELECT event_type, MIN(event_date), MAX(event_date) FROM
 economic_events WHERE event_type LIKE '%_release' GROUP BY event_type;`) — a gap could now be
 a genuine sync-coverage gap rather than this fallback-suppression bug, which this fix closes.
+
+---
+
+## Feature Reference: AUD256 — regime_min_rr_ratio Now Forwarded to decision-engine (Built 2026-07-20)
+
+**The gap**: `_call_decision_engine()`'s `config_overrides` had two related problems, both
+flagged but deliberately deferred during the 2026-07-17 AUD256 deep audit. (a) `min_rr_ratio`
+WAS sent, but its own fallback was a bare `2.0` literal — bypassing
+`SELFIMPROVE-NEVER-CALIBRATED-PARAMS`' calibration entirely. `_should_enter()` resolves the
+same key via `_default_min_rr_ratio("neutral")`, which returns the calibrated value from
+`min_rr_calibration.json` once one exists. (b) `regime_min_rr_ratio` was never sent AT ALL —
+decision-engine's `hard_rejects.py` already correctly reads `cfg.get("regime_min_rr_ratio",
+3.0)` for choppy/risk_off regimes (T190), confirmed working via its own pre-existing
+`test_custom_regime_min_rr_ratio_is_respected` test — but with nothing ever sending the key,
+DE always silently used its own hardcoded 3.0, completely blind to calibration, even though
+`_should_enter()` has been correctly regime-aware here since AUD232-060.
+
+**Fix — write side only, decision-engine's read side was already correct**:
+1. `_call_decision_engine()` gained a `regime_state: str = "neutral"` parameter.
+2. `min_rr_ratio`'s fallback changed from `2.0` to `_default_min_rr_ratio("neutral")`.
+3. Added `"regime_min_rr_ratio": cfg.get("regime_min_rr_ratio",
+   _default_min_rr_ratio(regime_state))` to `config_overrides`.
+4. The one real call site (inside `_scan_for_entries()`) now passes
+   `regime_state=(live_regime.get("state", "neutral") if live_regime else "neutral")` —
+   `live_regime` was already in scope there.
+
+`_default_min_rr_ratio(regime_state)` only returns the `regime_min_rr_ratio` calibrated value
+when `regime_state` is `"choppy"`/`"risk_off"`; otherwise it returns `min_rr_ratio`'s value —
+which `hard_rejects.py` ignores anyway outside those two regimes, since it only consults
+`regime_min_rr_ratio` inside that same branch. This exactly matches `_should_enter()`'s own
+usage of the same resolver.
+
+**Tests**: `services/market-data/tests/test_regime_min_rr_config_wiring.py` (new, 5 cases,
+source-text extraction matching `test_min_kscore_config_wiring.py`'s established technique) —
+`min_rr_ratio` routes through the calibrated resolver rather than a bare literal,
+`regime_min_rr_ratio` is actually threaded into `config_overrides`, it resolves via
+`_default_min_rr_ratio(regime_state)` rather than a hardcoded literal, `_call_decision_engine()`
+accepts a `regime_state` parameter, and the real call site derives it from `live_regime` rather
+than a hardcoded value.
+
+**Adversarial verification** — 3 sabotage cycles, all caught and reverted:
+1. Reverting `min_rr_ratio`'s fallback to a bare `2.0` literal.
+2. Removing `regime_min_rr_ratio` from `config_overrides` entirely.
+3. Hardcoding `regime_state="neutral"` at the call site instead of deriving it from
+   `live_regime`.
+
+Full 323-test market-data suite (up from 318) and 113-test decision-engine suite (unchanged —
+no decision-engine code was touched) green; frontend typecheck clean.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n 'regime_min_rr_ratio' /app/src/services/paper_trading_engine.py
+```
+Should show both the `config_overrides` entry and the call-site `regime_state=` argument. If
+decision-engine still seems to use a stale 3.0 regardless of calibration, confirm
+`min_rr_calibration.json` actually exists and has a real `regime_min_rr_ratio` value:
+```bash
+docker exec stockai-market-data-1 cat /data/models/min_rr_calibration.json 2>/dev/null
+```

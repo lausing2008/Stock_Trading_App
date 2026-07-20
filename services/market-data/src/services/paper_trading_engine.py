@@ -2736,6 +2736,7 @@ def _call_decision_engine(
     candidate_sector: str | None = None,
     consec_losses: int = 0,
     kscore: float | None = None,
+    regime_state: str = "neutral",
 ) -> tuple[bool, str, int, str | None] | None:
     """Call Decision Engine and return (should_enter, verdict, score, blocked_reason).
 
@@ -2760,7 +2761,22 @@ def _call_decision_engine(
                 "config_overrides": {
                     "min_entry_score":        cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]),
                     "min_confidence":         cfg.get("min_confidence", _DEFAULT_CONFIG["min_confidence"]),
-                    "min_rr_ratio":           cfg.get("min_rr_ratio", 2.0),
+                    # AUD256: min_rr_ratio's own fallback literal (2.0) bypassed calibration —
+                    # _should_enter() resolves this same key via _default_min_rr_ratio("neutral"),
+                    # which returns the calibrated value once SELFIMPROVE-NEVER-CALIBRATED-PARAMS'
+                    # min_rr_calibration.json has been written, falling back to 2.0 only if
+                    # calibration has never run. Route through the same resolver so DE and the
+                    # fallback agree on the SAME baseline instead of DE silently using a stale
+                    # hardcoded literal forever regardless of calibration.
+                    "min_rr_ratio":           cfg.get("min_rr_ratio", _default_min_rr_ratio("neutral")),
+                    # AUD256: regime_min_rr_ratio was never sent at all — decision-engine's own
+                    # hard_rejects.py has a read-side default of 3.0 for choppy/risk_off regimes
+                    # (T190) that DE always fell back to, completely blind to calibration, even
+                    # though _should_enter() has been correctly regime-aware here since AUD232-060.
+                    # Threaded through unconditionally (matches min_rr_ratio's own always-sent
+                    # convention above) so DE's choppy/risk_off floor tracks the SAME calibrated
+                    # value _should_enter() already uses, not a permanently-stale literal.
+                    "regime_min_rr_ratio":    cfg.get("regime_min_rr_ratio", _default_min_rr_ratio(regime_state)),
                     "risk_per_trade_pct":     cfg.get("risk_per_trade_pct", 0.01),
                     "max_position_pct":       cfg.get("max_position_pct", 0.10),
                     "max_loss_per_trade_pct": cfg.get("max_loss_per_trade_pct", 0.02),
@@ -4259,6 +4275,10 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             candidate_sector=stock.sector,             # T186: sector gate
             consec_losses=_consec_losses,              # T187: streak gate
             kscore=kscore_f,                           # AUD232-042: K-Score visibility
+            # AUD256: regime_state needed so the calibrated regime_min_rr_ratio default
+            # resolves correctly — _default_min_rr_ratio() only returns that key's calibrated
+            # value when regime_state is choppy/risk_off, matching _should_enter()'s own usage.
+            regime_state=(live_regime.get("state", "neutral") if live_regime else "neutral"),
         )
         _max_corr = _max_correlation_with_open_positions(
             session, stock.id, _open_stock_ids, _open_closes_cache,
