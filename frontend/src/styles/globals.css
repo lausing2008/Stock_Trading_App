@@ -16,6 +16,17 @@ a { color: inherit; text-decoration: none; }
   .desktop-nav-row { display: none; }
   .mobile-nav-toggle { display: flex; }
 }
+/* T230-UX-MOBILE-RESPONSIVE (Phase 2, stock detail page): the main chart+sidebar layout is a
+   fixed two-column grid (1fr 320px) that clips the sidebar off-screen on a phone — inline
+   `style={{gridTemplateColumns}}` can't respond to a media query directly, so this class
+   exists purely to give that one grid a breakpoint. Above 768px this is a no-op (matches the
+   existing inline style exactly); below it, the sidebar drops below the chart as a single
+   column instead of being cut off. */
+.stock-detail-main-grid { grid-template-columns: 1fr 320px; }
+@media (max-width: 767px) {
+  .stock-detail-main-grid { grid-template-columns: 1fr !important; }
+}
+
 .fixed { position: fixed; }
 .absolute { position: absolute; }
 .relative { position: relative; }

@@ -4306,3 +4306,134 @@ print('routes.py + scoring.py import chain OK')
 "
 docker exec stockai-research-engine-1 wc -l /app/src/api/routes.py /app/src/scoring.py
 ```
+
+---
+
+## Feature Reference: T232-DL-DUALSCORER-DEBT — Conviction Gate + Signal Staleness Hard Rejects Ported to decision-engine (Built 2026-07-20)
+
+**Continues the ongoing dual-scorer reconciliation** (see the T232-DL-DUALSCORER-DEBT entries
+elsewhere in this file for the full 34-dimension background) — this session ported 2 more of
+the 18 fallback-only hard rejects into `decision-engine`'s `hard_rejects.py`, both chosen
+because they're binary safety/data-quality gates (not scoring judgment calls the item's own
+`what` field warns against blind-porting).
+
+**1. Conviction gate cross-check** — reads the same `conv_gate:{symbol}:{style}` Redis key
+`paper_trading_engine.py`'s `_scan_for_entries()` already writes (1-day TTL, from the alert
+system's own 7-layer conviction check). If that check already evaluated this BUY and failed
+it, decision-engine now blocks too, instead of silently approving an entry the alert system
+itself would never have notified on. Reads Redis directly (decision-engine already depends on
+`redis` for `llm_scorer.py`/`risk_agent.py`, and shares the same `redis_url` as every other
+service) rather than requiring the caller to pre-compute and forward it — this specific check
+now makes `/decide/{symbol}` self-sufficient regardless of caller, directly closing part of
+the item's own group-(e) "pipeline-topology gap" for this one gate.
+
+**2. Signal-staleness hard reject (T222-C)** — a genuinely separate finding from what
+`T234-CONFIG-UNJUSTIFIED-THRESHOLDS` originally claimed. That item described `paper_trading_
+engine.py`'s 72h staleness cutoff and `decision-engine`'s scorer.py Layer 3e (4h/18h bands) as
+"the same conceptual threshold set to different values" — re-verified before touching anything
+and found this framing wrong: Layer 3e's 4h/18h bands are a SOFT scoring adjustment that
+already correctly matches `_should_enter()`'s own identical SA-24 soft-scoring thresholds
+(confirmed via grep — both literally use 4/18). The 72h value is a completely different,
+EARLIER, HARD cutoff in `_scan_for_entries()` that decision-engine had no equivalent of at
+all — meaning `/decide/{symbol}` would silently accept a signal so old that
+`paper_trading_engine` would have discarded it before ever reaching a scorer. Ported as a new
+hard reject (not a threshold reconciliation, since there was never a real numeric mismatch to
+reconcile).
+
+**Implementation**: `check_hard_rejects()` gained 3 new optional parameters (`symbol`, `style`,
+`sig_ts`, all defaulting to `None`) so every pre-existing call site keeps working unchanged. The
+conviction-gate check only runs `if symbol and style:`; the staleness check only runs `if
+sig_ts is not None:` — both fail open on any error (malformed timestamp, Redis unavailable),
+matching every other gate in this file. `routes.py`'s `_decide()` already had `sig_ts` computed
+at line 99 and `symbol`/`style` in scope well before the `check_hard_rejects()` call at line
+158 — no new data-fetching needed, just threading already-available values through.
+
+**A real test-writing bug of my own, caught via adversarial verification, not shipped**: the
+first version of "conviction gate skipped when symbol/style missing" relied on leaving Redis
+completely UNMOCKED, reasoning "if the code tried to reach Redis without symbol/style it would
+hit a real connection attempt and presumably fail." This test still passed even after
+temporarily removing the `if symbol and style:` guard entirely — investigated why (the
+"sabotage still passes" red flag this repo's testing discipline treats as a finding in its own
+right, not a shrug) and found: with `common.config` stubbed as `MagicMock` (this test file's
+own established convention for this Docker-only dependency, matching `test_risk_agent.py`),
+`get_settings().redis_url` is itself a `MagicMock`, and `redis.Redis.from_url()` raises a real
+`TypeError` trying to use it — caught by the SAME outer `except Exception` that handles
+genuine Redis failures elsewhere in the same function. Removing the guard just swapped which
+exception path produced the identical `result=None`, invisible to a test that only checks the
+final return value. Fixed with a call-counting mock (`_TrackedRedis.get()` increments a
+counter) that asserts the Redis lookup was never attempted at all — this version correctly
+fails when the guard is removed.
+
+**Tests**: 17 new cases in `services/decision-engine/tests/test_hard_rejects.py` (now 47 total,
+up from 35 before AUD232-005/060's earlier session and 41 immediately before this one) — 6 for
+the conviction gate (failed/passed/missing-key/redis-error/non-BUY-cached-signal/missing-
+symbol-or-style), 6 for signal staleness (beyond-max-age/within-max-age/custom-max-age/absent-
+ts/malformed-ts/real-datetime-object-not-just-string). Adversarially verified 3 guards by
+sabotage, all caught and reverted: disabling the conviction-gate `if` condition, disabling the
+staleness age comparison, and the call-counting-mock fix described above. Full 108-test
+decision-engine suite green (up from 96 at the start of this session's work).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-decision-engine-1 python3 -c "
+import sys; sys.path.insert(0, '/app')
+from src.api.core.hard_rejects import check_hard_rejects
+import inspect
+print(inspect.signature(check_hard_rejects))
+"
+# Confirm the conviction-gate Redis key format matches what paper_trading_engine.py writes:
+docker exec stockai-redis-1 redis-cli keys 'conv_gate:*' | head -5
+docker exec stockai-redis-1 redis-cli get 'conv_gate:<SYMBOL>:<STYLE>'
+```
+
+---
+
+## Feature Reference: T230-UX-MOBILE-RESPONSIVE (Phase 2 slice) — Stock Detail Page Grid Collapses on Mobile (Built 2026-07-20)
+
+**Scoped down from the original ask** ("refactor the whole ~4000-line page, ~3 days") to the
+single highest-value, lowest-risk slice: the page's ONE genuinely rigid layout. Matches the
+same Phase 1/Phase 2 split already established for the Mobile Nav Drawer
+(`T251-MOBILE-RESPONSIVE-DESIGN`) — fix the one broken thing that actually clips content off
+mobile screens now, defer a full ground-up mobile redesign as its own larger, separately-scoped
+item.
+
+**The fix**: the page's outer chart+sidebar layout (`frontend/src/pages/stock/[symbol].tsx`)
+was a hardcoded `gridTemplateColumns: '1fr 320px'` inline style — inline styles can't respond
+to a media query directly, so a new `.stock-detail-main-grid` class was added to
+`globals.css` instead, following the exact same `.desktop-nav-row`/`.mobile-nav-toggle`
+breakpoint-class pattern already proven for the nav drawer. Above 768px it's pixel-identical to
+the prior inline style; below it, the sidebar collapses to a single column below the chart
+instead of being cut off entirely.
+
+**Audited the rest of the page first** to confirm this really was the ONLY rigid layout that
+needed fixing, rather than assuming: every other grid/flex container in the file already uses
+`flexWrap: 'wrap'` (16 occurrences), self-wrapping `repeat(auto-fill, minmax(...))` grid
+tracks, or constrains only small individual elements (badges/icons at 8-48px) rather than large
+rigid columns. This means the sidebar's own internal content (AI Signal card, K-Score panel,
+etc.) needed zero changes — it already rendered correctly at any width; only the OUTER grid
+cutting the whole sidebar off-screen needed the fix.
+
+**Verification is CSS-only, not browser-verified** — no browser/device-emulator tool was
+available in this environment to visually confirm real rendered behavior (touch target sizes,
+actual scroll behavior, chart legibility at narrow width). What WAS verified: the compiled
+production CSS (`.next/static/css/*.css`) contains both the unconditional base rule
+(`.stock-detail-main-grid{grid-template-columns:1fr 320px}`) and the correct media-query
+override (`@media(max-width:767px){.stock-detail-main-grid{grid-template-columns:1fr!important}}`)
+— proving the intended CSS reaches production, but not that it renders as expected on a real
+device. Flagged explicitly in the tracker as not fully closed pending an actual visual check.
+
+**Explicitly not done in this pass**: the chart itself was not made touch-pinch-zoomable
+(lightweight-charts' default touch handling is used as-is); the page's remaining internal
+density (many small stat grids and tables) was not restructured for a genuinely mobile-
+optimized reading experience. This fix stops the sidebar from being cut off — it does not
+redesign the page for mobile.
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the compiled CSS contains both the base rule and the breakpoint override:
+docker exec stockai-frontend-1 sh -c "grep -o 'stock-detail-main-grid[^}]*}' /app/.next/static/css/*.css"
+docker exec stockai-frontend-1 sh -c "grep -o 'max-width:767px)[^{]*{[^}]*stock-detail[^}]*}' /app/.next/static/css/*.css"
+```
+If either line is missing, the CSS didn't compile/deploy correctly — re-check
+`frontend/src/styles/globals.css` and confirm a real frontend rebuild (not just a `docker cp`
+hotfix — CSS is baked into the Next.js build) was actually run.

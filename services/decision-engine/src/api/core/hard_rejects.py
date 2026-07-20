@@ -1,6 +1,7 @@
 """Hard-reject checks — fire before scoring and return BLOCKED immediately."""
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timezone
 
 # QW-4: NYSE holidays — market-closed guard would block weekends but not holidays.
@@ -37,6 +38,9 @@ def check_hard_rejects(
     game_plan: dict | None = None,
     market: str = "US",
     reasons: dict | None = None,
+    symbol: str | None = None,
+    style: str | None = None,
+    sig_ts=None,
 ) -> str | None:
     """Return a human-readable reject reason, or None if all checks pass."""
 
@@ -120,6 +124,27 @@ def check_hard_rejects(
 
     if days_to_earnings is not None and days_to_earnings <= 5:
         return f"Earnings in {days_to_earnings} days — binary event risk"
+
+    # T234-CONFIG-UNJUSTIFIED-THRESHOLDS: T222-C signal-staleness HARD REJECT, ported from
+    # paper_trading_engine.py's _scan_for_entries() (max_signal_age_hours, default 72h/3 days).
+    # This is genuinely NOT the same threshold as this file's own Layer-3e-equivalent soft
+    # freshness scoring elsewhere in decision-engine (scorer.py's 4h/18h SA-24 bands, which
+    # already correctly mirror _should_enter()'s own soft scoring) — T222-C is a separate,
+    # earlier, HARD cutoff in the pipeline that decision-engine had no equivalent of at all,
+    # making /decide/{symbol} silently accept an arbitrarily-stale signal that
+    # paper_trading_engine would have filtered out entirely before ever reaching a scorer.
+    if sig_ts is not None:
+        try:
+            if isinstance(sig_ts, str):
+                _ts_aware = datetime.fromisoformat(sig_ts.replace("Z", "+00:00"))
+            else:
+                _ts_aware = sig_ts.replace(tzinfo=timezone.utc) if sig_ts.tzinfo is None else sig_ts
+            _sig_age_h = (datetime.now(timezone.utc) - _ts_aware).total_seconds() / 3600
+            _max_age_h = float(cfg.get("max_signal_age_hours", 72))
+            if _sig_age_h > _max_age_h:
+                return f"Signal is {_sig_age_h:.1f}h old, exceeds max age {_max_age_h:.0f}h — stale, discard thesis"
+        except Exception:
+            pass  # malformed ts → fail-open, matching every other gate in this function
 
     # T234-DE-MISSING-HARD-REJECTS: ported from paper_trading_engine.py's _should_enter()
     # fallback (the "primary" DE gate was missing these two unconditional hard rejects that
@@ -213,5 +238,33 @@ def check_hard_rejects(
                     f"Stock {ext_pct:.1f}% above breakout ${breakout:.2f} — "
                     f"extended move, wait for pullback (threshold {threshold:.0f}%)"
                 )
+
+    # T232-DL-DUALSCORER-DEBT: Conviction gate hard-block — ported from
+    # paper_trading_engine.py's _scan_for_entries(). Reads the SAME conv_gate:{symbol}:{style}
+    # Redis key the alert system already writes (1-day TTL) — if the alert system's own
+    # 7-layer conviction check already evaluated this BUY and failed it, decision-engine must
+    # agree rather than approve an entry the alert system itself would not have notified on.
+    # No gate key = gate not yet run (fail-open, allow entry — matches _should_enter()'s own
+    # fail-open-on-missing-data behavior elsewhere in this function). Deliberately reads Redis
+    # directly (decision-engine already depends on `redis` for llm_scorer.py/risk_agent.py,
+    # and shares the same redis_url as every other service) rather than requiring the caller
+    # to pre-compute and forward this — the whole point is that /decide/{symbol} must be
+    # self-sufficient for callers other than paper_trading_engine (e.g. decide.tsx).
+    if symbol and style:
+        try:
+            import redis as _redis_lib
+            from common.config import get_settings as _gs_hr
+            _gate_redis = _redis_lib.Redis.from_url(_gs_hr().redis_url, decode_responses=True)
+            _cgval = _gate_redis.get(f"conv_gate:{symbol}:{style}")
+            if _cgval:
+                _cgdata = json.loads(_cgval)
+                if _cgdata.get("signal") == "BUY" and _cgdata.get("sent") is False:
+                    _failed_layers = _cgdata.get("failed", [])
+                    return (
+                        f"Conviction gate failed: {', '.join(_failed_layers[:2]) or 'multiple layers'} "
+                        f"— alert system would not have notified on this BUY"
+                    )
+        except Exception:
+            pass  # Redis unavailable or parse error → allow entry (fail-open)
 
     return None

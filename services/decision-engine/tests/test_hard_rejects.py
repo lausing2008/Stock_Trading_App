@@ -7,12 +7,22 @@ one, or vice versa, changes what a candidate is actually being evaluated against
 uses a fixed, real, non-holiday weekday/time inside normal market hours (Tuesday 2026-07-14,
 11:00 ET) via monkeypatching datetime.now, so every test exercises exactly the layer under
 test without the market-closed/time-of-day gates interfering.
+
+The conviction-gate check (added for T232-DL-DUALSCORER-DEBT) needs `common.config` — stubbed
+here via sys.modules.setdefault, matching test_risk_agent.py's established convention for this
+exact Docker-only dependency (real `redis` is installed and used directly; only `common`/
+`common.config` need stubbing).
 """
-from datetime import date, datetime, timezone
+import sys
+from datetime import date, datetime, timedelta, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
-from src.api.core import hard_rejects as hr
+sys.modules.setdefault("common", MagicMock())
+sys.modules.setdefault("common.config", MagicMock())
+
+from src.api.core import hard_rejects as hr  # noqa: E402
 
 
 _INSIDE_MARKET_HOURS_UTC = datetime(2026, 7, 14, 15, 0, 0, tzinfo=timezone.utc)  # Tue 11:00 ET
@@ -268,6 +278,50 @@ def test_earnings_6_days_out_does_not_block():
     assert result is None
 
 
+# ── Signal staleness hard reject (T222-C, T234-CONFIG-UNJUSTIFIED-THRESHOLDS) ─────────────
+# Genuinely distinct from decision-engine's own soft SA-24 freshness SCORE (scorer.py's
+# 4h/18h bands, -1/+1 points, never a hard reject) — this is a separate, earlier HARD cutoff
+# ported from paper_trading_engine.py's _scan_for_entries(), default 72h.
+
+def test_stale_signal_beyond_max_age_blocks():
+    stale_ts = (_INSIDE_MARKET_HOURS_UTC.replace(tzinfo=None) - timedelta(hours=100)).isoformat() + "Z"
+    result = hr.check_hard_rejects(**_base_kwargs(sig_ts=stale_ts))
+    assert result is not None and "stale" in result.lower()
+
+
+def test_signal_within_max_age_does_not_block():
+    fresh_ts = (_INSIDE_MARKET_HOURS_UTC.replace(tzinfo=None) - timedelta(hours=10)).isoformat() + "Z"
+    result = hr.check_hard_rejects(**_base_kwargs(sig_ts=fresh_ts))
+    assert result is None
+
+
+def test_signal_staleness_respects_custom_max_age():
+    ts_50h_old = (_INSIDE_MARKET_HOURS_UTC.replace(tzinfo=None) - timedelta(hours=50)).isoformat() + "Z"
+    # Default 72h: 50h old passes.
+    assert hr.check_hard_rejects(**_base_kwargs(sig_ts=ts_50h_old)) is None
+    # Tightened to 24h: the same 50h-old signal must now be rejected.
+    result = hr.check_hard_rejects(**_base_kwargs(sig_ts=ts_50h_old, cfg={"max_signal_age_hours": 24}))
+    assert result is not None and "stale" in result.lower()
+
+
+def test_no_staleness_check_when_sig_ts_absent():
+    result = hr.check_hard_rejects(**_base_kwargs(sig_ts=None))
+    assert result is None
+
+
+def test_malformed_sig_ts_fails_open():
+    result = hr.check_hard_rejects(**_base_kwargs(sig_ts="not-a-real-timestamp"))
+    assert result is None
+
+
+def test_stale_signal_accepts_a_real_datetime_object_not_just_a_string():
+    """sig_ts can arrive as a real datetime (e.g. a value read straight from the DB) as well
+    as an ISO string (from a JSON round-trip) — both must be handled."""
+    stale_dt = _INSIDE_MARKET_HOURS_UTC - timedelta(hours=100)
+    result = hr.check_hard_rejects(**_base_kwargs(sig_ts=stale_dt))
+    assert result is not None and "stale" in result.lower()
+
+
 # ── Gap filter (T171) ──────────────────────────────────────────────────────────
 # NOTE: the gap filter runs AFTER the R:R gate (see gate order at the top of this file), so
 # every test here must also move stop_price/take_profit along with live_price to keep R:R
@@ -365,3 +419,102 @@ def test_confidence_floor_fires_before_stop_distance_check():
         confidence=10.0, stop_price=105.0,  # both confidence AND stop-distance are bad
     ))
     assert result is not None and "Confidence" in result
+
+
+# ── Conviction gate (T232-DL-DUALSCORER-DEBT) ─────────────────────────────────
+# Reads the same conv_gate:{symbol}:{style} Redis key the alert system writes. Mocks
+# redis.Redis.from_url so no real Redis connection is needed — matches this file's own
+# established pattern of mocking exactly the external dependency a gate reaches out to
+# (datetime.now for the time gates, here redis.Redis.from_url for this one).
+
+class _FakeRedisClient:
+    def __init__(self, value: str | None):
+        self._value = value
+
+    def get(self, key):
+        return self._value
+
+
+def _mock_conv_gate_redis(monkeypatch, value: str | None):
+    import redis as _redis_lib
+    monkeypatch.setattr(
+        _redis_lib.Redis, "from_url",
+        classmethod(lambda cls, *a, **kw: _FakeRedisClient(value)),
+    )
+
+
+def test_conviction_gate_failed_blocks_entry(monkeypatch):
+    _mock_conv_gate_redis(monkeypatch, '{"signal": "BUY", "sent": false, "failed": ["K-Score", "RSI"]}')
+    result = hr.check_hard_rejects(**_base_kwargs(symbol="AAPL", style="SWING"))
+    assert result is not None and "Conviction gate failed" in result
+    assert "K-Score" in result
+
+
+def test_conviction_gate_passed_does_not_block(monkeypatch):
+    _mock_conv_gate_redis(monkeypatch, '{"signal": "BUY", "sent": true, "failed": []}')
+    result = hr.check_hard_rejects(**_base_kwargs(symbol="AAPL", style="SWING"))
+    assert result is None
+
+
+def test_conviction_gate_missing_key_fails_open(monkeypatch):
+    """No gate key = gate not yet run — matches _should_enter()'s own fail-open-on-missing-
+    data behavior; must NOT be treated as a failure."""
+    _mock_conv_gate_redis(monkeypatch, None)
+    result = hr.check_hard_rejects(**_base_kwargs(symbol="AAPL", style="SWING"))
+    assert result is None
+
+
+def test_conviction_gate_skipped_when_symbol_or_style_missing(monkeypatch):
+    """Without symbol/style (e.g. an older caller not yet passing them), the gate must never
+    even ATTEMPT the Redis lookup — not just "fail open eventually." Verified via a call-
+    tracking mock rather than leaving Redis unmocked: an earlier version of this test relied
+    on an unmocked `redis.Redis.from_url` to prove the guard worked (reasoning "if the code
+    tried to reach Redis it would hit a real connection attempt and fail"), but with
+    common.config stubbed as MagicMock, get_settings().redis_url is itself a MagicMock, and
+    the resulting TypeError inside redis.Redis.from_url() is caught by the SAME outer
+    except-Exception that handles genuine Redis failures — so removing the `if symbol and
+    style:` guard entirely still produced result=None, just via the exception path instead of
+    the intended skip path, and this test could not tell the difference. A call-counting mock
+    makes the two paths distinguishable."""
+    import redis as _redis_lib
+    call_count = {"n": 0}
+
+    class _TrackedRedis:
+        def get(self, key):
+            call_count["n"] += 1
+            return None
+
+    monkeypatch.setattr(_redis_lib.Redis, "from_url", classmethod(lambda cls, *a, **kw: _TrackedRedis()))
+    result = hr.check_hard_rejects(**_base_kwargs(symbol=None, style=None))
+    assert result is None
+    assert call_count["n"] == 0, "conviction gate must not attempt a Redis lookup without symbol/style"
+
+
+def test_conviction_gate_redis_error_fails_open(monkeypatch):
+    """A Redis connection failure must allow entry, not block it — matches every other
+    fail-open gate in this file (tz lookup failures, DB query failures for macro blackout)."""
+    import redis as _redis_lib
+
+    class _BrokenRedis:
+        def get(self, key):
+            raise ConnectionError("redis unavailable")
+
+    monkeypatch.setattr(_redis_lib.Redis, "from_url", classmethod(lambda cls, *a, **kw: _BrokenRedis()))
+    result = hr.check_hard_rejects(**_base_kwargs(symbol="AAPL", style="SWING"))
+    assert result is None
+
+
+def test_conviction_gate_ignores_non_buy_signal_in_cached_data():
+    """A cached gate entry for a SELL (or any non-BUY) signal must never block a BUY
+    evaluation — the gate only blocks when the CACHED signal itself was a failed BUY."""
+    def _mock(monkeypatch, value):
+        import redis as _redis_lib
+        monkeypatch.setattr(_redis_lib.Redis, "from_url", classmethod(lambda cls, *a, **kw: _FakeRedisClient(value)))
+    import pytest as _pytest
+    mp = _pytest.MonkeyPatch()
+    try:
+        _mock(mp, '{"signal": "SELL", "sent": false, "failed": ["RSI"]}')
+        result = hr.check_hard_rejects(**_base_kwargs(symbol="AAPL", style="SWING"))
+        assert result is None
+    finally:
+        mp.undo()

@@ -1161,7 +1161,7 @@ Return ONLY valid JSON — no markdown, no prose:
       })()}
 
       {/* Main layout: chart left, sidebar right */}
-      <div className="grid gap-4" style={{ gridTemplateColumns: '1fr 320px' }}>
+      <div className="grid gap-4 stock-detail-main-grid">
         {/* Left column: chart + analysis panels */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
