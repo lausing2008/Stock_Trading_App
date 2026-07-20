@@ -4498,3 +4498,52 @@ docker exec stockai-decision-engine-1 grep -n 'min_kscore' /app/src/api/core/har
 Both should show the fix present. If a low-K-Score candidate is still approved by
 `/decide/{symbol}` after confirming both, check whether the caller (e.g. `decide.tsx`) is
 actually sending a `kscore` in `config_overrides` at all — the gate is a no-op without one.
+
+---
+
+## Feature Reference: AUD250-MACRO-CALENDAR-FALLBACK-GRANULARITY — Per-Month Fallback Tracking (Built 2026-07-20)
+
+**The gap**: `_macro_events_from_db()` (`services/market-data/src/api/routes.py`) reads real
+FRED release-date rows and tells `events_calendar()`'s fallback loop which hardcoded
+`_MACRO_2026` entries are now redundant. This tracking was a flat `types_with_db_rows:
+set[str]` — if the DB had even ONE row for a type (e.g. `"cpi"`) anywhere in the requested
+window, EVERY hardcoded `_MACRO_2026` entry for that type was skipped across the ENTIRE
+window, including months `sync_fred_release_dates()`'s 180-day sync horizon never actually
+reached. `GET /stocks/events/calendar?days_ahead=365` is a valid, allowed request (the route's
+own `Query(90, ..., le=365)` permits it) — a caller requesting the far end of that range could
+have a real near-term DB row silently suppress fallback coverage for months 181-365 that the
+DB genuinely has no data for, dropping a real CPI/NFP/PCE/GDP release from the calendar with no
+error anywhere. Flagged but deliberately deferred during the original AUD250 audit pass
+(2026-07-16) given the frontend only ever requests the 90-day default in practice — this was
+the follow-up.
+
+**Fix**: `_macro_events_from_db()` now returns `covered_type_months: set[tuple[str, int,
+int]]` — `(macro_type, year, month)` — built from each DB row's own `event_date`, instead of a
+bare type-level set. `events_calendar()`'s fallback loop checks `(ev["type"], ev_date.year,
+ev_date.month) in covered_type_months` instead of `ev["type"] in types_with_db_rows`. A real
+July CPI row now only suppresses the July `_MACRO_2026` entry — August, September, etc. still
+correctly fall back to the hardcoded calendar if the DB has no row for them yet.
+
+**Other caller unaffected**: `scheduler.py`'s `send_premarket_brief()` also calls
+`_macro_events_from_db()` (`macro_events, _ = _macro_events_from_db(session, today, today)`)
+but discards the second return value entirely — confirmed via its own 16-test suite
+(`test_premarket_brief.py`) staying green with no changes needed.
+
+**Tests**: 2 new cases added to `services/market-data/tests/test_macro_events_from_db.py`
+(now 6 total) — one directly reproducing the bug scenario (a DB row for one month must leave
+other months of the same type uncovered), one confirming multiple distinct covered months
+accumulate correctly in the set. Adversarially verified by collapsing the `(year, month)`
+components to a constant `(0, 0)` in the fix — reproducing the exact original per-type bug —
+and confirming the 2 new tests plus the pre-existing type-mapping test all failed correctly
+before reverting. Full 318-test market-data suite (up from 316) and frontend typecheck green.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n "covered_type_months" /app/src/api/routes.py
+```
+Should show the tuple-based tracking in both `_macro_events_from_db()` and
+`events_calendar()`'s fallback loop. If a macro event still looks like it's silently missing
+from the calendar, check `sync_fred_release_dates()`'s actual sync coverage directly against
+production Postgres (`SELECT event_type, MIN(event_date), MAX(event_date) FROM
+economic_events WHERE event_type LIKE '%_release' GROUP BY event_type;`) — a gap could now be
+a genuine sync-coverage gap rather than this fallback-suppression bug, which this fix closes.

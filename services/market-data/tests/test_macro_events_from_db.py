@@ -60,9 +60,9 @@ def test_cpi_release_row_maps_to_the_hardcoded_type_name(monkeypatch):
     row = _fake_row("cpi_release", date(2026, 7, 14), title="CPI Release")
     session = _session_returning([row], monkeypatch)
 
-    events, types_with_db_rows = _macro_events_from_db(session, today, cutoff)
+    events, covered_type_months = _macro_events_from_db(session, today, cutoff)
 
-    assert types_with_db_rows == {"cpi"}
+    assert covered_type_months == {("cpi", 2026, 7)}
     assert len(events) == 1
     assert events[0]["type"] == "cpi"
     assert events[0]["date"] == "2026-07-14"
@@ -89,16 +89,51 @@ def test_events_have_the_same_shape_as_the_macro_2026_fallback_path(monkeypatch)
 
 def test_no_db_rows_returns_empty_types_so_fallback_path_is_used(monkeypatch):
     """No rows in the DB yet (e.g. before the first sync_fred_release_dates() run) must
-    correctly signal an empty types_with_db_rows set, so events_calendar()'s fallback to
+    correctly signal an empty covered_type_months set, so events_calendar()'s fallback to
     _MACRO_2026 actually engages instead of silently dropping the event."""
     today = date(2026, 7, 15)
     cutoff = date(2026, 9, 1)
     session = _session_returning([], monkeypatch)
 
-    events, types_with_db_rows = _macro_events_from_db(session, today, cutoff)
+    events, covered_type_months = _macro_events_from_db(session, today, cutoff)
 
     assert events == []
-    assert types_with_db_rows == set()
+    assert covered_type_months == set()
+
+
+def test_covered_type_months_is_scoped_per_month_not_per_type(monkeypatch):
+    """AUD250-MACRO-CALENDAR-FALLBACK-GRANULARITY: a single DB row for one month of a type
+    must NOT mark every other month of that same type as covered — each month needs its own
+    entry in the returned set, so a later month with no DB row still correctly falls back to
+    the hardcoded _MACRO_2026 entry for that month instead of being silently dropped."""
+    today = date(2026, 7, 15)
+    cutoff = date(2026, 12, 31)
+    # Only a July CPI row exists in the DB — August/September/etc. CPI releases have no
+    # DB row yet (e.g. sync_fred_release_dates()'s 180-day sync window hasn't reached them).
+    row = _fake_row("cpi_release", date(2026, 7, 14), title="CPI Release")
+    session = _session_returning([row], monkeypatch)
+
+    _, covered_type_months = _macro_events_from_db(session, today, cutoff)
+
+    assert ("cpi", 2026, 7) in covered_type_months
+    assert ("cpi", 2026, 8) not in covered_type_months
+    assert ("cpi", 2026, 9) not in covered_type_months
+
+
+def test_two_different_months_of_the_same_type_both_tracked(monkeypatch):
+    """Confirms the set accumulates multiple (type, year, month) entries correctly when the
+    DB genuinely does have rows for more than one month of the same type."""
+    today = date(2026, 7, 15)
+    cutoff = date(2026, 12, 31)
+    rows = [
+        _fake_row("cpi_release", date(2026, 7, 14), title="CPI Release"),
+        _fake_row("cpi_release", date(2026, 8, 13), title="CPI Release"),
+    ]
+    session = _session_returning(rows, monkeypatch)
+
+    _, covered_type_months = _macro_events_from_db(session, today, cutoff)
+
+    assert covered_type_months == {("cpi", 2026, 7), ("cpi", 2026, 8)}
 
 
 def test_every_macro_2026_fallback_type_has_a_release_mapping_or_is_fomc():

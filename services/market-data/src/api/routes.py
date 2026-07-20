@@ -1665,12 +1665,25 @@ _MACRO_TYPE_TO_RELEASE_EVENT_TYPE = {
 }
 
 
-def _macro_events_from_db(session: "Session", today, cutoff) -> tuple[list[dict], set[str]]:
+def _macro_events_from_db(session: "Session", today, cutoff) -> tuple[list[dict], set[tuple[str, int, int]]]:
     """T249-MARKETMOVER-P0: read the real release-date calendar from economic_events'
     *_release rows (synced from FRED's own fred/release/dates endpoint) for the hardcoded
-    macro types that now have a live equivalent. Returns (events, types_with_db_rows) — the
-    caller uses types_with_db_rows to decide which _MACRO_2026 entries to skip as redundant/
-    stale, falling back to the hardcoded list only for types the DB has no rows for yet.
+    macro types that now have a live equivalent. Returns (events, covered_type_months) — the
+    caller uses covered_type_months to decide which _MACRO_2026 entries to skip as redundant/
+    stale, falling back to the hardcoded list only for a (type, year, month) the DB has no row
+    for yet.
+
+    AUD250-MACRO-CALENDAR-FALLBACK-GRANULARITY: this was originally a per-type set[str] —
+    if the DB had even ONE row for a type anywhere in [today, cutoff], every _MACRO_2026
+    fallback entry for that type was skipped across the ENTIRE requested window, including
+    date ranges the DB sync never actually reached. sync_fred_release_dates() only syncs 180
+    days ahead by default; GET /stocks/events/calendar?days_ahead=365 is a valid request (up
+    to 365 per the route's own Query bound) — a caller requesting >180 days ahead could see a
+    real near-term DB row silently suppress fallback coverage for months 181-365 that the DB
+    genuinely has no data for. Tracking per-(type, year, month) instead of per-type scopes the
+    skip to only the specific months the DB actually returned a row for — a gap in coverage
+    for a later month now correctly falls back to the hardcoded entry for that month instead
+    of being silently dropped.
 
     Shape matches the fallback _MACRO_2026 path exactly (type/date/title/description/impact
     plus the same days_to_event/symbol/name/market/sector fields events_calendar() adds to
@@ -1696,14 +1709,14 @@ def _macro_events_from_db(session: "Session", today, cutoff) -> tuple[list[dict]
     ).scalars().all()
 
     events: list[dict] = []
-    types_with_db_rows: set[str] = set()
+    covered_type_months: set[tuple[str, int, int]] = set()
     for row in rows:
         macro_type = next(
             (k for k, v in _MACRO_TYPE_TO_RELEASE_EVENT_TYPE.items() if v == row.event_type),
             row.event_type,
         )
-        types_with_db_rows.add(macro_type)
         ev_date = row.event_date.date()
+        covered_type_months.add((macro_type, ev_date.year, ev_date.month))
         events.append({
             "type": macro_type,
             "date": ev_date.isoformat(),
@@ -1716,7 +1729,7 @@ def _macro_events_from_db(session: "Session", today, cutoff) -> tuple[list[dict]
             "market": None,
             "sector": None,
         })
-    return events, types_with_db_rows
+    return events, covered_type_months
 
 
 @router.get("/events/calendar")
@@ -1736,16 +1749,22 @@ def events_calendar(
     # yet (e.g. before the first successful sync_fred_release_dates() run, or if
     # FRED_API_KEY is ever unset again). FOMC has no DB equivalent (FRED doesn't publish a
     # release calendar for Fed meetings) so it always comes from _MACRO_2026.
-    db_macro_events, _types_with_db_rows = _macro_events_from_db(session, today, cutoff)
+    #
+    # AUD250-MACRO-CALENDAR-FALLBACK-GRANULARITY: the skip check below is scoped per
+    # (type, year, month) rather than per-type — see _macro_events_from_db()'s own docstring
+    # for why a per-type check silently dropped fallback coverage for months the DB sync
+    # never actually reached (sync_fred_release_dates() only syncs 180 days ahead; this route
+    # allows days_ahead up to 365).
+    db_macro_events, _covered_type_months = _macro_events_from_db(session, today, cutoff)
     events.extend(db_macro_events)
 
     for ev in _MACRO_2026:
-        if ev["type"] in _types_with_db_rows:
-            continue  # real DB row already covers this type for this date range
         try:
             ev_date = _date.fromisoformat(ev["date"])
         except Exception:
             continue
+        if (ev["type"], ev_date.year, ev_date.month) in _covered_type_months:
+            continue  # real DB row already covers this specific type+month
         if today <= ev_date <= cutoff:
             events.append({
                 **ev,
