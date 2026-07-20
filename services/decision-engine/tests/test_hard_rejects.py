@@ -322,6 +322,45 @@ def test_stale_signal_accepts_a_real_datetime_object_not_just_a_string():
     assert result is not None and "stale" in result.lower()
 
 
+# ── K-Score floor hard reject (T232-DL-DUALSCORER-DEBT) ───────────────────────────────────
+# Genuinely distinct from this file's own AUD232-042 soft K-Score SCORE layer in scorer.py
+# (±1 for kscore >=/< 55) — min_kscore is a separate, earlier HARD pre-filter ported from
+# paper_trading_engine.py's _scan_for_entries(), which discards a candidate entirely before
+# it's ever scored (per-style default 48-52, distinct from scorer.py's fixed 55 boundary).
+
+def test_kscore_below_min_kscore_blocks():
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"kscore": 40.0, "min_kscore": 48.0}))
+    assert result is not None and "K-Score" in result and "40" in result
+
+
+def test_kscore_at_or_above_min_kscore_does_not_block():
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"kscore": 48.0, "min_kscore": 48.0}))
+    assert result is None
+    result2 = hr.check_hard_rejects(**_base_kwargs(cfg={"kscore": 60.0, "min_kscore": 48.0}))
+    assert result2 is None
+
+
+def test_kscore_gate_skipped_when_min_kscore_absent():
+    """An older caller not yet sending min_kscore (or kscore) must not be blocked — this gate
+    is opt-in via cfg, matching every other optional gate in this file."""
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"kscore": 10.0}))  # min_kscore absent
+    assert result is None
+
+
+def test_kscore_gate_skipped_when_kscore_itself_absent():
+    """min_kscore present but no actual kscore value sent — must not crash or spuriously
+    block; there's nothing to compare against."""
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"min_kscore": 48.0}))  # kscore absent
+    assert result is None
+
+
+def test_kscore_gate_respects_per_style_thresholds():
+    """paper_trading_engine.py's real per-style defaults (GROWTH=48, SWING=52, LONG=50) — a
+    candidate that clears GROWTH's floor but not SWING's must be blocked under SWING's."""
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"kscore": 50.0, "min_kscore": 52.0}))
+    assert result is not None and "K-Score" in result
+
+
 # ── Gap filter (T171) ──────────────────────────────────────────────────────────
 # NOTE: the gap filter runs AFTER the R:R gate (see gate order at the top of this file), so
 # every test here must also move stop_price/take_profit along with live_price to keep R:R

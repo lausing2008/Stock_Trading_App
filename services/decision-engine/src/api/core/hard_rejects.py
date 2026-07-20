@@ -146,6 +146,26 @@ def check_hard_rejects(
         except Exception:
             pass  # malformed ts → fail-open, matching every other gate in this function
 
+    # T232-DL-DUALSCORER-DEBT: K-Score floor HARD REJECT, ported from
+    # paper_trading_engine.py's _scan_for_entries() (min_kscore, per-style default 48-52).
+    # Genuinely distinct from this file's own AUD232-042 soft K-Score SCORE layer elsewhere in
+    # this function (scorer.py's ±1 for kscore >=/< 55) — that layer nudges the score but never
+    # blocks outright. min_kscore is a separate, EARLIER hard pre-filter in _scan_for_entries
+    # that discards a candidate entirely before it's ever scored — decision-engine had no
+    # equivalent, so /decide/{symbol} could approve a candidate _scan_for_entries would have
+    # discarded before ever calling a scorer, for any caller that doesn't replicate that
+    # pre-filter itself (e.g. decide.tsx). cfg["min_kscore"] is only present when the caller
+    # also sent a real kscore (see paper_trading_engine.py's config_overrides) — absent for any
+    # older caller not yet passing it, matching this function's established optional-parameter
+    # fail-open convention elsewhere (symbol/style/sig_ts above).
+    if cfg.get("min_kscore") is not None:
+        _kscore_val = cfg.get("kscore")
+        if _kscore_val is not None and float(_kscore_val) < float(cfg["min_kscore"]):
+            return (
+                f"K-Score {float(_kscore_val):.0f} below minimum {float(cfg['min_kscore']):.0f} "
+                f"— fundamental/momentum quality gate not met"
+            )
+
     # T234-DE-MISSING-HARD-REJECTS: ported from paper_trading_engine.py's _should_enter()
     # fallback (the "primary" DE gate was missing these two unconditional hard rejects that
     # the fallback path enforces, making the normally-active gate looser than the outage-only

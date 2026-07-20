@@ -4437,3 +4437,64 @@ docker exec stockai-frontend-1 sh -c "grep -o 'max-width:767px)[^{]*{[^}]*stock-
 If either line is missing, the CSS didn't compile/deploy correctly — re-check
 `frontend/src/styles/globals.css` and confirm a real frontend rebuild (not just a `docker cp`
 hotfix — CSS is baked into the Next.js build) was actually run.
+
+---
+
+## Feature Reference: T232-DL-DUALSCORER-DEBT — K-Score Floor Hard Reject Ported to decision-engine (2026-07-20)
+
+**Gap closed**: one more of the ~28 remaining `_should_enter()`-vs-decision-engine divergences
+tracked under T232-DL-DUALSCORER-DEBT — the K-Score floor. `_scan_for_entries()`'s `min_kscore`
+(per-style hard pre-filter, `_DEFAULT_CONFIG["min_kscore"] = 48.0`, GROWTH=48, LONG=50, SWING=52
+via `_STYLE_OVERRIDES`) discards a candidate entirely before it's ever scored. decision-engine's
+`scorer.py` already has AUD232-042's soft ±1 K-Score layer (fixed 55 boundary) — a genuinely
+different mechanism (a scoring nudge, never a block) at a genuinely different threshold, so a
+candidate the soft layer barely penalizes could still be one `_scan_for_entries` would have
+discarded outright. `/decide/{symbol}` had no equivalent hard floor at all.
+
+**Two-sided fix** (the threshold itself, not just the candidate's kscore value which was
+already threaded, had to start reaching decision-engine):
+1. `paper_trading_engine.py`'s `_call_decision_engine()` — added
+   `**( {"min_kscore": cfg.get("min_kscore", _DEFAULT_CONFIG["min_kscore"])} if kscore is not None else {} )`
+   to the `config_overrides` dict, conditional on `kscore` also being sent (same pattern as the
+   existing `kscore` inclusion and the `llm_scoring_enabled` block).
+2. `hard_rejects.py`'s `check_hard_rejects()` — needed zero new function parameters (`cfg`
+   already carries both `min_kscore` and `kscore` via its existing merge mechanism):
+   ```python
+   if cfg.get("min_kscore") is not None:
+       _kscore_val = cfg.get("kscore")
+       if _kscore_val is not None and float(_kscore_val) < float(cfg["min_kscore"]):
+           return f"K-Score {float(_kscore_val):.0f} below minimum {float(cfg['min_kscore']):.0f} — fundamental/momentum quality gate not met"
+   ```
+   Fail-open exactly like every other optional gate in this file — an older caller not sending
+   `min_kscore` (or `kscore`) is unaffected.
+
+**Tests**: `services/market-data/tests/test_min_kscore_config_wiring.py` (new, 3 cases) guards
+the write side via source-text extraction (matching `test_llm_scoring_config_wiring.py`'s
+established technique, since `paper_trading_engine.py` can't be imported directly in this test
+environment) — confirms `min_kscore` actually appears in `config_overrides`, falls back to the
+real `_DEFAULT_CONFIG` value rather than a hardcoded literal, and is conditional on `kscore`'s
+own presence. `services/decision-engine/tests/test_hard_rejects.py` gained 5 cases (47→52):
+below/at-or-above the floor, gate skipped when `min_kscore` or `kscore` itself is absent, and
+the real per-style thresholds (a candidate clearing GROWTH's 48 but not SWING's 52 is blocked
+under SWING's).
+
+**Adversarial verification** — 3 separate guards sabotaged and reverted:
+1. The comparison logic (`if False:`) — caught by the below-floor and per-style tests.
+2. The outer `cfg.get("min_kscore") is not None` guard (`if True:`) — produced a genuine
+   `KeyError: 'min_kscore'` in the absent-threshold test, confirming the guard prevents a real
+   crash, not just redundant defensive code.
+3. The write-side `config_overrides` line in `paper_trading_engine.py` (replaced with a bare
+   comment) — confirmed all 3 new wiring tests correctly failed (2 via assertion, 1 via a real
+   `ValueError` from `.index()` no longer finding the string) before reverting.
+
+Full market-data suite (316 tests) and decision-engine suite (113 tests) green after every
+revert; frontend typecheck clean (no frontend files touched).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n '"min_kscore":' /app/src/services/paper_trading_engine.py
+docker exec stockai-decision-engine-1 grep -n 'min_kscore' /app/src/api/core/hard_rejects.py
+```
+Both should show the fix present. If a low-K-Score candidate is still approved by
+`/decide/{symbol}` after confirming both, check whether the caller (e.g. `decide.tsx`) is
+actually sending a `kscore` in `config_overrides` at all — the gate is a no-op without one.

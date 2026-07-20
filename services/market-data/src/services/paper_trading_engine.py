@@ -2775,6 +2775,15 @@ def _call_decision_engine(
                     # the fundamental weakness. Threaded through config_overrides, matching the
                     # existing recent_win_rate/consec_losses extension pattern.
                     **( {"kscore": kscore} if kscore is not None else {} ),
+                    # T232-DL-DUALSCORER-DEBT: min_kscore is _scan_for_entries' own HARD
+                    # pre-filter (candidates below this are discarded before DE is ever called
+                    # at all on the real production path) — but DE itself had no hard-reject
+                    # equivalent, only the soft ±1 kscore scoring layer above (AUD232-042). This
+                    # made /decide/{symbol} silently accept a candidate below the real min_kscore
+                    # floor whenever called standalone (e.g. decide.tsx), which never runs
+                    # _scan_for_entries' pre-filter at all. Threaded through so hard_rejects.py
+                    # can enforce the SAME floor _scan_for_entries already enforces upstream.
+                    **( {"min_kscore": cfg.get("min_kscore", _DEFAULT_CONFIG["min_kscore"])} if kscore is not None else {} ),
                     # T203-LLMWIRE: llm_scoring_enabled existed in decision-engine's
                     # llm_scorer.py since T203 but was never threaded from portfolio config
                     # into this request — a built-but-dormant feature with no way to turn it
