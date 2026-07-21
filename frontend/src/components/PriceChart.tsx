@@ -26,7 +26,7 @@ import { detectSwingPivots, nearestPivot } from '@/lib/swingPivots';
 import { VolumeProfilePrimitive } from './VolumeProfilePrimitive';
 import { ToolbarDropdown } from './ToolbarDropdown';
 import { computeSMA, computeEMA, computeRSI, computeMACD, computeBollingerBands } from '@/lib/indicators';
-import { loadDrawings, addDrawing, removeDrawing, clearDrawings, nextDrawingId, type ChartDrawing } from '@/lib/chartDrawings';
+import { loadDrawings, addDrawing, removeDrawing, clearDrawings, nextDrawingId, nearestBarIndexByTimestamp, type ChartDrawing } from '@/lib/chartDrawings';
 
 type Props = {
   symbol: string;
@@ -189,7 +189,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
   const [drawTool, setDrawTool] = useState<'off' | 'horizontal' | 'trendline'>('off');
   const [drawPickState, setDrawPickState] = useState<'idle' | 'picking-start' | 'picking-end'>('idle');
   const [drawings, setDrawings] = useState<ChartDrawing[]>([]);
-  const drawStartRef = useRef<{ idx: number; price: number } | null>(null);
+  const drawStartRef = useRef<{ idx: number; price: number; ts?: string } | null>(null);
 
   // Load this symbol's saved drawings on mount / symbol change.
   useEffect(() => {
@@ -652,12 +652,26 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
           axisLabelVisible: true, title: '',
         });
       } else {
+        // BUG-TRENDLINE-STALEBARINDEX: d.startIdx/d.endIdx are a raw bar POSITION captured
+        // against whatever activePrices array was active when this trendline was drawn —
+        // re-indexing that same number into a DIFFERENT array (a timeframe switch, or a
+        // changed visible date range) silently lands on an unrelated bar. When the drawing
+        // carries startTs/endTs (the real timestamp at draw time), re-anchor by finding the
+        // nearest bar to that timestamp in the CURRENT activePrices instead of trusting the
+        // stale index. Falls back to the old index-based lookup only for drawings saved
+        // before this fix shipped (no startTs/endTs at all).
+        const startBarIdx = d.startTs != null
+          ? nearestBarIndexByTimestamp(activePrices, d.startTs) ?? d.startIdx
+          : d.startIdx;
+        const endBarIdx = d.endTs != null
+          ? nearestBarIndexByTimestamp(activePrices, d.endTs) ?? d.endIdx
+          : d.endIdx;
         const startTime = isIntraday
-          ? toIntradayTime(activePrices[d.startIdx]?.ts ?? activePrices[0]?.ts ?? '') as unknown as Time
-          : toTime(activePrices[d.startIdx]?.ts ?? activePrices[0]?.ts ?? '');
+          ? toIntradayTime(activePrices[startBarIdx]?.ts ?? activePrices[0]?.ts ?? '') as unknown as Time
+          : toTime(activePrices[startBarIdx]?.ts ?? activePrices[0]?.ts ?? '');
         const endTime = isIntraday
-          ? toIntradayTime(activePrices[d.endIdx]?.ts ?? activePrices.at(-1)?.ts ?? '') as unknown as Time
-          : toTime(activePrices[d.endIdx]?.ts ?? activePrices.at(-1)?.ts ?? '');
+          ? toIntradayTime(activePrices[endBarIdx]?.ts ?? activePrices.at(-1)?.ts ?? '') as unknown as Time
+          : toTime(activePrices[endBarIdx]?.ts ?? activePrices.at(-1)?.ts ?? '');
         const trendSeries = chart.addLineSeries({
           color: '#facc15', lineWidth: 2 as const, lastValueVisible: false, priceLineVisible: false,
         });
@@ -970,14 +984,18 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
 
       // Trendline — 2 clicks.
       if (drawPickState === 'picking-start') {
-        drawStartRef.current = { idx, price };
+        // BUG-TRENDLINE-STALEBARINDEX: capture the real bar timestamp alongside the raw
+        // index — the timestamp is what survives a later timeframe switch; the index alone
+        // does not (see chartDrawings.ts's TrendlineDrawing docstring for the full picture).
+        drawStartRef.current = { idx, price, ts: activePrices[idx]?.ts };
         setDrawPickState('picking-end');
       } else if (drawPickState === 'picking-end') {
-        const start = drawStartRef.current ?? { idx, price };
+        const start = drawStartRef.current ?? { idx, price, ts: activePrices[idx]?.ts };
         const next = addDrawing(symbol, {
           id: nextDrawingId(), type: 'trendline',
           startIdx: start.idx, startPrice: start.price,
           endIdx: idx, endPrice: price,
+          startTs: start.ts, endTs: activePrices[idx]?.ts,
         });
         setDrawings(next);
         setDrawPickState('idle');
