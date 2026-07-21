@@ -272,9 +272,8 @@ def check_hard_rejects(
     # self-sufficient for callers other than paper_trading_engine (e.g. decide.tsx).
     if symbol and style:
         try:
-            import redis as _redis_lib
-            from common.config import get_settings as _gs_hr
-            _gate_redis = _redis_lib.Redis.from_url(_gs_hr().redis_url, decode_responses=True)
+            from common.redis_client import get_redis as _get_pool_redis
+            _gate_redis = _get_pool_redis()
             _cgval = _gate_redis.get(f"conv_gate:{symbol}:{style}")
             if _cgval:
                 _cgdata = json.loads(_cgval)

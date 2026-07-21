@@ -2212,9 +2212,8 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             # that's a separate, larger, more consequential decision than this fix.
             _stale_count = 0
             try:
-                import redis as _redis_lib
-                from common.config import get_settings as _gs_stale
-                _stale_redis = _redis_lib.Redis.from_url(_gs_stale().redis_url, decode_responses=True)
+                from common.redis_client import get_redis as _get_pool_redis
+                _stale_redis = _get_pool_redis()
                 _stale_key = f"stockai:monitor_stale_price:{trade.id}"
                 _stale_count = int(_stale_redis.incr(_stale_key))
                 _stale_redis.expire(_stale_key, 3600)  # 1h — well past any real multi-cycle gap
@@ -2236,11 +2235,8 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             # single missed tick followed by a healthy cycle doesn't carry a false streak
             # into a LATER, unrelated gap.
             try:
-                import redis as _redis_lib
-                from common.config import get_settings as _gs_stale
-                _redis_lib.Redis.from_url(_gs_stale().redis_url, decode_responses=True).delete(
-                    f"stockai:monitor_stale_price:{trade.id}"
-                )
+                from common.redis_client import get_redis as _get_pool_redis
+                _get_pool_redis().delete(f"stockai:monitor_stale_price:{trade.id}")
             except Exception:
                 pass
 
@@ -3564,9 +3560,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         _regime_suspend_days = int(cfg.get("regime_suspension_days", 3))
         if _regime_suspend_days > 0:
             try:
-                import redis as _redis_t210
-                from common.config import get_settings as _gs_t210
-                _t210_redis = _redis_t210.Redis.from_url(_gs_t210().redis_url, decode_responses=True)
+                from common.redis_client import get_redis as _get_pool_redis
+                _t210_redis = _get_pool_redis()
                 _today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 _regime_key = f"paper:regime_daily:{portfolio.id}"
                 # Store today's state (date-keyed; only writes once per day via NX)
@@ -4276,10 +4271,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         # Uses the existing conv_gate:{symbol}:{style} Redis key (1-day TTL).
         # No gate key = gate not yet run (allow entry; first BUY before next alert cycle).
         try:
-            import redis as _redis_lib
-            from common.config import get_settings as _gs_gate
-            _gate_settings = _gs_gate()
-            _gate_redis = _redis_lib.Redis.from_url(_gate_settings.redis_url, decode_responses=True)
+            from common.redis_client import get_redis as _get_pool_redis
+            _gate_redis = _get_pool_redis()
             _style = style
             _cgval = _gate_redis.get(f"conv_gate:{stock.symbol}:{_style}")
             if _cgval:

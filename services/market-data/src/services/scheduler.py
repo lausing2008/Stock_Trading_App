@@ -95,7 +95,6 @@ from ..api.routes import refresh_live_price_cache, refresh_avg_volume_cache, _AV
 log = get_logger("scheduler")
 _settings = get_settings()
 _scheduler: BackgroundScheduler | None = None
-_redis: redis_lib.Redis | None = None
 
 # Cache a service-to-service JWT so scheduler can call auth-protected internal endpoints.
 _service_token_cache: str | None = None
@@ -126,10 +125,8 @@ def _service_token() -> str:
 
 
 def _get_redis() -> redis_lib.Redis:
-    global _redis
-    if _redis is None:
-        _redis = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
-    return _redis
+    from common.redis_client import get_redis as _get_pool_redis
+    return _get_pool_redis()
 
 
 def _record_job_status(job_name: str, status: str, duration_s: float, error: str | None = None) -> None:
@@ -3629,7 +3626,8 @@ def _check_short_intraday_triggers(market: str) -> None:
             return
 
     try:
-        r = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        from common.redis_client import get_redis as _get_pool_redis
+        r = _get_pool_redis()
     except Exception:
         return
 

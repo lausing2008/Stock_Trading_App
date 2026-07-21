@@ -49,13 +49,10 @@ log = get_logger("routes")
 router = APIRouter(prefix="/stocks", tags=["stocks"])
 
 _settings = get_settings()
-_redis: redis_lib.Redis | None = None
 
 def _get_redis() -> redis_lib.Redis:
-    global _redis
-    if _redis is None:
-        _redis = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
-    return _redis
+    from common.redis_client import get_redis as _get_pool_redis
+    return _get_pool_redis()
 
 _LIVE_KEY = "stockai:live_prices"
 _LIVE_TTL = 90  # seconds — refreshed every 1 min by scheduler; 90s gives a 30s buffer

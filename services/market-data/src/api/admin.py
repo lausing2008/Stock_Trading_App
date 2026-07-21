@@ -55,7 +55,8 @@ _REDIS_DEEPSEEK_MODEL   = "stockai:admin:deepseek_model"
 _REDIS_BROKER_ENABLED   = "stockai:admin:feature:broker_enabled"
 
 def _get_redis():
-    return redis_lib.from_url(_settings.redis_url, decode_responses=True)
+    from common.redis_client import get_redis as _get_pool_redis
+    return _get_pool_redis()
 
 _EXCHANGE_MAP: dict[str, Exchange] = {
     "NMS": Exchange.NASDAQ, "NGM": Exchange.NASDAQ, "NCM": Exchange.NASDAQ,

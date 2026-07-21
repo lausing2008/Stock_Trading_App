@@ -5294,3 +5294,115 @@ docker exec stockai-signal-engine-1 curl -s 'http://localhost:8005/watchdog_self
 Should return `by_style` with `n_tighten_actions`/`n_relax_actions` per horizon — likely all
 zero for a while, since it depends on `backfill_realized_ev()` having already found and
 populated enough aged, promoted watchdog rows.
+
+---
+
+## Full-Codebase Audit — Duplicate Code / Single-Source-of-Truth (Phase 1: Redis Connections, 2026-07-20)
+
+**Ask**: "everything should be reused for the same purpose... the AI assistant key should be
+read from one place and used by every single module... do a deep full audit on all the
+modules and see if they are wired to the right component, using the same source of truth."
+Phased into 3 workflow runs to avoid hitting a single-run execution limit. Phase 1 (this
+entry) covered Redis connection construction + the Claude API key fallback path across all 11
+services, using a multi-agent workflow: one discovery agent per service, a synthesis pass, then
+an adversarial verify pass on every candidate "divergence" (a dedicated refute-agent per
+finding) before anything was reported as real.
+
+**What was already correctly centralized (audited, zero divergences found)**: JWT secret
+(`get_settings().jwt_secret` from `shared/common/config.py` — every service reads the exact
+same field, no service has its own copy) and DB session construction (`shared/db/session.py`'s
+sole `create_engine()`/`sessionmaker()`, re-exported via `shared/db/__init__.py` — no service
+constructs its own engine). These were checked, not assumed.
+
+**What was found divergent**: `shared/common/redis_client.py`'s `get_redis()` — a pooled
+(`ConnectionPool`, max 20 connections, `socket_connect_timeout=2`, `socket_timeout=5`,
+`retry_on_timeout=True`) helper explicitly built to replace raw `redis.from_url()`/
+`redis.Redis.from_url()` calls — had been adopted by essentially only ONE file
+(`services/market-data/src/api/auth.py`) before this fix. Every other Redis-touching module
+across all services was constructing its own fresh, unpooled client per call or per
+module-level singleton, each reading the same `settings.redis_url` but never sharing a
+connection pool with any sibling module in the same process.
+
+**Fixed this pass (market-data + decision-engine — the two highest-value, cheapest-to-fix
+services per the audit's own recommended order)**:
+- `services/market-data/src/services/paper_trading_engine.py` — 4 sites: `_monitor_positions()`'s
+  staleness-tracking construction + its paired `.delete()` call, the conviction-gate check's
+  `_gate_redis`, and a T210 regime-suspension-day `_t210_redis` construction (found during
+  review, not in the audit's original per-file list, fixed for consistency).
+- `services/market-data/src/services/scheduler.py` — the module-level `_get_redis()` singleton
+  (removed the now-dead `_redis: redis_lib.Redis | None = None` global) + one inline
+  construction inside a market-hours-gated function.
+- `services/market-data/src/api/routes.py` — the module-level `_get_redis()` singleton.
+- `services/market-data/src/api/admin.py` — the "worst variant" per the audit (constructed a
+  brand-new client on every single call, no caching at all).
+- `services/market-data/src/api/news.py` — the `_get_redis()` singleton, AND a separate
+  single-source-of-truth fix: the Claude-key fallback-of-last-resort was
+  `os.getenv("ANTHROPIC_API_KEY", "")` — the only site in the entire repo reading that env var
+  (nothing ever sets it in any container) — changed to `getattr(_settings, "claude_api_key", "")`
+  matching `llm_scorer.py`/`risk_agent.py`/`macro_reaction.py`'s existing convention of falling
+  back to the Redis-backed admin setting via `_settings`, not a phantom env var. Removed the
+  now-fully-unused `import os`.
+- `services/decision-engine/src/api/llm_scorer.py` and `risk_agent.py` — both had their own
+  private `_redis_client()` helper doing `redis.Redis.from_url(get_settings().redis_url, ...)`
+  inline; both now delegate to `common.redis_client.get_redis()`. Removed the now-unused
+  `import redis as _redis_lib` from both files.
+- `services/decision-engine/src/api/core/hard_rejects.py` — the conviction-gate check's inline
+  `redis.Redis.from_url(...)` construction.
+
+**Confirmed REFUTED, deliberately left alone** (re-checked the raw verify-agent reasoning
+directly, not just the synthesis summary, before accepting the refutation):
+`services/market-data/src/api/paper_portfolio.py:1152` (`list_portfolios()`) and
+`services/market-data/src/services/ingestion.py:224` (`_bust_live_price_cache()`) — both
+confirmed to match that same file's own DOMINANT local convention rather than deviating from
+it; "fix everything" would have meant introducing a NEW inconsistency (matching the
+audit-recommended pattern in a file that already has an established different-but-consistent
+one), not removing one.
+
+**Deliberately deferred, not silently dropped**: signal-engine, research-engine, and
+ml-prediction still have their own unpooled Redis-construction sites — scoped out of this pass
+per an explicit "you decide the scope" instruction, choosing the 2 highest-value/cheapest
+services now over a full 5-service sweep that risked not finishing. Phase 2 (duplicated
+business logic sweep) and Phase 3 (cross-service wiring confirmation) of the original 3-phase
+audit plan have not been run.
+
+**A real test-coupling gotcha hit and fixed while updating tests for this refactor** — worth
+its own note since it's a genuinely non-obvious Python behavior, not specific to this repo:
+`services/decision-engine/tests/test_hard_rejects.py` (and `test_risk_agent.py`,
+`test_aggregator.py`, `test_fetch_signal.py`, `test_regime.py`) all stub the Docker-only
+`common` package as a bare `sys.modules.setdefault("common", MagicMock())` (no real `common`
+package is installed in this local dev/test environment). Once `hard_rejects.py` was changed
+to do `from common.redis_client import get_redis`, tests needed to mock that new import path —
+but `import common.redis_client as X` against a `MagicMock`-stubbed PARENT package does NOT
+resolve via the `sys.modules["common.redis_client"]` entry a test registers up front; instead,
+each `import common.redis_client` statement auto-vivifies a brand-NEW, distinct child mock via
+attribute access on the parent mock, different from whatever was pre-registered in
+`sys.modules`. A test that does `monkeypatch.setattr(<freshly-imported-mock>, "get_redis", ...)`
+silently patches a mock object neither the test's own later assertions nor the production
+code's own local import will ever see again — `hard_rejects.py`'s real
+`from common.redis_client import get_redis` call resolves to yet another fresh child mock,
+untouched by the patch, and falls through to the function's own `except Exception: pass`
+(since calling an unpatched `MagicMock()` result as if it were real Redis produces a
+`TypeError` deep inside `json.loads()`, not an import error) — producing a silently-wrong
+`result=None` for a reason completely different from what the test intended to verify.
+**Fix**: patch `sys.modules["common.redis_client"]` itself (the dict entry, not a freshly
+re-imported name) — that's the one object every `import common.redis_client` statement AND
+every `from common.redis_client import X` statement in the same process actually shares.
+
+**What to check if a similar test-mocking gotcha is suspected in another service's test
+suite**: any test file that stubs a Docker-only package as `sys.modules.setdefault("<pkg>",
+MagicMock())` and then separately does `import <pkg>.<submodule> as X` to monkeypatch an
+attribute — confirm `id(X) == id(sys.modules["<pkg>.<submodule>"])` before trusting the patch
+takes effect; if they differ, patch via the `sys.modules` dict key directly instead.
+
+**Verification**: full market-data suite (344 tests) and decision-engine suite (113 tests)
+green after every file change; frontend typecheck clean (no frontend logic touched by this
+fix — the `/learn` page and nav change below are unrelated, from the same session).
+
+**What to check if a Redis-pooling regression is suspected**:
+```bash
+grep -rn "redis_lib.Redis.from_url\|redis.Redis.from_url\|redis\.from_url" \
+  services/market-data/src services/decision-engine/src
+# Should return nothing for the files listed above as fixed. signal-engine/research-engine/
+# ml-prediction WILL still show matches — that's the documented, deliberate Phase-2+ deferral,
+# not a missed fix.
+```

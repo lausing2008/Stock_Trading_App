@@ -21,6 +21,7 @@ import pytest
 
 sys.modules.setdefault("common", MagicMock())
 sys.modules.setdefault("common.config", MagicMock())
+sys.modules.setdefault("common.redis_client", MagicMock())
 
 from src.api.core import hard_rejects as hr  # noqa: E402
 
@@ -475,11 +476,13 @@ class _FakeRedisClient:
 
 
 def _mock_conv_gate_redis(monkeypatch, value: str | None):
-    import redis as _redis_lib
-    monkeypatch.setattr(
-        _redis_lib.Redis, "from_url",
-        classmethod(lambda cls, *a, **kw: _FakeRedisClient(value)),
-    )
+    # AUD-REDISAUDIT: `common` is stubbed as a bare MagicMock() above, so `import
+    # common.redis_client as X` auto-vivifies a NEW child mock on the parent each time (distinct
+    # from the sys.modules["common.redis_client"] entry registered above) — monkeypatching that
+    # fresh import binding silently does not affect what hard_rejects.py's own local
+    # `from common.redis_client import get_redis` call resolves. Patching the sys.modules entry
+    # directly is the one mutation both sides actually observe.
+    monkeypatch.setattr(sys.modules["common.redis_client"], "get_redis", lambda: _FakeRedisClient(value))
 
 
 def test_conviction_gate_failed_blocks_entry(monkeypatch):
@@ -514,8 +517,10 @@ def test_conviction_gate_skipped_when_symbol_or_style_missing(monkeypatch):
     except-Exception that handles genuine Redis failures — so removing the `if symbol and
     style:` guard entirely still produced result=None, just via the exception path instead of
     the intended skip path, and this test could not tell the difference. A call-counting mock
-    makes the two paths distinguishable."""
-    import redis as _redis_lib
+    makes the two paths distinguishable. AUD-REDISAUDIT: hard_rejects.py now calls
+    common.redis_client.get_redis() (the shared connection-pool helper) instead of
+    redis.Redis.from_url() directly — the mock target moved accordingly, the property under
+    test (zero Redis calls without symbol/style) is unchanged."""
     call_count = {"n": 0}
 
     class _TrackedRedis:
@@ -523,7 +528,7 @@ def test_conviction_gate_skipped_when_symbol_or_style_missing(monkeypatch):
             call_count["n"] += 1
             return None
 
-    monkeypatch.setattr(_redis_lib.Redis, "from_url", classmethod(lambda cls, *a, **kw: _TrackedRedis()))
+    monkeypatch.setattr(sys.modules["common.redis_client"], "get_redis", lambda: _TrackedRedis())
     result = hr.check_hard_rejects(**_base_kwargs(symbol=None, style=None))
     assert result is None
     assert call_count["n"] == 0, "conviction gate must not attempt a Redis lookup without symbol/style"
@@ -532,13 +537,11 @@ def test_conviction_gate_skipped_when_symbol_or_style_missing(monkeypatch):
 def test_conviction_gate_redis_error_fails_open(monkeypatch):
     """A Redis connection failure must allow entry, not block it — matches every other
     fail-open gate in this file (tz lookup failures, DB query failures for macro blackout)."""
-    import redis as _redis_lib
-
     class _BrokenRedis:
         def get(self, key):
             raise ConnectionError("redis unavailable")
 
-    monkeypatch.setattr(_redis_lib.Redis, "from_url", classmethod(lambda cls, *a, **kw: _BrokenRedis()))
+    monkeypatch.setattr(sys.modules["common.redis_client"], "get_redis", lambda: _BrokenRedis())
     result = hr.check_hard_rejects(**_base_kwargs(symbol="AAPL", style="SWING"))
     assert result is None
 
@@ -547,8 +550,7 @@ def test_conviction_gate_ignores_non_buy_signal_in_cached_data():
     """A cached gate entry for a SELL (or any non-BUY) signal must never block a BUY
     evaluation — the gate only blocks when the CACHED signal itself was a failed BUY."""
     def _mock(monkeypatch, value):
-        import redis as _redis_lib
-        monkeypatch.setattr(_redis_lib.Redis, "from_url", classmethod(lambda cls, *a, **kw: _FakeRedisClient(value)))
+        monkeypatch.setattr(sys.modules["common.redis_client"], "get_redis", lambda: _FakeRedisClient(value))
     import pytest as _pytest
     mp = _pytest.MonkeyPatch()
     try:

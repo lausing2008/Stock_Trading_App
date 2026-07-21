@@ -248,35 +248,40 @@ def test_market_pulse_label_boundaries():
         assert result.label == expected_label, f"score={score} expected {expected_label}, got {result.label}"
 
 
-# ── _get_claude_key() — Redis-first, env-var-fallback (matches llm_scorer.py's pattern) ──
+# ── _get_claude_key() — Redis-first, settings-fallback (matches llm_scorer.py's pattern) ──
+# AUD-REDISAUDIT-CLAUDEKEY-FALLBACK: the fallback used to be a bare os.getenv("ANTHROPIC_API_KEY")
+# — the only site in the repo referencing that env var — now matches every sibling service's
+# own convention of falling back to a settings attribute (getattr(_settings, "claude_api_key",
+# "")) instead. Tests patch news._settings.claude_api_key rather than a removed _ANTHROPIC_KEY
+# module constant.
 
-def test_get_claude_key_prefers_redis_over_env_var():
+def test_get_claude_key_prefers_redis_over_settings_fallback():
     fake_redis = _FakeRedis()
     fake_redis.store[news._REDIS_CLAUDE_KEY] = "redis-key"
     with patch.object(news, "_get_redis", return_value=fake_redis), \
-         patch.object(news, "_ANTHROPIC_KEY", "env-key"):
+         patch.object(news._settings, "claude_api_key", "settings-key", create=True):
         assert news._get_claude_key() == "redis-key"
 
 
-def test_get_claude_key_falls_back_to_env_var_when_redis_empty():
+def test_get_claude_key_falls_back_to_settings_when_redis_empty():
     fake_redis = _FakeRedis()  # no key set
     with patch.object(news, "_get_redis", return_value=fake_redis), \
-         patch.object(news, "_ANTHROPIC_KEY", "env-key"):
-        assert news._get_claude_key() == "env-key"
+         patch.object(news._settings, "claude_api_key", "settings-key", create=True):
+        assert news._get_claude_key() == "settings-key"
 
 
-def test_get_claude_key_falls_back_to_env_var_on_redis_error():
+def test_get_claude_key_falls_back_to_settings_on_redis_error():
     class _BrokenRedis:
         def get(self, key):
             raise ConnectionError("redis unavailable")
     with patch.object(news, "_get_redis", return_value=_BrokenRedis()), \
-         patch.object(news, "_ANTHROPIC_KEY", "env-key"):
-        assert news._get_claude_key() == "env-key"
+         patch.object(news._settings, "claude_api_key", "settings-key", create=True):
+        assert news._get_claude_key() == "settings-key"
 
 
 def test_get_claude_key_ignores_whitespace_only_redis_value():
     fake_redis = _FakeRedis()
     fake_redis.store[news._REDIS_CLAUDE_KEY] = "   "
     with patch.object(news, "_get_redis", return_value=fake_redis), \
-         patch.object(news, "_ANTHROPIC_KEY", "env-key"):
-        assert news._get_claude_key() == "env-key"
+         patch.object(news._settings, "claude_api_key", "settings-key", create=True):
+        assert news._get_claude_key() == "settings-key"

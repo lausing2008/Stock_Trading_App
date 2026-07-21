@@ -26,7 +26,6 @@ import re
 from datetime import datetime, timezone
 
 import httpx
-import redis as _redis_lib
 
 log = logging.getLogger("de.risk_agent")
 
@@ -49,8 +48,7 @@ Identify at least 3 and at most 8 risks. If you genuinely lack any basis for a c
 
 def _get_api_key(cfg: dict) -> str:
     try:
-        from common.config import get_settings
-        r = _redis_lib.Redis.from_url(get_settings().redis_url, decode_responses=True)
+        r = _redis_client()
         key = r.get(_REDIS_CLAUDE_KEY) or ""
         if key.strip():
             return key.strip()
@@ -60,8 +58,8 @@ def _get_api_key(cfg: dict) -> str:
 
 
 def _redis_client():
-    from common.config import get_settings
-    return _redis_lib.Redis.from_url(get_settings().redis_url, decode_responses=True)
+    from common.redis_client import get_redis as _get_pool_redis
+    return _get_pool_redis()
 
 
 def _cache_key(symbol: str, style: str, sig_ts: str | None) -> str:

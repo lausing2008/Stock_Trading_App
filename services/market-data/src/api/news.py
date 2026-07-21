@@ -17,7 +17,6 @@ Sentiment:
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 import urllib.parse
@@ -73,22 +72,17 @@ _analyzer.lexicon.update({
 })
 
 # ── Claude configuration (optional — falls back to VADER if key absent) ───────
-# ANTHROPIC_API_KEY env var is a last-resort fallback only — the primary source is the
-# same Redis key every other LLM feature in this app reads (set via the admin Settings
-# page), matching llm_scorer.py/risk_agent.py's established _get_api_key() pattern. A bare
-# env-var-only lookup here meant this feature silently fell back to VADER even with a key
-# configured in Settings, since nothing writes ANTHROPIC_API_KEY into this container's env.
+# Primary source is the same Redis key every other LLM feature in this app reads (set via
+# the admin Settings page), matching llm_scorer.py/risk_agent.py's established
+# _get_api_key() pattern. AUD-REDISAUDIT-CLAUDEKEY-FALLBACK: the last-resort fallback used
+# to be a bare os.getenv("ANTHROPIC_API_KEY") — the only site in the repo referencing that
+# env var, which nothing ever sets — now matches every sibling service's own fallback
+# convention (getattr(_settings, "claude_api_key", "")) instead.
 _REDIS_CLAUDE_KEY = "stockai:admin:claude_api_key"
-_ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-
-_redis: redis_lib.Redis | None = None
-
 
 def _get_redis() -> redis_lib.Redis:
-    global _redis
-    if _redis is None:
-        _redis = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
-    return _redis
+    from common.redis_client import get_redis as _get_pool_redis
+    return _get_pool_redis()
 
 
 def _get_claude_key() -> str:
@@ -98,7 +92,14 @@ def _get_claude_key() -> str:
             return key.strip()
     except Exception:
         pass
-    return _ANTHROPIC_KEY
+    # AUD-REDISAUDIT-CLAUDEKEY-FALLBACK: this used to be the only site in the repo still
+    # referencing a bare os.getenv("ANTHROPIC_API_KEY") fallback — every sibling service
+    # (llm_scorer.py, risk_agent.py, macro_reaction.py) falls back to a cfg dict value or
+    # getattr(_settings, "claude_api_key", "") instead. Nothing in this app ever sets
+    # ANTHROPIC_API_KEY as a real env var, so this fallback was already permanently inert in
+    # practice — changed for consistency with the established sibling pattern, not because the
+    # old fallback was reachable in production.
+    return getattr(_settings, "claude_api_key", "") or ""
 
 
 def _strip_markdown_fence(text: str) -> str:
