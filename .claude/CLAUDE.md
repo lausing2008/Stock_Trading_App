@@ -5160,3 +5160,80 @@ real red flag worth investigating directly — the 6 tests above prove the featu
 identical, but a live retrain comparison was not additionally run as part of this fix (the
 numerical-parity tests were judged sufficient evidence, since they test the actual property
 the fix depends on using the real function, not a mock).
+
+---
+
+## Recurring Issue: ml-prediction Missing `redis` — jose-Missing Bug Class, New Service (Found + Fixed 2026-07-21)
+
+**Symptom:** while deploying an unrelated fix, `stockai-ml-prediction-1`'s logs showed
+`macro_features.redis_save_failed` / `ModuleNotFoundError: No module named 'redis'` firing
+continuously (1787 times in 2 hours before being caught) — a real, pre-existing, unrelated
+bug surfaced only because this container happened to be restarted for a different reason.
+
+**Root cause:** identical to the jose-missing-from-container pattern already documented
+multiple times in this file for signal-engine/ml-prediction/ranking-engine — `redis==5.0.8`
+is correctly pinned in `services/ml-prediction/requirements.txt`, but the currently-running
+image predates that line being added, so the package was never actually installed in the
+running container. Confirmed fail-open (this specific call site is a best-effort Redis write
+of meta-model promotion status, wrapped in its own try/except per its own docstring — never
+blocks the actual retrain), so this was silent/low-severity, not a live-trading risk — but
+still a real, continuously-firing gap worth fixing.
+
+**Fix applied:**
+```bash
+docker exec stockai-ml-prediction-1 pip install 'redis==5.0.8'  # immediate
+docker compose -f docker/docker-compose.yml build ml-prediction  # durable — bakes it into the image
+docker compose -f docker/docker-compose.yml up -d ml-prediction
+```
+Verified both the immediate `pip install` and the subsequent real rebuild — `from redis import
+Redis` succeeds and zero `redis_save_failed` log lines appeared in the minutes following
+either step.
+
+**What to check if this recurs (or a similar dependency gap is suspected in any service)**:
+```bash
+docker exec stockai-<service>-1 python3 -c 'import <package>; print("OK")'
+# If it fails despite the package being in requirements.txt, the image predates that line —
+# pip install for an immediate fix, then a real `docker compose build <service>` to persist it.
+```
+
+---
+
+## Feature Reference: RK-D1-SCREENER-FULL-SCAN — Screener Signal Query No Longer a Full Table Scan (Fixed 2026-07-21)
+
+**The gap**: `screen()`'s (`services/ranking-engine/src/api/routes.py`) signal-lookup
+subquery (`sig_subq`) aggregated `max(Signal.ts) GROUP BY stock_id` across the **entire**
+`Signal` table (filtered only by `horizon == "SWING"`, no `stock_id` restriction at all) to
+build `sig_map` — even though the main screener query (`rows`, already filtered by
+market/sector/score/etc.) only ever looks up a small, bounded subset of `stock_id`s from that
+map. As the `signals` table grows (200+ stocks × 4 horizons × 3 years of history), this
+became an unbounded full-table aggregation on every screener request.
+
+**Fix**: scope both the subquery and the outer signal query to
+`Signal.stock_id.in_(_screen_stock_ids)`, where `_screen_stock_ids` is built from the
+already-filtered `rows` result. A no-op change in behavior — `sig_map`'s contents are
+identical either way, since anything outside `rows` was never actually read from it — purely
+a performance fix. An `if _screen_stock_ids:` guard also skips the signal queries entirely
+when the screener result is empty (no stocks matched the filters), rather than running a
+pointless `Signal.stock_id.in_([])` query.
+
+**Tests**: `services/ranking-engine/tests/test_screener_signal_scoping.py`, 4 cases —
+source-text regression checks (matching `test_rank_symbol_market_scoping.py`'s established
+proportionate-testing precedent, since `screen()` itself has a large, multi-branch body with
+heavy DB/session dependencies disproportionate to this fix's actual scope). Confirms:
+`_screen_stock_ids` is built from `rows` AFTER it's fetched, both signal queries include the
+`stock_id.in_()` filter, the empty-list guard correctly skips the signal queries, and the
+pre-existing `horizon == "SWING"` pin survived the change.
+
+**Adversarial verification**: 2 sabotage cycles, both caught and reverted — removing the
+`stock_id.in_()` filter from both queries, and removing the empty-list guard entirely.
+
+Full ranking-engine suite green (24 passed + 1 pre-existing unrelated failure in
+`test_kscore.py`, confirmed via git-stash earlier this session to already fail identically
+before any recent changes); frontend typecheck clean.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-ranking-engine-1 grep -n "_screen_stock_ids" /app/src/api/routes.py
+```
+Should show the variable built right after `rows = session.execute(stmt).all()`, then used in
+both signal-query `.where(...)` clauses.

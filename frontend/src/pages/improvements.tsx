@@ -11382,14 +11382,14 @@ const ITEMS: Item[] = [
   },
   {
     id: 'RK-D1-SCREENER-FULL-SCAN',
-    tier: 143 as const, severity: 'medium',
+    tier: 143 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/ranking-engine/src/api/routes.py:447',
     effort: '30m',
     impact: 'Medium — screen() sig_subq has no WHERE clause on stock_ids from the screener result set. As the signals table grows it becomes a full-table aggregation on every screener request. Response times degrade from ms to seconds with no index benefit.',
-    title: 'RK-D1 (deferred): Screener signal query is a full signals table scan — no stock_id pre-filter',
+    title: 'RK-D1: Screener signal query is a full signals table scan — no stock_id pre-filter',
     what: 'The sig_subq aggregates max(Signal.ts) GROUP BY stock_id across all signals. With 200+ stocks × 4 horizons × 3 years of signals this table grows unbounded and the screener query gets slower over time.',
-    fix: 'Deferred — pre-filter sig_subq with .where(Signal.stock_id.in_([r[0].id for r in rows])) using the already-fetched screener rows.',
-    implementedNote: 'Deferred — simple optimization, low urgency while signals table is small.',
+    fix: 'Pre-filter sig_subq with .where(Signal.stock_id.in_([r[0].id for r in rows])) using the already-fetched screener rows.',
+    implementedNote: 'Done 2026-07-21. Exactly the deferred fix, applied as designed: `_screen_stock_ids = [stock.id for stock, _ranking in rows]` (built from the already market/sector/score-filtered `rows`), then both the sig_subq and the outer signal query add `Signal.stock_id.in_(_screen_stock_ids)` alongside the pre-existing `Signal.horizon == "SWING"` filter — turning an unbounded full-Signal-table aggregation into a bounded lookup over only the stocks the screener actually matched. A no-op change in behavior (sig_map\'s contents are identical either way, since anything outside `rows` was never read from it anyway) — purely a performance fix. Also added an `if _screen_stock_ids:` guard so an empty screener result (no stocks matched the filters) skips the signal queries entirely rather than running `Signal.stock_id.in_([])` for no reason. New services/ranking-engine/tests/test_screener_signal_scoping.py (4 cases, source-text regression checks matching test_rank_symbol_market_scoping.py\'s established proportionate-testing precedent — screen() itself has a large, multi-branch body with heavy DB/session dependencies disproportionate to this fix\'s actual scope of one added filter + an empty-list guard): `_screen_stock_ids` is built from `rows` AFTER it\'s fetched, both signal queries include the `stock_id.in_()` filter, the empty-list guard correctly skips the signal queries, and the pre-existing horizon==SWING pin survived the change. Adversarially verified 2 sabotage cycles, both caught and reverted: removing the `stock_id.in_()` filter from both queries, and removing the empty-list guard entirely. Full 25-test ranking-engine suite (24 passed + 1 pre-existing unrelated failure in test_kscore.py, confirmed via earlier git-stash testing this session to already fail identically before any of today\'s changes) green; frontend typecheck clean (no frontend files touched).',
   },
 
   // ── Tier 142 — Deep Audit: Technical Analysis Engine ─────────────────────────

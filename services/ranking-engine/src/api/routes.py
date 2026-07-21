@@ -511,21 +511,32 @@ def screen(
 
     rows = session.execute(stmt).all()
 
+    # RK-D1-SCREENER-FULL-SCAN: previously scanned the ENTIRE Signal table (filtered only by
+    # horizon == "SWING", no stock_id restriction) to build sig_map below, even though only
+    # the stock_ids already present in `rows` (already filtered by market/sector/score/etc.
+    # above) are ever looked up from it. Scoping to those stock_ids turns this into a bounded
+    # lookup instead of a full-table scan — a no-op change in behavior (sig_map's contents are
+    # identical either way, since anything outside `rows` was never read from it anyway).
+    _screen_stock_ids = [stock.id for stock, _ranking in rows]
+
     # Latest SWING signal per stock — pin to SWING so multiple horizons written in the
     # same second don't produce arbitrary signal values in the screener display.
-    sig_subq = (
-        select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
-        .where(Signal.horizon == "SWING")
-        .group_by(Signal.stock_id)
-        .subquery()
-    )
-    sig_rows = session.execute(
-        select(Signal.stock_id, Signal.signal, Signal.confidence, Signal.horizon)
-        .join(sig_subq,
-              (Signal.stock_id == sig_subq.c.stock_id)
-              & (Signal.ts == sig_subq.c.max_ts))
-        .where(Signal.horizon == "SWING")
-    ).all()
+    if _screen_stock_ids:
+        sig_subq = (
+            select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+            .where(Signal.horizon == "SWING", Signal.stock_id.in_(_screen_stock_ids))
+            .group_by(Signal.stock_id)
+            .subquery()
+        )
+        sig_rows = session.execute(
+            select(Signal.stock_id, Signal.signal, Signal.confidence, Signal.horizon)
+            .join(sig_subq,
+                  (Signal.stock_id == sig_subq.c.stock_id)
+                  & (Signal.ts == sig_subq.c.max_ts))
+            .where(Signal.horizon == "SWING", Signal.stock_id.in_(_screen_stock_ids))
+        ).all()
+    else:
+        sig_rows = []
     sig_map: dict[int, dict] = {
         r.stock_id: {"signal": r.signal.value, "confidence": float(r.confidence), "horizon": r.horizon.value}
         for r in sig_rows
