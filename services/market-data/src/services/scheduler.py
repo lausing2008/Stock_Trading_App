@@ -4183,24 +4183,51 @@ def send_morning_digest(markets: list | None = None) -> None:
             pass  # non-fatal — digest sends without performance section
 
         # ── Send one combined email per recipient ─────────────────────────────
+        # BUG-MORNINGDIGEST-SENDLOOP: this loop previously had the identical unguarded
+        # pattern already found and fixed in send_premarket_brief() (AUD256, 2026-07-20c) —
+        # no dedup (a restart within this job's own misfire-grace window could re-email
+        # every recipient a second time) and no per-recipient error isolation (a single
+        # bad send would propagate to the outer except, aborting the whole batch and
+        # silently skipping every recipient still left in the loop). Same fix pattern,
+        # ported directly: a per-(user, market, date) Redis dedup key set only after a
+        # genuinely successful send, and a dedicated try/except around just the send call.
+        market_key = "_".join(m.lower() for m in markets)
+        today_str = datetime.now(timezone.utc).date().isoformat()
+        _rc = _get_redis()
         sent = 0
+        errors = 0
         for user in users:
-            ok = send_morning_digest_email(
-                to=user.email,
-                date_str=date_str,
-                regime=regime,
-                market_sections=market_sections,
-                open_positions=open_positions_all,
-                pattern_alerts=pattern_alerts,
-                signal_performance=signal_performance,
-            )
+            redis_key = f"stockai:morning_digest:{user.id}:{market_key}:{today_str}"
+            try:
+                if _rc and _rc.exists(redis_key):
+                    continue
+            except Exception:
+                pass
+            try:
+                ok = send_morning_digest_email(
+                    to=user.email,
+                    date_str=date_str,
+                    regime=regime,
+                    market_sections=market_sections,
+                    open_positions=open_positions_all,
+                    pattern_alerts=pattern_alerts,
+                    signal_performance=signal_performance,
+                )
+            except Exception as _send_exc:
+                ok = False
+                errors += 1
+                log.warning("morning_digest.recipient_send_error", user=user.id, error=str(_send_exc))
             if ok:
                 sent += 1
+                try:
+                    _rc and _rc.setex(redis_key, 20 * 3600, "1")  # 20h TTL — one digest/user/market/day
+                except Exception:
+                    pass
 
         total_opps = sum(len(s["swing"]) + len(s["growth"]) for s in market_sections)
         _job_name = "morning_digest_" + "_".join(m.lower() for m in markets)
         _record_job_status(_job_name, "ok", time.monotonic() - _t0)
-        log.info("morning_digest.done", markets=markets, sent=sent, recipients=len(users),
+        log.info("morning_digest.done", markets=markets, sent=sent, errors=errors, recipients=len(users),
                  opportunities=total_opps, positions=len(open_positions_all))
 
     except Exception as exc:

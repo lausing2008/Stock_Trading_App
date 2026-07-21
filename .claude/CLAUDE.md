@@ -5036,3 +5036,52 @@ Should find a match confirming the fix compiled in. For the scroll-lock and bann
 fixes specifically, they're only observable by actually opening the drawer on a real
 phone-width viewport (or a browser's device-emulation mode) — there's no automated test
 covering the visual/interactive behavior itself.
+
+---
+
+## Recurring Issue: BUG-MORNINGDIGEST-SENDLOOP — Same Unguarded Send-Loop Bug, Different Job (Fixed 2026-07-21)
+
+**Symptom:** none reported yet — this was explicitly flagged as a known, same-class follow-up
+when `send_premarket_brief()`'s identical bug was fixed (AUD256, 2026-07-20c), and fixed
+proactively before it could produce a real incident.
+
+**Root cause:** `send_morning_digest()` (`services/market-data/src/services/scheduler.py`) had
+the exact same two gaps `send_premarket_brief()` already had: no dedup (a restart within this
+job's own misfire-grace window could re-email every recipient a second time) and no
+per-recipient error isolation (a single bad send would propagate to the outer
+`except Exception`, aborting the whole batch and silently skipping every recipient still left
+in the loop). `send_morning_digest()`'s audience is broader (all `User` rows with an email, not
+the `PriceAlert`-subscribed audience `send_premarket_brief()` uses) — same bug class, different
+recipient scope.
+
+**Fix applied:** ported the identical fix pattern already proven for the pre-market brief:
+a Redis dedup key scoped to `stockai:morning_digest:{user.id}:{market_key}:{date}` (20h TTL,
+set only after a genuinely successful send), and the send call wrapped in its own
+try/except that logs `morning_digest.recipient_send_error` and increments an `errors` counter
+instead of re-raising. The dedup key deliberately includes `market_key` — `send_morning_digest()`
+is called once per market (US and HK are separate invocations per its own docstring), so a
+US-market digest and an HK-market digest on the same day must not collide and suppress each
+other via a shared key.
+
+**Tests**: `services/market-data/tests/test_morning_digest_send_loop.py` (new, 5 cases),
+mirroring `test_premarket_brief.py`'s established source-text-extraction technique exactly
+(`scheduler.py` can't be imported directly in this test environment) — the dedup check happens
+before the send call, the dedup key is set only after a successful send, the send call has its
+own try/except distinct from the outer one, the per-recipient error is logged/counted without
+re-raising, and the dedup key is correctly scoped per-market.
+
+**Adversarial verification** — 2 sabotage cycles, both caught and reverted: removing the dedup
+check entirely, and removing the per-recipient try/except so a send exception would propagate
+unguarded.
+
+Full 344-test market-data suite (up from 339) and frontend typecheck green.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n 'stockai:morning_digest:' /app/src/services/scheduler.py
+docker exec stockai-redis-1 redis-cli keys 'stockai:morning_digest:*'
+```
+If a user reports getting the morning digest twice on the same day for the same market, check
+whether the job actually fired twice
+(`docker logs stockai-market-data-1 --since 24h | grep morning_digest`) — the dedup key should
+have prevented a second send within its 20h TTL.
