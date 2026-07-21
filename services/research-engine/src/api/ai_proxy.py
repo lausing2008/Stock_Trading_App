@@ -38,12 +38,14 @@ def _get_redis():
 
 
 def _admin_key(provider: str) -> str:
-    """Return the admin-stored fallback API key for provider, or ''."""
-    rkey = _REDIS_CLAUDE_KEY if provider == "claude" else _REDIS_DEEPSEEK_KEY
-    try:
-        return _get_redis().get(rkey) or ""
-    except Exception:
-        return ""
+    """Return the admin-stored fallback API key for provider, or ''.
+
+    AUD-DUPLOGIC: delegates to common.ai_keys.get_admin_ai_key() — one of 6 independent
+    copies of this same lookup that had accumulated across decision-engine/event-intelligence/
+    market-data/research-engine (see shared/common/ai_keys.py's own module docstring).
+    """
+    from common.ai_keys import get_admin_ai_key
+    return get_admin_ai_key(provider)
 
 
 def _admin_model(provider: str) -> str:

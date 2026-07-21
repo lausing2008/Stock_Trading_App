@@ -5813,3 +5813,105 @@ grep -rn "redis\.Redis\.from_url\|redis\.from_url\|redis_lib\.Redis\.from_url\|r
 If this grep ever returns a match again, it's either a genuine regression or a new site
 introduced since — there is no longer any "some services haven't been audited yet" excuse,
 since this pass covered literally all 11.
+
+---
+
+## Full-Codebase Audit — Duplicated Business Logic (2026-07-21)
+
+**Scope**: distinct from the Redis-connection-pooling audit (Phases 1-2 + the closing-the-loop
+pass) and the cross-service-wiring audit (Phase 3) — this pass looked for actual business logic
+(scoring formulas, thresholds, calculations) reimplemented independently in multiple services
+that should share one implementation. Two independent research passes surfaced ~10 candidates;
+the first fix tackled was the clearest, lowest-risk one.
+
+### Fixed — Claude/DeepSeek admin API key lookup: 6 independent copies consolidated to 1
+
+**The finding**: the exact same "read the admin-configured AI key from Redis" lookup had been
+independently written 6 times, in 2 services:
+- `services/decision-engine/src/api/llm_scorer.py::_get_api_key()` and
+  `risk_agent.py::_get_api_key()` — byte-for-byte copies of each other (one file's own comment
+  literally says "this module was built by copying that pattern").
+- `services/event-intelligence/src/services/macro_reaction.py::_api_key()` and
+  `services/market-data/src/api/news.py::_get_claude_key()` — a second near-identical pair.
+- `services/research-engine/src/api/routes.py::_get_admin_ai_key()` and
+  `ai_proxy.py::_admin_key()` — a third pair, these two supporting both `claude` and `deepseek`
+  providers via a `rkey` lookup, the other 4 hardcoded to Claude only.
+
+**Verified before consolidating (not assumed)**: read all 6 side by side to check whether they
+actually behaved differently before treating this as a safe drop-in fix. Superficially they
+looked different — some checked `.strip()` truthiness, some had a `cfg` dict fallback, some had
+a `getattr(_settings, "claude_api_key", "")` fallback, research-engine's two had a bare `""`
+fallback with no secondary check at all. But `shared/common/config.py`'s `Settings` class has
+**no** `claude_api_key`/`deepseek_api_key` field at all, and grepping every `cfg` dict
+constructed anywhere in the repo found none ever populates `claude_api_key` either — so **every
+one of those "different" fallback paths was already permanently dead in production**, and all 6
+copies reduced to the exact same real behavior: read Redis, or return `""`. This meant the
+consolidation was genuinely safe (no real behavioral divergence to reconcile), not just
+convenient.
+
+**Fix**: new `shared/common/ai_keys.py` — `get_admin_ai_key(provider: str = "claude") -> str`,
+the one real implementation (Redis lookup + `.strip()` + fail-open-to-`""`, supporting both
+`claude` and `deepseek` via a lookup dict). All 6 original functions now delegate to it as thin
+wrappers, keeping their own names/signatures/dead-fallback-paths intact (harmless, since those
+paths were already unreachable) so no call site anywhere else in either service needed to
+change.
+
+**A real test-mocking gotcha hit 3 times in a row this session, hit again here, fixed the same
+way each time**: `services/decision-engine/tests/test_risk_agent.py` constructs real `cfg`
+dicts with `claude_api_key` set and never mocks `_get_api_key` itself — so the real function
+body now executes and hits `from common.ai_keys import get_admin_ai_key`, which fails against
+the `MagicMock`-stubbed `common` package the same way `common.redis_client` did twice already
+in this audit. Fixed identically: `sys.modules.setdefault("common.ai_keys", _fake_ai_keys)`
+with `get_admin_ai_key` stubbed to return `""` (so the existing `cfg["claude_api_key"]`
+fallback path — what these tests actually mean to exercise — still engages, exactly as before).
+`services/market-data/tests/test_market_pulse.py` had the same issue from a different angle:
+its 4 `_get_claude_key()` tests patched `news._get_redis` directly, which the function no
+longer calls at all now that it delegates to the shared helper — updated to patch
+`sys.modules["common.ai_keys"].get_admin_ai_key` instead (added `"common.ai_keys"` to
+market-data's own `conftest.py` stub list). `test_risk_agent.py` (byte-for-byte copy source)
+and `test_macro_reaction.py` were both unaffected — they patch by function name
+(`_get_api_key`/`_api_key`), not internals.
+
+**Tests**: `services/decision-engine/tests/test_ai_keys.py` (9 new cases) — the shared
+helper's own real behavior: Redis-first, `.strip()`-normalizes whitespace-only values to `""`,
+claude/deepseek keys are independent, fail-open on a Redis exception, unknown provider strings
+degrade to the Claude key rather than raising. Adversarially verified: reverted the `.strip()`
+call and confirmed 2 tests failed correctly before restoring it.
+
+**Verification**: decision-engine (122 tests, up from 113), event-intelligence (159, unchanged
+— its coupled test was unaffected), market-data (371, unchanged count but 4 tests rewritten),
+research-engine (56 tests, 3 pre-existing unrelated `test_scoring.py` failures, confirmed via
+this same session's own earlier `git stash` check to pre-date any of this work) — all green
+modulo that one already-documented pre-existing gap.
+
+**Still open from this pass's scoping** (not yet fixed, documented for a future session):
+- Stop-loss/game-plan math computed independently in decision-engine's `aggregator.py`
+  (`_default_game_plan`), research-engine's `scoring.py` (`_position_size`, a genuinely
+  different formula — support-minus-ATR vs. ATR-off-price), and market-data's
+  `paper_trading_engine.py` (a third formula) — HIGHER risk to consolidate since it touches
+  live trading/research output directly; needs its own careful, dedicated pass.
+- Beta calculation: `market-data/api/paper_portfolio.py::_compute_alpha_beta()` (pure-Python,
+  fixed SPY benchmark, `None` fallback below the data floor) vs.
+  `portfolio-optimizer/api/risk.py::_beta()` (numpy, HK-aware SPY/HSI benchmark selection, `1.0`
+  fallback) — same formula, different fallback semantics and benchmark logic.
+- ADX/DI/DX reimplemented independently in `ranking-engine/scoring/kscore.py` vs.
+  `signal-engine/generators/signals.py` — currently agree, no shared function; signal-engine's
+  ATR is also not yet migrated to `shared/common/indicators.py`'s canonical `atr()` (ranking-
+  engine's already is — a partial T233-ARCH-INDICATOR-DEDUP regression).
+  `signal-engine/generators/signals.py::_sr_context()` also independently reimplements support/
+  resistance pivot detection rather than calling technical-analysis's canonical
+  `trendlines.py::_find_pivots()`/`detect_support_resistance()` — different window sizes
+  (60-bar/±3 vs. 90-bar/order=5), a real risk that signal-engine's breakout/at_support labeling
+  can disagree with the chart's official S/R levels the user sees on the same page.
+- A third, previously-undocumented portfolio-correlation implementation in
+  `market-data/services/paper_trading_engine.py` (direct-DB Pearson correlation) — deliberately
+  separate from the already-tracked `T233-ARCH-PORTFOLIO-CONSOLIDATE` pairing
+  (`portfolio-optimizer`'s HTTP-fetched `df.corr()` + Ledoit-Wolf) to avoid an HTTP round-trip
+  on the hottest capital-sensitive code path — a reasoned, intentional duplication, just never
+  captured in that tracker item's own scope. Worth a doc-only addition to that tracker entry,
+  not a code change.
+- Volume-profile/FVG/swing-pivot detection: Python-canonical (`technical-analysis/indicators/
+  trendlines.py`) vs. hand-ported TypeScript (`frontend/src/lib/swingPivots.ts`,
+  `fvgTradePlan.ts`, `volumeProfile.ts`) — already cross-checked at build time and covered by
+  parity tests (a known, accepted exception per this file's own prior notes), but structurally
+  still two independent implementations with no build-time guard against future drift.

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 _stubs = [
     # shared/ modules
     "structlog",
-    "common", "common.config", "common.logging",
+    "common", "common.config", "common.logging", "common.ai_keys",
     "db", "db.session",
     # DB / cache drivers
     "sqlalchemy", "sqlalchemy.orm", "sqlalchemy.dialects",

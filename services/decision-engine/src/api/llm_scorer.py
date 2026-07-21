@@ -35,13 +35,16 @@ reasoning must be one sentence, max 120 chars."""
 
 
 def _get_api_key(cfg: dict) -> str:
-    try:
-        r = _redis_client()
-        key = r.get(_REDIS_CLAUDE_KEY) or ""
-        if key.strip():
-            return key.strip()
-    except Exception:
-        pass
+    """AUD-DUPLOGIC: delegates to common.ai_keys.get_admin_ai_key() — this used to be one of
+    6 independent copies of the same Redis-key lookup across decision-engine/event-intelligence/
+    market-data/research-engine. cfg["claude_api_key"] is kept as a secondary fallback for
+    backward compatibility with any caller that does populate it, though in practice no config
+    dict in this codebase ever has — the shared helper's own Redis-or-empty-string behavior is
+    what every real call already reduced to."""
+    from common.ai_keys import get_admin_ai_key
+    key = get_admin_ai_key("claude")
+    if key:
+        return key
     return cfg.get("claude_api_key", "")
 
 

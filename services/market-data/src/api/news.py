@@ -86,19 +86,13 @@ def _get_redis() -> redis_lib.Redis:
 
 
 def _get_claude_key() -> str:
-    try:
-        key = _get_redis().get(_REDIS_CLAUDE_KEY) or ""
-        if key.strip():
-            return key.strip()
-    except Exception:
-        pass
-    # AUD-REDISAUDIT-CLAUDEKEY-FALLBACK: this used to be the only site in the repo still
-    # referencing a bare os.getenv("ANTHROPIC_API_KEY") fallback — every sibling service
-    # (llm_scorer.py, risk_agent.py, macro_reaction.py) falls back to a cfg dict value or
-    # getattr(_settings, "claude_api_key", "") instead. Nothing in this app ever sets
-    # ANTHROPIC_API_KEY as a real env var, so this fallback was already permanently inert in
-    # practice — changed for consistency with the established sibling pattern, not because the
-    # old fallback was reachable in production.
+    """AUD-DUPLOGIC: delegates to common.ai_keys.get_admin_ai_key() — one of 6 independent
+    copies of this same lookup that had accumulated across decision-engine/event-intelligence/
+    market-data/research-engine (see shared/common/ai_keys.py's own module docstring)."""
+    from common.ai_keys import get_admin_ai_key
+    key = get_admin_ai_key("claude")
+    if key:
+        return key
     return getattr(_settings, "claude_api_key", "") or ""
 
 

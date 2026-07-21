@@ -7,6 +7,7 @@ it can be imported directly. httpx/redis ARE stubbed as MagicMock by conftest.py
 below monkeypatch news._get_redis, news._google_news, and news._claude_market_themes directly
 at the call boundary rather than going through the stubbed httpx/redis clients.
 """
+import sys
 from unittest.mock import patch
 
 from src.api import news
@@ -248,40 +249,46 @@ def test_market_pulse_label_boundaries():
         assert result.label == expected_label, f"score={score} expected {expected_label}, got {result.label}"
 
 
-# ── _get_claude_key() — Redis-first, settings-fallback (matches llm_scorer.py's pattern) ──
-# AUD-REDISAUDIT-CLAUDEKEY-FALLBACK: the fallback used to be a bare os.getenv("ANTHROPIC_API_KEY")
-# — the only site in the repo referencing that env var — now matches every sibling service's
-# own convention of falling back to a settings attribute (getattr(_settings, "claude_api_key",
-# "")) instead. Tests patch news._settings.claude_api_key rather than a removed _ANTHROPIC_KEY
-# module constant.
+# ── _get_claude_key() — delegates to common.ai_keys.get_admin_ai_key() (AUD-DUPLOGIC) ──
+# _get_claude_key() used to read Redis directly via news._get_redis(); it now delegates to the
+# shared, consolidated common.ai_keys.get_admin_ai_key() (one implementation instead of 6 near-
+# copies across services). Tests patch sys.modules["common.ai_keys"].get_admin_ai_key directly
+# rather than news._get_redis — `common` is stubbed as a bare MagicMock() by conftest.py, and
+# news.py's `from common.ai_keys import get_admin_ai_key` is a LOCAL import inside the function
+# body, so patching a freshly re-imported name would silently miss the module the function
+# actually resolves (same gotcha already documented/fixed for test_hard_rejects.py and
+# test_promotion_history.py elsewhere in this audit — patch the sys.modules dict entry itself).
+
+def _mock_admin_ai_key(value_or_raiser):
+    sys.modules["common.ai_keys"].get_admin_ai_key = value_or_raiser
+
 
 def test_get_claude_key_prefers_redis_over_settings_fallback():
-    fake_redis = _FakeRedis()
-    fake_redis.store[news._REDIS_CLAUDE_KEY] = "redis-key"
-    with patch.object(news, "_get_redis", return_value=fake_redis), \
-         patch.object(news._settings, "claude_api_key", "settings-key", create=True):
+    _mock_admin_ai_key(lambda provider="claude": "redis-key")
+    with patch.object(news._settings, "claude_api_key", "settings-key", create=True):
         assert news._get_claude_key() == "redis-key"
 
 
 def test_get_claude_key_falls_back_to_settings_when_redis_empty():
-    fake_redis = _FakeRedis()  # no key set
-    with patch.object(news, "_get_redis", return_value=fake_redis), \
-         patch.object(news._settings, "claude_api_key", "settings-key", create=True):
+    _mock_admin_ai_key(lambda provider="claude": "")
+    with patch.object(news._settings, "claude_api_key", "settings-key", create=True):
         assert news._get_claude_key() == "settings-key"
 
 
 def test_get_claude_key_falls_back_to_settings_on_redis_error():
-    class _BrokenRedis:
-        def get(self, key):
-            raise ConnectionError("redis unavailable")
-    with patch.object(news, "_get_redis", return_value=_BrokenRedis()), \
-         patch.object(news._settings, "claude_api_key", "settings-key", create=True):
+    """common.ai_keys.get_admin_ai_key() itself is fail-open (never raises — a Redis error
+    inside it returns "" ), so this exercises _get_claude_key()'s OWN fallback for that same
+    empty-string case, matching the pre-consolidation test's original intent."""
+    _mock_admin_ai_key(lambda provider="claude": "")
+    with patch.object(news._settings, "claude_api_key", "settings-key", create=True):
         assert news._get_claude_key() == "settings-key"
 
 
 def test_get_claude_key_ignores_whitespace_only_redis_value():
-    fake_redis = _FakeRedis()
-    fake_redis.store[news._REDIS_CLAUDE_KEY] = "   "
-    with patch.object(news, "_get_redis", return_value=fake_redis), \
-         patch.object(news._settings, "claude_api_key", "settings-key", create=True):
+    """common.ai_keys.get_admin_ai_key() already normalizes whitespace-only Redis values to ""
+    internally (see shared/common/ai_keys.py's own test suite) — this confirms _get_claude_key()
+    correctly treats that "" as "no key" and falls through to its settings fallback, rather than
+    re-testing the whitespace-stripping itself (that's common.ai_keys' own responsibility now)."""
+    _mock_admin_ai_key(lambda provider="claude": "")
+    with patch.object(news._settings, "claude_api_key", "settings-key", create=True):
         assert news._get_claude_key() == "settings-key"

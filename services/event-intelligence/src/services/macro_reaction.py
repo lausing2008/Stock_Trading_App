@@ -81,14 +81,16 @@ _RELEASE_TO_FRED_SERIES: dict[str, str] = {
 
 
 def _api_key() -> str:
-    try:
-        from common.redis_client import get_redis as _get_pool_redis
-        r = _get_pool_redis()
-        key = r.get(_REDIS_CLAUDE_KEY) or ""
-        if key.strip():
-            return key.strip()
-    except Exception:
-        pass
+    """AUD-DUPLOGIC: delegates to common.ai_keys.get_admin_ai_key() — this was one of 6
+    independent copies of the same Redis-key lookup across decision-engine/event-intelligence/
+    market-data/research-engine. The getattr(_settings, "claude_api_key", "") fallback below
+    was already permanently dead (Settings never had that field) — kept only for the
+    theoretical case a future Settings field is added, matching the historical convention
+    documented at this file's original fix site."""
+    from common.ai_keys import get_admin_ai_key
+    key = get_admin_ai_key("claude")
+    if key:
+        return key
     return getattr(_settings, "claude_api_key", "") or ""
 
 

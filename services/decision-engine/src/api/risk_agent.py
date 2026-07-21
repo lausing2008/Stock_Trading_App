@@ -47,13 +47,12 @@ Identify at least 3 and at most 8 risks. If you genuinely lack any basis for a c
 
 
 def _get_api_key(cfg: dict) -> str:
-    try:
-        r = _redis_client()
-        key = r.get(_REDIS_CLAUDE_KEY) or ""
-        if key.strip():
-            return key.strip()
-    except Exception:
-        pass
+    """AUD-DUPLOGIC: delegates to common.ai_keys.get_admin_ai_key() — see llm_scorer.py's
+    identical fix note (this file's own _get_api_key was a byte-for-byte copy of that one)."""
+    from common.ai_keys import get_admin_ai_key
+    key = get_admin_ai_key("claude")
+    if key:
+        return key
     return cfg.get("claude_api_key", "")
 
 

@@ -14,6 +14,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.modules.setdefault("common", MagicMock())
 sys.modules.setdefault("common.config", MagicMock())
+# AUD-DUPLOGIC: risk_agent.py's _get_api_key() now delegates to common.ai_keys.get_admin_ai_key()
+# (the shared, consolidated Claude-key lookup) before falling back to cfg["claude_api_key"].
+# Stubbed here to return "" (matching a real "Redis unavailable/no admin key configured" state)
+# so every existing test's cfg["claude_api_key"] fallback continues to be exercised exactly as
+# before — these tests are about check_risks()'s OWN logic, not common.ai_keys' (which has its
+# own dedicated test_ai_keys.py).
+_fake_ai_keys = MagicMock()
+_fake_ai_keys.get_admin_ai_key = lambda provider="claude": ""
+sys.modules.setdefault("common.ai_keys", _fake_ai_keys)
 
 import src.api.risk_agent as risk_agent  # noqa: E402
 

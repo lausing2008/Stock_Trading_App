@@ -63,14 +63,14 @@ _REDIS_DEEPSEEK_KEY = "stockai:admin:deepseek_api_key"
 
 
 def _get_admin_ai_key(provider: str = "claude") -> str:
-    """Return the admin-stored AI API key from Redis, or '' if unavailable."""
-    rkey = _REDIS_CLAUDE_KEY if provider == "claude" else _REDIS_DEEPSEEK_KEY
-    try:
-        from common.redis_client import get_redis as _get_pool_redis
-        r = _get_pool_redis()
-        return r.get(rkey) or ""
-    except Exception:
-        return ""
+    """Return the admin-stored AI API key from Redis, or '' if unavailable.
+
+    AUD-DUPLOGIC: delegates to common.ai_keys.get_admin_ai_key() — one of 6 independent
+    copies of this same lookup that had accumulated across decision-engine/event-intelligence/
+    market-data/research-engine (see shared/common/ai_keys.py's own module docstring).
+    """
+    from common.ai_keys import get_admin_ai_key
+    return get_admin_ai_key(provider)
 
 
 import time as _time
