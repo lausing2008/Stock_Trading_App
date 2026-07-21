@@ -127,7 +127,17 @@ const NAV_GROUPS: NavGroupDef[] = [
 
 // ── GlobalSearch component ────────────────────────────────────────────────────
 
-function GlobalSearch() {
+// BUG-MOBILEDRAWER-DUPLICATESEARCH: GlobalSearch is rendered TWICE in the header — once in
+// the desktop nav row, once inside the mobile drawer — because the desktop/mobile split is
+// pure CSS media-query visibility (.desktop-nav-row/.mobile-nav-toggle), not conditional
+// mounting, so both DOM trees (and both instances' own useEffects) are always live regardless
+// of viewport width. Without this flag, BOTH instances registered the same global `keydown`
+// shortcut (Cmd/Ctrl+K, `/`) — pressing it tried to focus/open whichever instance happened to
+// still be CSS-hidden just as often as the visible one. registerGlobalShortcut defaults to
+// true (the desktop instance's normal behavior) and is explicitly set false on the mobile
+// drawer's instance below, since that instance is only ever visible after the user has
+// already opened the hamburger menu — there's no "type a shortcut to reveal it" need there.
+function GlobalSearch({ registerGlobalShortcut = true }: { registerGlobalShortcut?: boolean }) {
   const router = useRouter();
   const { data: stocks } = useSWR<Stock[]>('stocks-all', () => api.listStocks(), { revalidateOnFocus: false });
   const [query, setQuery] = useState('');
@@ -142,6 +152,7 @@ function GlobalSearch() {
   ).slice(0, 8);
 
   useEffect(() => {
+    if (!registerGlobalShortcut) return;
     function handleKey(e: KeyboardEvent) {
       if ((e.key === 'k' && (e.metaKey || e.ctrlKey)) || e.key === '/') {
         // Only open on '/' when not in an input/textarea
@@ -154,7 +165,7 @@ function GlobalSearch() {
     }
     document.addEventListener('keydown', handleKey);
     return () => document.removeEventListener('keydown', handleKey);
-  }, []);
+  }, [registerGlobalShortcut]);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -454,6 +465,20 @@ export default function App({ Component, pageProps }: AppProps) {
     setMobileMenuOpen(false);
   }, [router.pathname]);
 
+  // BUG-MOBILEDRAWER-NOSCROLLLOCK: the drawer previously had no scroll lock at all — the
+  // page underneath kept scrolling right along with any touch/scroll gesture over the open
+  // drawer, since the drawer itself is just an absolutely-flowed block in the header, not a
+  // true modal overlay. Locking document.body's own scroll while the drawer is open is the
+  // standard fix for this; always restored on close/unmount so a route change (which already
+  // closes the drawer above) or any other unmount path can't leave scrolling permanently
+  // disabled.
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, [mobileMenuOpen]);
+
   useEffect(() => {
     if (!username) return; // Only poll freshness when logged in to avoid 401s on public pages
     let mounted = true;
@@ -699,9 +724,19 @@ export default function App({ Component, pageProps }: AppProps) {
         </div>
 
         {mobileMenuOpen && (
-          <div style={{ borderTop: '1px solid #1e293b', maxHeight: 'calc(100vh - 52px)', overflowY: 'auto' }}>
+          <div style={{
+            borderTop: '1px solid #1e293b',
+            // BUG-MOBILEDRAWER-BANNERHEIGHT: this maxHeight previously hardcoded 52px (the
+            // header's own height) unconditionally — it never accounted for the 33px
+            // impersonation banner (see its `top: impersonating ? '33px' : 0` sticky offset
+            // above) stacking on top of the header when an admin is impersonating a user.
+            // On a phone with impersonation active, the drawer's available height was
+            // overstated by 33px, pushing its real bottom past the visible viewport.
+            maxHeight: `calc(100vh - ${52 + (impersonating ? 33 : 0)}px)`,
+            overflowY: 'auto',
+          }}>
             <div style={{ padding: '10px 16px', borderBottom: '1px solid #1e293b' }}>
-              <GlobalSearch />
+              <GlobalSearch registerGlobalShortcut={false} />
             </div>
             <MobileNavDrawer
               groups={NAV_GROUPS.filter(g => !g.adminOnly || role === 'admin')}

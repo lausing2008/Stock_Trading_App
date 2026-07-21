@@ -4972,3 +4972,67 @@ timeframe switch, first confirm the drawing actually has `startTs`/`endTs` set
 (`localStorage.getItem('chart_drawings:SYMBOL')` in devtools) — a drawing made BEFORE this fix
 shipped has neither field and will still use the old (occasionally-wrong) index-based path
 until the user deletes and re-draws it.
+
+---
+
+## Feature Reference: Mobile Nav Drawer — Scroll Lock, Banner-Aware Height, Duplicate Search Listener (Fixed 2026-07-21)
+
+**Three related bugs in the mobile nav drawer (T251-MOBILE-RESPONSIVE-DESIGN Phase 1),
+`frontend/src/pages/_app.tsx`**, all flagged during the AUD256 deep audit and deferred until
+now:
+
+**1. BUG-MOBILEDRAWER-DUPLICATESEARCH — duplicate global keyboard shortcut.**
+`GlobalSearch` is rendered TWICE in the header — once in the desktop nav row, once inside the
+mobile drawer — because the desktop/mobile split is pure CSS media-query visibility
+(`.desktop-nav-row`/`.mobile-nav-toggle` classes), not conditional mounting. Both DOM trees
+(and both instances' own `useEffect`s) are always live regardless of viewport width, so both
+instances registered the SAME global `keydown` shortcut (`Cmd/Ctrl+K`, `/`) — pressing it
+tried to focus/open whichever instance happened to be CSS-hidden just as often as the visible
+one. Fixed with a new `registerGlobalShortcut` prop (defaults `true`, matching the desktop
+instance's existing behavior), explicitly set `false` on the mobile drawer's own `GlobalSearch`
+instance — that instance is only ever visible after the hamburger menu is already open, so
+there's no "type a shortcut to reveal it" need there.
+
+**2. BUG-MOBILEDRAWER-BANNERHEIGHT — impersonation banner not accounted for.** The drawer's
+`maxHeight` hardcoded `calc(100vh - 52px)` (the header's own height) unconditionally, never
+accounting for the 33px impersonation banner stacking on top of the header when an admin is
+impersonating a user (`top: impersonating ? '33px' : 0` on the header's own sticky
+positioning). On a phone with impersonation active, the drawer's available height was
+overstated by 33px. Fixed:
+```typescript
+maxHeight: `calc(100vh - ${52 + (impersonating ? 33 : 0)}px)`,
+```
+
+**3. BUG-MOBILEDRAWER-NOSCROLLLOCK — background page scrolled behind the open drawer.** No
+scroll lock existed at all — the drawer is just an absolutely-flowed block in the header, not
+a true modal overlay, so any touch/scroll gesture over it scrolled the page underneath too.
+Fixed with a new effect keyed on `mobileMenuOpen`:
+```typescript
+useEffect(() => {
+  if (!mobileMenuOpen) return;
+  const previousOverflow = document.body.style.overflow;
+  document.body.style.overflow = 'hidden';
+  return () => { document.body.style.overflow = previousOverflow; };
+}, [mobileMenuOpen]);
+```
+Restores the **previous** value (not just `''`) on close/unmount, so a route change (which
+already closes the drawer via a separate, pre-existing effect) or any other unmount path can't
+leave scrolling permanently disabled.
+
+**No dedicated test file** — `_app.tsx` is the root Next.js app wrapper, tightly coupled to
+routing/session context in a way that would need mocking most of the Next.js app shell to test
+in isolation. Matches this repo's own established precedent that `_app.tsx`-level fixes are
+verified via typecheck + a full production build rather than unit tests (same seam gap already
+documented for other `_app.tsx`/`PriceChart.tsx`-only changes elsewhere in this file).
+
+Full 79-test frontend vitest suite (unaffected — nothing imports `_app.tsx`) and typecheck
+green.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-frontend-1 sh -c "grep -o 'registerGlobalShortcut' /app/.next/static/chunks/pages/_app-*.js"
+```
+Should find a match confirming the fix compiled in. For the scroll-lock and banner-height
+fixes specifically, they're only observable by actually opening the drawer on a real
+phone-width viewport (or a browser's device-emulation mode) — there's no automated test
+covering the visual/interactive behavior itself.
