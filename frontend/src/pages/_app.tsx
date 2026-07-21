@@ -105,6 +105,12 @@ const NAV_GROUPS: NavGroupDef[] = [
     ],
   },
   {
+    label: 'Learning',
+    items: [
+      { label: 'Platform Guide', href: '/learn' },
+    ],
+  },
+  {
     label: 'Admin',
     adminOnly: true,
     items: [
