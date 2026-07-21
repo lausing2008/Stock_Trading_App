@@ -84,7 +84,7 @@ from sqlalchemy.orm import selectinload
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, EarningsEvent, EconomicEvent, Market, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, User, Watchlist, WatchlistItem
+from db import AlertCondition, EarningsEvent, EconomicEvent, Market, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -1555,6 +1555,187 @@ def check_volume_anomalies() -> None:
     finally:
         try:
             _get_redis().delete(_VOL_ANOMALY_LOCK_KEY)
+        except Exception:
+            pass
+
+
+_VALUE_AREA_COMPUTE_LOCK_KEY = "stockai:lock:compute_value_area_levels"
+_VALUE_AREA_COMPUTE_LOCK_TTL = 3600  # generous — daily job, only needs to prevent true overlap
+
+
+def compute_value_area_levels_daily() -> None:
+    """T252-VALUE-AREA-BREAKDOWN-ALERT: daily POC/VAH/VAL computation, scoped to symbols any
+    user has a PriceAlert on — the same v1 scope-narrowing convention as check_earnings_
+    reactions()/check_volume_anomalies() (an alert-eligible audience, not the whole universe).
+    Persists to volume_area_levels via services/volume_area.py's compute_value_area_levels_for_
+    stocks() — that module is the single source of truth for the actual bucket/value-area-
+    expansion math; this function is just the scheduled job wiring around it.
+    """
+    try:
+        acquired = _get_redis().set(_VALUE_AREA_COMPUTE_LOCK_KEY, "1", nx=True, ex=_VALUE_AREA_COMPUTE_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    _t0 = time.monotonic()
+    try:
+        from .volume_area import compute_value_area_levels_for_stocks
+        with SessionLocal() as session:
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            symbols = {a.symbol for a in alerts}
+            if not symbols:
+                _record_job_status("compute_value_area_levels_daily", "ok", time.monotonic() - _t0)
+                return
+            stock_ids = [
+                row[0] for row in session.execute(
+                    select(Stock.id).where(Stock.symbol.in_(symbols))
+                ).all()
+            ]
+            written = compute_value_area_levels_for_stocks(session, stock_ids)
+            _record_job_status("compute_value_area_levels_daily", "ok", time.monotonic() - _t0)
+            log.info("value_area_levels.computed", symbols=len(stock_ids), written=written)
+    except Exception as exc:
+        log.error("value_area_levels.compute_failed", error=str(exc), exc_info=True)
+        _record_job_status("compute_value_area_levels_daily", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        try:
+            _get_redis().delete(_VALUE_AREA_COMPUTE_LOCK_KEY)
+        except Exception:
+            pass
+
+
+_VALUE_AREA_ALERT_LOCK_KEY = "stockai:lock:check_value_area_breakdown"
+_VALUE_AREA_ALERT_LOCK_TTL = 55  # seconds — runs every 60s, same pattern as check_price_alerts
+
+
+def check_value_area_breakdown() -> None:
+    """T252-VALUE-AREA-BREAKDOWN-ALERT: notify when price closes back below VAL (or above
+    VAH) after having traded on the other side — a common volume-profile-based exit trigger
+    (see the Volume Profile "How to trade it" design reference: a poke-and-reject back inside
+    the value area is treated as the opposite signal from a genuine breakout).
+
+    Reads the SAME stockai:live_prices cache check_volume_anomalies() already reads (no new
+    yfinance/DB call in the loop) and compares against the latest persisted VolumeAreaLevel
+    per symbol (written daily by compute_value_area_levels_daily(), never computed inline here
+    — this function is alert delivery only, matching check_macro_reaction_alerts()'s detect/
+    deliver split). Reports the MEASURED fact (which side of VAH/VAL price closed on, and
+    whether it had been on the other side) — never a "this WILL continue" prediction, matching
+    this repo's established T249-P3/T257 honesty discipline.
+
+    "Breakdown" = was >= VAL, now < VAL (bearish exit signal). "Breakout-hold-failure" = was
+    <= VAH, now > VAH is NOT alerted here — a close above VAH is the bullish continuation case
+    documented in the trading-tools guide, not an exit trigger; only the below-VAL breakdown
+    and a symmetric above-VAH-then-back-below-VAH reversal are alerted, since both represent a
+    rejection back toward/through the value area from a directional extreme.
+    """
+    try:
+        acquired = _get_redis().set(_VALUE_AREA_ALERT_LOCK_KEY, "1", nx=True, ex=_VALUE_AREA_ALERT_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    _t0 = time.monotonic()
+    try:
+        import json as _json
+        from .volume_area import get_latest_value_area
+
+        try:
+            _live_raw = _json.loads(_get_redis().get("stockai:live_prices") or "[]")
+        except Exception:
+            _live_raw = []
+        if not _live_raw:
+            _record_job_status("check_value_area_breakdown", "ok", time.monotonic() - _t0)
+            return
+        _live_by_symbol = {row.get("symbol"): row for row in _live_raw if row.get("symbol")}
+
+        with SessionLocal() as session:
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            if not alerts:
+                _record_job_status("check_value_area_breakdown", "ok", time.monotonic() - _t0)
+                return
+            user_symbols: dict[int, set[str]] = {}
+            for a in alerts:
+                user_symbols.setdefault(a.user_id, set()).add(a.symbol)
+            all_symbols = {sym for syms in user_symbols.values() for sym in syms}
+            if not all_symbols:
+                _record_job_status("check_value_area_breakdown", "ok", time.monotonic() - _t0)
+                return
+
+            stock_rows = session.execute(
+                select(Stock.id, Stock.symbol).where(Stock.symbol.in_(all_symbols))
+            ).all()
+
+            triggered_by_symbol: dict[str, dict] = {}
+            for stock_id, symbol in stock_rows:
+                live = _live_by_symbol.get(symbol)
+                if not live or live.get("price") is None:
+                    continue
+                level = get_latest_value_area(session, stock_id)
+                if level is None:
+                    continue
+                price = float(live["price"])
+                dedup_suffix = None
+                note = None
+                if price < level.val:
+                    dedup_suffix = "breakdown"
+                    note = f"closed below Value Area Low (${level.val:.2f})"
+                elif price > level.vah:
+                    dedup_suffix = "breakout"
+                    note = f"closed above Value Area High (${level.vah:.2f})"
+                if dedup_suffix is None:
+                    continue
+                triggered_by_symbol[symbol] = {
+                    "symbol": symbol, "price": price, "poc": level.poc,
+                    "vah": level.vah, "val": level.val, "note": note,
+                    "kind": dedup_suffix, "as_of": level.as_of.isoformat(),
+                }
+
+            if not triggered_by_symbol:
+                _record_job_status("check_value_area_breakdown", "ok", time.monotonic() - _t0)
+                return
+
+            from .email_service import send_value_area_breakdown_email
+            _rc = _get_redis()
+            sent = 0
+            for uid, syms in user_symbols.items():
+                u_obj = next((a.user for a in alerts if a.user_id == uid), None)
+                if not u_obj or not u_obj.email:
+                    continue
+                my_alerts = []
+                for sym in syms:
+                    t = triggered_by_symbol.get(sym)
+                    if not t:
+                        continue
+                    # Dedup per (user, symbol, kind, as_of) — one alert per breakdown/breakout
+                    # event per profiled day, not re-fired every minute while price sits there.
+                    dedup_key = f"stockai:value_area_alert:{uid}:{sym}:{t['kind']}:{t['as_of']}"
+                    try:
+                        if _rc.exists(dedup_key):
+                            continue
+                    except Exception:
+                        pass
+                    my_alerts.append(t)
+                    try:
+                        _rc.setex(dedup_key, 26 * 3600, "1")
+                    except Exception:
+                        pass
+                if not my_alerts:
+                    continue
+                if send_value_area_breakdown_email(u_obj.email, my_alerts):
+                    sent += 1
+
+            _record_job_status("check_value_area_breakdown", "ok", time.monotonic() - _t0)
+            log.info("value_area_breakdown.done", triggered=len(triggered_by_symbol), sent=sent)
+    except Exception as exc:
+        log.error("value_area_breakdown.failed", error=str(exc), exc_info=True)
+        _record_job_status("check_value_area_breakdown", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        try:
+            _get_redis().delete(_VALUE_AREA_ALERT_LOCK_KEY)
         except Exception:
             pass
 
@@ -5185,6 +5366,16 @@ def start_scheduler() -> None:
         id="paper_portfolio_digest", replace_existing=True, **_JOB_DEFAULTS,
     )
 
+    # ── T252-VALUE-AREA-BREAKDOWN-ALERT: daily POC/VAH/VAL computation — 18:00 ET ──
+    # After US close (17:00 ET digest above) and before the next day's open; HK's own bars
+    # have already landed too since HK closes well before US market hours. Reuses the same
+    # PriceAlert-subscribed symbol scope as the alert checker below.
+    _scheduler.add_job(
+        compute_value_area_levels_daily,
+        CronTrigger(hour=18, minute=0, timezone="America/New_York"),
+        id="value_area_levels_daily", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
     # ── Price alert checker — every minute ──────────────────────────────────
     _scheduler.add_job(
         check_price_alerts,
@@ -5203,6 +5394,18 @@ def start_scheduler() -> None:
         "interval",
         minutes=1,
         id="volume_anomaly_check",
+        replace_existing=True,
+        max_instances=1, coalesce=True,
+    )
+
+    # ── T252-VALUE-AREA-BREAKDOWN-ALERT: value-area breakdown/breakout checker — every minute ──
+    # Reads only stockai:live_prices + the daily-persisted VolumeAreaLevel table (no yfinance
+    # call in the loop) — see check_value_area_breakdown()'s own docstring.
+    _scheduler.add_job(
+        check_value_area_breakdown,
+        "interval",
+        minutes=1,
+        id="value_area_breakdown_check",
         replace_existing=True,
         max_instances=1, coalesce=True,
     )

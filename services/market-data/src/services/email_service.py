@@ -1150,6 +1150,55 @@ def send_top3_conviction_email(to: str, picks: list[dict]) -> bool:
     return send_email(to, subject, body_html, body_text)
 
 
+def send_value_area_breakdown_email(to: str, alerts: list[dict]) -> bool:
+    """T252-VALUE-AREA-BREAKDOWN-ALERT: one email per recipient listing every symbol that
+    closed outside its persisted value area (below VAL = breakdown, above VAH = breakout).
+    Each alert dict: {symbol, price, poc, vah, val, note, kind ("breakdown"/"breakout"),
+    as_of}. Reports the MEASURED close price vs. the persisted POC/VAH/VAL — never a "this
+    WILL continue" prediction, matching this repo's established alert-honesty discipline.
+    """
+    n = len(alerts)
+    subject = f"📐 Value Area Alert — {n} stock{'s' if n != 1 else ''} closed outside their value area"
+
+    rows_html = ""
+    rows_text = ""
+    for a in alerts:
+        sym = a["symbol"]
+        kind = a["kind"]
+        kind_color = "#ef4444" if kind == "breakdown" else "#22c55e"
+        kind_label = "Breakdown" if kind == "breakdown" else "Breakout"
+        rows_html += (
+            f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
+            f'<strong style="font-size:14px">{sym}</strong>'
+            f'<span style="background:{kind_color}22;color:{kind_color};font-size:12px;font-weight:700;padding:2px 8px;border-radius:4px">{kind_label}</span>'
+            f'</div>'
+            f'<div style="font-size:12px;color:#64748b;margin-top:2px">${a["price"]:.2f} — {a["note"]}</div>'
+            f'<div style="font-size:11px;color:#94a3b8;margin-top:2px">POC ${a["poc"]:.2f} · VAH ${a["vah"]:.2f} · VAL ${a["val"]:.2f} (as of {a["as_of"]})</div>'
+            f'</div>'
+        )
+        rows_text += f"  {sym} ({kind_label}): ${a['price']:.2f} — {a['note']} [POC ${a['poc']:.2f}, VAH ${a['vah']:.2f}, VAL ${a['val']:.2f}, as of {a['as_of']}]\n"
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:#0ea5e9">📐 Value Area Alert</h2>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} stock{'s' if n != 1 else ''} closed outside their value area (POC/VAH/VAL, 60-day profile).</p>
+    <div style="margin-top:12px">{rows_html}</div>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      A breakdown/breakout is a measured close relative to the profiled value area, not a
+      prediction of what happens next — a close back inside the value area soon after can be
+      a false breakout/breakdown. Not financial advice.
+    </p>
+  </div>
+</body></html>"""
+    body_text = (
+        f"Value Area Alert — {n} stock{'s' if n != 1 else ''}\n\n"
+        + rows_text
+        + "\nA measured close relative to the profiled value area, not a prediction. Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_price_alert_email(to: str, symbol: str, condition: str, threshold: float, price: float, note: str | None) -> bool:
     direction = "risen above" if condition == "above" else "fallen below"
     subject = f"Price Alert: {symbol} has {direction} {threshold}"

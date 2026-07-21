@@ -44,6 +44,7 @@ from .models import (
     TuneHistory,
     PushSubscription,
     CapeReading,
+    VolumeAreaLevel,
 )
 from .session import SessionLocal, engine, get_session, init_db
 
@@ -93,6 +94,7 @@ __all__ = [
     "TuneHistory",
     "PushSubscription",
     "CapeReading",
+    "VolumeAreaLevel",
     "SessionLocal",
     "engine",
     "get_session",

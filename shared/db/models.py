@@ -1153,3 +1153,26 @@ class CapeReading(Base):
     cape_value: Mapped[float] = mapped_column(Float)
     source: Mapped[str] = mapped_column(String(32), default="multpl")
     fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class VolumeAreaLevel(Base):
+    """T252-VALUE-AREA-BREAKDOWN-ALERT: server-side POC/VAH/VAL per symbol/date, a straight
+    Python port of frontend/src/lib/volumeProfile.ts's computeVolumeProfile() (client-only
+    until this table). Computed daily from a rolling lookback window of daily bars — see
+    compute_volume_area_levels() in services/market-data/src/services/volume_area.py, the
+    single source of truth for this math on the backend (do not reimplement the bucket/
+    value-area-expansion algorithm a second time; port changes to volumeProfile.ts's logic
+    here too if the two ever need to agree, though as of this table's creation there is no
+    shared module between the TS and Python versions — they are two independent ports of the
+    same documented algorithm, not one shared implementation).
+    """
+    __tablename__ = "volume_area_levels"
+    __table_args__ = (UniqueConstraint("stock_id", "as_of", name="uq_volume_area_level_stock_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    as_of: Mapped[date] = mapped_column(Date, index=True)
+    poc: Mapped[float] = mapped_column(Float)
+    vah: Mapped[float] = mapped_column(Float)
+    val: Mapped[float] = mapped_column(Float)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

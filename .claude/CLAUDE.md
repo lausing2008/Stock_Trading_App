@@ -5502,3 +5502,89 @@ If `bearish_pillars_active` looks implausible for a specific stock (e.g. 4/4 on 
 strong uptrend), re-run the exact regression check this bug was caught with: confirm `bb_pct_b`
 isn't near the upper-band extreme (>0.8) while `bearish_pillar_structure` still reads >= 0.5 —
 that specific combination is the bug class this fix closed.
+
+---
+
+## Feature Reference: T252-VALUE-AREA-BREAKDOWN-ALERT — Server-Side POC/VAH/VAL + Alert (Built 2026-07-21)
+
+**The gap this closes**: volume profile (POC/VAH/VAL) computation was 100% client-side —
+`frontend/src/lib/volumeProfile.ts`'s `computeVolumeProfile()`, built for the Fixed Range VP
+chart feature — with no server-side equivalent, persistence, or scheduled job anywhere. Unlike
+T249's earnings/macro alerts (which reused already-computed backend values), this required
+porting the actual bucket/value-area-expansion algorithm to Python before any alert could exist.
+
+**New module**: `services/market-data/src/services/volume_area.py` — `compute_value_area()` is
+a faithful port of `computeVolumeProfile()`'s bucketing + value-area-expansion math (POC/VAH/VAL
+only; HVN/LVN/individual-bucket detail deliberately not ported, since nothing on the backend
+consumes them — the chart's own client-side `computeVolumeProfile()` remains the source of
+truth for anything actually rendered). This is an **independent port**, not a shared
+implementation with `volumeProfile.ts` — if the value-area-expansion logic in one is ever
+changed, check whether the other needs the same change too. Cross-checked against
+`volumeProfile.test.ts`'s own fixtures (same bar data, same expected POC-bucket range) to
+confirm the two ports agree, per this repo's established discipline of verifying a hand-
+translated formula against its real reference rather than trusting internal consistency alone.
+
+**New table**: `VolumeAreaLevel` (`shared/db/models.py`) — `(stock_id, as_of)` unique, stores
+`poc`/`vah`/`val` per symbol/date. A brand-new table, so `create_all()` handles it automatically
+— no manual `ALTER TABLE` needed (unlike adding a column to an existing table, per this file's
+own standing `create_all()`-gap invariant).
+
+**Daily compute job**: `compute_value_area_levels_daily()` (`scheduler.py`, 18:00 ET — after US
+close, HK's own bars already landed too) computes a rolling 60-day value area for every symbol
+any user has a `PriceAlert` on — the same v1 scope-narrowing convention already established for
+`check_earnings_reactions()`/`check_volume_anomalies()` (an alert-eligible audience, not the
+whole universe). Upserts via `ON CONFLICT DO UPDATE` on `(stock_id, as_of)` — safe to re-run
+idempotently (e.g. a retry after a partial failure).
+
+**Alert checker**: `check_value_area_breakdown()` (1-minute interval, matching every other
+T249/T257-era fast-reaction checker) reads only the existing `stockai:live_prices` Redis cache
+(no yfinance/DB call in the loop — matches `check_volume_anomalies()`'s established rate-limit
+discipline) plus the daily-persisted `VolumeAreaLevel`. Fires `send_value_area_breakdown_email()`
+with a per-`(user, symbol, kind, as_of)` Redis dedup key so a stock sitting below VAL for hours
+doesn't re-alert every cycle — same discipline as every other T249-era alert. Reports the
+**measured** close price relative to POC/VAH/VAL — never a "will continue" prediction, matching
+this repo's established alert-honesty discipline (T249-P3, T257's volume-anomaly/top3-conviction
+alerts).
+
+**Deliberate scope note**: only a close below VAL (breakdown) or above VAH (breakout) fires —
+not a symmetric "poke back below VAH after trading above it" reversal signal, since that would
+need intraday tracking of "was it above VAH earlier today" state this v1 doesn't carry; the
+docs' own "poke-and-reject = false breakout" read (Volume Profile "How to trade it" section)
+remains a manual chart read for now, not yet automated.
+
+**Tests**: `services/market-data/tests/test_volume_area.py` (10 cases, direct import — the
+function is pure with zero DB dependency, so no source-text extraction or stub workaround was
+needed) covers degenerate inputs, POC placement, VAH/VAL bracketing, the TS-fixture cross-check,
+and zero-volume-bar handling. `services/market-data/tests/test_value_area_breakdown_alert.py`
+(14 cases) covers `send_value_area_breakdown_email()` directly (pure composition) plus
+source-text regression checks for the scheduler wiring (`scheduler.py` can't be imported in this
+test environment — its import chain pulls in `apscheduler`, matching every other scheduler.py
+test file's documented constraint), confirming both jobs exist, are registered with the correct
+trigger type/schedule, and that the alert checker reads the live-prices cache (never yfinance)
+and has both a lock and a dedup key.
+
+**Adversarial verification**: reverted the value-area-expansion tie-break comparison
+(`vol_above >= vol_below` → `vol_above < vol_below`) and confirmed 4 tests failed correctly
+before restoring it; reverted the dedup-key prefix to an unrelated string and confirmed the
+wiring test caught it before restoring it. Full 368-test market-data suite (up from 344) and
+frontend typecheck green.
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the daily compute job actually ran and wrote real rows:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT st.symbol, val.poc, val.vah, val.val, val.as_of FROM volume_area_levels val JOIN stocks st ON val.stock_id = st.id ORDER BY val.as_of DESC LIMIT 10;"
+
+# Check job status/logs directly:
+docker logs stockai-market-data-1 --since 24h | grep 'value_area_levels\|value_area_breakdown'
+
+# Manually trigger the daily compute job (needs the running container, not a standalone script):
+docker exec stockai-market-data-1 python3 -c "
+import sys; sys.path.insert(0, '/app'); sys.path.insert(0, '/app/src')
+from src.services.scheduler import compute_value_area_levels_daily
+compute_value_area_levels_daily()
+"
+```
+If a breakdown/breakout alert never fires despite a real close outside VAL/VAH, first confirm
+the daily compute job actually populated a `VolumeAreaLevel` row for that symbol/date — the
+alert checker never computes on the fly, only reads what the daily job already persisted.
