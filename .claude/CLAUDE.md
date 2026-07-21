@@ -4658,3 +4658,56 @@ docker exec stockai-event-intelligence-1 grep -n "net_buyers = \[v for v" /app/s
 Both should show the `net_value > 0` / `net_amount > 0` filter. If a "Top Buys" card still
 shows what looks like a net seller, check the actual returned `net_value`/`net_amount` directly
 against a live call to `GET /events/insider/leaderboard` or `GET /events/congress/leaderboard`.
+
+---
+
+## Feature Reference: AUD256 — Pre-Market Brief Send-Loop Dedup + Per-Recipient Error Isolation (Built 2026-07-20)
+
+**The gap**: `send_premarket_brief()`'s (`services/market-data/src/services/scheduler.py`)
+per-recipient send loop had two related reliability gaps, both flagged but deliberately
+deferred during the 2026-07-17 AUD256 deep audit. (1) No dedup — the job is registered with
+`misfire_grace_time=60`; a restart within that window could re-fire the same day's brief and
+re-email every recipient a second time. (2) No per-recipient error isolation — a single
+recipient's `send_premarket_brief_email()` raising (a malformed address, a transient SMTP
+error) would propagate to the function's one shared outer `except Exception`, aborting the
+whole batch and silently skipping every recipient still left in the loop.
+
+**Fix**:
+1. **Dedup**: a Redis key `stockai:premarket_brief:{uid}:{market_key}:{date}` (20h TTL — one
+   brief per user per market per day), checked before the send and set only inside the `if ok:`
+   branch after a genuinely successful send. Mirrors the existing per-(user, symbol, date)
+   dedup shape `check_earnings_reactions()` already uses elsewhere in the same file.
+2. **Isolation**: the `send_premarket_brief_email()` call is now wrapped in its own try/except
+   (not the whole loop iteration) — a failure logs `premarket_brief.recipient_send_error` and
+   increments a new `errors` counter instead of re-raising. The `premarket_brief.done` log line
+   now reports both `sent` and `errors`, so a partial-failure batch is visible in logs instead
+   of looking identical to a fully clean run.
+
+**Also noted, not fixed this pass**: `send_morning_digest()` (same file) has the **identical**
+unguarded send-loop pattern (no per-user try/except, no dedup) — out of scope since this task
+was specifically the pre-market brief, but flagged as a real, same-class follow-up candidate.
+
+**Tests**: 4 new cases added to `services/market-data/tests/test_premarket_brief.py` (now 20
+total), using that file's own established source-text-extraction technique for
+`send_premarket_brief()` itself (`scheduler.py` can't be imported directly in this test
+environment — its import chain pulls in `apscheduler`) — the dedup check happens before the
+send call, the dedup key is set only after a successful send (not unconditionally, not
+before the send), the send call is wrapped in its own try/except distinct from the outer
+function-level except, and the per-recipient error is logged/counted without re-raising.
+
+**Adversarial verification** — 3 sabotage cycles, all caught and reverted:
+1. Removing the dedup check entirely.
+2. Setting the dedup key unconditionally instead of gated on a successful send.
+3. Removing the per-recipient try/except so a send exception would propagate unguarded.
+
+Full 327-test market-data suite (up from 323) green; frontend typecheck clean.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n 'stockai:premarket_brief:' /app/src/services/scheduler.py
+docker exec stockai-redis-1 redis-cli keys 'stockai:premarket_brief:*'
+```
+If a user reports getting the brief twice on the same day, check whether the job actually
+fired twice (`docker logs stockai-market-data-1 --since 24h | grep premarket_brief`) — the
+dedup key should have prevented a second send within its 20h TTL, so a duplicate despite this
+fix would point to a genuinely new failure mode, not a regression of this one.

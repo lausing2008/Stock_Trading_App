@@ -1294,26 +1294,60 @@ def send_premarket_brief(markets: list | None = None) -> None:
 
             from .email_service import send_premarket_brief_email
             date_str = today.strftime("%a, %b %-d")
+            market_key = "_".join(m.lower() for m in markets)
+            _rc = _get_redis()
             sent = 0
+            errors = 0
             for uid, user in recipients.items():
+                # AUD256-PREMARKETBRIEF-DEDUP: a restart within the misfire-grace window
+                # (misfire_grace_time=60 on this job's registration) could otherwise re-fire
+                # this same day's brief and re-email every recipient a second time. Same
+                # per-(user, day) dedup shape as check_earnings_reactions()'s own
+                # stockai:earnings_reaction:{uid}:{sym}:{date} key, scoped to market_key+date
+                # instead of a symbol since this brief is per-day/per-market, not per-symbol.
+                redis_key = f"stockai:premarket_brief:{uid}:{market_key}:{today.isoformat()}"
+                try:
+                    if _rc and _rc.exists(redis_key):
+                        continue
+                except Exception:
+                    pass
                 my_earnings = [
                     {"symbol": sym, "event": earnings_by_symbol[sym]}
                     for sym in sorted(user_symbols.get(uid, set()))
                     if sym in earnings_by_symbol
                 ]
-                ok = send_premarket_brief_email(
-                    to=user.email,
-                    date_str=date_str,
-                    market=markets[0] if len(markets) == 1 else "/".join(markets),
-                    macro_events=macro_today,
-                    my_earnings=my_earnings,
-                    recent_reactions=recent_reactions,
-                )
+                # AUD256-PREMARKETBRIEF-ISOLATION: previously unguarded — one recipient
+                # raising (a malformed email address, a transient SMTP error) would propagate
+                # to the outer except, aborting the whole batch and silently skipping every
+                # recipient still left in the loop. Isolating per-recipient means a single
+                # failure only costs that one recipient's brief, not everyone else's.
+                # AUD256-PREMARKETBRIEF-ISOLATION: previously unguarded — one recipient
+                # raising (a malformed email address, a transient SMTP error) would propagate
+                # to the outer except, aborting the whole batch and silently skipping every
+                # recipient still left in the loop. Isolating per-recipient means a single
+                # failure only costs that one recipient's brief, not everyone else's.
+                try:
+                    ok = send_premarket_brief_email(
+                        to=user.email,
+                        date_str=date_str,
+                        market=markets[0] if len(markets) == 1 else "/".join(markets),
+                        macro_events=macro_today,
+                        my_earnings=my_earnings,
+                        recent_reactions=recent_reactions,
+                    )
+                except Exception as _send_exc:
+                    ok = False
+                    errors += 1
+                    log.warning("premarket_brief.recipient_send_error", user=uid, error=str(_send_exc))
                 if ok:
                     sent += 1
+                    try:
+                        _rc and _rc.setex(redis_key, 20 * 3600, "1")  # 20h TTL — one brief/user/market/day
+                    except Exception:
+                        pass
 
             _record_job_status(_job_name, "ok", time.monotonic() - _t0)
-            log.info("premarket_brief.done", markets=markets, sent=sent, recipients=len(recipients),
+            log.info("premarket_brief.done", markets=markets, sent=sent, errors=errors, recipients=len(recipients),
                       macro_events=len(macro_today), reactions=len(recent_reactions))
     except Exception as exc:
         log.error("premarket_brief.failed", markets=markets, error=str(exc), exc_info=True)

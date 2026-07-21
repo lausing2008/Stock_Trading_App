@@ -251,3 +251,58 @@ def test_premarket_brief_macro_sections_are_gated_to_us_only():
     assert 'if "US" in markets:' in body
     # both macro sections (releases + reactions) must be behind a US-only gate — 2 occurrences
     assert body.count('if "US" in markets:') >= 2
+
+
+def _premarket_brief_body() -> str:
+    start = _SCHEDULER_SOURCE.index("def send_premarket_brief(")
+    end = _SCHEDULER_SOURCE.index("\ndef ", start + 1)
+    return _SCHEDULER_SOURCE[start:end]
+
+
+def test_premarket_brief_checks_a_redis_dedup_key_before_sending():
+    """AUD256-PREMARKETBRIEF-DEDUP: a restart within the job's misfire_grace_time=60 window
+    could otherwise re-fire this same day's brief and re-email every recipient a second time.
+    Must check a Redis existence key scoped to (user, market, date) BEFORE calling
+    send_premarket_brief_email(), and skip (continue) if it's already set."""
+    body = _premarket_brief_body()
+    assert "redis_key = f\"stockai:premarket_brief:{uid}:{market_key}:{today.isoformat()}\"" in body
+    dedup_check_idx = body.index("_rc.exists(redis_key)")
+    send_call_idx = body.index("send_premarket_brief_email(")
+    assert dedup_check_idx < send_call_idx, "dedup check must happen BEFORE the send call"
+
+
+def test_premarket_brief_sets_the_dedup_key_only_after_a_successful_send():
+    """The dedup key must only be set inside the `if ok:` branch — setting it unconditionally
+    (even on a failed send) would incorrectly suppress a legitimate retry after a real failure,
+    and setting it before the send at all would suppress the send itself on the next check."""
+    body = _premarket_brief_body()
+    setex_idx = body.index("_rc.setex(redis_key")
+    if_ok_idx = body.rindex("if ok:", 0, setex_idx)
+    send_call_idx = body.index("send_premarket_brief_email(")
+    # The setex call must appear inside the `if ok:` block, which itself comes after the send.
+    assert if_ok_idx > send_call_idx
+    assert setex_idx > if_ok_idx
+
+
+def test_premarket_brief_isolates_per_recipient_send_errors():
+    """AUD256-PREMARKETBRIEF-ISOLATION: previously unguarded — a single recipient's
+    send_premarket_brief_email() raising would propagate to the outer except, aborting the
+    whole batch and silently skipping every recipient still left in the loop. Must wrap the
+    send call itself in a try/except that keeps the loop going for the remaining recipients."""
+    body = _premarket_brief_body()
+    send_call_idx = body.index("send_premarket_brief_email(")
+    try_idx = body.rindex("try:", 0, send_call_idx)
+    except_idx = body.index("except Exception as _send_exc:", send_call_idx)
+    # A try immediately preceding the send call, with its own except (not just the one
+    # shared outer except covering the whole function) — confirms per-recipient isolation.
+    assert try_idx < send_call_idx < except_idx
+
+
+def test_premarket_brief_logs_and_counts_per_recipient_errors_without_reraising():
+    body = _premarket_brief_body()
+    assert 'log.warning("premarket_brief.recipient_send_error"' in body
+    assert "errors += 1" in body
+    # the done log line must report both sent and errors so a partial-failure batch is visible
+    done_log_idx = body.index('log.info("premarket_brief.done"')
+    done_log_line = body[done_log_idx:body.index("\n", done_log_idx + 200)]
+    assert "errors=errors" in done_log_line
