@@ -410,10 +410,9 @@ def _record_promotion_status(promoted: bool, auc: float, previous_auc: float | N
     try:
         import json as _json
         from datetime import datetime, timezone
-        import redis as _redis_lib
-        from common.config import get_settings as _get_settings
+        from common.redis_client import get_redis as _get_pool_redis
 
-        r = _redis_lib.from_url(_get_settings().redis_url, decode_responses=True)
+        r = _get_pool_redis()
         now_iso = datetime.now(timezone.utc).isoformat()
 
         r.setex(

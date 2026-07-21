@@ -17,8 +17,8 @@ _settings = get_settings()
 # ── Redis cache helper ────────────────────────────────────────────────────────
 
 def _get_redis():
-    import redis as redis_lib
-    return redis_lib.from_url(_settings.redis_url, decode_responses=True)
+    from common.redis_client import get_redis as _get_pool_redis
+    return _get_pool_redis()
 
 def _cache_get(key: str):
     try:

@@ -5588,3 +5588,72 @@ compute_value_area_levels_daily()
 If a breakdown/breakout alert never fires despite a real close outside VAL/VAH, first confirm
 the daily compute job actually populated a `VolumeAreaLevel` row for that symbol/date — the
 alert checker never computes on the fly, only reads what the daily job already persisted.
+
+---
+
+## Full-Codebase Audit — Duplicate Code / Single-Source-of-Truth (Phase 2: Redis Connections, 2026-07-21)
+
+**Continues the audit's own Phase 1 entry** (market-data + decision-engine, 2026-07-20) — this
+pass covers the 3 services explicitly deferred at the time: signal-engine, research-engine,
+ml-prediction. Found and fixed 9 raw `redis.Redis.from_url()`/`redis.from_url()` constructions
+across all three, routing each through `shared/common/redis_client.py`'s pooled `get_redis()`,
+exactly matching Phase 1's fix pattern. Also checked the Claude-API-key fallback convention (the
+other Phase 1 finding class) in all three services — all three already correctly read
+`stockai:admin:claude_api_key` from Redis with no phantom-env-var fallback bug; that finding was
+fully resolved in Phase 1 and did not recur here.
+
+**Fixed this pass**:
+- `services/signal-engine/src/generators/signals.py` — 5 sites: `_load_ml_weight_override()`,
+  `set_ml_weight_global_cap()`, `_load_ta_weights()`, `load_conviction_weights()`, and
+  `_redis_get_float()` — the highest-value fix of the five, since it backs
+  `_get_dynamic_buy_threshold()`/`_get_dynamic_sell_threshold()`/`_get_style_tuned_param()` and
+  is called on essentially every signal generation cycle, per style, per threshold lookup — a
+  genuinely hot path that was constructing a fresh unpooled client on every single call.
+- `services/signal-engine/src/api/routes.py` — the module-level `_get_redis()` singleton
+  (same pattern as market-data's own `routes.py`/`scheduler.py` fix in Phase 1).
+- `services/research-engine/src/api/ai_proxy.py` — the module-level `_get_redis()`, plus
+  removed the now-unused `import redis as redis_lib`.
+- `services/research-engine/src/api/routes.py` — `_get_admin_ai_key()`'s inline construction
+  (previously had its own custom `socket_connect_timeout=1`, different from `get_redis()`'s pool
+  default of `2` — the shared pool's timeout is used now instead, a minor behavior change judged
+  safe since this is a fail-open helper, `except Exception: return ""`, and 2s vs 1s makes no
+  practical difference to a call that degrades to an empty string on any failure anyway).
+- `services/ml-prediction/src/features/builder.py` — `_redis_save_macro()`/`_redis_load_macro()`.
+- `services/ml-prediction/src/training/meta_trainer.py` — `_record_promotion_status()`'s
+  inline construction.
+
+**A repeat of the exact Phase 1 test-mocking gotcha, caught and fixed the same way**:
+`services/ml-prediction/tests/test_promotion_history.py` uses `importlib.util.exec_module()` to
+load a fresh copy of `meta_trainer.py` with its own `__package__` override, and mocked Redis by
+doing `monkeypatch.setitem(sys.modules, "redis", fake_redis_lib)` / `sys.modules["redis"] =
+fake_redis_lib` — coupled to the exact `redis.from_url()` call the source used to make. Once
+`meta_trainer.py` was changed to `from common.redis_client import get_redis`, the SAME
+`MagicMock`-stubbed-parent-package gotcha from Phase 1 applied again: `common` is stubbed as a
+bare `MagicMock()` by `conftest.py` (no real `common` package installed locally), so `import
+common.redis_client` auto-vivifies a distinct child mock on the parent each time, different from
+whatever is registered in `sys.modules` — a test patching a freshly re-imported name would
+silently miss the module the production code's own local import actually resolves. Fixed
+identically to Phase 1's `test_hard_rejects.py` fix: register `sys.modules.setdefault
+("common.redis_client", MagicMock())` up front, then patch `sys.modules["common.redis_client"]
+.get_redis` directly (the dict entry, not a fresh import binding) — verified via the same
+sabotage-and-confirm-failure cycle (reverted the source fix, confirmed 3 of 4 tests failed
+correctly, restored it).
+
+**Verification**: full test suites run for all 3 services after every change —
+signal-engine (54 tests, 4 pre-existing unrelated `test_analyst_momentum.py` failures confirmed
+via `git stash` to pre-date this change), research-engine (56 tests, 3 pre-existing unrelated
+`test_scoring.py` balance-sheet-assessment failures also confirmed via `git stash`), ml-prediction
+(19 tests, fully green). Frontend untouched by this pass (backend-only fix).
+
+**Still deliberately out of scope**: a broader duplicate-business-logic sweep (Phase 3 of the
+originally-proposed 3-phase audit) has not been run — this pass was scoped specifically to the
+same Redis-connection-pooling class of issue Phase 1 already established, not a fresh
+open-ended audit of these 3 services.
+
+**What to check if a Redis-pooling regression is suspected in these 3 services**:
+```bash
+grep -rn "redis_lib.Redis.from_url\|redis.Redis.from_url\|redis\.from_url" \
+  services/signal-engine/src services/research-engine/src services/ml-prediction/src
+# Should return nothing — all 9 sites found in this pass are fixed. If this ever shows a
+# match again, it's either a regression or a genuinely new site introduced since.
+```

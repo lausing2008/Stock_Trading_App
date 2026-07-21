@@ -17,7 +17,6 @@ config rather than duplicating it a third time.
 from __future__ import annotations
 
 import httpx
-import redis as redis_lib
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -34,7 +33,8 @@ _REDIS_DEEPSEEK_MODEL = "stockai:admin:deepseek_model"
 
 
 def _get_redis():
-    return redis_lib.from_url(_settings.redis_url, decode_responses=True)
+    from common.redis_client import get_redis as _get_pool_redis
+    return _get_pool_redis()
 
 
 def _admin_key(provider: str) -> str:

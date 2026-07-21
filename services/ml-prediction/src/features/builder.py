@@ -363,9 +363,9 @@ _MACRO_CACHE_TTL = 86_400  # 24 hours — macro data is daily, one fresh fetch p
 
 def _redis_save_macro(macro: pd.DataFrame) -> None:
     try:
-        import json, redis as redis_lib
-        from common.config import get_settings
-        r = redis_lib.Redis.from_url(get_settings().redis_url, decode_responses=True)
+        import json
+        from common.redis_client import get_redis as _get_pool_redis
+        r = _get_pool_redis()
         r.setex(_MACRO_CACHE_KEY, _MACRO_CACHE_TTL, macro.to_json(orient="split"))
     except Exception as exc:
         log.warning("macro_features.redis_save_failed", error=str(exc))
@@ -373,9 +373,9 @@ def _redis_save_macro(macro: pd.DataFrame) -> None:
 
 def _redis_load_macro() -> pd.DataFrame:
     try:
-        import json, redis as redis_lib
-        from common.config import get_settings
-        r = redis_lib.Redis.from_url(get_settings().redis_url, decode_responses=True)
+        import json
+        from common.redis_client import get_redis as _get_pool_redis
+        r = _get_pool_redis()
         raw = r.get(_MACRO_CACHE_KEY)
         if raw:
             return pd.read_json(raw, orient="split")

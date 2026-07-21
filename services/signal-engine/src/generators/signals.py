@@ -176,8 +176,8 @@ def _ml_service_token() -> str:
 def _load_ml_weight_override() -> float | None:
     """Load calibrated ML weight cap from Redis (primary), file (fallback)."""
     try:
-        import redis as _redis_lib
-        _rc = _redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        from common.redis_client import get_redis as _get_pool_redis
+        _rc = _get_pool_redis()
         _val = _rc.get("stockai:ml_weight_cap")
         if _val:
             v = float(_val)
@@ -203,8 +203,8 @@ def set_ml_weight_global_cap(cap: float | None) -> None:
     with _ml_weight_lock:
         _ml_weight_global_cap = cap
     try:
-        import redis as _redis_lib
-        _rc = _redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        from common.redis_client import get_redis as _get_pool_redis
+        _rc = _get_pool_redis()
         if cap is None:
             _rc.delete("stockai:ml_weight_cap")
         else:
@@ -249,8 +249,8 @@ def _load_ta_weights() -> dict[str, float]:
     T228: moved from file-only to Redis-primary so Docker rebuilds don't wipe calibration state.
     """
     try:
-        import redis as _redis_lib
-        _rc = _redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        from common.redis_client import get_redis as _get_pool_redis
+        _rc = _get_pool_redis()
         _raw = _rc.get("stockai:ta_weights")
         if _raw:
             return _apply_ta_weights_migration(json.loads(_raw))
@@ -304,8 +304,8 @@ def load_conviction_weights() -> dict[str, float]:
     T228: Redis-primary so weights survive Docker rebuilds.
     """
     try:
-        import redis as _redis_lib
-        _rc = _redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        from common.redis_client import get_redis as _get_pool_redis
+        _rc = _get_pool_redis()
         _raw = _rc.get("stockai:conviction_weights")
         if _raw:
             return json.loads(_raw).get("edge_pct", {})
@@ -1578,8 +1578,8 @@ def _fetch_analyst_momentum(symbol: str) -> tuple[int, int]:
 def _redis_get_float(key: str) -> float | None:
     """Read a float value from Redis; return None on miss or error."""
     try:
-        import redis as redis_lib
-        r = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        from common.redis_client import get_redis as _get_pool_redis
+        r = _get_pool_redis()
         val = r.get(key)
         return float(val) if val else None
     except Exception:

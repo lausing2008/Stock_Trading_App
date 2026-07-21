@@ -66,8 +66,8 @@ def _get_admin_ai_key(provider: str = "claude") -> str:
     """Return the admin-stored AI API key from Redis, or '' if unavailable."""
     rkey = _REDIS_CLAUDE_KEY if provider == "claude" else _REDIS_DEEPSEEK_KEY
     try:
-        import redis as redis_lib
-        r = redis_lib.from_url(_s.redis_url, decode_responses=True, socket_connect_timeout=1)
+        from common.redis_client import get_redis as _get_pool_redis
+        r = _get_pool_redis()
         return r.get(rkey) or ""
     except Exception:
         return ""
