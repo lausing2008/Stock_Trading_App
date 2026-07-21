@@ -5237,3 +5237,60 @@ docker exec stockai-ranking-engine-1 grep -n "_screen_stock_ids" /app/src/api/ro
 ```
 Should show the variable built right after `rows = session.execute(stmt).all()`, then used in
 both signal-query `.where(...)` clauses.
+
+---
+
+## Feature Reference: SELFIMPROVE-WATCHDOG-SELF-TUNING — Watchdog Self-Tuning Diagnostic Report (Built 2026-07-21)
+
+**The gap**: `signal_watchdog()`'s own meta-parameters (38% win-rate floor, +0.03/-0.02 step
+size, 15-sample floor, 3x max-tighten cap) were exactly as hardcoded and never-revisited as
+any of the base trading parameters the watchdog exists to correct. Depended on
+`SELFIMPROVE-NO-RETRO-FEEDBACK-LOOP` (`backfill_realized_ev()`) existing first, since this
+report reads the `realized_ev_pct_after` column that job populates.
+
+**Deliberately a read-only diagnostic report, not an auto-tuning job.** The tracker item's own
+fix description ("compute whether tighten actions' realized win-rate improved vs. relax
+actions") is analysis for a human to review — matching the existing `GET /tune_status`
+precedent — not a decision rule mature enough to safely automate. Auto-tuning the tuner itself
+would be a materially bigger, riskier step than the item's Phase-2 framing implies.
+
+**Implementation**: new `GET /watchdog_self_tuning_report` in
+`services/signal-engine/src/api/routes.py`. For every `promoted=True`,
+`triggered_by="watchdog"` `TuneHistory` row with `realized_ev_pct_after` populated (i.e.
+`backfill_realized_ev()` already computed a trustworthy retro-verdict), a new
+`_watchdog_action_kind(old_value, new_value)` classifies the row as `tighten` (new threshold
+> old) or `relax` (new < old) by comparing the stored `{"threshold": float}` JSON —
+`TuneHistory` never recorded the action type as its own field, so it's derived. Per style,
+reports:
+- Mean `realized_ev_pct_after` for tighten actions vs. relax actions.
+- `n_weak_tightens` — how many tighten actions still had **negative** realized EV even after
+  applying the +0.03 step, the closest measurable proxy for "the step size might be too
+  small." (`max_tighten_reached_manual_review_needed` itself is a no-op branch in
+  `signal_watchdog()` that never writes a `TuneHistory` row, so it can't be queried back
+  directly — a real, narrower scope than the fix description's literal ask, documented rather
+  than silently glossed over.)
+
+**Tests**: `services/signal-engine/tests/test_watchdog_self_tuning_report.py`, 7 cases —
+source-text checks confirm the endpoint is `GET`-registered, filters to exactly the 3 required
+conditions, and never calls `session.commit()`/`add()`/Redis `.setex()` anywhere in its body
+(the read-only property this whole design depends on); behavioral checks against the real,
+source-extracted `_watchdog_action_kind()` cover tighten/relax/unchanged classification and
+malformed-input safety.
+
+**Adversarial verification**: 2 sabotage cycles, both caught and reverted — swapping the
+tighten/relax classification, and removing the `realized_ev_pct_after` filter (which would
+have included not-yet-trustworthy rows).
+
+Full signal-engine suite green modulo 2 pre-existing, unrelated failures confirmed via
+git-stash to already fail identically before this change (`test_signal_generator.py`'s import
+error against current `signals.py`, and 4 `test_analyst_momentum.py` failures — both
+pre-existing gaps this fix did not introduce). Frontend typecheck clean.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-signal-engine-1 curl -s 'http://localhost:8005/watchdog_self_tuning_report' \
+  -H "Authorization: Bearer <token>"
+```
+Should return `by_style` with `n_tighten_actions`/`n_relax_actions` per horizon — likely all
+zero for a while, since it depends on `backfill_realized_ev()` having already found and
+populated enough aged, promoted watchdog rows.

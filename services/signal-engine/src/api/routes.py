@@ -228,6 +228,105 @@ def backfill_realized_ev(
     }
 
 
+# ── SELFIMPROVE-WATCHDOG-SELF-TUNING ────────────────────────────────────────────
+# signal_watchdog()'s own meta-parameters (38% win-rate floor, +0.03/-0.02 step size, 15
+# min-samples, 3x max-tighten) are exactly as hardcoded and never-revisited as any of the base
+# trading parameters the watchdog exists to correct. Depended on SELFIMPROVE-NO-RETRO-FEEDBACK-
+# LOOP (backfill_realized_ev(), above) existing first — this report reads the realized_ev_pct_
+# after column that job populates.
+#
+# Deliberately a READ-ONLY diagnostic report, not an auto-tuning job that mutates the watchdog's
+# actual parameters. The tracker's own fix description asks to "compute whether tighten actions'
+# realized win-rate improved vs. relax actions, and whether max_tighten_review is hit often with
+# win rate still below floor" — that's diagnostic analysis for a human to review (matching the
+# existing GET /tune_status precedent), not a decision rule mature enough to safely automate.
+# Auto-tuning the tuner is a materially bigger, riskier step than this item's own Phase-2 framing
+# implies — better to surface the data first and let a human decide if/how to act on it.
+_WATCHDOG_STEP = 0.03      # signal_watchdog()'s hardcoded tighten step, mirrored here for context
+_WATCHDOG_RELAX_STEP = 0.02
+
+
+def _watchdog_action_kind(old_value: dict, new_value: dict) -> str | None:
+    """tighten (threshold went up) vs relax (went down) vs unknown (malformed row)."""
+    try:
+        old_thr = float(old_value.get("threshold"))
+        new_thr = float(new_value.get("threshold"))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if new_thr > old_thr:
+        return "tighten"
+    if new_thr < old_thr:
+        return "relax"
+    return None
+
+
+@router.get("/watchdog_self_tuning_report")
+def watchdog_self_tuning_report(
+    session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
+):
+    """Diagnostic report on signal_watchdog()'s own historical effectiveness, grouped by style.
+
+    For every promoted=True, triggered_by="watchdog" TuneHistory row with realized_ev_pct_after
+    populated (i.e. enough real SignalOutcome data has accumulated since the change to trust a
+    verdict — see backfill_realized_ev()'s own wait-floor logic), classifies the action as
+    tighten or relax (by comparing old_value/new_value's threshold) and reports:
+      - mean realized EV% for tighten actions vs. relax actions, per style
+      - how often max_tighten_reached_manual_review_needed fires with the 14d win rate still
+        below the 38% floor at the time (suggesting +0.03 may be too small a step)
+    Read-only — never mutates any watchdog state. See this endpoint's own module comment above
+    for why this is diagnostic-only rather than an auto-tuning job.
+    """
+    rows = session.execute(
+        select(TuneHistory).where(
+            TuneHistory.triggered_by == "watchdog",
+            TuneHistory.parameter_name == "watchdog_buy_threshold",
+            TuneHistory.promoted.is_(True),
+            TuneHistory.realized_ev_pct_after.is_not(None),
+        )
+    ).scalars().all()
+
+    by_style: dict[str, dict] = {}
+    for style in ("SHORT", "SWING", "LONG", "GROWTH"):
+        style_rows = [r for r in rows if r.style == style]
+        tighten_evs = []
+        relax_evs = []
+        for r in style_rows:
+            kind = _watchdog_action_kind(r.old_value or {}, r.new_value or {})
+            if kind == "tighten":
+                tighten_evs.append(r.realized_ev_pct_after)
+            elif kind == "relax":
+                relax_evs.append(r.realized_ev_pct_after)
+
+        # max_tighten_reached_manual_review_needed is logged as an `action` in signal_watchdog's
+        # in-memory response but NEVER written to TuneHistory (it's a no-op branch — no
+        # threshold actually changes when the cap is hit) — so it can't be queried back from
+        # this table. Report what CAN be measured from TuneHistory: how many of this style's
+        # promoted tighten actions themselves indicate the step size struggled — i.e. a tighten
+        # action whose OWN realized_ev_pct_after is still negative, meaning even after applying
+        # +0.03 the resulting period was still a net loser on average.
+        weak_tightens = sum(1 for ev in tighten_evs if ev < 0)
+
+        by_style[style] = {
+            "n_tighten_actions": len(tighten_evs),
+            "n_relax_actions": len(relax_evs),
+            "mean_realized_ev_pct_after_tighten": round(sum(tighten_evs) / len(tighten_evs), 3) if tighten_evs else None,
+            "mean_realized_ev_pct_after_relax": round(sum(relax_evs) / len(relax_evs), 3) if relax_evs else None,
+            "n_weak_tightens": weak_tightens,
+            "weak_tighten_note": (
+                f"{weak_tightens}/{len(tighten_evs)} tighten actions still had negative realized EV "
+                f"after applying the +{_WATCHDOG_STEP} step — may indicate the step size is too small"
+            ) if weak_tightens else None,
+        }
+
+    return {
+        "watchdog_step": _WATCHDOG_STEP,
+        "watchdog_relax_step": _WATCHDOG_RELAX_STEP,
+        "by_style": by_style,
+        "n_total_realized_rows": len(rows),
+    }
+
+
 # ── T223: Confidence calibration — outcome-based win rate lookup ──────────────
 # Confidence band → actual win rate from signal_outcomes (Redis-cached, 1h TTL).
 # Enriches every signal response so traders know if "70 confidence" means 55% or 65% wins.
