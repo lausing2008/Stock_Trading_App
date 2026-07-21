@@ -220,8 +220,8 @@ def _write_parquet(df: pd.DataFrame, symbol: str, timeframe: str) -> None:
 
 def _bust_live_price_cache() -> None:
     try:
-        import redis as redis_lib
-        r = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        from common.redis_client import get_redis as _get_pool_redis
+        r = _get_pool_redis()
         r.delete("stockai:live_prices")
     except Exception:
         pass

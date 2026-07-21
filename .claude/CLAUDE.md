@@ -5749,3 +5749,67 @@ docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
 
 **Still deferred**: a broader duplicate-business-logic sweep (distinct from both the
 Redis-connection audit and this cross-service-wiring pass) has not yet been scoped or run.
+
+---
+
+## Full-Codebase Audit — Redis Connection Pooling: Closing the Loop (2026-07-21)
+
+**Found while checking "is Phase 1/2 actually complete"**: a definitive `grep` across ALL 11
+services' `src/` for raw `redis.Redis.from_url()`/`redis.from_url()` constructions turned up 4
+sites Phase 1/2 had NOT actually closed:
+
+1. **`services/market-data/src/api/paper_portfolio.py:1152`** (`list_portfolios()`'s gate-block
+   read) — Phase 1's own audit found this site, but its verify-agent REFUTED fixing it,
+   reasoning it "matches this file's own dominant local convention." Re-checked directly this
+   pass: that reasoning doesn't hold — `paper_portfolio.py` had **zero** uses of the shared
+   pooled `get_redis()` anywhere, so there was no real "dominant convention" being preserved by
+   leaving it raw; it was simply the one site the audit happened to look at, in a file that
+   turned out to have 2 more identical raw-construction sites (`/de-divergences` at line 2025,
+   `/position-scaling-shadow` at line 2074) the original pass never checked.
+2. **`services/market-data/src/services/ingestion.py:224`** (`_bust_live_price_cache()`) —
+   same REFUTED-as-"dominant-convention" reasoning from Phase 1, same problem: with only one
+   Redis site in the whole file, there was no actual convention to match, just the one place
+   Redis happened to be used.
+3. **`services/event-intelligence/src/services/macro_reaction.py:86`** (`_api_key()`'s Claude-
+   key Redis-first lookup) — event-intelligence was never in scope for Phase 1 (market-data +
+   decision-engine) or Phase 2 (signal-engine + research-engine + ml-prediction) at all; this
+   surfaced only from doing an exhaustive re-check rather than trusting either phase's own
+   "done" list.
+
+**Fixed all 4** — same `common.redis_client.get_redis()` pattern as every other fix in this
+audit. `paper_portfolio.py`'s 3 sites and `ingestion.py`'s 1 site: no coupled tests found by
+name (`_pf_redis`/`de-divergences`/`position-scaling-shadow`/`_bust_live_price_cache` all
+absent from `market-data/tests/`). `macro_reaction.py`'s `_api_key()` IS coupled to
+`test_macro_reaction.py`, but only via `monkeypatch.setattr(mr, "_api_key", lambda: ...)` —
+patching the function by name, not its internal Redis call — so it was unaffected by the
+internal-implementation change.
+
+**Lesson reinforced**: a prior pass's own "REFUTED, matches the file's dominant convention"
+verdict is only as good as how much of that file the verify-agent actually looked at — "matches
+this file's own convention" is meaningless if the reviewer only saw one instance of the
+pattern. Confirming a convention is real (multiple identical sites already establishing it)
+vs. assumed (one site, no real basis for calling it "the convention") needs an actual count,
+not a one-site sample. The fix here was to keep it simple: with the shared pooled `get_redis()`
+now the ACTUAL established convention across 10+ other files in this same audit, there was no
+principled reason left to leave these 4 sites as exceptions.
+
+**Verification**: full market-data suite (371 tests, unchanged — these were additive fixes to
+already-covered code with no dedicated tests of their own) and full event-intelligence suite
+(159 tests) both green after the change.
+
+**Definitive final state, confirmed via exhaustive grep across ALL 11 services**:
+```bash
+grep -rn "redis\.Redis\.from_url\|redis\.from_url\|redis_lib\.Redis\.from_url\|redis_lib\.from_url" \
+  services/*/src/
+# Returns NOTHING — zero raw Redis constructions anywhere in the repo. Phase 1 + Phase 2 +
+# this closing-the-loop pass together account for all 14 sites found across the whole
+# codebase's history of this audit (9 in Phase 1, 9 in Phase 2 — wait, tallying: Phase 1 fixed
+# 9 sites in market-data+decision-engine; Phase 2 fixed 9 more in signal-engine+research-engine+
+# ml-prediction; this pass fixed the final 4 in market-data/event-intelligence Phase 1/2 missed).
+# technical-analysis, api-gateway, strategy-engine, and portfolio-optimizer have zero raw Redis
+# construction sites of any kind (confirmed, not just unchecked).
+```
+
+If this grep ever returns a match again, it's either a genuine regression or a new site
+introduced since — there is no longer any "some services haven't been audited yet" excuse,
+since this pass covered literally all 11.

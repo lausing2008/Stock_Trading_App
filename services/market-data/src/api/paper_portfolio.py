@@ -1147,9 +1147,8 @@ def list_portfolios(
     # case where no portfolio-level gate fired but every candidate failed its own check.
     _no_entry_summaries: dict[int, dict] = {}
     try:
-        import redis as _pf_redis
-        from common.config import get_settings as _pf_gs
-        _pf_r = _pf_redis.Redis.from_url(_pf_gs().redis_url, decode_responses=True)
+        from common.redis_client import get_redis as _get_pool_redis
+        _pf_r = _get_pool_redis()
         for p in portfolios:
             raw = _pf_r.get(f"paper:gate_block:{p.id}")
             if raw:
@@ -2020,9 +2019,9 @@ def get_de_divergences(
     _: User = Depends(get_current_user),
 ) -> dict:
     """Return recent Decision Engine shadow divergences and agreements from Redis."""
-    import redis as _redis_lib
     try:
-        rc = _redis_lib.from_url(_settings.redis_url, decode_responses=True, socket_connect_timeout=2)
+        from common.redis_client import get_redis as _get_pool_redis
+        rc = _get_pool_redis()
         raw_div = rc.lrange("de:divergences", 0, limit - 1)
         raw_agr = rc.lrange("de:agreements", 0, limit - 1)
         total_div = rc.llen("de:divergences")
@@ -2069,9 +2068,9 @@ def get_position_scaling_shadow(
     window) and ps:shadow:resolved (verdicts scheduler.py has checked against the real
     subsequent price) from Redis — same pattern as /de-divergences above.
     """
-    import redis as _redis_lib
     try:
-        rc = _redis_lib.from_url(_settings.redis_url, decode_responses=True, socket_connect_timeout=2)
+        from common.redis_client import get_redis as _get_pool_redis
+        rc = _get_pool_redis()
         raw_pending = rc.lrange("ps:shadow:pending", 0, limit - 1)
         raw_resolved = rc.lrange("ps:shadow:resolved", 0, limit - 1)
         total_pending = rc.llen("ps:shadow:pending")

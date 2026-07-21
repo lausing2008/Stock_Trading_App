@@ -82,8 +82,8 @@ _RELEASE_TO_FRED_SERIES: dict[str, str] = {
 
 def _api_key() -> str:
     try:
-        import redis as _redis_lib
-        r = _redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        from common.redis_client import get_redis as _get_pool_redis
+        r = _get_pool_redis()
         key = r.get(_REDIS_CLAUDE_KEY) or ""
         if key.strip():
             return key.strip()
