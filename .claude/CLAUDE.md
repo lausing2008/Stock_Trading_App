@@ -5406,3 +5406,99 @@ grep -rn "redis_lib.Redis.from_url\|redis.Redis.from_url\|redis\.from_url" \
 # ml-prediction WILL still show matches — that's the documented, deliberate Phase-2+ deferral,
 # not a missed fix.
 ```
+
+---
+
+## Feature Reference: T232-SIG10 — Bearish Pillar Mirror (`bearish_pillars_active`, Built 2026-07-21)
+
+**Context**: this tracker item's own history (2026-07-04) already investigated and rejected
+regime-tiered SELL thresholds and a `min_pillars_for_sell` gate as **unsupported by data** —
+96%+ of SELL outcome rows are bull-regime only, with near-zero bear/choppy/risk_off samples.
+Re-verified live against production Postgres before starting any work (per this file's own
+"verify against live state, not a stale investigation date" discipline): the gap is unchanged
+— 2,474 bull-regime SELL outcomes vs. 33 unknown vs. **zero** bear/high_vol samples. A genuinely
+new finding from this re-check: **BUY's own regime tiers are equally uncalibrated** — 3,176
+bull vs. 1 bear vs. 3 unknown outcome rows — meaning BUY's bear/high_vol/unknown thresholds in
+`_STYLE_PROFILES` were always hand-set deltas off the bull baseline, never actually fit against
+real non-bull outcome data either. This reframes the item: it's not that SELL is missing
+infrastructure BUY already validated — neither direction has real non-bull data to calibrate
+against yet.
+
+**What was built instead**: the genuinely tractable, non-data-blocked prerequisite —
+`bearish_pillars_active` in `services/signal-engine/src/generators/signals.py`'s `_ta_score()`,
+mirroring the existing bullish TREND/MOMENTUM/VOLUME/STRUCTURE pillar architecture (SA-19/SA-30)
+with each pillar's own bearish-specific conditions, not a naive `1 - bullish_score` (which would
+just restate the bullish pillar and score a merely-neutral stock as equally bearish):
+- **TREND**: death cross / supertrend cross-down analog — golden cross or supertrend cross-up
+  is a hard override to 0.0 (mirrors the bullish pillar's death-cross/cross-down override to 0.0).
+- **MOMENTUM**: RSI in a bearish sweet spot (35-55) vs. mild overbought (55-65) vs. mild oversold
+  (28-35, still a valid warning) vs. zeroed at extreme oversold (<=28, bounce territory, not
+  confirmation to sell) — same "meaningful zone, not just inverse of bullish" structure as the
+  bullish pillar's RSI scoring. MACD histogram negative-and-expanding-down, a new
+  `macd_zero_cross_down` (mirrors the existing `macd_zero_cross_up`). Stochastic RSI overbought
+  (bearish reversal) or a new `stoch_rsi_cross_down` (mirrors `stoch_rsi_cross_up`), zeroed when
+  oversold (bullish reversal territory).
+- **VOLUME**: OBV trend bearish + volume expansion together = full conviction (distribution, not
+  accumulation); either alone = partial. Exact AND-logic mirror of the bullish volume pillar.
+- **STRUCTURE**: below VWAP + BB%B pinned near the **lower** band specifically. New `bearish_trend`
+  boolean (`di_minus > di_plus` when trending) added as the ADX-direction mirror of the existing
+  `bullish_trend`.
+
+**Deliberately NOT wired into any live gate, compression, or threshold** — this is pure
+observability written into `Signal.reasons` (already a flexible JSON column, no schema change
+needed) so real bearish-evidence data starts accumulating from today. A future calibration pass
+needs both (a) enough non-bull-regime SELL outcomes AND (b) enough `bearish_pillars_active`
+history to validate a real `min_pillars_for_sell` gate against — building the gate now, before
+either exists, would repeat the exact "overfit argmax on thin data" mistake already documented
+at T232-OC3. `SignalOutcome` does not yet have a `bearish_pillars_active` column (unlike
+`market_regime`, which IS copied from `Signal.reasons` at outcome-evaluation time) — deliberately
+deferred until there's a real calibration pass ready to consume it; adding the column now would
+be schema infrastructure ahead of validated need.
+
+**A real bug caught and fixed during development, before it could ship**: the first version of
+the bearish structure sub-score used `bb_bear_score = 0.8 if not (0.2 < bb_pct_b < 0.8) else 0.0`
+— treating BB%B outside the neutral band as bearish evidence on **either** extreme. But a %B near
+1.0 (upper-band extreme) is what a steady, healthy uptrend produces — a bullish extreme, not
+bearish evidence. A synthetic strong-uptrend fixture (clean, low-noise, `trend=0.5`) scored
+`bearish_pillar_structure=0.65` and `bearish_pillars_active=4` (all 4 pillars) purely from this
+bug, despite every other pillar correctly reading bullish. Caught by manually tracing the
+sub-scores for a case that looked wrong, not by the test suite (which was written after the fix).
+Fixed by restricting `bb_bear_score` to the **lower**-band extreme only (`bb_pct_b <= 0.2`),
+mirroring the bullish pillar's own asymmetric structure (its `bb_score` only rewards the neutral
+band, `0.2 < bb_pct_b < 0.8`, not either extreme).
+
+**Tests**: `services/signal-engine/tests/test_bearish_pillars.py`, 12 cases — a new file rather
+than extending `test_signal_generator.py`, which has a pre-existing, unrelated `ImportError`
+(`_decide` no longer exists in `signals.py`, likely renamed to `_decide_style` at some point)
+that blocks that file's collection entirely; confirmed via `git stash` that this failure
+pre-dates this session's changes. Covers: all new `reasons` keys present, `bearish_pillars_active`
+correctly derived as a count of sub-scores `>= 0.5`, all 4 sub-scores in `[0, 1]`, a strong clean
+uptrend scores <=1 bearish pillars active (the exact property the bb_bear_score bug violated),
+a strong downtrend has more bearish than bullish pillars active and vice versa for uptrends, the
+golden-cross/supertrend-cross-up hard override to 0.0, and short-data robustness. Adversarially
+verified: reverted the `bb_bear_score` fix and confirmed
+`test_bearish_pillar_structure_not_triggered_by_upper_band_extreme` failed correctly
+(`0.65 < 0.5` assertion) before restoring it.
+
+**Verification**: 12/12 new tests pass; full signal-engine suite green modulo the 2 pre-existing,
+unrelated failure groups already documented elsewhere in this file
+(`test_signal_generator.py`'s `_decide` import error, 4 `test_analyst_momentum.py` failures) —
+confirmed via `git stash` that both pre-date this change. Frontend typecheck clean (only
+`improvements.tsx`'s tracker-entry text was touched on the frontend side).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-signal-engine-1 python3 -c "
+import sys; sys.path.insert(0, '/app'); sys.path.insert(0, '/app/src')
+from generators.signals import _ta_score
+import pandas as pd, numpy as np
+# feed a real symbol's recent price DataFrame here to inspect bearish_pillars_active live
+"
+# Or check a real Signal row's reasons JSON directly:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT symbol, reasons->'bearish_pillars_active', reasons->'independent_pillars_active' FROM signals ORDER BY ts DESC LIMIT 10;"
+```
+If `bearish_pillars_active` looks implausible for a specific stock (e.g. 4/4 on an obviously
+strong uptrend), re-run the exact regression check this bug was caught with: confirm `bb_pct_b`
+isn't near the upper-band extreme (>0.8) while `bearish_pillar_structure` still reads >= 0.5 —
+that specific combination is the bug class this fix closed.

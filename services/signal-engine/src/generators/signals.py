@@ -1209,6 +1209,109 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
     reasons["pillar_volume"]    = round(p_volume, 2)
     reasons["pillar_structure"] = round(p_structure, 2)
 
+    # T232-SIG10: bearish mirror of the 4 pillars above — observability-only, not wired into
+    # any live gate/compression yet. Deliberately NOT `1 - bullish_score`: that would just be a
+    # restatement of the bullish pillar, not independent bearish evidence, and would score a
+    # merely-neutral stock (bullish pillar ~0.5) as equally bearish, which is wrong. Each
+    # bearish pillar is scored from its own bearish-specific conditions (death cross, RSI/MACD
+    # breaking down, OBV distribution, price below VWAP/BB), mirroring the bullish pillar's
+    # exact structure inverted. This exists so bear/high_vol/choppy/risk_off SELL outcome data
+    # starts accumulating a `bearish_pillars_active` value from today — per this tracker item's
+    # own prior finding (2026-07-04, re-confirmed 2026-07-20: 2474 bull-regime SELL outcomes vs.
+    # 33 unknown vs. ZERO bear/high_vol samples), there is not yet enough non-bull SELL outcome
+    # data to fit a real min_pillars_for_sell gate or regime-tiered sell_threshold against —
+    # inventing one now would repeat the exact "overfit argmax on thin data" mistake already
+    # documented at T232-OC3. This block collects the feature so a future calibration pass has
+    # something real to validate against, without gating/compressing any live signal yet.
+    bearish_trend = trending and di_minus > di_plus
+    macd_zero_cross_down = False
+    if len(macd_line.dropna()) >= 2:
+        macd_zero_cross_down = bool(macd_line.iloc[-1] < 0 and macd_line.iloc[-2] >= 0)
+    stoch_rsi_cross_down = False
+    if len(k_smooth.dropna()) >= 2:
+        stoch_rsi_cross_down = bool(k_smooth.iloc[-1] < 0.80 and k_smooth.iloc[-2] >= 0.80)
+    reasons["bearish_trend"]          = bearish_trend
+    reasons["macd_zero_cross_down"]   = macd_zero_cross_down
+    reasons["stoch_rsi_cross_down"]   = stoch_rsi_cross_down
+
+    # TREND (bearish) — mirrors p_trend: death cross / supertrend cross-down as a hard
+    # override (confirmed downtrend), else weighted from below-SMA50, a death-cross already
+    # in place with the spread still widening (analogous to gc_spread_expanding above),
+    # bearish ADX trend, and a fresh supertrend cross-down.
+    if golden_cross_event or st_cross_up:
+        pb_trend = 0.0  # confirmed uptrend; hard override, mirrors death_cross_event above
+    else:
+        _dc_score = (
+            1.0 if (death_cross_event and _vz > 0.5 and not gc_spread_expanding) else
+            0.8 if (death_cross_event and not gc_spread_expanding) else
+            0.5 if death_cross_event else
+            0.0
+        )
+        _sma_death_score = (0.8 if not gc_spread_expanding else 0.4) if not sma50_above_sma200 else 0.0
+        _st_bear_score = 1.0 if st_cross_down else (0.7 if st_trend == -1 else 0.0)
+        pb_trend = (
+            (1.0 if above_sma50 is False else 0.0) * 0.30 +
+            _sma_death_score                         * 0.25 +
+            (1.0 if bearish_trend else 0.0)          * 0.20 +
+            _dc_score                                * 0.15 +
+            _st_bear_score                           * 0.10
+        )
+
+    # MOMENTUM (bearish) — mirrors p_momentum: RSI breaking down (not just "not bullish"),
+    # MACD histogram negative and expanding downward, stochastic RSI overbought-reversing.
+    rsi_bear_score = (
+        1.0 if (rsi_val is not None and 35 < rsi_val < 55) else  # bearish sweet spot
+        0.8 if (rsi_val is not None and 55 <= rsi_val < 65) else  # mild overbought, room to fall
+        0.5 if (rsi_val is not None and 28 <= rsi_val <= 35) else  # oversold but not extreme
+        0.0
+    )
+    macd_bear_score = (
+        1.0 if (macd_hist < 0 and not macd_hist_expanding) else
+        0.9 if macd_zero_cross_down else
+        0.7 if macd_hist < 0 else
+        0.0
+    )
+    stoch_bear_score = 0.8 if stoch_overbought else (0.7 if stoch_rsi_cross_down else 0.0)
+    if stoch_oversold:
+        stoch_bear_score *= 0.0  # oversold is bullish reversal territory — zero the bear score
+        macd_bear_score  *= 0.7
+    if rsi_val is not None and rsi_val <= 28:
+        rsi_bear_score   *= 0.0  # extreme oversold is a bounce warning, not confirmation to sell
+    pb_momentum = rsi_bear_score * 0.35 + macd_bear_score * 0.40 + stoch_bear_score * 0.25
+
+    # VOLUME (bearish) — mirrors p_volume: OBV trend bearish + volume expansion together
+    # is full conviction (distribution, not accumulation); either alone is partial.
+    obv_bear_signal = not obv_trend_bullish
+    if obv_bear_signal and vol_z_signal:
+        pb_volume = 1.0
+    elif obv_bear_signal or vol_z_signal:
+        pb_volume = 0.6
+    else:
+        pb_volume = 0.0
+
+    # STRUCTURE (bearish) — mirrors p_structure: below VWAP + BB%B pinned near the LOWER band
+    # specifically (bb_pct_b <= 0.2), not "outside the neutral band" generally — a %B near 1.0
+    # (upper-band extreme, e.g. a strong steady uptrend) is a bullish extreme, not bearish
+    # evidence, and treating both tails as bearish would score a strongly uptrending stock as
+    # partially bearish on structure alone, which real data confirmed was wrong before this fix.
+    bb_bear_score = 0.8 if bb_pct_b <= 0.2 else 0.0
+    vwap_bear_score = (
+        1.0 if price_above_vwap is False else
+        0.0 if price_above_vwap is True else
+        0.4
+    )
+    pb_structure = max(vwap_bear_score, bb_bear_score)
+    if price_above_vwap is True:
+        pb_structure = max(0.0, pb_structure - 0.15)  # above VWAP pulls bearish structure down
+
+    bearish_pillar_scores = [pb_trend, pb_momentum, pb_volume, pb_structure]
+    bearish_pillars_active = sum(1 for ps in bearish_pillar_scores if ps >= 0.5)
+    reasons["bearish_pillars_active"] = bearish_pillars_active
+    reasons["bearish_pillar_trend"]     = round(pb_trend, 2)
+    reasons["bearish_pillar_momentum"]  = round(pb_momentum, 2)
+    reasons["bearish_pillar_volume"]    = round(pb_volume, 2)
+    reasons["bearish_pillar_structure"] = round(pb_structure, 2)
+
     base = float(np.mean(pillar_scores))
 
     # STY-001: If calibrated TA weights were loaded from ta_weights.json, blend a
