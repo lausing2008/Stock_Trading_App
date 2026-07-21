@@ -2195,9 +2195,54 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             # _best_price() does elsewhere in this file (live -> cached current_price ->
             # entry_price) so exit checks still run against the best price we have.
             live_price = trade.current_price or trade.entry_price
-            log.warning("paper.monitor_price_fallback", symbol=trade.symbol,
-                        trade_id=trade.id, fallback_price=live_price,
-                        note="live quote missing this cycle — using cached/entry price for exit checks")
+
+            # BUG-MONITORPOS-STALEPRICE: the fallback above used to fire silently forever —
+            # trade.current_price was unconditionally overwritten with the SAME stale value
+            # every cycle (this loop runs every 5-10 min, per this module's own docstring),
+            # with no tracking of how many consecutive cycles a real quote hasn't arrived.
+            # A genuinely bad multi-cycle data outage (feed issue, halt, delisting) could
+            # leave a position's stop/target checks running against an increasingly frozen
+            # price for an unbounded time with zero visibility or escalation — a single
+            # log.warning() per cycle looks identical whether this is cycle 1 or cycle 50.
+            # Track consecutive stale cycles in Redis (no schema change needed — this is
+            # transient monitoring state, not something that needs to survive a restart)
+            # and escalate to log.error() once it crosses a real, actionable threshold, so
+            # a genuinely stuck feed is distinguishable in logs/alerts from one normal
+            # missed tick. Never changes which price is actually used for exit math —
+            # that's a separate, larger, more consequential decision than this fix.
+            _stale_count = 0
+            try:
+                import redis as _redis_lib
+                from common.config import get_settings as _gs_stale
+                _stale_redis = _redis_lib.Redis.from_url(_gs_stale().redis_url, decode_responses=True)
+                _stale_key = f"stockai:monitor_stale_price:{trade.id}"
+                _stale_count = int(_stale_redis.incr(_stale_key))
+                _stale_redis.expire(_stale_key, 3600)  # 1h — well past any real multi-cycle gap
+            except Exception:
+                _stale_count = 0  # fail-open — staleness tracking is diagnostic, never blocks exit checks
+
+            _STALE_ESCALATION_THRESHOLD = 5  # ~25-50 min of missing quotes at 5-10 min cadence
+            if _stale_count >= _STALE_ESCALATION_THRESHOLD:
+                log.error("paper.monitor_price_stale_escalation", symbol=trade.symbol,
+                          trade_id=trade.id, fallback_price=live_price, stale_cycles=_stale_count,
+                          note="live quote missing for many consecutive cycles — exit checks "
+                               "running against an increasingly stale price")
+            else:
+                log.warning("paper.monitor_price_fallback", symbol=trade.symbol,
+                            trade_id=trade.id, fallback_price=live_price, stale_cycles=_stale_count,
+                            note="live quote missing this cycle — using cached/entry price for exit checks")
+        else:
+            # A real quote arrived this cycle — clear any accumulated staleness streak so a
+            # single missed tick followed by a healthy cycle doesn't carry a false streak
+            # into a LATER, unrelated gap.
+            try:
+                import redis as _redis_lib
+                from common.config import get_settings as _gs_stale
+                _redis_lib.Redis.from_url(_gs_stale().redis_url, decode_responses=True).delete(
+                    f"stockai:monitor_stale_price:{trade.id}"
+                )
+            except Exception:
+                pass
 
         trade.current_price = live_price
         if trade.highest_price is None or live_price > trade.highest_price:
