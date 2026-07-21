@@ -1402,6 +1402,27 @@ def check_volume_anomalies() -> None:
             _record_job_status("check_volume_anomalies", "ok", time.monotonic() - _t0)
             return
 
+        # BUG-VOLANOM-STALEMARKET: this job trusted stockai:live_prices unconditionally, with
+        # no check on whether the market that cache entry belongs to is actually open right
+        # now. GET /stocks/latest_prices' own cache-miss fallback (routes.py) re-fetches and
+        # re-writes this SAME shared key on every request regardless of market hours — so a
+        # frontend page merely being open and polling in the background (no scheduled refresh
+        # involved at all) keeps re-populating the cache with yfinance's last COMPLETED daily
+        # bar for a closed market, stamped with a fresh TTL each time. This job then read that
+        # stale daily-bar volume as if it were live "this cycle" data — confirmed in production
+        # 2026-07-20/21: a "1 stock triggered" HK volume alert fired continuously for 30+
+        # minutes before HK's 09:30 HKT open, using HK's last FINISHED session's volume, not
+        # anything from the still-not-yet-open new session. _is_market_hours() (the same
+        # helper _should_enter()'s fallback gate already uses, including HK's lunch-break and
+        # holiday handling) is the correct, already-established source of truth — reused here
+        # instead of hand-rolling a second market-hours check.
+        from .paper_trading_engine import _is_market_hours
+        _us_market_open = _is_market_hours("US")
+        _hk_market_open = _is_market_hours("HK")
+        if not _us_market_open and not _hk_market_open:
+            _record_job_status("check_volume_anomalies", "ok", time.monotonic() - _t0)
+            return
+
         # Same session-elapsed scaling as the post-open digest's vol_surge (T241-AUDIT-
         # RVOL-INTRADAY-BIAS), computed once per market since HK/US have different session
         # lengths and open at different UTC times — cheap, no DB query needed for this.
@@ -1438,7 +1459,16 @@ def check_volume_anomalies() -> None:
                 prev_close = row.get("prev_close")
                 if not sym or not vol or not avg_vol:
                     continue
-                threshold = _hk_threshold if sym.upper().endswith(".HK") else _us_threshold
+                _is_hk_sym = sym.upper().endswith(".HK")
+                # BUG-VOLANOM-STALEMARKET: skip THIS symbol's own market when it isn't open,
+                # not just short-circuit the whole scan — HK can be open while US is closed
+                # (or vice versa), and the shared live_prices cache holds both markets' rows
+                # at once regardless of which one is actually trading right now.
+                if _is_hk_sym and not _hk_market_open:
+                    continue
+                if not _is_hk_sym and not _us_market_open:
+                    continue
+                threshold = _hk_threshold if _is_hk_sym else _us_threshold
                 rvol = float(vol) / float(avg_vol)
                 if rvol < threshold:
                     continue

@@ -142,3 +142,55 @@ def test_daily_cap_and_dedup_keys_use_the_established_naming_convention():
     body = _scheduler_source[start:end]
     assert "stockai:vol_anomaly_cap:" in body
     assert "stockai:vol_anomaly:" in body
+
+
+# ── BUG-VOLANOM-STALEMARKET: market-hours gating ────────────────────────────────────────────
+# Confirmed live in production 2026-07-20/21: GET /stocks/latest_prices' own cache-miss
+# fallback (routes.py) re-fetches and re-writes stockai:live_prices on every cache-expiry
+# request regardless of market hours, so a frontend page merely being open (no scheduled
+# refresh job involved at all) kept the cache populated with yfinance's last COMPLETED daily
+# bar for HK — closed at the time — stamped with a fresh 90s TTL every ~2 minutes. This job
+# read that stale daily-bar volume as if it were live "this cycle" data and fired a false
+# "abnormal volume" alert for an HK stock 80+ minutes before HK's actual 09:30 HKT open.
+
+def _volume_anomaly_body() -> str:
+    start = _scheduler_source.index("def check_volume_anomalies(")
+    end = _scheduler_source.index("\ndef ", start + 1)
+    return _scheduler_source[start:end]
+
+
+def test_scan_checks_is_market_hours_for_both_markets_before_scanning():
+    """Must reuse the already-established _is_market_hours() helper (same one
+    _should_enter()'s fallback gate already uses, including HK's lunch-break/holiday
+    handling) rather than trusting the cache blindly or hand-rolling a second, less complete
+    market-hours check."""
+    body = _volume_anomaly_body()
+    assert "from .paper_trading_engine import _is_market_hours" in body
+    assert '_is_market_hours("US")' in body
+    assert '_is_market_hours("HK")' in body
+
+
+def test_scan_short_circuits_entirely_when_both_markets_are_closed():
+    """The whole scan must bail out early (before even computing thresholds) when neither
+    market is open — not just filter individual rows, so a fully-closed dead window costs
+    nothing beyond the two _is_market_hours() calls."""
+    body = _volume_anomaly_body()
+    gate_idx = body.index("if not _us_market_open and not _hk_market_open:")
+    threshold_idx = body.index("_ABNORMAL_BASE = 2.5")
+    assert gate_idx < threshold_idx, "the both-closed short-circuit must happen before threshold computation"
+
+
+def test_scan_skips_hk_symbols_when_hk_market_is_closed_even_if_us_is_open():
+    """HK can be closed while US is open (the exact confirmed production scenario) — the
+    shared live_prices cache holds both markets' rows at once, so each row's OWN market must
+    be checked individually, not just a single both-closed short-circuit."""
+    body = _volume_anomaly_body()
+    assert "if _is_hk_sym and not _hk_market_open:" in body
+    assert "continue" in body[body.index("if _is_hk_sym and not _hk_market_open:"):][:80]
+
+
+def test_scan_skips_us_symbols_when_us_market_is_closed_even_if_hk_is_open():
+    """The mirror case — US symbols must be skipped when only HK is open."""
+    body = _volume_anomaly_body()
+    assert "if not _is_hk_sym and not _us_market_open:" in body
+    assert "continue" in body[body.index("if not _is_hk_sym and not _us_market_open:"):][:80]
