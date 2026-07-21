@@ -1918,7 +1918,7 @@ def short_interest(
 
 # ── T220-G: Sector K-Score Rotation ──────────────────────────────────────────
 
-@router.get("/stocks/sector-rotation")
+@router.get("/sector-rotation")
 def get_sector_rotation():
     """Return current sector K-Score momentum (computed Sunday, cached in Redis).
 

@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from common.config import get_settings
 from common.jwt_auth import get_current_username
 from common.logging import get_logger
 from db import Fundamental, Price, Ranking, Signal, SignalType, Stock, TimeFrame, get_session
@@ -27,12 +28,17 @@ from ..scoring import compute_kscore
 
 log = get_logger("ranking-engine")
 
-import os
-_MARKET_DATA_URL = os.environ.get("MARKET_DATA_URL", "http://market-data:8001")
-# T232-KS1: technical-analysis listens on 8002 (verified port map, CLAUDE.md); 8006 is
-# strategy-engine. This wrong default meant every bulk-patterns fetch connection-refused,
-# silently swallowed below, so the leaderboard pattern column was always empty.
-_TA_URL = os.environ.get("TA_URL", "http://technical-analysis:8002")
+_settings = get_settings()
+# AUD-REDISAUDIT Phase 3: this file used to keep its own private os.environ-based URL
+# constants (MARKET_DATA_URL/TA_URL env vars, each with its own hardcoded fallback port) —
+# the only service in the repo bypassing shared/common/config.py's Settings for this. That
+# private second source of truth already caused a real production bug once (T232-KS1: the
+# TA_URL default was wrong — 8006 instead of 8002 — silently connection-refusing every
+# bulk-patterns fetch). Routing through the same _settings.market_data_url/
+# technical_analysis_url every other service already uses means a docker-compose port
+# change can never miss this file again.
+_MARKET_DATA_URL = _settings.market_data_url
+_TA_URL = _settings.technical_analysis_url
 
 _patterns_cache_ts: float = 0.0
 _patterns_cache_data: dict = {}

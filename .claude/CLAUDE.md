@@ -5657,3 +5657,95 @@ grep -rn "redis_lib.Redis.from_url\|redis.Redis.from_url\|redis\.from_url" \
 # Should return nothing — all 9 sites found in this pass are fixed. If this ever shows a
 # match again, it's either a regression or a genuinely new site introduced since.
 ```
+
+---
+
+## Full-Codebase Audit — Cross-Service Wiring (Phase 3, 2026-07-21)
+
+**Scope**: verifying services actually call each other correctly (right URLs, right auth
+headers, right endpoint paths) — as opposed to Phases 1/2, which were about each service
+internally using the right Redis/API-key source of truth. Scoped via a research-only pass
+across all `_settings.*_url` cross-service call sites in all 11 backend services before making
+any changes.
+
+**Checked and confirmed CLEAN**: every auth-required endpoint (`Depends(get_current_username)`)
+called from another service correctly sends an `Authorization: Bearer` header via
+`_service_token()` — no recurrence of the INT-7 missing-auth-header bug class anywhere in the
+current codebase. portfolio-optimizer and strategy-engine are only ever reached via
+api-gateway's end-user JWT proxy, never service-to-service.
+
+### Finding 1 (fixed) — ranking-engine's private, hardcoded URL constants
+
+`services/ranking-engine/src/api/routes.py` was the **only** service in the repo bypassing
+`shared/common/config.py`'s `Settings` for cross-service URLs — it kept its own private
+`os.environ.get("MARKET_DATA_URL", "http://market-data:8001")` /
+`os.environ.get("TA_URL", "http://technical-analysis:8002")` constants, a second, independent
+source of truth for the same port map every other service already reads from `_settings.
+market_data_url`/`_settings.technical_analysis_url`. The file's own pre-existing comment
+already documented this pattern causing a real bug once (`T232-KS1`: the `TA_URL` fallback
+default was wrong — `8006` instead of `8002` — silently connection-refusing every bulk-patterns
+fetch, with the failure swallowed). **Fix**: added `from common.config import get_settings` +
+`_settings = get_settings()`, and reassigned `_MARKET_DATA_URL`/`_TA_URL` to read from
+`_settings.market_data_url`/`_settings.technical_analysis_url` — kept the same constant names
+(not renaming every call site) to keep the diff surgical while still closing the actual
+single-source-of-truth gap.
+
+### Finding 2 (fixed) — T220-G sector K-Score rotation endpoint silently 404ing since it shipped
+
+**The higher-value find of this pass.** `services/market-data/src/api/routes.py`'s router is
+mounted with `prefix="/stocks"` (line ~49) — every sibling route in the file correctly omits
+that prefix in its own decorator (e.g. `/sector_rotation`, `/regime`, `/fear_greed`). T220-G's
+`get_sector_rotation()` (sector K-Score momentum, NOT the same feature as the similarly-named
+RES-4 `sector_rotation()` ETF-rotation endpoint a few hundred lines earlier) was registered as
+`@router.get("/stocks/sector-rotation")` — repeating the prefix, resolving to the real, live-
+confirmed path `GET /stocks/stocks/sector-rotation`. signal-engine's own caller
+(`services/signal-engine/src/api/routes.py:808`, T220-G's `sector_momentum` reasons-enrichment)
+correctly requests the INTENDED single-prefixed path,
+`{market_data_url}/stocks/sector-rotation` — which 404s against the actually-registered double-
+prefixed route, silently swallowed by `if _rot_r.status_code == 200:` (never raises, just skips
+the enrichment). **Confirmed live against production Postgres**: `0` of the last 4,176 signals
+had `reasons->>'sector_momentum'` populated — this feature has been completely non-functional
+since it shipped, invisible because nothing ever exercised or tested the actual HTTP path
+end-to-end. The tracker's own `T220-G` entry (`frontend/src/pages/improvements.tsx`) already
+documents a DIFFERENT, unrelated bug on this same endpoint as fixed 2026-07-01 (a missing
+`_service_token()` Authorization header) — that fix was real and correct, but this separate
+double-prefix routing bug was never caught by it, since a 401 and a 404 both fail the identical
+`if status_code == 200` check and look the same from the caller's side.
+
+**Fix**: changed the route decorator from `@router.get("/stocks/sector-rotation")` to
+`@router.get("/sector-rotation")`, matching every sibling route's convention. Verified live
+before AND after the fix — `GET /stocks/stocks/sector-rotation` returned 200 before (the
+accidentally-working double-prefixed path) and 404 for the intended single-prefixed path;
+after the fix, the reverse. No caller anywhere (frontend `api.ts`, other services) hits the
+double-prefixed path directly, so nothing needed to change on the caller side.
+
+**Tests**: `services/market-data/tests/test_sector_rotation_route_path.py` (3 cases,
+source-text regression checks — `routes.py` imports `common.config` at module level and can't
+be directly imported in this test environment, matching every other market-data route test's
+documented constraint) — confirms the router's `/stocks` prefix mount, confirms
+`get_sector_rotation()` is registered without repeating it, and confirms the two similarly-
+named sector-rotation features (RES-4 ETF-based at `/sector_rotation`, T220-G K-Score-based at
+`/sector-rotation`) remain on distinct paths. Adversarially verified by reverting the route
+decorator back to the double-prefixed form and confirming 2 of 3 tests failed correctly before
+restoring it.
+
+**Verification**: full ranking-engine suite (25 tests, 1 pre-existing unrelated `test_kscore.py`
+failure confirmed via `git stash` to pre-date this change) and market-data suite (371 tests, up
+from 368) both green.
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the live endpoint now resolves at the single-prefixed path:
+docker exec stockai-market-data-1 curl -s -o /dev/null -w 'HTTP %{http_code}\n' \
+  'http://localhost:8001/stocks/sector-rotation'
+# Should be 200 (or 404 only if stockai:sector_rotation hasn't been computed yet by the
+# weekly _compute_sector_rotation job — check that key directly if so):
+docker exec stockai-redis-1 redis-cli get stockai:sector_rotation
+
+# Confirm sector_momentum is now actually landing in new signals (won't backfill old rows):
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT COUNT(*) FILTER (WHERE reasons->>'sector_momentum' IS NOT NULL), COUNT(*) FROM signals WHERE ts > now() - interval '1 day';"
+```
+
+**Still deferred**: a broader duplicate-business-logic sweep (distinct from both the
+Redis-connection audit and this cross-service-wiring pass) has not yet been scoped or run.
