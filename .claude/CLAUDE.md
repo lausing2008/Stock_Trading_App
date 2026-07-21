@@ -5085,3 +5085,78 @@ If a user reports getting the morning digest twice on the same day for the same 
 whether the job actually fired twice
 (`docker logs stockai-market-data-1 --since 24h | grep morning_digest`) — the dedup key should
 have prevented a second send within its 20h TTL.
+
+---
+
+## Feature Reference: AUD232-059 — meta_trainer.py's Per-Row Feature Recomputation Deduplicated (Fixed 2026-07-21)
+
+**The gap**: `train_meta_model()` (`services/ml-prediction/src/training/meta_trainer.py`)
+called `build_features()` (and `compute_label_threshold()`) **fresh for every
+`signal_outcome` row** — re-slicing the price DataFrame up to that row's `signal_date` and
+recomputing the entire rolling-window indicator pipeline (SMA/RSI/MACD/ATR/etc.) from
+scratch each time. For a symbol with N outcome rows, that's N full recomputations over
+heavily-overlapping windows instead of one.
+
+**Fix**: call `build_features()` **once per symbol** on the full price history, then index
+into the result per row instead of recomputing. This is safe for two reasons, both verified
+directly (not assumed):
+1. `build_features()`'s indicators are all trailing rolling-window computations — a row's
+   value depends only on data up to and including that row, never on data trailing after it,
+   so computing on the full `df` vs. a truncated `df_upto` slice gives numerically identical
+   values for any given date.
+2. `horizon` (which genuinely varies per row within the same symbol — SHORT/SWING/LONG/
+   GROWTH have different day counts) only affects `build_features()`'s discarded
+   `fwd_ret`/`y_dir` outputs and `compute_label_threshold()`'s result — itself only consumed
+   by `build_features()`'s non-inference-mode dead-zone mask, never reached here since
+   `inference_mode=True` is always passed at this call site. Both were genuinely unused
+   busywork on top of the duplication itself; the now-dead per-row `compute_label_threshold()`
+   call and its now-unused import were both removed.
+
+```python
+X_feat_full, _, _ = build_features(df, horizon=10, macro_df=macro_df, inference_mode=True)
+feat_ts = pd.to_datetime(df["ts"]).reset_index(drop=True)
+for row in sym_rows_sorted:
+    signal_date = pd.Timestamp(row.signal_date)
+    eligible_idx = feat_ts[feat_ts <= signal_date].index  # look-ahead safe
+    row_idx = eligible_idx[-1]
+    latest = X_feat_full.loc[row_idx]  # instead of a fresh build_features() call per row
+```
+
+**Tests**: `services/ml-prediction/tests/test_meta_trainer_feature_dedup.py`, 6 cases — the
+core numerical-parity claim is proven directly against the REAL `build_features()` (not a
+hand-copied reimplementation of the old logic): a full-history call at a given date produces
+bit-identical values to the old truncated-slice call at that same date, checked at one date
+and across 4 different dates within one symbol; a dedicated test confirms `horizon` genuinely
+has zero effect on `X` in inference mode (three different horizon values produce an
+identical DataFrame via `pd.testing.assert_frame_equal`); a test confirms
+`build_features()`'s boolean-mask filtering preserves original row-position index values
+rather than resetting to a fresh range (the property the fix's per-row lookup depends on);
+and 2 source-text regression checks guard the actual `meta_trainer.py` code — `build_features()`
+must be called exactly once per symbol, strictly before the per-row loop begins, and
+`compute_label_threshold()` must no longer be called at all.
+
+**Why `train_meta_model()` itself isn't exercised end-to-end**: it requires a real Postgres
+session for a `LEFT JOIN LATERAL` raw-SQL query with no SQLite equivalent (confirmed via its
+own `db=None` test-injection seam's docstring, but `LATERAL` joins aren't supported by
+SQLite) — testing is scoped to proving the underlying `build_features()` parity property
+directly instead, matching the proportionate-testing precedent already used elsewhere in this
+codebase for functions too DB-coupled to fully exercise locally (e.g. `_monitor_positions()`'s
+source-text-only tests).
+
+**Adversarial verification**: reverted the fix by moving `build_features()` back inside the
+per-row loop (restoring the exact original duplication) and confirmed the
+build-features-called-once source-text test correctly failed before re-reverting.
+
+Full 19-test ml-prediction suite green (9 across the two meta_trainer test files combined);
+frontend typecheck clean (no frontend files touched).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-ml-prediction-1 grep -n "X_feat_full, _, _ = build_features" /app/src/training/meta_trainer.py
+```
+Should show exactly one match, positioned before the `for row in sym_rows_sorted:` loop. If a
+meta-model retrain's AUC looks suspiciously different from before this fix, that would be a
+real red flag worth investigating directly — the 6 tests above prove the feature VALUES are
+identical, but a live retrain comparison was not additionally run as part of this fix (the
+numerical-parity tests were judged sufficient evidence, since they test the actual property
+the fix depends on using the real function, not a mock).

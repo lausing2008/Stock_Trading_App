@@ -89,7 +89,7 @@ def train_meta_model(db=None) -> dict:
 
     Returns {"trained": bool, "n_samples": int, "auc": float}
     """
-    from ..features.builder import FEATURE_COLUMNS, build_features, fetch_macro_features, compute_label_threshold
+    from ..features.builder import FEATURE_COLUMNS, build_features, fetch_macro_features
     from sklearn.preprocessing import StandardScaler
     from sklearn.metrics import roc_auc_score
     from sqlalchemy import text, select
@@ -204,32 +204,53 @@ def train_meta_model(db=None) -> dict:
         except Exception:
             macro_df = None
 
-        # For each signal_outcome row, build features up to signal_date
+        # AUD232-059: previously called build_features() (and compute_label_threshold())
+        # FRESH for every signal_outcome row, re-slicing df up to that row's signal_date and
+        # recomputing the entire rolling-window indicator pipeline (SMA/RSI/MACD/ATR/etc.)
+        # from scratch each time — for a symbol with N outcome rows, that's N full
+        # recomputations over heavily-overlapping windows instead of one. Safe to compute
+        # ONCE per symbol on the full price history and index into it per row, because:
+        # (1) build_features()'s indicators are all trailing rolling-window computations —
+        #     a row's own value depends only on data up to and including that row, never on
+        #     how much data trails AFTER it, so computing on the full df vs. a df_upto slice
+        #     gives numerically identical values for any given date;
+        # (2) `horizon` (which DOES vary per row within the same symbol — SHORT/SWING/LONG/
+        #     GROWTH have different _HORIZON_DAYS) only affects build_features()'s fwd_ret/
+        #     y_dir outputs (both discarded here via `_, _` — this call site only ever uses
+        #     X_feat) and compute_label_threshold()'s result, which itself is only consumed
+        #     by build_features()'s non-inference-mode dead-zone mask — never reached here,
+        #     since inference_mode=True is always passed. Both computations were genuinely
+        #     unused busywork on top of the duplication itself.
+        # A single inference_mode=True call per symbol therefore produces the exact same
+        # X_feat rows this loop already extracted one at a time, just without the redundant
+        # recomputation — verified via a dedicated regression test asserting numerical
+        # parity against the original per-row call for a real multi-row fixture.
+        try:
+            X_feat_full, _, _ = build_features(
+                df,
+                horizon=10,  # unused by X_feat in inference_mode — see comment above
+                macro_df=macro_df,
+                inference_mode=True,  # include latest bar without requiring future label
+            )
+        except Exception:
+            continue
+        if X_feat_full.empty:
+            continue
+        # X_feat_full carries df's own RangeIndex — align each row's timestamp for lookup.
+        feat_ts = pd.to_datetime(df["ts"]).reset_index(drop=True)
+
         for row in sym_rows_sorted:
             signal_date = pd.Timestamp(row.signal_date)
-            # Slice price data up to signal_date (look-ahead safe)
-            df_upto = df[df["ts"] <= signal_date].copy()
-            if len(df_upto) < 60:
+            # Nearest feature row AT OR BEFORE signal_date (look-ahead safe, matching the
+            # original df_upto slice's own `df["ts"] <= signal_date` cutoff exactly).
+            eligible_idx = feat_ts[feat_ts <= signal_date].index
+            if len(eligible_idx) < 60:
                 continue
+            row_idx = eligible_idx[-1]
+            if row_idx not in X_feat_full.index:
+                continue  # this bar didn't survive build_features' own NaN-feature mask
 
-            try:
-                horizon_days = _HORIZON_DAYS.get(str(row.horizon).upper(), 10)
-                label_thr = compute_label_threshold(df_upto.iloc[-min(252, len(df_upto)):], horizon_days)
-                X_feat, _, _ = build_features(
-                    df_upto,
-                    horizon=horizon_days,
-                    macro_df=macro_df,
-                    label_threshold=label_thr,
-                    inference_mode=True,  # include latest bar without requiring future label
-                )
-            except Exception:
-                continue
-
-            if X_feat.empty:
-                continue
-
-            # Use the last bar's features (= feature vector at signal_date)
-            latest = X_feat.iloc[-1]
+            latest = X_feat_full.loc[row_idx]
             vec: list[float] = [float(latest.get(col, np.nan)) if latest.get(col) is not None else np.nan
                                  for col in FEATURE_COLUMNS]
 
