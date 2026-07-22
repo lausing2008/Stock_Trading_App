@@ -27,6 +27,7 @@ import { VolumeProfilePrimitive } from './VolumeProfilePrimitive';
 import { ToolbarDropdown } from './ToolbarDropdown';
 import { computeSMA, computeEMA, computeRSI, computeMACD, computeBollingerBands } from '@/lib/indicators';
 import { loadDrawings, addDrawing, removeDrawing, clearDrawings, nextDrawingId, nearestBarIndexByTimestamp, type ChartDrawing } from '@/lib/chartDrawings';
+import { computeRiskReward } from '@/lib/riskReward';
 
 type Props = {
   symbol: string;
@@ -717,17 +718,13 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
         candles.createPriceLine({ price: rrl.stop, color: '#f87171', lineWidth: 2 as const, lineStyle: LineStyle.Solid, axisLabelVisible: true, title: 'Stop' });
       }
       if (rrl.target && rrl.target > 0) {
-        // AUD-CHART-INVERTEDRR: Math.abs on both legs used to label a positive-looking R:R
-        // even when target sat on the wrong side of entry relative to stop (e.g. an analyst
-        // target below current price drawn as if it were a bullish take-profit). Direction is
-        // inferred from stop vs entry — only show the ratio when target is on the correct
-        // side for that direction; otherwise the line still draws (it's real data) but with
-        // no R:R claim attached.
-        const isLong = rrl.stop != null && rrl.entry ? rrl.stop < rrl.entry : true;
-        const targetValidSide = rrl.entry ? (isLong ? rrl.target > rrl.entry : rrl.target < rrl.entry) : true;
-        const rrLabel = (rrl.entry && rrl.stop && rrl.entry > 0 && Math.abs(rrl.entry - rrl.stop) > 0 && targetValidSide)
-          ? ` (${(Math.abs(rrl.target - rrl.entry) / Math.abs(rrl.entry - rrl.stop)).toFixed(1)}:1)`
-          : '';
+        // AUD-DUPLOGIC: risk/reward + direction-validity now come from the shared
+        // computeRiskReward() helper (frontend/src/lib/riskReward.ts) instead of this call
+        // site's own inline copy — see that module's own docstring for the AUD-CHART-
+        // INVERTEDRR history this consolidates. The line still draws either way (it's real
+        // data); only the R:R label is suppressed when target is on the wrong side.
+        const { rr } = computeRiskReward({ entry: rrl.entry, stop: rrl.stop, target: rrl.target });
+        const rrLabel = rr != null ? ` (${rr.toFixed(1)}:1)` : '';
         candles.createPriceLine({ price: rrl.target, color: '#38bdf8', lineWidth: 1 as const, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: `Target${rrLabel}` });
       }
     }

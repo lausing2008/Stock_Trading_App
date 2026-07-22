@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { loadSettings } from '@/lib/settings';
+import { computeRiskReward } from '@/lib/riskReward';
 
 type Props = {
   entryPrice?: number;
@@ -36,25 +37,14 @@ export default function PositionSizer({ entryPrice, stopLoss, atrStop, atr, take
   }, [atrStop, stopLoss]);
   useEffect(() => { if (takeProfit) setTarget(takeProfit); }, [takeProfit]);
 
-  const riskPerShare = entry > 0 && stop > 0 ? Math.abs(entry - stop) : null;
   const dollarRisk   = accountSize * (riskPct / 100);
+  // AUD-DUPLOGIC: risk/reward + direction-validity now come from the shared computeRiskReward()
+  // helper (frontend/src/lib/riskReward.ts) instead of this component's own inline copy — see
+  // that module's own docstring for the AUD-POSITIONSIZER-INVERTEDRR history this consolidates.
+  const { isLong: isLongSetup, targetDirectionValid, riskPerShare, rewardPerShare, rr } = computeRiskReward({ entry, stop, target });
   const shares       = riskPerShare && riskPerShare > 0 ? Math.floor(dollarRisk / riskPerShare) : null;
   const positionSize = shares != null && entry > 0 ? shares * entry : null;
   const pctOfAccount = positionSize != null ? (positionSize / accountSize) * 100 : null;
-  const rewardPerShare = entry > 0 && target > 0 ? Math.abs(target - entry) : null;
-  // AUD-POSITIONSIZER-INVERTEDRR: Math.abs on both legs used to compute a positive-looking
-  // R:R even when target sits on the WRONG side of entry relative to the stop (e.g. stop
-  // below entry — implying a long — but target also below entry, an analyst target from an
-  // overvalued/bearish name). Direction is inferred from stop vs entry (this tool has no
-  // explicit long/short toggle): a long setup (stop < entry) requires target > entry to be a
-  // real reward leg; a short setup (stop > entry) requires target < entry. When target is on
-  // the wrong side, don't compute a misleading positive R:R at all — flag it instead.
-  const isLongSetup = stop > 0 && entry > 0 ? stop < entry : true;
-  const targetDirectionValid =
-    target > 0 && entry > 0 ? (isLongSetup ? target > entry : target < entry) : true;
-  const rr = riskPerShare && rewardPerShare && riskPerShare > 0 && targetDirectionValid
-    ? rewardPerShare / riskPerShare
-    : null;
   const potentialProfit = shares != null && rewardPerShare != null && targetDirectionValid ? shares * rewardPerShare : null;
   const potentialLoss   = shares != null && riskPerShare != null  ? shares * riskPerShare  : null;
   const targetOnWrongSide = target > 0 && entry > 0 && !targetDirectionValid;

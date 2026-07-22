@@ -6032,3 +6032,117 @@ docker exec stockai-decision-engine-1 curl -s 'http://localhost:8009/health'
 # Confirm decision-engine's live game plan for a GROWTH-style symbol uses a 3.0x (not 2.5x)
 # ATR multiplier by checking POST /decide/{symbol}'s returned stop value against a known ATR.
 ```
+
+### Fixed (fourth pass) — signal-engine's S/R detection consolidated onto technical-analysis's canonical levels engine
+
+**The finding**: `services/signal-engine/src/generators/signals.py::_sr_context()` independently
+reimplemented pivot detection (60-bar window, ±3-bar local-max/min) to classify a stock's
+position relative to support/resistance as `breakout`/`at_resistance`/`at_support`/`neutral` —
+a simpler, less sophisticated approach than `services/technical-analysis/src/indicators/
+trendlines.py::detect_support_resistance()` (a 3-tier strategy: 90-bar local structure →
+full-history 35% band → Fibonacci fallback), which is the actual canonical source the chart's
+own official S/R levels (`GET /ta/{symbol}/levels`) use — and which had already been fixed once
+for a close-vs-high/low pivot mismatch (`T247-TA-CLUSTERPIVOTS-CLOSE-HIGH-MISMATCH`) that
+signal-engine's independent copy never received. Real risk: a signal's breakout/at_support
+labeling could silently disagree with the chart's own S/R levels for the same symbol at the
+same moment.
+
+**Fix**: ported signal-engine's own classification logic (52-week high/low, the `cleared_res`
+all-time-high-breakout fallback, prev-bar comparison) into a new
+`detect_sr_context(df, levels=None)` function in `trendlines.py` — built on top of
+`detect_support_resistance()`'s own output, so it inherits every fix that module has already
+received. Exposed as a new `sr_context` field on `GET /ta/{symbol}/levels`'s response (reusing
+the `levels` list the endpoint already computes once, not recomputing them a second time).
+signal-engine's `_sr_context()` now takes an optional `symbol` param: when provided, fetches
+the classification from technical-analysis via a new `_fetch_sr_context_from_ta()` helper
+(matching this file's existing `_fetch_patterns_from_ta()` HTTP-to-TA integration pattern —
+not a new architecture); falls back to the original local computation (kept, unchanged) if
+`symbol` is omitted or technical-analysis is unreachable — signal generation must never
+hard-fail on a TA-service outage.
+
+**Verified numerically before wiring anything up**: fed the same synthetic breakout fixture
+through both `detect_sr_context()` (new, canonical) and the original `_sr_context()` (old,
+local) and confirmed both produced `sr_context: "breakout"` with the same
+`sr_nearest_resistance` (100.8 exactly) — the tiny support-level difference (98.22 vs. 97.93)
+reflects the different, more sophisticated pivot-detection windows, expected and correct.
+
+**Tests**: `services/technical-analysis/tests/test_sr_context.py` (5 cases) — fresh-breakout,
+neutral-mid-range, all expected keys present, precomputed-levels reuse (confirms the endpoint's
+one call to `detect_support_resistance()` isn't duplicated), and the all-time-high
+`cleared_res` fallback path. `services/signal-engine/tests/test_sr_context_consolidation.py`
+(7 cases) — remote-result-used-when-reachable, local-fallback-when-unreachable,
+no-HTTP-call-when-symbol-omitted, and 4 cases on `_fetch_sr_context_from_ta()`'s own
+fail-open behavior (non-200, network exception, malformed response missing the `sr_context`
+key, successful parse). Adversarially verified on both sides: reverted technical-analysis's
+`cleared_res` fallback and confirmed 2 tests failed correctly; reverted signal-engine's
+remote-result usage and confirmed the primary-path test failed correctly; both restored.
+
+**Verification**: full technical-analysis suite (31 tests, up from 26) and signal-engine suite
+(66 tests, up from 59) both green modulo the 4 pre-existing, unrelated
+`test_analyst_momentum.py` failures.
+
+### Fixed (final closing sweep) — strategy-engine's 4th independent ATR copy + frontend R:R triplication
+
+**A dedicated closing-sweep pass** (after the 4 fixes above) re-verified the whole audit for
+completeness rather than assuming it was done, and found two more real, previously-uncaught
+instances:
+
+**1. `services/strategy-engine/src/dsl/evaluator.py::compute_features()`** had its own
+byte-identical inline TR/ATR copy (`pd.concat([...]).max(axis=1).ewm(alpha=1/14, adjust=False,
+min_periods=14).mean()`) that the earlier ATR-consolidation pass (which only covered
+signal-engine) missed entirely — a 4th independent copy of the exact same formula, on a service
+neither research pass had checked. Fixed by importing `atr as _canon_atr` from
+`shared/common/indicators.py`, matching every other service. Required adding a new
+`services/strategy-engine/tests/conftest.py` (this service previously had none) to real-load
+`common.indicators` the same way market-data/ranking-engine/signal-engine's own conftest.py
+files already do, since `common` isn't installed as a real package in this local dev
+environment. 3 new tests (`test_atr_consolidation.py`) including a direct
+`pd.testing.assert_series_equal()` parity check against the canonical function and the
+min_periods-warmup-NaN guard; adversarially verified by reverting to the old inline formula and
+confirming both failed correctly. Full strategy-engine suite (15 tests, up from 12) green.
+
+**2. Frontend R:R computation — `PositionSizer.tsx` and `PriceChart.tsx`** had the exact same
+direction-validity-guarded risk:reward formula, independently fixed for the identical inverted-
+R:R bug in two separate sessions with two separate comment tags
+(`AUD-POSITIONSIZER-INVERTEDRR` / `AUD-CHART-INVERTEDRR`) and zero shared source — a textbook
+"hand-mirror silently drifts" risk (a future fix to one could easily be forgotten in the
+other). Consolidated into a new `frontend/src/lib/riskReward.ts::computeRiskReward()`, which
+both components now call. **`frontend/src/lib/fvgTradePlan.ts`'s own `Math.abs()`-based R:R
+was investigated and confirmed to be a DIFFERENT case, not the same bug class** — its `target`
+is derived from `entry ± risk*minRR` based on the gap's own `kind`, so it's mathematically
+guaranteed to land on the correct side by construction; there's no externally-supplied target
+that could be on the wrong side to guard against, unlike PositionSizer/PriceChart's analyst-
+target/game-plan-target inputs. Left unchanged, correctly.
+
+**Tests**: `frontend/src/lib/riskReward.test.ts`, 10 cases — valid long/short setups, the
+exact inverted-target regression case for both directions, missing/zero/negative inputs, and
+the zero-risk divide-by-zero guard. Adversarially verified by removing the
+`targetDirectionValid` guard from the `rr` computation and confirming 2 tests failed correctly
+before restoring it. Full frontend suite (89 tests, up from 79), typecheck, and a full
+`next build` all green.
+
+**This closing-sweep pass's own methodology note**: an initial verification attempt used a
+general-purpose research agent that, on its SECOND turn, described itself as "waiting for a
+background task to notify it" and returned a report synthesized from memory rather than from
+actually re-running any tools — its claims (e.g. "signal-engine/research-engine/ml-prediction
+still have raw Redis constructions") were stale and WRONG, contradicted by a direct `grep`
+re-run in the same turn. A second, independently re-prompted pass (explicitly told not to wait
+on anything and to run real tools) produced the two genuine findings above. **Lesson**: a
+subagent's own claim of "waiting on a background process" mid-task is itself a red flag — a
+research/analysis agent has no legitimate reason to defer to a background notification for its
+own final answer; always resume/re-prompt and verify the report actually came from fresh tool
+calls before trusting it, exactly the same "verify, don't just trust a status claim" discipline
+this file already applies to stale tracker entries and prior sessions' own "done" claims.
+
+**Audit now considered complete**: exhaustive re-verification found no further duplicated
+business-logic instances across position-sizing, R:R, confidence/probability scoring, EV/win-
+rate, Sharpe ratio, max drawdown, or K-Score categories beyond what's now fixed or already
+correctly identified as intentional (research-engine's support-anchored stops, the paper-
+portfolio-vs-portfolio-optimizer beta calculations, the third portfolio-correlation
+implementation, and the Python/TypeScript volume-profile/FVG/swing-pivot pairing). Sharpe ratio
+and max drawdown each have 3-4 independent per-service implementations
+(`paper_portfolio.py`, `strategy-engine/backtest/engine.py`, `portfolio-optimizer/methods.py`)
+that were flagged as plausibly-intentional-but-never-formally-audited — noted here as a
+possible future pass, not fixed in this one, since each serves a genuinely different consumer
+(paper-trading reporting vs. strategy backtest vs. portfolio optimization objective) and
+none showed a concrete, confirmed drift the way the 6 items fixed in this audit did.

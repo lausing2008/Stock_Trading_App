@@ -18,6 +18,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from common.indicators import atr as _canon_atr
+
 
 def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     """Extend OHLCV with standard indicators used by the DSL."""
@@ -50,12 +52,10 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     out["macd_hist"]   = out["macd"] - out["macd_signal"]
 
     # ATR(14) — Wilder smoothing using EWM
-    tr = pd.concat([
-        high - low,
-        (high - close.shift(1)).abs(),
-        (low  - close.shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    out["atr_14"] = tr.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    # AUD-DUPLOGIC: now delegates to shared/common/indicators.py's canonical atr() (byte-
+    # identical formula) instead of its own inline copy — the same function signal-engine,
+    # ranking-engine, and market-data already import for the same purpose.
+    out["atr_14"] = _canon_atr(high, low, close, period=14)
 
     # Bollinger Bands (20-period, 2σ)
     bb_std         = close.rolling(20).std()
