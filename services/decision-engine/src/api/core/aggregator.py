@@ -53,10 +53,10 @@ def _svc_token() -> str:
 # values from market-data instead of maintaining a separate copy.
 
 _STYLE_PARAMS_FALLBACK = {
-    "SHORT":  {"entry2_pct": 0.985, "breakout_pct": 1.010, "stop_pct": 0.970, "default_tp_pct": 1.05},
-    "SWING":  {"entry2_pct": 0.965, "breakout_pct": 1.020, "stop_pct": 0.945, "default_tp_pct": 1.12},
-    "LONG":   {"entry2_pct": 0.950, "breakout_pct": 1.030, "stop_pct": 0.900, "default_tp_pct": 1.25},
-    "GROWTH": {"entry2_pct": 0.940, "breakout_pct": 1.035, "stop_pct": 0.880, "default_tp_pct": 1.35},
+    "SHORT":  {"entry2_pct": 0.985, "breakout_pct": 1.010, "stop_pct": 0.970, "default_tp_pct": 1.05, "atr_stop_mult": 2.0},
+    "SWING":  {"entry2_pct": 0.965, "breakout_pct": 1.020, "stop_pct": 0.945, "default_tp_pct": 1.12, "atr_stop_mult": 2.0},
+    "LONG":   {"entry2_pct": 0.950, "breakout_pct": 1.030, "stop_pct": 0.900, "default_tp_pct": 1.25, "atr_stop_mult": 2.0},
+    "GROWTH": {"entry2_pct": 0.940, "breakout_pct": 1.035, "stop_pct": 0.880, "default_tp_pct": 1.35, "atr_stop_mult": 3.0},
 }
 
 _STYLE_PARAMS_CACHE: dict | None = None
@@ -90,8 +90,13 @@ def _default_game_plan(live_price: float, style: str, atr_14: float | None = Non
     p = {**p_raw, "target_pct": p_raw.get("target_pct", p_raw.get("default_tp_pct"))}
     fixed_stop = live_price * p["stop_pct"]
     if atr_14 and atr_14 > 0:
-        # GROWTH stocks need wider stops — 2.5× ATR vs 2.0× for other styles.
-        atr_mult = 2.5 if style.upper() == "GROWTH" else 2.0
+        # AUD-DUPLOGIC: atr_stop_mult now read from the same style-params fetch as
+        # entry/breakout/stop/target percentages above (both the live market-data response and
+        # _STYLE_PARAMS_FALLBACK always carry this key now), rather than its own hardcoded
+        # literal — this used to independently say 2.5 for GROWTH while paper_trading_engine.py's
+        # real, authoritative _build_game_plan_for_style() said 3.0, an undocumented drift with
+        # no comment ever explaining why the two disagreed.
+        atr_mult = p_raw.get("atr_stop_mult", 2.0)
         atr_stop = live_price - atr_mult * atr_14
         stop = max(atr_stop, fixed_stop)
         # Target: 2:1 R:R off the actual stop used

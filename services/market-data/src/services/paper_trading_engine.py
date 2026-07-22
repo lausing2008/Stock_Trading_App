@@ -558,15 +558,23 @@ def _regime_risk_off_override_active(cfg: dict) -> bool:
 
 
 # Mirrors scheduler._STYLE_PARAMS — inlined here to avoid circular import.
+# AUD-DUPLOGIC: atr_stop_mult added here as the single source of truth for the ATR-based
+# stop-override multiplier — decision-engine's aggregator.py::_default_game_plan() had its own
+# independently-hardcoded copy of this exact value (2.5 for GROWTH) that silently disagreed
+# with this file's real, authoritative value (3.0 for GROWTH) for years with no comment
+# explaining the difference — a genuine, undocumented drift, not an intentional divergence
+# (unlike the deliberately-separate Game Plan/FVG/Position-Sizer systems documented elsewhere).
+# decision-engine now reads this field via the same GET /stocks/style-params fetch it already
+# uses for entry/breakout/stop/target percentages, instead of hardcoding its own copy.
 _STYLE_PARAMS: dict[str, dict] = {
     "SHORT":  {"entry1_pct": 0.995, "entry2_pct": 0.985, "breakout_pct": 1.010,
-               "stop_pct": 0.970, "default_tp_pct": 1.05},
+               "stop_pct": 0.970, "default_tp_pct": 1.05, "atr_stop_mult": 2.0},
     "SWING":  {"entry1_pct": 0.985, "entry2_pct": 0.965, "breakout_pct": 1.020,
-               "stop_pct": 0.945, "default_tp_pct": 1.12},
+               "stop_pct": 0.945, "default_tp_pct": 1.12, "atr_stop_mult": 2.0},
     "LONG":   {"entry1_pct": 0.980, "entry2_pct": 0.950, "breakout_pct": 1.030,
-               "stop_pct": 0.900, "default_tp_pct": 1.25},
+               "stop_pct": 0.900, "default_tp_pct": 1.25, "atr_stop_mult": 2.0},
     "GROWTH": {"entry1_pct": 0.975, "entry2_pct": 0.940, "breakout_pct": 1.035,
-               "stop_pct": 0.880, "default_tp_pct": 1.35},
+               "stop_pct": 0.880, "default_tp_pct": 1.35, "atr_stop_mult": 3.0},
 }
 
 # AL-4: Load Optuna-tuned params from shared model dir; overlay onto _STYLE_PARAMS.
@@ -1984,7 +1992,9 @@ def _build_game_plan_for_style(
     # Stop: ATR-based is more adaptive than fixed %
     if atr and atr > 0:
         # GROWTH stocks are high-volatility; wider ATR multiplier avoids premature stops.
-        atr_mult = 3.0 if style.upper() == "GROWTH" else 2.0
+        # AUD-DUPLOGIC: now reads from _STYLE_PARAMS (the single source of truth) instead of
+        # its own inline literal — see this dict's own comment for why.
+        atr_mult = params.get("atr_stop_mult", 2.0)
         stop = round((current_price - atr * atr_mult) / step) * step
         stop = max(stop, round(current_price * params["stop_pct"] / step) * step)
     else:

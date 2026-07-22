@@ -5966,3 +5966,69 @@ were confirmed to be genuinely separate.
 **Verification**: 9/9 new tests pass; full signal-engine suite (59 tests, up from 50) green
 modulo the 4 pre-existing, unrelated `test_analyst_momentum.py` failures already documented
 elsewhere in this file.
+
+### Fixed (third pass) — GROWTH ATR-stop multiplier: decision-engine's game plan disagreed with the real paper-trading engine (2.5x vs 3.0x)
+
+**The finding**: decision-engine's `aggregator.py::_default_game_plan()` (the shadow-scoring
+game-plan approximation used for `/decide/{symbol}`'s illustrative entry/stop/target numbers)
+computed the GROWTH ATR-stop override with a hardcoded `2.5 if style == "GROWTH" else 2.0`
+multiplier. market-data's `paper_trading_engine.py::_build_game_plan_for_style()` — the REAL,
+authoritative function that computes the actual game plan for real paper trades — independently
+hardcoded `3.0 if style == "GROWTH" else 2.0`. **These two numbers had silently disagreed with
+no comment anywhere explaining why**, unlike the deliberately-separate Game Plan/FVG/Position-
+Sizer systems this file already documents as an intentional three-lens design (this wasn't
+that — decision-engine's game plan is explicitly meant to approximate the real one, per the
+whole `T232-DL-DUALSCORER-DEBT` parity effort already worked on twice this session).
+
+Notably, `T232-DL-STYLEPARAMS3X` (2026-07-04) had ALREADY fixed the adjacent problem — the
+entry/breakout/stop/target PERCENTAGES used to be independently triplicated across
+scheduler.py/paper_trading_engine.py/aggregator.py, with decision-engine's own copy having
+wrong GROWTH values and two dead styles. That fix made market-data's `_STYLE_PARAMS` (exposed
+via `GET /stocks/style-params`) the single source of truth for those percentage fields — but
+the ATR-stop-multiplier logic sat just outside that dict as its own separate inline literal in
+BOTH files, so it silently escaped that same consolidation and kept drifting independently.
+
+**Fix**: added `atr_stop_mult` as a real field in `_STYLE_PARAMS` (market-data,
+`paper_trading_engine.py` — 3.0 for GROWTH, 2.0 for SHORT/SWING/LONG, the REAL, authoritative
+values) and in decision-engine's `_STYLE_PARAMS_FALLBACK` (matching values, used only when
+market-data is unreachable). Both `_build_game_plan_for_style()` (market-data) and
+`_default_game_plan()` (decision-engine) now read `params.get("atr_stop_mult", 2.0)` instead of
+their own independent hardcoded style-name check — decision-engine already fetches the whole
+`_STYLE_PARAMS` dict live via `GET /stocks/style-params` for the percentage fields, so this
+needed no new endpoint or fetch, just reading one more key from the same response.
+
+**Tests**: `services/decision-engine/tests/test_game_plan_atr_mult.py` (5 cases) and
+`services/market-data/tests/test_game_plan_atr_mult.py` (5 cases) — confirm the fallback dicts
+carry the correct value per style, `_default_game_plan()`/`_build_game_plan_for_style()` apply
+it correctly for GROWTH vs. non-GROWTH styles, and both degrade safely to the `2.0` default if
+a style-params response is ever missing the field entirely (rather than crashing with a
+`KeyError` or silently reverting to a hardcoded literal). Adversarially verified on both sides:
+reverted each fix back to its own hardcoded literal and confirmed the dedicated
+missing-field-fallback test failed correctly in each case (a hardcoded literal, unlike a real
+`.get(..., default)` read, doesn't correctly degrade when the field is absent) before restoring
+both fixes.
+
+**Also corrected during this same audit continuation**: research-engine's `_position_size()`
+(support-anchored stop/target, using actual chart S/R levels) was flagged by the original
+scoping pass as part of the same "3 divergent stop-loss formulas" finding — re-examined
+directly and found this framing doesn't hold. Research reports are explicitly meant to give a
+technically-grounded, chart-level-anchored read as a genuinely different analytical lens from
+the trading engines' faster ATR-multiple approach — matching this file's own established
+"Game Plan vs. FVG vs. Position Sizer are three deliberately different systems" design
+principle, not an accidental duplication. Left unchanged; only the decision-engine/paper-
+trading-engine ATR-multiplier pair (which ARE meant to agree) was fixed.
+
+**Verification**: full decision-engine suite (127 tests, up from 122) and market-data suite
+(381 tests, up from 371) both green.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 python3 -c "
+import sys; sys.path.insert(0, '/app'); sys.path.insert(0, '/app/src')
+from services.paper_trading_engine import _STYLE_PARAMS
+print(_STYLE_PARAMS['GROWTH']['atr_stop_mult'])  # should print 3.0
+"
+docker exec stockai-decision-engine-1 curl -s 'http://localhost:8009/health'
+# Confirm decision-engine's live game plan for a GROWTH-style symbol uses a 3.0x (not 2.5x)
+# ATR multiplier by checking POST /decide/{symbol}'s returned stop value against a known ATR.
+```
