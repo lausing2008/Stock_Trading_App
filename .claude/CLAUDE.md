@@ -5915,3 +5915,54 @@ modulo that one already-documented pre-existing gap.
   `fvgTradePlan.ts`, `volumeProfile.ts`) — already cross-checked at build time and covered by
   parity tests (a known, accepted exception per this file's own prior notes), but structurally
   still two independent implementations with no build-time guard against future drift.
+
+### Fixed (second pass) — signal-engine's 3 independent inline ATR copies consolidated
+
+**Finding**: `services/signal-engine/src/generators/signals.py` had 3 separate inline TR/ATR
+calculations — `_adx()`, `_supertrend()`, and a third site inside `generate_all_signals()`
+feeding `reasons["atr_14"]`/`["atr_14_pct"]` (consumed by decision-engine's ATR-based game plan
+stops) — instead of calling `shared/common/indicators.py`'s canonical `atr()`, the same
+function `ranking-engine/scoring/kscore.py` already imports as `_canon_atr`. A partial
+`T233-ARCH-INDICATOR-DEDUP` regression: RSI/MACD were already migrated to the canonical module
+in this same file, ATR never was.
+
+**A real, previously-unfixed bug found in the third copy**: `_adx()` and `_supertrend()` had
+already independently received the `AUD232-073` fix (`min_periods=period` on the `.ewm()` call
+— without it, a short-history stock gets a real-looking but fabricated ATR from bar 0 instead
+of correctly returning `NaN` during warmup). The third copy, feeding `atr_14`, had NOT — a
+genuine, silently-recurring instance of the exact same bug class within one file, invisible
+because nothing had ever compared all 3 copies side by side until this consolidation pass.
+Directly confirmed the bug: the old inline formula produced `1.149...` (a plausible-looking
+number) for a 14-period ATR at only 10 bars of history, where the canonical `atr()` correctly
+returns `NaN`.
+
+**Fix**: added `atr as _canon_atr` to the file's existing `from common.indicators import
+rsi as _canon_rsi, macd as _canon_macd` line; all 3 sites now call `_canon_atr(high, low,
+close, period=N)` instead of their own inline `pd.concat(...).max(axis=1).ewm(...).mean()`
+copy. Verified numerically before deploying — fed the same synthetic OHLCV fixture through
+both the pre-fix inline formula and the canonical function directly and confirmed identical
+output (the TR/ATR math itself was always byte-identical; only the `min_periods` guard
+differed on the one previously-unfixed copy).
+
+**Tests**: `services/signal-engine/tests/test_atr_consolidation.py`, 9 cases — sane-range
+checks for `_adx()`/`_supertrend()` post-consolidation, the short-history `NaN`-not-fabricated
+guard specifically for the third (previously-unfixed) site, and a direct numerical-parity
+check against `common.indicators.atr()` called independently. Adversarially verified by
+reverting the `atr_14` call site to its exact pre-fix inline formula and confirming it
+reproduces the bug (a real, non-NaN value at 10 bars) before restoring the fix.
+
+**A test-writing correction made during development**: the first draft of this test file
+assumed `reasons["atr_14"]` was set inside `_ta_score()` — checking the actual code found it's
+set in a DIFFERENT function, `generate_all_signals()`, which calls `_ta_score()` first and then
+adds `atr_14` to the same `reasons` dict object afterward. `generate_all_signals()` itself
+fetches real prices via `_fetch_prices(symbol)` and isn't synthetic-DataFrame-testable directly
+— tests were rewritten to exercise the exact same `_adj_close()` + `_canon_atr(period=14)`
+computation `generate_all_signals()` runs, rather than asserting on a `_ta_score()` return value
+that was never going to contain `atr_14` in the first place. Caught by tracing an actual
+`_canon_atr()` call during execution and finding it returned a real value while the outer
+function's own return showed `None` — a mismatch that only made sense once the two functions
+were confirmed to be genuinely separate.
+
+**Verification**: 9/9 new tests pass; full signal-engine suite (59 tests, up from 50) green
+modulo the 4 pre-existing, unrelated `test_analyst_momentum.py` failures already documented
+elsewhere in this file.

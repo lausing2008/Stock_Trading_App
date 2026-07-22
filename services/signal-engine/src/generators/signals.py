@@ -79,7 +79,7 @@ import pandas as pd
 
 from common.config import get_settings
 from common.logging import get_logger
-from common.indicators import rsi as _canon_rsi, macd as _canon_macd
+from common.indicators import rsi as _canon_rsi, macd as _canon_macd, atr as _canon_atr
 
 log = get_logger("signal-generator")
 _settings = get_settings()
@@ -581,15 +581,15 @@ def _supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3.0) -> 
     if n < period + 2:
         return 1, False, False
 
-    prev_c = close.shift(1)
-    tr = pd.concat([high - low, (high - prev_c).abs(), (low - prev_c).abs()], axis=1).max(axis=1)
-    # AUD232-073: was .ewm(...).mean() with no min_periods — computed a real-looking ATR from
-    # bar 0, before `period` true-range bars have accumulated (same bug class as
-    # T237-TA-ATR-MINPERIODS, already fixed in the canonical technical-analysis core.py). The
-    # loop below (line ~584) already has an explicit `if np.isnan(basic_upper[i])` guard that
-    # correctly holds the prior trend during warmup — it just never had real NaNs to catch
-    # before this fix, since the under-warmed ATR silently produced a real (if unreliable) number.
-    atr_s = tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    # AUD232-073 / AUD-DUPLOGIC: was its own inline .ewm(...).mean() with no min_periods —
+    # computed a real-looking ATR from bar 0, before `period` true-range bars have accumulated
+    # (same bug class as T237-TA-ATR-MINPERIODS, already fixed in the canonical technical-
+    # analysis core.py). Now delegates to shared/common/indicators.py's canonical atr()
+    # (min_periods=period included there) instead of a second inline copy. The loop below
+    # (line ~584) already has an explicit `if np.isnan(basic_upper[i])` guard that correctly
+    # holds the prior trend during warmup — it just never had real NaNs to catch before this
+    # fix, since the under-warmed ATR silently produced a real (if unreliable) number.
+    atr_s = _canon_atr(high, low, close, period=period)
 
     hl2 = (high + low) / 2
     basic_upper = (hl2 + multiplier * atr_s).values
@@ -623,18 +623,18 @@ def _adx(df: pd.DataFrame, period: int = 14) -> tuple[float, float, float]:
     low  = df["low"].astype(float)
     close = _adj_close(df)
 
-    prev_close = close.shift(1)
-    tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
-
     up_move   = high.diff()
     down_move = (-low.diff())
     dm_plus  = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
     dm_minus = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
 
-    # AUD232-073: was .ewm(...).mean() with no min_periods — the under-warmed ATR still produced
-    # a real-looking (unreliable) number for short-history stocks even after the C3 FIX below,
-    # since that fix only catches a genuinely NaN adx, not one computed from too few TR bars.
-    atr      = tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    # AUD232-073 / AUD-DUPLOGIC: this used to be its own inline TR/ATR calc — identical math to
+    # (and now delegates to) shared/common/indicators.py's canonical atr(), the same one
+    # ranking-engine's kscore.py already uses. min_periods=period (AUD232-073's own fix — an
+    # under-warmed ATR still produced a real-looking, unreliable number for short-history
+    # stocks) lives in the canonical function now, so this can't silently regress in this file
+    # without also affecting every other caller of the shared version.
+    atr      = _canon_atr(high, low, close, period=period)
     di_plus  = 100 * dm_plus.ewm(alpha=1 / period, adjust=False).mean() / atr.replace(0, np.nan)
     di_minus = 100 * dm_minus.ewm(alpha=1 / period, adjust=False).mean() / atr.replace(0, np.nan)
 
@@ -2344,11 +2344,15 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             reasons["double_top_target"]          = meta.get("target")
             reasons["double_top_neckline_broken"] = bool(meta.get("neckline_broken"))
     # ATR-14 and last price — used by decision-engine for ATR-based game plan stops
+    # AUD-DUPLOGIC: this was a THIRD independent inline TR/ATR copy in this same file, and the
+    # one that had NOT received the AUD232-073 min_periods=14 fix already applied to _adx() and
+    # _supertrend() above — a real, silently-recurring instance of the same bug class within one
+    # file, caught only by this consolidation pass. Now delegates to the same canonical atr()
+    # every other call site in this file uses.
     _close = _adj_close(df)
     _high = df["high"].astype(float)
     _low = df["low"].astype(float)
-    _tr = pd.concat([_high - _low, (_high - _close.shift(1)).abs(), (_low - _close.shift(1)).abs()], axis=1).max(axis=1)
-    _atr_series = _tr.ewm(alpha=1 / 14, adjust=False).mean()
+    _atr_series = _canon_atr(_high, _low, _close, period=14)
     _last_price = float(_close.iloc[-1])
     _atr_14 = float(_atr_series.iloc[-1]) if not pd.isna(_atr_series.iloc[-1]) else None
     reasons["last_price"] = round(_last_price, 4)
