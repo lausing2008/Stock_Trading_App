@@ -85,15 +85,21 @@ def test_too_little_history_returns_neutral_with_none_fields():
     assert result == {"state": "neutral", "obv_trend_bullish": None, "updown_vol_ratio": None}
 
 
-def test_flat_price_no_down_days_produces_infinite_ratio_not_a_crash():
-    """All up/flat days (no down_vol at all) — up/down ratio is infinite, must not divide by
-    zero or crash; the raw inf sentinel is returned unrounded rather than rounding a nonsense
-    number."""
+def test_flat_price_no_down_days_produces_a_finite_sentinel_not_json_breaking_inf():
+    """AUD-T258-INF: all up/flat days (no down_vol at all) must not divide by zero or crash,
+    and — critically — must NEVER return a real float('inf'): json.dumps(float('inf')) emits
+    the bare token `Infinity`, which browser JSON.parse rejects outright, breaking the ENTIRE
+    GET /ta/{symbol}/levels response (S/R, trendlines, FVG, and this card together), not just
+    this field. A large finite sentinel (999.0) is used instead — still unambiguously
+    "overwhelmingly up-volume" to any reader, but always JSON-safe."""
     closes = list(np.linspace(100, 110, 40))
     volumes = [1_000_000.0] * 40
     df = _df(closes, volumes)
     result = detect_accumulation_distribution(df)
-    assert result["updown_vol_ratio"] == float("inf") or result["updown_vol_ratio"] is None
+    assert result["updown_vol_ratio"] == 999.0
+    assert result["updown_vol_ratio"] != float("inf")
+    import json
+    json.dumps(result)  # must not raise, and must round-trip through a strict JSON encoder
 
 
 # ── assess_breakout_quality() ────────────────────────────────────────────────────
@@ -187,3 +193,76 @@ def test_sr_context_cleared_fields_are_the_broken_level_not_the_nearest_unreache
     if ctx["sr_cleared_resistance"] is not None:
         assert ctx["sr_cleared_resistance"] < 110.0
         assert ctx["sr_nearest_resistance"] is None or ctx["sr_nearest_resistance"] > 110.0
+
+
+# ── AUD-T258 fixes: post-audit regression tests ─────────────────────────────────
+
+def test_21_to_29_bars_can_now_produce_a_real_state_not_forced_neutral():
+    """AUD-T258-DEADZONE: previously, 21-29 bars could NEVER produce anything but 'neutral'
+    (the entry guard admitted them, but obv_trend_bullish silently stayed None below 30 bars,
+    and both non-neutral branches require a real True/False). With the guard raised to the
+    true 30-bar minimum, a 25-bar input must degrade explicitly (None fields), never silently
+    admit a state it can't actually compute."""
+    rng = np.random.default_rng(6)
+    n = 25
+    closes = 100 + np.cumsum(rng.uniform(-0.3, 0.8, n))
+    volumes = list(rng.uniform(2_000_000, 3_000_000, n))
+    df = _df(closes, volumes)
+    result = detect_accumulation_distribution(df, window=20)
+    assert result == {"state": "neutral", "obv_trend_bullish": None, "updown_vol_ratio": None}
+
+
+def test_exactly_30_bars_is_the_real_minimum_for_a_non_neutral_verdict():
+    rng = np.random.default_rng(1)
+    n = 30
+    closes = 100 + np.cumsum(rng.uniform(-0.3, 0.8, n))
+    volumes = []
+    prev = closes[0]
+    for c in closes:
+        volumes.append(rng.uniform(2_000_000, 3_000_000) if c > prev else rng.uniform(500_000, 1_000_000))
+        prev = c
+    df = _df(closes, volumes)
+    result = detect_accumulation_distribution(df, window=20)
+    assert result["obv_trend_bullish"] is not None
+
+
+def test_breakout_that_fully_reverses_after_initially_holding_returns_none_not_real():
+    """AUD-T258-STALEBREAK: a breakout that held for exactly one bar (satisfying the old,
+    incomplete 'next bar' check) but then fully reversed and stayed reversed must NOT be
+    reported 'real' — the function must check whether the move is still intact as of the
+    actual current (most recent) bar, not just the bar immediately after the breakout."""
+    base = [100.0] * 30
+    # Breaks above 101 at idx 33 (5x volume), holds ONE bar (idx 34), then fully reverses
+    # and stays reversed for several more bars.
+    closes = base + [100, 100, 100, 105, 106, 95, 92, 90]
+    volumes = [1_000_000.0] * 33 + [5_000_000.0, 1_500_000.0, 1_000_000.0, 1_000_000.0, 1_000_000.0]
+    df = _df(closes, volumes)
+    result = assess_breakout_quality(df, level=101.0, direction="up")
+    assert result is None
+
+
+def test_breakout_that_holds_all_the_way_to_the_current_bar_is_unaffected_by_the_new_guard():
+    """The new still-beyond-as-of-now guard must not break the ordinary held-and-confirmed
+    case — a breakout that holds through to the current bar must still classify normally."""
+    base = [100.0] * 30
+    closes = base + [100, 100, 100, 105, 106, 107, 108]
+    volumes = [1_000_000.0] * 33 + [5_000_000.0, 1_500_000.0, 1_500_000.0, 1_500_000.0]
+    df = _df(closes, volumes)
+    result = assess_breakout_quality(df, level=101.0, direction="up")
+    assert result is not None
+    assert result["quality"] == "real"
+
+
+def test_updown_vol_ratio_never_returns_a_real_float_infinity():
+    """AUD-T258-INF: json.dumps(float('inf')) emits the bare token `Infinity`, which browser
+    JSON.parse rejects outright — breaking the ENTIRE GET /ta/{symbol}/levels response (S/R,
+    trendlines, FVG, and this card together), not just this one field. Any input that would
+    have produced a real inf must instead produce a large-but-finite, JSON-safe sentinel."""
+    import json
+    closes = list(np.linspace(100, 110, 40))  # monotonic up, zero down-close days
+    volumes = [1_000_000.0] * 40
+    df = _df(closes, volumes)
+    result = detect_accumulation_distribution(df)
+    assert isinstance(result["updown_vol_ratio"], float)
+    assert result["updown_vol_ratio"] != float("inf")
+    json.dumps(result)  # must not raise

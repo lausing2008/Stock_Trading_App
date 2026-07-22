@@ -143,3 +143,51 @@ def test_build_trajectories_total_sectors_excludes_unrankable_ones():
     # total_sectors should be 2 (Tech, Energy), not 3 — half=1.5, so rank 1 is top, rank 2 is bottom
     assert result["Energy"]["trajectory"] == "Established Laggard"
     assert result["ThinData"]["trajectory"] is None
+
+
+# ── AUD-T258-RANKNORM: rank normalized across different-sized fields ───────────
+
+def test_dead_last_in_a_small_field_that_grows_reads_as_emerging_not_established():
+    """The exact reported failure case: a sector at rank 4 of 4 (dead last, worst possible
+    standing) a month ago, now at rank 4 of 8 (top half) — a raw-rank delta of 0 would
+    incorrectly read 'flat'/Established; normalized by field size, this is a genuine
+    improvement in standing (percentile 1.0 -> 0.43) and must read as Emerging Leader."""
+    result = classify_trajectory(current_rank=4, prior_rank=4, total_sectors=8, prior_total_sectors=4)
+    assert result == "Emerging Leader"
+
+
+def test_top_of_a_small_field_that_shrinks_to_the_same_rank_reads_as_fading():
+    """The mirror case: rank 2 of 2 (dead last in a tiny field) improving to rank 2 of 8 is
+    NOT what this tests — instead: rank 1 of 4 (best) staying at rank 1 numerically while the
+    field grows to 8 is still 'best', but rank 4 of 4 shrinking to rank 4 of 4 with the SAME
+    field size must be unaffected (regression check that same-size fields still work)."""
+    result = classify_trajectory(current_rank=4, prior_rank=4, total_sectors=4, prior_total_sectors=4)
+    assert result == "Established Laggard"
+
+
+def test_omitting_prior_total_sectors_defaults_to_current_total_unchanged_behavior():
+    """Backward compatibility: a caller that only has one field size to compare (the pre-fix
+    behavior) must get identical results to before — omitting prior_total_sectors defaults it
+    to total_sectors, which is a same-size comparison, so percentile normalization is a no-op
+    relative to the original raw-rank comparison."""
+    assert classify_trajectory(current_rank=1, prior_rank=3, total_sectors=8) == "Emerging Leader"
+    assert classify_trajectory(current_rank=8, prior_rank=5, total_sectors=8) == "Fading Laggard"
+
+
+def test_zero_or_negative_prior_total_sectors_returns_none_not_a_crash():
+    assert classify_trajectory(current_rank=1, prior_rank=1, total_sectors=8, prior_total_sectors=0) is None
+
+
+def test_build_trajectories_passes_the_real_prior_field_size_not_current():
+    """build_trajectories() must compute and pass the PRIOR snapshot's own rankable count,
+    not silently reuse the current snapshot's count for both sides — that's exactly the bug
+    this whole fix closes."""
+    # Prior snapshot: 4 rankable sectors, this one at rank 4 (dead last).
+    # Current snapshot: 8 rankable sectors, this one still at rank 4 (now top half).
+    current = [SectorRank(f"S{i}", 100.0 - i, i + 1) for i in range(8)]
+    prior = [SectorRank(f"P{i}", 100.0 - i, i + 1) for i in range(4)]
+    # Rename the 4th current sector and 4th prior sector to the same name to compare directly.
+    current[3] = SectorRank("Target", 90.0, 4)
+    prior[3] = SectorRank("Target", 90.0, 4)
+    result = build_trajectories(current, prior)
+    assert result["Target"]["trajectory"] == "Emerging Leader"

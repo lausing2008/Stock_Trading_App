@@ -368,20 +368,38 @@ def detect_accumulation_distribution(df: pd.DataFrame, window: int = 20) -> dict
     """
     close = df["close"].astype(float)
     volume = df["volume"].astype(float)
-    if len(close) < window + 1:
+    # AUD-T258-DEADZONE: the OBV trend read below needs a real 30-bar rolling average to be
+    # meaningful (obv_trend_bullish stays None below that), and both the accumulation and
+    # distribution branches REQUIRE a non-None obv_trend_bullish — so a guard of window+1
+    # (21 bars by default) silently produced 'neutral' for every input in the 21-29 bar range,
+    # regardless of how decisive the volume-ratio evidence was. Raising the floor to the real
+    # 30-bar requirement makes the guard honestly reflect what the function can actually do,
+    # instead of quietly admitting inputs it can never classify as anything but neutral.
+    min_bars = max(window + 1, 30)
+    if len(close) < min_bars:
         return {"state": "neutral", "obv_trend_bullish": None, "updown_vol_ratio": None}
 
     direction = close.diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
     obv = (volume * direction).cumsum()
-    obv_trend_bullish = None
-    if len(obv) >= 30:
-        obv_trend_bullish = bool(obv.rolling(10).mean().iloc[-1] > obv.rolling(30).mean().iloc[-1])
+    obv_trend_bullish = bool(obv.rolling(10).mean().iloc[-1] > obv.rolling(30).mean().iloc[-1])
 
     recent_dir = direction.iloc[-window:]
     recent_vol = volume.iloc[-window:]
     up_vol = float(recent_vol[recent_dir > 0].sum())
     down_vol = float(recent_vol[recent_dir < 0].sum())
-    updown_vol_ratio = (up_vol / down_vol) if down_vol > 0 else (float("inf") if up_vol > 0 else None)
+    # AUD-T258-INF: a bare float("inf") here used to survive into the JSON response
+    # (json.dumps emits the literal token `Infinity`, which browser JSON.parse rejects
+    # outright) — breaking the ENTIRE GET /ta/{symbol}/levels fetch (S/R, trendlines, FVG,
+    # and this card together), not just this one field, for any symbol whose last `window`
+    # bars had zero down-close-day volume. Cap at a large-but-finite sentinel instead of
+    # ever returning a real inf — still unambiguously "overwhelmingly up-volume" for any
+    # caller reading the number, but always JSON-safe.
+    if down_vol > 0:
+        updown_vol_ratio = up_vol / down_vol
+    elif up_vol > 0:
+        updown_vol_ratio = 999.0
+    else:
+        updown_vol_ratio = None
 
     state = "neutral"
     if obv_trend_bullish is True and updown_vol_ratio is not None and updown_vol_ratio > 1.2:
@@ -392,7 +410,7 @@ def detect_accumulation_distribution(df: pd.DataFrame, window: int = 20) -> dict
     return {
         "state": state,
         "obv_trend_bullish": obv_trend_bullish,
-        "updown_vol_ratio": round(updown_vol_ratio, 2) if updown_vol_ratio not in (None, float("inf")) else updown_vol_ratio,
+        "updown_vol_ratio": round(updown_vol_ratio, 2) if updown_vol_ratio is not None else None,
     }
 
 
@@ -452,6 +470,20 @@ def assess_breakout_quality(df: pd.DataFrame, level: float, direction: str = "up
         quality = "real"
     else:
         quality = "unconfirmed"  # held, but no volume confirmation on the break itself
+
+    # AUD-T258-STALEBREAK: the routes.py caller only ever passes sr_cleared_resistance/
+    # sr_cleared_support, which by construction always sits on the still-beyond side of the
+    # CURRENT bar — so this is a no-op for that call site. But this function's own docstring
+    # explicitly invites reuse with an arbitrary externally-supplied level (e.g. "the game-plan
+    # breakout level"), and without this check a breakout that held past the immediate next-bar
+    # check but later fully reversed would still be reported 'real' — the classification above
+    # only ever looked at the SINGLE bar immediately after the breakout, never at whether the
+    # move is still intact as of the actual current bar. Only suppresses a stale 'real' verdict
+    # (a 'failed' verdict, by definition, already means price isn't beyond the level anymore —
+    # this check must never fire in that branch, or the very next-bar reversal case this
+    # function exists to detect would become unreachable).
+    if quality == "real" and not _beyond(n - 1):
+        return None
 
     return {
         "quality": quality,

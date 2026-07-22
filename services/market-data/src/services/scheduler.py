@@ -3752,7 +3752,20 @@ def _compute_sector_rotation() -> None:
             rotation = {}
             for row in rows:
                 if row.recent_kscore is None or row.prior_kscore is None:
-                    rotation[row.sector] = {"momentum": 0, "recent": None, "prior": None}
+                    # AUD-T258-SECTORKEY: previously wrote {"recent": None, "prior": None} —
+                    # WRONG keys (rank_sectors()/the API's own docstring/the full-data branch
+                    # below all use "recent_kscore"/"prior_kscore"). A sector with a REAL
+                    # current K-score but no 4-weeks-prior data (e.g. newly rankable this
+                    # cycle) silently lost recent_kscore entirely, which made rank_sectors()
+                    # read data.get("recent_kscore") as None and drop it from ranking outright
+                    # — exactly the "newly rankable sector" case the docstrings claim gets a
+                    # graceful trajectory=None, not silent exclusion from the rank field itself.
+                    rotation[row.sector] = {
+                        "momentum": 0,
+                        "recent_kscore": round(float(row.recent_kscore), 1) if row.recent_kscore is not None else None,
+                        "prior_kscore": round(float(row.prior_kscore), 1) if row.prior_kscore is not None else None,
+                        "delta": None,
+                    }
                     continue
                 delta = float(row.recent_kscore) - float(row.prior_kscore)
                 momentum = 1 if delta > 3 else (-1 if delta < -3 else 0)
@@ -3766,10 +3779,19 @@ def _compute_sector_rotation() -> None:
             today = datetime.now(timezone.utc).date()
             current_ranks = rank_sectors(rotation)
 
+            # AUD-T258-STALESNAPSHOT: the original query only had an UPPER bound (as_of <=
+            # four_weeks_ago) — after any gap in the weekly job (a missed run, a long outage),
+            # it would silently pick the newest snapshot still <= 28 days old, which could be
+            # months stale, and present the resulting comparison as if it were a genuine
+            # ~4-week trajectory (both this docstring and the API's own docstring advertise
+            # "~4 weeks ago"). A lower bound means a too-old gap correctly degrades to
+            # trajectory=None (no comparable snapshot) instead of a misleadingly-labeled one.
             four_weeks_ago = today - timedelta(days=28)
+            eight_weeks_ago = today - timedelta(days=56)
             prior_snapshot_date = sess.execute(_text_sr("""
-                SELECT MAX(as_of) FROM sector_rotation_snapshots WHERE as_of <= :cutoff
-            """), {"cutoff": four_weeks_ago}).scalar()
+                SELECT MAX(as_of) FROM sector_rotation_snapshots
+                WHERE as_of <= :cutoff AND as_of >= :floor
+            """), {"cutoff": four_weeks_ago, "floor": eight_weeks_ago}).scalar()
 
             prior_ranks: list[SectorRank] = []
             if prior_snapshot_date is not None:

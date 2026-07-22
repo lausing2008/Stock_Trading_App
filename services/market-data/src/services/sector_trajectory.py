@@ -55,34 +55,56 @@ _TRAJECTORY_LABELS = {
 
 def classify_trajectory(
     current_rank: int | None, prior_rank: int | None, total_sectors: int,
-    flat_threshold: int = 1,
+    flat_threshold: int = 1, prior_total_sectors: int | None = None,
 ) -> str | None:
     """Classify a sector's trajectory from its rank this snapshot vs. ~4 weeks prior.
 
-    `total_sectors` is the count of RANKABLE sectors this snapshot (used to determine the
-    top/bottom-half cutoff) — not a hardcoded constant, since the real sector universe can
-    genuinely vary between snapshots (a sector can drop out entirely if it has too few ranked
-    stocks that week, per rank_sectors()'s own exclusion of unrankable sectors).
+    `total_sectors` is the count of RANKABLE sectors THIS snapshot (used to determine the
+    top/bottom-half cutoff for `current_rank`) — not a hardcoded constant, since the real
+    sector universe can genuinely vary between snapshots (a sector can drop out entirely if it
+    has too few ranked stocks that week, per rank_sectors()'s own exclusion of unrankable
+    sectors).
 
-    `flat_threshold`: a rank move of this many places or fewer (in either direction) counts as
-    "flat" (Established) rather than "up"/"down" — avoids labeling a 1-2-place wobble in a
-    thin field as a genuine trajectory change. Default 1: only a move of >=2 places counts as
-    real movement.
+    `prior_total_sectors` is the count of rankable sectors the PRIOR snapshot had. AUD-T258-
+    RANKNORM: the rankable field size can genuinely differ week to week (more/fewer sectors
+    clearing the >=3-ranked-stocks floor), so comparing raw rank NUMBERS across two different
+    field sizes is wrong — rank 4 of 4 (dead last) and rank 4 of 8 (top half) are not the same
+    standing, but a raw-rank delta of 0 would call that "flat," mislabeling a sector that was
+    last place a month ago as a steady leader purely because the field grew. Both ranks are
+    normalized to a 0-1 percentile (0 = best) using their OWN respective field size before
+    computing delta/half, so the comparison is standing-relative-to-peers, not raw position.
+    Defaults to `total_sectors` when omitted (the pre-normalization behavior, for any caller
+    that genuinely has only one field size to compare — e.g. same-snapshot comparisons).
 
-    Returns None when either rank is unavailable (a sector newly entering the rankable set, or
-    one that dropped out 4 weeks ago) — there's no real trajectory to report without both
-    endpoints, and a caller must not guess one.
+    `flat_threshold`: expressed in the SAME units as `total_sectors` (rank-equivalent places,
+    not raw percentile) — a percentile delta of `flat_threshold / total_sectors` or less counts
+    as "flat" (Established) rather than "up"/"down". Default 1: roughly a 1-place move in a
+    field the size of `total_sectors` counts as flat.
+
+    Returns None when either rank or the current total is unavailable (a sector newly entering
+    the rankable set, or one that dropped out 4 weeks ago) — there's no real trajectory to
+    report without both endpoints, and a caller must not guess one.
     """
     if current_rank is None or prior_rank is None or total_sectors <= 0:
+        return None
+    prior_total = prior_total_sectors if prior_total_sectors is not None else total_sectors
+    if prior_total <= 0:
         return None
 
     half = (total_sectors + 1) / 2  # rank <= half is "top half" (ties resolved toward top)
     current_half = "top" if current_rank <= half else "bottom"
 
-    delta = prior_rank - current_rank  # positive = rank improved (lower number is better)
-    if delta > flat_threshold:
+    # Percentile position within each snapshot's own field (0 = best/rank-1, 1 = worst/last).
+    # Using (rank - 1) / (total - 1) so rank 1 is always exactly 0 and the last rank is always
+    # exactly 1, regardless of field size — the two endpoints are then directly comparable.
+    current_pctl = (current_rank - 1) / (total_sectors - 1) if total_sectors > 1 else 0.0
+    prior_pctl = (prior_rank - 1) / (prior_total - 1) if prior_total > 1 else 0.0
+
+    delta_pctl = prior_pctl - current_pctl  # positive = rank improved (lower percentile is better)
+    flat_band = flat_threshold / max(total_sectors - 1, 1)
+    if delta_pctl > flat_band:
         direction = "up"
-    elif delta < -flat_threshold:
+    elif delta_pctl < -flat_band:
         direction = "down"
     else:
         direction = "flat"
@@ -98,6 +120,7 @@ def build_trajectories(
     """
     prior_by_sector = {r.sector: r.rank for r in prior_ranks}
     total = sum(1 for r in current_ranks if r.rank is not None)
+    prior_total = sum(1 for r in prior_ranks if r.rank is not None)
 
     result: dict[str, dict] = {}
     for r in current_ranks:
@@ -106,6 +129,6 @@ def build_trajectories(
             "rank": r.rank,
             "prior_rank": prior_rank,
             "recent_kscore": r.recent_kscore,
-            "trajectory": classify_trajectory(r.rank, prior_rank, total),
+            "trajectory": classify_trajectory(r.rank, prior_rank, total, prior_total_sectors=prior_total),
         }
     return result

@@ -90,3 +90,37 @@ def test_sector_rotation_persist_happens_inside_the_same_session_as_the_read():
     # dedented back out to module scope after the `with` exits
     insert_idx = body.index("_pg_insert(SectorRotationSnapshot)")
     assert with_idx < insert_idx < commit_idx
+
+
+def test_sector_rotation_insufficient_data_branch_uses_the_correct_key_names():
+    """AUD-T258-SECTORKEY: the insufficient-data branch (recent_kscore or prior_kscore is
+    None) must write recent_kscore/prior_kscore — NOT the wrong "recent"/"prior" keys — since
+    rank_sectors() reads data.get("recent_kscore"), and a sector with a real current K-score
+    but no prior data (newly rankable) must not be silently dropped from ranking just because
+    this branch used the wrong dict keys."""
+    body = _sector_rotation_body()
+    branch_idx = body.index("if row.recent_kscore is None or row.prior_kscore is None:")
+    next_branch_idx = body.index("delta = float(row.recent_kscore) - float(row.prior_kscore)")
+    branch_body = body[branch_idx:next_branch_idx]
+    # only look at the actual dict literal assignment, not the explanatory comment above it
+    dict_start = branch_body.index("rotation[row.sector] = {")
+    dict_body = branch_body[dict_start:]
+    assert '"recent_kscore"' in dict_body
+    assert '"prior_kscore"' in dict_body
+    assert '"recent":' not in dict_body
+    assert '"prior":' not in dict_body
+
+
+def test_sector_rotation_prior_snapshot_query_has_a_lower_bound_not_just_upper():
+    """AUD-T258-STALESNAPSHOT: the prior-snapshot lookup must have BOTH an upper bound
+    (>= 4 weeks old) and a lower bound (not more than ~8 weeks old) — without a floor, a gap
+    in the weekly job could silently pick a months-old snapshot and still present it as a
+    genuine ~4-week trajectory."""
+    body = _sector_rotation_body()
+    assert "eight_weeks_ago" in body
+    assert "timedelta(days=56)" in body
+    query_idx = body.index("SELECT MAX(as_of) FROM sector_rotation_snapshots")
+    query_end = body.index('"""', query_idx)
+    query_text = body[query_idx:query_end]
+    assert "as_of <= :cutoff" in query_text
+    assert "as_of >= :floor" in query_text
