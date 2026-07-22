@@ -3718,10 +3718,22 @@ def _run_watchlist_auto_rotation() -> None:
 
 
 def _compute_sector_rotation() -> None:
-    """T220-G: Compute sector K-Score momentum (this week vs 4 weeks ago) and cache in Redis."""
+    """T220-G: Compute sector K-Score momentum (this week vs 4 weeks ago) and cache in Redis.
+
+    T258-SECTOR-ROTATION-TRAJECTORY: also persists this week's per-sector rank as a
+    SectorRotationSnapshot row (in addition to, not instead of, the Redis cache above — nothing
+    that already reads stockai:sector_rotation needs to change) and folds a `trajectory`
+    classification (Emerging/Established/Fading Leader or Laggard, from services/sector_
+    trajectory.py) into the SAME Redis payload by comparing this week's rank against the
+    snapshot from ~4 weeks ago. A sector with no snapshot from 4 weeks ago (first run, or a
+    sector that wasn't rankable then) simply gets trajectory=None — there's no real trajectory
+    to report without both endpoints.
+    """
     import json as _json
-    from db import SessionLocal
+    from db import SectorRotationSnapshot, SessionLocal
     from sqlalchemy import text as _text_sr
+    from sqlalchemy.dialects.postgresql import insert as _pg_insert
+    from .sector_trajectory import SectorRank, build_trajectories, rank_sectors
     _t0 = time.monotonic()
     try:
         with SessionLocal() as sess:
@@ -3737,19 +3749,64 @@ def _compute_sector_rotation() -> None:
                 HAVING COUNT(DISTINCT CASE WHEN r.as_of >= NOW() - INTERVAL '14 days' THEN s.id END) >= 3
             """)).fetchall()
 
-        rotation = {}
-        for row in rows:
-            if row.recent_kscore is None or row.prior_kscore is None:
-                rotation[row.sector] = {"momentum": 0, "recent": None, "prior": None}
-                continue
-            delta = float(row.recent_kscore) - float(row.prior_kscore)
-            momentum = 1 if delta > 3 else (-1 if delta < -3 else 0)
-            rotation[row.sector] = {
-                "momentum": momentum,
-                "recent_kscore": round(float(row.recent_kscore), 1),
-                "prior_kscore": round(float(row.prior_kscore), 1),
-                "delta": round(delta, 1),
-            }
+            rotation = {}
+            for row in rows:
+                if row.recent_kscore is None or row.prior_kscore is None:
+                    rotation[row.sector] = {"momentum": 0, "recent": None, "prior": None}
+                    continue
+                delta = float(row.recent_kscore) - float(row.prior_kscore)
+                momentum = 1 if delta > 3 else (-1 if delta < -3 else 0)
+                rotation[row.sector] = {
+                    "momentum": momentum,
+                    "recent_kscore": round(float(row.recent_kscore), 1),
+                    "prior_kscore": round(float(row.prior_kscore), 1),
+                    "delta": round(delta, 1),
+                }
+
+            today = datetime.now(timezone.utc).date()
+            current_ranks = rank_sectors(rotation)
+
+            four_weeks_ago = today - timedelta(days=28)
+            prior_snapshot_date = sess.execute(_text_sr("""
+                SELECT MAX(as_of) FROM sector_rotation_snapshots WHERE as_of <= :cutoff
+            """), {"cutoff": four_weeks_ago}).scalar()
+
+            prior_ranks: list[SectorRank] = []
+            if prior_snapshot_date is not None:
+                prior_rows = sess.execute(_text_sr("""
+                    SELECT sector, rank FROM sector_rotation_snapshots WHERE as_of = :as_of
+                """), {"as_of": prior_snapshot_date}).fetchall()
+                prior_ranks = [
+                    SectorRank(sector=r.sector, recent_kscore=None, rank=r.rank)
+                    for r in prior_rows if r.rank is not None
+                ]
+
+            trajectories = build_trajectories(current_ranks, prior_ranks)
+            for sector, traj in trajectories.items():
+                if sector in rotation:
+                    rotation[sector]["trajectory"] = traj["trajectory"]
+                    rotation[sector]["prior_rank"] = traj["prior_rank"]
+                    rotation[sector]["rank"] = traj["rank"]
+
+            for sr in current_ranks:
+                stmt = _pg_insert(SectorRotationSnapshot).values(
+                    sector=sr.sector, as_of=today,
+                    recent_kscore=sr.recent_kscore,
+                    prior_kscore=rotation.get(sr.sector, {}).get("prior_kscore"),
+                    momentum=rotation.get(sr.sector, {}).get("momentum", 0),
+                    rank=sr.rank,
+                )
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["sector", "as_of"],
+                    set_={
+                        "recent_kscore": stmt.excluded.recent_kscore,
+                        "prior_kscore": stmt.excluded.prior_kscore,
+                        "momentum": stmt.excluded.momentum,
+                        "rank": stmt.excluded.rank,
+                    },
+                )
+                sess.execute(stmt)
+            sess.commit()
 
         _get_redis().setex("stockai:sector_rotation", 86400 * 3, _json.dumps(rotation))
         elapsed = time.monotonic() - _t0

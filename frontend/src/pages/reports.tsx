@@ -279,10 +279,25 @@ function TopStocksTab({ market }: { market: Market }) {
   );
 }
 
+const TRAJECTORY_COLOR: Record<string, string> = {
+  'Emerging Leader': '#4ade80',
+  'Established Leader': '#86efac',
+  'Fading Leader': '#f59e0b',
+  'Emerging Laggard': '#93c5fd',
+  'Established Laggard': '#9ca3af',
+  'Fading Laggard': '#f87171',
+};
+
 // ── Money Flow ────────────────────────────────────────────────────────────────
 function FlowTab({ market }: { market: Market }) {
   const { data: rotation } = useSWR(`sector-rotation-kscore-${market}`, () => api.sectorRotation(market));
   const { data: rankings } = useSWR(`rankings-flow-${market}`, () => api.rankings(market));
+  // T220-G/T258: US-only, K-Score-based rotation — distinct source from the RS-based
+  // `rotation` fetch above (which itself may be scoped by market).
+  const { data: kscoreRotation } = useSWR('sector-rotation-kscore-t258', () => api.sectorRotationKscore());
+  const kscoreEntries = kscoreRotation
+    ? Object.entries(kscoreRotation).sort((a, b) => (b[1].recent_kscore ?? -Infinity) - (a[1].recent_kscore ?? -Infinity))
+    : [];
 
   // "Best stocks in the leading sector" — client-side join of sector momentum + rankings,
   // scoped to THIS app's existing universe. A whole-market screener (per the user's explicit
@@ -302,7 +317,7 @@ function FlowTab({ market }: { market: Market }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={card}>
-        <div style={sectionTitle}>Sector Momentum (K-Score-based, {market})</div>
+        <div style={sectionTitle}>Sector Momentum (Relative Strength, {market})</div>
         {rotation?.sectors ? (
           <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
             <thead>
@@ -326,6 +341,45 @@ function FlowTab({ market }: { market: Market }) {
               ))}
             </tbody>
           </table>
+        ) : <div style={{ color: '#6b7280' }}>Loading…</div>}
+      </div>
+
+      <div style={card}>
+        <div style={sectionTitle}>Sector K-Score Momentum &amp; Trajectory (US)</div>
+        <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 10 }}>
+          Rank trajectory compares this week&apos;s sector rank against the snapshot from ~4
+          weeks ago — Emerging/Fading track a sector&apos;s rank moving in/out of the top half,
+          Established means the rank held steady. Computed weekly (Sunday); US-only for now.
+        </div>
+        {kscoreRotation ? (
+          kscoreEntries.length > 0 ? (
+            <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ color: '#9ca3af', textAlign: 'left' }}>
+                  <th style={{ padding: '6px 8px' }}>Sector</th>
+                  <th style={{ padding: '6px 8px' }}>K-Score</th>
+                  <th style={{ padding: '6px 8px' }}>4wk Δ</th>
+                  <th style={{ padding: '6px 8px' }}>Rank</th>
+                  <th style={{ padding: '6px 8px' }}>Trajectory</th>
+                </tr>
+              </thead>
+              <tbody>
+                {kscoreEntries.map(([sector, e]) => (
+                  <tr key={sector} style={{ borderTop: '1px solid #1f2937' }}>
+                    <td style={{ padding: '6px 8px', fontWeight: 600 }}>{sector}</td>
+                    <td style={{ padding: '6px 8px' }}>{e.recent_kscore != null ? fmtNum(e.recent_kscore, 1) : '—'}</td>
+                    <td style={{ padding: '6px 8px', color: pctColor(e.delta) }}>{e.delta != null ? fmtNum(e.delta, 1) : '—'}</td>
+                    <td style={{ padding: '6px 8px', color: '#9ca3af' }}>
+                      {e.rank != null ? `#${e.rank}${e.prior_rank != null ? ` (was #${e.prior_rank})` : ''}` : '—'}
+                    </td>
+                    <td style={{ padding: '6px 8px', fontWeight: 600, color: e.trajectory ? TRAJECTORY_COLOR[e.trajectory] ?? '#9ca3af' : '#6b7280' }}>
+                      {e.trajectory ?? 'Not enough history yet'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : <div style={{ color: '#6b7280', fontSize: 13 }}>No sector rotation data yet — computed weekly.</div>
         ) : <div style={{ color: '#6b7280' }}>Loading…</div>}
       </div>
 

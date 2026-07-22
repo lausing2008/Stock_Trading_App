@@ -1922,9 +1922,15 @@ def short_interest(
 def get_sector_rotation():
     """Return current sector K-Score momentum (computed Sunday, cached in Redis).
 
-    Returns {sector_name: {momentum: +1/0/-1, recent_kscore, prior_kscore, delta}}
-    where momentum=+1 means sector K-Score rose >3 pts vs 4 weeks ago (institutional
-    tailwind), -1 means fell >3 pts (headwind), 0 means flat.
+    Returns {sector_name: {momentum: +1/0/-1, recent_kscore, prior_kscore, delta,
+    rank, prior_rank, trajectory}} where momentum=+1 means sector K-Score rose >3 pts vs 4
+    weeks ago (institutional tailwind), -1 means fell >3 pts (headwind), 0 means flat.
+
+    T258-SECTOR-ROTATION-TRAJECTORY: `trajectory` is one of "Emerging Leader"/"Established
+    Leader"/"Fading Leader"/"Emerging Laggard"/"Established Laggard"/"Fading Laggard" — how
+    this sector's RANK among sectors has moved vs. the snapshot ~4 weeks ago (see
+    services/sector_trajectory.py). `null` when there's no comparable snapshot from 4 weeks
+    ago yet (first run, or the sector wasn't rankable then).
     """
     import json as _json
     r = _get_redis()

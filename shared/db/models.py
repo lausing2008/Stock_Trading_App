@@ -1176,3 +1176,31 @@ class VolumeAreaLevel(Base):
     vah: Mapped[float] = mapped_column(Float)
     val: Mapped[float] = mapped_column(Float)
     computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class SectorRotationSnapshot(Base):
+    """T258-SECTOR-ROTATION-TRAJECTORY: dated history for _compute_sector_rotation()'s weekly
+    K-Score-momentum-by-sector computation (services/market-data/src/services/scheduler.py).
+
+    Before this table, _compute_sector_rotation() only ever wrote ONE Redis key
+    (stockai:sector_rotation, 3-day TTL) — each week's run overwrote the prior one, so nothing
+    could answer "is this sector's leadership rising or fading over the last several weeks,"
+    only "what does this week's snapshot say." Persisting each week's row here (in addition to,
+    not instead of, the existing Redis cache — nothing that already reads that key needs to
+    change) makes a rank-vs-N-weeks-ago trajectory classification possible for the first time.
+
+    Keyed by (sector, as_of) rather than a stock_id FK, since a sector name is not itself a row
+    in `stocks` — matches how _compute_sector_rotation()'s own query already groups by
+    `s.sector` (a plain string column on Stock), not a dedicated sectors table.
+    """
+    __tablename__ = "sector_rotation_snapshots"
+    __table_args__ = (UniqueConstraint("sector", "as_of", name="uq_sector_rotation_snapshot"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sector: Mapped[str] = mapped_column(String(64), index=True)
+    as_of: Mapped[date] = mapped_column(Date, index=True)
+    recent_kscore: Mapped[float | None] = mapped_column(Float, nullable=True)
+    prior_kscore: Mapped[float | None] = mapped_column(Float, nullable=True)
+    momentum: Mapped[int] = mapped_column(Integer)  # +1 / 0 / -1, same convention as the Redis payload
+    rank: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1 = highest recent_kscore that week
+    computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

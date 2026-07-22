@@ -382,6 +382,10 @@ export const api = {
     ts: string;
     error?: string;
   }>('/stocks/sector_rotation'),
+  // T220-G/T258: sector K-Score momentum + rank trajectory (a THIRD, distinct sector-rotation
+  // endpoint from the two above — this one is US-only, K-Score-based, computed weekly by
+  // market-data's _compute_sector_rotation()). Returns {sector_name: entry}, not an array.
+  sectorRotationKscore: () => request<Record<string, SectorRotationKscoreEntry>>('/stocks/sector-rotation'),
 
   // Earnings calendar
   earningsCalendar: (daysAhead = 45) => request<EarningsItem[]>(`/stocks/earnings_calendar?days_ahead=${daysAhead}`),
@@ -739,6 +743,17 @@ export type ShortInterestRow = { symbol: string; name: string; market: string; s
 export type SectorRsStock = { symbol: string; name: string; rs_score: number | null; kscore: number | null; past_rs: number | null };
 export type SectorRotationEntry = { sector: string; etf: string; avg_rs: number; rs_change: number | null; stock_count: number; leading: number; lagging: number; leading_pct: number; top_stocks: SectorRsStock[]; bottom_stocks: SectorRsStock[] };
 export type SectorRotationReport = { as_of: string; sectors: SectorRotationEntry[] };
+// T220-G/T258 — momentum: +1 rising / -1 falling / 0 flat vs 4 weeks ago (K-Score delta).
+// trajectory/rank/prior_rank are only present once a prior snapshot ~4 weeks back exists.
+export type SectorRotationKscoreEntry = {
+  momentum: number;
+  recent_kscore?: number | null;
+  prior_kscore?: number | null;
+  delta?: number | null;
+  rank?: number | null;
+  prior_rank?: number | null;
+  trajectory?: string | null;
+};
 export type Prediction = { symbol: string; bullish_probability: number; confidence: number; direction: string };
 export type Backtest = {
   backtest_id: number | null;

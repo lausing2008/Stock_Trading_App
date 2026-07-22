@@ -6250,3 +6250,151 @@ docker logs stockai-market-data-1 --since 24h | grep 'earnings_reminder_digest_s
 # different symbols (expected — a symbol due tomorrow and one due in 5 days will land in
 # different weekly cycles unless both cross a reminder threshold on the same run).
 ```
+
+---
+
+## Feature Reference: T258-SECTOR-ROTATION-TRAJECTORY — Sector Rank Trajectory Classification (Built 2026-07-22)
+
+**The gap this closes**: `_compute_sector_rotation()` (T220-G, `services/market-data/src/
+services/scheduler.py`, Sunday-scheduled) only ever wrote ONE Redis key
+(`stockai:sector_rotation`, 3-day TTL) — each week's run overwrote the prior one, so nothing
+could answer "is this sector's leadership rising or fading over several weeks," only "what does
+this week's snapshot say." No history was persisted anywhere.
+
+**New module**: `services/market-data/src/services/sector_trajectory.py` — pure, DB-independent
+classification logic (no network/DB dependency, matching the `volume_area.py` precedent of
+separating pure math from DB-touching wiring):
+- `rank_sectors(rotation: dict) -> list[SectorRank]` — assigns a 1-indexed rank (1 = highest
+  `recent_kscore`) to every sector that HAS a real `recent_kscore` this snapshot. A sector with
+  no `recent_kscore` (insufficient ranking data that week) gets `rank=None` — excluded from
+  ranking, never assigned a fake last place.
+- `classify_trajectory(current_rank, prior_rank, total_sectors, flat_threshold=1) -> str | None`
+  — six-class vocabulary from the original design doc's own "Combined Agent Catalog" cite:
+  **Emerging Leader** (top half, rank improved by >1), **Established Leader** (top half, rank
+  held within ±1), **Fading Leader** (top half, rank worsened by >1), and the mirror three for
+  bottom half — **Emerging/Established/Fading Laggard**. Classification is by the sector's
+  CURRENT half only — a sector that fell from rank 1 (top half) to rank 3 of 4 (bottom half,
+  `half = (total+1)/2 = 2.5`) reads as "Fading Laggard," not "Fading Leader," since it's now
+  actually in the bottom half; "Fading Leader" is reserved for a sector still IN the top half
+  but losing ground within it. Returns `None` when either rank is unavailable (a sector newly
+  entering the rankable set, or one that dropped out 4 weeks ago) — no trajectory is fabricated
+  without both endpoints.
+- `build_trajectories(current_ranks, prior_ranks) -> dict[str, dict]` — combines this
+  snapshot's ranks with a prior snapshot's into `{sector: {rank, prior_rank, trajectory,
+  recent_kscore}}`. `total_sectors` (used for the top/bottom-half cutoff) counts only rankable
+  sectors THIS snapshot — an unrankable sector doesn't skew the cutoff for the others.
+
+**New table**: `SectorRotationSnapshot` (`shared/db/models.py`) — `(sector, as_of)` unique,
+stores `recent_kscore`/`prior_kscore`/`momentum`/`rank` per sector/week. A brand-new table, so
+`create_all()` handles it automatically — no manual `ALTER TABLE` needed (per this file's own
+standing `create_all()`-gap invariant, which only applies to adding a column to an EXISTING
+table).
+
+**Wiring**: `_compute_sector_rotation()` now, in addition to its existing Redis write: (1)
+ranks this week's sectors via `rank_sectors()`; (2) queries the most recent
+`SectorRotationSnapshot` `as_of` that's `<= today - 28 days` (not a fixed weeks-back count —
+tolerant of a missed week); (3) classifies each sector's trajectory via `build_trajectories()`
+against that prior snapshot's ranks; (4) folds `trajectory`/`rank`/`prior_rank` directly into
+the SAME `rotation` dict already being cached to `stockai:sector_rotation` — nothing that
+already reads that key needs to change, it just gains new fields; (5) upserts this week's
+`SectorRotationSnapshot` rows via `ON CONFLICT DO UPDATE` on `(sector, as_of)`, matching
+`volume_area.py`'s established idempotent-upsert pattern for the same class of dated-snapshot
+table — safe to re-run for the same week without duplicate rows.
+
+**API**: `GET /stocks/sector-rotation` (T220-G's existing endpoint) needed zero code changes —
+it's a pure Redis-cache passthrough, so the new `trajectory`/`rank`/`prior_rank` fields just
+flow through automatically once the scheduler starts writing them. Docstring updated to
+document the new fields.
+
+**Frontend**: `frontend/src/lib/api.ts` gained `sectorRotationKscore()` → `GET /stocks/sector-
+rotation` and a `SectorRotationKscoreEntry` type — this endpoint had NO prior frontend consumer
+at all; the Money Flow tab's existing "Sector Momentum" table was reading a DIFFERENT endpoint
+entirely (`api.sectorRotation()` → `/rankings/sector_rotation`, ranking-engine's own RS-based
+sector rotation — confirmed by checking the actual response shape/fields, not assumed from the
+similar name). Renamed that pre-existing card's title from "Sector Momentum (K-Score-based)" to
+"Sector Momentum (Relative Strength)" to correct a standing label mismatch (it was never
+K-Score-based — its own columns are Avg RS/RS Change), found while wiring up the real K-Score
+endpoint alongside it. Added a new "Sector K-Score Momentum & Trajectory (US)" card to
+`reports.tsx`'s Money Flow tab, with a trajectory-colored chip per sector (green shades for
+Leader classes, gray/red for Laggard/Fading) and a rank readout (`#N (was #M)`).
+
+**Three DISTINCT sector-rotation endpoints now exist in this app, easy to confuse by name
+alone** (a reminder for future work, not a bug): `/stocks/sector_rotation` (RES-4, US sector
+ETFs vs SPY, ETF-ticker-based), `/rankings/sector_rotation` (ranking-engine, Relative-Strength-
+based, used by `FlowTab`'s pre-existing card and `TopStocksTab`), and `/stocks/sector-rotation`
+(T220-G/T258, this feature, K-Score-momentum-based, the only one with rank-trajectory history).
+Verify the ACTUAL response shape before reusing any of these three for a new call site — same
+discipline already documented elsewhere in this file for `/events/overview`'s nested fields.
+
+**Tests**: `services/market-data/tests/test_sector_trajectory.py` (20 cases) — direct,
+DB-independent tests of `rank_sectors()`/`classify_trajectory()`/`build_trajectories()`,
+covering unrankable-sector exclusion, all 6 trajectory classes, the flat-threshold band, the
+odd-vs-even `total_sectors` half-cutoff tie-break, missing-rank fallback to `None`, and
+zero-`total_sectors` safety. `services/market-data/tests/test_sector_rotation_trajectory_
+wiring.py` (5 cases) — source-text regression checks for the `scheduler.py` wiring (matching
+this repo's established pattern for scheduler.py functions that can't be imported directly in
+this test environment — its import chain pulls in `apscheduler`, and `conftest.py`'s
+`MagicMock()`-stubbed `sqlalchemy`/`db` would silently mask a real `NameError`/missing import).
+Confirms: only locally-imported names are used, the upsert targets `(sector, as_of)`, the
+prior-snapshot query looks back 28 days, the trajectory fold happens BEFORE the existing Redis
+`setex` call (not a separate/new key), and the persist happens inside the same session as the
+read with an explicit commit.
+
+**Adversarial verification** — 3 sabotage cycles on the wiring tests, all caught and reverted:
+removing `"as_of"` from the `on_conflict_do_update` index_elements (caught by the upsert-target
+test); replacing `timedelta(days=28)` with a same-day cutoff (caught by the four-weeks-ago
+test); removing the trajectory-fold block entirely before the `setex` call (caught by the
+folds-into-same-payload test). Separately, `classify_trajectory()`'s half-cutoff comparison
+operator (`<=` vs `<`) was sabotaged and reverted, caught by the odd-total-sectors tie-break
+test. All reverts confirmed byte-identical to the pre-sabotage source before moving on.
+
+**A real, unrelated corruption caught and fixed during this same session**: while restoring
+`scheduler.py` from a `/tmp` backup after one of the sabotage cycles above, the restore
+inadvertently reverted TWO already-shipped, already-committed pieces of code back to an older
+state — `check_signal_alerts()`'s earnings-reminder block reverted from the consolidated
+per-user digest (AUD-EARNINGS-DIGEST, committed `0a8ba04`) back to the old per-symbol
+`send_email()` loop, and the already-deleted `_earnings_reminder_body()` helper reappeared.
+Caught by the full test suite failing on an unrelated, pre-existing test
+(`test_reminder_wiring_sends_one_consolidated_digest_not_per_symbol_emails`) — confirmed via
+`git diff` that the corruption was isolated to those two already-committed regions (a `git
+stash`/`stash pop` round-trip proved the failure disappeared against the clean committed state),
+then surgically restored just those two regions from `git show HEAD` via targeted `Edit` calls
+rather than a blanket file overwrite, byte-verified against HEAD before proceeding. **Lesson
+reinforced**: a `cp <backup> <target>` restore during adversarial sabotage testing must restore
+from a backup taken of the CURRENT intended state, not an earlier, possibly-stale snapshot —
+after any such restore, diff the full file against `git show HEAD` (not just re-run the tests
+for the function you were sabotaging) to catch collateral reversion in unrelated regions before
+it ships.
+
+**Not yet built (deferred, matching the tracker item's own note)**: an HK sector-ETF rotation
+equivalent — the K-Score rotation query is hardcoded `WHERE s.market = 'US'`; HK support would
+need its own sector-ETF universe first, tracked as a separate follow-up.
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the new table exists and has real rows after the next Sunday run:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT sector, as_of, recent_kscore, rank FROM sector_rotation_snapshots ORDER BY as_of DESC, rank ASC LIMIT 20;"
+
+# Confirm trajectory is actually landing in the Redis payload:
+docker exec stockai-redis-1 redis-cli get stockai:sector_rotation
+
+# Manually trigger the job to see it live (safe, idempotent — upserts on conflict):
+docker exec stockai-market-data-1 python3 -c "
+import sys; sys.path.insert(0, '/app'); sys.path.insert(0, '/app/src')
+from src.services.scheduler import _compute_sector_rotation
+_compute_sector_rotation()
+"
+
+# Live check the API response:
+docker exec stockai-market-data-1 python3 -c "
+import sys, uuid, time; sys.path.insert(0,'/app'); sys.path.insert(0,'/app/src')
+from common.config import get_settings; from jose import jwt as _jwt; import httpx
+s = get_settings()
+tok = _jwt.encode({'sub':'scheduler','jti':str(uuid.uuid4()),'exp':int(time.time())+86400}, s.jwt_secret, algorithm='HS256')
+r = httpx.get('http://localhost:8001/stocks/sector-rotation', headers={'Authorization': f'Bearer {tok}'}, timeout=15)
+print(r.status_code, r.json())
+"
+```
+A `trajectory: null` for every sector on the FIRST run after this deploy is expected (no 4-week-
+prior snapshot exists yet) — it should start populating from the second Sunday run onward.

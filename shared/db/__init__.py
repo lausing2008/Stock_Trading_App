@@ -45,6 +45,7 @@ from .models import (
     PushSubscription,
     CapeReading,
     VolumeAreaLevel,
+    SectorRotationSnapshot,
 )
 from .session import SessionLocal, engine, get_session, init_db
 
@@ -95,6 +96,7 @@ __all__ = [
     "PushSubscription",
     "CapeReading",
     "VolumeAreaLevel",
+    "SectorRotationSnapshot",
     "SessionLocal",
     "engine",
     "get_session",
