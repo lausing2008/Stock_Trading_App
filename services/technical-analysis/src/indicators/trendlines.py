@@ -136,6 +136,76 @@ def detect_support_resistance(
     return (fib + candidates_35)[:max_levels]
 
 
+def detect_sr_context(df: pd.DataFrame, levels: list[Level] | None = None) -> dict:
+    """Classify the current bar's position relative to support/resistance as one of
+    'breakout' | 'at_resistance' | 'at_support' | 'neutral'.
+
+    AUD-DUPLOGIC: this is a straight port of signal-engine's own `_sr_context()` classification
+    logic (services/signal-engine/src/generators/signals.py) — that file's pivot-DETECTION was
+    a simplified, independent reimplementation of this module's own `detect_support_resistance()`
+    (60-bar/±3-window vs. this module's 3-tier 90-bar/full-history/Fibonacci-fallback strategy,
+    already fixed once for a close-vs-high/low pivot mismatch — T247-TA-CLUSTERPIVOTS-
+    CLOSE-HIGH-MISMATCH — that signal-engine's own copy never received). Consolidating here
+    means signal-engine's breakout/at_support labeling can no longer silently disagree with
+    the chart's own official S/R levels for the same symbol at the same moment.
+
+    `levels` may be passed in (already computed by the caller, e.g. GET /ta/{symbol}/levels'
+    own detect_support_resistance() call) to avoid recomputing them a second time; if omitted,
+    computes them fresh with the same defaults detect_support_resistance() itself uses.
+    """
+    if levels is None:
+        levels = detect_support_resistance(df)
+
+    close = df["close"].astype(float)
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    current = float(close.iloc[-1])
+    prev = float(close.iloc[-2]) if len(close) >= 2 else current
+
+    # 52-week high/low from historical bars (excluding today, to avoid look-ahead).
+    hist_len = min(252, len(close) - 1)
+    hist_high = float(high.iloc[-hist_len - 1:-1].max()) if hist_len > 0 else float(high.max())
+    hist_low = float(low.iloc[-hist_len - 1:-1].min()) if hist_len > 0 else float(low.min())
+
+    resistances = [hist_high] + [L.price for L in levels if L.kind == "resistance"]
+    supports = [L.price for L in levels if L.kind == "support"]
+
+    nearest_res = min((r for r in resistances if r > current), default=None)
+    nearest_sup = max((s for s in supports if s < current), default=None)
+    # A stock that decisively clears every known resistance level in one move (a genuine
+    # all-time-high breakout) has no level qualifying as "nearest" once price has passed it —
+    # track the highest resistance still <= current separately so that case is still recognized
+    # as a breakout instead of silently falling through to "neutral".
+    cleared_res = max((r for r in resistances if r <= current), default=None)
+
+    thr = 0.015  # 1.5% proximity threshold
+    sr_context = "neutral"
+
+    if cleared_res is not None and prev < cleared_res:
+        # Price closed at/above a former resistance level the prior bar was still below — a
+        # freshly-confirmed breakout, not just historically having traded above it.
+        sr_context = "breakout"
+    elif nearest_res is not None:
+        dist = (nearest_res - current) / nearest_res
+        if dist <= thr:
+            if prev < nearest_res * (1.0 - thr):
+                sr_context = "breakout"
+            else:
+                sr_context = "at_resistance"
+    if sr_context == "neutral" and nearest_sup is not None:
+        dist = (current - nearest_sup) / current
+        if dist <= thr:
+            sr_context = "at_support"
+
+    return {
+        "sr_context": sr_context,
+        "sr_nearest_resistance": round(nearest_res, 2) if nearest_res is not None else None,
+        "sr_nearest_support": round(nearest_sup, 2) if nearest_sup is not None else None,
+        "sr_52w_high": round(hist_high, 2),
+        "sr_52w_low": round(hist_low, 2),
+    }
+
+
 def detect_trendlines(df: pd.DataFrame, order: int = 5) -> list[Trendline]:
     """Least-squares fit through consecutive pivot lows (uptrend) / highs (downtrend)."""
     highs_idx, lows_idx = _find_pivots(df["close"], order=order)

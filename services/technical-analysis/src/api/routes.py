@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from db import Price, Stock, TimeFrame, get_session
 
 from ..indicators import bollinger_bands, cog, ema, fibonacci_retracement, macd, rsi, sma, supertrend
-from ..indicators.trendlines import detect_fair_value_gaps, detect_support_resistance, detect_trendlines
+from ..indicators.trendlines import detect_fair_value_gaps, detect_sr_context, detect_support_resistance, detect_trendlines
 from ..patterns import detect_patterns
 
 router = APIRouter(prefix="/ta", tags=["technical-analysis"])
@@ -183,10 +183,17 @@ def get_levels(
     swing_low = swing["low"].min()
     import math as _math
     fib = fibonacci_retracement(float(swing_high), float(swing_low)) if not _math.isnan(swing_high) else {}
+    # AUD-DUPLOGIC: sr_context (breakout/at_resistance/at_support/neutral classification) is
+    # the canonical version signal-engine's own _sr_context() now delegates to over HTTP,
+    # instead of independently reimplementing pivot detection with a different window/order —
+    # see detect_sr_context()'s own docstring. Reuses the SAME `levels` already computed above
+    # rather than detecting them a second time.
+    sr_context = detect_sr_context(df, levels=levels)
     return {
         "symbol": symbol,
         "support_resistance": [vars(L) for L in levels],
         "trendlines": [vars(T) for T in lines],
         "fair_value_gaps": [vars(G) for G in fvgs],
         "fibonacci": fib,
+        "sr_context": sr_context,
     }

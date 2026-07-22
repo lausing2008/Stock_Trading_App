@@ -781,12 +781,45 @@ def _weekly_technicals(df: pd.DataFrame) -> dict:
     }
 
 
-def _sr_context(df: pd.DataFrame) -> dict:
+def _fetch_sr_context_from_ta(symbol: str) -> dict | None:
+    """Fetch the canonical sr_context classification from technical-analysis's GET
+    /ta/{symbol}/levels — the same endpoint _fetch_patterns_from_ta() already calls, matching
+    this file's existing HTTP-to-TA integration pattern. Returns None on any failure so the
+    caller can fall back to the local computation (technical-analysis being unreachable must
+    never block signal generation).
+    """
+    try:
+        url = f"{_settings.technical_analysis_url}/ta/{symbol}/levels"
+        with httpx.Client(timeout=8) as c:
+            r = c.get(url)
+            if r.status_code == 200:
+                data = r.json().get("sr_context")
+                if isinstance(data, dict) and "sr_context" in data:
+                    return data
+    except Exception:
+        pass
+    return None
+
+
+def _sr_context(df: pd.DataFrame, symbol: str | None = None) -> dict:
     """Detect price position relative to key support/resistance levels.
 
-    Uses swing high/low pivots from the last 60 bars plus 52-week high/low.
+    AUD-DUPLOGIC: when `symbol` is provided, fetches the canonical classification from
+    technical-analysis's GET /ta/{symbol}/levels (services/technical-analysis/src/indicators/
+    trendlines.py::detect_sr_context() — the same 3-tier pivot-detection strategy the chart's
+    own official S/R levels use, already fixed once for a close-vs-high/low pivot mismatch this
+    file's own independent pivot detection never received) instead of reimplementing pivot
+    detection with a different, simpler window here. Falls back to the local computation below
+    (this file's own original 60-bar/±3-window pivot scan) if technical-analysis is unreachable
+    or `symbol` is omitted — signal generation must never hard-fail on a TA-service outage.
+
     Returns sr_context: 'breakout' | 'at_resistance' | 'at_support' | 'neutral'.
     """
+    if symbol:
+        remote = _fetch_sr_context_from_ta(symbol)
+        if remote is not None:
+            return remote
+
     close = _adj_close(df)
     high  = df["high"].astype(float)
     low   = df["low"].astype(float)
@@ -2276,7 +2309,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
 
     is_stale = _check_price_staleness(df, symbol)
     ta_prob, reasons = _ta_score(df, ta_weights=_ta_weights)
-    sr_data = _sr_context(df)
+    sr_data = _sr_context(df, symbol=symbol)
 
     # T228: HK liquidity filter — flag stocks with avg 20d daily turnover < HKD 50M
     _hk_low_liquidity = False
