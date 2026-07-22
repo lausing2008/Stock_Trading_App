@@ -70,6 +70,9 @@ def test_returns_all_expected_keys():
     assert set(result.keys()) == {
         "sr_context", "sr_nearest_resistance", "sr_nearest_support",
         "sr_52w_high", "sr_52w_low",
+        # T258-ACCUM-DIST-BREAKOUT-QUALITY: the level actually broken (as opposed to
+        # sr_nearest_resistance/sr_nearest_support, which are always still ahead of price).
+        "sr_cleared_resistance", "sr_cleared_support",
     }
     assert result["sr_context"] in ("breakout", "at_resistance", "at_support", "neutral")
 

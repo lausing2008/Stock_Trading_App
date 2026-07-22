@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from db import Price, Stock, TimeFrame, get_session
 
 from ..indicators import bollinger_bands, cog, ema, fibonacci_retracement, macd, rsi, sma, supertrend
-from ..indicators.trendlines import detect_fair_value_gaps, detect_sr_context, detect_support_resistance, detect_trendlines
+from ..indicators.trendlines import assess_breakout_quality, detect_accumulation_distribution, detect_fair_value_gaps, detect_sr_context, detect_support_resistance, detect_trendlines
 from ..patterns import detect_patterns
 
 router = APIRouter(prefix="/ta", tags=["technical-analysis"])
@@ -189,6 +189,18 @@ def get_levels(
     # see detect_sr_context()'s own docstring. Reuses the SAME `levels` already computed above
     # rather than detecting them a second time.
     sr_context = detect_sr_context(df, levels=levels)
+
+    # T258-ACCUM-DIST-BREAKOUT-QUALITY: reuses the levels already computed above by
+    # detect_sr_context() — no second level-detection pass. Uses sr_cleared_resistance/
+    # sr_cleared_support (the level actually broken through), NOT sr_nearest_resistance/
+    # sr_nearest_support (which are always still ahead of price, never yet reached).
+    # assess_breakout_quality() itself returns None when nothing has broken in that direction.
+    breakout_quality = None
+    if sr_context.get("sr_cleared_resistance") is not None:
+        breakout_quality = assess_breakout_quality(df, sr_context["sr_cleared_resistance"], direction="up")
+    if breakout_quality is None and sr_context.get("sr_cleared_support") is not None:
+        breakout_quality = assess_breakout_quality(df, sr_context["sr_cleared_support"], direction="down")
+
     return {
         "symbol": symbol,
         "support_resistance": [vars(L) for L in levels],
@@ -196,4 +208,6 @@ def get_levels(
         "fair_value_gaps": [vars(G) for G in fvgs],
         "fibonacci": fib,
         "sr_context": sr_context,
+        "accumulation_distribution": detect_accumulation_distribution(df),
+        "breakout_quality": breakout_quality,
     }

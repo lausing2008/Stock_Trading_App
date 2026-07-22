@@ -177,6 +177,13 @@ def detect_sr_context(df: pd.DataFrame, levels: list[Level] | None = None) -> di
     # track the highest resistance still <= current separately so that case is still recognized
     # as a breakout instead of silently falling through to "neutral".
     cleared_res = max((r for r in resistances if r <= current), default=None)
+    # Mirror of cleared_res for the downside — the lowest support still >= current, i.e. the
+    # support level price has actually broken BELOW (not sr_nearest_support, which is by
+    # construction always < current and therefore can never be "the level just broken").
+    # This function's own sr_context classification doesn't currently distinguish a genuine
+    # breakdown from plain "neutral" (only breakout/at_resistance/at_support/neutral exist) —
+    # exposing cleared_sup is additive data only, not a change to that existing classification.
+    cleared_sup = min((s for s in supports if s >= current), default=None)
 
     thr = 0.015  # 1.5% proximity threshold
     sr_context = "neutral"
@@ -203,6 +210,13 @@ def detect_sr_context(df: pd.DataFrame, levels: list[Level] | None = None) -> di
         "sr_nearest_support": round(nearest_sup, 2) if nearest_sup is not None else None,
         "sr_52w_high": round(hist_high, 2),
         "sr_52w_low": round(hist_low, 2),
+        # T258-ACCUM-DIST-BREAKOUT-QUALITY: the actual levels a breakout/breakdown check should
+        # test — sr_nearest_resistance/sr_nearest_support are ALWAYS on the "not yet reached"
+        # side of current price by construction, so neither can be the level a genuine
+        # breakout/breakdown just cleared. cleared_res/cleared_sup are the correct levels to
+        # feed into assess_breakout_quality() for the "up"/"down" directions respectively.
+        "sr_cleared_resistance": round(cleared_res, 2) if cleared_res is not None else None,
+        "sr_cleared_support": round(cleared_sup, 2) if cleared_sup is not None else None,
     }
 
 
@@ -329,3 +343,121 @@ def detect_fair_value_gaps(
         gaps.sort(key=lambda g: g.idx)
 
     return gaps
+
+
+def detect_accumulation_distribution(df: pd.DataFrame, window: int = 20) -> dict:
+    """T258-ACCUM-DIST-BREAKOUT-QUALITY: classify a stock as 'accumulation' | 'distribution' |
+    'neutral' from price/volume PATTERN alone.
+
+    No block-trade/dark-pool feed exists anywhere in this app — this deliberately does NOT
+    claim to detect institutional accumulation directly (that would need trade-level data this
+    app doesn't have access to). It's a volume-pattern-based read, framed honestly as such:
+    the two component signals, both already established conventions elsewhere in this app —
+    - OBV trend: cumulative (volume * price-direction) — the same construction signal-engine's
+      own obv_trend_bullish already uses (generators/signals.py), a 10-bar OBV average above
+      its 30-bar average means net buying pressure has been building recently.
+    - Up/down-day volume ratio: total volume on up-close days vs. down-close days over
+      `window` bars — a stock trading heavier on its up days than its down days is being
+      bought into strength, not just drifting up on thin volume.
+
+    Both signals must agree for a real accumulation/distribution call (`state`); one agreeing
+    and one not degrades to 'neutral' rather than assigning a rough state. Returns the two
+    component readings (`obv_trend_bullish`, `updown_vol_ratio`) alongside `state` so a caller
+    can see the actual evidence, not just a bare label — the tracker's own honesty requirement
+    for a pattern-based (not trade-level) classification.
+    """
+    close = df["close"].astype(float)
+    volume = df["volume"].astype(float)
+    if len(close) < window + 1:
+        return {"state": "neutral", "obv_trend_bullish": None, "updown_vol_ratio": None}
+
+    direction = close.diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
+    obv = (volume * direction).cumsum()
+    obv_trend_bullish = None
+    if len(obv) >= 30:
+        obv_trend_bullish = bool(obv.rolling(10).mean().iloc[-1] > obv.rolling(30).mean().iloc[-1])
+
+    recent_dir = direction.iloc[-window:]
+    recent_vol = volume.iloc[-window:]
+    up_vol = float(recent_vol[recent_dir > 0].sum())
+    down_vol = float(recent_vol[recent_dir < 0].sum())
+    updown_vol_ratio = (up_vol / down_vol) if down_vol > 0 else (float("inf") if up_vol > 0 else None)
+
+    state = "neutral"
+    if obv_trend_bullish is True and updown_vol_ratio is not None and updown_vol_ratio > 1.2:
+        state = "accumulation"
+    elif obv_trend_bullish is False and updown_vol_ratio is not None and 0 < updown_vol_ratio < (1 / 1.2):
+        state = "distribution"
+
+    return {
+        "state": state,
+        "obv_trend_bullish": obv_trend_bullish,
+        "updown_vol_ratio": round(updown_vol_ratio, 2) if updown_vol_ratio not in (None, float("inf")) else updown_vol_ratio,
+    }
+
+
+def assess_breakout_quality(df: pd.DataFrame, level: float, direction: str = "up", window: int = 20) -> dict | None:
+    """T258-ACCUM-DIST-BREAKOUT-QUALITY: assess whether the most recent close-beyond-level
+    move is a 'real' | 'failed' | 'unconfirmed' breakout, per the "poke-and-reject = false
+    breakout" read already taught (manual chart read only, until now) in the Volume Profile docs.
+
+    `level` is the price level being tested (e.g. the nearest resistance from
+    detect_support_resistance(), or the game-plan breakout level) — this function does NOT
+    pick the level itself, matching the FVG trade-plan precedent of keeping level-selection
+    and quality-assessment as separate concerns. `direction` is "up" (breakout above
+    resistance) or "down" (breakdown below support).
+
+    Finds the FIRST bar (scanning backward from the end) whose close crossed the level in
+    the given direction while the prior bar was still on the wrong side — i.e. the actual
+    breakout bar, not just "today's close happens to be beyond the level" (which could be
+    day 40 of an established uptrend, not a fresh break). Classification:
+    - 'real': the bar AFTER the breakout bar held beyond the level too (didn't reverse back
+      across) AND the breakout bar's own volume was above its `window`-bar average
+      (RVOL > 1.0) — a genuine, volume-confirmed move.
+    - 'failed': the bar after the breakout closed back on the wrong side of the level —
+      the classic poke-and-reject the docs already describe as a manual chart read.
+    - 'unconfirmed': the breakout happened on the most recent bar (no next bar exists yet
+      to confirm the hold), or a next bar exists and held but the breakout itself lacked
+      volume confirmation — a break without volume confirmation is real-vs-failed
+      genuinely unknowable from price alone, so this deliberately doesn't guess 'real'.
+
+    Returns None if no bar in the given `df` actually broke the level in this direction —
+    there's no breakout to assess (e.g. price has been above resistance the whole window,
+    or never got near the level at all).
+    """
+    close = df["close"].astype(float)
+    volume = df["volume"].astype(float)
+    n = len(close)
+
+    def _beyond(i: int) -> bool:
+        return close.iloc[i] > level if direction == "up" else close.iloc[i] < level
+
+    breakout_idx = None
+    for i in range(n - 1, 0, -1):
+        if _beyond(i) and not _beyond(i - 1):
+            breakout_idx = i
+            break
+    if breakout_idx is None:
+        return None
+
+    avg_vol = float(volume.iloc[max(0, breakout_idx - window):breakout_idx].mean())
+    breakout_rvol = (float(volume.iloc[breakout_idx]) / avg_vol) if avg_vol > 0 else None
+    volume_confirmed = breakout_rvol is not None and breakout_rvol > 1.0
+
+    if breakout_idx == n - 1:
+        quality = "unconfirmed"  # no next bar yet to confirm the hold
+    elif not _beyond(breakout_idx + 1):
+        quality = "failed"       # next bar reversed back across the level
+    elif volume_confirmed:
+        quality = "real"
+    else:
+        quality = "unconfirmed"  # held, but no volume confirmation on the break itself
+
+    return {
+        "quality": quality,
+        "level": round(level, 2),
+        "direction": direction,
+        "close": round(float(close.iloc[breakout_idx]), 2),
+        "breakout_rvol": round(breakout_rvol, 2) if breakout_rvol is not None else None,
+        "volume_confirmed": volume_confirmed,
+    }

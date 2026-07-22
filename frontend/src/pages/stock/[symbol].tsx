@@ -2487,6 +2487,52 @@ Return ONLY valid JSON — no markdown, no prose:
             );
           })()}
 
+          {/* T258-ACCUM-DIST-BREAKOUT-QUALITY: a volume-PATTERN-based accumulation/distribution
+              read + a breakout-quality assessment (real/failed/unconfirmed), replacing what the
+              Volume Profile docs previously taught as a manual chart-reading exercise
+              ("poke-and-reject = false breakout"). No block-trade/dark-pool data source exists
+              anywhere in this app — both reads are framed honestly as pattern-derived, not true
+              institutional-flow detection. Shown only when there's something to say (a state
+              other than the two-signals-disagree default, or an actual breakout in play). */}
+          {(() => {
+            const ad = data.levels?.accumulation_distribution;
+            const bq = data.levels?.breakout_quality;
+            if (!ad && !bq) return null;
+            const AD_COLOR: Record<string, string> = { accumulation: '#4ade80', distribution: '#f87171', neutral: '#94a3b8' };
+            const BQ_COLOR: Record<string, string> = { real: '#4ade80', failed: '#f87171', unconfirmed: '#fbbf24' };
+            return (
+              <div style={{ background: '#1e293b', borderRadius: 10, padding: '14px 18px', border: '1px solid #334155', marginTop: 12 }}>
+                <div style={{ fontWeight: 600, color: '#f1f5f9', fontSize: 13, marginBottom: 8 }}>Volume Pattern Read</div>
+                <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', fontSize: 12 }}>
+                  {ad && (
+                    <div>
+                      <span style={{ color: '#64748b' }}>Accumulation/Distribution:</span>{' '}
+                      <span style={{ color: AD_COLOR[ad.state], fontWeight: 600, textTransform: 'capitalize' }}>{ad.state}</span>
+                      {ad.updown_vol_ratio != null && (
+                        <span style={{ color: '#64748b' }}> (up/down vol {ad.updown_vol_ratio.toFixed(2)}x)</span>
+                      )}
+                    </div>
+                  )}
+                  {bq && (
+                    <div>
+                      <span style={{ color: '#64748b' }}>Breakout Quality:</span>{' '}
+                      <span style={{ color: BQ_COLOR[bq.quality], fontWeight: 600, textTransform: 'capitalize' }}>{bq.quality}</span>
+                      <span style={{ color: '#64748b' }}>
+                        {' '}({bq.direction === 'up' ? 'above' : 'below'} ${bq.level.toFixed(2)}, {bq.breakout_rvol != null ? `${bq.breakout_rvol.toFixed(1)}x vol` : 'no vol data'})
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 8 }}>
+                  Volume-pattern-based reads (OBV trend + up/down-day volume ratio; next-bar hold
+                  + relative volume on the breakout bar) — no institutional/block-trade data
+                  source exists, so these describe price/volume PATTERNS, not confirmed
+                  institutional flow.
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Signal Consensus + per-horizon alert subscriptions */}
           {(() => {
             const SIG_C: Record<string, string> = { BUY: '#4ade80', SELL: '#f87171', WAIT: '#fbbf24', HOLD: '#94a3b8' };

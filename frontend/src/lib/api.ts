@@ -887,11 +887,41 @@ export type FairValueGap = {
   idx: number; filled: boolean; filled_idx: number | null;
 };
 
+export type SrContext = {
+  sr_context: 'breakout' | 'at_resistance' | 'at_support' | 'neutral';
+  sr_nearest_resistance: number | null;
+  sr_nearest_support: number | null;
+  sr_52w_high: number;
+  sr_52w_low: number;
+  sr_cleared_resistance: number | null;
+  sr_cleared_support: number | null;
+};
+
+// T258-ACCUM-DIST-BREAKOUT-QUALITY — volume-PATTERN-based reads (no block-trade/dark-pool
+// data source exists anywhere in this app), not true institutional-flow detection.
+export type AccumulationDistribution = {
+  state: 'accumulation' | 'distribution' | 'neutral';
+  obv_trend_bullish: boolean | null;
+  updown_vol_ratio: number | null;
+};
+
+export type BreakoutQuality = {
+  quality: 'real' | 'failed' | 'unconfirmed';
+  level: number;
+  direction: 'up' | 'down';
+  close: number;
+  breakout_rvol: number | null;
+  volume_confirmed: boolean;
+} | null;
+
 export type Levels = {
   support_resistance: SRLevel[];
   trendlines: { slope: number; intercept: number; r2: number; direction: string; start_idx: number; end_idx: number }[];
   fair_value_gaps?: FairValueGap[];
   fibonacci: Record<string, number>;
+  sr_context?: SrContext;
+  accumulation_distribution?: AccumulationDistribution;
+  breakout_quality?: BreakoutQuality;
 } | null;
 
 export type Fundamentals = {

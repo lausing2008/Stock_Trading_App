@@ -274,6 +274,25 @@ function ChartToolsTab() {
         </ul>
       </Section>
 
+      <Section title="Volume Pattern Read: Accumulation/Distribution + Breakout Quality">
+        <p>
+          The &ldquo;poke-and-reject = false breakout&rdquo; read above used to be a manual chart
+          judgment call. The <b>Volume Pattern Read</b> card (below the Fair Value Gap Trade Plan
+          on the stock detail page) now computes two related reads directly from price/volume
+          data, so you don&rsquo;t have to eyeball it:
+        </p>
+        <ul style={{ paddingLeft: 20, margin: '4px 0 12px' }}>
+          <li style={{ marginBottom: 8 }}><b>Accumulation / Distribution</b> — combines OBV trend (net buying vs. selling pressure, cumulative) with the ratio of volume on up-days vs. down-days over the last 20 bars. Both signals must agree for a real call; if they disagree, it reads &ldquo;neutral&rdquo; rather than guessing.</li>
+          <li style={{ marginBottom: 8 }}><b>Breakout Quality</b> — finds the actual bar that broke a support/resistance level and classifies it: <b>real</b> (the next bar held beyond the level AND the break itself had above-average volume), <b>failed</b> (the very next bar reversed back across the level — the poke-and-reject case), or <b>unconfirmed</b> (the break just happened, so there&rsquo;s no next bar yet to confirm — or it held but without volume backing it).</li>
+        </ul>
+        <Callout tone="warn" title="A pattern read, not confirmed institutional flow">
+          No block-trade or dark-pool data source exists anywhere in this app — both reads are
+          derived purely from ordinary daily-bar price and volume, the same data everything else
+          on this page uses. Treat &ldquo;accumulation&rdquo; as &ldquo;the volume pattern looks
+          like buying pressure,&rdquo; not as proof a specific institution is actually buying.
+        </Callout>
+      </Section>
+
       <Section title="Anchored VWAP and Auto-Detected Trendlines">
         <p>
           <b>Anchored VWAP</b> — click any point on the chart (snaps to the nearest swing pivot) and
@@ -316,6 +335,35 @@ function SignalTab() {
         </p>
       </Section>
 
+      <Section title="What confidence level is actually &ldquo;good&rdquo;?">
+        <p>
+          There is no single hard cutoff — confidence is a continuous read of how far the
+          probability sits from a coin-flip, not a pass/fail score. As a rough guide for reading
+          the number itself (independent of the panels below, which matter more):
+        </p>
+        <ul style={{ paddingLeft: 20, margin: 0 }}>
+          <li style={{ marginBottom: 8 }}><b>Below ~40%</b> — marginal. The probability barely cleared the BUY/SELL threshold; treat the label as a weak lean, not a real call.</li>
+          <li style={{ marginBottom: 8 }}><b>~40–60%</b> — moderate. A reasonably confident directional read, but still worth corroborating before sizing a position.</li>
+          <li style={{ marginBottom: 8 }}><b>Above ~60%</b> — high conviction. The fused probability is well clear of a toss-up in either direction.</li>
+        </ul>
+        <Callout tone="warn" title="Confidence alone is not enough">
+          A high-confidence BUY can still fail the Conviction Gate (see below), and a
+          low-confidence BUY that clears every other check can still be a reasonable, if smaller,
+          position. Confidence tells you how sure the MODEL is about its own probability estimate
+          — it does not by itself tell you whether the trade is a good idea. Always read it
+          alongside Confluence Score and Conviction Gate, never on its own.
+        </Callout>
+        <p>
+          A more honest read than the raw confidence number is the <b>measured historical win
+          rate</b> shown alongside it on stock pages (e.g. &ldquo;Historical win rate 72%,
+          n=41&rdquo;). This is tracked separately, per horizon/direction/market and confidence
+          band, from real past signal outcomes — not a model&rsquo;s self-reported confidence, but
+          what actually happened the last N times a signal in that same band fired. A confidence
+          number tells you how sure the model is; a measured win rate tells you how often that
+          exact kind of call has actually been right.
+        </p>
+      </Section>
+
       <Section title="The panels that matter more than the headline label">
         <p>
           This is exactly what the other panels on the stock detail page are for — they&rsquo;re
@@ -331,6 +379,25 @@ function SignalTab() {
           position on its own — always cross-check Confluence Score and Conviction Gate, which are
           deliberately independent, stricter checks that can (and are meant to) disagree with the
           headline label.
+        </Callout>
+      </Section>
+
+      <Section title="Why a signal-change email can arrive outside market hours">
+        <p>
+          Signal alerts are checked five times a day, all inside real US market hours (roughly
+          9:25am–4:30pm ET, plus the equivalent HK window) — the check never runs on a fixed
+          overnight schedule. If you get an email well outside those hours, the most common
+          explanation is that the underlying signal server was <b>restarted</b> (a deploy,
+          maintenance, or a crash-and-recover) — the very first thing it does after coming back up
+          is a one-time catch-up check, specifically so a real signal change that happened earlier
+          in the day doesn&rsquo;t go unreported just because the container was down when it would
+          normally have been caught.
+        </p>
+        <Callout tone="info" title="The signal itself is still real">
+          A late-arriving alert reflects a signal change that genuinely happened during real
+          trading hours — only the TIMING of the email notification is delayed by the restart, not
+          the underlying signal computation. It is not a sign the system is checking prices while
+          markets are closed.
         </Callout>
       </Section>
 

@@ -6398,3 +6398,158 @@ print(r.status_code, r.json())
 ```
 A `trajectory: null` for every sector on the FIRST run after this deploy is expected (no 4-week-
 prior snapshot exists yet) — it should start populating from the second Sunday run onward.
+
+---
+
+## Recurring Issue: Stale Tracker Entry — T171-RETURN-TARGET-ANALYSIS Was Already Fully Done
+
+**Found 2026-07-22, while surveying the tracker for "next improvements."** A survey agent
+flagged `T171-RETURN-TARGET-ANALYSIS` as the top open candidate — its `what`/`fix` text
+described insider/congress scores as "metadata only," no premarket gap filter, no scale-out
+exit logic, and risk_off regime only dampening size rather than blocking entries. Before
+building anything, verified each of the 5 named gaps directly against current code and found
+**all 5 were already independently shipped**, each under a DIFFERENT tracker id, none of which
+cross-referenced back to close this entry out:
+- insider/congress → `fused_prob` wiring: `T172-CATALYST-INTO-FUSED-PROB` (done 2026-06-24,
+  `services/signal-engine/src/api/routes.py` `_bulk_persist()`), plus a `T237-EI1` fix for
+  negative congress scores.
+- options_flag → `fused` adjustment: already live in `signals.py`'s `_apply_style_signal()`
+  (lines ~2027-2042) — this sub-claim was stale even at the tracker's OWN original analysis
+  date, not just now.
+- Premarket gap filter: `paper_trading_engine.py`'s `_should_enter()`, `max_entry_gap_pct`
+  (0.04 default), explicitly tagged `# T171` in its own comment.
+- Scale-out exits: `T232-PT6`'s two-level scale-out (sell 50% of remainder at +12%, move stop
+  to +5%).
+- Strict risk_off gating: `T226-A` (2026-06-30) — `regime_risk_off_gate` defaults to `True`
+  (blocks ALL new entries in risk_off), not just size dampening, based on a real 9-trade
+  0%-win-rate audit finding.
+
+**This is the mirror image of the SE-F2/aud14 staleness pattern already documented elsewhere
+in this file** (an entry claiming something is BROKEN when it's actually fixed, rather than
+claiming something is fixed when it's actually broken) — both directions are real in this
+tracker, and both require reading the actual current code before either building or reporting
+status, never trusting a tracker entry's own `defaultStatus`/`what`/`fix` text at face value.
+
+**Fix applied**: flipped `T171-RETURN-TARGET-ANALYSIS`'s `defaultStatus` to `'done'` with an
+`implementedNote` cross-referencing all 5 closing tracker ids, so a future survey doesn't
+re-flag this same already-closed gap.
+
+**Design invariant reinforced**: whenever a broader initiative's individual sub-items get
+closed under their OWN separate, narrower tracker ids (a common pattern in this tracker — see
+`T232-DL-DUALSCORER-DEBT`'s own many dated `UPDATE` notes for the opposite, correctly-
+cross-referenced version of this same pattern), the ORIGINAL broader item must be updated too,
+or it becomes a standing false-positive for every future "what's still open" survey. When an
+entry names several sub-gaps, check each one against current code individually before trusting
+the entry's own status — a broader item can be entirely stale even when its constituent fixes
+were each done correctly and are individually well-documented elsewhere.
+
+---
+
+## Feature Reference: T258-ACCUM-DIST-BREAKOUT-QUALITY — Volume-Pattern A/D Classifier + Breakout Quality (Built 2026-07-22)
+
+**The gap this closes**: per the tracker's own framing, volume analysis was otherwise
+extensively covered (volume profile POC/VAH/VAL/HVN, session-scaled RVOL, T257 volume anomaly
+alert, FVG, OBV conviction layer, 13F QoQ institutional accumulation) but two reads remained
+manual-only: (a) an explicit accumulation-vs-distribution classification (OBV direction
+existed as a boolean conviction layer, but no named A/D state was surfaced anywhere), and (b)
+breakout FOLLOW-THROUGH assessment — the docs literally taught "poke-and-reject = false
+breakout" as a manual chart read (Volume Profile "How to trade it" section), with nothing
+automating it.
+
+**Honesty constraint carried over from the tracker's own text**: no block-trade/dark-pool data
+source exists anywhere in this app — both new functions are explicitly framed as
+volume-PATTERN-based reads, not true institutional-flow detection. Neither claims to detect
+real institutional buying/selling directly.
+
+**New functions**: `services/technical-analysis/src/indicators/trendlines.py`:
+- `detect_accumulation_distribution(df, window=20)` — combines OBV trend (10-bar MA vs.
+  30-bar MA of cumulative volume×price-direction — the same construction signal-engine's own
+  `obv_trend_bullish` already uses) with an up/down-day total-volume ratio over `window` bars.
+  Both signals must agree (ratio `>1.2` for accumulation, `<1/1.2` for distribution) — one
+  agreeing and one not degrades to `'neutral'` rather than a rough guess from a single signal.
+  Returns the component readings alongside `state` so a caller sees the actual evidence.
+- `assess_breakout_quality(df, level, direction="up", window=20)` — finds the actual bar that
+  first crossed `level` in the given direction (scanning backward for the transition, not just
+  "is today's close beyond the level," which would misreport an established multi-week uptrend
+  as a fresh break every single day). Classifies `'real'` (next bar held beyond the level AND
+  the breakout bar's own volume was RVOL > 1.0), `'failed'` (next bar reversed back across —
+  the classic poke-and-reject), or `'unconfirmed'` (breakout is the most recent bar with no
+  next-bar data yet, or held without volume confirmation — deliberately does NOT guess `'real'`
+  in that case, since real-vs-failed is genuinely unknowable from price alone without volume
+  backing). Returns `None` when nothing has actually broken the level in that direction.
+
+**`detect_sr_context()` gained two new fields** (`sr_cleared_resistance`/`sr_cleared_support`)
+— a real design gap caught mid-implementation: `sr_nearest_resistance`/`sr_nearest_support`
+are ALWAYS on the not-yet-reached side of price by construction (the nearest level still
+ahead), so neither can ever be "the level a breakout just cleared." `cleared_res`/`cleared_sup`
+(the highest resistance `<=` current / lowest support `>=` current) were already computed
+internally by `detect_sr_context()` for its own breakout classification but never exposed —
+now exposed as the correct levels to feed into `assess_breakout_quality()`.
+
+**API**: `GET /ta/{symbol}/levels` gained `accumulation_distribution` and `breakout_quality`
+fields, reusing the SAME `df`/`levels`/`sr_context` already computed in that route — no second
+level-detection pass, no new endpoint (folded into the existing levels response, matching how
+`sr_context`/`fair_value_gaps` were added previously).
+
+**Frontend**: new `SrContext`/`AccumulationDistribution`/`BreakoutQuality` types in
+`frontend/src/lib/api.ts` (the `Levels` type had never gained `sr_context` either, despite that
+field shipping earlier — added alongside these two new ones). New "Volume Pattern Read" card
+on the stock detail page, placed directly after the Fair Value Gap Trade Plan card, matching
+that card's exact visual convention (color-coded state, an explanatory footer disclaiming the
+pattern-vs-confirmed-flow distinction).
+
+**A real design bug caught and fixed DURING implementation, not shipped**: the first draft of
+`assess_breakout_quality()`'s docstring promised a `'failed'` classification but the
+implementation only ever checked the CURRENT bar's close vs. level — never looked at a "next
+bar" at all, so `'failed'` could never actually be produced. Caught by re-reading my own
+docstring against my own implementation before writing tests. Fixed by re-architecting the
+function to scan backward for the actual bar that first crossed the level (the transition
+point), then check the bar immediately after it — which is what makes a genuine
+real/failed/unconfirmed classification possible in the first place.
+
+**Tests**: `services/technical-analysis/tests/test_accum_dist_breakout_quality.py` (13 cases)
+— accumulation/distribution detection (heavier up-day vs. down-day volume, insufficient
+history, zero-down-days infinite-ratio edge case, and a DETERMINISTICALLY-constructed
+just-below-threshold case rather than relying on random-seed luck), and breakout-quality's
+full state space (no breakout at all → `None`, breakout-on-last-bar → `unconfirmed`,
+held-with-volume → `real`, reversed-next-bar → `failed`, held-without-volume → `unconfirmed`
+not `real`, breakdown direction, and the "price already beyond the level for many bars must
+still find the FIRST crossing" case). Plus a `sr_context` integration test confirming
+`sr_cleared_resistance` differs from `sr_nearest_resistance` as designed.
+
+**A real test-construction lesson hit while writing the accumulation/distribution disagreement
+test**: OBV direction and the up/down-volume ratio are correlated by construction (both derive
+from the same volume-times-price-direction data) — an initial attempt to build a fixture where
+"OBV reads bullish but the volume ratio reads bearish" kept producing BOTH signals agreeing
+instead, no matter how the random data was skewed, because heavy down-day volume that drags the
+ratio down also drags OBV's own cumulative sum down. Abandoned the "genuine disagreement"
+fixture as non-representative of realistic data and replaced it with a simpler, fully
+deterministic "ratio just below the 1.2 threshold" test instead — a more useful regression
+guard for the actual threshold boundary than a hard-to-construct edge case.
+
+**Adversarial verification** — 3 sabotage cycles, all caught and reverted: loosening the
+accumulation threshold from `1.2` to `1.0` (caught by the just-below-threshold test);
+hardcoding the "next bar reversed" branch to never fire (`elif False:`) (caught by the
+failed-breakout test); hardcoding `volume_confirmed = True` unconditionally (caught by the
+no-volume-confirmation test).
+
+**Verification**: full technical-analysis suite (44 tests, up from 31 — includes one
+pre-existing `test_sr_context.py` test updated for the 2 new `detect_sr_context()` return
+fields, not a regression), frontend vitest suite (89 tests, unaffected), frontend typecheck,
+and a full `next build` all green.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-technical-analysis-1 python3 -c "
+import sys; sys.path.insert(0, '/app')
+from src.indicators.trendlines import detect_accumulation_distribution, assess_breakout_quality
+print('module loads OK')
+"
+# Live check against a real symbol:
+docker exec stockai-technical-analysis-1 curl -s 'http://localhost:8002/ta/AAPL/levels?timeframe=1d' \
+  | python3 -c "import sys, json; d = json.load(sys.stdin); print(d['accumulation_distribution']); print(d['breakout_quality'])"
+```
+If `breakout_quality` is always `None` for a symbol you'd expect a real recent break on, check
+whether `sr_context`'s `sr_cleared_resistance`/`sr_cleared_support` are actually populated for
+that symbol first — `assess_breakout_quality()` never computes a level itself, it only
+evaluates whichever cleared-level `detect_sr_context()` already found.
