@@ -6146,3 +6146,52 @@ that were flagged as plausibly-intentional-but-never-formally-audited — noted 
 possible future pass, not fixed in this one, since each serves a genuinely different consumer
 (paper-trading reporting vs. strategy backtest vs. portfolio optimization objective) and
 none showed a concrete, confirmed drift the way the 6 items fixed in this audit did.
+
+---
+
+## Recurring Issue: strategy-engine Crash-Loop on Deploy — `common.indicators` Never Baked Into Its Image
+
+**Symptom (2026-07-22):** deploying the strategy-engine ATR-consolidation fix (importing
+`from common.indicators import atr` for the first time in this service) caused an immediate
+crash-loop on restart: `ModuleNotFoundError: No module named 'common.indicators'`.
+
+**Root cause:** `shared/common/indicators.py` was created for `T233-ARCH-INDICATOR-DEDUP`
+(2026-07-09) and rolled out via `docker cp` to the services that needed it AT THE TIME
+(research-engine, ranking-engine, ml-prediction, market-data, signal-engine) — strategy-engine
+wasn't one of them, since nothing in that service imported it yet. `docker cp` only patches a
+container's writable layer; strategy-engine's actual image was never rebuilt with the file
+baked in. This is the exact "docker cp is a session-scoped hotfix, not a deployment" invariant
+already documented elsewhere in this file (see the EC2-reboot incident and the "docker compose
+up -d --force-recreate can revert docker-cp'd files" entries) — except surfaced from the
+opposite direction: instead of a REVERT losing a fix, this was a service that had simply never
+received the original `docker cp` rollout in the first place, because it had no prior reason to.
+
+**Fix applied:** `docker cp shared/common/indicators.py stockai-strategy-engine-1:/app/shared/
+common/indicators.py` immediately (matching every other service's own copy), then restarted —
+recovered cleanly within seconds. Confirmed via `docker run --rm --entrypoint /bin/sh
+stockai-strategy-engine:latest -c 'ls -la /app/shared/common/'` that the image's baked-in
+`shared/common/` genuinely lacked `indicators.py` (and, by extension, `ai_keys.py` and any
+other shared file added since this service's image was last built) before concluding this was
+the same root cause rather than guessing.
+
+**Design invariant, generalized from this incident:** whenever a NEW shared/common/ module
+gets its first consumer in a service that previously had no reason to import it, check whether
+that service's image actually has the file baked in — do NOT assume "shared/common/ is shared,
+so every service already has every file in it." A service can go a long time without ever
+needing a given shared module and silently never receive it via any of this repo's historical
+`docker cp` rollouts. Before deploying a NEW import of an existing shared/common/ file to a
+service, either (a) confirm via `docker run --rm --entrypoint /bin/sh <image>:latest -c 'ls
+/app/shared/common/'` that the file is already there, or (b) proactively `docker cp` it as part
+of the same deploy, before restarting — don't wait for a crash-loop to discover the gap.
+
+**What to check if a similar crash-loop appears in a different service:**
+```bash
+docker logs stockai-<service>-1 --tail 20 | grep "ModuleNotFoundError"
+# If it names a shared/common/ module, confirm the image's baked-in copy is missing:
+docker run --rm --entrypoint /bin/sh stockai-<service>:latest -c "ls -la /app/shared/common/"
+# If missing, docker cp the specific file(s) in immediately, then restart:
+docker cp shared/common/<file>.py stockai-<service>-1:/app/shared/common/<file>.py
+docker restart stockai-<service>-1
+```
+This is a hotfix, not a durable deploy — the service's image is still owed a real rebuild that
+bakes the shared file in, per the standing "docker cp is session-scoped" invariant.
