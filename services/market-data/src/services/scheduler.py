@@ -1017,30 +1017,6 @@ def _run_paper_trading_step(label: str = "refresh") -> None:
                 pass
 
 
-def _earnings_reminder_body(sym: str, dte_int: int, fund: dict) -> str:
-    """T249-MARKETMOVER-P1: builds the day-of earnings reminder body, enriched with the
-    estimate/beat-rate/surprise-trend data /stocks/{symbol}/fundamentals already computes
-    (eps_beat_rate, eps_avg_surprise_pct, forward_eps) — previously this reminder was a
-    generic "review your position" line with none of that context, even though the data
-    was already one field away in the same fundamentals_cache dict this function reads from.
-    Falls back to the generic line when a field is missing (e.g. a newly-listed stock with
-    no earnings_history yet), same as the pre-enrichment behavior."""
-    parts = [f"{sym} reports earnings in {dte_int} day(s)."]
-    eps_est = fund.get("forward_eps")
-    if eps_est is not None:
-        parts.append(f"Street estimate: ${eps_est:.2f}.")
-    beat_rate = fund.get("eps_beat_rate")
-    avg_surprise = fund.get("eps_avg_surprise_pct")
-    if beat_rate is not None:
-        beats = round(beat_rate * 8)
-        beat_line = f"Beat {beats} of last 8 quarters"
-        if avg_surprise is not None:
-            beat_line += f", avg surprise {avg_surprise:+.1f}%"
-        parts.append(beat_line + ".")
-    parts.append("Review your position and manage risk before the print.")
-    return " ".join(parts)
-
-
 def _earnings_reaction_body(sym: str, eps_actual: float, eps_estimate: float | None,
                              surprise_pct: float | None, strength_score: float | None) -> str:
     """T249-MARKETMOVER-P1: post-release fast-reaction alert body — fires once eps_actual
@@ -2357,16 +2333,30 @@ def check_signal_alerts() -> None:
             if fired:
                 log.info("signal_alert.check_done", fired=fired)
 
-            # T230-ALERTING-EARNINGS-PROXIMITY: send earnings reminder for watchlist stocks
+            # T230-ALERTING-EARNINGS-PROXIMITY: send earnings reminder for watchlist stocks.
+            # AUD-EARNINGS-DIGEST: consolidated into ONE email per user listing every upcoming
+            # print as a table, instead of one separate send_email() call per (user, symbol) —
+            # a user watching 8 stocks reporting in the same week previously got 8 separate
+            # emails (see the inbox flood this fix addresses). Dedup granularity is unchanged
+            # (still per-(user, symbol, days_to_earnings), 20h TTL) — only delivery is batched:
+            # a symbol already reminded at dte=3 still gets a fresh row when it later hits
+            # dte=1, but multiple DIFFERENT symbols due the same cycle now land in one email.
             try:
                 user_symbols: dict[int, set[str]] = {}
                 for a in alerts:
                     user_symbols.setdefault(a.user_id, set()).add(a.symbol)
                 _rc = _get_redis()
+                try:
+                    _live_raw = json.loads(_rc.get("stockai:live_prices") or "[]")
+                except Exception:
+                    _live_raw = []
+                _live_by_symbol = {row.get("symbol"): row for row in _live_raw if row.get("symbol")}
+
                 for uid, syms in user_symbols.items():
                     u_obj = next((a.user for a in alerts if a.user_id == uid), None)
                     if not u_obj or not u_obj.email:
                         continue
+                    digest_rows: list[dict] = []
                     for sym in syms:
                         fund = fundamentals_cache.get(sym) or {}
                         dte = fund.get("days_to_earnings")
@@ -2384,16 +2374,35 @@ def check_signal_alerts() -> None:
                                 continue
                         except Exception:
                             pass
-                        subject = f"⏰ Earnings in {dte_int}d: {sym}"
-                        body_text = _earnings_reminder_body(sym, dte_int, fund)
-                        from .email_service import send_email
-                        if send_email(u_obj.email, subject, f"<p>{body_text}</p>", body_text):
+                        live = _live_by_symbol.get(sym) or {}
+                        price = live.get("price")
+                        prev_close = live.get("prev_close")
+                        change_pct = (
+                            round((float(price) - float(prev_close)) / float(prev_close) * 100, 2)
+                            if price and prev_close else None
+                        )
+                        digest_rows.append({
+                            "symbol": sym,
+                            "days_to_earnings": dte_int,
+                            "price": price,
+                            "change_pct": change_pct,
+                            "forward_eps": fund.get("forward_eps"),
+                            "eps_beat_rate": fund.get("eps_beat_rate"),
+                            "eps_avg_surprise_pct": fund.get("eps_avg_surprise_pct"),
+                            "kscore": kscores.get(sym),
+                            "_redis_key": redis_key,
+                        })
+                    if not digest_rows:
+                        continue
+                    from .email_service import send_earnings_reminder_digest_email
+                    if send_earnings_reminder_digest_email(u_obj.email, digest_rows):
+                        for row in digest_rows:
                             try:
-                                _rc and _rc.setex(redis_key, 72000, "1")  # 20-hour TTL
+                                _rc and _rc.setex(row["_redis_key"], 72000, "1")  # 20-hour TTL
                             except Exception:
                                 pass
-                            log.info("signal_alert.earnings_reminder_sent",
-                                     symbol=sym, days=dte_int, user=u_obj.username)
+                        log.info("signal_alert.earnings_reminder_digest_sent",
+                                 symbols=[r["symbol"] for r in digest_rows], user=u_obj.username)
             except Exception as exc:
                 log.warning("signal_alert.earnings_reminder_error", error=str(exc))
     except Exception as exc:

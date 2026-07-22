@@ -6195,3 +6195,58 @@ docker restart stockai-<service>-1
 ```
 This is a hotfix, not a durable deploy — the service's image is still owed a real rebuild that
 bakes the shared file in, per the standing "docker cp is session-scoped" invariant.
+
+---
+
+## Feature Reference: AUD-EARNINGS-DIGEST — Consolidated Earnings Reminder Email (Built 2026-07-22)
+
+**User report**: a real inbox screenshot showed 8+ separate "⏰ Earnings in Xd: SYMBOL" emails
+in a row — one per watched stock reporting that week, each its own send. Asked to consolidate
+into one email with a table including current prices and other context.
+
+**Root cause**: `check_signal_alerts()`'s `T230-ALERTING-EARNINGS-PROXIMITY` block looped over
+every `(user, symbol)` pair with an upcoming print and called `send_email()` once per symbol —
+correct dedup (one reminder per symbol per `days_to_earnings` milestone, 20h TTL) but no
+batching across symbols for the same user in the same cycle.
+
+**Fix**: new `send_earnings_reminder_digest_email(to, rows)` in `email_service.py` — one HTML
+`<table>` per user (not stacked cards, per the user's explicit request), columns: Symbol,
+Reports (Xd), Price (with `change_pct`), Est. EPS, Beat Rate (X/8 + avg surprise), K-Score.
+Rows sorted soonest-first. `check_signal_alerts()` now collects every qualifying row for a
+user into a `digest_rows` list (same per-`(user, symbol, days_to_earnings)` dedup key,
+unchanged 20h TTL — the dedup granularity is untouched, only delivery is batched) and sends
+ONE `send_earnings_reminder_digest_email()` call at the end of that user's loop, instead of a
+`send_email()` inside it.
+
+**Data sources**: `fundamentals_cache[sym]` (`forward_eps`, `eps_beat_rate`,
+`eps_avg_surprise_pct`) and `kscores[sym]` were already fetched earlier in the same function
+for the signal-alert scoring pass — reused directly, no new fetch. Current price + `change_pct`
+are new to this code path: read from `stockai:live_prices` (the same Redis cache
+`check_volume_anomalies()`/`check_value_area_breakdown()` already read this session), computed
+the same way those functions do (`(price - prev_close) / prev_close * 100`).
+
+**Old `_earnings_reminder_body()` deleted** — its only caller was the per-symbol send this fix
+removed, and its sentence-formatting logic doesn't fit a table cell. Its 4 unit tests in
+`test_earnings_alert_bodies.py` were removed along with it; the wiring test was rewritten to
+confirm `check_signal_alerts()` now calls `send_earnings_reminder_digest_email()` with a
+`digest_rows` list instead of the old per-symbol call, and a new test confirms the dedup-key
+granularity is unchanged.
+
+**Tests**: `services/market-data/tests/test_earnings_reminder_digest.py` (14 cases) — multiple
+symbols land in one send (the core consolidation guarantee), subject reflects count,
+soonest-earnings-first sort, price/change_pct/beat-rate/K-Score rendering including
+missing-field placeholders, negative change_pct sign handling. Adversarially verified by
+disabling the sort and confirming the ordering test failed correctly before restoring.
+
+**Verification**: full market-data suite (387 tests) green.
+
+**What to check if this looks wrong**:
+```bash
+docker logs stockai-market-data-1 --since 24h | grep 'earnings_reminder_digest_sent'
+# Should show one log line per user per cycle with a `symbols=[...]` list, not one line per
+# symbol. If a user reports still getting multiple separate earnings emails, confirm this log
+# line's symbols list actually contains all of them together — if it doesn't, check whether
+# stockai:earnings_remind:{uid}:{sym}:{dte_int} dedup keys are firing at different cycles for
+# different symbols (expected — a symbol due tomorrow and one due in 5 days will land in
+# different weekly cycles unless both cross a reminder threshold on the same run).
+```

@@ -1199,6 +1199,102 @@ def send_value_area_breakdown_email(to: str, alerts: list[dict]) -> bool:
     return send_email(to, subject, body_html, body_text)
 
 
+def send_earnings_reminder_digest_email(to: str, rows: list[dict]) -> bool:
+    """T230-ALERTING-EARNINGS-PROXIMITY consolidation: one email per recipient listing every
+    upcoming earnings print this cycle, as a table, instead of a separate email per symbol
+    (previously check_signal_alerts() sent one send_email() call per (user, symbol) pair —
+    a user watching 8 stocks reporting in the same week got 8 separate emails).
+
+    Each row dict: {symbol, days_to_earnings, price (optional), change_pct (optional),
+    forward_eps (optional), eps_beat_rate (optional, 0-1), eps_avg_surprise_pct (optional),
+    kscore (optional)}. Rows are already deduped/capped by the caller (same per-(user, symbol,
+    days_to_earnings) Redis dedup key as before this consolidation — the dedup granularity is
+    unchanged, only the delivery is batched).
+    """
+    n = len(rows)
+    subject = f"⏰ Earnings This Week — {n} stock{'s' if n != 1 else ''} reporting soon"
+
+    def _fmt_price(r: dict) -> str:
+        price = r.get("price")
+        if price is None:
+            return "—"
+        chg = r.get("change_pct")
+        chg_str = ""
+        if chg is not None:
+            color = "#22c55e" if chg >= 0 else "#ef4444"
+            chg_str = f' <span style="color:{color}">({chg:+.1f}%)</span>'
+        return f"${price:.2f}{chg_str}"
+
+    def _fmt_beat_rate(r: dict) -> str:
+        beat_rate = r.get("eps_beat_rate")
+        if beat_rate is None:
+            return "—"
+        beats = round(beat_rate * 8)
+        surprise = r.get("eps_avg_surprise_pct")
+        surprise_str = f", avg {surprise:+.1f}%" if surprise is not None else ""
+        return f"{beats}/8{surprise_str}"
+
+    def _fmt_kscore(r: dict) -> str:
+        ks = r.get("kscore")
+        return f"{ks:.0f}" if ks is not None else "—"
+
+    rows_sorted = sorted(rows, key=lambda r: r.get("days_to_earnings", 999))
+
+    table_rows_html = ""
+    for r in rows_sorted:
+        sym = r["symbol"]
+        dte = r.get("days_to_earnings")
+        dte_str = f"{dte}d" if dte is not None else "—"
+        eps_est = r.get("forward_eps")
+        eps_str = f"${eps_est:.2f}" if eps_est is not None else "—"
+        table_rows_html += (
+            f'<tr style="border-bottom:1px solid #f1f5f9">'
+            f'<td style="padding:8px 6px;font-weight:700">{sym}</td>'
+            f'<td style="padding:8px 6px;color:#f59e0b;font-weight:600">{dte_str}</td>'
+            f'<td style="padding:8px 6px">{_fmt_price(r)}</td>'
+            f'<td style="padding:8px 6px;color:#64748b">{eps_str}</td>'
+            f'<td style="padding:8px 6px;color:#64748b;font-size:12px">{_fmt_beat_rate(r)}</td>'
+            f'<td style="padding:8px 6px;color:#64748b">{_fmt_kscore(r)}</td>'
+            f'</tr>'
+        )
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:640px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:#f59e0b">⏰ Earnings This Week</h2>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} stock{'s' if n != 1 else ''} on your watchlist reporting soon. Review your position and manage risk before each print.</p>
+    <table style="width:100%;border-collapse:collapse;margin-top:12px;font-size:13px">
+      <thead>
+        <tr style="border-bottom:2px solid #e2e8f0;text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase">
+          <th style="padding:6px">Symbol</th>
+          <th style="padding:6px">Reports</th>
+          <th style="padding:6px">Price</th>
+          <th style="padding:6px">Est. EPS</th>
+          <th style="padding:6px">Beat Rate</th>
+          <th style="padding:6px">K-Score</th>
+        </tr>
+      </thead>
+      <tbody>{table_rows_html}</tbody>
+    </table>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      Beat rate is measured over the last 8 reported quarters. Not financial advice.
+    </p>
+  </div>
+</body></html>"""
+
+    text_rows = "\n".join(
+        f"  {r['symbol']}: reports in {r.get('days_to_earnings', '?')}d, "
+        f"price {r.get('price', '—')}, est EPS {r.get('forward_eps', '—')}, "
+        f"beat rate {_fmt_beat_rate(r)}, K-Score {_fmt_kscore(r)}"
+        for r in rows_sorted
+    )
+    body_text = (
+        f"Earnings This Week — {n} stock{'s' if n != 1 else ''}\n\n"
+        + text_rows
+        + "\n\nReview your position and manage risk before each print. Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_price_alert_email(to: str, symbol: str, condition: str, threshold: float, price: float, note: str | None) -> bool:
     direction = "risen above" if condition == "above" else "fallen below"
     subject = f"Price Alert: {symbol} has {direction} {threshold}"
