@@ -7070,3 +7070,68 @@ docker exec stockai-decision-engine-1 grep -n 'min_ta_score' /app/src/api/core/h
 Both should show the fix present. If a low-TA-score candidate is still approved by
 `/decide/{symbol}` after confirming both, check whether the caller (e.g. `decide.tsx`) is
 actually sending a `ta_score` in `config_overrides` at all — the gate is a no-op without one.
+
+---
+
+## Feature Reference: T230-DATA-OPTIONS-CHAIN — Full Strike/Expiry Options Chain (Built 2026-07-22)
+
+**Correction to this tracker item's original claim**: it said a full options chain "requires
+Polygon.io options snapshots API (paid tier)." Checking the actual code found this false —
+`GET /stocks/{symbol}/options-flow` (`services/market-data/src/api/routes.py`) already calls
+yfinance's `t.option_chain(exp)` and fetches the FULL calls/puts DataFrames (strike, bid, ask,
+last price, volume, open interest, implied volatility, in-the-money flag) for the nearest 4
+expiries — then throws almost all of it away down to a top-3-per-side "unusual activity"
+summary. No new or paid data source was needed; the data was already being fetched and
+discarded.
+
+**New endpoint**: `GET /stocks/{symbol}/options-chain?expiry=<date>` — a SECOND, independent
+fetch (not a shared cache with `options-flow`, since a different `expiry` param means a
+genuinely different yfinance call) returning every strike for ONE expiration, both sides,
+unfiltered. Defaults to the nearest listed expiry when `expiry` is omitted; always returns
+the full list of available expiries too, so the frontend can build an expiry picker without a
+second round-trip. Redis-cached 15 min (`options_chain:{symbol}:{expiry}`), matching
+`options-flow`'s own `_OPTIONS_TTL` cadence.
+
+**New pure function**: `_options_chain_rows(df)` — flattens one side (calls or puts) of a
+yfinance chain DataFrame into a plain list of dicts, sorted by strike ascending. Pulled out to
+module level (not an inline closure inside the route handler) specifically so it's
+independently unit-testable without a real yfinance/HTTP call — the only real logic in the
+new endpoint worth testing directly. `df.fillna(0)` before conversion is load-bearing: a
+thinly-traded contract's `NaN` bid/ask/volume would otherwise either crash the endpoint
+(`ValueError: cannot convert float NaN to integer`) or — worse — leak a bare `NaN` into the
+JSON response, which browser `JSON.parse` rejects, matching the exact `Infinity`-in-JSON bug
+class already fixed once this session for `updown_vol_ratio`.
+
+**Frontend**: `frontend/src/lib/api.ts` gained `getOptionsChain()` + `OptionsChain`/
+`OptionsChainRow` types. `frontend/src/pages/stock/[symbol].tsx` gained a new, collapsed-by-
+default "Options Chain" section directly below the existing Options Flow summary — opens on
+click (the full chain is a heavier fetch than the flow summary's top-3-per-side rows, so it's
+opt-in rather than always-fetched), with an expiry-picker row of buttons and a side-by-side
+calls-left/strike-center/puts-right table matching the classic broker options-chain layout.
+Strikes are merged from the union of calls' and puts' own strike sets (a strike missing on one
+side, e.g. a call with no matching put row in a thin market, renders `—` on that side rather
+than being silently dropped from the table).
+
+**Tests**: `services/market-data/tests/test_options_chain.py` (8 cases) — `routes.py` can't be
+imported directly in this test environment (its import chain needs `common.config`/`db`,
+neither for-real-installed here), so `_options_chain_rows()`'s real source is extracted via
+`exec()` and run against a REAL pandas DataFrame (not mocked), matching this repo's established
+source-text-extraction technique. Covers strike-ascending sort, field mapping + IV-to-percent
+conversion, `NaN`→`0` degradation (not a crash, not a JSON-breaking leaked `NaN`), empty-
+DataFrame handling, and that `itm`/`volume`/`oi` are plain Python `bool`/`int` (not
+`numpy.bool_`/`numpy.int64`, which `json.dumps()` also chokes on).
+
+**Adversarial verification** — 2 sabotage cycles, both caught and reverted: removing the
+`sort_values("strike")` call (caught by the sort-order test); removing the `df.fillna(0)` call
+(caught by the NaN test with a real `ValueError`, not a generic assertion failure). Full
+444-test market-data suite (up from 436) and 89-test frontend vitest suite (unaffected) green;
+frontend typecheck and a full `next build` both clean.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 curl -s 'http://localhost:8001/stocks/AAPL/options-chain' | python3 -m json.tool | head -30
+```
+If a symbol with real listed options returns `available: false, reason: "fetch_error"`,
+check `docker logs stockai-market-data-1 --since 10m | grep options_chain` for the underlying
+yfinance error — the same rate-limit/fetch fragility documented elsewhere for options-flow
+applies here too, since it's the identical underlying yfinance call.

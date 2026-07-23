@@ -2174,6 +2174,91 @@ def get_options_flow(symbol: str):
         return {"symbol": sym, "available": False, "reason": "fetch_error"}
 
 
+_OPTIONS_CHAIN_TTL = 900  # 15-min — matches _OPTIONS_TTL's own refresh cadence
+
+
+def _options_chain_rows(df) -> list[dict]:
+    """Flattens one side (calls or puts) of a yfinance option_chain() DataFrame into a plain
+    list of dicts, sorted by strike ascending. Pulled out to module level (not an inline
+    closure) specifically so it's independently unit-testable without needing a real yfinance
+    Ticker/HTTP call — the only real logic in get_options_chain() worth testing directly."""
+    df = df.fillna(0)
+    out = []
+    for _, row in df.sort_values("strike").iterrows():
+        out.append({
+            "strike":       float(row["strike"]),
+            "bid":          float(row.get("bid", 0)),
+            "ask":          float(row.get("ask", 0)),
+            "last_price":   float(row.get("lastPrice", 0)),
+            "volume":       int(row.get("volume", 0)),
+            "oi":           int(row.get("openInterest", 0)),
+            "iv":           round(float(row.get("impliedVolatility", 0)) * 100, 1),
+            "itm":          bool(row.get("inTheMoney", False)),
+        })
+    return out
+
+
+@router.get("/{symbol}/options-chain")
+def get_options_chain(symbol: str, expiry: str | None = None):
+    """T230-DATA-OPTIONS-CHAIN: full strike/expiry matrix for one expiration date.
+
+    CORRECTION vs. this tracker item's original claim: no paid Polygon.io tier is needed —
+    get_options_flow() (above) already calls yfinance's t.option_chain(exp) and fetches the
+    FULL calls/puts DataFrames (strike, bid, ask, volume, openInterest, impliedVolatility,
+    inTheMoney) for the nearest 4 expiries, then throws almost all of it away down to a
+    top-3-per-side "unusual activity" summary. This endpoint is a second, independent fetch
+    (not a shared cache with get_options_flow — a different `expiry` param means a different
+    yfinance call) that returns every strike for ONE expiry, both sides, unfiltered.
+
+    `expiry` defaults to the nearest listed expiration when omitted. Returns the full list of
+    available expiries either way, so a caller can build an expiry picker without a second
+    round-trip.
+    """
+    sym = symbol.upper()
+    try:
+        t = yf.Ticker(sym)
+        expiries = t.options
+        if not expiries:
+            return {"symbol": sym, "available": False, "reason": "no_options_listed"}
+
+        exp = expiry if expiry in expiries else expiries[0]
+        cache_key = f"options_chain:{sym}:{exp}"
+        try:
+            rdb = _get_redis()
+            cached = rdb.get(cache_key)
+            if cached:
+                return json.loads(cached)
+        except Exception:
+            rdb = None
+
+        try:
+            chain = t.option_chain(exp)
+        except Exception as exc:
+            log.warning("options_chain.fetch_failed", symbol=sym, expiry=exp, error=str(exc))
+            return {"symbol": sym, "available": False, "reason": "fetch_error"}
+
+        result = {
+            "symbol":          sym,
+            "available":       True,
+            "expiry":          exp,
+            "expiries":        list(expiries),
+            "calls":           _options_chain_rows(chain.calls),
+            "puts":            _options_chain_rows(chain.puts),
+        }
+
+        if rdb is not None:
+            try:
+                rdb.setex(cache_key, _OPTIONS_CHAIN_TTL, json.dumps(result))
+            except Exception:
+                pass
+
+        return result
+
+    except Exception as exc:
+        log.warning("options_chain.error", symbol=sym, error=str(exc))
+        return {"symbol": sym, "available": False, "reason": "fetch_error"}
+
+
 # ── Per-symbol Relative Strength ─────────────────────────────────────────────
 
 _SECTOR_ETF_MAP: dict[str, str] = {

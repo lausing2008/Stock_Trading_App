@@ -406,6 +406,8 @@ export const api = {
 
   // Dividends
   getOptionsFlow: (symbol: string) => request<OptionsFlow>(`/stocks/${symbol}/options-flow`),
+  getOptionsChain: (symbol: string, expiry?: string) =>
+    request<OptionsChain>(`/stocks/${symbol}/options-chain${expiry ? `?expiry=${expiry}` : ''}`),
   getDividends: (symbol: string) => request<DividendData>(`/stocks/${symbol}/dividends`),
 
   // Institutional holders
@@ -877,6 +879,8 @@ export type WalkForwardReport = {
 export type MLWeightValidation = { lookback_days: number; signal_count: number; optimal_weight: number | null; optimal_accuracy: number | null; current_formula_range: [number, number]; curve: MLWeightCurvePoint[] };
 export type OptionsFlowContract = { expiry: string; side: 'call' | 'put'; strike: number; volume: number; oi: number; vol_oi: number; iv: number; itm: boolean; premium: number; is_whale: boolean };
 export type OptionsFlow = { symbol: string; available: boolean; reason?: string; call_volume?: number; put_volume?: number; cp_ratio?: number; sentiment?: string; unusual_count?: number; unusual?: OptionsFlowContract[]; expiries_used?: string[]; whale_count?: number; top_whale_premium?: number };
+export type OptionsChainRow = { strike: number; bid: number; ask: number; last_price: number; volume: number; oi: number; iv: number; itm: boolean };
+export type OptionsChain = { symbol: string; available: boolean; reason?: string; expiry?: string; expiries?: string[]; calls?: OptionsChainRow[]; puts?: OptionsChainRow[] };
 export type QuickScanResult = { symbol: string; price: number; change_pct: number | null; change_5d: number | null; rsi: number | null; sma20: number | null; sma50: number | null; above_sma20: boolean | null; above_sma50: boolean | null; vol_ratio: number | null; range_pos_20d: number | null };
 export type FearGreed = { score: number; rating: string; previous_close: number | null; previous_1_week: number | null; previous_1_month: number | null; previous_1_year: number | null; sp500_regime?: 'bull' | 'bear'; sp500_vs_ma200_pct?: number | null; components?: { vix: number; sp500_vs_ma: number; momentum: number; vix_spike: number } };
 export type MarketBreadth = { breadth_pct: number | null; above_200ma: number; below_200ma: number; total: number; label: string; color: string; updated_at: string };

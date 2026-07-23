@@ -307,9 +307,19 @@ export default function StockDetail() {
 
   const [divOpen, setDivOpen] = useState(false);
   const [instOpen, setInstOpen] = useState(false);
+  const [chainOpen, setChainOpen] = useState(false);
+  const [chainExpiry, setChainExpiry] = useState<string | undefined>(undefined);
   const { data: optionsFlow } = useSWR(
     symbol ? `options-flow-${symbol}` : null,
     () => api.getOptionsFlow(symbol),
+    { revalidateOnFocus: false },
+  );
+  // T230-DATA-OPTIONS-CHAIN: only fetched once the user opens the section — the full
+  // strike matrix is a heavier fetch than options-flow's own top-3-per-side summary, and
+  // most visits to a stock page don't need it.
+  const { data: optionsChain } = useSWR(
+    symbol && chainOpen ? `options-chain-${symbol}-${chainExpiry ?? 'default'}` : null,
+    () => api.getOptionsChain(symbol, chainExpiry),
     { revalidateOnFocus: false },
   );
   const { data: dividendData } = useSWR<DividendData>(
@@ -4049,6 +4059,93 @@ Return ONLY valid JSON — no markdown, no prose:
               </>
             )}
           </div>
+        </div>
+      )}
+
+      {/* T230-DATA-OPTIONS-CHAIN: full strike/expiry matrix, opt-in expand (heavier fetch
+          than the Options Flow summary above) */}
+      {optionsFlow && optionsFlow.available && (
+        <div style={{ marginBottom: 24 }}>
+          <div
+            onClick={() => setChainOpen(o => !o)}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: chainOpen ? 12 : 0, cursor: 'pointer' }}
+          >
+            <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Options Chain</h2>
+            <span style={{ fontSize: 11, color: '#475569' }}>{chainOpen ? '▲ Hide' : '▼ Show full strike matrix'}</span>
+          </div>
+          {chainOpen && (
+            <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+              {!optionsChain && <div style={{ fontSize: 12, color: '#475569' }}>Loading options chain…</div>}
+              {optionsChain && !optionsChain.available && (
+                <div style={{ fontSize: 12, color: '#475569' }}>No options chain available for this symbol.</div>
+              )}
+              {optionsChain && optionsChain.available && (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 11, color: '#64748b' }}>Expiry:</span>
+                    {(optionsChain.expiries ?? []).map(exp => (
+                      <button
+                        key={exp}
+                        onClick={() => setChainExpiry(exp)}
+                        style={{
+                          fontSize: 11, fontWeight: (optionsChain.expiry === exp) ? 700 : 400,
+                          padding: '3px 10px', borderRadius: 5, cursor: 'pointer',
+                          background: optionsChain.expiry === exp ? 'rgba(56,189,248,0.15)' : 'transparent',
+                          border: `1px solid ${optionsChain.expiry === exp ? 'rgba(56,189,248,0.4)' : '#1e293b'}`,
+                          color: optionsChain.expiry === exp ? '#38bdf8' : '#94a3b8',
+                        }}
+                      >
+                        {exp}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                          {['Bid', 'Ask', 'Last', 'Vol', 'OI', 'IV'].map(h => (
+                            <th key={`c-${h}`} style={{ padding: '4px 8px', textAlign: 'right', color: '#4ade80', fontWeight: 500 }}>{h}</th>
+                          ))}
+                          <th style={{ padding: '4px 12px', textAlign: 'center', color: '#475569', fontWeight: 700 }}>Strike</th>
+                          {['Bid', 'Ask', 'Last', 'Vol', 'OI', 'IV'].map(h => (
+                            <th key={`p-${h}`} style={{ padding: '4px 8px', textAlign: 'left', color: '#f87171', fontWeight: 500 }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          const calls = optionsChain.calls ?? [];
+                          const puts = optionsChain.puts ?? [];
+                          const strikes = Array.from(new Set([...calls.map(c => c.strike), ...puts.map(p => p.strike)])).sort((a, b) => a - b);
+                          return strikes.map(strike => {
+                            const c = calls.find(x => x.strike === strike);
+                            const p = puts.find(x => x.strike === strike);
+                            return (
+                              <tr key={strike} style={{ borderBottom: '1px solid #0f172a' }}>
+                                <td style={{ padding: '4px 8px', textAlign: 'right', color: c?.itm ? '#4ade80' : '#94a3b8' }}>{c ? c.bid.toFixed(2) : '—'}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'right', color: c?.itm ? '#4ade80' : '#94a3b8' }}>{c ? c.ask.toFixed(2) : '—'}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'right', color: '#94a3b8' }}>{c ? c.last_price.toFixed(2) : '—'}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'right', color: '#94a3b8' }}>{c ? c.volume.toLocaleString() : '—'}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{c ? c.oi.toLocaleString() : '—'}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{c ? `${c.iv.toFixed(0)}%` : '—'}</td>
+                                <td style={{ padding: '4px 12px', textAlign: 'center', color: '#e2e8f0', fontWeight: 700 }}>${strike}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'left', color: p?.itm ? '#f87171' : '#94a3b8' }}>{p ? p.bid.toFixed(2) : '—'}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'left', color: p?.itm ? '#f87171' : '#94a3b8' }}>{p ? p.ask.toFixed(2) : '—'}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'left', color: '#94a3b8' }}>{p ? p.last_price.toFixed(2) : '—'}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'left', color: '#94a3b8' }}>{p ? p.volume.toLocaleString() : '—'}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'left', color: '#64748b' }}>{p ? p.oi.toLocaleString() : '—'}</td>
+                                <td style={{ padding: '4px 8px', textAlign: 'left', color: '#64748b' }}>{p ? `${p.iv.toFixed(0)}%` : '—'}</td>
+                              </tr>
+                            );
+                          });
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </div>
       )}
 
