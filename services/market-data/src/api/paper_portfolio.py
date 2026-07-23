@@ -2231,6 +2231,62 @@ def backtest_min_entry_score(
         return walk_forward_min_entry_score(session, style, market, base_cfg, window_start, window_end)
 
 
+# ── T233-SELFIMPROVE-PHASE2b: min_kscore / min_ta_score / min_volume_z ──────────
+# See gate_harness.py's own module docstring (search "Phase 2b") for the full re-scoping
+# rationale — these three pre-filter gates live in _scan_for_entries' candidate loop, not
+# inside _should_enter(), but are each a pure per-signal comparison (no open-position/equity
+# state), so they're layered onto the same per-signal replay Phase 2a already uses rather than
+# needing the full bar-by-bar equity-curve engine originally envisioned for this phase.
+
+@router.get("/backtest/extended-gate")
+def backtest_extended_gate(
+    style: str = Query(..., description="SHORT | SWING | LONG | GROWTH"),
+    market: str = Query("US", description="US | HK"),
+    param: str = Query(..., description="min_kscore | min_ta_score | min_volume_z"),
+    window_days: int = Query(60, ge=14, le=365, description="Lookback window in calendar days"),
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """Walk-forward backtest of a candidate min_kscore/min_ta_score/min_volume_z value,
+    replaying the real _should_enter() PLUS the three pre-filter gates _scan_for_entries
+    applies before ever calling it. Research tool only — does not write to portfolio.config
+    or any promotion history table.
+    """
+    from ..backtest.gate_harness import walk_forward_extended_gate
+    from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES, _HK_MARKET_OVERRIDES
+
+    style = style.upper()
+    if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
+        raise HTTPException(status_code=400, detail=f"Unknown style: {style}")
+    market = market.upper()
+    if market not in ("US", "HK"):
+        raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
+    if param not in ("min_kscore", "min_ta_score", "min_volume_z"):
+        raise HTTPException(status_code=400, detail=f"Unknown param: {param}")
+
+    base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    if market == "HK":
+        base_cfg = {**base_cfg, **_HK_MARKET_OVERRIDES}
+    window_end = date.today()
+    window_start = window_end - timedelta(days=window_days)
+
+    current = base_cfg.get(param, 0.0)
+    # Candidate grid — only ever TIGHTER than the current value (see gate_harness.py's own
+    # docstring: a stored-outcome replay can only evaluate tightening an existing gate, never
+    # a genuinely looser one, since it re-filters signals that already fired under the CURRENT
+    # threshold rather than regenerating them against a different one).
+    if param == "min_kscore":
+        candidates = sorted({v for v in (current, current + 2, current + 5, current + 8, current + 12) if v <= 100})
+    elif param == "min_ta_score":
+        candidates = sorted({v for v in (current, current + 0.05, current + 0.10, current + 0.15) if v <= 1.0})
+    else:  # min_volume_z
+        candidates = sorted({v for v in (current, current + 0.25, current + 0.5, current + 1.0)})
+
+    with SessionLocal() as session:
+        return walk_forward_extended_gate(
+            session, style, market, base_cfg, window_start, window_end, param, candidates,
+        )
+
+
 # ── T233-SELFIMPROVE-PHASE3: promotion gate + tune history ─────────────────────
 # See docs/DESIGN_PROMOTION_GATE_PHASE3_2026-07-05.md for full scope/rationale.
 # Still manually-triggered and does NOT write to portfolio.config — records every

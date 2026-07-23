@@ -7135,3 +7135,117 @@ If a symbol with real listed options returns `available: false, reason: "fetch_e
 check `docker logs stockai-market-data-1 --since 10m | grep options_chain` for the underlying
 yfinance error — the same rate-limit/fetch fragility documented elsewhere for options-flow
 applies here too, since it's the identical underlying yfinance call.
+
+---
+
+## Feature Reference: T233-SELFIMPROVE-PHASE2b — min_kscore/min_ta_score/min_volume_z Gate Backtest (Built 2026-07-22)
+
+**Closes the gap** `docs/DESIGN_BACKTEST_HARNESS_PHASE2_2026-07-06.md`'s §1c/§4 explicitly
+deferred: Phase 2a's `gate_harness.py` only replays `_should_enter()`, parameterized by
+`min_entry_score`/`min_confidence`/`min_rr_ratio`/`max_entry_gap_pct` — it deliberately does
+NOT test `min_kscore`/`min_ta_score`/`min_volume_z`, since those live in `_scan_for_entries`'s
+own candidate loop, upstream of `_should_enter()` entirely. The design doc's own framing was
+that testing them would need "a full bar-by-bar equity-curve replay" (tracking open positions,
+equity, entry caps, cooldowns evolving day-over-day) — a materially larger, riskier build than
+Phase 2a, deferred as Phase 2b.
+
+**Re-scoping finding before writing any code**: re-read the actual gate code for these THREE
+SPECIFIC checks (not `_scan_for_entries` as a whole) and found the design doc's own concern too
+pessimistic for them specifically. `min_kscore` (`ranking.score` vs. a threshold),
+`min_ta_score` (`sig.reasons["ta_score"]` vs. a threshold), and `min_volume_z`
+(`sig.reasons["volume_z"]` vs. a threshold) are each a PURE, STATELESS comparison against data
+already stored per-signal/per-stock — none of them read open positions, equity, or any other
+evolving portfolio state. They only happen to live in the wrong function. This meant they could
+be layered onto the EXISTING per-signal `replay_should_enter()` (Phase 2a's own machinery)
+without building the full equity-curve engine — a much smaller, lower-risk extension than the
+design doc anticipated. The genuinely-stateful gates (drawdown, daily/weekly loss, cooldowns,
+entry caps, sector/cluster caps) remain out of scope and would still need the originally-
+envisioned full bar-by-bar replay if ever tackled — not attempted here, not silently claimed
+as covered either.
+
+**Data depth re-checked before committing to this scope** — the design doc's own §1a flagged
+thin history (Jul 2026: US SWING ~34 days, all HK "likely skipped"). Re-queried production
+directly rather than trusting the 2-week-old snapshot: US SWING is now 42 days/1,124 resolved
+outcomes, and even HK now clears 24-37 days/317-471 rows across every style — the floor this
+harness enforces (`MIN_SAMPLES_PER_SPLIT=15`) should now clear for nearly every style/market
+combination, not just US SWING/SHORT/LONG as the original doc anticipated.
+
+**Point-in-time correctness — the one real trap in this design, caught before shipping**:
+`_scan_for_entries`'s own LIVE `min_kscore` check always joins the MOST RECENT `Ranking` row
+(`func.max(Ranking.as_of)`, no date bound) — correct for live trading, where "most recent"
+always means "now." A historical replay must NOT reuse that shortcut, or it would silently
+look up a K-Score computed AFTER the signal date, leaking future data into a past decision.
+New `_historical_kscore(session, stock_id, as_of)` instead finds the most recent `Ranking` row
+with `as_of <= the signal's own date` — verified directly with a dedicated test constructing
+two Ranking rows (one before, one after the signal date) and confirming only the earlier one
+is ever returned.
+
+**Implementation** (`services/market-data/src/backtest/gate_harness.py`):
+- `_historical_kscore()` — point-in-time-correct Ranking lookup (above).
+- `_passes_prefilter_gates(cfg, kscore, reasons)` — pure function applying all three gates
+  in the SAME order and with the SAME fail-open conventions as the live `_scan_for_entries`
+  code: a missing `kscore` blocks only when `require_kscore` (default `True`); `min_ta_score`
+  only enforces when `> 0` (0.0 = disabled, matching the live gate's own no-op state) and a
+  missing `ta_score` defaults to `1.0` (never blocks); a missing `volume_z` is fail-open
+  (skips the gate entirely, per the pre-existing T232-DL5 fix) — only an explicitly-present,
+  too-low value blocks.
+- `replay_extended_gates()` — same per-signal replay as `replay_should_enter()`, but calls
+  `_passes_prefilter_gates()` before `_should_enter()`; a candidate must clear all four gates
+  (the three pre-filters plus `_should_enter()` itself) to count as entered.
+- `walk_forward_extended_gate(param, candidates)` — same chronological 70/30 train/validation
+  split and promotion criterion as Phase 2a's `walk_forward_min_entry_score()`, generalized to
+  search any ONE of the three params while holding the other two at their base-config values.
+
+**New endpoint**: `GET /paper-portfolio/backtest/extended-gate?style=&market=&param=&window_days=`
+(admin-only, mirrors Phase 2a's `/backtest/min-entry-score` exactly). Candidate grids are
+deliberately TIGHTER-only from the current value (`min_kscore`: +2/+5/+8/+12 capped at 100;
+`min_ta_score`: +0.05/+0.10/+0.15 capped at 1.0; `min_volume_z`: +0.25/+0.5/+1.0) — same
+explicit limitation as Phase 2a and every other stored-outcome sweep in this codebase: a
+replay can only evaluate TIGHTENING an existing gate (re-filtering signals that already fired
+under the CURRENT threshold), never a genuinely looser one, since that would require
+regenerating signals against historical price data rather than re-filtering already-computed
+ones. Stated explicitly in the endpoint's own response `note` field, not silently omitted.
+
+**Tests**: `services/market-data/tests/test_gate_harness_extended.py` (15 cases) —
+`gate_harness.py` can't be imported directly in this test environment (conftest.py stubs
+`sqlalchemy` itself as a `MagicMock`), so this uses the established real-sqlalchemy-via-stub-
+pop-and-restore technique (`test_correlation_preentry.py`/`test_broker_position_sync.py`) to
+build a real in-memory SQLite session against the real `shared/db/models.py`, then extracts
+`_historical_kscore()`/`_passes_prefilter_gates()`'s real source via `exec()`. Covers: the
+point-in-time-correctness property directly (a Ranking row dated AFTER the signal must never
+be returned), exact-date-match inclusion, no-ranking-found handling, all three gates'
+individual pass/fail boundaries, each gate's specific fail-open convention (missing kscore
+blocks by default but not when `require_kscore=False`; missing `ta_score` never blocks;
+missing `volume_z` never blocks; `min_ta_score=0.0` never blocks), gate-ordering (kscore
+checked first, short-circuits before ta_score/volume_z), and the all-three-clear pass case.
+
+**A real, previously-undocumented SQLite test-harness quirk hit while writing these** (same
+class already documented for `Price`/`SignalOutcome` elsewhere in this file, now confirmed for
+`Ranking` too): `Ranking.id` is a `BigInteger` primary key, which doesn't get SQLite's implicit
+autoincrement — test fixtures must assign `id` explicitly. Also: `Ranking.volatility` is
+`NOT NULL` with no default (unlike `value`/`growth`, deliberately made nullable per an earlier
+fix, `T232-RANKSTALE`) — test fixtures must supply a real value or the insert fails.
+
+**Adversarial verification** — 2 sabotage cycles, both caught and reverted: removing the
+`Ranking.as_of <= as_of` date bound from `_historical_kscore()` (caught by the point-in-time
+test with a real `90.0 == 40.0` failure — confirming the fix genuinely prevents future-data
+leakage, not just looking like it does); disabling the `min_volume_z` comparison in
+`_passes_prefilter_gates()` (caught directly). Full 459-test market-data suite (up from 444)
+green after every revert.
+
+**Deliberately not built this pass, matching the design doc's own explicit deferral list**:
+Phase 2c (decision-engine-path backtesting, blocked on `T232-DL-DUALSCORER-DEBT` resolution
+per the design doc's §1d) and the genuinely-stateful gates (drawdown, daily/weekly loss,
+cooldowns, entry caps, sector/cluster caps) remain untouched — those still need the originally-
+envisioned full bar-by-bar equity-curve replay if ever tackled.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 curl -s \
+  'http://localhost:8001/paper-portfolio/backtest/extended-gate?style=SWING&market=US&param=min_kscore&window_days=60' \
+  -H "Authorization: Bearer <admin token>" | python3 -m json.tool
+```
+If a specific style/market/param combo always returns `skipped_reason`, check the actual
+resolved sample count directly against production Postgres (per-style/market resolved-outcome
+counts, same query used to re-verify data depth above) before assuming the endpoint itself is
+broken — a genuine data-thinness skip and a real bug produce the identical response shape.
