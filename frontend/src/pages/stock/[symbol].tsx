@@ -1431,7 +1431,7 @@ Return ONLY valid JSON — no markdown, no prose:
 
           {/* K-Score + Fear & Greed side by side */}
           {(ranking || fearGreed) && (
-            <div style={{ display: 'grid', gridTemplateColumns: ranking && fearGreed ? '1fr 1fr' : '1fr', gap: '16px', alignItems: 'stretch' }}>
+            <div className="stock-detail-kscore-feargreed-grid" style={{ display: 'grid', gridTemplateColumns: ranking && fearGreed ? '1fr 1fr' : '1fr', gap: '16px', alignItems: 'stretch' }}>
 
               {/* K-Score with progress bars */}
               {ranking && (() => {
@@ -2887,7 +2887,7 @@ Return ONLY valid JSON — no markdown, no prose:
               </div>
 
               {/* Row 3 — Balance sheet + margins + per share */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+              <div className="stock-detail-fundamentals-row3-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
                 {/* Balance sheet */}
                 <div>
                   <div style={{ fontSize: '10px', fontWeight: 700, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>Balance Sheet</div>
@@ -2917,7 +2917,7 @@ Return ONLY valid JSON — no markdown, no prose:
               </div>
 
               {/* Row 4 — Per share & risk + 52-week range */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              <div className="stock-detail-fundamentals-row4-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                 <div>
                   <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>Per Share &amp; Risk</div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
@@ -3301,7 +3301,7 @@ Return ONLY valid JSON — no markdown, no prose:
                       )}
 
                       {/* Buy zone + Sell / Target zone */}
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                      <div className="stock-detail-buyzone-sellzone-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                         {/* BUY ZONE */}
                         <div style={{ borderRadius: '10px', padding: '12px 14px', background: 'rgba(34,197,94,0.06)', border: '1px solid rgba(34,197,94,0.2)' }}>
                           <div style={{ fontSize: '10px', fontWeight: 800, color: '#22c55e', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>

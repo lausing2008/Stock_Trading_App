@@ -27,6 +27,27 @@ a { color: inherit; text-decoration: none; }
   .stock-detail-main-grid { grid-template-columns: 1fr !important; }
 }
 
+/* T230-UX-MOBILE-RESPONSIVE (follow-up pass): 4 more rigid, page-width multi-column grids on
+   the stock detail page were found still squeezing full panels side-by-side on a phone with no
+   fallback — the earlier Phase 2 fix only addressed the outer chart+sidebar grid, not these
+   inner content grids. Each class's base rule matches its pre-existing inline
+   gridTemplateColumns exactly (a no-op above 768px); below it, panels stack to one column.
+   Kept as 4 distinct classes (not one shared rule) since a couple of these are also
+   conditionally 1-column already at the widest breakpoint (e.g. K-Score/Fear&Greed only shows
+   1fr 1fr when BOTH panels have data) — a single shared class could not represent that. */
+.stock-detail-kscore-feargreed-grid { grid-template-columns: 1fr 1fr; }
+.stock-detail-fundamentals-row3-grid { grid-template-columns: 1fr 1fr 1fr; }
+.stock-detail-fundamentals-row4-grid { grid-template-columns: 1fr 1fr; }
+.stock-detail-buyzone-sellzone-grid { grid-template-columns: 1fr 1fr; }
+@media (max-width: 767px) {
+  .stock-detail-kscore-feargreed-grid,
+  .stock-detail-fundamentals-row3-grid,
+  .stock-detail-fundamentals-row4-grid,
+  .stock-detail-buyzone-sellzone-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
 .fixed { position: fixed; }
 .absolute { position: absolute; }
 .relative { position: relative; }

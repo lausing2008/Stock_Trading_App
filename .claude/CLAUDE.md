@@ -4438,6 +4438,49 @@ If either line is missing, the CSS didn't compile/deploy correctly — re-check
 `frontend/src/styles/globals.css` and confirm a real frontend rebuild (not just a `docker cp`
 hotfix — CSS is baked into the Next.js build) was actually run.
 
+**CORRECTION 2026-07-23 — the original "audited the rest of the page, this was the ONLY rigid
+layout" claim was wrong.** A follow-up survey (triggered by re-checking `T230-UX-MOBILE-
+RESPONSIVE` against real code rather than trusting its own `done` status, per this file's own
+standing "verify in both directions" discipline) found 4 more genuinely rigid, page-width,
+multi-column grids still squeezing full panels side-by-side on a phone with no fallback,
+missed by the original audit: the K-Score + Fear&Greed side-by-side row (line ~1434, dynamic
+`1fr 1fr`/`1fr` depending on which panels have data), the fundamentals Row 3 (Balance Sheet /
+Margins / Returns&Growth, a rigid 3-column `1fr 1fr 1fr`), the fundamentals Row 4 (Per Share&Risk
+/ 52-Week Range, `1fr 1fr`), and the analyst-ratings Buy Zone / Sell Zone panel (`1fr 1fr`) —
+all in `frontend/src/pages/stock/[symbol].tsx`. These are genuinely different from the
+`flexWrap`/`repeat(auto-fill, minmax(...))` grids the original audit correctly found safe:
+those self-wrap by design; these 4 use a fixed N-up column count with no wrap and no breakpoint.
+
+**Fix**: 4 new CSS classes in `globals.css` (`.stock-detail-kscore-feargreed-grid`,
+`.stock-detail-fundamentals-row3-grid`, `.stock-detail-fundamentals-row4-grid`,
+`.stock-detail-buyzone-sellzone-grid`), following the EXACT same pattern as
+`.stock-detail-main-grid` above — each class's base rule matches its pre-existing inline
+`gridTemplateColumns` exactly (a no-op above 768px), overridden to `1fr !important` under
+`@media (max-width: 767px)`. The K-Score/Fear&Greed grid keeps its dynamic inline
+`gridTemplateColumns` ternary for the desktop case (only shows 2 columns when BOTH panels have
+real data) — the mobile `!important` override still wins under 768px regardless of which
+inline value the ternary resolves to, so adding the class alongside the existing inline style
+was safe without needing to special-case the dynamic grid separately.
+
+**Verification, more thorough than the original pass**: same CSS-only discipline (no browser/
+device-emulator available), but this time verified BOTH the compiled CSS (`.next/static/css/*.css`
+— confirmed all 4 base rules present, and confirmed the combined `@media (max-width:767px)`
+selector correctly bundles all 4 classes together forcing `1fr!important`) AND the compiled JS
+page bundle (`.next/static/chunks/pages/stock/*.js` — grepped for each class name and confirmed
+all 4 appear exactly once, proving the `className` attributes actually reached the shipped
+page, not just the source file). A full `next build` and the existing 89-test frontend vitest
+suite (unaffected — no test imports `[symbol].tsx` directly, the same seam gap already
+documented for this page) both ran clean.
+
+**Lesson reinforced**: an earlier "I audited the rest of the page and found nothing else"
+claim — even one made carefully, with real grep evidence at the time — is not a permanent
+guarantee. A large (4000+ line), actively-growing page can accumulate new rigid grids between
+audits, or an earlier audit's grep pattern can simply miss instances outside its search scope.
+Re-verify a "this was fully audited" claim against live code before trusting it, the same
+discipline this file already applies to stale tracker `defaultStatus` claims — this was found
+specifically because the next session re-checked rather than assuming the earlier "done"
+status meant the page was actually fully covered.
+
 ---
 
 ## Feature Reference: T232-DL-DUALSCORER-DEBT — K-Score Floor Hard Reject Ported to decision-engine (2026-07-20)
