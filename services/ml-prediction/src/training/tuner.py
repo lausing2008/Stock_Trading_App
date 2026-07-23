@@ -9,13 +9,20 @@ For each symbol the tuner:
      top ~10% highest-predicted-probability validation rows per fold (a proxy for production's
      buy_threshold tail, which only ever fires on prob > ~0.60-0.76), with mean AUC as a small
      tiebreaker (see T232-ML5)
-  2. Saves best params to  {model_dir}/xgboost/{symbol}_params.json
-  3. Retrains the final model with those best params so predictions update immediately
+  2. T233-SELFIMPROVE-PHASE4: scores the candidate params (and the current live params, if any)
+     on a genuine holdout slice (the last 15% of feature rows, never seen by Optuna's own CV)
+     using a real trading-EV proxy (see ev_gate.py) — only proceeds to steps 3-4 if the
+     candidate's holdout EV beats the live baseline's. Records one tune_history row per call
+     regardless of outcome.
+  3. Saves best params to  {model_dir}/xgboost/{symbol}_params.json
+  4. Retrains the final model with those best params so predictions update immediately
 """
 from __future__ import annotations
 
 import json
 import os
+import uuid
+from datetime import date
 
 import numpy as np
 import optuna
@@ -28,7 +35,8 @@ from xgboost import XGBClassifier
 from common.logging import get_logger
 
 from ..features import build_features, compute_label_threshold, fetch_macro_features, fetch_sector_features, fetch_signal_outcome_features
-from .trainer import _blend_weights, _load_fund_snapshots, _load_fundamentals, _load_prices, _params_path, _recency_weights, train_model
+from .ev_gate import MIN_HOLDOUT_SIGNALED_ROWS, evaluate_candidate_ev
+from .trainer import _blend_weights, _load_best_params, _load_fund_snapshots, _load_fundamentals, _load_prices, _params_path, _recency_weights, train_model
 
 log = get_logger("tuner")
 
@@ -46,6 +54,68 @@ _SEARCH = {
     "reg_alpha":       ("float", 0.0,  3.0),
     "reg_lambda":      ("float", 0.5,  5.0),
 }
+
+
+def _record_tune_history(
+    symbol: str, style: str, window_start: date, window_end: date,
+    current_params: dict, best_params: dict, ev_gate_result: dict, promoted: bool,
+) -> None:
+    """T233-SELFIMPROVE-PHASE4: one tune_history row per tune_symbol() call, matching every
+    other tuning mechanism's "record the attempt regardless of outcome" convention
+    (promotion_gate.py, signal-engine's _record_tune_history). Reuses the shared TuneHistory
+    model directly (no cross-service call — shared/db/ is baked into every service's image,
+    same as the T233-SELFIMPROVE-PHASE3-EXTENSION precedent for signal-engine).
+    """
+    try:
+        from db import SessionLocal, TuneHistory
+        market = "HK" if symbol.upper().endswith(".HK") else "US"
+        candidate_ev = ev_gate_result.get("candidate_ev") or {}
+        baseline_ev = ev_gate_result.get("baseline_ev") or {}
+        with SessionLocal() as session:
+            session.add(TuneHistory(
+                run_id=str(uuid.uuid4()),
+                parameter_class="ml_hyperparams",
+                parameter_name="xgboost_params",
+                style=style,
+                market=market,
+                old_value=current_params or {},
+                new_value=best_params,
+                train_window_start=window_start,
+                train_window_end=window_end,
+                validation_window_start=window_end,
+                validation_window_end=window_end,
+                validation_ev_pct=candidate_ev.get("ev_pct"),
+                baseline_validation_ev_pct=baseline_ev.get("ev_pct"),
+                validation_n=candidate_ev.get("n"),
+                promoted=promoted,
+                gate_failures=ev_gate_result.get("gate_failures") or [],
+                triggered_by="scheduled",
+            ))
+            session.commit()
+    except Exception as exc:
+        log.warning("tune.tune_history_write_failed", symbol=symbol, error=str(exc))
+
+
+def _fit_and_predict_holdout(
+    params: dict, X_arr: np.ndarray, y_arr: np.ndarray, X_holdout_arr: np.ndarray,
+) -> np.ndarray:
+    """Fit a model with `params` on the full search slice (X_arr/y_arr) using the SAME
+    scaling/weighting convention as objective()'s per-fold fit, then return predicted
+    probabilities on X_holdout_arr. Used by the EV gate (T233-SELFIMPROVE-PHASE4) to score
+    both the candidate and the current-live params on the identical held-out rows.
+    """
+    clf = XGBClassifier(
+        **params,
+        eval_metric="logloss",
+        n_jobs=-1,
+        random_state=42,
+        tree_method="hist",
+    )
+    sc = StandardScaler()
+    recency_w = _recency_weights(len(y_arr), newest_to_oldest_ratio=5.0)
+    w = _blend_weights(y_arr, recency_w)
+    clf.fit(sc.fit_transform(X_arr), y_arr, sample_weight=w, verbose=False)
+    return clf.predict_proba(sc.transform(X_holdout_arr))[:, 1]
 
 
 def _suggest(trial: optuna.Trial, name: str) -> int | float:
@@ -126,13 +196,17 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
     except Exception:
         pass
 
-    X, y_dir, _ = build_features(
+    X, y_dir, y_ret = build_features(
         df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold,
         fund_data=fund_data, sector_df=sector_df, outcome_df=outcome_df,
         fund_snapshots=fund_snapshots,
     )
-    # Restrict tuner to first 85% of data to avoid leaking the test period
+    # T233-SELFIMPROVE-PHASE4: the last 15% was previously discarded entirely (`X.iloc[:cutoff]`
+    # with no holdout kept). It's real, never-touched data with real forward returns (y_ret) —
+    # kept here as a genuine EV holdout for evaluate_candidate_ev() below, instead of being
+    # thrown away. Optuna's own search below still only ever sees the first 85%.
     cutoff = int(len(X) * 0.85)
+    X_holdout, y_ret_holdout = X.iloc[cutoff:], y_ret.iloc[cutoff:]
     X, y_dir = X.iloc[:cutoff], y_dir.iloc[:cutoff]
     if len(X) < 300:
         reason = f"only {len(X)} clean samples (need ≥300 for tuning)"
@@ -225,6 +299,63 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
     best_cv_precision_top_k = study.best_trial.user_attrs.get("mean_precision_top_k", 0.0)
     best_cv_auc = study.best_trial.user_attrs.get("mean_auc", 0.0)
 
+    # T233-SELFIMPROVE-PHASE4: second, independent gate — Optuna's own CV folds never see the
+    # true holdout (X_holdout/y_ret_holdout, the last 15%, untouched above). Refit the candidate
+    # AND the current-live params (if any) on the full search slice, score both on the same
+    # holdout rows, and only persist/retrain if the candidate's holdout EV beats the live
+    # baseline's. Matches every other tuning mechanism's "must beat current live baseline on
+    # data neither saw" convention (gate_harness.py, outcomes_calibrate_apply, tune_style_profiles).
+    current_params = _load_best_params(symbol)
+    ev_gate_result: dict = {"skipped_reason": None}
+    # A coarse pre-filter on TOTAL holdout rows (distinct from MIN_HOLDOUT_SIGNALED_ROWS'
+    # real meaning inside compute_holdout_ev — rows that cross the reference probability
+    # threshold). If the whole holdout is already smaller than that floor, no threshold
+    # crossing could possibly clear it either, so skip straight to the CV-only fallback.
+    if len(X_holdout) < MIN_HOLDOUT_SIGNALED_ROWS:
+        ev_gate_result = {"skipped_reason": f"holdout too small ({len(X_holdout)} rows)"}
+        gate_promoted = True  # not enough holdout data to gate on — fall back to Optuna's own CV verdict
+    else:
+        X_holdout_arr = X_holdout.values
+        y_ret_holdout_arr = y_ret_holdout.values
+        candidate_probs = _fit_and_predict_holdout(best_params, X_arr, y_arr, X_holdout_arr)
+        baseline_probs = (
+            _fit_and_predict_holdout(current_params, X_arr, y_arr, X_holdout_arr)
+            if current_params else None
+        )
+        ev_gate_result = evaluate_candidate_ev(candidate_probs, baseline_probs, y_ret_holdout_arr)
+        gate_promoted = ev_gate_result["promoted"]
+
+    log.info(
+        "tune.ev_gate",
+        symbol=symbol,
+        promoted=gate_promoted,
+        candidate_ev=ev_gate_result.get("candidate_ev"),
+        baseline_ev=ev_gate_result.get("baseline_ev"),
+        gate_failures=ev_gate_result.get("gate_failures"),
+        skipped_reason=ev_gate_result.get("skipped_reason"),
+    )
+
+    _window_start = pd.to_datetime(df["ts"]).min().date()
+    _window_end = pd.to_datetime(df["ts"]).max().date()
+    _record_tune_history(
+        symbol, style, _window_start, _window_end,
+        current_params, best_params, ev_gate_result, gate_promoted,
+    )
+
+    if not gate_promoted:
+        log.warning(
+            "tune.rejected_by_ev_gate", symbol=symbol,
+            gate_failures=ev_gate_result.get("gate_failures"),
+        )
+        return {
+            "symbol": symbol, "skipped": True,
+            "reason": "candidate hyperparameters did not beat live baseline on EV holdout",
+            "ev_gate": ev_gate_result,
+            "best_params": best_params,
+            "best_cv_precision_top_k": round(best_cv_precision_top_k, 4),
+            "best_cv_auc": round(best_cv_auc, 4),
+        }
+
     # Persist best params — atomic write to avoid partial-read race with _load_best_params
     p = _params_path(symbol)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -244,4 +375,5 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
     result["best_params"] = best_params
     result["best_cv_precision_top_k"] = round(best_cv_precision_top_k, 4)
     result["best_cv_auc"] = round(best_cv_auc, 4)
+    result["ev_gate"] = ev_gate_result
     return result

@@ -7444,3 +7444,141 @@ ingest job itself actually ran (`docker logs ... | grep premarket_5m_ingest_done
 assuming the query is broken — an empty PRE-session `Price` table (ingest job silently
 failing, or running outside its own cron window) looks identical to "no gappers today" from
 the query's own perspective.
+
+---
+
+## Feature Reference: T233-SELFIMPROVE-PHASE4 — EV Backtest Gate for ML Hyperparameter Tuning (Built 2026-07-22)
+
+**Re-scoping finding before writing any code**: the tracker item's own framing ("ML
+hyperparameter tuning today optimizes AUC... not realized trading expected value") was
+partially STALE — `T232-ML5-OPTUNA-WRONG-METRIC` (2026-07-09) already changed
+`tuner.py`'s Optuna objective from raw AUC to mean top-decile precision (a much closer proxy
+for what live trading actually acts on: only the extreme right tail of the probability
+distribution, where `buy_threshold` sits). That half of Phase 4's original framing was already
+done. What was genuinely still missing: Optuna's own `TimeSeriesSplit` CV folds are entirely
+internal to the search — a winning candidate was never checked against a real, untouched
+holdout using an actual trading-EV metric before being persisted and used to retrain the live
+model. This session built that second, independent gate.
+
+**Second re-scoping finding**: the tracker item's other half — "systematically tune
+`sizer.py`'s hand-set confidence-multiplier tiers" — turned out to be **not worth building**.
+Checked directly: `sizer.py`'s own module docstring already states it is a "preview/scoring-
+only module" — confirmed via grep that `paper_trading_engine.py` (the ONLY code that places
+real paper trades) never calls `compute_position()`/imports from `sizer.py` at all; it has its
+own, completely independent sizing logic. decision-engine's `sizer.py` output only ever
+reaches `/decide/{symbol}`'s JSON response, rendered by `decide.tsx`'s `PositionCard` for
+DISPLAY ONLY. Tuning these multipliers against a validation-EV backtest — the whole premise of
+promotion_gate.py's pattern — requires a real trade outcome to attribute the parameter choice
+to; since nothing ever acts on sizer.py's numbers, there is no real EV signal to tune against.
+Building a fake one would be worse than not building it at all. Left undone, documented here
+rather than silently dropped.
+
+**Design**: `tune_symbol()` (`services/ml-prediction/src/training/tuner.py`) already carved off
+the last 15% of feature rows as `cutoff = int(len(X) * 0.85)` — but discarded it completely
+(`X, y_dir = X.iloc[:cutoff], y_dir.iloc[:cutoff]`, `y_ret` wasn't even captured from
+`build_features()`'s return). This is real, never-touched holdout data with real forward
+returns. No new data source or regeneration needed: keep `y_ret`, keep the holdout slice
+(`X_holdout`/`y_ret_holdout`), refit the CANDIDATE params on the full search slice and score
+the holdout, refit the CURRENT LIVE params (`_load_best_params(symbol)`) the same way on the
+SAME holdout, and only persist/retrain if the candidate's holdout EV beats the live baseline's
+— matching every other tuning mechanism's "must beat the current live baseline on data neither
+saw" convention (`gate_harness.py`, `outcomes_calibrate_apply`, `tune_style_profiles`).
+
+**New module**: `services/ml-prediction/src/training/ev_gate.py` — pure numpy functions, zero
+DB/network dependency:
+- `compute_holdout_ev(probs, y_ret, threshold=0.60)` — mean forward return among holdout rows
+  crossing a reference probability threshold (0.60, approximating where production's
+  `buy_threshold` sits across styles/regimes). Returns `{"ev_pct": None, "n": n}` — not a real
+  `0.0` — when fewer than `MIN_HOLDOUT_SIGNALED_ROWS=10` rows cross the threshold; an
+  unmeasurable value must never be silently treated as "zero EV."
+- `evaluate_candidate_ev(candidate_probs, baseline_probs, y_ret_holdout)` — the comparison
+  logic. `baseline_probs=None` (first-ever tune for a symbol) auto-promotes (nothing to beat,
+  matches `tune_symbol()`'s pre-existing first-tune behavior) with an explicit
+  `"no_baseline_params:first_tune_for_symbol"` gate-failure marker rather than silently passing.
+  An unmeasurable candidate EV rejects; an unmeasurable baseline EV (but a measurable candidate)
+  promotes with an explicit marker; otherwise requires `ev_lift > 0` STRICTLY — an exact tie
+  is rejected, matching `T255-STRATEGY-TUNER-PER-HORIZON`'s own established "unconditional
+  rejection of non-positive EV lift" convention.
+
+**Wiring in `tuner.py`**: new `_fit_and_predict_holdout(params, X_arr, y_arr, X_holdout_arr)`
+refits using the IDENTICAL scaling/weighting convention as `objective()`'s own per-fold fit
+(`_recency_weights` + `_blend_weights`), so the gate compares a model trained the same way
+Optuna actually searched, not a differently-weighted one. `_record_tune_history()` writes one
+`TuneHistory` row per `tune_symbol()` call regardless of outcome (`parameter_class=
+"ml_hyperparams"`, `parameter_name="xgboost_params"`, market derived from the `.HK` symbol
+suffix) — reuses the shared model directly (`from db import SessionLocal, TuneHistory`, no
+cross-service call, matching the `T233-SELFIMPROVE-PHASE3-EXTENSION` precedent for
+signal-engine), wrapped in try/except so a DB hiccup never aborts a real tuning run. A
+too-small holdout (`< MIN_HOLDOUT_SIGNALED_ROWS` total rows) skips the gate entirely and falls
+back to Optuna's own CV verdict, rather than crashing on the sample floor inside
+`compute_holdout_ev` itself.
+
+**A real bug caught by `pyflakes`, not by any test, before this shipped**: the EV-gate call
+site added `current_params = _load_best_params(symbol)`, but `_load_best_params` was never
+added to `tuner.py`'s own `from .trainer import ...` line — an undefined-name bug that would
+only have surfaced as a live `NameError` in production the moment `tune_symbol()` actually ran
+past Optuna's search (i.e., every single real invocation). Caught by running `pyflakes` against
+the touched files before considering the change done, not by the test suite itself (which,
+being source-text-extraction-based for this file, never actually imports/executes the real
+module). Fixed by adding `_load_best_params` to the import line, and added a dedicated
+regression test (`test_load_best_params_is_actually_imported`) so this specific class of
+"undefined name only reachable at runtime" bug can't silently regress again unnoticed.
+
+**Tests**: `services/ml-prediction/tests/test_ev_gate.py` (13 cases) — `ev_gate.py` has zero
+DB/network dependency, so it's loaded via a direct file-spec import (bypassing
+`src.training.__init__`, which drags in the full model registry including `lightgbm`, not
+installed locally — same constraint already documented for `meta_trainer.py`'s own tests in
+this directory) and tested behaviorally: EV computation only over signaled rows (poisoned an
+adjacent "unsignaled" return with an extreme value and confirmed it never leaks into the
+mean), the `None`-not-zero unmeasurable floor at exactly the boundary, custom threshold
+respect, all `evaluate_candidate_ev` branches (no-baseline auto-promote, candidate/baseline
+each independently unmeasurable, beats/loses/ties baseline).
+`services/ml-prediction/tests/test_tuner_ev_gate_wiring.py` (11 cases, source-text regression
+checks — `tuner.py` can't be imported directly without real `optuna`/`xgboost`/DB access)
+confirm: the holdout slice is captured before search-slice truncation (not after, which would
+silently produce garbage), the gate runs and `TuneHistory` is recorded before either exit
+branch, a rejected candidate actually `return`s rather than falling through to persist/retrain,
+both refits use the identical weighting convention as Optuna's own fit, and the
+`_load_best_params` import guard described above.
+
+**Adversarial verification** — 4 sabotage cycles across both test files, all caught and
+reverted: disabling the `ev_lift <= 0` rejection (caught by 2 tests: loses-to-baseline and
+exact-tie); disabling the `MIN_HOLDOUT_SIGNALED_ROWS` floor inside `compute_holdout_ev` (caught
+by 3 tests, and surfaced a real `RuntimeWarning: Mean of empty slice` — confirming the floor
+prevents a genuine NaN-producing edge case, not just a defensive nicety); reverting the
+`y_ret` capture back to the pre-fix `X, y_dir, _ = build_features(...)` discard (caught by the
+holdout-slice regression test); removing `_load_best_params` from the import line (caught by
+its own dedicated regression test, described above).
+
+Full 43-test `ml-prediction` suite (up from 19) green after every revert; `pyflakes` clean on
+all touched files.
+
+**What to check if this looks wrong**:
+```bash
+docker logs stockai-ml-prediction-1 --since 24h | grep 'tune.ev_gate\|tune.rejected_by_ev_gate'
+# tune.ev_gate logs every attempt's candidate/baseline EV and promoted verdict.
+# tune.rejected_by_ev_gate logs specifically when a candidate was found but didn't beat baseline.
+
+# Check tune_history rows this mechanism wrote:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT style, market, old_value, new_value, validation_ev_pct, baseline_validation_ev_pct, promoted, gate_failures FROM tune_history WHERE parameter_class='ml_hyperparams' ORDER BY ts DESC LIMIT 10;"
+
+# Manually trigger a single-symbol tune to see the gate live (writes real params/retrains a
+# real model as a side effect — same caveat as every other tune_symbol()/tune_all() trigger):
+docker exec stockai-ml-prediction-1 python3 -c "
+import sys; sys.path.insert(0, '/app')
+from src.training.tuner import tune_symbol
+print(tune_symbol('AAPL', n_trials=20))
+"
+```
+If a candidate never seems to get promoted despite what looks like a real improvement, check
+`gate_failures` in the logged/recorded result first — `no_baseline_params` and
+`baseline_ev_unmeasurable` both promote automatically and are NOT failures; only
+`ev_lift_not_positive` and `candidate_ev_unmeasurable` actually block promotion.
+
+**Not built this pass, documented not silently dropped**: sizer.py multiplier tuning (see the
+re-scoping finding above — genuinely not worth building given sizer.py's preview-only status).
+Phase 5 (scheduling the whole Phase 1-4 pipeline automatically) remains explicitly deferred
+per the original design's own sequencing — this EV gate runs inline inside every
+`tune_symbol()` call (manual `/ml/tune` or the existing weekly `/ml/tune_all` cadence), it is
+not yet a SEPARATE scheduled job of its own, matching Phase 4's own scope boundary.
