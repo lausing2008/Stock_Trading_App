@@ -7582,3 +7582,92 @@ Phase 5 (scheduling the whole Phase 1-4 pipeline automatically) remains explicit
 per the original design's own sequencing — this EV gate runs inline inside every
 `tune_symbol()` call (manual `/ml/tune` or the existing weekly `/ml/tune_all` cadence), it is
 not yet a SEPARATE scheduled job of its own, matching Phase 4's own scope boundary.
+
+---
+
+## Design Reference: T232-SIG-ENTRYTIMING — Why BUY Signals Tend to Fire Near a Local Peak, Not a Bottom
+
+**User asked directly (2026-07-23)**: "Why AI signal always asked me to buy from the top of
+the peak not from the bottom or lower position. How to improve it?" — a real, structural
+property of the signal design, not a bug. Documented here as 4 options before building
+anything, per this repo's standing scope-first discipline.
+
+**Root cause**: `_ta_score()`'s 4 pillars (`services/signal-engine/src/generators/signals.py`,
+SA-19/SA-30 architecture) are built almost entirely from TREND-CONFIRMATION evidence, and
+confirmation by definition only exists once a move has already happened:
+- **TREND pillar** (line ~1160): rewards price above its 50/200-day averages, a golden cross,
+  an established ADX uptrend — none of which can be true at a genuine bottom, where price is
+  still below its own averages.
+- **MOMENTUM pillar** (line ~1187): `rsi_score` is a flat **0.0** for `rsi_val < 35` — the
+  model actively zeroes out the exact oversold zone where real bottoms form — and instead
+  rewards RSI 45-65 with MACD already positive and expanding (mid-rally, not "just turned up").
+- **VOLUME pillar** (line ~1212): wants OBV trend + volume expansion together (SA-32 AND
+  logic) — this usually confirms a move already in progress, not quiet accumulation at a low.
+- **The pillar-count gate compounds it** (`min_pillars_for_buy`, `_STYLE_PROFILES` — 3 for
+  SWING/LONG, 2 default for SHORT/GROWTH, `_apply_style_signal()` line ~1813): since trend/
+  momentum pillars are near-zero at a bottom, a genuine dip gets compressed toward neutral
+  (`fused = 0.5 + (fused - 0.5) * 0.70` when below the style's minimum), while a stock already
+  mid-rally clears the gate easily and gets a `+0.03` confluence boost instead.
+- **`_pullback_recovery()`** (SA-14, line ~890) exists specifically to reward a healthy dip +
+  recovery (5-25% pullback, 2+ green days, volume confirmation), but its bonus (`pr_delta`,
+  0.04-0.07) is deliberately gated **behind** the pillar check
+  (`if _pr_delta > 0 and _pillars >= _min_pillars:`, line 1854) — the comment at line 1848-1852
+  states this is intentional ("the boost only rewards setups that already have sufficient
+  independent TA confirmation... a pullback recovery on a 2-pillar setup should not bypass that
+  gate"). The practical effect: the ONE mechanism built to reward early dip entries can't fire
+  until the trend/momentum pillars have already confirmed — but those pillars are structurally
+  weak immediately after a pullback, so the bonus arrives too late to help the early entry it
+  was designed to reward.
+
+**What already exists downstream to work around this** (none of it feeds back into the BUY
+label or confidence number itself): the Fair Value Gap Trade Plan (entry at the midpoint of the
+nearest unfilled gap below current price), Volume Profile POC/VAH/VAL (explicitly documented
+elsewhere in this file as a better pullback-entry reference than chasing a breakout), the
+Position Sizer's independent ATR/support-based entry, and `paper_trading_engine.py`'s
+extended-move guards (`max_entry_gap_pct`/`max_breakout_extension_pct` hard-rejects, plus a
+soft score bonus for an "optimal entry zone" vs. a penalty for chasing). A user has to know to
+check these separate cards — the signal's own BUY/confidence display doesn't reflect any of it.
+
+**Four options, ranked by risk**:
+
+1. **(Small, safe — BUILT 2026-07-23)** Stop scoring RSI 28-35 as a flat zero in the momentum
+   pillar. Give it partial credit as an "early recovery zone" — mirroring how the BEARISH
+   pillar (line ~1298) already treats its own mirrored range (`0.5 if 28 <= rsi_val <= 35`) as
+   a real, distinct zone rather than a flat cutoff. A pure scoring-table change, no gating logic
+   touched, no change to when signals fire — only how much credit an already-computed RSI value
+   receives at the exact bottom-recovery zone the bearish pillar already models on its own side.
+
+2. **(Small, safe — BUILT 2026-07-23)** Let `_pullback_recovery()`'s bonus apply even when the
+   pillar gate hasn't cleared the style minimum, specifically for the RSI 30-45 recovery band —
+   i.e., treat "genuine 2-green-day, volume-confirmed recovery off a real dip" as legitimate
+   evidence in its OWN right, not something that can only ever pad an already-strong setup.
+   Deliberately narrower than "always bypass the gate" (which the original SA-14/SA-32 comment
+   correctly warns against for setups with zero real TA support) — only unlocks the bypass when
+   the RSI evidence itself indicates a real, not-yet-fully-confirmed recovery is underway.
+
+3. **(Medium, needs backtesting before promotion)** Pull `paper_trading_engine.py`'s
+   "distance from a good entry price" extended-move judgment UPSTREAM into the signal's own
+   fused probability, so "this is a good price to enter" becomes part of what BUY actually
+   means, not a separate downstream trade-gate that fires after the signal already said BUY.
+   Concretely: a distance-from-20/50-day-high penalty (mirroring `_pullback_recovery()`'s own
+   `high_20d` reference) applied as a genuine negative pillar-adjacent score, not just a hard
+   reject at the trade-execution layer. This changes the actual probability users see, not just
+   whether a trade executes — needs a real train/validation EV comparison
+   (`gate_harness.py`-style) before promoting, matching this repo's standing convention for any
+   change to core signal probability.
+
+4. **(Bigger, needs backtesting)** Split "is this a real trend" from "is this a good entry
+   price" into two genuinely separate scores that BOTH must clear, instead of one blended
+   `fused_prob` where trend strength alone can push a stock over `buy_threshold` regardless of
+   how extended the current price is. This is effectively what FVG/Volume-Profile/Position-
+   Sizer already do as separate, disconnected cards — the deeper fix is making that judgment
+   part of the actual signal decision, not a supplementary panel a user has to know to check
+   separately. A structural change to `_decide_style()`'s gating logic, not a scoring-table
+   tweak — the largest-effort, highest-payoff option, and the one most likely to need a
+   dedicated design doc + phased rollout (matching how `T233-SELFIMPROVE-DESIGN`'s own phases
+   were sequenced) rather than a same-session build.
+
+**Chosen for this session**: options 1 and 2 (both narrow, reversible, scoring-only changes
+with no gating-logic risk). Options 3 and 4 deliberately deferred — both would change the core
+signal probability broadly and need the same train/validation-beats-baseline discipline every
+other signal-probability change in this codebase already follows before being trusted live.

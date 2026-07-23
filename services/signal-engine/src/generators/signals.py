@@ -1184,10 +1184,19 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
     # MOMENTUM pillar — oscillator-based rate of change
     # Weighted average (not max) so overbought RSI/Stoch meaningfully reduce the pillar
     # even when MACD is strong. Overbought penalties applied before averaging.
+    # T232-SIG-ENTRYTIMING (option 1): 28-35 was previously a flat 0.0 — the model actively
+    # zeroed out the exact "early recovery off a real dip" zone where genuine bottoms form,
+    # while rewarding 45-65 (mid-rally) with full credit. This structurally biased BUY signals
+    # toward firing after a move had already run rather than at a healthier, earlier entry.
+    # Mirrors the BEARISH pillar's own treatment of this same range (28 <= rsi_val <= 35 scores
+    # 0.5 there too — "oversold but not extreme") rather than inventing a new asymmetric rule.
+    # Below 28 stays 0.0 — genuinely extreme oversold has no confirmation at all yet, matching
+    # the bearish pillar's own boundary.
     rsi_score = (
         1.0 if (rsi_val is not None and 45 < rsi_val < 65) else
         0.8 if (rsi_val is not None and 35 < rsi_val <= 45) else
         0.5 if (rsi_val is not None and 65 <= rsi_val < 72) else
+        0.5 if (rsi_val is not None and 28 <= rsi_val < 35) else
         0.0
     )
     # Use 3-bar histogram slope (macd_hist_expanding) instead of single-bar macd_rising.
@@ -1850,10 +1859,32 @@ def _apply_style_signal(
     # have sufficient independent TA confirmation (>= min_pillars). A pullback
     # recovery on a 2-pillar setup (compressed above) should not bypass that gate.
     # Only apply when pillars met the style minimum (no compress was applied).
+    #
+    # T232-SIG-ENTRYTIMING (option 2): the ORIGINAL gate above meant this bonus — the one
+    # mechanism specifically built to reward a healthy early dip+recovery — could only ever
+    # pad an ALREADY-confirmed setup, never help the early entry it exists to reward. That's
+    # because trend/momentum pillars are structurally weak right after a pullback (see the
+    # option 1 fix above), so a genuine recovery rarely clears min_pillars on its own merit
+    # in time to benefit. Narrow, targeted exception: when RSI sits in the 30-45 recovery band
+    # (a real, not-yet-fully-confirmed bounce off a dip — distinct from a stock with no real
+    # oversold/recovery evidence at all) AND the pullback-recovery pattern is genuinely
+    # volume-confirmed (the strongest of _pullback_recovery()'s two tiers, delta=0.07), allow
+    # the bonus to apply even below the style's own min_pillars, but NEVER below the universal
+    # 2-pillar floor (_pillars >= 2) — a setup with fewer than 2 real pillars active still has
+    # no independent TA support at all, and this exception must not become a full bypass of
+    # SA-19's own baseline gate the way the original SA-14/SA-32 comment correctly warned against.
     _pr_delta = base_reasons.get("pullback_recovery_delta", 0.0) or 0.0
-    if _pr_delta > 0 and _pillars >= _min_pillars:
+    _rsi_val = base_reasons.get("rsi")
+    _early_recovery_exception = (
+        _pr_delta >= 0.07
+        and _rsi_val is not None and 30 <= _rsi_val <= 45
+        and _pillars >= 2
+    )
+    if _pr_delta > 0 and (_pillars >= _min_pillars or _early_recovery_exception):
         fused = float(np.clip(fused + _pr_delta, 0.0, 1.0))
         reasons["pullback_recovery_applied"] = True
+        if _pillars < _min_pillars:
+            reasons["pullback_recovery_early_exception"] = True
     else:
         reasons["pullback_recovery_applied"] = False
 
