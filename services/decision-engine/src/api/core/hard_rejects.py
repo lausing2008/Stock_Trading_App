@@ -166,6 +166,26 @@ def check_hard_rejects(
                 f"— fundamental/momentum quality gate not met"
             )
 
+    # T232-DL-DUALSCORER-DEBT: TA-score floor HARD REJECT, ported from
+    # paper_trading_engine.py's _scan_for_entries() (T224-C/T225-A min_ta_score — 0.0/disabled
+    # by _DEFAULT_CONFIG's own absence of the key, 0.50 for SWING via _STYLE_OVERRIDES, 0.65 for
+    # HK via _HK_MARKET_OVERRIDES). Same shape as the min_kscore gate immediately above: an
+    # EARLIER hard pre-filter in _scan_for_entries that discards a candidate before it's ever
+    # scored, with no equivalent in decision-engine at all before this — /decide/{symbol} could
+    # approve a candidate _scan_for_entries would have discarded, for any caller that doesn't
+    # replicate that pre-filter itself (e.g. decide.tsx). cfg["min_ta_score"] is only present
+    # when the caller also sent a real ta_score (see paper_trading_engine.py's
+    # config_overrides), matching this function's established optional-parameter fail-open
+    # convention. A min_ta_score of 0.0 (the gate's own disabled state upstream) never rejects,
+    # since ta_score can't be below 0.0 — matches _scan_for_entries' own `_min_ta > 0` no-op check.
+    if cfg.get("min_ta_score") is not None:
+        _ta_val = cfg.get("ta_score")
+        if _ta_val is not None and float(_ta_val) < float(cfg["min_ta_score"]):
+            return (
+                f"TA score {float(_ta_val):.2f} below minimum {float(cfg['min_ta_score']):.2f} "
+                f"— technical-analysis quality gate not met"
+            )
+
     # T234-DE-MISSING-HARD-REJECTS: ported from paper_trading_engine.py's _should_enter()
     # fallback (the "primary" DE gate was missing these two unconditional hard rejects that
     # the fallback path enforces, making the normally-active gate looser than the outage-only

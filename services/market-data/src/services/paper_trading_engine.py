@@ -2787,6 +2787,7 @@ def _call_decision_engine(
     candidate_sector: str | None = None,
     consec_losses: int = 0,
     kscore: float | None = None,
+    ta_score: float | None = None,
     regime_state: str = "neutral",
 ) -> tuple[bool, str, int, str | None] | None:
     """Call Decision Engine and return (should_enter, verdict, score, blocked_reason).
@@ -2851,6 +2852,21 @@ def _call_decision_engine(
                     # _scan_for_entries' pre-filter at all. Threaded through so hard_rejects.py
                     # can enforce the SAME floor _scan_for_entries already enforces upstream.
                     **( {"min_kscore": cfg.get("min_kscore", _DEFAULT_CONFIG["min_kscore"])} if kscore is not None else {} ),
+                    # T232-DL-DUALSCORER-DEBT: min_ta_score is _scan_for_entries' own HARD
+                    # pre-filter (T224-C/T225-A, ~line 4207) — a candidate below it is discarded
+                    # before DE is ever called on the real production path. DE had no equivalent
+                    # hard reject, only its own soft TA-related scoring layers, so /decide/{symbol}
+                    # called standalone (e.g. decide.tsx, which never runs _scan_for_entries' own
+                    # pre-filter) could silently accept a candidate below the real min_ta_score
+                    # floor. Threaded through so hard_rejects.py can enforce the SAME floor
+                    # _scan_for_entries already enforces upstream — same pattern as min_kscore above.
+                    **( {"ta_score": ta_score} if ta_score is not None else {} ),
+                    # min_ta_score has NO _DEFAULT_CONFIG entry — it's only ever set via
+                    # _STYLE_OVERRIDES (SWING=0.50) or _HK_MARKET_OVERRIDES (0.65); the read
+                    # side's own fallback (line ~4218) is a bare 0.0, which disables the gate
+                    # (0.0 > 0 is False) — matched exactly here, NOT _DEFAULT_CONFIG["min_ta_score"]
+                    # (which doesn't exist and would KeyError).
+                    **( {"min_ta_score": cfg.get("min_ta_score", 0.0)} if ta_score is not None else {} ),
                     # T203-LLMWIRE: llm_scoring_enabled existed in decision-engine's
                     # llm_scorer.py since T203 but was never threaded from portfolio config
                     # into this request — a built-but-dormant feature with no way to turn it
@@ -4300,6 +4316,10 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         # Entry qualifier: Decision Engine is authoritative; _should_enter() is the fallback.
         de_mode = cfg.get("decision_engine_mode", "primary")
         kscore_f = float(ranking.score) if ranking and ranking.score is not None else None
+        # T232-DL-DUALSCORER-DEBT: same reasons dict the TA-score hard-reject above (line ~4207)
+        # already reads from — reused here, not re-fetched.
+        _ta_score_raw = (sig.reasons or {}).get("ta_score")
+        ta_score_f = float(_ta_score_raw) if _ta_score_raw is not None else None
         gate_source = "de"
 
         # T232-DL-DUALSCORER-SHADOW: run BOTH scorers on every candidate regardless of which one
@@ -4323,6 +4343,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             candidate_sector=stock.sector,             # T186: sector gate
             consec_losses=_consec_losses,              # T187: streak gate
             kscore=kscore_f,                           # AUD232-042: K-Score visibility
+            ta_score=ta_score_f,                        # T232-DL-DUALSCORER-DEBT: TA-score gate parity
             # AUD256: regime_state needed so the calibrated regime_min_rr_ratio default
             # resolves correctly — _default_min_rr_ratio() only returns that key's calibrated
             # value when regime_state is choppy/risk_off, matching _should_enter()'s own usage.

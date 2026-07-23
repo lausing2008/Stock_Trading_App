@@ -362,6 +362,54 @@ def test_kscore_gate_respects_per_style_thresholds():
     assert result is not None and "K-Score" in result
 
 
+# ── TA-score floor hard reject (T232-DL-DUALSCORER-DEBT) ──────────────────────────────────
+# Same shape as the K-Score gate above — a separate, earlier HARD pre-filter ported from
+# paper_trading_engine.py's _scan_for_entries() (T224-C/T225-A min_ta_score: disabled by
+# default (no _DEFAULT_CONFIG entry), 0.50 for SWING, 0.65 for HK), distinct from decision-
+# engine's own soft TA-related scoring layers elsewhere in scorer.py.
+
+def test_ta_score_below_min_ta_score_blocks():
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"ta_score": 0.40, "min_ta_score": 0.65}))
+    assert result is not None and "TA score" in result and "0.40" in result
+
+
+def test_ta_score_at_or_above_min_ta_score_does_not_block():
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"ta_score": 0.65, "min_ta_score": 0.65}))
+    assert result is None
+    result2 = hr.check_hard_rejects(**_base_kwargs(cfg={"ta_score": 0.80, "min_ta_score": 0.65}))
+    assert result2 is None
+
+
+def test_ta_score_gate_skipped_when_min_ta_score_absent():
+    """An older caller not yet sending min_ta_score (or ta_score) must not be blocked — this
+    gate is opt-in via cfg, matching every other optional gate in this file. Also matches
+    _scan_for_entries' own disabled-by-default state (no _DEFAULT_CONFIG min_ta_score entry)."""
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"ta_score": 0.10}))  # min_ta_score absent
+    assert result is None
+
+
+def test_ta_score_gate_skipped_when_ta_score_itself_absent():
+    """min_ta_score present but no actual ta_score value sent — must not crash or spuriously
+    block; there's nothing to compare against."""
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"min_ta_score": 0.65}))  # ta_score absent
+    assert result is None
+
+
+def test_ta_score_gate_respects_per_market_thresholds():
+    """paper_trading_engine.py's real thresholds (SWING style=0.50, HK market=0.65) — a
+    candidate that clears SWING's floor but not HK's must be blocked under HK's."""
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"ta_score": 0.55, "min_ta_score": 0.65}))
+    assert result is not None and "TA score" in result
+
+
+def test_ta_score_gate_disabled_min_ta_score_of_zero_never_blocks():
+    """A min_ta_score of 0.0 (paper_trading_engine's own read-side no-op state, cfg.get(
+    "min_ta_score", 0.0)) must never reject — ta_score can't be below 0.0, matching
+    _scan_for_entries' own `_min_ta > 0` disabled-gate check exactly."""
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"ta_score": 0.0, "min_ta_score": 0.0}))
+    assert result is None
+
+
 # ── Gap filter (T171) ──────────────────────────────────────────────────────────
 # NOTE: the gap filter runs AFTER the R:R gate (see gate order at the top of this file), so
 # every test here must also move stop_price/take_profit along with live_price to keep R:R

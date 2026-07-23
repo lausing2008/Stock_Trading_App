@@ -6996,3 +6996,77 @@ print(_fetch_overnight_futures())
 If `_fetch_overnight_futures()` returns `[]` outside a Redis-cache-hit scenario, check
 `docker logs stockai-market-data-1 --since 1h | grep overnight_futures.download_failed` for the
 underlying yfinance error.
+
+---
+
+## Feature Reference: T232-DL-DUALSCORER-DEBT — TA-Score Floor Hard Reject Ported to decision-engine (2026-07-22)
+
+**Gap closed**: one more of the remaining `_should_enter()`-vs-decision-engine divergences —
+the TA-score floor. `_scan_for_entries()`'s `min_ta_score` (T224-C/T225-A hard pre-filter, no
+`_DEFAULT_CONFIG` entry at all — disabled by default via the read side's own `cfg.get(
+"min_ta_score", 0.0)` fallback; 0.50 for SWING via `_STYLE_OVERRIDES`, 0.65 for HK via
+`_HK_MARKET_OVERRIDES`) discards a candidate before it's ever scored. decision-engine had no
+equivalent at all — `/decide/{symbol}` called standalone (e.g. `decide.tsx`, which never runs
+`_scan_for_entries`' own pre-filter) could silently accept a candidate below the real
+`min_ta_score` floor. Same shape as the K-Score floor port (2026-07-20) — this session ported
+the next domino in that same, well-proven pattern.
+
+**A real mistake caught before shipping**: `min_kscore` DOES have a `_DEFAULT_CONFIG` entry
+(48.0), so its write-side fallback correctly reads `_DEFAULT_CONFIG["min_kscore"]`. `min_ta_score`
+has NO `_DEFAULT_CONFIG` entry anywhere in this file — copying the K-Score pattern verbatim
+(`_DEFAULT_CONFIG["min_ta_score"]`) would have raised a `KeyError` on every single call, since
+that key doesn't exist. Caught by tracing the READ side's own fallback (`_scan_for_entries`,
+line ~4218: `cfg.get("min_ta_score", 0.0)`) before writing the send side, and matching that
+exact fallback (`cfg.get("min_ta_score", 0.0)`) instead of blindly mirroring the sibling gate's
+literal code shape.
+
+**Implementation**:
+1. `paper_trading_engine.py`'s `_call_decision_engine()` — gained a `ta_score: float | None =
+   None` parameter; the real call site inside `_scan_for_entries()` now computes `ta_score_f =
+   float(_ta_score_raw) if _ta_score_raw is not None else None` from `(sig.reasons or {}).get(
+   "ta_score")` — the SAME `sig.reasons` dict the pre-existing TA-score hard-reject (a few
+   lines earlier in the same function) already reads from, not a re-fetch. Added
+   `"ta_score": ta_score` and `"min_ta_score": cfg.get("min_ta_score", 0.0)` to
+   `config_overrides`, both conditional on `ta_score is not None` (matching the existing
+   `kscore`/`min_kscore` conditional-inclusion pattern exactly).
+2. `hard_rejects.py`'s `check_hard_rejects()` — needed zero new function parameters (`cfg`
+   already carries both keys via its existing merge mechanism, same as `min_kscore`):
+   ```python
+   if cfg.get("min_ta_score") is not None:
+       _ta_val = cfg.get("ta_score")
+       if _ta_val is not None and float(_ta_val) < float(cfg["min_ta_score"]):
+           return f"TA score {float(_ta_val):.2f} below minimum {float(cfg['min_ta_score']):.2f} — technical-analysis quality gate not met"
+   ```
+   A `min_ta_score` of `0.0` (the upstream gate's own disabled state) never rejects, since
+   `ta_score` can't be below `0.0` — matches `_scan_for_entries`' own `_min_ta > 0` no-op check.
+
+**Tests**: `services/decision-engine/tests/test_hard_rejects.py` gained 6 cases (133 total, up
+from 127) — below/at-or-above the floor, gate skipped when `min_ta_score` or `ta_score` itself
+is absent, per-market thresholds (SWING's 0.50 vs. HK's 0.65), and the `min_ta_score=0.0`
+disabled-gate case. `services/market-data/tests/test_min_ta_score_config_wiring.py` (new, 4
+cases) guards the write side via source-text extraction (matching
+`test_min_kscore_config_wiring.py`'s established technique) — confirms both `ta_score` and
+`min_ta_score` actually reach `config_overrides`, confirms the fallback is the literal
+`cfg.get("min_ta_score", 0.0)` (NOT a `_DEFAULT_CONFIG` key reference — the exact mistake
+caught above), confirms both keys are conditional on `ta_score is not None`, and confirms
+`ta_score_f` is derived from the same `sig.reasons` dict the pre-existing gate reads from.
+
+**Adversarial verification** — 2 sabotage cycles, both caught and reverted:
+1. The comparison logic in `hard_rejects.py` (`if False:`) — caught by 2 of the 6 new tests
+   (the below-floor and per-market-threshold cases).
+2. The write-side `config_overrides` conditional inclusion of `"ta_score"` in
+   `paper_trading_engine.py` (removed) — caught by 2 of the 4 new wiring tests (a real
+   `ValueError` from `.index()` no longer finding the string, matching the exact failure mode
+   the equivalent `min_kscore` sabotage produced in the earlier session).
+
+Full 436-test market-data suite (up from 432) and 133-test decision-engine suite (up from 127)
+green after every revert; frontend untouched (backend-only fix, no UI change).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n '"min_ta_score":' /app/src/services/paper_trading_engine.py
+docker exec stockai-decision-engine-1 grep -n 'min_ta_score' /app/src/api/core/hard_rejects.py
+```
+Both should show the fix present. If a low-TA-score candidate is still approved by
+`/decide/{symbol}` after confirming both, check whether the caller (e.g. `decide.tsx`) is
+actually sending a `ta_score` in `config_overrides` at all — the gate is a no-op without one.
