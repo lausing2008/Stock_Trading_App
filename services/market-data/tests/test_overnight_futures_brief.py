@@ -47,7 +47,12 @@ def _make_multi_ticker_df(closes: dict[str, list[float]]) -> pd.DataFrame:
 
 def _extract_fetch_overnight_futures():
     start = _SCHEDULER_SOURCE.index("_FUTURES = [")
-    end = _SCHEDULER_SOURCE.index("\ndef send_premarket_brief(")
+    # T257-OVERNIGHT-FLOW-BRIEF (premarket gappers): _fetch_premarket_gappers() was added
+    # right after this function, before send_premarket_brief() itself — narrow the boundary
+    # to this function's own end (not the now-more-distant send_premarket_brief) so this
+    # extraction doesn't also pull in _fetch_premarket_gappers' own Session-typed signature,
+    # which this test's exec() namespace doesn't provide (it's covered by its own tests).
+    end = _SCHEDULER_SOURCE.index("\n_PREMARKET_GAPPERS_CACHE_KEY")
     func_source = _SCHEDULER_SOURCE[start:end]
 
     class _FakeYfModule:

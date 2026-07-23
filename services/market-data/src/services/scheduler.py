@@ -80,7 +80,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, func, text
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, Session
 
 from common.config import get_settings
 from common.logging import get_logger
@@ -1241,6 +1241,88 @@ def _fetch_overnight_futures() -> list[dict]:
     return results
 
 
+_PREMARKET_GAPPERS_CACHE_KEY = "stockai:premarket_gappers"
+_PREMARKET_GAPPERS_CACHE_TTL = 300  # 5 min — matches the premarket ingest job's own cadence
+_PREMARKET_GAPPERS_TOP_N = 10
+
+
+def _fetch_premarket_gappers(session: Session) -> list[dict]:
+    """T257-OVERNIGHT-FLOW-BRIEF: top US stocks moving significantly in the premarket session,
+    fed by _refresh_premarket_5m()'s new ingest job — reads only already-persisted Price rows
+    (no live yfinance call here), matching this file's own established discipline of never
+    hammering yfinance from a request/report path (see check_volume_anomalies()'s docstring
+    for the same reasoning applied to a different feature).
+
+    Gap % = (today's latest PRE-session 5m close) vs. (the prior trading day's REGULAR-session
+    daily close) — the same "gap from yesterday's close" definition a trader means by
+    "premarket gapper." Ranked by |gap %| descending, capped at _PREMARKET_GAPPERS_TOP_N.
+    Redis-cached 5 min since this can be read by both the premarket brief and (potentially)
+    other future callers within the same short window.
+    """
+    try:
+        cached = _get_redis().get(_PREMARKET_GAPPERS_CACHE_KEY)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    # Latest PRE-session 5m bar per stock (today or the most recent premarket session on
+    # file — no hard date filter, so a weekend/holiday run degrades to "no rows" naturally
+    # rather than crashing on an empty today's-date window).
+    pre_ranked = (
+        select(
+            Price.stock_id, Price.close.label("pre_close"), Price.ts,
+            func.row_number().over(partition_by=Price.stock_id, order_by=Price.ts.desc()).label("rn"),
+        )
+        .where(Price.timeframe == TimeFrame.M5, Price.session == "PRE")
+        .subquery()
+    )
+    pre_latest = pre_ranked.alias("pre_latest")
+
+    # Prior trading day's REGULAR daily close per stock — the same row_number()-per-stock_id
+    # pattern already established in routes.py's _latest_prices_from_db().
+    daily_ranked = (
+        select(
+            Price.stock_id, Price.close.label("prior_close"),
+            func.row_number().over(partition_by=Price.stock_id, order_by=Price.ts.desc()).label("rn"),
+        )
+        .where(Price.timeframe == TimeFrame.D1)
+        .subquery()
+    )
+    daily_latest = daily_ranked.alias("daily_latest")
+
+    stmt = (
+        select(Stock.symbol, pre_latest.c.pre_close, pre_latest.c.ts, daily_latest.c.prior_close)
+        .join(pre_latest, Stock.id == pre_latest.c.stock_id)
+        .join(daily_latest, Stock.id == daily_latest.c.stock_id)
+        .where(
+            Stock.active.is_(True), Stock.market == Market.US,
+            pre_latest.c.rn == 1, daily_latest.c.rn == 1,
+        )
+    )
+    rows: list[dict] = []
+    for symbol, pre_close, ts, prior_close in session.execute(stmt).all():
+        if not prior_close or prior_close <= 0 or not pre_close:
+            continue
+        change_pct = (pre_close - prior_close) / prior_close * 100
+        rows.append({
+            "symbol": symbol,
+            "pre_close": round(float(pre_close), 2),
+            "prior_close": round(float(prior_close), 2),
+            "change_pct": round(change_pct, 2),
+            "as_of": ts.isoformat() if ts else None,
+        })
+    rows.sort(key=lambda r: abs(r["change_pct"]), reverse=True)
+    results = rows[:_PREMARKET_GAPPERS_TOP_N]
+
+    try:
+        _get_redis().setex(_PREMARKET_GAPPERS_CACHE_KEY, _PREMARKET_GAPPERS_CACHE_TTL, json.dumps(results))
+    except Exception:
+        pass
+
+    return results
+
+
 def send_premarket_brief(markets: list | None = None) -> None:
     """T249-MARKETMOVER-P3: pre-market brief — combines the three already-shipped MarketMover
     pieces (P0 release-date calendar, P1 earnings day-of reminders, P2 macro fast-reactions)
@@ -1262,7 +1344,9 @@ def send_premarket_brief(markets: list | None = None) -> None:
     "recent window" shape; P2's own check_macro_reaction_alerts() only tracks
     sent-vs-unsent, not a time window), (4) T257-OVERNIGHT-FLOW-BRIEF Phase 1: overnight futures
     (ES/NQ/YM/RTY) via _fetch_overnight_futures() — a measured reading of the market's own
-    current expectation for the open, never a prediction of whether it holds.
+    current expectation for the open, never a prediction of whether it holds, (5) premarket
+    gappers via _fetch_premarket_gappers() — US stocks moving significantly vs. yesterday's
+    close, fed by the new _refresh_premarket_5m() ingest job (4:00-9:25 ET).
 
     Called once per day per market, ~30-40 min before that market's open — mirrors
     send_morning_digest's own cadence choice for the same reason (enough lead time to read
@@ -1345,7 +1429,13 @@ def send_premarket_brief(markets: list | None = None) -> None:
             if "US" in markets:
                 overnight_futures = _fetch_overnight_futures()
 
-            if not macro_today and not any(sym in earnings_by_symbol for syms in user_symbols.values() for sym in syms) and not recent_reactions and not overnight_futures:
+            # ── Section 5 (T257-OVERNIGHT-FLOW-BRIEF, premarket gappers): US-only — fed by
+            # _refresh_premarket_5m()'s new ingest job; HK has no premarket session concept.
+            premarket_movers: list[dict] = []
+            if "US" in markets:
+                premarket_movers = _fetch_premarket_gappers(session)
+
+            if not macro_today and not any(sym in earnings_by_symbol for syms in user_symbols.values() for sym in syms) and not recent_reactions and not overnight_futures and not premarket_movers:
                 _record_job_status(_job_name, "ok", time.monotonic() - _t0)
                 log.info("premarket_brief.nothing_to_report", markets=markets)
                 return
@@ -1388,6 +1478,7 @@ def send_premarket_brief(markets: list | None = None) -> None:
                         my_earnings=my_earnings,
                         recent_reactions=recent_reactions,
                         overnight_futures=overnight_futures,
+                        premarket_movers=premarket_movers,
                     )
                 except Exception as _send_exc:
                     ok = False
@@ -1402,7 +1493,8 @@ def send_premarket_brief(markets: list | None = None) -> None:
 
             _record_job_status(_job_name, "ok", time.monotonic() - _t0)
             log.info("premarket_brief.done", markets=markets, sent=sent, errors=errors, recipients=len(recipients),
-                      macro_events=len(macro_today), reactions=len(recent_reactions), futures=len(overnight_futures))
+                      macro_events=len(macro_today), reactions=len(recent_reactions), futures=len(overnight_futures),
+                      premarket_movers=len(premarket_movers))
     except Exception as exc:
         log.error("premarket_brief.failed", markets=markets, error=str(exc), exc_info=True)
         _record_job_status(_job_name, "error", time.monotonic() - _t0, str(exc))
@@ -4117,6 +4209,33 @@ def _refresh_5m(market: str) -> None:
     _check_short_intraday_triggers(market)
 
 
+def _refresh_premarket_5m() -> None:
+    """T257-OVERNIGHT-FLOW-BRIEF: ingest 5-minute bars during the US premarket window
+    (4:00–9:25 ET), so Price.session=="PRE" rows actually exist for the premarket-gappers
+    section of send_premarket_brief() below. US-only — HK has no premarket session concept
+    (_classify_session() in ingestion.py returns "REGULAR" unconditionally for any market
+    other than "US").
+
+    Deliberately does NOT reuse _refresh_5m("US") directly, even though the underlying
+    ingest_universe(symbols, "5m") call is identical — _refresh_5m also unconditionally runs
+    _run_paper_trading_step() and _check_short_intraday_triggers() after every ingest, both of
+    which are designed and tuned around regular-hours trading logic. Firing them on a new,
+    untested premarket cadence would be new, unreviewed behavior outside this feature's actual
+    scope (surfacing premarket gappers in an email) — this function does the ingest ONLY.
+    """
+    if not _is_us_trading_day():
+        return
+    symbols = _symbols_for("US")
+    if not symbols:
+        return
+    log.info("scheduler.premarket_5m_ingest_start", count=len(symbols))
+    try:
+        ingest_universe(symbols, "5m")
+        log.info("scheduler.premarket_5m_ingest_done", count=len(symbols))
+    except Exception as exc:
+        log.error("scheduler.premarket_5m_ingest_failed", error=str(exc))
+
+
 def _is_token_rejected_error(err: Exception) -> bool:
     """True if a broker API exception looks like an expired/rejected OAuth token.
 
@@ -5420,6 +5539,32 @@ def start_scheduler() -> None:
         _weekly_full_refresh,
         CronTrigger(day_of_week="sun", hour=14, minute=0, timezone="America/Los_Angeles"),
         id="weekly_full_refresh", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── 5-minute bars — US premarket window (4:00–9:25 ET) ──────────────────
+    # T257-OVERNIGHT-FLOW-BRIEF: feeds the premarket-gappers section of send_premarket_brief()
+    # below. Hands off cleanly to us_5m_intraday's own 9:30 start (last tick here is 9:25).
+    _scheduler.add_job(
+        _refresh_premarket_5m,
+        CronTrigger(
+            hour="4,5,6,7,8",
+            minute="0,5,10,15,20,25,30,35,40,45,50,55",
+            day_of_week="mon-fri",
+            timezone="America/New_York",
+        ),
+        id="us_premarket_5m_early", replace_existing=True, **_JOB_DEFAULTS,
+    )
+    # 9am hour needs its own trigger (stop at 9:25, not 9:55) so this job hands off cleanly
+    # to us_5m_intraday's own 9:30 start below, rather than double-firing at 9:30.
+    _scheduler.add_job(
+        _refresh_premarket_5m,
+        CronTrigger(
+            hour="9",
+            minute="0,5,10,15,20,25",
+            day_of_week="mon-fri",
+            timezone="America/New_York",
+        ),
+        id="us_premarket_5m_9am", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── 5-minute intraday bars — US market hours ────────────────────────────

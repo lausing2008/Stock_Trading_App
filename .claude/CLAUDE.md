@@ -7350,3 +7350,97 @@ directly call `_should_enter()` with the exact `signal_data`/`game_plan`/`as_of`
 would construct and read `notes` — a `"Market closed"` or `"Time-of-day gate"` reason there
 means this exact bug class has recurred (check whether a new wall-clock read was added inside
 `_should_enter()` without going through `_now`).
+
+---
+
+## Feature Reference: T257-OVERNIGHT-FLOW-BRIEF — Premarket Gappers (Built 2026-07-23)
+
+**Closes the other half of Phase 1** — the futures reading shipped earlier this session; the
+"top premarket gappers" half was blocked because no scheduled job ingested intraday bars
+during the 4:00–9:30 ET premarket window, so `Price.session == "PRE"` rows were effectively
+empty for the whole universe. This session added the missing ingest job plus the gappers
+query and email section.
+
+**New ingest jobs**: `_refresh_premarket_5m()` (`services/market-data/src/services/
+scheduler.py`), registered as two cron jobs (`us_premarket_5m_early`: hours 4-8, every 5 min;
+`us_premarket_5m_9am`: hour 9, minutes 0-25 only — a SEPARATE registration specifically so it
+stops at 9:25, handing off cleanly to `us_5m_intraday`'s own 9:30 start rather than double-
+firing at 9:30). US-only — HK has no premarket session concept (`_classify_session()` in
+`ingestion.py` returns `"REGULAR"` unconditionally for any non-US market).
+
+**Deliberately does NOT reuse `_refresh_5m()` as-is**, even though the underlying
+`ingest_universe(symbols, "5m")` call is identical: `_refresh_5m()` also unconditionally runs
+`_run_paper_trading_step()` and `_check_short_intraday_triggers()` after every ingest — both
+designed and tuned around regular-hours trading logic. Firing them on a new, untested
+premarket cadence would be new, unreviewed behavior outside this feature's actual scope
+(surfacing gappers in an email). `_refresh_premarket_5m()` does the ingest only.
+
+**New query**: `_fetch_premarket_gappers(session)` — gap % = (today's latest PRE-session 5m
+close) vs. (the prior trading day's REGULAR-session daily close), the same "gap from
+yesterday's close" definition a trader means by "premarket gapper." Uses the same
+`row_number()`-per-`stock_id` window-function pattern already established in `routes.py`'s
+`_latest_prices_from_db()` — one query, no per-symbol Python loop. Ranked by `|change_pct|`
+descending, capped at 10, Redis-cached 5 min (matching the premarket ingest job's own
+cadence). Reads only already-persisted `Price` rows — no live yfinance call in this path,
+matching this file's own established discipline (see `check_volume_anomalies()`'s docstring
+for the same reasoning applied to a different feature).
+
+**Wired into `send_premarket_brief()`** as a 5th section (`premarket_movers`), US-only-gated
+like sections 1/3/4, folded into the existing nothing-to-report guard and `.done` log line.
+`send_premarket_brief_email()` gained a `premarket_movers: list[dict] | None = None`
+parameter (defaults to `None` → treated as `[]`, so no existing caller needed to change),
+rendered via the same `_section()` helper and green/red change_pct color convention already
+used for `overnight_futures`.
+
+**Tests**: `services/market-data/tests/test_premarket_gappers.py` (19 cases) — `scheduler.py`
+can't be imported directly in this test environment, so `_fetch_premarket_gappers()` is
+extracted via `exec()` and run against a REAL in-memory SQLite session (established
+`test_correlation_preentry.py`/`test_broker_position_sync.py` technique), covering gap-%
+computation, ranking, the 10-item cap, US-only filtering, correct exclusion of stocks with no
+PRE bar (not a fabricated 0% gap), and — the one genuinely tricky case — that a REGULAR-
+session 5m bar is never mistaken for a PRE one just because it's the same timeframe. Plus
+source-text regression checks confirming the cron registration's exact hour/minute windows,
+that `_refresh_premarket_5m()`'s real CODE (not its own docstring, which legitimately mentions
+both names in prose while explaining why they're skipped) never calls
+`_run_paper_trading_step`/`_check_short_intraday_triggers`, and the `send_premarket_brief()`
+wiring (US-only gate, `.done` log, nothing-to-report guard). Plus 4 email-composition tests
+for the new section (render, empty-state, `None`-default backward compatibility, red/green
+color coding) — extended `test_overnight_futures_brief.py`'s own extraction boundary (which
+previously ran all the way to `send_premarket_brief`) to stop right after
+`_fetch_overnight_futures` instead, since it would otherwise also pull in this new function's
+`Session`-typed signature with no `Session` in that test's own exec namespace.
+
+**A real test-writing mistake caught and fixed before shipping**: the first version of
+`test_refresh_premarket_5m_does_not_call_paper_trading_step` checked the function's FULL
+source text (including its own docstring) for the two forbidden call names — but the
+docstring itself legitimately names both functions in prose while explaining why they're NOT
+called, making the test fail against correct code. Fixed by slicing past the closing
+docstring delimiter before checking for the two names, so only the real executable code is
+scanned.
+
+**Adversarial verification** — 2 sabotage cycles, both caught and reverted: removing the
+`Stock.market == Market.US` filter (a real HK stock leaked into a US-only gappers list);
+removing the `Price.session == "PRE"` filter (a REGULAR-session 5m bar was mistaken for a
+premarket one). Full 486-test market-data suite (up from 467) green.
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the new ingest jobs actually ran and populated PRE rows:
+docker logs stockai-market-data-1 --since 6h | grep premarket_5m_ingest
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT COUNT(*) FROM prices WHERE session='PRE' AND ts > now() - interval '1 day';"
+
+# Manually trigger the gappers query directly against real data:
+docker exec stockai-market-data-1 python3 -c "
+import sys; sys.path.insert(0, '/app'); sys.path.insert(0, '/app/src')
+from db import SessionLocal
+from src.services.scheduler import _fetch_premarket_gappers
+with SessionLocal() as s:
+    print(_fetch_premarket_gappers(s))
+"
+```
+If the gappers list is always empty despite real premarket volatility, first confirm the
+ingest job itself actually ran (`docker logs ... | grep premarket_5m_ingest_done`) before
+assuming the query is broken — an empty PRE-session `Price` table (ingest job silently
+failing, or running outside its own cron window) looks identical to "no gappers today" from
+the query's own perspective.

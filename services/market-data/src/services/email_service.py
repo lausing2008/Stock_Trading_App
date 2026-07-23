@@ -942,6 +942,7 @@ def send_premarket_brief_email(
     my_earnings: list,
     recent_reactions: list,
     overnight_futures: list[dict] | None = None,
+    premarket_movers: list[dict] | None = None,
 ) -> bool:
     """T249-MARKETMOVER-P3: pre-market brief — combines P0 (today's macro releases), P1
     (recipient's own symbols reporting earnings today), and P2 (macro reactions generated in
@@ -957,8 +958,14 @@ def send_premarket_brief_email(
     a MEASURED overnight change (futures ARE the market's own current expectation for the
     open), never a prediction of whether that holds through the cash open. Defaults to `None`
     (treated as empty) so existing callers built before this field existed keep working.
+
+    `premarket_movers` items are the dict shape _fetch_premarket_gappers() returns
+    ({"symbol", "pre_close", "prior_close", "change_pct", "as_of"}) — reports a MEASURED gap
+    vs. yesterday's close, same non-predictive framing as overnight_futures. Also defaults to
+    `None` (treated as empty) for the same backward-compatibility reason.
     """
     overnight_futures = overnight_futures or []
+    premarket_movers = premarket_movers or []
     subject = f"🔔 Pre-Market Brief — {market} — {date_str}"
 
     _impact_color = {"critical": "#ef4444", "high": "#f97316", "medium": "#facc15"}
@@ -1022,6 +1029,24 @@ def send_premarket_brief_email(
         )
         futures_rows_text += f'  {f.get("name","")}: {price_str} ({chg_str})\n'
 
+    # ── Section 5: premarket gappers (T257-OVERNIGHT-FLOW-BRIEF) ────────────────
+    movers_rows_html = ""
+    movers_rows_text = ""
+    for m in premarket_movers:
+        chg = m.get("change_pct")
+        chg_color = "#16a34a" if (chg or 0) >= 0 else "#dc2626"
+        chg_str = f"{chg:+.2f}%" if chg is not None else "—"
+        pre_str = f"{m.get('pre_close'):,.2f}" if m.get("pre_close") is not None else "—"
+        movers_rows_html += (
+            f'<div style="padding:8px 0;border-bottom:1px solid #f1f5f9;display:flex;'
+            f'justify-content:space-between">'
+            f'<strong style="font-size:13px">{m.get("symbol","")}</strong>'
+            f'<span style="font-size:13px"><span style="color:#64748b">{pre_str}</span> '
+            f'<span style="color:{chg_color};font-weight:600">{chg_str}</span></span>'
+            f'</div>'
+        )
+        movers_rows_text += f'  {m.get("symbol","")}: {pre_str} ({chg_str} vs. yesterday\'s close)\n'
+
     def _section(title: str, rows_html: str, empty_note: str) -> str:
         if not rows_html:
             return (
@@ -1047,6 +1072,7 @@ def send_premarket_brief_email(
     </div>
 
     {_section("Overnight Futures", futures_rows_html, "Overnight futures data unavailable this morning.")}
+    {_section("Premarket Movers", movers_rows_html, "No significant premarket movers detected.")}
     {_section("Today's Macro Releases", macro_rows_html, "No high/critical-importance releases scheduled today.")}
     {_section("Your Symbols Reporting Today", earnings_rows_html, "None of your watched symbols report earnings today.")}
     {_section("Recent Macro Reactions (18h)", reaction_rows_html, "No macro reactions generated in the last 18 hours.")}
@@ -1063,6 +1089,8 @@ def send_premarket_brief_email(
         f"StockAI Pre-Market Brief — {market} — {date_str}\n\n"
         f"OVERNIGHT FUTURES\n"
         + (futures_rows_text or "  Unavailable this morning.\n")
+        + f"\nPREMARKET MOVERS\n"
+        + (movers_rows_text or "  None detected.\n")
         + f"\nTODAY'S MACRO RELEASES\n"
         + (macro_rows_text or "  None scheduled today.\n")
         + f"\nYOUR SYMBOLS REPORTING TODAY\n"
