@@ -941,6 +941,7 @@ def send_premarket_brief_email(
     macro_events: list[dict],
     my_earnings: list,
     recent_reactions: list,
+    overnight_futures: list[dict] | None = None,
 ) -> bool:
     """T249-MARKETMOVER-P3: pre-market brief — combines P0 (today's macro releases), P1
     (recipient's own symbols reporting earnings today), and P2 (macro reactions generated in
@@ -950,7 +951,14 @@ def send_premarket_brief_email(
     (type/date/title/description/impact/days_to_event); `my_earnings` items are
     {"symbol": str, "event": EarningsEvent}; `recent_reactions` items are EconomicEvent rows
     with reaction_text/reaction_generated_at populated.
+
+    T257-OVERNIGHT-FLOW-BRIEF Phase 1: `overnight_futures` items are the dict shape
+    _fetch_overnight_futures() returns ({"name", "ticker", "price", "change_pct"}) — reports
+    a MEASURED overnight change (futures ARE the market's own current expectation for the
+    open), never a prediction of whether that holds through the cash open. Defaults to `None`
+    (treated as empty) so existing callers built before this field existed keep working.
     """
+    overnight_futures = overnight_futures or []
     subject = f"🔔 Pre-Market Brief — {market} — {date_str}"
 
     _impact_color = {"critical": "#ef4444", "high": "#f97316", "medium": "#facc15"}
@@ -996,6 +1004,24 @@ def send_premarket_brief_email(
         )
         reaction_rows_text += f"  {ev.title}: {ev.reaction_text}\n"
 
+    # ── Section 4: overnight futures (T257-OVERNIGHT-FLOW-BRIEF Phase 1) ───────
+    futures_rows_html = ""
+    futures_rows_text = ""
+    for f in overnight_futures:
+        chg = f.get("change_pct")
+        chg_color = "#16a34a" if (chg or 0) >= 0 else "#dc2626"
+        chg_str = f"{chg:+.2f}%" if chg is not None else "—"
+        price_str = f"{f.get('price'):,.2f}" if f.get("price") is not None else "—"
+        futures_rows_html += (
+            f'<div style="padding:8px 0;border-bottom:1px solid #f1f5f9;display:flex;'
+            f'justify-content:space-between">'
+            f'<strong style="font-size:13px">{f.get("name","")}</strong>'
+            f'<span style="font-size:13px"><span style="color:#64748b">{price_str}</span> '
+            f'<span style="color:{chg_color};font-weight:600">{chg_str}</span></span>'
+            f'</div>'
+        )
+        futures_rows_text += f'  {f.get("name","")}: {price_str} ({chg_str})\n'
+
     def _section(title: str, rows_html: str, empty_note: str) -> str:
         if not rows_html:
             return (
@@ -1020,26 +1046,31 @@ def send_premarket_brief_email(
       <span style="font-size:13px;color:#94a3b8">{date_str}</span>
     </div>
 
+    {_section("Overnight Futures", futures_rows_html, "Overnight futures data unavailable this morning.")}
     {_section("Today's Macro Releases", macro_rows_html, "No high/critical-importance releases scheduled today.")}
     {_section("Your Symbols Reporting Today", earnings_rows_html, "None of your watched symbols report earnings today.")}
     {_section("Recent Macro Reactions (18h)", reaction_rows_html, "No macro reactions generated in the last 18 hours.")}
 
     <p style="font-size:11px;color:#94a3b8;margin-top:28px;border-top:1px solid #e2e8f0;padding-top:14px">
-      Historical-scenario context only — not a prediction of today's outcome, not financial advice.
-      StockAI · {date_str}
+      Futures reflect the market's own current expectation for the open — not a prediction of
+      whether it holds through the cash session. Historical-scenario context only elsewhere in
+      this brief — not financial advice. StockAI · {date_str}
     </p>
   </div>
 </body></html>"""
 
     body_text = (
         f"StockAI Pre-Market Brief — {market} — {date_str}\n\n"
-        f"TODAY'S MACRO RELEASES\n"
+        f"OVERNIGHT FUTURES\n"
+        + (futures_rows_text or "  Unavailable this morning.\n")
+        + f"\nTODAY'S MACRO RELEASES\n"
         + (macro_rows_text or "  None scheduled today.\n")
         + f"\nYOUR SYMBOLS REPORTING TODAY\n"
         + (earnings_rows_text or "  None.\n")
         + f"\nRECENT MACRO REACTIONS (18h)\n"
         + (reaction_rows_text or "  None.\n")
-        + "\nHistorical-scenario context only — not a prediction, not financial advice.\n"
+        + "\nFutures reflect the market's current expectation for the open, not a prediction of"
+        " whether it holds. Historical-scenario context only elsewhere — not financial advice.\n"
     )
     return send_email(to, subject, body_html, body_text)
 

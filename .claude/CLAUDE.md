@@ -6888,3 +6888,111 @@ docker exec stockai-signal-engine-1 curl -s -o /dev/null -w '%{http_code}\n' \
 grep -n "routers=\[" services/signal-engine/src/main.py
 # The router containing any catch-all @router.get("/{...}") must be listed LAST.
 ```
+
+---
+
+## Feature Reference: T257-OVERNIGHT-FLOW-BRIEF Phase 1 — Overnight Futures Section on the Pre-Market Brief (Built 2026-07-22)
+
+**The gap this closes**: per the tracker's own Tier 257 design ("overnight options-flow +
+futures-flow analysis to read whether the market opens high/low and lay out the day"), this
+session scoped down to just Phase 1's futures half — confirmed via grep that **zero** futures
+data (`ES=F`/`NQ=F`/`YM=F`/`RTY=F`) existed anywhere in the codebase before this. Phase 1's
+OTHER half (premarket gappers "from already-ingested PRE-session bars") was investigated and
+found **not buildable as scoped**: no scheduled job currently ingests intraday bars during the
+4:00–9:30 ET premarket window (`us_5m_intraday`/`hk_5m_intraday` are both cron-gated to regular
+market hours only, scheduler.py ~5344-5363) — `Price.session == "PRE"` rows for the whole
+universe are effectively empty in production today. Rather than build a feature reading from
+data that doesn't exist, this session shipped ONLY the futures half (fully self-contained, no
+new ingest dependency) and documented the gappers gap honestly as a real prerequisite for a
+future session, instead of silently building on top of an empty data source.
+
+**New function**: `_fetch_overnight_futures()` (`services/market-data/src/services/
+scheduler.py`) — one bulk `yf.download(["ES=F","NQ=F","YM=F","RTY=F"], period="5d",
+interval="1d", ...)` call, matching this file's own house rule ("All ingests use
+yf.download(symbols_list) — one batch call") and `_fetch_live_bulk()`'s exact multi-ticker
+column-shape handling (`raw[symbol]["Close"]` vs `raw["Close"]`, branching on
+`len(symbols) > 1`). Uses `period="5d"` (not `_fetch_live_bulk`'s `"2d"`) specifically so a
+thin/holiday-adjacent session doesn't leave fewer than 2 valid daily closes to diff. Redis-
+cached 60s (`stockai:overnight_futures`, matching `market_overview()`'s own short-TTL
+convention) since the US and HK brief jobs could both call this in the same minute window.
+
+**Framing, matching this repo's established alert-honesty discipline** (T249-P3, T257-VOLUME-
+ANOMALY-ALERT, T257-TOP3-CONVICTION-ALERT): reports a MEASURED overnight change — "ES +0.8%
+overnight" is literally what futures prices mean (the market's own current expectation for the
+open) — never a prediction of whether that holds through the cash session. Both the HTML
+footer and the plain-text footer of the brief email were updated to state this distinction
+explicitly, separate from the brief's pre-existing "historical-scenario context, not a
+prediction" disclaimer for its other 3 sections.
+
+**Wiring**: `send_premarket_brief()` gates the fetch to `if "US" in markets:` (same reasoning
+as sections 1/3 — no HK futures data source exists), passes `overnight_futures` into
+`send_premarket_brief_email()`, includes `futures=len(overnight_futures)` in the `.done` log
+line, and includes `not overnight_futures` in the early-return "nothing to report" guard so a
+morning with real futures movement but no macro/earnings/reaction content still sends.
+`send_premarket_brief_email()` gained an `overnight_futures: list[dict] | None = None`
+parameter (defaults to `None`→treated as `[]`, so no existing caller needed to change) and a
+4th section ("Overnight Futures") rendered via the SAME `_section()` helper every other section
+already uses — green/red color-coded change_pct, `None`-safe em-dash fallback for price/change,
+explicit empty-state note ("Overnight futures data unavailable this morning.") matching the
+file's own established "every section needs an explicit empty state" convention.
+
+**Also fixed in passing**: a duplicated 5-line comment block (an accidental copy-paste,
+unrelated to this feature) in `send_premarket_brief()`'s per-recipient try/except, found while
+editing this exact function.
+
+**Tests**: `services/market-data/tests/test_overnight_futures_brief.py` (13 cases) —
+`_fetch_overnight_futures()`'s real source is extracted via `exec()` (matching
+`test_backfill_realized_ev.py`'s/`test_tune_strategy.py`'s established technique, since
+`scheduler.py` can't be imported directly in this test environment) with a fake `yfinance`
+module injected via `sys.modules` patching and a fake `_get_redis` injected directly into the
+exec()'d function's own `__globals__` — covers change_pct computation, warm-cache short-
+circuit (no `yf.download()` call at all on a cache hit), cache-write after a real fetch, a
+ticker with fewer than 2 valid closes being silently skipped (not crashing or fabricating a
+value), and a download failure degrading to `[]`. `send_premarket_brief_email()`'s new section
+is tested directly (pure composition) — rendering, explicit empty state, `None`-parameter
+backward compatibility, red/green color coding, and `None`-safe em-dash fallback. 4 source-text
+regression checks confirm the scheduler wiring (US-only gate, `overnight_futures` reaching both
+the email call and the `.done` log line, and inclusion in the nothing-to-report guard).
+
+**Two real test-writing bugs caught and fixed before shipping** (both self-caught, not shipped
+with false confidence):
+1. `test_missing_change_pct_renders_em_dash_not_none_or_crash`'s first version asserted
+   `"None" not in html` against the WHOLE rendered page — failed not because of a real bug, but
+   because the pre-existing "Your Symbols Reporting Today" section's own empty-state note
+   ("None of your watched symbols report earnings today.") legitimately contains the substring
+   "None". Fixed by scoping the assertion to just the futures row's own HTML slice.
+2. `test_premarket_brief_gates_futures_fetch_to_us_only`'s first version anchored on
+   `body.index("_fetch_overnight_futures()")` — but the function's own docstring mentions
+   `_fetch_overnight_futures()` in prose BEFORE the real call site, so `.index()` (first match)
+   found the docstring text, not the actual gated call, making the test's `rindex` search
+   accidentally correct for the wrong reason on the first pass. Fixed by anchoring on the more
+   specific assignment form `"overnight_futures = _fetch_overnight_futures()"`, which only
+   appears once, at the real call site.
+
+**Adversarial verification** — 2 sabotage cycles, both caught and reverted: removing the
+`if "US" in markets:` gate around the fetch call (caught — the test correctly found 12 lines of
+unrelated code between the PRECEDING section's gate and the now-unconditional fetch call,
+failing the `<= 2` proximity check); removing `overnight_futures` from the nothing-to-report
+guard (caught directly). Full 432-test market-data suite (up from 419) green.
+
+**Not built (Phase 1's other half, deliberately deferred, not silently dropped)**: premarket
+gappers from PRE-session bars — needs a new premarket-hours intraday ingest job first (extending
+`us_5m_intraday`'s cron window to start before 9:30 ET, or a dedicated new job), since the
+underlying data genuinely doesn't exist yet. Phase 2 (options-flow snapshot persistence + EOD
+job) and Phase 3 (the "day attention-list" combining premarket gap + options flow + earnings +
+macro) remain unbuilt, per the original design's own phasing.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-redis-1 redis-cli get stockai:overnight_futures
+# Manually trigger the brief to see the new section live (safe — respects the existing
+# per-recipient dedup key, so re-running within 20h for the same user/market/day is a no-op):
+docker exec stockai-market-data-1 python3 -c "
+import sys; sys.path.insert(0, '/app'); sys.path.insert(0, '/app/src')
+from src.services.scheduler import _fetch_overnight_futures
+print(_fetch_overnight_futures())
+"
+```
+If `_fetch_overnight_futures()` returns `[]` outside a Redis-cache-hit scenario, check
+`docker logs stockai-market-data-1 --since 1h | grep overnight_futures.download_failed` for the
+underlying yfinance error.

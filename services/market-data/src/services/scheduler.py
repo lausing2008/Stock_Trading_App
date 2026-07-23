@@ -1164,6 +1164,83 @@ def check_macro_reaction_alerts() -> None:
         log.error("signal_alert.macro_reaction_error", error=str(exc))
 
 
+_FUTURES = [
+    ("E-mini S&P 500", "ES=F"),
+    ("E-mini Nasdaq 100", "NQ=F"),
+    ("E-mini Dow", "YM=F"),
+    ("E-mini Russell 2000", "RTY=F"),
+]
+_FUTURES_CACHE_KEY = "stockai:overnight_futures"
+_FUTURES_CACHE_TTL = 60  # seconds — matches market_overview()'s own short-TTL convention
+
+
+def _fetch_overnight_futures() -> list[dict]:
+    """T257-OVERNIGHT-FLOW-BRIEF Phase 1: overnight futures reading for the pre-market brief.
+
+    One bulk yf.download() call for all 4 futures tickers — matches this file's own house
+    rule (line ~63: "All ingests use yf.download(symbols_list) — one batch call") and
+    _fetch_live_bulk()'s exact multi-ticker column-shape handling (routes.py), rather than a
+    per-ticker Ticker().fast_info loop. Futures trade nearly 24h, so "prev_close" here means
+    the prior COMPLETED daily bar's close (yesterday's US settlement), not a live intraday
+    reference — a period="5d" window (not "2d") guards against a thin trading day (e.g. a
+    holiday-adjacent session) leaving fewer than 2 valid daily closes.
+
+    Framing: this reports a MEASURED overnight change — "ES +0.8% overnight" is what futures
+    prices literally mean (the market's own current expectation for the open). It does NOT
+    predict whether that holds through the cash open — matching this repo's established
+    alert-honesty discipline (T249-P3, T257-VOLUME-ANOMALY-ALERT, T257-TOP3-CONVICTION-ALERT).
+
+    Redis-cached 60s — this can be called from more than one brief cycle (US + HK) in the same
+    minute; a fresh yf.download() per call would be wasteful and unnecessary for a value that
+    only meaningfully changes overnight, not intra-minute.
+    """
+    try:
+        cached = _get_redis().get(_FUTURES_CACHE_KEY)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    import yfinance as yf
+
+    symbols = [t for _, t in _FUTURES]
+    try:
+        raw = yf.download(
+            symbols, period="5d", interval="1d", auto_adjust=True, progress=False, group_by="ticker",
+        )
+    except Exception as exc:
+        log.warning("overnight_futures.download_failed", error=str(exc))
+        return []
+
+    if raw is None or raw.empty:
+        return []
+
+    results: list[dict] = []
+    for name, symbol in _FUTURES:
+        try:
+            closes = raw[symbol]["Close"].dropna() if len(symbols) > 1 else raw["Close"].dropna()
+            if len(closes) < 2:
+                continue
+            price = float(closes.iloc[-1])
+            prev_close = float(closes.iloc[-2])
+            change_pct = ((price - prev_close) / prev_close * 100) if prev_close else None
+            results.append({
+                "name": name,
+                "ticker": symbol,
+                "price": round(price, 2),
+                "change_pct": round(change_pct, 2) if change_pct is not None else None,
+            })
+        except Exception:
+            continue
+
+    try:
+        _get_redis().setex(_FUTURES_CACHE_KEY, _FUTURES_CACHE_TTL, json.dumps(results))
+    except Exception:
+        pass
+
+    return results
+
+
 def send_premarket_brief(markets: list | None = None) -> None:
     """T249-MARKETMOVER-P3: pre-market brief — combines the three already-shipped MarketMover
     pieces (P0 release-date calendar, P1 earnings day-of reminders, P2 macro fast-reactions)
@@ -1183,7 +1260,9 @@ def send_premarket_brief(markets: list | None = None) -> None:
     check_earnings_reactions(), just report_date == today instead of the post-release window),
     (3) macro reactions generated in the last 18h (a new query — no existing helper covers this
     "recent window" shape; P2's own check_macro_reaction_alerts() only tracks
-    sent-vs-unsent, not a time window).
+    sent-vs-unsent, not a time window), (4) T257-OVERNIGHT-FLOW-BRIEF Phase 1: overnight futures
+    (ES/NQ/YM/RTY) via _fetch_overnight_futures() — a measured reading of the market's own
+    current expectation for the open, never a prediction of whether it holds.
 
     Called once per day per market, ~30-40 min before that market's open — mirrors
     send_morning_digest's own cadence choice for the same reason (enough lead time to read
@@ -1260,7 +1339,13 @@ def send_premarket_brief(markets: list | None = None) -> None:
                     ).order_by(EconomicEvent.reaction_generated_at.desc())
                 ).scalars().all()
 
-            if not macro_today and not any(sym in earnings_by_symbol for syms in user_symbols.values() for sym in syms) and not recent_reactions:
+            # ── Section 4 (T257-OVERNIGHT-FLOW-BRIEF Phase 1): overnight futures — US-only,
+            # same reasoning as sections 1/3 above (no HK futures data source exists here).
+            overnight_futures: list[dict] = []
+            if "US" in markets:
+                overnight_futures = _fetch_overnight_futures()
+
+            if not macro_today and not any(sym in earnings_by_symbol for syms in user_symbols.values() for sym in syms) and not recent_reactions and not overnight_futures:
                 _record_job_status(_job_name, "ok", time.monotonic() - _t0)
                 log.info("premarket_brief.nothing_to_report", markets=markets)
                 return
@@ -1294,11 +1379,6 @@ def send_premarket_brief(markets: list | None = None) -> None:
                 # to the outer except, aborting the whole batch and silently skipping every
                 # recipient still left in the loop. Isolating per-recipient means a single
                 # failure only costs that one recipient's brief, not everyone else's.
-                # AUD256-PREMARKETBRIEF-ISOLATION: previously unguarded — one recipient
-                # raising (a malformed email address, a transient SMTP error) would propagate
-                # to the outer except, aborting the whole batch and silently skipping every
-                # recipient still left in the loop. Isolating per-recipient means a single
-                # failure only costs that one recipient's brief, not everyone else's.
                 try:
                     ok = send_premarket_brief_email(
                         to=user.email,
@@ -1307,6 +1387,7 @@ def send_premarket_brief(markets: list | None = None) -> None:
                         macro_events=macro_today,
                         my_earnings=my_earnings,
                         recent_reactions=recent_reactions,
+                        overnight_futures=overnight_futures,
                     )
                 except Exception as _send_exc:
                     ok = False
@@ -1321,7 +1402,7 @@ def send_premarket_brief(markets: list | None = None) -> None:
 
             _record_job_status(_job_name, "ok", time.monotonic() - _t0)
             log.info("premarket_brief.done", markets=markets, sent=sent, errors=errors, recipients=len(recipients),
-                      macro_events=len(macro_today), reactions=len(recent_reactions))
+                      macro_events=len(macro_today), reactions=len(recent_reactions), futures=len(overnight_futures))
     except Exception as exc:
         log.error("premarket_brief.failed", markets=markets, error=str(exc), exc_info=True)
         _record_job_status(_job_name, "error", time.monotonic() - _t0, str(exc))
