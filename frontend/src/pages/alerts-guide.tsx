@@ -295,7 +295,7 @@ export default function AlertsGuidePage() {
   if (!authed) return null;
 
   return (
-    <div style={{ maxWidth: '1000px', margin: '0 auto', padding: '24px 0 60px' }}>
+    <div style={{ maxWidth: '1400px', margin: '0 auto', padding: '24px 24px 60px' }}>
       <div style={{ marginBottom: '24px' }}>
         <h1 style={{ fontSize: '22px', fontWeight: 800, color: '#e2e8f0', marginBottom: '6px' }}>
           Alerts &amp; Notifications Guide
@@ -332,11 +332,18 @@ export default function AlertsGuidePage() {
           Anything that can land in your inbox. Sorted roughly by how often it can fire.
         </p>
         <div style={{ borderRadius: '10px', border: '1px solid #1e293b', overflowX: 'auto', marginBottom: 8 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px', minWidth: '760px' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px', tableLayout: 'fixed' }}>
+            <colgroup>
+              <col style={{ width: '15%' }} />
+              <col style={{ width: '13%' }} />
+              <col style={{ width: '11%' }} />
+              <col style={{ width: '16%' }} />
+              <col style={{ width: '45%' }} />
+            </colgroup>
             <thead>
               <tr style={{ background: 'rgba(148,163,184,0.05)' }}>
                 {['Alert', 'Schedule', 'Sent to', 'Cooldown / dedup', 'What it does & why'].map(h => (
-                  <th key={h} style={{ textAlign: 'left', padding: '8px 12px', color: '#475569', fontWeight: 700, fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '0.04em', borderBottom: '1px solid #1e293b', whiteSpace: 'nowrap' }}>
+                  <th key={h} style={{ textAlign: 'left', padding: '8px 12px', color: '#475569', fontWeight: 700, fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '0.04em', borderBottom: '1px solid #1e293b' }}>
                     {h}
                   </th>
                 ))}
@@ -345,11 +352,11 @@ export default function AlertsGuidePage() {
             <tbody>
               {USER_ALERTS.map(row => (
                 <tr key={row.job} style={{ borderBottom: '1px solid #1e293b', verticalAlign: 'top' }}>
-                  <td style={{ padding: '10px 12px', color: '#e2e8f0', fontWeight: 600, whiteSpace: 'nowrap' }}><Code>{row.job}</Code></td>
-                  <td style={{ padding: '10px 12px', color: '#94a3b8', whiteSpace: 'nowrap' }}>{row.schedule}</td>
-                  <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}><ScopePill scope={row.scope} /></td>
-                  <td style={{ padding: '10px 12px', color: '#64748b', minWidth: '160px' }}>{row.cooldown}</td>
-                  <td style={{ padding: '10px 12px', color: '#cbd5e1', minWidth: '320px', lineHeight: 1.6 }}>{row.note}</td>
+                  <td style={{ padding: '10px 12px', color: '#e2e8f0', fontWeight: 600, wordBreak: 'break-word' }}><Code>{row.job}</Code></td>
+                  <td style={{ padding: '10px 12px', color: '#94a3b8' }}>{row.schedule}</td>
+                  <td style={{ padding: '10px 12px' }}><ScopePill scope={row.scope} /></td>
+                  <td style={{ padding: '10px 12px', color: '#64748b' }}>{row.cooldown}</td>
+                  <td style={{ padding: '10px 12px', color: '#cbd5e1', lineHeight: 1.6 }}>{row.note}</td>
                 </tr>
               ))}
             </tbody>
@@ -362,11 +369,16 @@ export default function AlertsGuidePage() {
           These never email you directly, but feed the data or model quality the alerts above depend on.
         </p>
         <div style={{ borderRadius: '10px', border: '1px solid #1e293b', overflowX: 'auto', marginBottom: 8 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px', minWidth: '640px' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px', tableLayout: 'fixed' }}>
+            <colgroup>
+              <col style={{ width: '22%' }} />
+              <col style={{ width: '20%' }} />
+              <col style={{ width: '58%' }} />
+            </colgroup>
             <thead>
               <tr style={{ background: 'rgba(148,163,184,0.05)' }}>
                 {['Job', 'Schedule', 'What it maintains'].map(h => (
-                  <th key={h} style={{ textAlign: 'left', padding: '8px 12px', color: '#475569', fontWeight: 700, fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '0.04em', borderBottom: '1px solid #1e293b', whiteSpace: 'nowrap' }}>
+                  <th key={h} style={{ textAlign: 'left', padding: '8px 12px', color: '#475569', fontWeight: 700, fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '0.04em', borderBottom: '1px solid #1e293b' }}>
                     {h}
                   </th>
                 ))}
@@ -375,9 +387,9 @@ export default function AlertsGuidePage() {
             <tbody>
               {BACKGROUND_JOBS.map(row => (
                 <tr key={row.job} style={{ borderBottom: '1px solid #1e293b', verticalAlign: 'top' }}>
-                  <td style={{ padding: '10px 12px', color: '#e2e8f0', fontWeight: 600, whiteSpace: 'nowrap' }}><Code>{row.job}</Code></td>
-                  <td style={{ padding: '10px 12px', color: '#94a3b8', whiteSpace: 'nowrap' }}>{row.schedule}</td>
-                  <td style={{ padding: '10px 12px', color: '#cbd5e1', minWidth: '340px', lineHeight: 1.6 }}>{row.note}</td>
+                  <td style={{ padding: '10px 12px', color: '#e2e8f0', fontWeight: 600, wordBreak: 'break-word' }}><Code>{row.job}</Code></td>
+                  <td style={{ padding: '10px 12px', color: '#94a3b8' }}>{row.schedule}</td>
+                  <td style={{ padding: '10px 12px', color: '#cbd5e1', lineHeight: 1.6 }}>{row.note}</td>
                 </tr>
               ))}
             </tbody>
