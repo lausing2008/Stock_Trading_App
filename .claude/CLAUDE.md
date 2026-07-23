@@ -7671,3 +7671,105 @@ check these separate cards — the signal's own BUY/confidence display doesn't r
 with no gating-logic risk). Options 3 and 4 deliberately deferred — both would change the core
 signal probability broadly and need the same train/validation-beats-baseline discipline every
 other signal-probability change in this codebase already follows before being trusted live.
+
+---
+
+## Feature Reference: T234-CONFIG-DECIDE-DEFAULT-MISMATCH — Real Entry-Gate Defaults for Standalone /decide (Built 2026-07-23)
+
+**The gap**: decision-engine's `routes.py`'s own `_DEFAULT_CFG["min_confidence"] = 62.0` (and
+`hard_rejects.py`'s matching inline fallback of the same literal) is a value that exists
+**nowhere** in the real trading engine's actual style/market matrix
+(`paper_trading_engine.py`'s `_DEFAULT_CONFIG`/`_STYLE_OVERRIDES`/`_HK_MARKET_OVERRIDES`):
+SHORT/GROWTH=45, SWING=50, LONG=40 in the US, ALL raised to 65 in HK. A caller going through
+the real trading path (`_call_decision_engine()`, called from `_scan_for_entries()`) always
+sends the real resolved value explicitly via `config_overrides`, so this never mattered on that
+path — but `decide.tsx`'s standalone `GET /decide/{symbol}/explain` (which builds a bare
+`DecisionRequest(style=style)` with **no** `config_overrides` at all) silently used the
+disconnected `62.0` literal instead of the real value a live portfolio of that style/market
+would actually gate on.
+
+**Investigated the "best fix," not just the easy patch, per explicit user instruction.**
+Considered simply changing the one literal to something more defensible — rejected, since NO
+single number can correctly represent this: the real value depends on BOTH style (4 different
+US values) AND market (a uniform HK override on top). The real fix needed to resolve the
+correct value dynamically, the same way `_scan_for_entries()` itself does, not encode a second,
+inevitably-still-wrong guess.
+
+**Design — reused an EXISTING, already-proven pattern rather than inventing a new one.**
+`GET /stocks/style-params` (market-data) already solves the identical class of problem for
+game-plan geometry (entry/breakout/stop/target percentages) — decision-engine's `aggregator.py`
+already has a working fetch-cache-fallback (`_get_style_params()`) plus an async wrapper
+(`abuild_game_plan()`) that runs the blocking fetch in a dedicated executor
+(`_game_plan_executor`) so a cache-miss `httpx.get()` never stalls the shared event loop
+(`T247-DECISIONENGINE-STYLEPARAMS-BLOCKING`). Built the exact same shape for entry-gate
+thresholds instead of a one-off literal fix:
+
+1. **New market-data function**: `resolve_entry_gate_params(style, market)`
+   (`paper_trading_engine.py`) — replicates `_scan_for_entries()`'s own exact merge order
+   (`_DEFAULT_CONFIG` → `_STYLE_OVERRIDES[style]` → HK override if `market == "HK"`),
+   restricted to the 5 real entry-gate keys (`min_confidence`, `min_kscore`,
+   `min_entry_score`, `min_ta_score`, `min_rr_ratio` — distinct from `_STYLE_PARAMS`'s game-plan
+   geometry keys, a genuinely different dict for a genuinely different purpose).
+   `min_rr_ratio` is resolved via the existing calibration-aware `_default_min_rr_ratio()`
+   rather than a frozen `2.0`, so this stays correct even after a future calibration run
+   changes the real default. `min_ta_score` correctly defaults to `0.0` (gate disabled) when no
+   style/market override set it — it has no `_DEFAULT_CONFIG` entry at all, matching every
+   other read site's own established convention for this specific key.
+2. **New endpoint**: `GET /stocks/entry-gate-params?style=&market=` — thin wrapper, unauthenticated
+   (read-only, no sensitive data, matching `/style-params`'s own posture).
+3. **New decision-engine fetcher**: `_get_entry_gate_params(style, market)` +
+   `aget_entry_gate_params()` in `aggregator.py` — identical fetch/cache(15min)/fallback shape
+   as `_get_style_params()`, cached per `(style, market)` pair (the two dimensions genuinely
+   produce different values), reusing `_game_plan_executor` for the async wrapper (the same
+   class of infrequent, short-lived cache-refresh call as the game-plan fetch, not a new
+   contention source needing its own dedicated pool).
+4. **Wired into `_decide()`** (`routes.py`): fetches the real defaults right after `market` is
+   finalized (i.e. AFTER the `.HK`-suffix auto-upgrade, not before — a `.HK` symbol must get
+   HK-adjusted defaults, not US ones) and BEFORE `check_hard_rejects()` consumes `cfg`. Only
+   fills in a key if the caller didn't already explicitly set it via `config_overrides` — the
+   real trading path's own explicit overrides always still win, this only closes the gap for
+   callers (like `decide.tsx`) that never set them at all.
+5. **`hard_rejects.py`'s own `62.0` fallback literal** is now effectively unreachable in
+   production (routes.py's `_decide()` always fills a real value into `cfg` before this
+   function runs) — left in place as a safety net for a direct test-only caller that
+   constructs `cfg` without the key, with a comment explaining why it's dead in practice.
+
+**Tests**: `services/market-data/tests/test_entry_gate_params.py` (14 cases) — cross-checks
+every returned value directly against `_scan_for_entries()`'s own source dicts (not a
+hand-copied expectation, which could silently drift from the real merge), the exact reported
+real-world case (SWING/US resolves to 50, not decision-engine's stale 62), HK's uniform 65
+override across all 4 styles, `min_ta_score`'s correct 0.0-when-unset default,
+`min_rr_ratio`'s calibration-awareness, graceful degradation for an unknown style, and the
+route itself delegating to (not reimplementing) the resolver.
+`services/decision-engine/tests/test_entry_gate_params.py` (13 cases) — the fetch/cache/
+fallback shape (cache hit skips the HTTP call entirely, distinct `(style, market)` pairs cache
+independently, a fetch failure degrades to the stale cache before the generic fallback, matching
+`_get_style_params()`'s own precedent), the async wrapper's executor-not-event-loop property, and
+4 source-text regression checks on `_decide()`'s actual wiring: the fetch call exists, the
+`config_overrides`-always-wins guard exists, the fetch happens before `check_hard_rejects()`,
+and — the one genuinely subtle ordering bug this class of fix can introduce — the fetch happens
+AFTER `market`'s `.HK` auto-upgrade, not before.
+
+**Adversarial verification** — 3 sabotage cycles, all caught and reverted: removing the HK
+override merge from `resolve_entry_gate_params()` (3 market-data tests caught it); removing the
+`config_overrides`-precedence guard in `_decide()` (1 decision-engine test caught it, with a
+real `AssertionError` diff showing the source no longer contained the guard); reordering the
+fetch to run BEFORE `market`'s `.HK` upgrade (1 decision-engine test caught it via a real index
+comparison, `4134 < 3904` failing correctly).
+
+Full 500-test market-data suite and 146-test decision-engine suite green after every revert;
+`pyflakes` clean on every touched file (confirmed via `git stash` that all pre-existing warnings
+in these files predate this change).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 curl -s 'http://localhost:8001/stocks/entry-gate-params?style=SWING&market=HK'
+# Should show min_confidence: 65.0 (HK override), not decision-engine's old stale 62.0.
+
+docker exec stockai-decision-engine-1 grep -n "aget_entry_gate_params" /app/src/api/routes.py /app/src/api/core/aggregator.py
+```
+If `GET /decide/{symbol}/explain` still shows a confidence-gate result inconsistent with what
+`/stocks/entry-gate-params` reports for the same style/market, confirm the fetch is actually
+succeeding — check `docker logs stockai-decision-engine-1 --since 10m | grep
+entry_gate_params_fetch_failed` for a silent fallback-to-hardcoded-literal condition (market-data
+unreachable, DNS issue, etc.).

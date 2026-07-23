@@ -687,6 +687,36 @@ _HK_MARKET_OVERRIDES: dict = {
     "min_ta_score":            0.65,
 }
 
+# T234-CONFIG-DECIDE-DEFAULT-MISMATCH: the keys _scan_for_entries() actually gates real entries
+# on (min_confidence/min_kscore/min_entry_score/min_ta_score/min_rr_ratio) — exposed via
+# resolve_entry_gate_params() below so decision-engine's standalone /decide/{symbol}/explain
+# path (which never runs _scan_for_entries' own merge, since it's not a real portfolio scan)
+# can resolve the SAME real values instead of a disconnected hardcoded literal.
+_ENTRY_GATE_KEYS = ("min_confidence", "min_kscore", "min_entry_score", "min_ta_score", "min_rr_ratio")
+
+
+def resolve_entry_gate_params(style: str, market: str = "US") -> dict:
+    """The real, live entry-gate thresholds a portfolio with this style/market and NO explicit
+    portfolio.config overrides would actually use — same merge order _scan_for_entries() uses
+    (_DEFAULT_CONFIG -> _STYLE_OVERRIDES[style] -> HK override if market == 'HK'), restricted to
+    the subset of keys that are real entry GATES (not sizing/risk/exit params, which are out of
+    scope for this endpoint's purpose). min_rr_ratio is resolved via _default_min_rr_ratio() so
+    this stays calibration-aware too, matching how the real engine reads it, not a stale 2.0
+    literal frozen at whatever _DEFAULT_CONFIG said before any calibration ever ran.
+    """
+    style = (style or "SWING").upper()
+    cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    if (market or "US").upper() == "HK":
+        for _k, _v in _HK_MARKET_OVERRIDES.items():
+            if _k in _ENTRY_GATE_KEYS:
+                cfg[_k] = _v
+    result = {k: cfg.get(k) for k in _ENTRY_GATE_KEYS if k in cfg}
+    result["min_rr_ratio"] = _default_min_rr_ratio("neutral")
+    # min_ta_score has no _DEFAULT_CONFIG entry — 0.0 (gate disabled) is the correct default
+    # when no style/market override set it, matching every other read site's own fallback.
+    result.setdefault("min_ta_score", 0.0)
+    return result
+
 
 # ── ATR helper ────────────────────────────────────────────────────────────────
 

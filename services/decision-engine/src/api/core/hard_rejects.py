@@ -99,6 +99,12 @@ def check_hard_rejects(
             f"entries suspended until next winning trade"
         )
 
+    # T234-CONFIG-DECIDE-DEFAULT-MISMATCH: this 62.0 fallback is a disconnected literal with
+    # no relation to the real per-style/market value (SWING=50/HK=65, LONG=40, etc. — see
+    # paper_trading_engine.py's resolve_entry_gate_params()). It's effectively unreachable in
+    # production now — routes.py's _decide() always resolves and fills in the real value into
+    # cfg via aget_entry_gate_params() before this function is ever called — kept only as a
+    # safety net for a direct caller (e.g. a test) that constructs cfg without that key at all.
     min_conf     = cfg.get("min_confidence", 62.0)
     hard_floor   = min_conf * 0.90
     if confidence < hard_floor:

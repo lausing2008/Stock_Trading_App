@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from common.jwt_auth import get_current_username
 
-from .core.aggregator import abuild_game_plan, extract_live_price, fetch_all
+from .core.aggregator import abuild_game_plan, aget_entry_gate_params, extract_live_price, fetch_all
 from .core.hard_rejects import check_hard_rejects
 from .core.models import (
     BatchDecisionRequest,
@@ -139,6 +139,20 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
     vix_size_mult     = float(regime.get("vix_size_mult", 1.0))
     is_pre_choppy = bool(regime.get("is_pre_choppy", False))
     is_pre_risk_off = bool(regime.get("is_pre_risk_off", False))
+
+    # T234-CONFIG-DECIDE-DEFAULT-MISMATCH: _DEFAULT_CFG's min_confidence/min_kscore/
+    # min_entry_score/min_ta_score/min_rr_ratio are disconnected literals with no relation to
+    # what a real portfolio of this style/market would actually use (_scan_for_entries' own
+    # _DEFAULT_CONFIG + _STYLE_OVERRIDES + HK-override merge in paper_trading_engine.py) —
+    # a caller that goes through _call_decision_engine() (the real trading path) always sends
+    # these explicitly via config_overrides, so this never mattered there, but a standalone
+    # caller (decide.tsx's GET /decide/{symbol}/explain, which sends no config_overrides at
+    # all) silently got _DEFAULT_CFG's own guessed values instead of the real ones. Only fills
+    # in keys the caller didn't already explicitly override — config_overrides still always wins.
+    _real_gate_defaults = await aget_entry_gate_params(style, market)
+    for _k, _v in _real_gate_defaults.items():
+        if _k not in req.config_overrides and _v is not None:
+            cfg[_k] = _v
 
     # 7. Hard rejects — special-case: no signal data means symbol is unknown
     if signal_data is None:

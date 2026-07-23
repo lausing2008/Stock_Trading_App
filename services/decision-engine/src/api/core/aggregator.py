@@ -245,3 +245,50 @@ async def abuild_game_plan(live_price: float, style: str, signal_data: dict | No
     in the executor rather than threading async through every internal call site."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(_game_plan_executor, build_game_plan, live_price, style, signal_data)
+
+
+# ── T234-CONFIG-DECIDE-DEFAULT-MISMATCH: real entry-gate defaults (min_confidence etc.) ──
+
+_ENTRY_GATE_FALLBACK = {
+    "min_confidence": 62.0, "min_kscore": 48.0, "min_entry_score": 4,
+    "min_ta_score": 0.0, "min_rr_ratio": 2.0,
+}
+
+_ENTRY_GATE_CACHE: dict[tuple[str, str], dict] = {}
+_ENTRY_GATE_TS: dict[tuple[str, str], float] = {}
+_ENTRY_GATE_TTL = 900  # matches _get_style_params()'s own 15-minute cache window
+
+
+def _get_entry_gate_params(style: str, market: str) -> dict:
+    """Fetch the real per-style/market entry-gate defaults from market-data, with a local
+    cache + hardcoded fallback if market-data is unreachable — same fail-open shape as
+    _get_style_params() above (a stale/fallback default is better than blocking the decide
+    endpoint entirely). Cached per (style, market) pair since the resolved values genuinely
+    differ across both dimensions (HK overrides several keys on top of the style baseline)."""
+    key = (style.upper(), market.upper())
+    cached = _ENTRY_GATE_CACHE.get(key)
+    if cached and (_time.time() - _ENTRY_GATE_TS.get(key, 0.0)) < _ENTRY_GATE_TTL:
+        return cached
+    try:
+        r = httpx.get(
+            f"{_settings.market_data_url}/stocks/entry-gate-params",
+            params={"style": key[0], "market": key[1]}, timeout=5.0,
+        )
+        r.raise_for_status()
+        _ENTRY_GATE_CACHE[key] = r.json()
+        _ENTRY_GATE_TS[key] = _time.time()
+        return _ENTRY_GATE_CACHE[key]
+    except Exception as exc:
+        log.warning("decision.entry_gate_params_fetch_failed", error=str(exc))
+        return cached if cached else _ENTRY_GATE_FALLBACK
+
+
+async def aget_entry_gate_params(style: str, market: str) -> dict:
+    """Async wrapper matching abuild_game_plan()'s own executor pattern — _get_entry_gate_params()
+    does a blocking httpx.get() on a cache miss, which must never run directly on the shared
+    event loop (same T247-DECISIONENGINE-STYLEPARAMS-BLOCKING class this whole file already
+    guards against for game-plan params). Reuses _game_plan_executor rather than a third
+    dedicated pool — this is the same kind of infrequent, short-lived cache-refresh call as
+    the game-plan fetch, not a new class of contention."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_game_plan_executor, _get_entry_gate_params, style, market)

@@ -560,6 +560,25 @@ def style_params():
     return _STYLE_PARAMS
 
 
+@router.get("/entry-gate-params")
+def entry_gate_params(style: str = "SWING", market: str = "US"):
+    """T234-CONFIG-DECIDE-DEFAULT-MISMATCH: the real entry-gate thresholds
+    (min_confidence/min_kscore/min_entry_score/min_ta_score/min_rr_ratio) a real portfolio of
+    this style/market would use with no explicit portfolio.config overrides — same merge order
+    _scan_for_entries() applies. A distinct dict from /style-params above (that one is
+    game-plan geometry: entry/breakout/stop/target percentages; this one is the actual
+    gates that decide whether a candidate is even allowed to enter).
+
+    Built because decision-engine's standalone GET /decide/{symbol}/explain path (used by
+    decide.tsx) never runs _scan_for_entries' own config merge at all — it's not a real
+    portfolio scan — so it previously had no way to know the real value and silently used its
+    own disconnected hardcoded literal (62.0) instead of the real per-style/market value
+    (SWING=50/HK=65, LONG=40, etc.). Unauthenticated — read-only, no sensitive data.
+    """
+    from ..services.paper_trading_engine import resolve_entry_gate_params
+    return resolve_entry_gate_params(style, market)
+
+
 _MARKET_BREADTH_KEY = "stockai:market_breadth"
 _MARKET_BREADTH_TTL = 60 * 60 * 4  # 4 hours
 
