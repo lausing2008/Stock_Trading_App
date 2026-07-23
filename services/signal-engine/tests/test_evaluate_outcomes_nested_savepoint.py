@@ -40,7 +40,7 @@ Market = _models.Market
 Exchange = _models.Exchange
 Base = _models.Base
 
-_ROUTES_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "routes.py"
+_ROUTES_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "outcomes.py"
 _ROUTES_SOURCE = _ROUTES_PATH.read_text()
 
 

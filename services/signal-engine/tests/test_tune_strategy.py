@@ -26,7 +26,7 @@ Signal = _models.Signal
 TuneHistory = _models.TuneHistory
 Base = _models.Base
 
-_ROUTES_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "routes.py"
+_ROUTES_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "calibration.py"
 _ROUTES_SOURCE = _ROUTES_PATH.read_text()
 
 

@@ -6716,3 +6716,120 @@ docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
 # A sector with a real recent K-Score should never show recent_kscore=NULL just because it
 # lacked prior-week data.
 ```
+
+---
+
+## Feature Reference: T233-ARCH-INSERVICE-SPLITS (signal-engine half) — routes.py Split Into 4 Files (Built 2026-07-22)
+
+**Gap this closes**: `services/signal-engine/src/api/routes.py` had grown to 6,289 lines / 35
+routes — the single most safety-critical service in this app (live BUY/SELL signal
+generation), bundling three structurally distinct concerns in one file: hot-path signal
+reads/writes (what real trading traffic depends on every few minutes), self-tuning/
+calibration mechanisms (weekly jobs), and analytics/backtest/outcome-evaluation (on-demand
+reports). This mirrors the research-engine half of the same tracker item (`scoring.py`
+extraction, done 2026-07-19) but at a materially larger scale — signal-engine's file was
+~5x research-engine's original size, with real cross-cutting shared state, which is exactly
+why this half was deliberately deferred to its own separately-scoped session rather than
+rushed into the same pass as the low-risk research-engine half.
+
+**What moved (verbatim — verified byte-identical, see below)**:
+- `services/signal-engine/src/api/signals_shared.py` (new, 329 lines) — helpers called from
+  MORE than one of the three route files: Redis cache helpers (`_get_redis`/`_cache_get`/
+  `_cache_set`/`_redis_get_float`), the service-to-service JWT (`_service_token`), the
+  `TuneHistory` recorder (`_record_tune_history`), the confidence-calibration read path
+  (`_cal_bucket_key`/`_build_confidence_calibration`/`_get_confidence_calibration`/
+  `_calibrated_win_rate`, used by BOTH live signal reads in routes.py and the calibration map
+  endpoint in calibration.py), `_compute_stability`/`_stored_signal_for_style`, and the
+  outcome-window/hurdle constants (`_OUTCOME_HOLD_DAYS`/`_SELL_OUTCOME_HOLD_DAYS`/
+  `_OUTCOME_CENSOR_GRACE_DAYS`/`_OUTCOME_WIN_HURDLE_PCT`, used by BOTH calibration sweeps and
+  the outcomes evaluator).
+- `services/signal-engine/src/api/routes.py` (trimmed, 1,192 lines) — 9 hot-path routes:
+  `GET ""` (all_latest_signals), `/consensus`, `/refresh`, `/reset`, `/suppressed`,
+  `/recent_changes`, `/{symbol}/history`, `/{symbol}/patterns`, `/{symbol}` (signal_for) — plus
+  `_bulk_persist()` (the ~2200-line core signal-generation function these routes share).
+- `services/signal-engine/src/api/calibration.py` (new, 2,313 lines) — 13 self-tuning/
+  calibration routes: `/watchdog_self_tuning_report`, `/ml-weight-validation`,
+  `/calibrate_ml_weight`, `/calibrate_ta_weights`, `/calibrate_conviction_weights`,
+  `/outcomes/calibration`, `/outcomes/calibrate`, `/outcomes/calibrate/apply`,
+  `/tune_style_profiles`, `/tune_strategy`, `/watchdog`, `/tune_status`,
+  `/confidence-calibration`.
+- `services/signal-engine/src/api/outcomes.py` (new, 2,536 lines) — 13 analytics/backtest/
+  outcome-evaluation routes: `/backfill_realized_ev`, `/accuracy`, `/rolling_accuracy`,
+  `/factor-exposure`, `/trade_performance`, `/filter_audit`, `/walkforward`,
+  `/outcomes/summary`, `/alpha_decay`, `/information_coefficient`, `/factor_attribution`,
+  `/outcomes/evaluate`, `/gate_backtest`.
+- `services/signal-engine/src/main.py` — now mounts all 3 routers (`routers=[router,
+  calibration_router, outcomes_router]`); FastAPI's `include_router()` natively supports
+  multiple routers sharing the same `prefix="/signals"` as long as individual paths don't
+  collide, which they don't (routes were split, never duplicated) — confirmed via a direct
+  diff of all 35 `@router.` decorators across the 3 files against the original 35, zero
+  duplicates.
+
+**Real bug caught DURING extraction, before it ever ran**: several module-level constants
+initially landed in the wrong file purely from a naive "boundary = next route's line number"
+slicing approach — e.g. `_CONF_BANDS`/`_CONF_CAL_MIN_COUNT`/`_CONF_CAL_TTL` (needed by
+`_build_confidence_calibration` in `shared.py`) initially trailed into `calibration.py`'s
+`watchdog_self_tuning_report` segment instead; `_OUTCOME_HOLD_DAYS`/`_SELL_OUTCOME_HOLD_DAYS`/
+`_OUTCOME_CENSOR_GRACE_DAYS`/`_OUTCOME_WIN_HURDLE_PCT` (needed by BOTH calibration and
+outcomes routes) initially landed only in one; `_WATCHDOG_STEP`/`_WATCHDOG_RELAX_STEP`
+initially landed in `outcomes.py` instead of `calibration.py`; `_DECAY_DAYS` initially landed
+with `tune_status` (calibration) instead of its real consumer `alpha_decay` (outcomes). Caught
+by a systematic Python script cross-referencing every module-level `_UPPER_CASE` constant's
+definition-file against every file that actually references it — not by manual read-through,
+which would very plausibly have missed one or more of these given the file's size. Separately,
+`shared.py` was initially missing a `TuneHistory` import entirely (used by
+`_record_tune_history`) — caught by running `pyflakes` against all 4 draft files before
+copying anything into place, which is also how the 3 real "unused import" cleanups (a stray
+top-level `import json` shadowed by local re-imports in 2 files, an unused `date` import in
+`routes.py`) were found. Every pre-existing pyflakes warning in the ORIGINAL file (an unused
+`generate_signal`/`sqlalchemy.desc`/`horizon_enum`/`httpx`) was deliberately left untouched in
+whichever new file inherited it — this split fixes zero pre-existing issues, only issues the
+split itself introduced.
+
+**Verified as genuinely verbatim, not just "looks right"**: wrote a Python AST-based
+comparison (not a naive text/line-count check) extracting every top-level function's own
+decorator+signature+body from the original committed `routes.py` and from the combined new 4
+files, then diffed each of the 52 functions by name — **0 mismatches, 52/52 identical**,
+confirming no function's actual logic changed anywhere during the split, only its file
+location. Ran the equivalent check for module-level constants after the fixes above.
+
+**Test suite impact — 5 existing test files locate functions via hardcoded source-string
+extraction from `routes.py`** (this repo's established technique for functions that can't be
+exercised behaviorally due to Docker-only import constraints, e.g.
+`_ROUTES_SOURCE.index("def watchdog_self_tuning_report(")`) — these needed two kinds of
+updates, not a rewrite: (1) `_ROUTES_PATH` repointed to whichever new file the function
+actually lives in now (`test_evaluate_outcomes_nested_savepoint.py`/`test_backfill_realized_
+ev.py` → `outcomes.py`; `test_watchdog_self_tuning_report.py`/`test_tune_strategy.py` →
+`calibration.py`; `test_signal_get_path_upsert.py` unchanged, since `signal_for`/`_bulk_
+persist` both stayed in `routes.py`); (2) 3 test assertions whose END boundary was a hardcoded
+string like `"\n\n\n# ── T223"` (the comment block that used to immediately follow a function
+in the OLD single-file layout) needed the boundary changed to whatever function/route now
+immediately follows it in the NEW file — the "T223" comment itself moved to `shared.py`, so it
+simply doesn't exist anymore in `outcomes.py`/`calibration.py`.
+
+**Pre-existing, unrelated test failures confirmed via `git stash` to predate this split**: 4
+`test_analyst_momentum.py` failures and `test_signal_generator.py`'s `_decide`-import
+collection error — both already documented elsewhere in this file, both reproduced identically
+on the clean pre-split commit.
+
+**Verification**: 63/63 in-scope tests pass (the two pre-existing failure groups excluded and
+separately confirmed pre-existing); `pyflakes` clean on all 4 new files modulo the 4
+pre-existing warnings inherited verbatim from the original file.
+
+**What to check if this looks wrong**:
+```bash
+# Confirm all 35 routes are registered with no duplicates across the 3 files:
+docker exec stockai-signal-engine-1 grep -h '^@router\.' /app/src/api/routes.py /app/src/api/calibration.py /app/src/api/outcomes.py | sort | uniq -d
+# Should return NOTHING — any output here means two files registered the same path.
+
+# Confirm main.py mounts all 3 routers:
+docker exec stockai-signal-engine-1 grep -A3 "routers=\[" /app/src/main.py
+
+# Live-verify a route from each of the 3 files still resolves correctly:
+docker exec stockai-signal-engine-1 curl -s -o /dev/null -w 'consensus: %{http_code}\n' 'http://localhost:8005/signals/consensus' -H "Authorization: Bearer <token>"
+docker exec stockai-signal-engine-1 curl -s -o /dev/null -w 'tune_status: %{http_code}\n' 'http://localhost:8005/signals/tune_status' -H "Authorization: Bearer <token>"
+docker exec stockai-signal-engine-1 curl -s -o /dev/null -w 'accuracy: %{http_code}\n' 'http://localhost:8005/signals/accuracy' -H "Authorization: Bearer <token>"
+```
+If a route 404s that used to work, check whether it landed in the wrong file (a route
+decorator with a typo'd/duplicate path) or whether `main.py` is missing one of the 3 router
+imports.

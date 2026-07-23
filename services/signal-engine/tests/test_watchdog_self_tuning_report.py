@@ -19,7 +19,7 @@ logic (_watchdog_action_kind) is what's behaviorally tested here.
 """
 import pathlib
 
-_ROUTES_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "routes.py"
+_ROUTES_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "calibration.py"
 _ROUTES_SOURCE = _ROUTES_PATH.read_text()
 
 
@@ -48,7 +48,10 @@ def test_report_only_reads_watchdog_rows_with_realized_ev_already_populated():
     """Must filter to triggered_by="watchdog", promoted=True, and realized_ev_pct_after NOT
     NULL — a row without a realized verdict yet has nothing trustworthy to report on."""
     start = _ROUTES_SOURCE.index("def watchdog_self_tuning_report(")
-    end = _ROUTES_SOURCE.index("\n\n\n# ── T223", start)
+    # T233-ARCH-INSERVICE-SPLITS: this function now lives in calibration.py, immediately
+    # followed by the next route's decorator (the "T223" confidence-calibration comment
+    # block it used to precede moved to signals_shared.py in the same split).
+    end = _ROUTES_SOURCE.index('@router.get("/ml-weight-validation")', start)
     body = _ROUTES_SOURCE[start:end]
     assert 'TuneHistory.triggered_by == "watchdog"' in body
     assert "TuneHistory.promoted.is_(True)" in body
@@ -59,7 +62,10 @@ def test_report_never_writes_to_the_database():
     """This is a diagnostic report, not an auto-tuning job — must never call session.add/
     commit/execute with an UPDATE, only SELECT via session.execute(select(...))."""
     start = _ROUTES_SOURCE.index("def watchdog_self_tuning_report(")
-    end = _ROUTES_SOURCE.index("\n\n\n# ── T223", start)
+    # T233-ARCH-INSERVICE-SPLITS: this function now lives in calibration.py, immediately
+    # followed by the next route's decorator (the "T223" confidence-calibration comment
+    # block it used to precede moved to signals_shared.py in the same split).
+    end = _ROUTES_SOURCE.index('@router.get("/ml-weight-validation")', start)
     body = _ROUTES_SOURCE[start:end]
     assert "session.commit()" not in body
     assert "session.add(" not in body
