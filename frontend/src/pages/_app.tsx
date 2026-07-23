@@ -98,6 +98,7 @@ const NAV_GROUPS: NavGroupDef[] = [
     items: [
       { label: 'Strategies',      href: '/strategies' },
       { label: 'Alerts',          href: '/alerts' },
+      { label: 'Alerts Guide',    href: '/alerts-guide', color: '#f59e0b', tag: 'new' },
       { label: 'Decision Engine', href: '/decide',   color: '#34d399', tag: 'new' },
       { label: 'Market Regime',   href: '/regime',   color: '#6366f1', tag: 'new' },
       { label: 'Insider Trading', href: '/insider',  color: '#fb923c' },
