@@ -19,7 +19,8 @@ in the codebase (checked: no precedent exists).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from sqlalchemy import select
@@ -66,6 +67,30 @@ class BacktestResult:
     # check without a second replay — NOT a portfolio equity curve, see promotion_gate.py's
     # module docstring for why a faithful drawdown check needs Phase 2b instead.
     returns: list[float] = field(default_factory=list)
+
+
+def _entry_as_of(entry_date: date, market: str) -> datetime:
+    """UTC-aware `as_of` for _should_enter()'s replay-mode market-hours/time-of-day/macro-
+    blackout checks — a fixed midday-local-market-time on `entry_date`, comfortably clear of
+    both the market-hours boundary and the time-of-day gate's open/close edge windows.
+
+    CORRECTION during Phase 2b's own live-verification: an earlier version of this function
+    used Signal.ts (the moment the signal was actually GENERATED) directly. Live-checking
+    against real production data found this doesn't work — signals are frequently generated
+    by the post-close refresh burst (scheduler.py's us_post_close job, ~16:30 ET), so
+    Signal.ts is routinely stamped AFTER the market-hours gate's own 16:00 cutoff (confirmed:
+    45/45 signals in a real SWING/US window had an out-of-hours ts). This is not a sig.ts
+    data-quality problem — it is exactly the same T+1 entry-timing model this file's own
+    outcome.entry_price already relies on (SignalOutcome.entry_date is deliberately the day
+    AFTER signal_date, precisely to avoid same-day-close lookahead bias — see this repo's own
+    SE-F2 fix history). A live trader acting on a signal generated after today's close enters
+    on the NEXT trading day — entry_date IS that day. Midday (not exactly market open/close)
+    keeps the constructed instant comfortably inside the time-of-day gate's own safe window
+    without needing to reason about exact open/close boundaries.
+    """
+    tz = ZoneInfo("Asia/Hong_Kong") if market == "HK" else ZoneInfo("America/New_York")
+    local_midday = datetime(entry_date.year, entry_date.month, entry_date.day, 12, 0, tzinfo=tz)
+    return local_midday.astimezone(timezone.utc)
 
 
 def _historical_atr(session: Session, stock_id: int, as_of: date, period: int = 14) -> float | None:
@@ -166,6 +191,7 @@ def replay_should_enter(
         }
         should, _score, _notes = _should_enter(
             stock.symbol, signal_data, live_price, game_plan, cfg, live_regime=None, kscore=None,
+            as_of=_entry_as_of(outcome.entry_date or outcome.signal_date, market),
         )
         if not should:
             continue
@@ -322,6 +348,7 @@ def replay_extended_gates(
         }
         should, _score, _notes = _should_enter(
             stock.symbol, signal_data, live_price, game_plan, cfg, live_regime=None, kscore=kscore,
+            as_of=_entry_as_of(outcome.entry_date or outcome.signal_date, market),
         )
         if not should:
             continue

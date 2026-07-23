@@ -881,15 +881,24 @@ _NYSE_HOLIDAYS: frozenset[date] = frozenset([
 ])
 
 
-def _is_market_hours(market: str = "US") -> bool:
-    """True if current time falls within the regular session for the given market.
+def _is_market_hours(market: str = "US", as_of: datetime | None = None) -> bool:
+    """True if `as_of` (default: the real current time) falls within the regular session for
+    the given market.
 
     US: 9:30–16:00 ET Mon–Fri (NYSE holidays respected).
     HK: 09:30–12:00 and 13:00–16:00 HKT Mon–Fri.
+
+    T233-SELFIMPROVE-PHASE2b: `as_of` exists so gate_harness.py's historical replay can check
+    market hours AS OF a signal's own historical date/time, not the replay's real run-time —
+    without it, EVERY historical replay of _should_enter() (which calls this unconditionally
+    as a hard reject) would return zero entered trades unless the replay happened to run during
+    real live market hours, since "now" always means the actual current moment regardless of
+    what date is being replayed. Defaults to `None` -> `datetime.now()`, so every existing live
+    caller (paper trading's real-time scan) is completely unaffected — this is purely additive.
     """
     from zoneinfo import ZoneInfo
     if market == "HK":
-        now_hkt = datetime.now(ZoneInfo("Asia/Hong_Kong"))
+        now_hkt = as_of.astimezone(ZoneInfo("Asia/Hong_Kong")) if as_of else datetime.now(ZoneInfo("Asia/Hong_Kong"))
         if now_hkt.weekday() >= 5:
             return False
         # H-1: HKEX public holiday check (lazy import avoids circular dependency).
@@ -908,7 +917,7 @@ def _is_market_hours(market: str = "US") -> bool:
         aftnoon_close = now_hkt.replace(hour=16, minute=0,  second=0, microsecond=0)
         return (morning_open <= now_hkt < morning_close) or (aftnoon_open <= now_hkt < aftnoon_close)
 
-    now_et = datetime.now(ZoneInfo("America/New_York"))
+    now_et = as_of.astimezone(ZoneInfo("America/New_York")) if as_of else datetime.now(ZoneInfo("America/New_York"))
     if now_et.weekday() >= 5:  # Saturday=5, Sunday=6
         return False
     if now_et.date() in _NYSE_HOLIDAYS:
@@ -1587,6 +1596,7 @@ def _should_enter(
     live_regime: dict | None = None,
     kscore: float | None = None,
     max_open_corr: float | None = None,
+    as_of: datetime | None = None,
 ) -> tuple[bool, int, list[str]]:
     """Score current conditions to decide if NOW is a good time to enter.
 
@@ -1600,7 +1610,17 @@ def _should_enter(
     Advisory only — same -1/+0 shape as the other score layers here, never a hard reject. The
     correlation math itself lives in _max_correlation_with_open_positions() below and is
     computed once per scan cycle by the caller (_scan_for_entries), not per candidate here.
+
+    as_of (T233-SELFIMPROVE-PHASE2b): defaults to `None` -> every wall-clock check below
+    resolves to the REAL current time, exactly as before this parameter existed — every live
+    caller is unaffected. gate_harness.py's historical replay passes the signal's own
+    historical date/time instead, so the market-hours/time-of-day/macro-blackout hard rejects
+    below are evaluated AS OF the signal's real date, not the replay's actual run-time. Without
+    this, a replay of `_should_enter()` would reject essentially every historical signal
+    outside of whatever moment the replay happens to actually execute — a real bug caught via
+    live verification against production before Phase 2b was considered deployable.
     """
+    _now = as_of or datetime.now(timezone.utc)
     style = cfg.get("trading_style", "GROWTH")
     reasons = signal_data.get("reasons") or {}
     notes: list[str] = []
@@ -1620,7 +1640,7 @@ def _should_enter(
     # but a US market holiday landing on a weekday (e.g. July 4th) would otherwise slip through
     # with no check. Reuse the existing _is_market_hours() helper (already NYSE/HKEX-holiday-aware)
     # rather than duplicating hard_rejects.py's separate holiday list.
-    if not _is_market_hours(cfg.get("market", "US")):
+    if not _is_market_hours(cfg.get("market", "US"), as_of=_now):
         return False, -99, ["Market closed — outside regular trading session or a market holiday"]
 
     # Confidence hard floor — signals between 90%–100% of min_confidence get scored
@@ -1698,7 +1718,6 @@ def _should_enter(
             # of-day gate's OWN try/except, making both AUD232-005 hard rejects dead code in
             # production despite looking correctly ported. Found while writing regression
             # tests for T232-DL-DUALSCORER-DEBT's already-ported DE-only hard rejects.
-            _now = datetime.now(timezone.utc)
             _window_end = _now + timedelta(hours=2)
             with SessionLocal() as _evsess:
                 _ev_row = _evsess.execute(text(
@@ -1722,7 +1741,7 @@ def _should_enter(
         from zoneinfo import ZoneInfo as _ZI
         _market = cfg.get("market", "US")
         _tz = _ZI("America/New_York") if _market.upper() != "HK" else _ZI("Asia/Hong_Kong")
-        _local = datetime.now(timezone.utc).astimezone(_tz)
+        _local = _now.astimezone(_tz)
         _mins = _local.hour * 60 + _local.minute
         if 570 <= _mins < 600:
             return False, -99, [
@@ -1820,9 +1839,8 @@ def _should_enter(
     sig_ts = signal_data.get("ts")
     if sig_ts is not None:
         try:
-            now_utc = datetime.now(timezone.utc)
             ts_aware = sig_ts.replace(tzinfo=timezone.utc) if sig_ts.tzinfo is None else sig_ts
-            signal_age_h = (now_utc - ts_aware).total_seconds() / 3600
+            signal_age_h = (_now - ts_aware).total_seconds() / 3600
             if signal_age_h < 4:
                 score += 1
                 notes.append(f"Fresh signal ({signal_age_h:.1f}h old) — entry in prime window")

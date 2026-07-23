@@ -21,6 +21,11 @@ import pytest
 
 from src.services.paper_trading_engine import _should_enter
 
+# Captured BEFORE the autouse fixture below ever patches it, so tests that need the REAL
+# market-hours logic (not the fixture's always-True stub) can restore it explicitly.
+import src.services.paper_trading_engine as _pte_module
+_REAL_IS_MARKET_HOURS = _pte_module._is_market_hours
+
 
 @pytest.fixture(autouse=True)
 def _always_market_hours(monkeypatch):
@@ -37,7 +42,7 @@ def _always_market_hours(monkeypatch):
     test file started failing at exactly 9:48 AM ET on a real run, unrelated to any code
     change in that session."""
     import src.services.paper_trading_engine as pte
-    monkeypatch.setattr(pte, "_is_market_hours", lambda market="US": True)
+    monkeypatch.setattr(pte, "_is_market_hours", lambda market="US", as_of=None: True)
 
     _safe_noon = datetime(2026, 6, 15, 17, 0, tzinfo=timezone.utc)  # noon ET on a Monday
 
@@ -73,7 +78,7 @@ def _neutral_inputs():
 
 
 def _score_only(live_regime=None, kscore=None, cfg_overrides=None, game_plan_overrides=None,
-                 signal_data_overrides=None, max_open_corr=None):
+                 signal_data_overrides=None, max_open_corr=None, as_of=None):
     live_price, game_plan, signal_data, cfg = _neutral_inputs()
     if cfg_overrides:
         cfg.update(cfg_overrides)
@@ -83,7 +88,7 @@ def _score_only(live_regime=None, kscore=None, cfg_overrides=None, game_plan_ove
         signal_data.update(signal_data_overrides)
     should_enter, score, notes = _should_enter(
         "TEST", signal_data, live_price, game_plan, cfg, live_regime, kscore=kscore,
-        max_open_corr=max_open_corr,
+        max_open_corr=max_open_corr, as_of=as_of,
     )
     return should_enter, score, notes
 
@@ -214,7 +219,7 @@ def test_all_three_new_layers_stack_independently():
 
 def test_market_closed_hard_rejects_with_score_negative_99_and_no_further_checks(monkeypatch):
     import src.services.paper_trading_engine as pte
-    monkeypatch.setattr(pte, "_is_market_hours", lambda market="US": False)
+    monkeypatch.setattr(pte, "_is_market_hours", lambda market="US", as_of=None: False)
     live_price, game_plan, signal_data, cfg = _neutral_inputs()
     should_enter, score, notes = pte._should_enter("TEST", signal_data, live_price, game_plan, cfg, None)
     assert should_enter is False
@@ -408,3 +413,84 @@ def test_correlation_layer_stacks_with_kscore_and_regime_independently():
     assert any("Regime: bull" in n for n in notes)
     assert any("K-Score 60" in n for n in notes)
     assert any("High correlation" in n for n in notes)
+
+
+# ── T233-SELFIMPROVE-PHASE2b: `as_of` parameter — historical replay correctness ───────────
+#
+# Live-verification against production found that a historical backtest replay of
+# _should_enter() (via gate_harness.py) returned ZERO entered trades no matter what, because
+# the market-hours/time-of-day/macro-blackout hard rejects all read the REAL wall-clock
+# "now" — completely unrelated to whichever historical date was being replayed. `as_of`
+# fixes this: when passed, every wall-clock check below resolves against IT instead of the
+# real current time. When omitted (every live caller), behavior is byte-identical to before
+# this parameter existed — these tests confirm both halves of that claim.
+
+def test_as_of_none_defaults_to_the_real_wall_clock_unchanged(monkeypatch):
+    """Backward compatibility: an as_of=None call must resolve exactly like the pre-fix
+    code (a bare `datetime.now(timezone.utc)`), not silently behave differently."""
+    import src.services.paper_trading_engine as pte
+    fixed_now = datetime(2026, 6, 15, 17, 0, tzinfo=timezone.utc)  # noon ET, safely mid-session
+
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now.astimezone(tz) if tz else fixed_now
+
+    monkeypatch.setattr(pte, "datetime", _FixedDatetime)
+    monkeypatch.setattr(pte, "_is_market_hours", lambda market="US", as_of=None: True)
+    should_enter, score, notes = _score_only(as_of=None)
+    assert not any("Market closed" in n for n in notes)
+    assert not any("Time-of-day gate" in n for n in notes)
+
+
+def test_as_of_overrides_the_real_wall_clock_for_the_market_hours_gate(monkeypatch):
+    """The actual bug fix: passing a historical as_of during market hours (in that
+    timezone) must clear the gate even if the REAL current wall-clock time (also mocked
+    here, to a value that would otherwise fail the gate) would not.
+
+    Must un-patch the autouse `_always_market_hours` fixture's OWN `_is_market_hours`
+    override first — that fixture unconditionally stubs it to always return True for
+    every other test in this file, which would make this specific test pass regardless
+    of whether the real as_of-forwarding logic works at all. Caught via adversarial
+    verification: sabotaging the as_of= argument at the real call site inside
+    _should_enter() did NOT make an earlier version of this test fail, because it was
+    unknowingly exercising the autouse fixture's always-True stub, never the real
+    function — restoring the REAL _is_market_hours() here is what makes this test
+    actually test the fix.
+
+    Deliberately uses a WEEKDAY 3am ET for the mocked "real now" (not a weekend) — an
+    even earlier draft used a UTC timestamp that happened to convert to a Sunday in ET,
+    which fails the market-hours gate for an unrelated reason (weekend) regardless of
+    whether the as_of override actually works — a second, independent false-confidence
+    trap caught the same way."""
+    import src.services.paper_trading_engine as pte
+    monkeypatch.setattr(pte, "_is_market_hours", _REAL_IS_MARKET_HOURS)
+    # Real "now" mocked to 3am ET on a WEEKDAY Monday (market closed, but not a weekend
+    # closure) — as_of below overrides this per-call to a genuinely open moment.
+    real_now_market_closed = datetime(2026, 6, 15, 3, 0, tzinfo=ZoneInfo("America/New_York")).astimezone(timezone.utc)
+
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real_now_market_closed.astimezone(tz) if tz else real_now_market_closed
+
+    monkeypatch.setattr(pte, "datetime", _FixedDatetime)
+    historical_as_of = datetime(2026, 6, 15, 17, 0, tzinfo=timezone.utc)  # noon ET, same Monday
+    should_enter, score, notes = _score_only(as_of=historical_as_of)
+    assert not any("Market closed" in n for n in notes)
+
+
+def test_as_of_first_30_minutes_of_session_still_hard_rejects():
+    """The time-of-day gate must be evaluated AS OF as_of, not real "now" — a historical
+    as_of landing in the first 30 minutes of the session must still reject, exactly as the
+    live gate would for a live candidate at that same local time."""
+    as_of_9_45_et = datetime(2026, 6, 15, 13, 45, tzinfo=timezone.utc)  # 09:45 ET
+    should_enter, score, notes = _score_only(as_of=as_of_9_45_et)
+    assert should_enter is False
+    assert any("Time-of-day gate" in n for n in notes)
+
+
+def test_as_of_mid_session_does_not_hit_the_time_of_day_gate():
+    as_of_noon_et = datetime(2026, 6, 15, 17, 0, tzinfo=timezone.utc)  # noon ET
+    should_enter, score, notes = _score_only(as_of=as_of_noon_et)
+    assert not any("Time-of-day gate" in n for n in notes)
