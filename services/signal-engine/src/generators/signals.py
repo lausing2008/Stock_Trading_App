@@ -52,6 +52,27 @@ Signal accuracy improvements (SA-1 through SA-7):
          When exactly 2 pillars are active (previously no penalty above the SA-19 < 2 gate),
          those styles apply a ×0.70 compress — blocking borderline 2-pillar BUYs while passing
          high-conviction ones (fused ≥ ~0.714 for SWING's 0.65 threshold still clears).
+  SA-33: Early-recovery entry timing fix (2026-07-28, corrected 2026-07-28). Three structural
+         biases caused BUY signals to fire at the top of moves rather than at the bottom:
+         1. TREND pillar: price below SMA50 scored 0.0 (same as freefall). Added a 0.70 partial
+            credit when price > SMA20 but < SMA50 (early recovery structure) — contributes
+            0.70*0.30=0.21 to the pillar alone. CORRECTION: the original 0.25 credit
+            (contributing only 0.075) was verified mathematically incapable of ever reaching the
+            pillar's 0.5 active threshold during genuine early recovery, since sma50_above_sma200
+            and golden_cross_event are both structurally False in that state (they require
+            sma50>sma200) — best case with the old credit was 0.375 even with every other signal
+            confirming. 0.70 reaches 0.51 (just active) specifically when BOTH a supertrend
+            cross-up AND an ADX bullish trend confirm together — a real, achievable bar (the
+            original "either one alone" framing was mathematically unreachable at any credit
+            <= 1.0), while still correctly staying inactive alone (0.21) or with only one of the
+            two confirming signals (0.31/0.41).
+         2. RS compression: rs_rank < 0.70 compressed signals even during genuine recoveries
+            because the 20d RS window captures the decline, not the turn. Added exemption when
+            RSI is in the 28-45 recovery band AND stoch_rsi_cross_up=True.
+         3. Weekly gate: fired hardest (0.40×) exactly when a stock is bottoming (low weekly RSI
+            + down weekly trend). Added exception when stoch_rsi_cross_up=True AND
+            pullback_recovery_delta >= 0.07 (volume-confirmed recovery) — both conditions
+            together mean the daily chart has real evidence of a turn.
   SA-31: Outcomes-data-driven rebalance (2026-06-18). 60-day signal_outcomes table analysis:
          SWING BUY win rate 27.5% at 10d (conf=65-79 band: 13.3% — WORST despite highest ML
          confidence, indicating ML overconfidence at SWING horizon). SHORT BUY 16.2% (n=37).
@@ -1162,6 +1183,20 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
     # Cross-up gets extra weight (1.0) vs sustained bullish (0.7).
     # GC spread velocity: golden territory with narrowing spread scores 0.4 (not 1.0) —
     # 50 SMA curling back toward 200 is early-warning reversal even before a death cross.
+    #
+    # SA-33 EARLY-RECOVERY: a stock in a genuine dip-recovery has price below SMA50 but
+    # above SMA20 (short-term trend turning before the lagging SMA50 catches up). Previously
+    # this scored 0.0 on the trend pillar — the same as a stock in freefall — because
+    # above_sma50=False and sma50_above_sma200=False. Added a partial credit (0.25) for
+    # price > SMA20 > SMA50 (early recovery structure) so the trend pillar doesn't zero out
+    # a setup that is genuinely turning. This is the primary reason BUY signals fired at
+    # the top (where all 3 SMAs were aligned) rather than at the bottom (where none were).
+    sma20_val = close.rolling(20).mean().iloc[-1]
+    _above_sma20 = bool(not pd.isna(sma20_val) and close.iloc[-1] > sma20_val)
+    _early_recovery_trend = _above_sma20 and not above_sma50  # price reclaimed SMA20 but not yet SMA50
+    reasons["above_sma20"] = _above_sma20
+    reasons["early_recovery_trend"] = _early_recovery_trend
+
     if death_cross_event or st_cross_down:
         p_trend = 0.0  # confirmed downtrend; hard override
     else:
@@ -1173,8 +1208,25 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
         )
         _sma_golden_score = (0.8 if gc_spread_expanding else 0.4) if sma50_above_sma200 else 0.0
         _st_score = 1.0 if st_cross_up else (0.7 if st_trend == 1 else 0.0)
+        # SA-33 (corrected): early-recovery partial credit replaces the hard 0.0 for
+        # above_sma50=False. The ORIGINAL 0.25 credit was verified mathematically incapable of
+        # reaching the pillar's own 0.5 "active" threshold (used by independent_pillars_active
+        # below) — during genuine early recovery sma50_above_sma200 and golden_cross_event are
+        # BOTH structurally False (they require sma50 > sma200, which by definition hasn't
+        # happened yet), so _sma_golden_score and _gc_score are always 0.0 too. The best
+        # achievable p_trend with the old 0.25 credit was 0.25*0.30 + 1.0*0.20 + 1.0*0.10 = 0.375
+        # even with BOTH a supertrend cross-up AND an ADX bullish trend confirming — never 0.5.
+        # Raised to 0.70: reaches 0.70*0.30 + 1.0*0.20 + 1.0*0.10 = 0.51 (just active) when BOTH
+        # supertrend cross-up AND bullish_trend confirm together — a stricter bar than the
+        # original "either one" intent (mathematically unreachable at any credit <= 1.0 for the
+        # weaker single signal alone: 1.0*0.10 needs a credit > 1.0, off the pillar's own 0-1
+        # scale), but a real, achievable, and still-conservative one: two independent confirming
+        # signals are required, not just the early-recovery structure alone. With NEITHER
+        # confirming signal (alone: 0.70*0.30=0.21) or only ONE (0.41 with bullish_trend alone,
+        # 0.31 with st_cross_up alone), the pillar still correctly stays inactive.
+        _above_sma50_score = 1.0 if above_sma50 else (0.70 if _early_recovery_trend else 0.0)
         p_trend = (
-            (1.0 if above_sma50 else 0.0) * 0.30 +
+            _above_sma50_score             * 0.30 +
             _sma_golden_score              * 0.25 +
             (1.0 if bullish_trend else 0.0) * 0.20 +
             _gc_score                       * 0.15 +
@@ -2025,14 +2077,25 @@ def _apply_style_signal(
     # ── Relative strength vs sector ───────────────────────────────────────────
     # SA-23: threshold changed 0.80 → 0.70; absolute return floor: never compress if stock
     # itself is up > 5% in 20 days (it's not a true laggard, just a hot-sector context).
+    # SA-33 EARLY-RECOVERY: also skip RS compression when RSI is in the 28-45 recovery band
+    # AND stoch_rsi_cross_up is True — a stock bottoming out always has poor 20d RS because
+    # the RS window captures the decline, not the turn. Compressing a genuine recovery signal
+    # because the stock fell before turning is the exact wrong behaviour. The stoch_cross_up
+    # guard ensures this only applies when momentum is actually turning, not just any oversold.
     rs_comp = p.get("rs_compression")
     stock_20d_ret_pct = base_reasons.get("stock_20d_return_pct")
     rs_absolute_floor = stock_20d_ret_pct is not None and stock_20d_ret_pct > 5.0
-    if rs_comp is not None and rs_rank is not None and rs_rank < 0.70 and not rs_absolute_floor:
+    _rsi_for_rs = base_reasons.get("rsi")
+    _stoch_cross_up_for_rs = base_reasons.get("stoch_rsi_cross_up", False)
+    rs_recovery_floor = (
+        _rsi_for_rs is not None and 28 <= _rsi_for_rs <= 45
+        and _stoch_cross_up_for_rs
+    )
+    if rs_comp is not None and rs_rank is not None and rs_rank < 0.70 and not rs_absolute_floor and not rs_recovery_floor:
         fused = 0.5 + (fused - 0.5) * rs_comp
         reasons["rs_flag"] = "lagging_sector"
-    elif rs_absolute_floor and rs_rank is not None and rs_rank < 0.70:
-        reasons["rs_flag"] = "lagging_sector_floor_applied"  # lagging but absolute return positive
+    elif (rs_absolute_floor or rs_recovery_floor) and rs_rank is not None and rs_rank < 0.70:
+        reasons["rs_flag"] = "lagging_sector_floor_applied"  # lagging but recovery/return floor active
     elif rs_rank is not None:
         reasons["rs_flag"] = "in_line_or_leading"
     fused = float(np.clip(fused, 0.0, 1.0))
@@ -2195,12 +2258,26 @@ def _apply_style_signal(
     # GROWTH style skips this gate: growth names often have abnormal weekly RSI readings.
     # None weekly_trend (missing history) safely skips the gate — no data = no penalty.
     # Threshold ≤ 38 (not < 40) reduces boundary sensitivity; RSI 38-40 is neutral, not bearish.
+    # SA-33 EARLY-RECOVERY: skip the weekly gate when daily momentum is genuinely turning.
+    # The weekly gate fires hardest (0.40×) exactly when a stock is bottoming — low weekly RSI
+    # and a down weekly trend are the definition of a stock at the bottom, not a reason to
+    # suppress a BUY. The gate was designed to block entries into confirmed structural
+    # downtrends, not to block recoveries from them. Add an exception when BOTH:
+    #   1. stoch_rsi_cross_up=True (daily momentum turning from oversold — not just oversold)
+    #   2. pullback_recovery_delta >= 0.07 (volume-confirmed recovery, the strongest tier)
+    # Both conditions together mean the daily chart has real evidence of a turn, not just
+    # a low RSI reading. Without both, the gate still fires normally.
+    _weekly_gate_recovery_exception = (
+        base_reasons.get("stoch_rsi_cross_up", False)
+        and (base_reasons.get("pullback_recovery_delta") or 0.0) >= 0.07
+    )
     if (style_key in ("SWING", "LONG")
             and not p.get("skip_weekly_gate")
             and weekly_rsi is not None
             and weekly_trend is not None
             and weekly_rsi <= 38
-            and weekly_trend == "down"):
+            and weekly_trend == "down"
+            and not _weekly_gate_recovery_exception):
         # Graduated compression: brief dips (< 5 bars) get 0.65× — could recover quickly.
         # Confirmed downtrends (≥ 20 bars) get 0.40× — structurally broken weekly chart.
         # Linear interpolation between 5 and 20 bars.
@@ -2222,6 +2299,8 @@ def _apply_style_signal(
     else:
         reasons["weekly_gate_fired"] = False
         reasons["weekly_gate_bars"] = 0
+        if _weekly_gate_recovery_exception:
+            reasons["weekly_gate_recovery_exception"] = True
 
     # SA-28: Weekly overbought extension gate (SWING/LONG, mirrors the oversold gate above).
     # When weekly RSI > 75 and the weekly trend is up, the stock is in an extended rally —
