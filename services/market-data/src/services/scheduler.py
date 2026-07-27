@@ -3274,6 +3274,16 @@ def _weekly_full_refresh() -> None:
     _post(f"{_settings.signal_engine_url}/signals/tune_style_profiles")
     _record_job_status("tune_style_profiles_sent", "ok", 0.0)
 
+    # T255-STRATEGY-TUNER-PER-HORIZON: joint (buy_threshold x ml_weight_cap) grid sweep — built
+    # and live-verified, but never had a cron registration, same class of gap as
+    # calibrate_ml_weight above (SELFIMPROVE-MISSING-SCHEDULE-REGISTRATIONS). Applies through
+    # the SAME Redis keys outcomes_calibrate_apply/tune_style_profiles already write, so this
+    # is purely additive — no read-side changes needed. Run after tune_style_profiles
+    # (its closest sibling) since both are per-style gate-parameter sweeps.
+    log.info("scheduler.tune_strategy_start")
+    _post(f"{_settings.signal_engine_url}/signals/tune_strategy")
+    _record_job_status("tune_strategy_sent", "ok", 0.0)
+
     # PT-3: calibrate entry factor weights from closed paper trades.
     # Fits logistic regression on (rr_ratio, confidence, entry_score, kscore) vs win/loss.
     # Called directly (not via HTTP) because the service token has no DB user record.

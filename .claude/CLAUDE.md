@@ -3185,13 +3185,59 @@ docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
   "SELECT style, old_value, new_value, promoted, gate_failures FROM tune_history WHERE parameter_class='joint_strategy' ORDER BY ts DESC LIMIT 10;"
 ```
 
-**Not yet built (Phases 2-4, documented not silently dropped)**: Phase 2 — sweep `hold_days`
-per horizon using the already-populated `return_5d/10d/20d` columns (same no-regeneration
-speed advantage). Phase 3 — schedule this weekly once a few manual cycles look sane, folding
-in `calibrate_ml_weight` (currently manual-only). Phase 4 — the explicit limitation that any
-stored-outcome sweep (this one included) can only evaluate TIGHTENING an existing parameter;
-testing a genuinely LOOSER threshold or a different compression map needs the design doc's own
-deferred Phase 2b equity-curve replay, a separate and larger project.
+**Not yet built (Phases 2 and 4, documented not silently dropped)**: Phase 2 — sweep
+`hold_days` per horizon using the already-populated `return_5d/10d/20d` columns (same no-
+regeneration speed advantage). Phase 4 — the explicit limitation that any stored-outcome sweep
+(this one included) can only evaluate TIGHTENING an existing parameter; testing a genuinely
+LOOSER threshold or a different compression map needs the design doc's own deferred Phase 2b
+equity-curve replay, a separate and larger project.
+
+**Phase 3 (scheduling) done 2026-07-28** — `tune_strategy` had been manual-HTTP-only since it
+shipped 2026-07-18, despite its own "Phase 3: schedule this weekly" note above; every sibling
+calibration mechanism (`calibrate_ta_weights`, `calibrate_conviction_weights`,
+`outcomes/calibrate/apply`, `tune_style_profiles`, `calibrate_ml_weight`) was already wired into
+`_weekly_full_refresh()` (`services/market-data/src/services/scheduler.py`, Sunday 14:00 PT),
+just this one was overlooked — same gap class as `calibrate_ml_weight`'s own
+`SELFIMPROVE-MISSING-SCHEDULE-REGISTRATIONS` fix (a built, already-gated mechanism with zero
+cron entry, not a missing safety check). Fixed by adding one `_post()` call right after
+`tune_style_profiles` (its closest sibling — both are per-style gate-parameter sweeps),
+following the identical log/post/record-status pattern every other call in that function
+already uses. Purely additive: `tune_strategy` applies through the SAME Redis keys
+`outcomes_calibrate_apply`/`tune_style_profiles` already write
+(`stockai:signal_thresholds:{H}`, `stockai:style_tune:{H}:ml_weight_cap`), so the read side
+needed zero changes — this is only a missing cron registration, not new wiring.
+
+**`calibrate_ml_weight` was NOT folded into `tune_strategy` this pass** — it's already
+independently scheduled (added by its own earlier fix), and `tune_strategy` sweeps
+`ml_weight_cap` jointly with `buy_threshold` per horizon, a materially different scope than
+`calibrate_ml_weight`'s own single global fusion-weight sweep; folding one into the other would
+be a real behavioral merge, not a scheduling fix, and was correctly left out of this narrow
+scope.
+
+**Tests**: `services/market-data/tests/test_tune_strategy_scheduling.py` (5 cases) — source-
+text regression checks (matching `test_scheduler_static_names.py`'s established pattern for
+this file's Docker-only-dependency constraint): the `_post()` call and `_record_job_status()`
+call both land inside `_weekly_full_refresh()` specifically (not a different function — a
+copy-paste-to-the-wrong-function mistake is exactly the kind of error this checks for), the
+call runs after `tune_style_profiles` (matching the comment's own stated intent), and every
+pre-existing sibling calibration call is still present (guards against an accidental removal
+while inserting the new one). Adversarially verified twice: removing the new call entirely
+(3 of 5 tests correctly failed) and inserting an equivalent call into the WRONG function ahead
+of `_weekly_full_refresh` (4 of 5 tests correctly failed, including the dedicated misplacement
+guard) — both reverted after confirming the failures. Full 505-test market-data suite green;
+`pyflakes` clean (confirmed via `git stash` that all 4 pre-existing warnings in this file
+predate this change).
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the job actually fires on the next Sunday run:
+docker logs stockai-market-data-1 --since 24h | grep 'tune_strategy'
+# Should show scheduler.tune_strategy_start, then a downstream signal-engine
+# tune.ev_gate-style log line (or the real signal-engine equivalent) confirming the POST landed.
+
+# Manually verify the wiring is present in the deployed container:
+docker exec stockai-market-data-1 grep -n "tune_strategy" /app/src/services/scheduler.py
+```
 
 ---
 
