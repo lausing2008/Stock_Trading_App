@@ -30,7 +30,11 @@ _FILING_TYPES = ["8-K", "4", "SC 13D"]
 _USER_AGENT = "StockAI News Intelligence research@lausing.com"
 
 # "8-K/A - Some Company Name, Inc. (0001234567) (Filer)" — extract company name + CIK.
-_TITLE_RE = re.compile(r"^(?P<form>\S+(?:/\S+)?)\s*-\s*(?P<company>.+?)\s*\((?P<cik>\d+)\)\s*\(Filer\)$")
+# Role label varies by form type: 8-K filings use "(Filer)"; Form 4 uses "(Reporting)" for the
+# insider and "(Issuer)" for the company being reported on — confirmed live against real EDGAR
+# entries (a hardcoded "(Filer)"-only match silently fell through to the raw-title fallback for
+# every single Form 4 entry, caught during live post-deploy verification).
+_TITLE_RE = re.compile(r"^(?P<form>\S+(?:/\S+)?)\s*-\s*(?P<company>.+?)\s*\((?P<cik>\d+)\)\s*\((?:Filer|Reporting|Issuer|Subject)\)$")
 
 
 def _fetch_one(filing_type: str) -> list[dict]:

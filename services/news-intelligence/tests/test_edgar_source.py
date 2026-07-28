@@ -25,7 +25,41 @@ _SAMPLE_ATOM = """<?xml version="1.0" encoding="ISO-8859-1" ?>
 </feed>"""
 
 
+_FORM4_ATOM = """<?xml version="1.0" encoding="ISO-8859-1" ?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+<title>Latest Filings</title>
+<entry>
+<title>4 - Leggio Karen Marie (0002021777) (Reporting)</title>
+<link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/2021777/index.htm"/>
+<updated>2026-07-27T20:36:58-04:00</updated>
+</entry>
+<entry>
+<title>4 - Ryerson Holding Corp (0001481582) (Issuer)</title>
+<link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/1481582/index.htm"/>
+<updated>2026-07-27T20:36:58-04:00</updated>
+</entry>
+</feed>"""
+
+
 class TestFetchOne:
+    def test_form4_reporting_role_is_correctly_parsed_not_a_raw_title_fallback(self, monkeypatch):
+        """Real bug caught during live post-deploy verification: Form 4 entries use "(Reporting)"
+        (the insider) or "(Issuer)" (the company) instead of 8-K's "(Filer)" — a regex hardcoded
+        to only accept "(Filer)" silently fell through to the raw-title fallback (no company/cik
+        extracted at all) for every single Form 4 entry, a large fraction of the real feed."""
+        _real_parse = edgar_source.feedparser.parse
+        monkeypatch.setattr(edgar_source.feedparser, "parse", lambda url, request_headers=None: _real_parse(_FORM4_ATOM))
+        items = edgar_source._fetch_one("4")
+        assert items[0]["cik"] == "0002021777"
+        assert items[0]["headline"] == "4 filed — Leggio Karen Marie"
+
+    def test_form4_issuer_role_is_correctly_parsed(self, monkeypatch):
+        _real_parse = edgar_source.feedparser.parse
+        monkeypatch.setattr(edgar_source.feedparser, "parse", lambda url, request_headers=None: _real_parse(_FORM4_ATOM))
+        items = edgar_source._fetch_one("4")
+        assert items[1]["cik"] == "0001481582"
+        assert items[1]["headline"] == "4 filed — Ryerson Holding Corp"
+
     def test_parses_company_and_cik_from_title(self, monkeypatch):
         _real_parse = edgar_source.feedparser.parse
         monkeypatch.setattr(
