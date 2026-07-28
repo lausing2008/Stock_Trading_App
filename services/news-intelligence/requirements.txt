@@ -11,3 +11,10 @@ redis>=5.0
 apscheduler==3.10.4
 feedparser==6.0.11
 websockets==13.1
+# T233-ARCH-INDICATOR-DEDUP: shared/common/__init__.py unconditionally imports indicators.py,
+# which requires numpy/pandas — every service importing anything from common needs these two,
+# even ones (like this one) that never call an indicator function directly. See CLAUDE.md's
+# "api-gateway Crash-Loops on ModuleNotFoundError: No module named 'numpy'" entry for the exact
+# same bug class this pin avoids.
+numpy==1.26.4
+pandas>=2.0.0
