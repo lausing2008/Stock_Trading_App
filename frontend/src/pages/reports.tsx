@@ -50,7 +50,7 @@ const sectionTitle: React.CSSProperties = { fontSize: 13, fontWeight: 700, color
 function TrendTab({ market }: { market: Market }) {
   const { data: regime } = useSWR(`regime-${market}`, () => api.regime(market));
   const { data: fearGreed } = useSWR('fear-greed', () => api.fearGreed());
-  const { data: breadth } = useSWR('breadth', () => api.marketBreadth());
+  const { data: breadth } = useSWR(`breadth-${market}`, () => api.marketBreadth(market));
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
@@ -86,14 +86,13 @@ function TrendTab({ market }: { market: Market }) {
       </div>
 
       <div style={card}>
-        <div style={sectionTitle}>Market Breadth (US)</div>
+        <div style={sectionTitle}>Market Breadth ({market})</div>
         {breadth ? (
           <>
             <div style={{ fontSize: 22, fontWeight: 700, color: breadth.color }}>{fmtPct(breadth.breadth_pct)}</div>
             <div style={{ fontSize: 13, color: '#9ca3af', marginTop: 8 }}>
               {breadth.above_200ma} above / {breadth.below_200ma} below 200MA ({breadth.total} total) — <span style={{ color: breadth.color }}>{breadth.label}</span>
             </div>
-            {market === 'HK' && <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 8 }}>US-only data source — no HK breadth endpoint yet (see T255-REPORTS-TAB tracker item).</div>}
           </>
         ) : <div style={{ color: '#6b7280' }}>Loading…</div>}
       </div>
@@ -292,6 +291,9 @@ const TRAJECTORY_COLOR: Record<string, string> = {
 function FlowTab({ market }: { market: Market }) {
   const { data: rotation } = useSWR(`sector-rotation-kscore-${market}`, () => api.sectorRotation(market));
   const { data: rankings } = useSWR(`rankings-flow-${market}`, () => api.rankings(market));
+  // T255-REPORTS-TAB Phase 2: HK Stock-Connect southbound top-N money flow — only fetched
+  // when the HK tab is active, matching the market-scoping already used above.
+  const { data: hkFlow } = useSWR(market === 'HK' ? 'hk-connect-flow-leaderboard' : null, () => api.hkConnectFlowLeaderboard());
   // T220-G/T258: US-only, K-Score-based rotation — distinct source from the RS-based
   // `rotation` fetch above (which itself may be scoped by market).
   const { data: kscoreRotation } = useSWR('sector-rotation-kscore-t258', () => api.sectorRotationKscore());
@@ -382,6 +384,37 @@ function FlowTab({ market }: { market: Market }) {
           ) : <div style={{ color: '#6b7280', fontSize: 13 }}>No sector rotation data yet — computed weekly.</div>
         ) : <div style={{ color: '#6b7280' }}>Loading…</div>}
       </div>
+
+      {market === 'HK' && (
+        <div style={card}>
+          <div style={sectionTitle}>HK Stock-Connect Southbound Flow — Top Net Buys (5d)</div>
+          <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 10 }}>
+            Net mainland money flowing into HK stocks via Southbound Stock Connect over the
+            last 5 trading days — real, measured positioning, not a prediction. Sourced from a
+            daily holdings-change snapshot (net accumulation = net buying); computed nightly.
+          </div>
+          {hkFlow ? (
+            hkFlow.length > 0 ? (
+              <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ color: '#9ca3af', textAlign: 'left' }}>
+                    <th style={{ padding: '6px 8px' }}>Symbol</th>
+                    <th style={{ padding: '6px 8px' }}>Net Buy (HKD M)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {hkFlow.map(f => (
+                    <tr key={f.symbol} style={{ borderTop: '1px solid #1f2937' }}>
+                      <td style={{ padding: '6px 8px', fontWeight: 700 }}>{f.symbol}</td>
+                      <td style={{ padding: '6px 8px', color: '#4ade80' }}>{fmtNum(f.net_buy_hkd, 1)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : <div style={{ color: '#6b7280', fontSize: 13 }}>No net-buy flow data in this window yet.</div>
+          ) : <div style={{ color: '#6b7280' }}>Loading…</div>}
+        </div>
+      )}
 
       {leadingSector && (
         <div style={card}>

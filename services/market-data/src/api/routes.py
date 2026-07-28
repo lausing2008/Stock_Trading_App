@@ -588,14 +588,17 @@ _MARKET_BREADTH_TTL = 60 * 60 * 4  # 4 hours
 
 
 @router.get("/market_breadth")
-def market_breadth(session: Session = Depends(get_session)):
-    """% of active US stocks trading above their 200-day SMA (from latest ranking fair_price).
-    Redis-cached 4 h. Used as a regime signal: > 60% = healthy bull, < 40% = broad weakness."""
+def market_breadth(market: str = Query("US", pattern="^(US|HK)$"), session: Session = Depends(get_session)):
+    """% of active stocks (US or HK) trading above their 200-day SMA (from latest ranking
+    fair_price). Redis-cached 4 h per market — the cache key is market-scoped (T255-REPORTS-TAB)
+    so a US and an HK reading never overwrite each other. Used as a regime signal: > 60% =
+    healthy bull, < 40% = broad weakness."""
     from db import Ranking, Market as _Market
     from datetime import date as _date
 
+    _market_key = f"{_MARKET_BREADTH_KEY}:{market.upper()}"
     try:
-        cached = _get_redis().get(_MARKET_BREADTH_KEY)
+        cached = _get_redis().get(_market_key)
         if cached:
             return json.loads(cached)
     except Exception:
@@ -604,7 +607,7 @@ def market_breadth(session: Session = Depends(get_session)):
     today = _date.today()
     cutoff = today - timedelta(days=10)
 
-    # Latest ranking per active US stock that has a fair_price (SMA-200)
+    # Latest ranking per active stock (in the requested market) that has a fair_price (SMA-200)
     latest_subq = (
         select(Ranking.stock_id, func.max(Ranking.as_of).label("max_date"))
         .where(Ranking.as_of >= cutoff)
@@ -615,7 +618,7 @@ def market_breadth(session: Session = Depends(get_session)):
         select(Stock.symbol, Ranking.fair_price)
         .join(latest_subq, Stock.id == latest_subq.c.stock_id)
         .join(Ranking, (Ranking.stock_id == latest_subq.c.stock_id) & (Ranking.as_of == latest_subq.c.max_date))
-        .where(Stock.active.is_(True), Stock.market == _Market.US, Ranking.fair_price.is_not(None))
+        .where(Stock.active.is_(True), Stock.market == _Market(market.upper()), Ranking.fair_price.is_not(None))
     ).all()
 
     if not rows:
@@ -666,7 +669,7 @@ def market_breadth(session: Session = Depends(get_session)):
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
-        _get_redis().setex(_MARKET_BREADTH_KEY, _MARKET_BREADTH_TTL, json.dumps(result))
+        _get_redis().setex(_market_key, _MARKET_BREADTH_TTL, json.dumps(result))
     except Exception:
         pass
     return result
@@ -2585,6 +2588,22 @@ def hk_connect_flow(
     """
     from ..services.hk_connect import get_flow_summary
     return get_flow_summary(session, symbol.upper(), days=days)
+
+
+@router.get("/hk-connect-flow/leaderboard/top")
+def hk_connect_flow_leaderboard(
+    days: int = Query(5, ge=1, le=90),
+    limit: int = Query(20, ge=5, le=50),
+    session: Session = Depends(get_session),
+):
+    """T255-REPORTS-TAB: Top-N HK stocks by net Stock-Connect southbound buying over the
+    last `days`. Intentionally public (no auth), matching the per-symbol endpoint above.
+
+    Registered under a literal /leaderboard/top sub-path (not a bare /{symbol}) so it can
+    never be shadowed by — or shadow — the per-symbol route above.
+    """
+    from ..services.hk_connect import get_flow_leaderboard
+    return get_flow_leaderboard(session, days=days, limit=limit)
 
 
 @router.get("/{symbol}/rvol")

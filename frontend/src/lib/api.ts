@@ -121,7 +121,9 @@ export const api = {
   deleteStock: (symbol: string) => request<{ status: string; symbol: string }>(`/admin/stocks/${symbol}`, { method: 'DELETE' }),
   marketOverview: () => request<MarketIndex[]>(`/stocks/market_overview`),
   fearGreed: () => request<FearGreed>(`/stocks/fear_greed`),
-  marketBreadth: () => request<MarketBreadth>(`/stocks/market_breadth`),
+  marketBreadth: (market: string = 'US') => request<MarketBreadth>(`/stocks/market_breadth?market=${market}`),
+  hkConnectFlowLeaderboard: (days = 5, limit = 20) =>
+    request<HkConnectFlowLeaderboardItem[]>(`/stocks/hk-connect-flow/leaderboard/top?days=${days}&limit=${limit}`),
   listWatchlists: () => request<WatchlistMeta[]>(`/watchlists`),
   createWatchlist: (name: string, trading_style?: string | null) => request<WatchlistMeta>(`/watchlists`, { method: 'POST', body: JSON.stringify({ name, trading_style }) }),
   renameWatchlist: (id: number, name: string, trading_style?: string | null) => request<WatchlistMeta>(`/watchlists/${id}`, { method: 'PUT', body: JSON.stringify({ name, trading_style }) }),
@@ -897,6 +899,7 @@ export type OptionsChain = { symbol: string; available: boolean; reason?: string
 export type QuickScanResult = { symbol: string; price: number; change_pct: number | null; change_5d: number | null; rsi: number | null; sma20: number | null; sma50: number | null; above_sma20: boolean | null; above_sma50: boolean | null; vol_ratio: number | null; range_pos_20d: number | null };
 export type FearGreed = { score: number; rating: string; previous_close: number | null; previous_1_week: number | null; previous_1_month: number | null; previous_1_year: number | null; sp500_regime?: 'bull' | 'bear'; sp500_vs_ma200_pct?: number | null; components?: { vix: number; sp500_vs_ma: number; momentum: number; vix_spike: number } };
 export type MarketBreadth = { breadth_pct: number | null; above_200ma: number; below_200ma: number; total: number; label: string; color: string; updated_at: string };
+export type HkConnectFlowLeaderboardItem = { symbol: string; net_buy_hkd: number };
 
 export type SRLevel = { price: number; strength: number; kind: 'support' | 'resistance' };
 export type FairValueGap = {

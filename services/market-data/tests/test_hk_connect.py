@@ -6,7 +6,7 @@ conftest.py for the whole test suite — real network calls are never made in th
 """
 from unittest.mock import MagicMock, patch
 
-from src.services.hk_connect import _symbol_to_eastmoney_code, _fetch_southbound_stock
+from src.services.hk_connect import _symbol_to_eastmoney_code, _fetch_southbound_stock, build_flow_leaderboard
 
 
 # ── _symbol_to_eastmoney_code ──────────────────────────────────────────────────
@@ -107,3 +107,71 @@ def test_json_parse_failure_returns_none_not_raises():
     resp.json.side_effect = ValueError("not json")
     with patch("src.services.hk_connect.httpx.get", return_value=resp):
         assert _fetch_southbound_stock("00700.HK") is None
+
+
+# ── build_flow_leaderboard (T255-REPORTS-TAB) ──────────────────────────────────
+# Pure function, no DB dependency — mirrors event-intelligence's
+# _build_insider_leaderboard()'s fetch-then-aggregate-in-Python convention.
+
+def test_sums_net_buy_hkd_per_symbol_across_multiple_rows():
+    """Multiple days for the same symbol must accumulate into one total, not the last row
+    winning or rows being double-counted."""
+    rows = [
+        {"symbol": "0700.HK", "net_buy_hkd": 1_000_000.0},
+        {"symbol": "0700.HK", "net_buy_hkd": 500_000.0},
+        {"symbol": "9988.HK", "net_buy_hkd": 200_000.0},
+    ]
+    result = build_flow_leaderboard(rows, limit=10)
+    tencent = next(r for r in result if r["symbol"] == "0700.HK")
+    assert tencent["net_buy_hkd"] == 1.5  # (1,000,000 + 500,000) / 1e6
+
+
+def test_excludes_net_sellers_matching_aud_insidertopbuys_netnegative_precedent():
+    """A 'top buys' leaderboard must never pad itself out with net-negative (net-selling)
+    rows, matching this repo's established insider/congress-leaderboard convention exactly."""
+    rows = [
+        {"symbol": "0700.HK", "net_buy_hkd": 1_000_000.0},
+        {"symbol": "BADSTOCK.HK", "net_buy_hkd": -5_000_000.0},
+    ]
+    result = build_flow_leaderboard(rows, limit=10)
+    symbols = [r["symbol"] for r in result]
+    assert "BADSTOCK.HK" not in symbols
+    assert "0700.HK" in symbols
+
+
+def test_exactly_zero_net_buy_is_excluded_not_padded_in():
+    """Strict > 0, not >= 0 — a symbol with exactly zero net flow over the window is not a
+    genuine 'buy', matching the insider leaderboard's own strict floor."""
+    rows = [{"symbol": "FLAT.HK", "net_buy_hkd": 0.0}]
+    result = build_flow_leaderboard(rows, limit=10)
+    assert result == []
+
+
+def test_sorted_descending_by_net_buy_hkd():
+    rows = [
+        {"symbol": "SMALL.HK", "net_buy_hkd": 100_000.0},
+        {"symbol": "BIG.HK", "net_buy_hkd": 5_000_000.0},
+        {"symbol": "MID.HK", "net_buy_hkd": 1_000_000.0},
+    ]
+    result = build_flow_leaderboard(rows, limit=10)
+    assert [r["symbol"] for r in result] == ["BIG.HK", "MID.HK", "SMALL.HK"]
+
+
+def test_limit_applies_after_filtering_and_sorting():
+    rows = [{"symbol": f"SYM{i}.HK", "net_buy_hkd": float(i) * 1_000_000} for i in range(1, 11)]
+    result = build_flow_leaderboard(rows, limit=3)
+    assert len(result) == 3
+    assert result[0]["symbol"] == "SYM10.HK"
+
+
+def test_none_net_buy_hkd_treated_as_zero_not_a_crash():
+    """buy_hkd/sell_hkd are always NULL post-MD-HKCONNECT2, but net_buy_hkd itself could
+    theoretically be None for a malformed row — must not crash, must not count as a buy."""
+    rows = [{"symbol": "PARTIAL.HK", "net_buy_hkd": None},
+            {"symbol": "PARTIAL.HK", "net_buy_hkd": 2_000_000.0}]
+    result = build_flow_leaderboard(rows, limit=10)
+    assert result[0]["net_buy_hkd"] == 2.0
+
+
+def test_empty_input_returns_empty_list():
+    assert build_flow_leaderboard([], limit=10) == []

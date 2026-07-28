@@ -278,3 +278,49 @@ def get_flow_summary(db, symbol: str, days: int = 20) -> dict:
         "flow_20d_net_hkd": round(flow_20d / 1e6, 2),
         "flow_strength":    round(flow_strength, 3),
     }
+
+
+# ── Market-level top-N flow leaderboard (T255-REPORTS-TAB) ────────────────────
+
+def build_flow_leaderboard(rows: list[dict], limit: int) -> list[dict]:
+    """Aggregate raw (symbol, net_buy_hkd) rows into a top-N net-buy leaderboard.
+
+    Pure function, no DB dependency — mirrors event-intelligence's
+    _build_insider_leaderboard()'s fetch-then-aggregate-in-Python convention: sum
+    net_buy_hkd per symbol across the window, filter to NET BUYERS only (net_sum > 0,
+    matching AUD-INSIDERTOPBUYS-NETNEGATIVE's precedent — a "top buys" list should never
+    pad itself out with net sellers), sort descending, cap at `limit`.
+    """
+    totals: dict[str, float] = {}
+    for row in rows:
+        sym = row["symbol"]
+        totals[sym] = totals.get(sym, 0.0) + (row["net_buy_hkd"] or 0.0)
+
+    net_buyers = [{"symbol": sym, "net_buy_hkd": round(total / 1e6, 2)}
+                  for sym, total in totals.items() if total > 0]
+    net_buyers.sort(key=lambda x: x["net_buy_hkd"], reverse=True)
+    return net_buyers[:limit]
+
+
+def get_flow_leaderboard(db, days: int = 5, limit: int = 20) -> list[dict]:
+    """Top-N HK stocks by net Stock-Connect southbound buying over the last `days`.
+
+    All hk_connect_flows rows are already HK-only (ingested via _symbols_for("HK") — see
+    scheduler.py's hk_connect_flows_daily job), so no market join/filter is needed on the
+    table itself; net_buy_hkd is the only real, populated column since the MD-HKCONNECT2
+    switch to Eastmoney (buy_hkd/sell_hkd are always NULL — see get_flow_summary's own note).
+    """
+    from sqlalchemy import text
+
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    try:
+        rows = db.execute(text("""
+            SELECT symbol, net_buy_hkd
+            FROM hk_connect_flows
+            WHERE trade_date >= :cutoff
+        """), {"cutoff": cutoff}).fetchall()
+    except Exception as exc:
+        log.warning("hk_connect.leaderboard_query_failed", exc=str(exc))
+        return []
+
+    return build_flow_leaderboard([{"symbol": r.symbol, "net_buy_hkd": r.net_buy_hkd} for r in rows], limit)
