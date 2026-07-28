@@ -92,6 +92,7 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Portfolio',    href: '/portfolio' },
       { label: 'Trade Board',  href: '/board',    color: '#818cf8' },
       { label: 'Journal',      href: '/journal',  color: '#34d399' },
+      { label: 'E*Trade Transactions', href: '/etrade-transactions', color: '#4ade80', tag: 'new' },
     ],
   },
   {
