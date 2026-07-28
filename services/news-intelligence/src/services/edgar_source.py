@@ -35,7 +35,11 @@ _USER_AGENT = "StockAI News Intelligence research@lausing.com"
 # insider and "(Issuer)" for the company being reported on — confirmed live against real EDGAR
 # entries (a hardcoded "(Filer)"-only match silently fell through to the raw-title fallback for
 # every single Form 4 entry, caught during live post-deploy verification).
-_TITLE_RE = re.compile(r"^(?P<form>\S+(?:/\S+)?)\s*-\s*(?P<company>.+?)\s*\((?P<cik>\d+)\)\s*\((?:Filer|Reporting|Issuer|Subject)\)$")
+# The `form` group is matched two ways, longest-first: "SC \S+..." specifically for SC 13D/13G
+# (whose form name itself contains a space, e.g. "SC 13D/A") — a bare `\S+` form group greedily
+# backtracks into the WRONG "-" for these (matching just "SC" as the form, corrupting the
+# company name), also caught live post-deploy (every real SC 13D/13G entry parsed with cik=None).
+_TITLE_RE = re.compile(r"^(?P<form>SC \S+(?:/\S+)?|\S+(?:/\S+)?)\s+-\s+(?P<company>.+?)\s*\((?P<cik>\d+)\)\s*\((?:Filer|Reporting|Issuer|Subject)\)$")
 
 
 def _fetch_one(filing_type: str) -> list[dict]:

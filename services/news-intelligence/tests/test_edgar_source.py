@@ -41,6 +41,31 @@ _FORM4_ATOM = """<?xml version="1.0" encoding="ISO-8859-1" ?>
 </feed>"""
 
 
+_SC13D_ATOM = """<?xml version="1.0" encoding="ISO-8859-1" ?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+<title>Latest Filings</title>
+<entry>
+<title>SC 13D/A - GENCO SHIPPING &amp; TRADING LTD (0001326200) (Subject)</title>
+<link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/1326200/index.htm"/>
+<updated>2026-07-27T20:36:58-04:00</updated>
+</entry>
+</feed>"""
+
+
+class TestFetchOneScheduleD:
+    def test_sc13d_form_name_with_internal_space_is_correctly_parsed(self, monkeypatch):
+        """Real bug caught during live post-deploy verification: "SC 13D/A" itself contains a
+        space, so the naive \\S+ form-group regex greedily backtracked into the WRONG "-" (the
+        one inside "13D/A - GENCO..." vs. the real "SC 13D/A" boundary), corrupting both the
+        parsed form AND the company name, and leaving cik=None every time — every real SC 13D/
+        13G entry silently fell through to the raw-title fallback since first deploy."""
+        _real_parse = edgar_source.feedparser.parse
+        monkeypatch.setattr(edgar_source.feedparser, "parse", lambda url, request_headers=None: _real_parse(_SC13D_ATOM))
+        items = edgar_source._fetch_one("SC 13D")
+        assert items[0]["cik"] == "0001326200"
+        assert items[0]["headline"] == "SC 13D/A filed — GENCO SHIPPING & TRADING LTD"
+
+
 class TestFetchOneUrlEncoding:
     def test_multi_word_filing_type_is_url_encoded(self, monkeypatch):
         """Real bug caught during live post-deploy verification: "SC 13D" contains a literal
