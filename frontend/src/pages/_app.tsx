@@ -92,7 +92,6 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Portfolio',    href: '/portfolio' },
       { label: 'Trade Board',  href: '/board',    color: '#818cf8' },
       { label: 'Journal',      href: '/journal',  color: '#34d399' },
-      { label: 'E*Trade Transactions', href: '/etrade-transactions', color: '#4ade80', tag: 'new' },
     ],
   },
   {
@@ -118,6 +117,7 @@ const NAV_GROUPS: NavGroupDef[] = [
     adminOnly: true,
     items: [
       { label: 'Paper Portfolio',  href: '/paper-portfolio',  color: '#22c55e' },
+      { label: 'E*Trade Transactions', href: '/etrade-transactions', color: '#4ade80', tag: 'new' },
       { label: 'Entry Gates',      href: '/paper-gates',      color: '#22c55e' },
       { label: 'Horizon Compare',  href: '/horizon-compare',  color: '#38bdf8', tag: 'new' },
       { label: 'Signal Accuracy',  href: '/signal-accuracy',  color: '#a78bfa' },

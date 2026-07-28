@@ -304,7 +304,12 @@ def get_account_info(
     from src.services.broker import get_broker
     broker = get_broker(conn.broker_type, _decrypt_config(conn.config))
     try:
-        acct = broker.get_account(conn.account_id or None)
+        # BUG-BROKERACCTKEY: conn.account_id is the PLAIN account number (e.g. "823145980"),
+        # not E*Trade's opaque accountIdKey — passing it here overrides
+        # EtradeBroker._account_id_key()'s own correct fallback to the real
+        # config["account_id_key"], causing E*Trade to reject every call with "Please enter
+        # valid Account Key". Always pass None so the real key from config is used.
+        acct = broker.get_account(None)
     except Exception as exc:
         raise HTTPException(502, f"Broker account fetch failed: {exc}")
 
@@ -352,7 +357,10 @@ def get_order_history(
     from src.services.broker import get_broker
     broker = get_broker(conn.broker_type, _decrypt_config(conn.config))
     try:
-        orders = broker.list_orders(conn.account_id or None, status=status)
+        # BUG-BROKERACCTKEY: same fix as get_account_info() above — conn.account_id is the
+        # plain account number, not E*Trade's opaque accountIdKey; passing it here overrode
+        # EtradeBroker._account_id_key()'s own correct fallback to config["account_id_key"].
+        orders = broker.list_orders(None, status=status)
     except NotImplementedError:
         raise HTTPException(501, f"{conn.broker_type} does not support order history")
     except Exception as exc:
