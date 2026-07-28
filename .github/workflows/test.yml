@@ -30,7 +30,10 @@ jobs:
             signal-engine \
             strategy-engine \
             portfolio-optimizer \
-            research-engine; do
+            research-engine \
+            decision-engine \
+            event-intelligence \
+            news-intelligence; do
             echo "── installing $svc ──"
             pip install -q -r services/$svc/requirements.txt
           done
@@ -48,7 +51,7 @@ jobs:
           retention-days: 7
 
   typecheck:
-    name: Frontend typecheck
+    name: Frontend typecheck + unit tests
     runs-on: ubuntu-latest
 
     steps:
@@ -66,3 +69,6 @@ jobs:
 
       - name: TypeScript check
         run: npm run --prefix frontend typecheck 2>/dev/null || npx --prefix frontend tsc --noEmit
+
+      - name: Frontend unit tests
+        run: npm test --prefix frontend

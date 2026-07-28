@@ -28,7 +28,7 @@ ps:
 	docker compose -f docker/docker-compose.yml ps
 
 test:
-	@for svc in market-data technical-analysis ml-prediction ranking-engine signal-engine strategy-engine portfolio-optimizer research-engine api-gateway; do \
+	@for svc in market-data technical-analysis ml-prediction ranking-engine signal-engine strategy-engine portfolio-optimizer research-engine api-gateway decision-engine event-intelligence news-intelligence; do \
 		echo "== $$svc =="; \
 		(cd services/$$svc && python -m pytest -q; ec=$$?; [ "$$ec" -eq 0 ] || [ "$$ec" -eq 5 ] || exit 1); \
 	done
