@@ -540,6 +540,48 @@ def test_hk_flow_gate_never_applies_to_us_market():
     assert result is None
 
 
+# ── Low-volume hard reject (T200, T232-DL-DUALSCORER-DEBT) ────────────────────────────────
+# Market-agnostic (unlike HK Stock-Connect flow) — applies regardless of market, so no
+# HK-hours freeze needed; the file's default US-hours fixture covers every test here.
+
+def test_low_volume_below_min_volume_z_blocks():
+    result = hr.check_hard_rejects(
+        **_base_kwargs(reasons={"macro_blackout": None, "last_price": 100.0, "volume_z": -2.0})
+    )
+    assert result is not None and "Volume z-score" in result and "-2.00" in result
+
+
+def test_low_volume_at_or_above_min_volume_z_does_not_block():
+    result = hr.check_hard_rejects(
+        **_base_kwargs(reasons={"macro_blackout": None, "last_price": 100.0, "volume_z": -1.5})
+    )
+    assert result is None
+    result2 = hr.check_hard_rejects(
+        **_base_kwargs(reasons={"macro_blackout": None, "last_price": 100.0, "volume_z": 1.0})
+    )
+    assert result2 is None
+
+
+def test_low_volume_gate_skipped_when_volume_z_absent():
+    """T232-DL5: a missing volume_z must fail OPEN, not be treated as 0/average — matching
+    _scan_for_entries' own fail-open behavior exactly (a genuine data gap must never silently
+    pass the gate as if volume were confirmed average)."""
+    result = hr.check_hard_rejects(
+        **_base_kwargs(reasons={"macro_blackout": None, "last_price": 100.0})
+    )
+    assert result is None
+
+
+def test_low_volume_gate_respects_custom_min_volume_z():
+    """paper_trading_engine.py's real default is -1.5, but cfg can override it — a value that
+    clears the default floor must still be blocked under a tighter custom threshold."""
+    result = hr.check_hard_rejects(
+        **_base_kwargs(cfg={"min_volume_z": -0.5},
+                       reasons={"macro_blackout": None, "last_price": 100.0, "volume_z": -1.0})
+    )
+    assert result is not None and "Volume z-score" in result
+
+
 # ── Gap filter (T171) ──────────────────────────────────────────────────────────
 # NOTE: the gap filter runs AFTER the R:R gate (see gate order at the top of this file), so
 # every test here must also move stop_price/take_profit along with live_price to keep R:R

@@ -8592,3 +8592,58 @@ Should show the gate present. If an HK entry with confirmed negative flow is sti
 by `/decide/{symbol}` after confirming this, check whether the caller is actually sending
 `reasons.flow_5d_net_hkd` and `market="HK"` in the request body at all — the gate is a no-op
 without both.
+
+---
+
+## Feature Reference: T232-DL-DUALSCORER-DEBT — Low-Volume Gate (T200) Ported; Price-Drift Investigated, Deliberately Deferred (2026-07-28)
+
+**Gap closed**: another divergence in the ongoing series — the low-volume gate.
+`_scan_for_entries()`'s T200 gate hard-skips a candidate when `volume_z < min_volume_z`
+(default `-1.5`) before it's ever scored — a thin-market safety check (higher slippage/exit
+risk). decision-engine only had the same value's SOFT scoring layer (`scorer.py`'s Layer 3a:
+`+1` above `z=1.0`, `-1` below `z=-0.5`) — never a hard block, and materially looser than the
+`-1.5` floor. Same zero-write-side-threading shape as the HK flow gate: `sig.reasons` already
+carries `volume_z` when present, and `hard_rejects.py` already builds a `_reasons = reasons or
+{}` local for the T171/T220-D gates — the entire fix was one new read-side block.
+
+**A real scope-boundary finding, not built**: investigated porting price-drift (T196,
+`max_price_drift_pct`, default 3.0%) in the same pass and found it does NOT fit the
+zero-write-side pattern every other port in this series has used. Its reference price
+(`_sig_ref_prices[stock.id]`, a separately bulk-prefetched signal-date close) is genuinely NOT
+part of `sig.reasons` — unlike every field ported so far. Faithfully porting it needs either
+(a) new write-side threading of `_sig_ref_prices[stock.id]` into the request payload, or (b) a
+documented semantic substitution reusing the ALREADY-ported T171 gate's `reasons["last_price"]`
+field instead (a different, arguably softer reference point than the source gate uses). Both
+are real design decisions requiring their own scoped pass, not a rushed addition alongside a
+genuinely-free port — correctly deferred rather than built into this session.
+
+**Tests**: 4 new cases in `services/decision-engine/tests/test_hard_rejects.py` (72 total, up
+from 68; decision-engine suite 160 total, up from 156) — below/at-or-above the `-1.5` floor,
+gate skipped when `volume_z` itself is absent (T232-DL5 fail-open — a missing value must never
+be treated as `0`/average, matching `_scan_for_entries` exactly), and a custom-threshold case.
+Market-agnostic (unlike the HK-only flow gate) — no special HK-hours fixture needed, the
+file's default US-hours fixture covers every test.
+
+**Adversarial verification** — 2 sabotage cycles, both caught and reverted:
+1. The comparison logic (`if False:`) — caught by the 2 dedicated blocking tests.
+2. The fail-open presence check (hardcoded `_vol_z_raw = 0.0`, `if True:`) — caught by the
+   same 2 tests via a real value-mismatch (0.0 is above -1.5, so it never blocks — confirming
+   the guard's removal changes behavior even when it doesn't crash).
+
+Full 160-test decision-engine suite green after every revert; `pyflakes` clean.
+
+**Tracker correction made in the same pass**: `T232-DL-DUALSCORER-DEBT`'s own running
+"dimensions remain open" tally still listed HK Stock-Connect flow as unported from the
+PREVIOUS update, even though it was actually closed in the very next commit after that update
+was written (this session's earlier round). Corrected via a new `UPDATE 2026-07-28b`
+paragraph — both the HK-flow tally error and this session's low-volume port are now reflected,
+dropping the open-dimension count from ~25 to ~23.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-decision-engine-1 grep -n 'min_volume_z\|Volume z-score' /app/src/api/core/hard_rejects.py
+```
+Should show the gate present. If a thin-market entry is still approved by `/decide/{symbol}`
+after confirming this, check whether the caller is actually sending `reasons.volume_z` in the
+request body at all — the gate is a no-op without one (correctly — not all symbols have a
+computed volume z-score at every moment).

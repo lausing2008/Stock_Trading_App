@@ -239,6 +239,28 @@ def check_hard_rejects(
                 f"— Stock Connect southbound selling pressure (T224-A)"
             )
 
+    # T232-DL-DUALSCORER-DEBT: Low-volume HARD REJECT (T200, min_volume_z default -1.5),
+    # ported from paper_trading_engine.py's _scan_for_entries(). Genuinely distinct from this
+    # file's own pre-existing SOFT volume-z SCORE layer in scorer.py (Layer 3a: +1 above
+    # z=1.0, -1 below z=-0.5, 0 in between) — that layer nudges the score but never blocks
+    # outright, and its -0.5 mild-penalty band is a materially looser bar than this gate's
+    # -1.5 hard floor. T200 is a separate, earlier hard pre-filter in _scan_for_entries that
+    # discards a thin-market candidate entirely before it's ever scored — decision-engine had
+    # no equivalent, so /decide/{symbol} could approve an entry against abnormally low volume
+    # (higher slippage/exit risk) the fallback gate would reject. Same zero-write-side-
+    # threading shape as the HK flow gate above — sig.reasons already carries volume_z when
+    # present (T232-DL5: a missing value must fail OPEN, not be treated as 0/average, which
+    # would silently pass the gate for a genuine data gap — matches the fallback exactly).
+    _vol_z_raw = _reasons.get("volume_z")
+    if _vol_z_raw is not None:
+        _vol_z = float(_vol_z_raw)
+        _min_vol_z = float(cfg.get("min_volume_z", -1.5))
+        if _vol_z < _min_vol_z:
+            return (
+                f"Volume z-score {_vol_z:.2f} below minimum {_min_vol_z:.2f} "
+                f"— thin market, elevated slippage/exit risk (T200)"
+            )
+
     # T171: Premarket gap filter — reject if price has already gapped up significantly
     # from its signal-time close. reasons["last_price"] is the close at signal-compute time.
     _signal_close = _reasons.get("last_price")
