@@ -2842,6 +2842,7 @@ def _call_decision_engine(
     ta_score: float | None = None,
     regime_state: str = "neutral",
     confidence_delta: float | None = None,
+    index_return_pct: float | None = None,
 ) -> tuple[bool, str, int, str | None] | None:
     """Call Decision Engine and return (should_enter, verdict, score, blocked_reason).
 
@@ -2938,6 +2939,21 @@ def _call_decision_engine(
                     **( {"confidence_delta": confidence_delta} if confidence_delta is not None else {} ),
                     **( {"max_confidence_decline": cfg.get("max_confidence_decline", -8.0)}
                         if confidence_delta is not None else {} ),
+                    # T232-DL-DUALSCORER-DEBT: T221's index-trend gate is _scan_for_entries'
+                    # own HARD pre-filter (index_return_pct < index_trend_gate_pct, default
+                    # -1.5% — a single-day macro-shock catch, distinct from the regime filter's
+                    # sustained bear/risk_off classification) — a candidate is discarded before
+                    # DE is ever called on the real production path. DE had no equivalent at
+                    # all, so /decide/{symbol} called standalone (e.g. decide.tsx) could
+                    # silently approve an entry right after a sharp index selloff the fallback
+                    # would reject outright. UNLIKE min_kscore/min_ta_score/HK-flow/low-volume,
+                    # this value was never already flowing to DE anywhere (not in sig.reasons,
+                    # not in /stocks/regime) — a genuine write-side change, not a free port.
+                    # index_return_pct is already computed once per scan cycle above (before
+                    # the candidate loop), reused here rather than re-fetched per-candidate.
+                    **( {"index_return_pct": index_return_pct} if index_return_pct is not None else {} ),
+                    **( {"index_trend_gate_pct": cfg.get("index_trend_gate_pct", -0.015)}
+                        if index_return_pct is not None else {} ),
                     # T203-LLMWIRE: llm_scoring_enabled existed in decision-engine's
                     # llm_scorer.py since T203 but was never threaded from portfolio config
                     # into this request — a built-but-dormant feature with no way to turn it
@@ -3818,7 +3834,18 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     # Regime filter handles sustained bear/risk_off conditions; this catches single-day macro
     # shocks (FOMC surprise, CPI print, HSI circuit-breaker open) where any long entry will
     # immediately fight the tide. Uses yfinance fast_info; fail-open on network errors.
+    #
+    # T232-DL-DUALSCORER-DEBT: _idx_ret is hoisted to survive past this block (unlike before,
+    # where it only existed inside the threshold-tripped branch) specifically so it can be
+    # threaded through to decision-engine below — this gate's decision logic is purely a
+    # function of (market, index_return), no per-symbol/per-portfolio state at all, making it
+    # genuinely portable, UNLIKE the last two ports (HK flow, low-volume) this value was never
+    # already flowing to decision-engine anywhere (not in sig.reasons, not in /stocks/regime) —
+    # a real write-side change, not a free port. Computed once per scan cycle here (this block
+    # already ran before the fix), reused for every candidate in the loop below rather than
+    # re-fetched per-candidate.
     _mkt = cfg.get("market", "US")  # defined here — reused in market cluster cap below
+    _idx_ret: float | None = None
     if cfg.get("index_trend_gate_enabled", True):
         _idx_sym = "^HSI" if _mkt == "HK" else "SPY"
         _idx_threshold = float(cfg.get("index_trend_gate_pct", -0.015))
@@ -4420,6 +4447,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             # value when regime_state is choppy/risk_off, matching _should_enter()'s own usage.
             regime_state=(live_regime.get("state", "neutral") if live_regime else "neutral"),
             confidence_delta=confidence_delta,          # T232-DL-DUALSCORER-DEBT: T202 gate parity
+            index_return_pct=_idx_ret,                  # T232-DL-DUALSCORER-DEBT: T221 gate parity
         )
         _max_corr = _max_correlation_with_open_positions(
             session, stock.id, _open_stock_ids, _open_closes_cache,

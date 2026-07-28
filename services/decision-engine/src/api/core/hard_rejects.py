@@ -82,6 +82,30 @@ def check_hard_rejects(
     if regime_state == "bear":
         return "Bear regime — all long entries blocked"
 
+    # T232-DL-DUALSCORER-DEBT: Index-trend HARD REJECT (T221), ported from
+    # paper_trading_engine.py's _scan_for_entries() (index_return_pct < index_trend_gate_pct,
+    # default -1.5%). Genuinely distinct from the regime_state=="bear" check just above —
+    # regime is a SUSTAINED multi-day classification; this is a single-day macro-shock catch
+    # (FOMC surprise, CPI print, HSI circuit-breaker open) where any long entry immediately
+    # fights the tide, even in an otherwise-bull/choppy regime that hasn't reclassified yet.
+    # Placed here (market-wide, before any per-symbol gate) rather than alongside the
+    # reasons-derived gates below, since — unlike every other gate in this file — this one is
+    # purely a function of (market, index_return), with zero per-symbol/per-portfolio state.
+    # UNLIKE min_kscore/min_ta_score/HK-flow/low-volume, this value was never already flowing
+    # to decision-engine anywhere (not in sig.reasons, not in /stocks/regime) — a genuine
+    # write-side change on paper_trading_engine.py's side, not a free port; both
+    # index_return_pct and index_trend_gate_pct are only present when the caller supplies a
+    # real measured value (see paper_trading_engine.py's config_overrides), matching this
+    # file's established optional-parameter fail-open convention exactly.
+    if cfg.get("index_trend_gate_pct") is not None:
+        _idx_ret_val = cfg.get("index_return_pct")
+        if _idx_ret_val is not None and float(_idx_ret_val) < float(cfg["index_trend_gate_pct"]):
+            return (
+                f"Index down {abs(float(_idx_ret_val))*100:.1f}% today, exceeds "
+                f"{abs(float(cfg['index_trend_gate_pct']))*100:.1f}% threshold "
+                f"— macro shock, no new entries (T221)"
+            )
+
     if open_positions >= max_positions:
         return f"Portfolio full ({open_positions}/{max_positions} positions)"
 

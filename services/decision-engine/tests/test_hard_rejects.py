@@ -166,6 +166,58 @@ def test_bear_regime_blocks_all_entries():
     assert result is not None and "Bear regime" in result
 
 
+# ── Index-trend hard reject (T221, T232-DL-DUALSCORER-DEBT) ──────────────────────────────
+# Genuinely distinct from the bear-regime check just above — regime is a SUSTAINED multi-day
+# classification; this is a single-day macro-shock catch (FOMC surprise, CPI print, HSI
+# circuit-breaker open) that can fire even in an otherwise-bull/choppy regime that hasn't
+# reclassified yet. Purely a function of (market, index_return) — no per-symbol/per-portfolio
+# state at all, unlike every OTHER gate in this file, which is why it's placed here rather
+# than alongside the reasons-derived gates.
+
+def test_index_down_beyond_threshold_blocks():
+    result = hr.check_hard_rejects(
+        **_base_kwargs(cfg={"index_return_pct": -0.03, "index_trend_gate_pct": -0.015})
+    )
+    assert result is not None and "Index down" in result and "3.0" in result
+
+
+def test_index_down_at_or_within_threshold_does_not_block():
+    """The real gate uses strict < (not <=) — exactly at the threshold does not block,
+    matching _scan_for_entries' own `_idx_ret < _idx_threshold` comparison exactly."""
+    result = hr.check_hard_rejects(
+        **_base_kwargs(cfg={"index_return_pct": -0.015, "index_trend_gate_pct": -0.015})
+    )
+    assert result is None
+    result2 = hr.check_hard_rejects(
+        **_base_kwargs(cfg={"index_return_pct": 0.01, "index_trend_gate_pct": -0.015})
+    )
+    assert result2 is None
+
+
+def test_index_trend_gate_skipped_when_threshold_absent():
+    """An older caller not yet sending index_trend_gate_pct (or index_return_pct) must not
+    be blocked — this gate is opt-in via cfg, matching every other optional gate in this
+    file."""
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"index_return_pct": -0.10}))
+    assert result is None
+
+
+def test_index_trend_gate_skipped_when_index_return_pct_itself_absent():
+    """index_trend_gate_pct present but no actual index_return_pct value sent — must not
+    crash or spuriously block; there's nothing to compare against."""
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"index_trend_gate_pct": -0.015}))
+    assert result is None
+
+
+def test_index_trend_gate_positive_return_never_blocks_regardless_of_threshold():
+    """A RISING index (positive return) must never block, no matter how tight the
+    threshold — confirms the gate's sign isn't accidentally inverted."""
+    result = hr.check_hard_rejects(
+        **_base_kwargs(cfg={"index_return_pct": 0.02, "index_trend_gate_pct": -0.001})
+    )
+    assert result is None
+
+
 def test_portfolio_full_blocks_entry():
     result = hr.check_hard_rejects(**_base_kwargs(open_positions=6, max_positions=6))
     assert result is not None and "full" in result.lower()

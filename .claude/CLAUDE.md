@@ -8647,3 +8647,89 @@ Should show the gate present. If a thin-market entry is still approved by `/deci
 after confirming this, check whether the caller is actually sending `reasons.volume_z` in the
 request body at all — the gate is a no-op without one (correctly — not all symbols have a
 computed volume z-score at every moment).
+
+---
+
+## Feature Reference: T232-DL-DUALSCORER-DEBT — Index-Trend Gate (T221) Ported — First Genuine Write-Side-Only Change in This Series (2026-07-28)
+
+**Gap closed**: another divergence — the index-trend gate. `_scan_for_entries()`'s T221 gate
+hard-blocks all new entries when the market index (SPY for US, `^HSI` for HK) is down more
+than `index_trend_gate_pct` (default `-1.5%`) same-day — a single-day macro-shock catch (FOMC
+surprise, CPI print, an HSI circuit-breaker) distinct from the regime filter's sustained
+multi-day bear/risk_off classification. decision-engine had zero equivalent, so
+`/decide/{symbol}` could approve an entry right after a sharp index selloff the fallback gate
+would reject outright.
+
+**A genuine departure from the last 3 ports in this series** (HK flow, low-volume,
+declining-confidence) — all three were "free" because their values were ALREADY flowing to
+decision-engine somewhere (`sig.reasons`, already sent wholesale). Index-return was not — it's
+a live, uncached, single yfinance `fast_info` call made once per scan cycle, with no existing
+path to decision-engine (not in `sig.reasons`, not in `/stocks/regime`, not in any existing
+`config_overrides` key). This required a real, if small, write-side change.
+
+**Design decision made**: rather than adding a NEW decision-engine-side fetch (which would
+need a new market-data endpoint field, plus the established cache+fallback+executor pattern
+`regime.py`/`aggregator.py` already use for cross-service reads — real but avoidable extra
+surface), the fix reuses the value `_scan_for_entries()` ALREADY computes for free once per
+scan cycle, before the candidate loop even starts. `_idx_ret` was hoisted from a
+block-scoped variable (previously only assigned inside the threshold-tripped branch, which
+returns early) to a properly-initialized `_idx_ret: float | None = None` that survives to the
+per-candidate `_call_decision_engine()` call site regardless of outcome — computed once,
+reused for every candidate in the cycle, never re-fetched per-candidate.
+
+**Implementation**:
+1. `paper_trading_engine.py`'s `_call_decision_engine()` gained an `index_return_pct: float |
+   None = None` parameter; the real call site passes `index_return_pct=_idx_ret` (the same
+   hoisted local). Added `"index_return_pct"`/`"index_trend_gate_pct"` to `config_overrides`,
+   both conditional on `index_return_pct is not None` (matching every other gate's
+   conditional-inclusion pattern in this series exactly).
+2. `hard_rejects.py`'s `check_hard_rejects()` — placed the new gate right after the
+   `regime_state == "bear"` check, NOT alongside the `_reasons`-derived gates below (T171,
+   T220-D, HK-flow, low-volume) — this gate is the only one in the file that's purely a
+   function of `(market, index_return)` with zero per-symbol/per-portfolio state, so it
+   belongs with the other market-wide gate (bear regime), not the reasons-derived cluster:
+   ```python
+   if cfg.get("index_trend_gate_pct") is not None:
+       _idx_ret_val = cfg.get("index_return_pct")
+       if _idx_ret_val is not None and float(_idx_ret_val) < float(cfg["index_trend_gate_pct"]):
+           return f"Index down {abs(float(_idx_ret_val))*100:.1f}% today, exceeds {abs(float(cfg['index_trend_gate_pct']))*100:.1f}% threshold — macro shock, no new entries (T221)"
+   ```
+
+**Tests**: `services/market-data/tests/test_index_trend_config_wiring.py` (new, 5 cases,
+source-text extraction) — confirms both keys reach `config_overrides`, the threshold's
+fallback matches the real `-0.015` literal, both keys are conditional on presence, `_idx_ret`
+is properly hoisted with a typed `None` default BEFORE the conditional block (guarding against
+a real `NameError` — the bare `except Exception: pass` inside the block would otherwise
+silently leave the name unbound on any exception path), and the call site passes the same
+hoisted local through rather than re-fetching. `services/decision-engine/tests/
+test_hard_rejects.py` gained 5 cases (165 total, up from 160) — below/at-exactly/above the
+threshold (the real gate's strict `<`, not `<=`), gate skipped when either
+`index_trend_gate_pct` or `index_return_pct` itself is absent, and a dedicated sign-safety
+test confirming a RISING index return never blocks regardless of threshold.
+
+**Adversarial verification** — 3 sabotage cycles, all caught and reverted:
+1. The comparison logic in `hard_rejects.py` (`if False:`) — caught by exactly the 1 dedicated
+   blocking test.
+2. The write-side `config_overrides` conditional inclusion in `paper_trading_engine.py`
+   (removed both dict-spread lines) — caught by 3 of the 5 wiring tests (the 2 unrelated ones
+   — the hoisting check and the call-site kwarg check — correctly stayed green).
+3. The `_idx_ret` hoisting fix itself (reverted to the pre-fix block-scoped assignment) —
+   caught by exactly the dedicated hoisting-order test.
+
+Full 552-test market-data suite (up from 547) and 165-test decision-engine suite (up from 160)
+green after every revert; `pyflakes` clean on both touched files (confirmed via `git stash`
+that the 3 pre-existing `paper_trading_engine.py` warnings predate this change — only a line
+number shifted).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n '"index_return_pct":\|_idx_ret: float' /app/src/services/paper_trading_engine.py
+docker exec stockai-decision-engine-1 grep -n 'index_trend_gate_pct' /app/src/api/core/hard_rejects.py
+```
+Both should show the fix present. If an entry is still approved by `/decide/{symbol}` right
+after a sharp index selloff, check whether the caller is actually sending
+`index_return_pct`/`index_trend_gate_pct` in `config_overrides` — the gate is a no-op without
+both (correctly — a `/decide/{symbol}` call made outside the real `_scan_for_entries()` scan
+cycle, e.g. `decide.tsx`, has no way to supply a fresh index-return value of its own; this port
+only closes the gap for the REAL trading path, which always goes through
+`_call_decision_engine()`).
