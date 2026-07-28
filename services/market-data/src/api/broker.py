@@ -311,6 +311,18 @@ def get_account_info(
         # valid Account Key". Always pass None so the real key from config is used.
         acct = broker.get_account(None)
     except Exception as exc:
+        # BUG-BROKERROUTE-STALEAUTH: an expired/rejected E*Trade token (tokens hard-expire at
+        # midnight ET daily, per T257-ETRADE-PROD-SYSTEMATIC) was previously invisible here —
+        # this route just returned a generic 502 with no indication the user needed to
+        # re-authorize, and conn.is_authorized stayed stuck at True even though the real token
+        # was dead, until the next 08:30 ET health check caught it (up to a full day later).
+        # Reuses the same in-loop detection already wired into the paper-trading engine's own
+        # broker call sites (_place_broker_entry/_place_broker_exit/poll_broker_order_fills) —
+        # this route was a genuine gap in that same "in-loop, not just once-daily" coverage.
+        from ..services.scheduler import _is_token_rejected_error, _mark_broker_unauthorized_and_notify
+        if _is_token_rejected_error(exc):
+            _mark_broker_unauthorized_and_notify(session, conn)
+            raise HTTPException(401, f"E*Trade session expired — a fresh re-authorize link has been emailed to you. ({exc})")
         raise HTTPException(502, f"Broker account fetch failed: {exc}")
 
     return {
@@ -364,6 +376,13 @@ def get_order_history(
     except NotImplementedError:
         raise HTTPException(501, f"{conn.broker_type} does not support order history")
     except Exception as exc:
+        # BUG-BROKERROUTE-STALEAUTH: same fix as get_account_info() above — an expired token
+        # must flip is_authorized and notify the user immediately, not silently 502 while the
+        # DB keeps claiming the connection is still authorized.
+        from ..services.scheduler import _is_token_rejected_error, _mark_broker_unauthorized_and_notify
+        if _is_token_rejected_error(exc):
+            _mark_broker_unauthorized_and_notify(session, conn)
+            raise HTTPException(401, f"E*Trade session expired — a fresh re-authorize link has been emailed to you. ({exc})")
         raise HTTPException(502, f"Broker order history fetch failed: {exc}")
 
     return {
