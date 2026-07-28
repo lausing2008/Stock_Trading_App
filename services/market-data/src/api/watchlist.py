@@ -19,6 +19,11 @@ class WatchlistItemOut(BaseModel):
     currency: str
     added_at: str
     note: str | None = None
+    # T260-DELISTED-BADGE: surfaces aud14-survivorship's real delisting detection to the
+    # watchlist UI. Deliberately informational only — no auto-removal (see the design note in
+    # CLAUDE.md's aud14-survivorship entry for why silent auto-removal was rejected for a
+    # terminal/irreversible condition, unlike the existing win-rate-based auto-rotation).
+    delisted: bool = False
 
     class Config:
         from_attributes = True
@@ -76,7 +81,7 @@ def _item_out(item: WatchlistItem, stock: Stock) -> WatchlistItemOut:
         symbol=stock.symbol, name=stock.name, name_zh=stock.name_zh,
         market=stock.market, exchange=stock.exchange, sector=stock.sector,
         currency=stock.currency, added_at=item.added_at.isoformat(),
-        note=item.note,
+        note=item.note, delisted=stock.delisted,
     )
 
 

@@ -1115,7 +1115,17 @@ export default function Watchlist() {
 
                 {/* Top row: symbol + price */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
-                  <Link href={`/stock/${item.symbol}${activeList?.trading_style ? `?style=${activeList.trading_style}` : ''}`} style={{ fontWeight: 700, fontSize: '17px', letterSpacing: '-0.01em', color: '#f1f5f9' }}>{item.symbol}</Link>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Link href={`/stock/${item.symbol}${activeList?.trading_style ? `?style=${activeList.trading_style}` : ''}`} style={{ fontWeight: 700, fontSize: '17px', letterSpacing: '-0.01em', color: '#f1f5f9' }}>{item.symbol}</Link>
+                    {item.delisted && (
+                      <span
+                        title="Yahoo Finance reports no data for this symbol — it appears to be delisted. Historical data and notes are preserved; remove it from this watchlist manually if you no longer want to track it."
+                        style={{ fontSize: '10px', fontWeight: 700, color: '#f87171', padding: '1px 6px', borderRadius: '4px', background: 'rgba(248,113,113,0.15)', border: '1px solid rgba(248,113,113,0.35)' }}
+                      >
+                        DELISTED
+                      </span>
+                    )}
+                  </div>
                   <div style={{ textAlign: 'right' }}>
                     {lp ? (<>
                       <div style={{ fontWeight: 600, fontSize: '14px', color: '#f1f5f9' }}>

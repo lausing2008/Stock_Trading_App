@@ -883,7 +883,17 @@ Return ONLY valid JSON — no markdown, no prose:
       <div className="flex items-start justify-between">
         <div className="flex items-start gap-6">
           <div>
-            <h1 className="text-2xl font-bold">{symbol}</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-bold">{symbol}</h1>
+              {(data.price as { delisted?: boolean })?.delisted && (
+                <span
+                  title="Yahoo Finance reports no data for this symbol — it appears to be delisted. Historical data is preserved for reference."
+                  style={{ fontSize: '11px', fontWeight: 700, color: '#f87171', padding: '2px 8px', borderRadius: '5px', background: 'rgba(248,113,113,0.15)', border: '1px solid rgba(248,113,113,0.35)' }}
+                >
+                  DELISTED
+                </span>
+              )}
+            </div>
             <div className="text-sm text-slate-400">{(data.price as { name?: string })?.name}</div>
             {(data.price as { name_zh?: string | null })?.name_zh && (
               <div className="text-xs text-slate-500" style={{ marginTop: '1px' }}>

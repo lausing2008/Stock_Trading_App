@@ -4018,6 +4018,18 @@ const ITEMS: Item[] = [
     what: 'routes.py train_all queries active stocks only. The model learns: "these patterns preceded gains" without ever seeing: "these same patterns preceded a delisting." This is classic survivorship bias — the model is trained on winners by construction.',
     fix: 'Add a delisted flag (Boolean, default False) to the Stock table. Include delisted symbols in ML training (filter: Stock.active.is_(True) OR Stock.delisted.is_(True)). As an interim measure: add survivorship_bias: true to every ML metric bundle and tighten the buy_threshold precision floor by 3–5 percentage points to compensate for the known upward bias.',
   },
+  {
+    id: 'T260-DELISTED-BADGE',
+    defaultStatus: 'done',
+    implementedNote: 'DONE 2026-07-27. Direct follow-up to aud14-survivorship, after the user asked "if delisted, should we remove from watchlist?" Researched first: today Stock.delisted touches nothing user-facing at all — watchlists/alerts/paper positions each handle "no fresh data" independently and inconsistently. Decided against auto-removal (offered 3 options: badge-only / auto-remove-with-notification / auto-remove-silently-matching-precedent; user chose badge-only) — the existing auto-rotation precedent\'s silent removal is justified by being reversible (win-rate can recover); delisting is terminal, so silent removal would repeat that pattern\'s one weak spot in exactly the case where it matters most. Implementation: WatchlistItemOut.delisted and StockOut.delisted (both bool, default False) threaded from the already-fetched Stock ORM row — zero new endpoints, zero handler-function changes for StockOut (from_attributes=True picks it up automatically; api-gateway\'s /aggregate/overview pass-through inherits it for free too). Small red "DELISTED" badge with an explanatory tooltip added next to the symbol on both the watchlist card and the stock detail page header. 3 new tests (real watchlist.py module import, no source-extraction needed — _item_out() is a pure function), adversarially verified. Full 535-test market-data suite green (up from 532); frontend typecheck/vitest/build all clean. Deliberately NOT built this pass (documented, not dropped): alert-on-delisted-symbol silent-forever-non-firing and paper-position-freezes-open-on-delisting are both real, related gaps surfaced by the same research, but scoped out as their own separate follow-ups.',
+    tier: 14, severity: 'low',
+    title: 'Delisted stock badge on watchlist/stock-detail — informational only, no auto-removal',
+    file: 'services/market-data/src/api/watchlist.py, services/market-data/src/api/routes.py, frontend/src/pages/watchlist.tsx, frontend/src/pages/stock/[symbol].tsx',
+    effort: 'S',
+    impact: 'aud14-survivorship added real delisting detection but it was 100% invisible to users — a delisted stock in a watchlist looked identical to a live one, just with a frozen last-known price and no explanation why. A visible badge closes that gap without the risk of surprising/confusing an automatic, irreversible removal.',
+    what: 'Stock.delisted existed but was read in exactly one place (ml-prediction\'s training query) — no UI anywhere surfaced it.',
+    fix: 'Thread Stock.delisted through WatchlistItemOut and StockOut (both response models already receive the full Stock ORM row) and render a small badge on the watchlist card and stock detail header.',
+  },
 
   // ── HIGH ──────────────────────────────────────────────────────────────────────
   {

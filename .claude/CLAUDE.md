@@ -8218,3 +8218,71 @@ docker exec stockai-redis-1 redis-cli get stockai:delisting_signal:<SYMBOL>
 # Check ingestion logs for the signal being recorded/confirmed:
 docker logs stockai-market-data-1 --since 24h | grep 'delisting_signal\|delisted_confirmed'
 ```
+
+---
+
+## Feature Reference: T260-DELISTED-BADGE — Informational Badge, Deliberately No Auto-Removal (Built 2026-07-27)
+
+**Direct follow-up to aud14-survivorship** (above), after the user asked "if delisted, should
+we remove from watchlist?" Researched before building: today `Stock.delisted` touches nothing
+user-facing at all — watchlists, alerts, and paper positions each handle "no fresh data"
+independently and inconsistently (silently stale prices, alerts that quietly never fire again,
+paper positions that freeze open forever with only a log-level warning, per
+`_monitor_positions()`'s own staleness-escalation comment explicitly naming delisting as one of
+the scenarios it guards against).
+
+**Decision, given 3 options presented (badge-only / auto-remove-with-notification / auto-
+remove-silently-matching-precedent)**: badge-only, no auto-removal. The one existing precedent
+for "auto-modify a user's watchlist from a backend signal" — `_run_watchlist_auto_rotation()`'s
+win-rate-based drops — is silent (audit-trail-only, no user notification) and is justified
+specifically because a win-rate-based drop is *reversible* (a stock can earn its way back onto
+the candidate list next week). Delisting is *terminal* — copying that same silent-removal
+behavior for an irreversible condition would repeat the one real weak spot of that pattern in
+exactly the case where it matters most. A badge preserves the user's historical record and
+lets them decide when to remove it themselves.
+
+**Implementation**: `Stock.delisted` already existed (aud14-survivorship) — this pass only
+threads it through to two existing response models that already receive the full `Stock`
+ORM row, no new endpoint needed:
+- `services/market-data/src/api/watchlist.py` — `WatchlistItemOut.delisted: bool = False`,
+  set in `_item_out()` from `stock.delisted` (the function already receives the full `Stock`
+  object).
+- `services/market-data/src/api/routes.py` — `StockOut.delisted: bool = False`. Since
+  `StockOut` uses `from_attributes = True` and `get_stock()` returns the `Stock` ORM row
+  directly, this required zero handler-function changes — the field just appears.
+  `api-gateway`'s `GET /aggregate/overview/{symbol}` (`aggregate.py`) builds its `price` field
+  as a direct pass-through of this same `GET /stocks/{symbol}` response, so the stock detail
+  page picks it up for free too.
+
+**Frontend**: `frontend/src/pages/watchlist.tsx` (badge next to the symbol on each card) and
+`frontend/src/pages/stock/[symbol].tsx` (badge next to the `<h1>` symbol heading) — both a
+small red "DELISTED" pill with an explanatory hover tooltip, matching this app's established
+small-badge visual convention (e.g. `ExitBadge`/`BrokerStatusBadge` elsewhere in this repo).
+`WatchlistItem`/`Stock` TypeScript types both gained `delisted?: boolean`.
+
+**Deliberately NOT built this pass** (documented, not silently dropped, since the same research
+surfaced these as real, related gaps): alerts on a delisted symbol still silently stop firing
+forever with no escalation; paper positions in a delisted stock still freeze open indefinitely
+with only a log-level warning, no user notification, no auto-exit. Both are real, but distinct
+scoped follow-ups from "should the watchlist react to this" — worth their own focused pass
+rather than bundling into this narrower, already-scoped badge change.
+
+**Tests**: `services/market-data/tests/test_watchlist_delisted_badge.py` (3 cases) — imports
+the real `watchlist.py` module directly (a pure function, no DB/session dependency, so no
+source-extraction workaround was needed) and confirms `_item_out()` correctly threads
+`stock.delisted` through. Adversarially verified: removing the field assignment correctly
+failed 2 of 3 tests before being reverted. Full 535-test market-data suite green (up from 532);
+frontend typecheck, vitest suite (89 tests), and a full `next build` all clean.
+
+**What to check if this looks wrong**:
+```bash
+# Confirm a delisted stock's watchlist item reports the flag:
+docker exec stockai-market-data-1 python3 -c "
+import sys, uuid, time; sys.path.insert(0,'/app'); sys.path.insert(0,'/app/src')
+from common.config import get_settings; from jose import jwt as _jwt; import httpx
+s = get_settings()
+tok = _jwt.encode({'sub':'lausing','jti':str(uuid.uuid4()),'exp':int(time.time())+86400}, s.jwt_secret, algorithm='HS256')
+r = httpx.get('http://localhost:8001/watchlist', headers={'Authorization': f'Bearer {tok}'}, timeout=15)
+print([item for item in r.json() if item.get('delisted')])
+"
+```

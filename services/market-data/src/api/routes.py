@@ -70,6 +70,10 @@ class StockOut(BaseModel):
     exchange: str
     sector: str | None = None
     currency: str
+    # T260-DELISTED-BADGE: surfaces aud14-survivorship's real delisting detection — informational
+    # only (see the design note in CLAUDE.md's aud14-survivorship entry). from_attributes=True
+    # pulls this straight off the Stock ORM row, no handler-function changes needed.
+    delisted: bool = False
 
     class Config:
         from_attributes = True

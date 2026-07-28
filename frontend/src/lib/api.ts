@@ -708,6 +708,7 @@ export type Stock = {
   exchange: string;
   sector?: string;
   currency: string;
+  delisted?: boolean;
 };
 
 export type Price = {
@@ -829,7 +830,7 @@ export type PortfolioWeights = {
 };
 export type LatestPrice = { symbol: string; price: number; prev_close: number | null; change_pct: number | null; currency: string; volume: number | null; avg_volume: number | null };
 export type MarketIndex = { name: string; ticker: string; market: string; price: number | null; change_pct: number | null };
-export type WatchlistItem = { symbol: string; name: string; name_zh?: string | null; market: string; exchange: string; sector?: string; currency: string; added_at: string; note?: string | null };
+export type WatchlistItem = { symbol: string; name: string; name_zh?: string | null; market: string; exchange: string; sector?: string; currency: string; added_at: string; note?: string | null; delisted?: boolean };
 export type WatchlistMeta = { id: number; name: string; item_count: number; trading_style: string | null; created_at: string };
 export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };
 export type MarketPulse = { score: number; label: 'positive' | 'negative' | 'neutral'; source: 'claude' | 'vader'; themes: string[]; headlines: NewsItem[]; generated_at: number };
