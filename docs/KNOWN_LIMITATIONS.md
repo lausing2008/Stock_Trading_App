@@ -101,6 +101,32 @@ actually populates this column, or adopt the fixed-rule heuristic from the origi
 Revisit note instead of assuming the column will eventually start being useful on
 its own.
 
+**RESOLVED 2026-07-28** — the prerequisite this Revisit note asked for now exists.
+`aud14-survivorship` (2026-07-27) built a real, conservative delisting detector: a
+yfinance exception (`YFTickerMissingError`, Yahoo's own "possibly delisted" signal,
+structurally distinct from a rate-limit error) requires **2 consecutive** daily-bar
+ingestion failures before `Stock.delisted` flips to `True` — a real margin against a
+one-off provider glitch. With that column now genuinely trustworthy,
+`evaluate_signal_outcomes()`'s censoring branch (`services/signal-engine/src/api/
+outcomes.py`) was extended: when the hold window closes with no exit price found
+(past the same 10-day grace period as before) AND `Stock.delisted` is `True` AND the
+signal was a **BUY**, the outcome is now written as `is_correct=False`,
+`skip_reason="delisted_loss"` — a real loss, counted by every existing
+`is_correct IS NOT NULL` win-rate query with zero downstream query changes needed.
+`SELL` signals are deliberately left unchanged (still censored/`NULL`) — a delisting
+doesn't confirm a SELL thesis was right (an unrelated acquisition at a premium would
+also delist the stock), so guessing a direction there would trade one bias for
+another, exactly the risk this entry's own original "what was left out" reasoning
+warned about. `outcomes_summary()`'s `censored` count was also corrected to filter
+`skip_reason == "no_exit_price"` specifically (not `skip_reason.is_not(None)`), so a
+`delisted_loss` row — now correctly scored, not excluded — isn't double-reported as
+both "scored" and "censored" at once. 11 new tests in
+`services/signal-engine/tests/test_delisted_loss_scoring.py`, adversarially verified
+(sabotaged the classification condition, the `is_correct`/`skip_reason` assignment,
+and the `censored` count fix independently — each caught by its own dedicated test
+before being reverted). This finally, fully closes the original tracker fix's ask —
+"score confirmed delistings as full losses."
+
 ---
 
 ## T233-ARCH-CONGRESS-DEDUP — Investigated, not fixed; re-scoped

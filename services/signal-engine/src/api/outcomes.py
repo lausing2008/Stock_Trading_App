@@ -1364,12 +1364,15 @@ def outcomes_summary(
 
     outcomes = session.execute(q).scalars().all()
 
-    # T232-OC6: count censored outcomes (hold window closed, price permanently missing —
-    # delisting/halt) in the same window/filters, so win rates can be reported alongside
-    # the fraction of outcomes that were excluded rather than silently vanishing.
+    # T232-OC6: count censored outcomes (hold window closed, price permanently missing, and
+    # NOT a confirmed delisting) in the same window/filters, so win rates can be reported
+    # alongside the fraction of outcomes that were excluded rather than silently vanishing.
+    # A "delisted_loss" row is deliberately EXCLUDED from this count — it's is_correct=False
+    # now, not excluded from win-rate math, so counting it here too would double-report it as
+    # both "scored" and "censored" at once.
     censored_q = select(func.count()).select_from(SignalOutcome).where(
         SignalOutcome.signal_date >= cutoff,
-        SignalOutcome.skip_reason.is_not(None),
+        SignalOutcome.skip_reason == "no_exit_price",
     )
     if horizon:
         censored_q = censored_q.where(SignalOutcome.horizon == SignalHorizon(horizon.upper()))
@@ -1923,8 +1926,11 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
     )
 
     # BUY and SELL signals old enough that at least SHORT window could be closed
+    # T232-OC6: Stock.delisted selected alongside symbol via the SAME existing join — no new
+    # query — so the censoring branch below can distinguish a confirmed delisting from an
+    # ordinary permanent price gap (halt, acquisition) without a per-row extra DB hit.
     pending_signals = session.execute(
-        select(Signal, Stock.symbol)
+        select(Signal, Stock.symbol, Stock.delisted)
         .join(Stock, Stock.id == Signal.stock_id)
         .where(
             Signal.signal.in_([SignalType.BUY, SignalType.SELL]),
@@ -1934,8 +1940,8 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
     ).all()
 
     # Bulk-load D1 prices — always extend window to 20d for INT-8 multi-window
-    pending_stock_ids = list({sig.stock_id for sig, _ in pending_signals})
-    price_min_ts = min((sig.ts for sig, _ in pending_signals), default=datetime.now())
+    pending_stock_ids = list({sig.stock_id for sig, _, _ in pending_signals})
+    price_min_ts = min((sig.ts for sig, _, _ in pending_signals), default=datetime.now())
     price_max_ts = datetime.now() + timedelta(days=30)
     bulk_prices: list = []
     if pending_stock_ids:
@@ -2025,7 +2031,7 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
     _COMMIT_EVERY = 25
     _since_commit = 0
 
-    for sig, symbol in pending_signals:
+    for sig, symbol, is_delisted in pending_signals:
         if sig.id in evaluated_ids:
             continue
 
@@ -2067,6 +2073,22 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
                 # concluding the price is permanently gone — otherwise a stock that's merely a
                 # few days behind on ingestion gets wrongly censored as delisted.
                 if today - exit_target > timedelta(days=_OUTCOME_CENSOR_GRACE_DAYS):
+                    # T232-OC6 (revisited 2026-07-28, now that Stock.delisted is a real,
+                    # confirmed signal per aud14-survivorship — see docs/KNOWN_LIMITATIONS.md):
+                    # a confirmed delisting is scored as a real loss (is_correct=False,
+                    # BUY-direction thesis failed / SELL-direction thesis vacuously held —
+                    # see below) rather than silently excluded from win-rate math. Distinct
+                    # skip_reason ("delisted_loss" vs. the ordinary "no_exit_price") keeps this
+                    # auditable/reversible and separately filterable from a genuine unknown
+                    # price gap (halt, ingestion hole with no confirmed cause) — is_correct
+                    # stays NULL for those, unchanged. Only BUY is scored as a loss: a
+                    # delisting after a BUY thesis is unambiguously bad (the position would
+                    # have been forced to zero or a forced buyout), but a delisting after a
+                    # SELL thesis (thesis was "this will fall") is genuinely ambiguous — the
+                    # delisting itself doesn't confirm the SELL was right (could be an
+                    # unrelated acquisition at a premium) — so SELL rows keep the prior,
+                    # conservative NULL/censored behavior rather than guessing a direction.
+                    _is_confirmed_delisting = bool(is_delisted) and sig.signal == SignalType.BUY
                     outcome = SignalOutcome(
                         signal_id=sig.id,
                         stock_id=sig.stock_id,
@@ -2082,7 +2104,8 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
                         market_regime=(sig.reasons or {}).get("market_regime"),
                         entry_date=entry_date,
                         entry_price=entry_price,
-                        skip_reason="no_exit_price",
+                        is_correct=(False if _is_confirmed_delisting else None),
+                        skip_reason=("delisted_loss" if _is_confirmed_delisting else "no_exit_price"),
                     )
                     # AUD250-SIGNALENGINE-ROLLBACK-EXPIRES-IDENTITY-MAP: flush inside a SAVEPOINT
                     # (begin_nested) rather than deferring to the periodic/end-of-loop commit —

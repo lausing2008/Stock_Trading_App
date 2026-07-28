@@ -8432,3 +8432,99 @@ Both should show the fix present. If a degrading-confidence candidate is still a
 actually sending a `confidence_delta` in `config_overrides` at all — the gate is a no-op
 without one (correctly — there's nothing to compare against for a brand-new symbol with no
 prior signal).
+
+---
+
+## Feature Reference: T232-OC6 (Revisited) — Confirmed Delistings Now Scored as Real Losses (2026-07-28)
+
+**Gap closed**: `evaluate_signal_outcomes()`'s censoring branch
+(`services/signal-engine/src/api/outcomes.py`) has always written a `SignalOutcome` row with
+`skip_reason="no_exit_price"` and `is_correct=NULL` whenever a signal's hold window closed
+with no exit price found (after a 10-day ingestion-lag grace period) — a deliberate
+2026-07-03 fix that stopped these outcomes from silently vanishing, but `is_correct=NULL`
+still EXCLUDES the row from every win-rate/calibration query (all filter `is_correct IS NOT
+NULL`), meaning a real delisting after a BUY signal never hurt the win rate at all — the
+worst-case outcome was omitted from calibration rather than penalized. `docs/
+KNOWN_LIMITATIONS.md`'s T232-OC6 entry documented this as a deliberate, honest deferral:
+"there is no reliable signal in this system to distinguish 'confirmed delisting' from
+'benign, longer-than-10-day ingestion gap'" — explicitly naming `Stock.delisted` becoming
+real as the prerequisite to revisit.
+
+**That prerequisite is now satisfied** — `aud14-survivorship` (2026-07-27, documented
+elsewhere in this file) built a real, conservative delisting detector via yfinance's
+`YFTickerMissingError` exception hierarchy, requiring 2 CONSECUTIVE ingestion failures before
+`Stock.delisted` flips `True`. This session wired that column into the censoring branch.
+
+**Implementation**:
+1. `pending_signals`' existing `select(Signal, Stock.symbol).join(Stock, ...)` query extended
+   to `select(Signal, Stock.symbol, Stock.delisted)` — zero new queries, reusing the SAME
+   join already in place. All 3 unpacking sites (`pending_stock_ids`, `price_min_ts`, the main
+   `for sig, symbol in pending_signals:` loop) updated to `for sig, symbol, is_delisted in
+   pending_signals:`.
+2. Inside the existing 10-day-grace-period censoring branch:
+   ```python
+   _is_confirmed_delisting = bool(is_delisted) and sig.signal == SignalType.BUY
+   ...
+   is_correct=(False if _is_confirmed_delisting else None),
+   skip_reason=("delisted_loss" if _is_confirmed_delisting else "no_exit_price"),
+   ```
+3. **SELL signals are deliberately NOT scored on a confirmed delisting** — a delisting
+   doesn't confirm a SELL thesis was right (an unrelated acquisition at a premium would also
+   delist the stock without validating "this will fall"), so guessing a direction there would
+   trade one bias for a different, harder-to-detect one — exactly the risk the original
+   T232-OC6 entry's own reasoning warned about. SELL rows on a delisted stock keep the prior,
+   unchanged censored/NULL behavior.
+4. `outcomes_summary()`'s `censored` count query (`GET /signals/outcomes/summary`) was also
+   corrected: it previously filtered `SignalOutcome.skip_reason.is_not(None)`, which would
+   have double-counted a `delisted_loss` row as BOTH "scored" (via `is_correct`) AND
+   "censored" (via the summary's own count) at once. Now filters
+   `SignalOutcome.skip_reason == "no_exit_price"` specifically.
+
+**Because `is_correct=False` (not NULL) is a real value, not a new code path**: every
+existing `is_correct.is_not(None)` filter across `outcomes.py`/`calibration.py` (8+ call
+sites) automatically counts a `delisted_loss` row as a loss in every win-rate/calibration
+query — zero downstream query changes needed anywhere else.
+
+**Tests**: `services/signal-engine/tests/test_delisted_loss_scoring.py` (11 cases), following
+`test_evaluate_outcomes_nested_savepoint.py`'s established convention exactly (source-text
+extraction for structural checks against the real production code — `evaluate_signal_
+outcomes()` can't be driven end-to-end in this test environment — plus a real in-memory
+SQLite model to directly exercise the classification and persistence). Covers: the extended
+join/unpacking exists, the classification requires BOTH `is_delisted` AND `SignalType.BUY`,
+`is_correct`/`skip_reason` are set correctly for the confirmed case vs. the ordinary case, the
+`outcomes_summary` censored-count fix, and behavioral round-trip tests against the real
+`SignalOutcome` model confirming a `delisted_loss` row IS picked up by `is_correct.is_not
+(None)` while an ordinary censored row still is NOT.
+
+**Adversarial verification** — 3 sabotage cycles, all caught and reverted:
+1. The classification condition (`_is_confirmed_delisting = False`) — caught by the dedicated
+   test checking that exact expression's source text.
+2. The `is_correct`/`skip_reason` assignment (reverted to the pre-fix hardcoded
+   `skip_reason="no_exit_price"`) — caught by 2 dedicated tests.
+3. The `outcomes_summary` censored-count fix (reverted to `skip_reason.is_not(None)`) — caught
+   by its own dedicated test.
+
+Full 111-in-scope-test signal-engine suite green (up from 100, excluding the 2 pre-existing,
+unrelated failure groups already documented elsewhere in this file — `test_signal_
+generator.py`'s `_decide` import-collection error and 4 `test_analyst_momentum.py` failures,
+both confirmed via `git stash` to predate this change). `pyflakes` clean (the sole warning,
+an unused `httpx` import, confirmed pre-existing via `git stash`).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-signal-engine-1 grep -n "_is_confirmed_delisting\|delisted_loss" /app/src/api/outcomes.py
+
+# Check real delisted_loss rows in production, once any confirmed delisting ages past the
+# 10-day grace period after its hold window closes:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT symbol, signal_date, is_correct, skip_reason FROM signal_outcomes WHERE skip_reason = 'delisted_loss' ORDER BY signal_date DESC LIMIT 10;"
+
+# Confirm the ordinary censored count no longer includes delisted_loss rows:
+docker exec stockai-signal-engine-1 python3 -c "
+import sys; sys.path.insert(0, '/app'); sys.path.insert(0, '/app/src')
+from db import SessionLocal; from sqlalchemy import text
+s = SessionLocal()
+print('no_exit_price:', s.execute(text(\"SELECT COUNT(*) FROM signal_outcomes WHERE skip_reason='no_exit_price'\")).scalar())
+print('delisted_loss:', s.execute(text(\"SELECT COUNT(*) FROM signal_outcomes WHERE skip_reason='delisted_loss'\")).scalar())
+s.close()"
+```
