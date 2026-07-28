@@ -41,6 +41,25 @@ _FORM4_ATOM = """<?xml version="1.0" encoding="ISO-8859-1" ?>
 </feed>"""
 
 
+class TestFetchOneUrlEncoding:
+    def test_multi_word_filing_type_is_url_encoded(self, monkeypatch):
+        """Real bug caught during live post-deploy verification: "SC 13D" contains a literal
+        space, which the underlying HTTP layer rejects outright as a control character in a URL
+        before the request is even sent — every SC 13D poll was silently failing
+        (edgar_source.parse_failed) since first deploy. urllib.parse.quote() must be applied."""
+        captured_urls = []
+
+        def _fake_parse(url, request_headers=None):
+            captured_urls.append(url)
+            return edgar_source.feedparser.parse(_SAMPLE_ATOM)
+
+        real_parse = edgar_source.feedparser.parse
+        monkeypatch.setattr(edgar_source.feedparser, "parse", _fake_parse)
+        edgar_source._fetch_one("SC 13D")
+        assert " " not in captured_urls[0]
+        assert "type=SC%2013D" in captured_urls[0]
+
+
 class TestFetchOne:
     def test_form4_reporting_role_is_correctly_parsed_not_a_raw_title_fallback(self, monkeypatch):
         """Real bug caught during live post-deploy verification: Form 4 entries use "(Reporting)"

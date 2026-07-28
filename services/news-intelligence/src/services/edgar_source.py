@@ -14,6 +14,7 @@ stakes) via EDGAR's own `type=` query param, one poll per type per cycle.
 from __future__ import annotations
 
 import re
+import urllib.parse
 from datetime import datetime, timezone
 
 import feedparser
@@ -38,7 +39,11 @@ _TITLE_RE = re.compile(r"^(?P<form>\S+(?:/\S+)?)\s*-\s*(?P<company>.+?)\s*\((?P<
 
 
 def _fetch_one(filing_type: str) -> list[dict]:
-    url = f"{_EDGAR_BASE}?action=getcurrent&type={filing_type}&company=&dateb=&owner=include&count=40&output=atom"
+    # A literal space in "SC 13D" is rejected outright by feedparser/urllib as a control
+    # character in a URL — caught live post-deploy: every SC 13D poll was silently failing
+    # (edgar_source.parse_failed) since first deploy. quote() encodes it to %20 correctly.
+    encoded_type = urllib.parse.quote(filing_type)
+    url = f"{_EDGAR_BASE}?action=getcurrent&type={encoded_type}&company=&dateb=&owner=include&count=40&output=atom"
     try:
         feed = feedparser.parse(url, request_headers={"User-Agent": _USER_AGENT})
     except Exception as exc:
