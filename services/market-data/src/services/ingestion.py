@@ -7,11 +7,14 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import yfinance as yf
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from common.config import get_settings
 from common.logging import get_logger
+from common.redis_client import get_redis
+
 from db import Price, SessionLocal, Stock, TimeFrame
 
 from ..adapters import get_adapter, get_adapters
@@ -23,6 +26,55 @@ _settings = get_settings()
 
 class IngestionError(Exception):
     pass
+
+
+# AUD-SURVIVORSHIP-DELISTDETECT: closes the gap where ml-prediction's training-universe
+# query already does `WHERE active OR delisted` (see services/ml-prediction/src/api/routes.py)
+# but nothing anywhere ever sets delisted=True — confirmed a dead, always-False column in
+# production. YFTickerMissingError (raised by yfinance_adapter.py when Yahoo's own API reports
+# "no data found, symbol may be delisted") is a real, distinct signal — but a SINGLE
+# occurrence isn't trusted alone, since this app's daily ingestion cycle could in principle hit
+# a genuine one-off data-provider glitch even though YFTickerMissingError itself is excluded
+# from yfinance_adapter.py's own retry policy. Requiring 2 occurrences on separate ingestion
+# RUNS (not 2 retries within one call — those are already collapsed into a single raise by the
+# retry-exclusion above) before acting is a cheap, conservative confirmation margin.
+_DELISTING_CONFIRM_THRESHOLD = 2
+_DELISTING_REDIS_KEY = "stockai:delisting_signal:{symbol}"
+_DELISTING_REDIS_TTL = 30 * 86400  # 30 days — a stale single occurrence should eventually decay
+
+
+def _record_delisting_signal(symbol: str) -> None:
+    """Increment this symbol's consecutive-delisting-signal counter; on reaching the
+    confirmation threshold, set Stock.delisted=True. Fails open (a Redis hiccup must never
+    block ingestion) — logs a warning and returns without raising.
+    """
+    try:
+        r = get_redis()
+        key = _DELISTING_REDIS_KEY.format(symbol=symbol)
+        count = r.incr(key)
+        r.expire(key, _DELISTING_REDIS_TTL)
+        log.warning("ingest.delisting_signal", symbol=symbol, count=count)
+        if count >= _DELISTING_CONFIRM_THRESHOLD:
+            with SessionLocal() as session:
+                stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
+                if stock and not stock.delisted:
+                    stock.delisted = True
+                    session.commit()
+                    log.warning("ingest.delisted_confirmed", symbol=symbol, count=count)
+            r.delete(key)
+    except Exception as exc:
+        log.warning("ingest.delisting_signal_failed", symbol=symbol, error=str(exc))
+
+
+def _clear_delisting_signal(symbol: str) -> None:
+    """A successful fetch means this symbol is NOT delisted (a real data source just returned
+    real data for it) — clear any accumulated signal so a past transient glitch doesn't
+    linger toward the threshold indefinitely. Fails open, matching _record_delisting_signal().
+    """
+    try:
+        get_redis().delete(_DELISTING_REDIS_KEY.format(symbol=symbol))
+    except Exception as exc:
+        log.warning("ingest.delisting_signal_clear_failed", symbol=symbol, error=str(exc))
 
 
 def validate_ohlcv(df: pd.DataFrame, symbol: str, allow_zero_volume: bool = False) -> pd.DataFrame:
@@ -156,14 +208,28 @@ def ingest_symbol(
 
         last_err: Exception | None = None
         df: pd.DataFrame | None = None
+        # AUD-SURVIVORSHIP-DELISTDETECT: only the DAILY-bar ingestion cycle drives the
+        # delisting signal — intraday ingestion runs far more often (would reach the
+        # confirmation threshold in hours, not days, on a stock that's merely rate-limited)
+        # and HK/US-daily is the cadence this app's own scheduler already treats as the
+        # canonical "is this stock still alive" check (see _snapshot_fundamentals()'s own
+        # `WHERE delisted = false` filter, which assumes a daily-granularity signal).
+        _track_delisting = (timeframe == "1d")
         for adapter in adapters:
             try:
                 ohlcv = adapter.fetch_ohlcv(symbol, start, end, timeframe)
                 candidate = validate_ohlcv(ohlcv.df, symbol, allow_zero_volume=allow_zero_volume)
                 if not candidate.empty:
                     df = candidate
+                    if _track_delisting and adapter.name == "yfinance":
+                        _clear_delisting_signal(symbol)
                     break
                 log.warning("ingest.adapter_empty", adapter=adapter.name, symbol=symbol)
+            except yf.exceptions.YFTickerMissingError as exc:
+                log.warning("ingest.adapter_failed", adapter=adapter.name, symbol=symbol, error=str(exc))
+                last_err = exc
+                if _track_delisting:
+                    _record_delisting_signal(symbol)
             except Exception as exc:
                 log.warning("ingest.adapter_failed", adapter=adapter.name, symbol=symbol, error=str(exc))
                 last_err = exc

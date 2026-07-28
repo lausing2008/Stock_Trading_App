@@ -8139,3 +8139,82 @@ docker logs stockai-news-intelligence-1 --since 10m | grep 'alpaca_source'
 # Should show alpaca_source.connecting / alpaca_source.subscribed if a key IS configured, or
 # alpaca_source.no_credentials_configured (a normal, expected state) if not.
 ```
+
+---
+
+## Feature Reference: aud14-survivorship — Real Delisting Detection Closes a Dead Column (Built 2026-07-27)
+
+**Closes a long-standing gap**: ml-prediction's training-universe query at 5 call sites
+(`services/ml-prediction/src/api/routes.py` — `train_all`, `tune_all`,
+`train_all_ensemble_three`, `train_all_ensemble`, `train_all_horizons`) already did
+`WHERE or_(Stock.active.is_(True), Stock.delisted.is_(True))` — but `Stock.delisted` was
+confirmed a genuinely dead column: always `False` in production, zero writers anywhere in the
+codebase. The OR clause was a real, confirmed no-op since the query-level fix was re-applied
+2026-07-15 (`aud14-survivorship`'s own prior implementation note documents this explicitly).
+
+### The real detection signal — yfinance's own exception hierarchy
+
+Researched before building: yfinance has a purpose-built exception class,
+`YFTickerMissingError` (raised in practice as either `YFPricesMissingError` or
+`YFTzMissingError`, both subclasses), whose message is Yahoo's OWN API reporting "no data
+found, symbol may be delisted." This is **structurally separate** from `YFRateLimitError`
+(confirmed: not a subclass) — a genuine rate-limit/network blip can never be mistaken for a
+delisting signal by this design.
+
+Verified live against 5 real, confirmed-delisted tickers (Lehman Brothers `LEHMQ`, Sears
+`SHLDQ`, Bed Bath & Beyond `BBBYQ`, and others) — all consistently raise a
+`YFTickerMissingError` subclass. Also checked the one real false-positive risk: a valid,
+currently-listed stock queried with a `start` date before it existed (e.g. pre-IPO) ALSO
+raises this exception — but confirmed this app's actual call shape (`start` = last known bar
+minus 7 days, or a 3-year lookback for a fresh/forced ingest) never legitimately produces that
+shape for a genuinely-still-listed stock (verified live: a real recent IPO, `ARM`, queried with
+a 3-year lookback correctly returns its real post-IPO history with no error).
+
+### Implementation
+
+- `services/market-data/src/adapters/yfinance_adapter.py` — `ticker.history()` now called
+  with `raise_errors=True` so the error surfaces as a real exception instead of silently
+  becoming an empty DataFrame (the pre-existing behavior for every OTHER kind of empty
+  result). `YFTickerMissingError` is excluded from the adapter's own 3x `@retry` policy via
+  `retry_if_not_exception_type` — retrying a genuine delisting can never succeed, unlike a
+  real transient error, so excluding it avoids wasting ~8s of retry backoff per occurrence and
+  delaying the signal.
+- `services/market-data/src/services/ingestion.py` — new `_record_delisting_signal()`/
+  `_clear_delisting_signal()`, wired into `ingest_symbol()`'s adapter loop, **gated to the
+  daily-bar cycle only** (`timeframe == "1d"`) — intraday ingestion runs far more often and
+  would reach a false "confirmed" state within hours on a stock that's merely rate-limited,
+  not genuinely delisted. Requires **2 consecutive** ingestion runs (a Redis counter,
+  `stockai:delisting_signal:{symbol}`, 30-day TTL) before setting `Stock.delisted = True` — a
+  conservative confirmation margin against a genuine one-off provider glitch, even though
+  `YFTickerMissingError` itself is already excluded from the adapter's own retry policy. Any
+  successful fetch clears the counter immediately.
+
+### A real regression caught and fixed in the same session, before shipping
+
+The new `from yfinance.exceptions import X` and `from common.redis_client import Y` import
+forms broke 4 UNRELATED test files' collection (`test_macro_events_from_db.py`,
+`test_premarket_session_classify.py`, `test_promotion_history_reader.py`,
+`test_validation.py`) — all transitively import `ingestion.py` via `routes.py`/`admin.py`/
+`scheduler.py`, and this repo's `conftest.py` stubs `yfinance`/`common` as bare `MagicMock()`
+objects for local testing. A bare `from X.submodule import Y` import statement requires `X` to
+be a real package to resolve `X.submodule` — it fails hard against a `MagicMock`-stubbed `X`,
+unlike `import X as x` followed by `x.submodule.Y` attribute access (which works fine on a
+mock, since attribute access on a `MagicMock` never raises). Fixed by switching both new
+imports to the `import X` + attribute-access form, and separately adding the missing
+`common.redis_client` entry to `conftest.py`'s stub list (a gap that existed independently of
+this fix, only surfaced by it).
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the fix is actually setting delisted=True when it should (needs a real delisted
+# ticker to observe naturally — will only fire for a stock genuinely in this app's universe
+# that gets delisted going forward):
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT symbol, delisted FROM stocks WHERE delisted = true;"
+
+# Check the Redis confirmation counter for a specific symbol mid-confirmation:
+docker exec stockai-redis-1 redis-cli get stockai:delisting_signal:<SYMBOL>
+
+# Check ingestion logs for the signal being recorded/confirmed:
+docker logs stockai-market-data-1 --since 24h | grep 'delisting_signal\|delisted_confirmed'
+```
