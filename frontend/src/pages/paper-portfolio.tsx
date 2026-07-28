@@ -89,6 +89,38 @@ function ExitBadge({ reason }: { reason: string | null }) {
   );
 }
 
+// T260-BROKERSTATUS: distinguishes "never attempted" (unlinked portfolio, or this trade
+// predates the broker link) from "attempted and genuinely failed at the broker" from
+// "synced" — otherwise indistinguishable from stored data alone (both leave no visible
+// signal), which previously required digging through container logs to tell apart.
+const BROKER_STATUS_LABEL: Record<string, string> = {
+  synced: 'Broker ✓', failed: 'Broker ✗', not_attempted: 'Broker —',
+};
+const BROKER_STATUS_COLOR: Record<string, string> = {
+  synced: '#22c55e', failed: '#ef4444', not_attempted: '#64748b',
+};
+const BROKER_STATUS_TITLE: Record<string, string> = {
+  synced: 'A real order was placed at the linked broker for this trade.',
+  failed: 'This portfolio is broker-linked, but placing the real order failed (see the E*Trade Transactions dashboard or server logs for the reason) — the trade is simulated-only.',
+  not_attempted: 'This portfolio is broker-linked, but no real order was ever attempted for this trade (e.g. it predates the link).',
+};
+
+function BrokerStatusBadge({ status }: { status: 'not_attempted' | 'failed' | 'synced' | null }) {
+  if (!status) return null;  // portfolio has no broker link at all — nothing to show
+  return (
+    <span
+      title={BROKER_STATUS_TITLE[status]}
+      style={{
+        marginLeft: 6, fontSize: 10, fontWeight: 600, color: BROKER_STATUS_COLOR[status],
+        background: BROKER_STATUS_COLOR[status] + '18', border: `1px solid ${BROKER_STATUS_COLOR[status]}44`,
+        borderRadius: 4, padding: '1px 6px',
+      }}
+    >
+      {BROKER_STATUS_LABEL[status]}
+    </span>
+  );
+}
+
 function PostmortemPanel({ tradeId }: { tradeId: number }) {
   const { data, error, isLoading } = useSWR(
     `postmortem:${tradeId}`,
@@ -2018,6 +2050,7 @@ export default function PaperPortfolioPage() {
                         <Link href={`/stock/${p.symbol}`} style={{ color: '#60a5fa', fontWeight: 600, textDecoration: 'none' }}
                               onClick={e => e.stopPropagation()}>{p.symbol}</Link>
                         <span style={{ marginLeft: 6, fontSize: 10, color: '#475569' }}>{isExpanded ? '▲' : '▼'}</span>
+                        <BrokerStatusBadge status={p.broker_status} />
                       </td>
                       <td style={{ padding: '9px 10px' }}>${p.entry_price.toFixed(2)}</td>
                       <td style={{ padding: '9px 10px' }}>{p.current_price != null ? `$${p.current_price.toFixed(2)}` : '—'}</td>
@@ -2525,6 +2558,7 @@ export default function PaperPortfolioPage() {
                         >
                           <td style={{ padding: '9px 10px' }}>
                             <Link href={`/stock/${t.symbol}`} onClick={e => e.stopPropagation()} style={{ color: '#60a5fa', fontWeight: 600, textDecoration: 'none' }}>{t.symbol}</Link>
+                            <BrokerStatusBadge status={t.broker_status} />
                           </td>
                           <td style={{ padding: '9px 10px', color: '#94a3b8', fontSize: 11 }}>{t.trading_style ?? '—'}</td>
                           <td style={{ padding: '9px 10px', color: '#64748b' }}>{fmtDate(t.entry_date)}</td>

@@ -694,6 +694,12 @@ class PaperTrade(Base):
 
     # Real-broker execution tracking (null for paper-only portfolios)
     broker_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Set when a broker-linked portfolio's entry/exit order placement genuinely fails (e.g. a
+    # real E*Trade rejection) — distinguishes "attempted and failed" from "never attempted"
+    # (both otherwise leave broker_order_id null, making the two indistinguishable without a
+    # log dig). Cleared back to None the moment a later attempt on the SAME leg (entry or exit)
+    # succeeds — a stale failure reason must never linger after a real recovery.
+    broker_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

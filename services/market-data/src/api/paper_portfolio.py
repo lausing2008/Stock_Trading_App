@@ -36,6 +36,22 @@ _FALLBACK_PARAMS: dict[str, dict] = {
 _tune_lock = threading.Lock()
 _tune_running: dict[str, bool] = {}  # style → is running
 
+
+def _broker_status(t: PaperTrade, portfolio: PaperPortfolio) -> str | None:
+    """Classify a trade's real-broker execution state for display, distinguishing "never
+    attempted" (unlinked portfolio, or this trade predates the broker link — broker_error and
+    broker_order_id both null) from "attempted and failed" (broker_error set) from "synced"
+    (broker_order_id set). Returns None for a portfolio with no broker link at all, so the UI
+    can omit the column entirely for portfolios that were never meant to place real orders.
+    """
+    if not portfolio.broker_connection_id:
+        return None
+    if t.broker_error:
+        return "failed"
+    if t.broker_order_id:
+        return "synced"
+    return "not_attempted"
+
 _ENTRY_WEIGHTS_PATH = Path(_settings.model_dir) / "entry_weights.json"
 _calibration_lock = threading.Lock()
 _calibration_running = False
@@ -367,6 +383,7 @@ def get_positions(
             "decision_notes": t.entry_decision_notes or [],
             "entry_reasons": t.entry_reasons or {},
             "current_signal": current_signals.get(t.symbol),
+            "broker_status": _broker_status(t, p),
         }
         for t in trades
     ]
@@ -488,6 +505,7 @@ def get_trades(
                 "entry_score": t.entry_score,
                 "confidence_at_entry": t.confidence_at_entry,
                 "kscore_at_entry": t.kscore_at_entry,
+                "broker_status": _broker_status(t, p),
             }
             for t in trades
         ],

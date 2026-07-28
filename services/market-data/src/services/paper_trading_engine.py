@@ -146,6 +146,7 @@ def _place_broker_entry(session, trade: "PaperTrade", portfolio: "PaperPortfolio
             order_type=OrderType.MARKET,
         )
         trade.broker_order_id = order.order_id
+        trade.broker_error = None  # a successful placement clears any prior failure on this leg
         log.info("broker.entry_order_placed",
                  symbol=trade.symbol, order_id=order.order_id, shares=int(trade.shares))
         # Immediate fill check — sandbox fills market orders instantly
@@ -164,6 +165,7 @@ def _place_broker_entry(session, trade: "PaperTrade", portfolio: "PaperPortfolio
     except Exception as exc:
         if not _handle_broker_error_if_token_rejected(session, portfolio, exc):
             log.warning("broker.entry_order_failed", symbol=trade.symbol, error=str(exc))
+            trade.broker_error = str(exc)[:512]
 
 
 def _place_broker_exit(session, trade: "PaperTrade", portfolio: "PaperPortfolio") -> None:
@@ -187,6 +189,7 @@ def _place_broker_exit(session, trade: "PaperTrade", portfolio: "PaperPortfolio"
             side=OrderSide.SELL,
             order_type=OrderType.MARKET,
         )
+        trade.broker_error = None  # a successful exit placement clears any prior failure
         log.info("broker.exit_order_placed",
                  symbol=trade.symbol, order_id=order.order_id, shares=int(trade.shares))
         try:
@@ -213,6 +216,7 @@ def _place_broker_exit(session, trade: "PaperTrade", portfolio: "PaperPortfolio"
     except Exception as exc:
         if not _handle_broker_error_if_token_rejected(session, portfolio, exc):
             log.warning("broker.exit_order_failed", symbol=trade.symbol, error=str(exc))
+            trade.broker_error = str(exc)[:512]
 
 
 def poll_broker_order_fills(session=None) -> None:

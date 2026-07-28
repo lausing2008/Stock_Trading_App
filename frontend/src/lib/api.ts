@@ -1562,6 +1562,10 @@ export type PaperPosition = {
   decision_notes: string[];
   entry_reasons: Record<string, unknown>;
   current_signal: string | null;
+  // T260-BROKERSTATUS: null when the portfolio has no broker link at all (nothing to show);
+  // 'not_attempted' | 'failed' | 'synced' when it does — see _broker_status() in
+  // paper_portfolio.py for the exact classification rules.
+  broker_status: 'not_attempted' | 'failed' | 'synced' | null;
 };
 
 export type PaperTrade = {
@@ -1584,6 +1588,7 @@ export type PaperTrade = {
   entry_score: number | null;
   confidence_at_entry: number | null;
   kscore_at_entry: number | null;
+  broker_status: 'not_attempted' | 'failed' | 'synced' | null;
 };
 
 export type PaperTradesResponse = {
