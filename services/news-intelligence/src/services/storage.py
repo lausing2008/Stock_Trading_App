@@ -56,25 +56,51 @@ def persist_news_items(
     items — those are skipped via ON CONFLICT DO NOTHING on the (source, url, symbol) unique
     constraint, not counted here).
 
+    BUG-NEWSCLASSIFY-REPEATCOST: found live — every RSS/EDGAR poll cycle re-fetches the SAME
+    feed URL, which returns its most-recent N items regardless of what was already seen (RSS
+    feeds are not "since last poll" incremental). The ON CONFLICT dedup above only prevents a
+    duplicate DB ROW — it does nothing to prevent re-classifying an already-seen headline via
+    Claude on every single cycle before that dedup ever runs. Confirmed live: pr_newswire had
+    2,640 stored rows for only 22 distinct headlines (~120x reclassification), businesswire
+    792-for-6 (~132x), sec_edgar 5,489-for-154 (~35x) — each duplicate a real, paid Claude call
+    for content already classified minutes earlier. Fixed by checking which of this batch's
+    URLs are ALREADY in the DB for this source BEFORE calling classify_in_batches() at all —
+    only genuinely new URLs are ever sent to Claude. Items with url=None (rare) can't be
+    deduped this way and are always classified — a small, bounded exception, not the common case.
+
     `symbol_mode` picks how each item's tracked symbol(s) are determined:
       - "extract" (RSS sources): run extract_symbols() against the headline text itself.
       - "cik" (EDGAR): resolve the item's own `cik` field via symbol_for_cik() — a filer's CIK
         is an exact, unambiguous identifier, so this never needs headline text-matching at all.
       - "tagged" (Alpaca): the item already carries a `symbols` list directly from the source's
         own native ticker tagging — used as-is.
-    Classification (sentiment/materiality) always runs regardless of symbol_mode, since none of
-    the three sources provide that metadata themselves.
+    Classification (sentiment/materiality) always runs for genuinely new items, regardless of
+    symbol_mode, since none of the three sources provide that metadata themselves.
     """
     if not raw_items:
         return 0
 
-    api_key = get_admin_ai_key("claude")
-    headlines = [it["headline"] for it in raw_items]
-    classifications = classify_in_batches(headlines, api_key) if api_key else [None] * len(headlines)
-
-    inserted = 0
     with SessionLocal() as session:
-        for raw, cls in zip(raw_items, classifications):
+        _urls = [it["url"] for it in raw_items if it.get("url")]
+        _known_urls: set[str] = set()
+        if _urls:
+            _known_urls = set(
+                session.execute(
+                    select(RealtimeNewsItem.url).where(
+                        RealtimeNewsItem.source == source,
+                        RealtimeNewsItem.url.in_(_urls),
+                    )
+                ).scalars().all()
+            )
+        _new_items = [it for it in raw_items if not it.get("url") or it["url"] not in _known_urls]
+        _skipped = len(raw_items) - len(_new_items)
+
+        api_key = get_admin_ai_key("claude")
+        headlines = [it["headline"] for it in _new_items]
+        classifications = classify_in_batches(headlines, api_key) if api_key else [None] * len(headlines)
+
+        inserted = 0
+        for raw, cls in zip(_new_items, classifications):
             headline = raw["headline"]
             if symbol_mode == "tagged":
                 symbols = raw.get("symbols")
@@ -105,7 +131,11 @@ def persist_news_items(
                         _mark_hot(sym, headline, cls["sentiment_label"])
         session.commit()
 
-    log.info("news_storage.persisted", source=source, seen=len(raw_items), inserted=inserted)
+    log.info(
+        "news_storage.persisted",
+        source=source, seen=len(raw_items), inserted=inserted,
+        skipped_already_seen=_skipped, classified=len(_new_items),
+    )
     return inserted
 
 
