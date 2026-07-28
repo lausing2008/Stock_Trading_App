@@ -58,13 +58,31 @@ def _parse_news_message(msg: dict) -> dict | None:
 
 async def _run_once(api_key: str, secret_key: str, stop_event: asyncio.Event) -> None:
     async with websockets.connect(_WS_URL, ping_interval=30, ping_timeout=10) as ws:
+        # Real bug found live in production: Alpaca sends {"T":"success","msg":"connected"} the
+        # MOMENT the socket opens — before any auth message is even sent. The original code
+        # skipped consuming this, so its one post-auth recv() actually read this stale
+        # already-queued "connected" ack instead of the real auth reply, misreported as an auth
+        # failure on every single connection attempt (confirmed via production logs: "reply":
+        # [{"T": "success", "msg": "connected"}], logged as alpaca_source.auth_failed, in a
+        # tight ~5s reconnect loop with the exponential backoff never actually growing).
+        connect_ack = json.loads(await ws.recv())
+        connect_replies = connect_ack if isinstance(connect_ack, list) else [connect_ack]
+        if not any(r.get("T") == "success" and r.get("msg") == "connected" for r in connect_replies):
+            log.warning("alpaca_source.unexpected_connect_reply", reply=connect_replies)
+
         await ws.send(json.dumps({"action": "auth", "key": api_key, "secret": secret_key}))
         auth_reply = json.loads(await ws.recv())
         # Alpaca replies with a LIST of one or more control messages, not a bare dict.
         replies = auth_reply if isinstance(auth_reply, list) else [auth_reply]
         if not any(r.get("T") == "success" and r.get("msg") == "authenticated" for r in replies):
             log.error("alpaca_source.auth_failed", reply=replies)
-            return
+            # Must RAISE, not silently return — a bare return looks identical to a clean
+            # connection lifecycle to run_alpaca_stream()'s own try/except, which only resets
+            # the reconnect backoff to its base delay on the NON-exception path. A real auth
+            # failure (bad/revoked key) should escalate the backoff like any other failure, not
+            # retry every 5s forever — this was a second bug in the same live incident (the
+            # logged backoff never grew past its base delay across 50+ consecutive attempts).
+            raise RuntimeError(f"Alpaca auth failed: {replies}")
 
         await ws.send(json.dumps({"action": "subscribe", "news": ["*"]}))
         log.info("alpaca_source.subscribed")
