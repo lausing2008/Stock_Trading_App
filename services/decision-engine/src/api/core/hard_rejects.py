@@ -192,6 +192,29 @@ def check_hard_rejects(
                 f"— technical-analysis quality gate not met"
             )
 
+    # T232-DL-DUALSCORER-DEBT: Declining-confidence HARD REJECT (T202), ported from
+    # paper_trading_engine.py's _scan_for_entries() (max_confidence_decline, default -8.0).
+    # Genuinely distinct from this file's own SA-26 soft ±1 confidence-trajectory SCORE layer
+    # in scorer.py (nudges the score at the same ±8 boundary but never blocks outright) —
+    # max_confidence_decline is a separate, EARLIER hard pre-filter in _scan_for_entries that
+    # discards a candidate whose confidence has fallen since its prior signal before it's ever
+    # scored — decision-engine had no equivalent, so /decide/{symbol} could approve a degrading
+    # setup _scan_for_entries would have discarded, for any caller that doesn't replicate that
+    # pre-filter itself (e.g. decide.tsx). cfg["max_confidence_decline"] is only present when
+    # the caller also sent a real confidence_delta (see paper_trading_engine.py's
+    # config_overrides), matching this function's established optional-parameter fail-open
+    # convention. UNLIKE min_kscore/min_ta_score (positive floors, value < min blocks), this
+    # threshold is NEGATIVE and the gate blocks when the delta falls BELOW it — do not treat
+    # the comparison direction like a positive floor.
+    if cfg.get("max_confidence_decline") is not None:
+        _conf_delta_val = cfg.get("confidence_delta")
+        if _conf_delta_val is not None and float(_conf_delta_val) < float(cfg["max_confidence_decline"]):
+            return (
+                f"Confidence declined {float(_conf_delta_val):.1f} pts since prior signal, "
+                f"exceeds max decline {float(cfg['max_confidence_decline']):.1f} pts "
+                f"— setup degrading, wait for stabilisation"
+            )
+
     # T234-DE-MISSING-HARD-REJECTS: ported from paper_trading_engine.py's _should_enter()
     # fallback (the "primary" DE gate was missing these two unconditional hard rejects that
     # the fallback path enforces, making the normally-active gate looser than the outage-only

@@ -8286,3 +8286,149 @@ r = httpx.get('http://localhost:8001/watchlist', headers={'Authorization': f'Bea
 print([item for item in r.json() if item.get('delisted')])
 "
 ```
+
+---
+
+## Recurring Issue: BUG-BROKERROUTE-STALEAUTH — broker.py Never Detected Expired E*Trade Tokens (Fixed 2026-07-28)
+
+**Symptom:** the E*Trade Transactions dashboard (`/etrade-transactions`) showed "Failed to
+load" with 0 of 0 orders. Direct query confirmed `GET /broker/connections/{id}/orders` returned
+a generic `502` — `"E*Trade list_orders failed: 401 {"Error":{"message":
+"oauth_problem=token_expired"}}"` — while `broker_connections.is_authorized` still showed
+`true` and no `token_rejected`/`reauth`/`mark_broker_unauthorized` log lines existed anywhere.
+
+**Root cause:** `T257-ETRADE-PROD-SYSTEMATIC` (2026-07-17) built shared token-rejection
+detection (`_is_token_rejected_error()`/`_mark_broker_unauthorized_and_notify()` in
+`scheduler.py`) and wired it into the paper-trading engine's broker call sites
+(`_place_broker_entry`/`_place_broker_exit`/`poll_broker_order_fills`) plus a daily 08:30 ET
+health check and an intraday keepalive cron — but `broker.py`'s
+`GET /broker/connections/{id}/account` and `.../orders` (both added LATER, for the Load
+Balance button and the E*Trade Transactions dashboard) were never wired into this same
+detection. A genuinely expired token there just silently 502'd with the DB stuck claiming
+`is_authorized=True`, until the next daily health check caught it — up to a full day later.
+
+**Fix applied:** both routes' exception handlers now call the SAME shared
+`_is_token_rejected_error(exc)` check; on a match, `_mark_broker_unauthorized_and_notify(
+session, conn)` flips `is_authorized=False`, mints a fresh OAuth URL, and emails a re-auth
+link, and the route returns `401` with a clear message instead of a bare `502`. Both imports
+are lazy (inside the function bodies), matching `scheduler.py`'s own existing reverse-direction
+lazy import of `broker.py` — avoids a circular import.
+
+**Tests**: `services/market-data/tests/test_broker_route_staleauth_detection.py` (7 cases,
+source-text extraction — `broker.py` needs a real DB session to import directly) — confirm
+both routes check for a token-rejected error, call the shared mark-unauthorized-and-notify
+helper, raise `401` (not `502`) on a match, and that `get_order_history`'s pre-existing
+`NotImplementedError` → `501` branch (for brokers with no real order-history API) is
+untouched by this fix. Adversarially verified: reverted `get_account_info`'s detection block
+and confirmed its 3 dedicated tests failed correctly before restoring.
+
+**Live verification, both before and after deploy**: before the fix,
+`GET /broker/connections/1/orders?status=all` returned `502` with `is_authorized` still `true`
+and zero relevant log lines. After deploy, the identical request returned `401` with the
+re-auth message, `is_authorized` flipped to `false` in Postgres, and
+`broker.auth_expired_notified` appeared in the logs — confirming the fix closes the loop
+end-to-end, not just that it compiles.
+
+**Standing note**: this does NOT eliminate E*Trade's own daily midnight-ET token expiry (an
+OAuth 1.0a platform constraint, not a bug) — it makes the failure visible and actionable
+(a clear 401 + automatic re-auth email) instead of a silent, misleading 502 with a stale
+"authorized" status. A user hitting this will still need to re-authorize via Settings once a
+token has genuinely expired.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n "_is_token_rejected_error(exc)" /app/src/api/broker.py
+# Should show 2 matches — one in get_account_info, one in get_order_history.
+
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT id, name, is_authorized FROM broker_connections;"
+docker logs stockai-market-data-1 --since 1h | grep 'auth_expired_notified\|auth_notify_failed'
+```
+
+---
+
+## Feature Reference: T232-DL-DUALSCORER-DEBT — Declining-Confidence (T202) Hard Reject Ported to decision-engine (2026-07-28)
+
+**Gap closed**: another divergence in the ongoing dual-scorer reconciliation — T202's
+declining-confidence gate. `_scan_for_entries()`'s SA-26 trajectory query computes
+`confidence_delta` (current signal's confidence minus the most recent PRIOR signal's
+confidence for the same symbol+style) and hard-discards a candidate whose confidence has
+dropped more than `max_confidence_decline` (default `-8.0`) points before it's ever scored.
+decision-engine only had the SAME value's SOFT ±1 scoring layer (`scorer.py`'s own SA-26
+mirror) — never a hard block — so `/decide/{symbol}` called standalone (e.g. `decide.tsx`,
+which never runs `_scan_for_entries`' own pre-filter) could silently approve a degrading
+setup `_scan_for_entries` would have discarded outright. Same shape as the `min_kscore`/
+`min_ta_score` ports (2026-07-20/22) — this session ported the next domino in that proven
+pattern.
+
+**One structural difference from those two priors, confirmed before writing code**:
+`confidence_delta` needed ZERO new DB query — it's already computed earlier in the SAME
+`_scan_for_entries()` loop iteration (by T202's own gate, via a `SELECT Signal.confidence
+WHERE stock_id=X AND horizon=style AND ts < sig.ts ORDER BY ts DESC LIMIT 1` query) and stays
+live as a local variable all the way to the `_call_decision_engine()` call site ~90 lines
+later — a pure "thread an existing local through as a new kwarg," not a "compute+thread"
+port like `kscore`/`ta_score` were.
+
+**A real sign-direction trap avoided**: `min_kscore`/`min_ta_score` are POSITIVE floors
+(`value < min` blocks). `max_confidence_decline` is a NEGATIVE threshold and the gate blocks
+when the delta falls BELOW it (`confidence_delta < max_confidence_decline`, e.g. `-12.0 <
+-8.0` blocks; exactly `-8.0` does not). Blindly copy-pasting the positive-floor idiom's
+comparison direction would have silently inverted the gate's behavior — every comment and
+test in this port explicitly calls out the sign to guard against exactly that mistake.
+
+**Implementation**:
+1. `paper_trading_engine.py`'s `_call_decision_engine()` — gained a `confidence_delta: float
+   | None = None` parameter; the real call site inside `_scan_for_entries()` passes
+   `confidence_delta=confidence_delta` (the same local T202's own gate already computed).
+   Added `"confidence_delta"` and `"max_confidence_decline"` to `config_overrides`, both
+   conditional on `confidence_delta is not None` (matching the `kscore`/`min_kscore` and
+   `ta_score`/`min_ta_score` conditional-inclusion pattern exactly). The threshold's fallback
+   (`cfg.get("max_confidence_decline", -8.0)`) matches `_scan_for_entries`' own real fallback
+   verbatim.
+2. `hard_rejects.py`'s `check_hard_rejects()` — needed zero new function parameters (`cfg`
+   already carries both keys via its existing merge mechanism, same as `min_kscore`/
+   `min_ta_score`):
+   ```python
+   if cfg.get("max_confidence_decline") is not None:
+       _conf_delta_val = cfg.get("confidence_delta")
+       if _conf_delta_val is not None and float(_conf_delta_val) < float(cfg["max_confidence_decline"]):
+           return f"Confidence declined {float(_conf_delta_val):.1f} pts since prior signal, exceeds max decline {float(cfg['max_confidence_decline']):.1f} pts — setup degrading, wait for stabilisation"
+   ```
+
+**Tests**: `services/market-data/tests/test_declining_confidence_config_wiring.py` (new, 5
+cases, source-text extraction — matching `test_min_ta_score_config_wiring.py`'s established
+technique) — confirms both keys actually reach `config_overrides`, the threshold's fallback
+matches the real `-8.0` literal, both keys are conditional on `confidence_delta is not None`,
+`confidence_delta` is derived from the same SA-26 trajectory query T202's own gate computes
+(not a second independent derivation), and the call site passes the same local variable
+through. `services/decision-engine/tests/test_hard_rejects.py` gained 5 cases (68 total, up
+from 63) — below/at-exactly/above the threshold (confirming the strict `<` boundary),
+gate skipped when either `max_confidence_decline` or `confidence_delta` itself is absent, and
+a dedicated sign-safety test confirming a RISING (positive) confidence delta never blocks
+regardless of how tight the threshold is set.
+
+**Adversarial verification** — 2 sabotage cycles, both caught and reverted:
+1. The comparison logic in `hard_rejects.py` (`if False:`) — caught by exactly 1 of the 5 new
+   tests (the below-threshold-blocks case), the other 4 (which test the surrounding guard
+   conditions, not the comparison itself) correctly stayed green — confirming the sabotage
+   was isolated to the right code path.
+2. The write-side `config_overrides` conditional inclusion in `paper_trading_engine.py`
+   (removed both dict-spread lines) — caught by 3 of the 5 new wiring tests (the 2 unrelated
+   ones — the SA-26 query-derivation check and the call-site kwarg check, neither of which
+   depends on the `config_overrides` dict — correctly stayed green).
+
+Full 547-test market-data suite (up from 542) and 151-test decision-engine suite (up from
+146) green after every revert; `pyflakes` clean on both touched files (confirmed via `git
+stash` that the 3 pre-existing `paper_trading_engine.py` warnings predate this change — one
+warning's line number shifted by exactly the number of lines this fix added, nothing new).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n '"confidence_delta":\|"max_confidence_decline":' /app/src/services/paper_trading_engine.py
+docker exec stockai-decision-engine-1 grep -n 'max_confidence_decline' /app/src/api/core/hard_rejects.py
+```
+Both should show the fix present. If a degrading-confidence candidate is still approved by
+`/decide/{symbol}` after confirming both, check whether the caller (e.g. `decide.tsx`) is
+actually sending a `confidence_delta` in `config_overrides` at all — the gate is a no-op
+without one (correctly — there's nothing to compare against for a brand-new symbol with no
+prior signal).

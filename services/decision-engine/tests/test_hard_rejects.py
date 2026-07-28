@@ -410,6 +410,63 @@ def test_ta_score_gate_disabled_min_ta_score_of_zero_never_blocks():
     assert result is None
 
 
+# ── Declining-confidence hard reject (T202, T232-DL-DUALSCORER-DEBT) ──────────────────────
+# Same shape as the K-Score/TA-score gates above — a separate, earlier HARD pre-filter ported
+# from paper_trading_engine.py's _scan_for_entries() (T202, max_confidence_decline default
+# -8.0), distinct from decision-engine's own SA-26 soft ±1 confidence-trajectory SCORE layer
+# elsewhere in scorer.py. UNLIKE the two floor gates above (positive floor, value < min
+# blocks), max_confidence_decline is a NEGATIVE threshold and the gate blocks when the delta
+# falls BELOW it — every test here is written with that sign in mind, not copy-pasted from the
+# positive-floor shape.
+
+def test_declining_confidence_below_threshold_blocks():
+    """A confidence_delta more negative than the threshold (bigger drop) must block."""
+    result = hr.check_hard_rejects(
+        **_base_kwargs(cfg={"confidence_delta": -12.0, "max_confidence_decline": -8.0})
+    )
+    assert result is not None and "Confidence declined" in result and "12.0" in result
+
+
+def test_declining_confidence_at_or_above_threshold_does_not_block():
+    """A delta exactly at the threshold, or a smaller drop (or a rise), must NOT block —
+    matching _scan_for_entries' own strict `confidence_delta < _conf_decline_threshold`
+    comparison (exactly -8.0 does not trip it)."""
+    result = hr.check_hard_rejects(
+        **_base_kwargs(cfg={"confidence_delta": -8.0, "max_confidence_decline": -8.0})
+    )
+    assert result is None
+    result2 = hr.check_hard_rejects(
+        **_base_kwargs(cfg={"confidence_delta": 5.0, "max_confidence_decline": -8.0})
+    )
+    assert result2 is None
+
+
+def test_declining_confidence_gate_skipped_when_max_confidence_decline_absent():
+    """An older caller not yet sending max_confidence_decline (or confidence_delta) must not
+    be blocked — this gate is opt-in via cfg, matching every other optional gate in this
+    file."""
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"confidence_delta": -50.0}))
+    assert result is None
+
+
+def test_declining_confidence_gate_skipped_when_confidence_delta_itself_absent():
+    """max_confidence_decline present but no actual confidence_delta value sent — must not
+    crash or spuriously block; there's nothing to compare against (e.g. a brand-new symbol
+    with no prior signal to compute a delta from)."""
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"max_confidence_decline": -8.0}))
+    assert result is None
+
+
+def test_declining_confidence_positive_delta_never_blocks_regardless_of_threshold():
+    """A RISING confidence (positive delta) must never block, no matter how tight the
+    threshold — confirms the gate's sign isn't accidentally inverted into treating a positive
+    delta as if it were a floor violation."""
+    result = hr.check_hard_rejects(
+        **_base_kwargs(cfg={"confidence_delta": 20.0, "max_confidence_decline": -1.0})
+    )
+    assert result is None
+
+
 # ── Gap filter (T171) ──────────────────────────────────────────────────────────
 # NOTE: the gap filter runs AFTER the R:R gate (see gate order at the top of this file), so
 # every test here must also move stop_price/take_profit along with live_price to keep R:R

@@ -2841,6 +2841,7 @@ def _call_decision_engine(
     kscore: float | None = None,
     ta_score: float | None = None,
     regime_state: str = "neutral",
+    confidence_delta: float | None = None,
 ) -> tuple[bool, str, int, str | None] | None:
     """Call Decision Engine and return (should_enter, verdict, score, blocked_reason).
 
@@ -2919,6 +2920,24 @@ def _call_decision_engine(
                     # (0.0 > 0 is False) — matched exactly here, NOT _DEFAULT_CONFIG["min_ta_score"]
                     # (which doesn't exist and would KeyError).
                     **( {"min_ta_score": cfg.get("min_ta_score", 0.0)} if ta_score is not None else {} ),
+                    # T232-DL-DUALSCORER-DEBT: T202's declining-confidence gate is
+                    # _scan_for_entries' own HARD pre-filter (confidence_delta computed at the
+                    # SA-26 trajectory query, ~line 4297) — a candidate whose confidence dropped
+                    # more than max_confidence_decline points since the prior signal is discarded
+                    # before DE is ever called on the real production path. DE only has the SAME
+                    # value's SOFT ±1 scoring layer (scorer.py's own SA-26 mirror), never a hard
+                    # reject, so /decide/{symbol} called standalone (e.g. decide.tsx, which never
+                    # runs _scan_for_entries' own pre-filter) could silently accept a candidate
+                    # below the real max_confidence_decline floor. Threaded through so
+                    # hard_rejects.py can enforce the SAME floor _scan_for_entries already
+                    # enforces upstream — same pattern as min_kscore/min_ta_score above. Unlike
+                    # those two (positive floors, value < min blocks), this threshold is a
+                    # NEGATIVE number and the gate blocks when the delta falls BELOW it
+                    # (confidence_delta < max_confidence_decline) — the sign must NOT be treated
+                    # like a positive floor.
+                    **( {"confidence_delta": confidence_delta} if confidence_delta is not None else {} ),
+                    **( {"max_confidence_decline": cfg.get("max_confidence_decline", -8.0)}
+                        if confidence_delta is not None else {} ),
                     # T203-LLMWIRE: llm_scoring_enabled existed in decision-engine's
                     # llm_scorer.py since T203 but was never threaded from portfolio config
                     # into this request — a built-but-dormant feature with no way to turn it
@@ -4400,6 +4419,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             # resolves correctly — _default_min_rr_ratio() only returns that key's calibrated
             # value when regime_state is choppy/risk_off, matching _should_enter()'s own usage.
             regime_state=(live_regime.get("state", "neutral") if live_regime else "neutral"),
+            confidence_delta=confidence_delta,          # T232-DL-DUALSCORER-DEBT: T202 gate parity
         )
         _max_corr = _max_correlation_with_open_positions(
             session, stock.id, _open_stock_ids, _open_closes_cache,
