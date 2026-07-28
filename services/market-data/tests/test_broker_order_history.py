@@ -6,6 +6,15 @@ array into BrokerOrder instances, including converting E*Trade's epoch-milliseco
 placedTime into an ISO8601 string. Tested directly with requests.get mocked — EtradeBroker
 itself is dependency-light (only requests/requests_oauthlib, both real packages, not part of
 this repo's conftest.py stub list) so it imports and runs normally under pytest.
+
+BUG-ETRADEORDERFIELDS (found live, post-deploy, via a real fetched sandbox response): this
+file's OWN original fixture (_order_json) was hand-authored with WRONG field names that
+happened to exactly match the buggy implementation being tested — top-level "orderStatus"
+(the real field lives on OrderDetail["status"]) and Instrument["quantity"] (the real field is
+"orderedQuantity") — so the tests passed even though the shipped code always returned qty=0
+and status="pending" for every real order. Per this repo's own standing lesson (see CLAUDE.md's
+CAPE-feature entry on this exact failure mode), the fixture below is now built from a REAL
+captured E*Trade sandbox response instead of a hand-idealized guess.
 """
 from unittest.mock import MagicMock, patch
 
@@ -28,16 +37,19 @@ def _make_broker(sandbox=True):
 
 def _order_json(order_id="123", symbol="AAPL", action="BUY", qty=10,
                  status="EXECUTED", filled_qty=10, avg_price=150.25, placed_ms=1700000000000):
+    """Matches the REAL field names/nesting confirmed live against E*Trade's sandbox
+    orders.json response — status and quantity both live one level down from where the
+    original (buggy) implementation and its own matching-but-wrong fixture read them."""
     return {
         "orderId": order_id,
-        "orderStatus": status,
         "OrderDetail": [{
+            "status": status,
             "placedTime": placed_ms,
             "averageExecutionPrice": avg_price,
             "Instrument": [{
                 "Product": {"symbol": symbol},
                 "orderAction": action,
-                "quantity": qty,
+                "orderedQuantity": qty,
                 "filledQuantity": filled_qty,
             }],
         }],
@@ -143,3 +155,50 @@ def test_manual_broker_does_not_override_list_orders_and_raises_not_implemented(
     broker = ManualBroker(config={})
     with pytest.raises(NotImplementedError):
         broker.list_orders()
+
+
+def test_list_orders_reads_ordered_quantity_not_quantity():
+    """Real bug caught live: the old code read Instrument["quantity"] (a field that never
+    exists in the real response) instead of "orderedQuantity", so every real order silently
+    showed qty=0 regardless of its actual size."""
+    broker = _make_broker()
+    mock_resp = MagicMock(ok=True)
+    mock_resp.json.return_value = {"OrdersResponse": {"Order": [_order_json(qty=100)]}}
+    with patch("src.services.broker.etrade_broker.requests.get", return_value=mock_resp):
+        orders = broker.list_orders()
+    assert orders[0].qty == 100.0
+
+
+def test_list_orders_reads_status_from_order_detail_not_top_level():
+    """Real bug caught live: the old code read a top-level order["orderStatus"] key that
+    never exists — the real status lives on OrderDetail["status"] — so every real order
+    silently fell through to the hardcoded "OPEN" default (shown as "Pending"), regardless of
+    whether it was actually filled, cancelled, or rejected."""
+    broker = _make_broker()
+    mock_resp = MagicMock(ok=True)
+    mock_resp.json.return_value = {"OrdersResponse": {"Order": [_order_json(status="EXECUTED")]}}
+    with patch("src.services.broker.etrade_broker.requests.get", return_value=mock_resp):
+        orders = broker.list_orders()
+    assert orders[0].status == "filled"
+
+
+def test_list_orders_classifies_options_buy_open_as_buy_not_sell():
+    """Real bug caught live against an actual E*Trade sandbox response: options orders use
+    orderAction values like "BUY_OPEN"/"SELL_CLOSE", not the bare "BUY"/"SELL" equities use.
+    The old exact-match `== "BUY"` check missed "BUY_OPEN" entirely, misclassifying it as a
+    SELL — the opposite of its real side."""
+    broker = _make_broker()
+    mock_resp = MagicMock(ok=True)
+    mock_resp.json.return_value = {"OrdersResponse": {"Order": [_order_json(action="BUY_OPEN")]}}
+    with patch("src.services.broker.etrade_broker.requests.get", return_value=mock_resp):
+        orders = broker.list_orders()
+    assert orders[0].side == OrderSide.BUY
+
+
+def test_list_orders_classifies_options_sell_close_as_sell():
+    broker = _make_broker()
+    mock_resp = MagicMock(ok=True)
+    mock_resp.json.return_value = {"OrdersResponse": {"Order": [_order_json(action="SELL_CLOSE")]}}
+    with patch("src.services.broker.etrade_broker.requests.get", return_value=mock_resp):
+        orders = broker.list_orders()
+    assert orders[0].side == OrderSide.SELL

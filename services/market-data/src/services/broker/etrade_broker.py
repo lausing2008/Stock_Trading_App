@@ -340,9 +340,20 @@ class EtradeBroker(BrokerInterface):
         for o in raw_orders:
             detail = o.get("OrderDetail", [{}])[0]
             instr  = detail.get("Instrument", [{}])[0]
-            raw_status = o.get("orderStatus", "OPEN")
+            # BUG-ETRADEORDERFIELDS: found live post-deploy — every real order showed qty=0 and
+            # status=Pending regardless of its actual state. Both field names were wrong:
+            # (1) E*Trade's real field is "orderedQuantity" (confirmed against a real
+            #     sandbox response), not "quantity" — "quantity" never exists, so this always
+            #     silently defaulted to 0.
+            # (2) order status lives on OrderDetail["status"] ("OPEN"/"EXECUTED"/etc.), NOT a
+            #     top-level "orderStatus" key on the order itself (also confirmed against the
+            #     real response) — the old code always fell through to its own "OPEN" default,
+            #     so every order showed "Pending" no matter what it actually was.
+            raw_status = detail.get("status", "OPEN")
             # E*Trade's placedTime is epoch milliseconds on the OrderDetail — convert to ISO8601
-            # so the frontend never has to know the broker-native format.
+            # so the frontend never has to know the broker-native format. Sandbox test orders
+            # can carry deliberately tiny/fake epoch values (e.g. 123453456 -> Jan 1970) as
+            # canned demo data — that is real sandbox behavior, not a parsing bug.
             placed_at = None
             _placed_ms = detail.get("placedTime")
             if _placed_ms:
@@ -350,11 +361,17 @@ class EtradeBroker(BrokerInterface):
                     placed_at = datetime.fromtimestamp(int(_placed_ms) / 1000, tz=timezone.utc).isoformat()
                 except (ValueError, TypeError, OSError):
                     placed_at = None
+            # orderAction can be "BUY"/"SELL" for equities but "BUY_OPEN"/"SELL_OPEN"/
+            # "BUY_CLOSE"/"SELL_CLOSE" for options (confirmed live: a real sandbox option order
+            # had orderAction="BUY_OPEN", which the old `== "BUY"` exact-match check missed
+            # entirely, misclassifying every options order as SELL).
+            _action = (instr.get("orderAction") or "").upper()
+            side = OrderSide.BUY if _action.startswith("BUY") else OrderSide.SELL
             results.append(BrokerOrder(
                 order_id          = str(o.get("orderId", "")),
                 symbol            = instr.get("Product", {}).get("symbol", ""),
-                side              = OrderSide.BUY if instr.get("orderAction") == "BUY" else OrderSide.SELL,
-                qty               = float(instr.get("quantity", 0)),
+                side              = side,
+                qty               = float(instr.get("orderedQuantity", 0)),
                 order_type        = OrderType.MARKET,
                 status            = status_map.get(raw_status, raw_status.lower()),
                 filled_qty        = float(instr.get("filledQuantity", 0)),
