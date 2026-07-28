@@ -221,6 +221,24 @@ def check_hard_rejects(
     # fallback — backwards from intended). Both use signal.reasons, same as the fallback.
     _reasons = reasons or {}
 
+    # T232-DL-DUALSCORER-DEBT: HK Stock-Connect mainland-flow HARD REJECT (T224-A), ported
+    # from paper_trading_engine.py's _scan_for_entries() (HK entries require positive 5-day
+    # southbound flow; flow_5d_net_hkd <= 0 means mainland money is net-selling the stock —
+    # bearish pressure). Unlike min_kscore/min_ta_score/max_confidence_decline, this required
+    # ZERO write-side threading — sig.reasons (which already carries flow_5d_net_hkd when
+    # present) is already sent to decision-engine wholesale as the request's "reasons" field,
+    # so _reasons (built just above, for T171/T220-D) already has this value in scope. Fail-
+    # open if the field is absent (not all stocks are Stock Connect eligible), matching the
+    # fallback's own behavior exactly. HK-only, using this function's own `market` parameter
+    # (not cfg.get("market") — market is already threaded here directly, unlike cfg-only gates).
+    if market.upper() == "HK":
+        _flow5d = _reasons.get("flow_5d_net_hkd")
+        if _flow5d is not None and float(_flow5d) <= 0:
+            return (
+                f"HK mainland outflow: 5d net flow {float(_flow5d):,.0f} HKD <= 0 "
+                f"— Stock Connect southbound selling pressure (T224-A)"
+            )
+
     # T171: Premarket gap filter — reject if price has already gapped up significantly
     # from its signal-time close. reasons["last_price"] is the close at signal-compute time.
     _signal_close = _reasons.get("last_price")

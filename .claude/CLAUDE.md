@@ -8528,3 +8528,67 @@ print('no_exit_price:', s.execute(text(\"SELECT COUNT(*) FROM signal_outcomes WH
 print('delisted_loss:', s.execute(text(\"SELECT COUNT(*) FROM signal_outcomes WHERE skip_reason='delisted_loss'\")).scalar())
 s.close()"
 ```
+
+---
+
+## Feature Reference: T232-DL-DUALSCORER-DEBT — HK Stock-Connect Flow Gate (T224-A) Ported, Zero Write-Side Changes Needed (2026-07-28)
+
+**Gap closed**: another divergence in the ongoing dual-scorer reconciliation — the HK
+mainland-flow gate. `_scan_for_entries()`'s T224-A gate blocks an HK entry when
+`sig.reasons["flow_5d_net_hkd"] <= 0` (mainland money net-selling the stock via Southbound
+Stock Connect) before it's ever scored. decision-engine had zero equivalent, so
+`/decide/{symbol}` called standalone (e.g. `decide.tsx`) could silently approve an HK entry
+against confirmed mainland outflow the fallback gate would reject outright.
+
+**A genuine structural difference from every prior port in this series**: this one needed
+**zero write-side changes**. `sig.reasons` (the full dict, which already carries
+`flow_5d_net_hkd` when present) is ALREADY sent to decision-engine wholesale as the request's
+`"reasons"` field — confirmed by checking `_call_decision_engine()`'s existing
+`"reasons": sig.reasons or {}` line, which predates this fix entirely. `check_hard_rejects()`
+already receives both `reasons: dict | None = None` and `market: str = "US"` as real
+parameters, and already builds `_reasons = reasons or {}` locally for the pre-existing
+T171/T220-D gates. The entire fix was a single new `if market.upper() == "HK": ...` block
+reading `_reasons.get("flow_5d_net_hkd")` — no new kwarg on `_call_decision_engine()`, no new
+`config_overrides` entry, no `paper_trading_engine.py` changes at all.
+
+**Comparison detail preserved exactly**: the real gate uses `<= 0` (not `< 0`) — exactly zero
+net flow blocks too. Confirmed and tested explicitly, since a naive port might have assumed a
+strict `<` floor like `min_kscore`/`min_ta_score`.
+
+**Tests**: 5 new cases in `services/decision-engine/tests/test_hard_rejects.py` (156 total, up
+from 151) — negative flow blocks, exactly-zero flow blocks (the `<=` boundary), positive flow
+does not block, missing flow data fails open (not all HK stocks are Stock Connect eligible,
+matching `_scan_for_entries`' own fail-open behavior), and a dedicated market-scoping test
+confirming a US portfolio is never blocked by this gate even with a negative
+`flow_5d_net_hkd` present. 4 of the 5 needed their own frozen HK-local-time fixture
+(`_FrozenHKDateTime`, 11:00 HKT) — the file's default `_frozen_market_hours` autouse fixture
+freezes 11:00 ET (23:00 HKT), outside HK's trading session, which would otherwise mask this
+gate behind the earlier market-closed check whenever a test passes `market="HK"`.
+
+**Adversarial verification** — 2 sabotage cycles, both caught and reverted:
+1. The comparison logic (`if False:`) — caught by exactly the 2 blocking tests (negative and
+   zero flow), while the does-not-block and fail-open tests correctly stayed green.
+2. The `market.upper() == "HK"` gate (`if True:`) — caught by the dedicated market-scoping
+   test, which found the gate firing for a US portfolio.
+
+Full 156-test decision-engine suite green after every revert; `pyflakes` clean on the touched
+file (confirmed via `git stash` — zero warnings either before or after).
+
+**Two tracker corrections made in the same pass** (`frontend/src/pages/improvements.tsx`):
+1. `T232-OC6-SURVIVORSHIP-IN-OUTCOMES` gained an `implementedNote` cross-referencing the
+   2026-07-28 fix (see the T232-OC6 Revisited entry above) — its own `fix` text still
+   described the delisted-loss scoring as deliberately deferred, which is now stale.
+2. `T232-DL-DUALSCORER-DEBT`'s own running "dimensions remain open" tally (which still listed
+   "declining-confidence" as unported, despite that gate being ported earlier in this same
+   session) got a new `UPDATE 2026-07-28` paragraph correcting the count and documenting this
+   HK-flow-gate port, dropping the open-dimension count from ~26 to ~24 (declining-confidence
+   and HK Stock-Connect flow both now closed).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-decision-engine-1 grep -n 'flow_5d_net_hkd\|mainland outflow' /app/src/api/core/hard_rejects.py
+```
+Should show the gate present. If an HK entry with confirmed negative flow is still approved
+by `/decide/{symbol}` after confirming this, check whether the caller is actually sending
+`reasons.flow_5d_net_hkd` and `market="HK"` in the request body at all — the gate is a no-op
+without both.

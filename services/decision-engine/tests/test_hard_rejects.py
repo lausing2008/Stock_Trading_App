@@ -467,6 +467,79 @@ def test_declining_confidence_positive_delta_never_blocks_regardless_of_threshol
     assert result is None
 
 
+# ── HK Stock-Connect mainland-flow hard reject (T224-A, T232-DL-DUALSCORER-DEBT) ──────────
+# Unlike every other port in this file, this one required ZERO write-side threading —
+# sig.reasons (which already carries flow_5d_net_hkd when present) is already sent to
+# decision-engine wholesale as the request's "reasons" field, so the gate only needed a new
+# block in hard_rejects.py itself, reading the SAME `market` parameter and `reasons` dict this
+# function already receives for the T171/T220-D gates just below it.
+#
+# _INSIDE_MARKET_HOURS_UTC (15:00 UTC) is 23:00 HKT — outside HK's 09:30-16:00 window, so
+# every test below needs its OWN frozen HK-local instant instead of the file's default
+# US-hours fixture, or the market-closed gate (which runs earlier) would mask this gate.
+_INSIDE_HK_MARKET_HOURS_UTC = datetime(2026, 7, 14, 3, 0, 0, tzinfo=timezone.utc)  # Tue 11:00 HKT
+
+
+class _FrozenHKDateTime(datetime):
+    _frozen_now = _INSIDE_HK_MARKET_HOURS_UTC
+
+    @classmethod
+    def now(cls, tz=None):
+        if tz is None:
+            return cls._frozen_now.replace(tzinfo=None)
+        return cls._frozen_now.astimezone(tz)
+
+
+def test_hk_negative_flow_blocks(monkeypatch):
+    monkeypatch.setattr(hr, "datetime", _FrozenHKDateTime)
+    result = hr.check_hard_rejects(
+        **_base_kwargs(market="HK", reasons={"macro_blackout": None, "last_price": 100.0,
+                                              "flow_5d_net_hkd": -500000.0})
+    )
+    assert result is not None and "mainland outflow" in result.lower()
+
+
+def test_hk_zero_flow_blocks(monkeypatch):
+    """The real gate uses <= 0, not < 0 — exactly zero net flow blocks too, matching
+    _scan_for_entries' own `_flow5d <= 0` comparison exactly."""
+    monkeypatch.setattr(hr, "datetime", _FrozenHKDateTime)
+    result = hr.check_hard_rejects(
+        **_base_kwargs(market="HK", reasons={"macro_blackout": None, "last_price": 100.0,
+                                              "flow_5d_net_hkd": 0.0})
+    )
+    assert result is not None and "mainland outflow" in result.lower()
+
+
+def test_hk_positive_flow_does_not_block(monkeypatch):
+    monkeypatch.setattr(hr, "datetime", _FrozenHKDateTime)
+    result = hr.check_hard_rejects(
+        **_base_kwargs(market="HK", reasons={"macro_blackout": None, "last_price": 100.0,
+                                              "flow_5d_net_hkd": 250000.0})
+    )
+    assert result is None
+
+
+def test_hk_flow_gate_skipped_when_flow_data_absent(monkeypatch):
+    """Not all HK stocks are Stock Connect eligible — a missing flow_5d_net_hkd must fail
+    open, matching _scan_for_entries' own fail-open behavior exactly."""
+    monkeypatch.setattr(hr, "datetime", _FrozenHKDateTime)
+    result = hr.check_hard_rejects(
+        **_base_kwargs(market="HK", reasons={"macro_blackout": None, "last_price": 100.0})
+    )
+    assert result is None
+
+
+def test_hk_flow_gate_never_applies_to_us_market():
+    """A US portfolio must never be blocked by this gate, even with a negative
+    flow_5d_net_hkd present (e.g. stale data left over from a prior HK-scoped request). Uses
+    the file's own default US-hours fixture — no HK-hours freeze needed."""
+    result = hr.check_hard_rejects(
+        **_base_kwargs(market="US", reasons={"macro_blackout": None, "last_price": 100.0,
+                                              "flow_5d_net_hkd": -999999.0})
+    )
+    assert result is None
+
+
 # ── Gap filter (T171) ──────────────────────────────────────────────────────────
 # NOTE: the gap filter runs AFTER the R:R gate (see gate order at the top of this file), so
 # every test here must also move stop_price/take_profit along with live_price to keep R:R
