@@ -1204,3 +1204,43 @@ class SectorRotationSnapshot(Base):
     momentum: Mapped[int] = mapped_column(Integer)  # +1 / 0 / -1, same convention as the Redis payload
     rank: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1 = highest recent_kscore that week
     computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class RealtimeNewsItem(Base):
+    """New news-intelligence service (port 8011) — real-time financial headline ingestion.
+
+    Replaces the abandoned DESIGN_REALTIME_NEWS_FEED_2026-07-25.md design (built around a
+    Stock Titan RSS URL that was verified DEAD — a genuine 404, not just rate-limited — before
+    any code was written against it). This table backs 3 independently-pollable sources instead:
+    PR Newswire RSS (~under 30s observed latency), GlobeNewswire RSS (~2min observed latency),
+    SEC EDGAR's real-time filing Atom feed (~2min observed latency, replacing the existing
+    daily-batch 8-K sync as a SEPARATE, faster-latency source — not a replacement for it), plus
+    Alpaca's real-time news WebSocket (near-instant, natively ticker-tagged, the only push-based
+    source of the four). All 3 non-Alpaca sources were verified live via direct HTTP request
+    before this table was designed, not assumed reachable from documentation alone.
+
+    A single row may have multiple (symbol, headline) combinations if a headline mentions
+    several tickers — deliberately denormalized (one row per symbol-headline pair, matching
+    the abandoned design doc's own schema for this exact reason) rather than a separate join
+    table, since headlines rarely mention more than 1-2 tickers and a join table would add
+    real complexity for a case this rare.
+    """
+    __tablename__ = "realtime_news_items"
+    __table_args__ = (
+        UniqueConstraint("source", "url", "symbol", name="uq_realtime_news_source_url_symbol"),
+        Index("ix_realtime_news_symbol_published", "symbol", "published_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    symbol: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # None = macro/market-wide
+    headline: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(32))  # 'pr_newswire' | 'globenewswire' | 'sec_edgar' | 'alpaca'
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sentiment_score: Mapped[float | None] = mapped_column(Float, nullable=True)  # 0-100, 50=neutral — SAME
+    # scale as market-data's existing SentimentResponse.score (news.py), deliberately, so a
+    # future consumer never has to remember "which news source uses which sentiment scale."
+    sentiment_label: Mapped[str | None] = mapped_column(String(16), nullable=True)  # positive|negative|neutral
+    is_material: Mapped[bool] = mapped_column(Boolean, default=False)  # earnings/FDA/M&A/upgrade/downgrade/etc.
+    category: Mapped[str | None] = mapped_column(String(32), nullable=True)  # earnings|fda|ma|analyst|macro|other
+    published_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    ingested_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

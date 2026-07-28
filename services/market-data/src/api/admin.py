@@ -53,6 +53,13 @@ _REDIS_DEEPSEEK_KEY     = "stockai:admin:deepseek_api_key"
 _REDIS_CLAUDE_MODEL     = "stockai:admin:claude_model"
 _REDIS_DEEPSEEK_MODEL   = "stockai:admin:deepseek_model"
 _REDIS_BROKER_ENABLED   = "stockai:admin:feature:broker_enabled"
+# T258-NEWS-INTELLIGENCE: same admin-configured-credential pattern as the Claude/DeepSeek keys
+# above — matches shared/common/ai_keys.py's own _ALPACA_KEY_REDIS/_ALPACA_SECRET_REDIS
+# constants exactly (kept as two separate literals here rather than importing them, matching
+# this file's existing convention of defining its own Redis key constants rather than
+# importing another module's private constants).
+_REDIS_ALPACA_KEY       = "stockai:admin:alpaca_api_key"
+_REDIS_ALPACA_SECRET    = "stockai:admin:alpaca_secret_key"
 
 def _get_redis():
     from common.redis_client import get_redis as _get_pool_redis
@@ -106,6 +113,13 @@ class ConfigRequest(BaseModel):
     # never having been set, without being an explicit/auditable action).
     unshare_claude_key: bool | None = None
     unshare_deepseek_key: bool | None = None
+    # T258-NEWS-INTELLIGENCE: Alpaca's real-time news WebSocket needs a key+secret PAIR, not a
+    # single token — both must be set together for the news-intelligence service to connect,
+    # but each is independently updatable here (e.g. rotating just the secret) matching the
+    # same "only touch what's explicitly provided" contract as every other field in this model.
+    alpaca_api_key: str | None = None
+    alpaca_secret_key: str | None = None
+    unshare_alpaca_key: bool | None = None
 
 
 @router.get("/feature-flags")
@@ -135,7 +149,8 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
     r = None
     if req.claude_api_key is not None or req.deepseek_api_key is not None or \
        req.claude_model is not None or req.deepseek_model is not None or \
-       req.broker_enabled is not None or req.unshare_claude_key or req.unshare_deepseek_key:
+       req.broker_enabled is not None or req.unshare_claude_key or req.unshare_deepseek_key or \
+       req.alpaca_api_key is not None or req.alpaca_secret_key is not None or req.unshare_alpaca_key:
         r = _get_redis()
     if req.claude_api_key is not None:
         r.set(_REDIS_CLAUDE_KEY, req.claude_api_key)
@@ -151,8 +166,16 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
         r.delete(_REDIS_CLAUDE_KEY)
     if req.unshare_deepseek_key:
         r.delete(_REDIS_DEEPSEEK_KEY)
+    if req.alpaca_api_key is not None:
+        r.set(_REDIS_ALPACA_KEY, req.alpaca_api_key)
+    if req.alpaca_secret_key is not None:
+        r.set(_REDIS_ALPACA_SECRET, req.alpaca_secret_key)
+    if req.unshare_alpaca_key:
+        r.delete(_REDIS_ALPACA_KEY)
+        r.delete(_REDIS_ALPACA_SECRET)
     log.info("admin.config_updated", broker_enabled=req.broker_enabled,
-              unshared_claude=bool(req.unshare_claude_key), unshared_deepseek=bool(req.unshare_deepseek_key))
+              unshared_claude=bool(req.unshare_claude_key), unshared_deepseek=bool(req.unshare_deepseek_key),
+              alpaca_key_set=req.alpaca_api_key is not None, unshared_alpaca=bool(req.unshare_alpaca_key))
     return {"status": "ok"}
 
 

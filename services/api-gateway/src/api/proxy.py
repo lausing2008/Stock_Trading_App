@@ -78,6 +78,8 @@ _ROUTES = {
     # entirely, so every request 404'd at the gateway despite the backend fully implementing
     # the feature (admin-health page's RL Agent tile, RL training trigger).
     "rl-agent": _settings.market_data_url,
+    # T258-NEWS-INTELLIGENCE: new service (port 8011) — real-time headline ingestion.
+    "news": _settings.news_intelligence_url,
 }
 
 

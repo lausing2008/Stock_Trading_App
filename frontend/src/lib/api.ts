@@ -186,6 +186,7 @@ export const api = {
     claude_model?: string; deepseek_model?: string;
     broker_enabled?: boolean;
     unshare_claude_key?: boolean; unshare_deepseek_key?: boolean;
+    alpaca_api_key?: string; alpaca_secret_key?: string; unshare_alpaca_key?: boolean;
   }) => request<{ status: string }>(`/admin/config`, { method: 'POST', body: JSON.stringify(keys) }),
   getFeatureFlags: () => request<{ broker_enabled: boolean }>(`/admin/feature-flags/public`),
 
@@ -570,6 +571,17 @@ export const api = {
   catalystLeaderboard: (limit = 20) => request<CatalystLeaderItem[]>(`/catalyst/leaderboard?limit=${limit}`),
   riskLeaderboard: (limit = 20) => request<CatalystLeaderItem[]>(`/catalyst/risk-leaderboard?limit=${limit}`),
   compositeLeaderboard: (limit = 20) => request<CatalystLeaderItem[]>(`/catalyst/composite-leaderboard?limit=${limit}`),
+
+  // ── News Intelligence (T258-NEWS-INTELLIGENCE) ─────────────────────────────
+  news: (opts?: { symbol?: string; limit?: number; sinceHours?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.symbol) params.set('symbol', opts.symbol);
+    if (opts?.limit) params.set('limit', String(opts.limit));
+    if (opts?.sinceHours) params.set('since_hours', String(opts.sinceHours));
+    const qs = params.toString();
+    return request<RealtimeNewsItem[]>(`/news${qs ? `?${qs}` : ''}`);
+  },
+  newsHot: (symbol: string) => request<HotNewsFlag>(`/news/hot/${symbol}`),
 
   // ── Broker integration ──────────────────────────────────────────────────
   brokerList: () => request<BrokerConnection[]>('/broker/connections'),
@@ -2146,4 +2158,25 @@ export type QuarterlyRow = {
   gross_profit: number | null;
   net_income: number | null;
   ebitda: number | null;
+};
+
+// ── News Intelligence (T258-NEWS-INTELLIGENCE) ───────────────────────────────
+export type RealtimeNewsItem = {
+  id: number;
+  symbol: string | null;             // null = macro/market-wide, no ticker matched
+  headline: string;
+  source: 'pr_newswire' | 'businesswire' | 'sec_edgar' | 'alpaca';
+  url: string | null;
+  sentiment_score: number | null;    // 0-100, 50 = neutral
+  sentiment_label: 'positive' | 'negative' | 'neutral' | null;
+  is_material: boolean;
+  category: 'earnings' | 'fda' | 'ma' | 'analyst' | 'macro' | 'other' | null;
+  published_at: string;
+};
+
+export type HotNewsFlag = {
+  symbol: string;
+  hot: boolean;
+  headline?: string | null;
+  sentiment_label?: string | null;
 };

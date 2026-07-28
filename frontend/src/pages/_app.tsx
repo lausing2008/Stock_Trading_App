@@ -81,6 +81,7 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Short Interest',   href: '/short-selling',  color: '#fb923c' },
       { label: 'Research Engine',  href: '/research',       color: '#4ade80', tag: 'ai' },
       { label: 'Event Intelligence', href: '/intelligence', color: '#f59e0b', tag: 'new' },
+      { label: 'Real-Time News',     href: '/news',          color: '#38bdf8', tag: 'live' },
     ],
   },
   {

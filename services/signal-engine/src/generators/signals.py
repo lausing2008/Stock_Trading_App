@@ -575,6 +575,30 @@ def _fetch_options_flow(symbol: str) -> tuple[str | None, float | None]:
         return None, None
 
 
+def _fetch_hot_news(symbol: str) -> dict | None:
+    """T258-NEWS-INTELLIGENCE: fetch the hot-news flag from the news-intelligence service
+    (GET /news/hot/{symbol}) — set when a MATERIAL headline (earnings, FDA, M&A, guidance,
+    executive departure, downgrade/upgrade — see news-intelligence/src/services/classify.py's
+    own classification prompt) was ingested for this symbol within the last 2 hours, from any
+    of its 4 sources (PR Newswire, Business Wire, SEC EDGAR real-time filings, Alpaca news
+    WebSocket). Returns None on any failure/absence — news-intelligence being unreachable or a
+    symbol having no recent material news must never block signal generation, matching every
+    other optional cross-service enrichment in this file (_fetch_options_flow,
+    _fetch_sr_context_from_ta, etc.).
+    """
+    try:
+        url = f"{_settings.news_intelligence_url}/news/hot/{symbol}"
+        with httpx.Client(timeout=5) as c:
+            r = c.get(url)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("hot"):
+                    return data
+    except Exception:
+        pass
+    return None
+
+
 def _fetch_patterns_from_ta(symbol: str) -> list[dict]:
     """Fetch recent chart patterns from the TA service."""
     try:
@@ -2150,6 +2174,33 @@ def _apply_style_signal(
         reasons["sr_flag"] = "neutral"
     fused = float(np.clip(fused, 0.0, 1.0))
 
+    # ── T258-NEWS-INTELLIGENCE: hot material news ─────────────────────────────
+    # A material headline (earnings, FDA, M&A, guidance change, executive departure,
+    # downgrade/upgrade — see news-intelligence's classify.py) ingested in the last 2 hours
+    # is a real, fast-moving information event this signal's other inputs (TA/ML/etc.) cannot
+    # have priced in yet — TA is computed off yesterday's close, ML off historical training
+    # data, neither reacts to a headline from 10 minutes ago. Direction-aware, matching the
+    # sector-headwind/RS-lagging pattern above: negative news compresses a BUY toward neutral
+    # (don't recommend buying INTO bad news); positive news does NOT boost a SELL/HOLD back to
+    # BUY (a positive headline alone is not independent TA/ML confirmation — this is a
+    # suppression-only gate, not a new bullish signal source, matching the original
+    # DESIGN_REALTIME_NEWS_FEED_2026-07-25.md design's own defensive intent, generalized beyond
+    # just gap-downs). A compression (not a hard reject) — a strong independent TA+ML case can
+    # still clear the buy_threshold even with mixed news; this only pulls the AMBIGUOUS or
+    # already-BUY-leaning candidates back the way sr_flag/rs_flag/sector_headwind already do.
+    hot_news = base_reasons.get("hot_news")
+    if hot_news and fused > 0.5:
+        if hot_news.get("sentiment_label") == "negative":
+            fused = 0.5 + (fused - 0.5) * 0.70   # compress 30% — material bad news, BUY direction
+            reasons["hot_news_flag"] = "material_negative"
+        else:
+            reasons["hot_news_flag"] = "material_other"  # positive/neutral material news — logged, not applied
+    elif hot_news:
+        reasons["hot_news_flag"] = "material_other"
+    else:
+        reasons["hot_news_flag"] = "none"
+    fused = float(np.clip(fused, 0.0, 1.0))
+
     # ── Short interest: squeeze potential boost (SWING/GROWTH) ───────────────
     # High short interest (≥20%) heading into a bullish signal raises squeeze
     # risk for shorts — a small confidence boost for BUY direction.
@@ -2444,6 +2495,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     news_sentiment = _fetch_news_sentiment(symbol)
     rs_score, rs_rank, sector_etf_above_sma50, stock_20d_ret = _fetch_relative_strength(symbol)
     options_sentiment, cp_ratio = _fetch_options_flow(symbol)
+    hot_news = _fetch_hot_news(symbol)
     patterns = _fetch_patterns_from_ta(symbol)
     pattern_adj, active_patterns = _pattern_score_adjustment(patterns, len(df))
     df_weekly = _resample_to_weekly(df)
@@ -2452,6 +2504,9 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     kscore = _fetch_kscore(symbol)
     short_pct_float, short_ratio = _fetch_short_interest(symbol)
     analyst_upgrades_7d, analyst_downgrades_7d = _fetch_analyst_momentum(symbol)
+
+    # T258-NEWS-INTELLIGENCE: hot_news is a dict ({headline, sentiment_label}) or None.
+    reasons["hot_news"]            = hot_news
 
     # Populate shared base reasons (written into every style's output)
     reasons["market_regime"]      = market_regime

@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     research_engine_url: str = "http://research-engine:8008"
     decision_engine_url: str = "http://decision-engine:8009"
     event_intelligence_url: str = "http://event-intelligence:8010"
+    news_intelligence_url: str = "http://news-intelligence:8011"
 
     # Event Intelligence
     fred_api_key: str = ""      # https://fred.stlouisfed.org/docs/api/api_key.html (free)

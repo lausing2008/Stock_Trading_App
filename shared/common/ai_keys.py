@@ -36,3 +36,28 @@ def get_admin_ai_key(provider: str = "claude") -> str:
         return key.strip()
     except Exception:
         return ""
+
+
+# T258-NEWS-INTELLIGENCE: same admin-configured-credential pattern as get_admin_ai_key() above,
+# but Alpaca's news WebSocket needs a KEY+SECRET pair (OAuth-style API key ID + secret key),
+# not a single bearer token — hence a separate pair of Redis keys instead of reusing
+# _REDIS_KEYS/get_admin_ai_key("alpaca") for a single string.
+_ALPACA_KEY_REDIS = "stockai:admin:alpaca_api_key"
+_ALPACA_SECRET_REDIS = "stockai:admin:alpaca_secret_key"
+
+
+def get_alpaca_credentials() -> tuple[str, str]:
+    """Return (api_key, secret_key) for Alpaca's news WebSocket, or ("", "") if unset/unavailable.
+
+    Fail-open, matching get_admin_ai_key()'s exact contract — a Redis outage or an unconfigured
+    key must never raise; the news-intelligence service treats ("", "") as "Alpaca source
+    disabled," not an error worth surfacing distinctly (the RSS/EDGAR sources keep working
+    regardless of whether Alpaca is configured).
+    """
+    try:
+        r = get_redis()
+        key = (r.get(_ALPACA_KEY_REDIS) or "").strip()
+        secret = (r.get(_ALPACA_SECRET_REDIS) or "").strip()
+        return key, secret
+    except Exception:
+        return "", ""

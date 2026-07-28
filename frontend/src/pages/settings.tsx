@@ -339,6 +339,50 @@ export default function SettingsPage() {
   const [sharedKeyMsg, setSharedKeyMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [sharedKeyLoading, setSharedKeyLoading] = useState(false);
 
+  // Admin: Alpaca news API credentials (news-intelligence service). Server-only credential —
+  // deliberately NOT part of AppSettings/localStorage (unlike claudeApiKey/deepseekApiKey,
+  // which are a per-browser "bring your own key" convenience); Alpaca's news feed is admin-wide
+  // infrastructure read directly from Redis by the news-intelligence service, so there's no
+  // per-user key concept to persist locally in the first place.
+  const [alpacaApiKey, setAlpacaApiKey] = useState('');
+  const [alpacaSecretKey, setAlpacaSecretKey] = useState('');
+  const [alpacaMsg, setAlpacaMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [alpacaSaving, setAlpacaSaving] = useState(false);
+
+  async function handleSaveAlpacaKeys() {
+    if (!alpacaApiKey.trim() || !alpacaSecretKey.trim()) {
+      setAlpacaMsg({ ok: false, text: 'Both the API key and secret key are required.' });
+      return;
+    }
+    setAlpacaSaving(true);
+    setAlpacaMsg(null);
+    try {
+      await api.pushConfig({ alpaca_api_key: alpacaApiKey.trim(), alpaca_secret_key: alpacaSecretKey.trim() });
+      setAlpacaMsg({ ok: true, text: 'Alpaca credentials saved — real-time news ingestion will pick them up within a few minutes.' });
+      setAlpacaApiKey('');
+      setAlpacaSecretKey('');
+      setTimeout(() => setAlpacaMsg(null), 5000);
+    } catch {
+      setAlpacaMsg({ ok: false, text: 'Failed to save Alpaca credentials.' });
+    } finally {
+      setAlpacaSaving(false);
+    }
+  }
+
+  async function handleRemoveAlpacaKeys() {
+    setAlpacaSaving(true);
+    setAlpacaMsg(null);
+    try {
+      await api.pushConfig({ unshare_alpaca_key: true });
+      setAlpacaMsg({ ok: true, text: 'Alpaca credentials removed — the news-intelligence service will disable that source.' });
+      setTimeout(() => setAlpacaMsg(null), 5000);
+    } catch {
+      setAlpacaMsg({ ok: false, text: 'Failed to remove Alpaca credentials.' });
+    } finally {
+      setAlpacaSaving(false);
+    }
+  }
+
   async function handlePushSharedKey() {
     if (s.aiProvider === 'none') return;
     setSharedKeyLoading(true);
@@ -1043,6 +1087,84 @@ export default function SettingsPage() {
           </div>
         )}
       </div>
+
+      {/* ── Real-Time News (Alpaca) ────────────────────────────────────── */}
+      {isAdmin && (
+        <div style={section('#38bdf8')}>
+          <div style={sectionBar('linear-gradient(90deg,#38bdf8,#7dd3fc,#38bdf8)')} />
+          <div style={sectionHead}>
+            Real-Time News — Alpaca
+            <span style={{ fontSize: '10px', color: '#38bdf8', fontWeight: 400, marginLeft: '8px', padding: '2px 8px', border: '1px solid rgba(56,189,248,0.3)', borderRadius: '4px', background: 'rgba(56,189,248,0.1)', textTransform: 'none', letterSpacing: 'normal' }}>Admin only</span>
+          </div>
+          <div style={{ padding: '16px 20px' }}>
+            <div style={{ fontSize: '12px', color: '#475569', marginBottom: '12px', lineHeight: 1.6 }}>
+              Powers the near-instant, ticker-tagged headline feed on the{' '}
+              <Link href="/news" style={{ color: '#7dd3fc' }}>News</Link> page and the hot-news
+              signal gate, alongside the always-on PR Newswire / GlobeNewswire / SEC EDGAR
+              sources. Optional — those 3 sources keep working with no key set here; Alpaca adds
+              the fastest, most precisely ticker-tagged one of the four.
+            </div>
+            <div style={grid2}>
+              <div>
+                <label style={lbl}>Alpaca API Key ID</label>
+                <KeyInput
+                  id="alpaca_key"
+                  value={alpacaApiKey}
+                  onChange={setAlpacaApiKey}
+                  placeholder="PK…"
+                />
+              </div>
+              <div>
+                <label style={lbl}>Alpaca Secret Key</label>
+                <KeyInput
+                  id="alpaca_secret"
+                  value={alpacaSecretKey}
+                  onChange={setAlpacaSecretKey}
+                  placeholder="Enter your Alpaca secret key"
+                />
+              </div>
+            </div>
+            <div style={{ ...hint, padding: '0 20px 4px' }}>
+              Get a free key pair at{' '}
+              <span style={{ color: '#7dd3fc' }}>app.alpaca.markets</span> (Paper or Live account
+              — the news feed works the same on either). This is a single, server-wide
+              credential shared by the news-intelligence service for every user, not a
+              per-browser key — it is stored in Redis on the server, never in this browser.
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 20px 0' }}>
+              <button
+                onClick={handleSaveAlpacaKeys}
+                disabled={alpacaSaving}
+                style={{
+                  padding: '8px 18px', borderRadius: '8px', fontSize: '13px', fontWeight: 600,
+                  cursor: alpacaSaving ? 'not-allowed' : 'pointer',
+                  background: 'rgba(56,189,248,0.15)', border: '1px solid rgba(56,189,248,0.4)',
+                  color: '#7dd3fc', transition: 'all 0.15s',
+                }}
+              >
+                {alpacaSaving ? '⟳ Saving…' : 'Save Alpaca credentials'}
+              </button>
+              <button
+                onClick={handleRemoveAlpacaKeys}
+                disabled={alpacaSaving}
+                style={{
+                  padding: '8px 18px', borderRadius: '8px', fontSize: '13px', fontWeight: 600,
+                  cursor: alpacaSaving ? 'not-allowed' : 'pointer',
+                  background: 'transparent', border: '1px solid rgba(248,113,113,0.35)',
+                  color: '#f87171', transition: 'all 0.15s',
+                }}
+              >
+                Remove
+              </button>
+              {alpacaMsg && (
+                <span style={{ fontSize: '12px', color: alpacaMsg.ok ? '#4ade80' : '#f87171' }}>
+                  {alpacaMsg.text}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Data & Refresh ──────────────────────────────────────────────── */}
       <div style={section('#4f46e5')}>

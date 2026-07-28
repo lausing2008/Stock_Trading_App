@@ -120,6 +120,13 @@ services:
       dockerfile: services/event-intelligence/Dockerfile
     #ports: ["8010:8010"]
 
+  news-intelligence:
+    <<: *py-common
+    build:
+      context: ..
+      dockerfile: services/news-intelligence/Dockerfile
+    #ports: ["8011:8011"]
+
   api-gateway:
     <<: *py-common
     build:
@@ -150,6 +157,8 @@ services:
       decision-engine:
         condition: service_healthy
       event-intelligence:
+        condition: service_healthy
+      news-intelligence:
         condition: service_healthy
 
   frontend:
