@@ -2086,6 +2086,27 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
 
     # Batch-fetch latest signal per open symbol in ONE query (avoids N+1)
     symbols = [t.symbol for t in open_trades]
+
+    # BUG-PAPERPOS-DELISTED-FROZEN: Stock.delisted (aud14-survivorship) is populated with a
+    # real, conservative signal (2 consecutive ingestion failures) but was never consumed
+    # here — a delisted stock's live quote goes stale, and the pre-existing staleness-
+    # escalation logic below only LOGS the condition, never exits the position. Left alone,
+    # the position freezes open at an increasingly stale price forever, distorting reported
+    # equity/P&L indefinitely. This bulk-fetches the flag once per cycle for all open
+    # symbols, matching the batch-fetch pattern every other per-symbol lookup in this
+    # function already uses (signals/kscores/OBV above).
+    delisted_symbols: set[str] = set()
+    if symbols:
+        try:
+            delisted_symbols = {
+                sym for sym, is_delisted in session.execute(
+                    select(Stock.symbol, Stock.delisted).where(Stock.symbol.in_(symbols))
+                ).all()
+                if is_delisted
+            }
+        except Exception as exc:
+            log.warning("paper.monitor_delisted_check_failed", error=str(exc))
+
     latest_signals: dict[str, Signal] = {}
     if symbols:
         # DISTINCT ON (stock_id): get the most-recent signal row per stock
@@ -2329,7 +2350,21 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             "signal_at_exit": sig_type,
         }
 
-        if live_price <= stop:
+        # BUG-PAPERPOS-DELISTED-FROZEN: checked FIRST, ahead of stop/target/signal logic —
+        # once a stock is confirmed delisted, `live_price` here is whatever stale fallback
+        # value _monitor_positions's own missing-quote handling last supplied (there is no
+        # real market left to compute a meaningful stop/target breach against), so this must
+        # preempt every other exit condition rather than compete with them.
+        if trade.symbol in delisted_symbols:
+            exit_reason = "delisted"
+            exit_notes = {**_base_notes,
+                "message": f"{trade.symbol} confirmed delisted — closing position at last known price ${live_price:.2f}",
+                "pnl_pct": round(pnl_pct * 100, 2),
+            }
+            log.warning("paper.delisted_auto_exit", symbol=trade.symbol, trade_id=trade.id,
+                        exit_price=live_price, pnl_pct=round(pnl_pct * 100, 2))
+
+        elif live_price <= stop:
             # T197: Distinguish break-even stops (stop ≈ entry) from real losses.
             # A break-even exit means the trade ran positive, came back, and exited flat.
             _be_tol = entry * 0.005  # 0.5% tolerance around entry

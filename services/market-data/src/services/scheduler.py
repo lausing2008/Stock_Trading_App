@@ -2232,6 +2232,46 @@ def check_signal_alerts() -> None:
 
             symbols = list({a.symbol for a in alerts})
 
+            # BUG-ALERTS-DELISTED-SILENT: a delisted symbol's stored prices simply stop
+            # updating, which the pre-existing freshness check (below) already excludes from
+            # firing — but that check can't distinguish "genuinely delisted, will never fire
+            # again" from "a normal few-day data gap." Without this, a user's alert subscription
+            # silently goes dead forever with zero notification. Send exactly one email per
+            # (user, symbol) via a Redis dedup key (no schema migration needed — this is a
+            # one-time notice, not state that needs to survive a restart) rather than deleting
+            # the subscription outright, since a relisting is rare but not impossible.
+            delisted_symbols: set[str] = set()
+            if symbols:
+                try:
+                    delisted_symbols = {
+                        sym for sym, is_delisted in session.execute(
+                            select(Stock.symbol, Stock.delisted).where(Stock.symbol.in_(symbols))
+                        ).all()
+                        if is_delisted
+                    }
+                except Exception as exc:
+                    log.warning("signal_alert.delisted_check_failed", error=str(exc))
+            for sym in delisted_symbols:
+                for alert in alerts:
+                    if alert.symbol != sym or not alert.email:
+                        continue
+                    try:
+                        _dl_key = f"stockai:alert_delisted_notice:{alert.id}"
+                        if _get_redis().set(_dl_key, "1", nx=True, ex=90 * 86400):
+                            from .email_service import send_email
+                            send_email(
+                                alert.email,
+                                f"⚠️ Signal alert on {sym} can no longer fire — delisted",
+                                f"<p>Your signal alert on <strong>{sym}</strong> ({getattr(alert, 'horizon', 'SWING')}) "
+                                f"will not fire again — {sym} has been detected as delisted and no longer has "
+                                f"live price/signal data. You can remove this subscription from the Alerts page.</p>",
+                                f"Your signal alert on {sym} ({getattr(alert, 'horizon', 'SWING')}) will not fire "
+                                f"again — {sym} has been detected as delisted and no longer has live price/signal "
+                                f"data. You can remove this subscription from the Alerts page.",
+                            )
+                    except Exception as exc:
+                        log.warning("signal_alert.delisted_notice_failed", symbol=sym, error=str(exc))
+
             # DP-3: Build per-symbol price freshness map; skip symbols with stale bars.
             # Use 4-day window to accommodate weekends (Fri close → Mon alert run = 3 calendar days).
             fresh_symbols: set[str] = set()
@@ -2832,6 +2872,48 @@ def check_price_alerts() -> None:
                 except Exception:
                     pass
 
+            # BUG-ALERTS-DELISTED-SILENT: a delisted symbol never has a usable live price, so
+            # its alert(s) would otherwise sit in `triggered=False` and be re-checked forever
+            # with no notification the user's threshold can never be reached again. Unlike
+            # SignalAlert (a persistent subscription, left alone below), a PriceAlert already
+            # self-terminates via `triggered=True` — so a confirmed delisting is the correct
+            # terminal state here, not just a one-time notice.
+            delisted_symbols: set[str] = set()
+            try:
+                delisted_symbols = {
+                    sym for sym, is_delisted in session.execute(
+                        select(Stock.symbol, Stock.delisted).where(Stock.symbol.in_(symbols))
+                    ).all()
+                    if is_delisted
+                }
+            except Exception as exc:
+                log.warning("price_alert.delisted_check_failed", error=str(exc))
+            delisted_fired = 0
+            for alert in alerts:
+                if alert.symbol not in delisted_symbols:
+                    continue
+                alert.triggered = True
+                alert.triggered_at = datetime.now(timezone.utc)
+                delisted_fired += 1
+                log.info("price_alert.delisted_deactivated", symbol=alert.symbol, alert_id=alert.id)
+                if alert.email:
+                    try:
+                        from .email_service import send_email
+                        send_email(
+                            alert.email,
+                            f"⚠️ Price alert on {alert.symbol} can no longer fire — delisted",
+                            f"<p>Your price alert on <strong>{alert.symbol}</strong> "
+                            f"({alert.condition.value} ${alert.threshold:.2f}) has been deactivated — "
+                            f"{alert.symbol} has been detected as delisted and no longer has live price data.</p>",
+                            f"Your price alert on {alert.symbol} ({alert.condition.value} ${alert.threshold:.2f}) "
+                            f"has been deactivated — {alert.symbol} has been detected as delisted and no longer "
+                            f"has live price data.",
+                        )
+                    except Exception as exc:
+                        log.warning("price_alert.delisted_notice_failed", symbol=alert.symbol, error=str(exc))
+            if delisted_fired:
+                session.commit()
+
             fired = 0
             pending_emails: list[dict] = []
             pending_webhooks: list[tuple[str, dict]] = []
@@ -2841,6 +2923,8 @@ def check_price_alerts() -> None:
             _compound_signal_cache: dict = {}
             _compound_rvol_cache: dict = {}
             for alert in alerts:
+                if alert.symbol in delisted_symbols:
+                    continue  # already deactivated above — never fire on a stale/cached price
                 price = prices.get(alert.symbol)
                 if price is None:
                     continue

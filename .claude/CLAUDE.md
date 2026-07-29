@@ -9304,3 +9304,117 @@ from src.services.earnings import check_earnings_impact_poll
 print(asyncio.run(check_earnings_impact_poll()))
 "
 ```
+
+---
+
+## Feature Reference: BUG-PAPERPOS-DELISTED-FROZEN + BUG-ALERTS-DELISTED-SILENT — Delisting Now Wired Into Paper-Position Exits + Alert Deactivation (Built 2026-07-29)
+
+**Gap this closes**: `Stock.delisted` (aud14-survivorship, 2026-07-27) is a real, conservative
+signal (2 consecutive yfinance `YFTickerMissingError` failures before it flips `True`) and is
+already surfaced as a badge on the watchlist/stock-detail pages (T260-DELISTED-BADGE) — but
+before this fix it was consumed in exactly those 2 read-only display sites and NOWHERE else.
+Both gaps were explicitly flagged as deliberately-deferred follow-ups in T260-DELISTED-BADGE's
+own writeup ("alert-on-delisted-symbol silent-forever-non-firing and paper-position-freezes-
+open-on-delisting are both real, related gaps... scoped out as their own separate follow-ups")
+and confirmed still real by re-reading the current code before building anything.
+
+### 1. Paper positions froze open forever on a delisted stock
+
+**Root cause**: `_monitor_positions()`'s missing-live-quote fallback
+(BUG-MONITORPOS-STALEPRICE, 2026-07-21) already tracks consecutive stale cycles in Redis and
+escalates from `log.warning` to `log.error` once a real threshold is crossed — but that
+escalation is diagnostic-only. Nothing ever actually CLOSED the position. A delisted stock's
+open paper position would sit at `stage="open"` indefinitely, its stop/target math running
+against an increasingly stale fallback price, permanently distorting the portfolio's reported
+equity/P&L with no resolution.
+
+**Fix**: bulk-fetch `Stock.delisted` for every open symbol once per monitoring cycle (same
+batch-fetch pattern the function already uses for signals/kscores/OBV divergence — no
+per-trade N+1 query), then add a new `exit_reason = "delisted"` hard-exit branch checked
+FIRST, ahead of the stop/target/signal-exit chain — a delisted stock has no real market left
+to compute a meaningful stop/target breach against, so this must preempt rather than compete
+with those checks. Reuses the EXACT same "Execute exit" block every other hard exit already
+flows through (fills, commission, cash credit, `signal_outcomes` write-back, broker exit
+routing) — no bespoke shortcut. `exit_reason` is a plain `String(64)` column with no enum
+constraint, so no schema/migration was needed for the new value.
+
+**Deliberately NOT added to `_MECHANICAL_EXIT_REASONS`** (`paper_portfolio.py`'s trade-
+postmortem classifier) — that set is already narrower than "any hard exit" (it excludes
+`signal_exit`/`hold_stall_timeout`/`momentum_fade`/`momentum_exit` too), and a delisting is
+neither a plan-consistent mechanical exit nor a discretionary one — it's a forced exit the
+market itself imposed. Left uncategorized rather than force a decision outside this fix's
+scope.
+
+### 2. Alerts on a delisted symbol went silent forever with no notification
+
+**Root cause**: `check_price_alerts()` fetches live prices via `yf.Tickers(...).fast_info.
+last_price` — a delisted symbol simply never gets a usable price, so `prices.get(alert.symbol)`
+returns `None` and the alert is silently skipped every cycle forever, with `triggered` staying
+`False` indefinitely. `check_signal_alerts()`'s existing DP-3 freshness check (a 4-day
+`Price.ts` staleness window) has the identical blind spot — it correctly excludes a stale
+symbol from firing, but can't distinguish "genuinely delisted, will never update again" from
+"a normal few-day data gap," so the user's subscription just quietly stops working with zero
+indication anything is wrong.
+
+**Fix — two different terminal actions, because the two alert types have genuinely different
+lifecycles**:
+- **`PriceAlert`** already self-terminates via `triggered=True` once fired (`select(PriceAlert)
+  .where(PriceAlert.triggered.is_(False))`) — so a confirmed delisting is a real terminal
+  state here, not just a notice. Bulk-fetches `Stock.delisted` for all alert symbols, sets
+  `triggered=True` + `triggered_at` on every delisted symbol's alerts, commits, and — if an
+  email is on file — sends a one-time "this alert can no longer fire, SYMBOL is delisted"
+  notice. The main per-alert loop also explicitly skips `delisted_symbols` (defense-in-depth
+  against a transient stale-cached yfinance value slipping through before the real exception
+  path fires, even though the pre-existing `if price is None: continue` already makes this a
+  no-op in practice).
+- **`SignalAlert`** has NO such lifecycle at all — it's a persistent subscription with no
+  `triggered` field, and a relisting is rare but not impossible, so deleting/deactivating the
+  row outright would be the wrong, more destructive move. Instead: a one-time notification per
+  `(alert)` via a Redis `SET NX EX` dedup key (`stockai:alert_delisted_notice:{alert.id}`, 90-day
+  TTL — matching this file's own established one-time-notice convention, e.g. `stockai:
+  auto_research_sent:{sym}`), so the notice fires exactly once per alert rather than every
+  minute this job runs. The subscription itself is left completely untouched.
+
+Both fixes fail open on a DB error for the delisted-lookup itself (matching every other
+optional batch-fetch in these functions) — a query hiccup must never crash the whole
+monitoring/alert cycle for every other open trade or alert.
+
+**Tests**: `services/market-data/tests/test_delisted_position_autoexit.py` (6 cases) and
+`test_delisted_alert_deactivation.py` (12 cases) — both source-text regression checks
+(`paper_trading_engine.py`/`scheduler.py` can't be imported directly in this test environment,
+matching every other test file's documented constraint for these two modules). Cover: the
+bulk-fetch pattern and its fail-open guard, the delisted-exit branch's priority ordering
+(strictly first, before the stop-check `elif`, with exactly one `exit_reason =` assignment
+between the branch start and the stop check), that it flows through the shared execute-exit
+block rather than a bypass, `PriceAlert`'s `triggered=True`+commit+main-loop-skip-guard, and
+`SignalAlert`'s no-delete guarantee + Redis dedup key with `nx=True` + email-on-file gate.
+
+**Adversarial verification** — 3 sabotage cycles, all caught and reverted:
+1. Relocating the delisted-exit branch to fire AFTER the stop/target/signal chain (an `elif`
+   inserted just before the momentum-fade check) — caught by the ordering test with a real
+   `substring not found` failure (the exact `if trade.symbol in delisted_symbols:` prefix no
+   longer existed at its expected position), proving the test catches a genuine relocation
+   bug, not just a coincidental string match.
+2. Removing `PriceAlert`'s main-loop defense-in-depth skip guard — caught directly.
+3. Removing `nx=True` from `SignalAlert`'s dedup key (which would have resent the notice every
+   single minute this job runs) — caught directly.
+
+Full 620-test market-data suite (up from 602) green after every revert; `pyflakes` clean on
+both touched files (confirmed via `git stash` that all 7 pre-existing warnings predate this
+change — only line numbers shifted).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n 'exit_reason = "delisted"\|delisted_symbols' /app/src/services/paper_trading_engine.py
+docker exec stockai-market-data-1 grep -n 'stockai:alert_delisted_notice\|delisted_fired' /app/src/services/scheduler.py
+
+# Check for a real auto-exit having fired:
+docker logs stockai-market-data-1 --since 24h | grep 'paper.delisted_auto_exit'
+
+# Check for a real alert deactivation/notice having fired:
+docker logs stockai-market-data-1 --since 24h | grep 'price_alert.delisted_deactivated\|signal_alert.delisted'
+
+# Confirm a specific delisted symbol's open trades actually closed:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT symbol, stage, exit_reason FROM paper_trades WHERE symbol IN (SELECT symbol FROM stocks WHERE delisted = true);"
+```
