@@ -9182,3 +9182,125 @@ docker exec stockai-frontend-1 sh -c "grep -o 'Overview.,.Research' /app/.next/s
 If the Research tab shows a blank/error state that `/research/SYMBOL` directly does not, check
 the browser console for a hooks-related React warning first — that would indicate the
 component-reuse approach hit an edge case this build-time check didn't catch.
+
+---
+
+## Feature Reference: T249-EARNINGS-LLM-IMPACT — Earnings LLM Impact Report (Built 2026-07-29)
+
+**User ask, verbatim**: after asking whether earnings/macro results already get an LLM impact
+read (answer: macro did, via T249-P2's `generate_reaction()`; earnings only had a non-LLM
+numeric reaction), the user said: "add the LLM feature to earning report as well same as
+Marco to get the impact report and all the details" — then, immediately after: "put all those
+to feature flag as well so that I can have control" (referring to both this new feature and
+the pre-existing, previously-unflagged macro reaction feature).
+
+**Mirrors `event-intelligence/src/services/macro_reaction.py`'s `generate_reaction()` exactly**
+— same Claude Haiku call shape, same fail-open contract (`None` on any error), same structured
+`{"impact_text": ..., "sectors_helped": [...], "sectors_hurt": [...]}` return shape and
+`_clean_sector_list()` validation, same markdown-fence-stripping fix already established for
+`risk_agent.py`/`news.py`. New `generate_earnings_impact()` in
+`services/event-intelligence/src/services/earnings.py` takes EPS/revenue actual-vs-estimate/
+surprise-pct/earnings-strength-score instead of a macro release's actual/expected/previous
+values — the earnings-specific inputs, same LLM-call plumbing.
+
+**Detection differs from macro's release-day-armed poll** — macro's poll knows the EXACT
+minute a release is due (`_FRED_RELEASES`/`_FOMC_DATES`); earnings land unpredictably per
+company throughout the day/after-hours, so `check_earnings_impact_poll()` is instead a plain
+5-minute interval scan for `EarningsEvent` rows where `eps_actual` has already landed (via the
+existing daily `sync_all_earnings()` job) but `impact_text` hasn't been generated yet — a
+cheap, single indexed query on the common no-op case.
+
+**New DB columns on `EarningsEvent`** (`shared/db/models.py`): `impact_text`,
+`impact_generated_at`, `impact_sent_at`, `sectors_helped`, `sectors_hurt` — byte-for-byte
+mirroring `EconomicEvent`'s own 5 reaction-tracking columns. Per this repo's own standing
+`create_all()`-gap invariant (new columns on an existing, already-populated table are never
+auto-applied), a matching `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migration was added to
+`shared/db/session.py`'s `_run_migrations()`.
+
+**Delivery — new `check_earnings_impact_alerts()` in `services/market-data/src/services/
+scheduler.py`**, the earnings-side mirror of `check_macro_reaction_alerts()`: polls for
+`impact_text IS NOT NULL AND impact_sent_at IS NULL` rows and emails the same
+`PriceAlert`-subscribed audience as every other T249 alert type. `impact_sent_at` only
+advances inside an `if any_sent:` gate — a failed send cycle must retry next minute, not get
+silently marked done (same discipline already established for `reaction_sent_at`, and
+adversarially re-verified here too).
+
+### Feature flags — closing the "put all those to feature flag" ask
+
+Three global admin flags now exist for the app's Claude-calling features, each with different
+default semantics matched to its actual risk/track record:
+
+| Flag | Redis key | Default | Why |
+|---|---|---|---|
+| `auto_research_enabled` | `stockai:admin:feature:auto_research_enabled` | **OFF** | Real production cost-leak bug found same session (CLAUDE-API-COST-AUDIT) |
+| `macro_llm_reaction_enabled` | `stockai:admin:feature:macro_llm_reaction_enabled` | **ON** | Live and relied upon since T249-P2, no cost incident — flag exists for control, not because it needed fixing |
+| `earnings_llm_impact_enabled` | `stockai:admin:feature:earnings_llm_impact_enabled` | **OFF** | Brand-new feature, matches every other new opt-in Claude feature's own default-off convention |
+
+`macro_llm_reaction_enabled`'s Redis semantics are deliberately inverted from the other two:
+the read side checks `get(...) == "0"` (only an explicit `"0"` disables it) rather than
+`get(...) != "1"` (only an explicit `"1"` enables it) — this preserves the feature's own
+already-live production behavior for every existing deployment where the key has never been
+set, rather than silently turning off a feature that's been running fine since T249-P2 the
+moment this flag code deploys. `admin.py`'s `get_feature_flags()`/`get_feature_flags_public()`
+match this same inverted-default semantics on the read side (`!= "0"` reports `True` when
+unset).
+
+All 3 flags follow the identical 5-touch-point wiring pattern established for
+`auto_research_enabled`: `ConfigRequest` field, both `GET /admin/feature-flags` endpoints,
+`POST /admin/config`'s write-guard + write branch + log line.
+
+**Admin AI Assistant Features page** (`frontend/src/pages/admin-ai-features.tsx`) — both new
+flags added as real toggles in the existing "Global" card (previously only had Auto Research);
+the old, now-redundant "Macro Reaction Analysis" **info-only** row under "Always on" was
+removed since it's a real toggle now — a feature can't be both read-only-info AND
+user-controlled in the same page without being misleading about which one is true.
+
+**Tests**: `services/event-intelligence/tests/test_earnings_impact.py` (18 cases) —
+`_clean_sector_list()` behavior (identical contract to macro's own), `generate_earnings_impact()`'s
+full fail-open matrix (no key / non-200 / network exception / malformed JSON / missing impact
+text / markdown-fence stripping / 500-char truncation), and `check_earnings_impact_poll()`'s
+feature-flag gate (unset/explicit-off/Redis-error all correctly skip, checked before any DB
+query). `services/market-data/tests/test_earnings_impact_delivery.py` (9 cases, source-text —
+`scheduler.py` can't be imported directly in this test environment) — confirms
+`check_earnings_impact_alerts()`'s flag gate, lock pattern, generated-but-unsent query shape,
+and the `any_sent`-gated `impact_sent_at` write; plus confirms the RETROACTIVELY-added flag
+gate on `check_macro_reaction_alerts()` (default-on semantics, checked before the lock).
+`services/market-data/tests/test_earnings_macro_llm_admin_flags.py` (10 cases) — real
+behavioral tests against `admin.py` (genuinely importable in this test environment), covering
+both flags' read/write/default-semantics plus a cross-file check that all 3 services'
+independently-hardcoded Redis key literals agree.
+
+**Adversarial verification** — every guard sabotaged and reverted, all caught correctly: 2
+sabotage cycles on `_clean_sector_list()`/the feature-flag gate in `earnings.py` (8 tests
+caught across both); 3 cycles on `scheduler.py` (the new function's flag gate, the
+`any_sent` gate, and the retroactive macro flag gate — 8 tests caught total); 1 cycle on
+`admin.py`'s write-guard (4 tests caught, confirming a request setting ONLY one of the new
+flags would otherwise silently no-op). Full suites green throughout: event-intelligence 177
+(159 baseline + 18 new), market-data 602 (583 baseline + 19 new — 9 delivery + 10 admin-flag).
+`pyflakes` clean on every touched file (confirmed via `git stash` that every pre-existing
+warning predates this change).
+
+**What to check if this looks wrong**:
+```bash
+# Confirm both new flags' current state:
+docker exec stockai-redis-1 redis-cli get stockai:admin:feature:earnings_llm_impact_enabled
+docker exec stockai-redis-1 redis-cli get stockai:admin:feature:macro_llm_reaction_enabled
+
+# Check whether the detection poll is finding/generating anything (needs the flag ON first):
+docker logs stockai-event-intelligence-1 --since 1h | grep 'earnings_impact'
+
+# Check whether delivery is sending anything:
+docker logs stockai-market-data-1 --since 1h | grep 'earnings_impact_sent\|earnings_impact_error'
+
+# Check real impact rows in the DB:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT stock_id, report_date, impact_generated_at, impact_sent_at FROM earnings_events WHERE impact_text IS NOT NULL ORDER BY report_date DESC LIMIT 10;"
+
+# Manually trigger the detection poll (needs the flag ON, and a recent real EarningsEvent row
+# with eps_actual populated and impact_text still NULL to have any real effect):
+docker exec stockai-event-intelligence-1 python3 -c "
+import asyncio, sys; sys.path.insert(0, '/app')
+from src.services.earnings import check_earnings_impact_poll
+print(asyncio.run(check_earnings_impact_poll()))
+"
+```

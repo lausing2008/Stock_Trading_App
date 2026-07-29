@@ -407,6 +407,24 @@ def _run_migrations() -> None:  # noqa: C901
             conn.execute(text(
                 f"ALTER TABLE fundamentals_snapshot ADD COLUMN IF NOT EXISTS {_col} {_type}"
             ))
+        # T249-EARNINGS-LLM-IMPACT: LLM-generated earnings impact read, mirroring
+        # EconomicEvent's reaction_text/reaction_generated_at/reaction_sent_at/sectors_helped/
+        # sectors_hurt columns exactly.
+        conn.execute(text(
+            "ALTER TABLE earnings_events ADD COLUMN IF NOT EXISTS impact_text TEXT"
+        ))
+        conn.execute(text(
+            "ALTER TABLE earnings_events ADD COLUMN IF NOT EXISTS impact_generated_at TIMESTAMP"
+        ))
+        conn.execute(text(
+            "ALTER TABLE earnings_events ADD COLUMN IF NOT EXISTS impact_sent_at TIMESTAMP"
+        ))
+        conn.execute(text(
+            "ALTER TABLE earnings_events ADD COLUMN IF NOT EXISTS sectors_helped TEXT"
+        ))
+        conn.execute(text(
+            "ALTER TABLE earnings_events ADD COLUMN IF NOT EXISTS sectors_hurt TEXT"
+        ))
 
 
 def _seed_admin() -> None:

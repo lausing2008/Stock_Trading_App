@@ -43,6 +43,10 @@ async def job_sync_earnings():
     await _run("sync_earnings", earnings.sync_all_earnings())
 
 
+async def job_check_earnings_impact_poll():
+    await _run("check_earnings_impact_poll", earnings.check_earnings_impact_poll())
+
+
 async def job_sync_insider():
     await _run("sync_insider", insider.sync_all_insider())
 
@@ -122,6 +126,14 @@ async def start_scheduler():
     _scheduler.add_job(job_sync_economic,      "cron", hour=6,  minute=0,  id="sync_economic")
     _scheduler.add_job(job_sync_fred_release_dates, "cron", hour=6, minute=15, id="sync_fred_release_dates")
     _scheduler.add_job(job_sync_earnings,      "cron", hour=6,  minute=30, id="sync_earnings")
+    # T249-EARNINGS-LLM-IMPACT: unlike macro's release-day-armed polls (exact release times are
+    # known in advance), earnings land unpredictably per company throughout the day — a plain
+    # 5-min interval poll is the simplest correct fit. Cheap no-op (one indexed query, zero
+    # LLM calls) whenever there's nothing new to generate, and fails closed on the
+    # earnings_llm_impact_enabled admin flag before even querying the DB.
+    _scheduler.add_job(
+        job_check_earnings_impact_poll, "interval", minutes=5, id="check_earnings_impact_poll",
+    )
     _scheduler.add_job(job_sync_insider,       "cron", hour=7,  minute=0,  id="sync_insider")
     _scheduler.add_job(job_sync_congress,      "cron", hour=7,  minute=30, id="sync_congress")
     _scheduler.add_job(job_sync_political,     "cron", hour=8,  minute=0,  id="sync_political")

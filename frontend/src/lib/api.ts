@@ -188,10 +188,15 @@ export const api = {
     claude_model?: string; deepseek_model?: string;
     broker_enabled?: boolean;
     auto_research_enabled?: boolean;
+    macro_llm_reaction_enabled?: boolean;
+    earnings_llm_impact_enabled?: boolean;
     unshare_claude_key?: boolean; unshare_deepseek_key?: boolean;
     alpaca_api_key?: string; alpaca_secret_key?: string; unshare_alpaca_key?: boolean;
   }) => request<{ status: string }>(`/admin/config`, { method: 'POST', body: JSON.stringify(keys) }),
-  getFeatureFlags: () => request<{ broker_enabled: boolean; auto_research_enabled: boolean }>(`/admin/feature-flags/public`),
+  getFeatureFlags: () => request<{
+    broker_enabled: boolean; auto_research_enabled: boolean;
+    macro_llm_reaction_enabled: boolean; earnings_llm_impact_enabled: boolean;
+  }>(`/admin/feature-flags/public`),
 
   getAdminSignalLog: (params?: {
     symbol?: string; signal_type?: string; horizon?: string;

@@ -57,6 +57,14 @@ _REDIS_BROKER_ENABLED   = "stockai:admin:feature:broker_enabled"
 # exactly — both files hardcode the same string rather than cross-importing a shared constant,
 # matching this file's own established convention (see the Alpaca-key comment below).
 _REDIS_AUTO_RESEARCH_ENABLED = "stockai:admin:feature:auto_research_enabled"
+# T249-EARNINGS-LLM-IMPACT / macro_llm_reaction: matches scheduler.py's own hardcoded literals
+# for both (_REDIS_EARNINGS_LLM_ENABLED / _REDIS_MACRO_LLM_ENABLED), same not-cross-imported
+# convention as auto_research above. macro_llm_reaction_enabled defaults ON (the feature has
+# been live since T249-P2, unlike auto_research/earnings_llm_impact which default OFF as new
+# opt-in features) — scheduler.py's own read side treats the ABSENCE of "0" as enabled, so the
+# admin-flag read/write helpers below must match that same "unset/1 = on, 0 = off" semantics.
+_REDIS_MACRO_LLM_ENABLED = "stockai:admin:feature:macro_llm_reaction_enabled"
+_REDIS_EARNINGS_LLM_ENABLED = "stockai:admin:feature:earnings_llm_impact_enabled"
 # T258-NEWS-INTELLIGENCE: same admin-configured-credential pattern as the Claude/DeepSeek keys
 # above — matches shared/common/ai_keys.py's own _ALPACA_KEY_REDIS/_ALPACA_SECRET_REDIS
 # constants exactly (kept as two separate literals here rather than importing them, matching
@@ -114,6 +122,11 @@ class ConfigRequest(BaseModel):
     # the most expensive Claude-calling feature in the app (full Sonnet report generation),
     # default OFF since it had no opt-in/opt-out anywhere before this fix.
     auto_research_enabled: bool | None = None
+    # T249-EARNINGS-LLM-IMPACT: gates the new earnings-impact LLM read (default OFF — a
+    # brand-new feature). macro_llm_reaction_enabled gates the existing, already-relied-upon
+    # macro reaction feature (default ON — read side treats unset/None as enabled).
+    macro_llm_reaction_enabled: bool | None = None
+    earnings_llm_impact_enabled: bool | None = None
     # Unshare: deletes the shared server-side key so other users' AI features fall back to
     # their own personal key (or "no AI" if they don't have one) — the inverse of pushing
     # claude_api_key/deepseek_api_key above. Bool, not a key value, since "clear this" is a
@@ -137,6 +150,8 @@ def get_feature_flags(_: User = Depends(get_admin_user)):
     return {
         "broker_enabled": r.get(_REDIS_BROKER_ENABLED) == "1",
         "auto_research_enabled": r.get(_REDIS_AUTO_RESEARCH_ENABLED) == "1",
+        "macro_llm_reaction_enabled": r.get(_REDIS_MACRO_LLM_ENABLED) != "0",
+        "earnings_llm_impact_enabled": r.get(_REDIS_EARNINGS_LLM_ENABLED) == "1",
     }
 
 
@@ -147,6 +162,8 @@ def get_feature_flags_public():
     return {
         "broker_enabled": r.get(_REDIS_BROKER_ENABLED) == "1",
         "auto_research_enabled": r.get(_REDIS_AUTO_RESEARCH_ENABLED) == "1",
+        "macro_llm_reaction_enabled": r.get(_REDIS_MACRO_LLM_ENABLED) != "0",
+        "earnings_llm_impact_enabled": r.get(_REDIS_EARNINGS_LLM_ENABLED) == "1",
     }
 
 
@@ -161,7 +178,8 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
        req.claude_model is not None or req.deepseek_model is not None or \
        req.broker_enabled is not None or req.unshare_claude_key or req.unshare_deepseek_key or \
        req.alpaca_api_key is not None or req.alpaca_secret_key is not None or req.unshare_alpaca_key or \
-       req.auto_research_enabled is not None:
+       req.auto_research_enabled is not None or req.macro_llm_reaction_enabled is not None or \
+       req.earnings_llm_impact_enabled is not None:
         r = _get_redis()
     if req.claude_api_key is not None:
         r.set(_REDIS_CLAUDE_KEY, req.claude_api_key)
@@ -175,6 +193,10 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
         r.set(_REDIS_BROKER_ENABLED, "1" if req.broker_enabled else "0")
     if req.auto_research_enabled is not None:
         r.set(_REDIS_AUTO_RESEARCH_ENABLED, "1" if req.auto_research_enabled else "0")
+    if req.macro_llm_reaction_enabled is not None:
+        r.set(_REDIS_MACRO_LLM_ENABLED, "1" if req.macro_llm_reaction_enabled else "0")
+    if req.earnings_llm_impact_enabled is not None:
+        r.set(_REDIS_EARNINGS_LLM_ENABLED, "1" if req.earnings_llm_impact_enabled else "0")
     if req.unshare_claude_key:
         r.delete(_REDIS_CLAUDE_KEY)
     if req.unshare_deepseek_key:
@@ -188,6 +210,8 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
         r.delete(_REDIS_ALPACA_SECRET)
     log.info("admin.config_updated", broker_enabled=req.broker_enabled,
               auto_research_enabled=req.auto_research_enabled,
+              macro_llm_reaction_enabled=req.macro_llm_reaction_enabled,
+              earnings_llm_impact_enabled=req.earnings_llm_impact_enabled,
               unshared_claude=bool(req.unshare_claude_key), unshared_deepseek=bool(req.unshare_deepseek_key),
               alpaca_key_set=req.alpaca_api_key is not None, unshared_alpaca=bool(req.unshare_alpaca_key))
     return {"status": "ok"}

@@ -841,6 +841,17 @@ class EarningsEvent(Base):
     post_earnings_return_1d: Mapped[float | None] = mapped_column(Float, nullable=True)
     post_earnings_return_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
     fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # T249-EARNINGS-LLM-IMPACT: LLM-generated impact read, mirroring EconomicEvent's
+    # reaction_text/reaction_generated_at/reaction_sent_at + sectors_helped/sectors_hurt exactly
+    # (same field names, same JSON-encoded-string-list convention for the sector lists) — see
+    # generate_earnings_impact() in services/event-intelligence/src/services/earnings.py.
+    # New columns on an existing, already-populated table need a manual ALTER TABLE in every
+    # environment; create_all() will not add these automatically.
+    impact_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    impact_generated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    impact_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    sectors_helped: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sectors_hurt: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("stock_id", "fiscal_year", "fiscal_quarter", name="uq_earnings_stock_period"),

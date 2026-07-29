@@ -106,22 +106,48 @@ export default function AdminAiFeaturesPage() {
     setAuthed(true);
   }, [router]);
 
-  // ── Global flag: auto-research report generation ──────────────────────────
+  // ── Global flags: auto-research report generation, macro reaction, earnings impact ──
   const [autoResearchEnabled, setAutoResearchEnabled] = useState(false);
-  const [globalSaving, setGlobalSaving] = useState(false);
+  const [macroLlmReactionEnabled, setMacroLlmReactionEnabled] = useState(true);
+  const [earningsLlmImpactEnabled, setEarningsLlmImpactEnabled] = useState(false);
+  const [globalSaving, setGlobalSaving] = useState<string | null>(null);
 
   useEffect(() => {
     if (!authed) return;
-    api.getFeatureFlags().then(f => setAutoResearchEnabled(f.auto_research_enabled)).catch(() => {});
+    api.getFeatureFlags().then(f => {
+      setAutoResearchEnabled(f.auto_research_enabled);
+      setMacroLlmReactionEnabled(f.macro_llm_reaction_enabled);
+      setEarningsLlmImpactEnabled(f.earnings_llm_impact_enabled);
+    }).catch(() => {});
   }, [authed]);
 
   async function handleToggleAutoResearch(val: boolean) {
-    setGlobalSaving(true);
+    setGlobalSaving('auto_research');
     try {
       await api.pushConfig({ auto_research_enabled: val });
       setAutoResearchEnabled(val);
     } catch { /* ignore */ } finally {
-      setGlobalSaving(false);
+      setGlobalSaving(null);
+    }
+  }
+
+  async function handleToggleMacroLlmReaction(val: boolean) {
+    setGlobalSaving('macro_llm_reaction');
+    try {
+      await api.pushConfig({ macro_llm_reaction_enabled: val });
+      setMacroLlmReactionEnabled(val);
+    } catch { /* ignore */ } finally {
+      setGlobalSaving(null);
+    }
+  }
+
+  async function handleToggleEarningsLlmImpact(val: boolean) {
+    setGlobalSaving('earnings_llm_impact');
+    try {
+      await api.pushConfig({ earnings_llm_impact_enabled: val });
+      setEarningsLlmImpactEnabled(val);
+    } catch { /* ignore */ } finally {
+      setGlobalSaving(null);
     }
   }
 
@@ -193,15 +219,35 @@ export default function AdminAiFeaturesPage() {
         <div style={cardBar('linear-gradient(90deg,#6366f1,#818cf8,#6366f1)')} />
         <div style={cardHead}>Global</div>
         <div style={cardBody}>
-          <ToggleRow
-            title="Auto Research Report Generation"
-            desc="Automatically writes a full AI research report (fundamentals, technicals, DCF valuation, catalysts) for the top BUY-signal stocks every refresh cycle, so a report is ready before you click into a stock. Off by default — this is the most expensive AI feature in the app, and a 2026-07-28 usage audit found it was firing far more often than intended due to a bug (now fixed) before this toggle existed at all."
-            model="Sonnet"
-            cadence="Would fire up to 5 symbols per market refresh cycle (~77×/day for US alone) if left on"
-            on={autoResearchEnabled}
-            onChange={handleToggleAutoResearch}
-            disabled={globalSaving}
-          />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+            <ToggleRow
+              title="Auto Research Report Generation"
+              desc="Automatically writes a full AI research report (fundamentals, technicals, DCF valuation, catalysts) for the top BUY-signal stocks every refresh cycle, so a report is ready before you click into a stock. Off by default — this is the most expensive AI feature in the app, and a 2026-07-28 usage audit found it was firing far more often than intended due to a bug (now fixed) before this toggle existed at all."
+              model="Sonnet"
+              cadence="Would fire up to 5 symbols per market refresh cycle (~77×/day for US alone) if left on"
+              on={autoResearchEnabled}
+              onChange={handleToggleAutoResearch}
+              disabled={globalSaving === 'auto_research'}
+            />
+            <ToggleRow
+              title="Macro Reaction Analysis"
+              desc="Reads the actual released number for a real CPI/PPI/GDP/NFP print or FOMC statement and writes a market-impact reaction paragraph plus which sectors it helps/hurts, then emails it to you. On by default — this has been live and relied upon since it first shipped, unlike the newer features below."
+              model="Haiku"
+              cadence="Only armed during the ~90-min window a real release could land, or on confirmed FOMC dates — essentially free the other ~360 days/year"
+              on={macroLlmReactionEnabled}
+              onChange={handleToggleMacroLlmReaction}
+              disabled={globalSaving === 'macro_llm_reaction'}
+            />
+            <ToggleRow
+              title="Earnings Impact Analysis"
+              desc="The earnings-side counterpart to Macro Reaction Analysis, added on request: once a watched stock's real EPS/revenue actuals land, writes an impact paragraph (what the beat/miss means, and any read-through risk to peers/sector) plus which sectors it helps/hurts, then emails it to you. Off by default — a brand-new feature, same default-off convention as Auto Research above."
+              model="Haiku"
+              cadence="Polled every 5 min for newly-landed earnings without an impact read yet — cheap no-op most cycles"
+              on={earningsLlmImpactEnabled}
+              onChange={handleToggleEarningsLlmImpact}
+              disabled={globalSaving === 'earnings_llm_impact'}
+            />
+          </div>
         </div>
       </div>
 
@@ -287,13 +333,6 @@ export default function AdminAiFeaturesPage() {
               model="Haiku"
               cadence="Polled every 1-2 min, 24/7"
               cache="dedup by article URL — each real headline is classified once"
-            />
-            <InfoRow
-              title="Macro Reaction Analysis"
-              desc="After a real CPI/PPI/GDP/NFP print or an FOMC statement, reads the actual released number and writes a market-impact reaction paragraph plus which sectors it helps/hurts."
-              model="Haiku"
-              cadence="Only armed during the ~90-min window a real release could land, or on confirmed FOMC dates"
-              cache="one per real release — not a repeating poll"
             />
           </div>
         </div>

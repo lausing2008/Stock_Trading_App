@@ -1137,6 +1137,7 @@ def check_earnings_reactions() -> None:
 
 _MACRO_REACTION_LOCK_KEY = "stockai:lock:check_macro_reaction_alerts"
 _MACRO_REACTION_LOCK_TTL = 55  # seconds — runs every 60s, same pattern as check_price_alerts
+_REDIS_MACRO_LLM_ENABLED = "stockai:admin:feature:macro_llm_reaction_enabled"
 
 
 def check_macro_reaction_alerts() -> None:
@@ -1147,7 +1148,17 @@ def check_macro_reaction_alerts() -> None:
     rows with a generated-but-unsent reaction (reaction_sent_at IS NULL) and emails them to the
     same PriceAlert-subscribed audience as the earnings reaction alert, for audience consistency
     across all T249 alert types rather than a new/separate opt-in preference.
+
+    CLAUDE-API-COST-AUDIT follow-up: gated behind macro_llm_reaction_enabled (default ON, since
+    this feature has been live and relied upon since T249-P2 — unlike auto_research_enabled,
+    which had a real production cost-leak bug forcing a default-OFF flip, this flag exists so
+    the user can turn it off if wanted, not because it's had a cost problem).
     """
+    try:
+        if _get_redis().get(_REDIS_MACRO_LLM_ENABLED) == "0":
+            return
+    except Exception:
+        pass
     try:
         acquired = _get_redis().set(_MACRO_REACTION_LOCK_KEY, "1", nx=True, ex=_MACRO_REACTION_LOCK_TTL)
         if not acquired:
@@ -1186,6 +1197,71 @@ def check_macro_reaction_alerts() -> None:
                     session.commit()
     except Exception as exc:
         log.error("signal_alert.macro_reaction_error", error=str(exc))
+
+
+_EARNINGS_IMPACT_LOCK_KEY = "stockai:lock:check_earnings_impact_alerts"
+_EARNINGS_IMPACT_LOCK_TTL = 55  # seconds — runs every 60s, same pattern as check_price_alerts
+_REDIS_EARNINGS_LLM_ENABLED = "stockai:admin:feature:earnings_llm_impact_enabled"
+
+
+def check_earnings_impact_alerts() -> None:
+    """T249-EARNINGS-LLM-IMPACT: alert-delivery half of the earnings LLM impact feature —
+    the earnings-side mirror of check_macro_reaction_alerts() above. event-intelligence's
+    earnings.py detects eps_actual landing and generates the LLM impact read, writing
+    impact_text/impact_generated_at into earnings_events (it owns detection + LLM, not
+    delivery). This job polls for rows with a generated-but-unsent impact (impact_sent_at IS
+    NULL) and emails them to the same PriceAlert-subscribed audience as every other T249 alert
+    type, for audience consistency.
+
+    Gated behind earnings_llm_impact_enabled (default OFF — a brand-new feature, matching
+    auto_research_enabled's own default-off convention for any NEW Claude-calling feature added
+    since the CLAUDE-API-COST-AUDIT, rather than macro_llm_reaction_enabled's default-on
+    convention for an already-relied-upon feature).
+    """
+    try:
+        if _get_redis().get(_REDIS_EARNINGS_LLM_ENABLED) != "1":
+            return
+    except Exception:
+        return
+    try:
+        acquired = _get_redis().set(_EARNINGS_IMPACT_LOCK_KEY, "1", nx=True, ex=_EARNINGS_IMPACT_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    try:
+        with SessionLocal() as session:
+            pending = session.execute(
+                select(EarningsEvent, Stock.symbol).join(Stock, EarningsEvent.stock_id == Stock.id).where(
+                    EarningsEvent.impact_text.isnot(None),
+                    EarningsEvent.impact_sent_at.is_(None),
+                )
+            ).all()
+            if not pending:
+                return
+
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            recipients = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            if not recipients:
+                return
+
+            from .email_service import send_email
+            for ev, sym in pending:
+                verb = "beat" if (ev.surprise_pct or 0) > 0 else "missed" if (ev.surprise_pct or 0) < 0 else "met"
+                subject = f"📊 {sym} earnings impact — {verb} estimates"
+                body_text = ev.impact_text
+                any_sent = False
+                for u_obj in recipients.values():
+                    if send_email(u_obj.email, subject, f"<p>{body_text}</p>", body_text):
+                        any_sent = True
+                        log.info("signal_alert.earnings_impact_sent", symbol=sym, user=u_obj.username)
+                if any_sent:
+                    ev.impact_sent_at = datetime.now(timezone.utc)
+                    session.commit()
+    except Exception as exc:
+        log.error("signal_alert.earnings_impact_error", error=str(exc))
 
 
 _FUTURES = [
@@ -5791,6 +5867,20 @@ def start_scheduler() -> None:
         "interval",
         minutes=1,
         id="macro_reaction_alert_check",
+        replace_existing=True,
+        max_instances=1, coalesce=True,
+    )
+
+    # ── Earnings LLM impact alert delivery — every minute ────────────────────
+    # T249-EARNINGS-LLM-IMPACT: event-intelligence's earnings.py generates the impact read;
+    # this job just polls for generated-but-unsent rows and emails them. Same cadence as the
+    # other fast-reaction checkers above. Gated behind earnings_llm_impact_enabled internally
+    # (default OFF) — the job itself is always registered, cheap no-op check first.
+    _scheduler.add_job(
+        check_earnings_impact_alerts,
+        "interval",
+        minutes=1,
+        id="earnings_impact_alert_check",
         replace_existing=True,
         max_instances=1, coalesce=True,
     )
