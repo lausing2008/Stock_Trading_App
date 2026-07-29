@@ -53,6 +53,10 @@ _REDIS_DEEPSEEK_KEY     = "stockai:admin:deepseek_api_key"
 _REDIS_CLAUDE_MODEL     = "stockai:admin:claude_model"
 _REDIS_DEEPSEEK_MODEL   = "stockai:admin:deepseek_model"
 _REDIS_BROKER_ENABLED   = "stockai:admin:feature:broker_enabled"
+# CLAUDE-API-COST-AUDIT (2026-07-28): matches scheduler.py's _AUTO_RESEARCH_ENABLED_KEY literal
+# exactly — both files hardcode the same string rather than cross-importing a shared constant,
+# matching this file's own established convention (see the Alpaca-key comment below).
+_REDIS_AUTO_RESEARCH_ENABLED = "stockai:admin:feature:auto_research_enabled"
 # T258-NEWS-INTELLIGENCE: same admin-configured-credential pattern as the Claude/DeepSeek keys
 # above — matches shared/common/ai_keys.py's own _ALPACA_KEY_REDIS/_ALPACA_SECRET_REDIS
 # constants exactly (kept as two separate literals here rather than importing them, matching
@@ -106,6 +110,10 @@ class ConfigRequest(BaseModel):
     claude_model: str | None = None
     deepseek_model: str | None = None
     broker_enabled: bool | None = None  # feature flag: show/hide broker integration UI
+    # CLAUDE-API-COST-AUDIT (2026-07-28): gates _auto_trigger_research() in scheduler.py —
+    # the most expensive Claude-calling feature in the app (full Sonnet report generation),
+    # default OFF since it had no opt-in/opt-out anywhere before this fix.
+    auto_research_enabled: bool | None = None
     # Unshare: deletes the shared server-side key so other users' AI features fall back to
     # their own personal key (or "no AI" if they don't have one) — the inverse of pushing
     # claude_api_key/deepseek_api_key above. Bool, not a key value, since "clear this" is a
@@ -128,6 +136,7 @@ def get_feature_flags(_: User = Depends(get_admin_user)):
     r = _get_redis()
     return {
         "broker_enabled": r.get(_REDIS_BROKER_ENABLED) == "1",
+        "auto_research_enabled": r.get(_REDIS_AUTO_RESEARCH_ENABLED) == "1",
     }
 
 
@@ -137,6 +146,7 @@ def get_feature_flags_public():
     r = _get_redis()
     return {
         "broker_enabled": r.get(_REDIS_BROKER_ENABLED) == "1",
+        "auto_research_enabled": r.get(_REDIS_AUTO_RESEARCH_ENABLED) == "1",
     }
 
 
@@ -150,7 +160,8 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
     if req.claude_api_key is not None or req.deepseek_api_key is not None or \
        req.claude_model is not None or req.deepseek_model is not None or \
        req.broker_enabled is not None or req.unshare_claude_key or req.unshare_deepseek_key or \
-       req.alpaca_api_key is not None or req.alpaca_secret_key is not None or req.unshare_alpaca_key:
+       req.alpaca_api_key is not None or req.alpaca_secret_key is not None or req.unshare_alpaca_key or \
+       req.auto_research_enabled is not None:
         r = _get_redis()
     if req.claude_api_key is not None:
         r.set(_REDIS_CLAUDE_KEY, req.claude_api_key)
@@ -162,6 +173,8 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
         r.set(_REDIS_DEEPSEEK_MODEL, req.deepseek_model)
     if req.broker_enabled is not None:
         r.set(_REDIS_BROKER_ENABLED, "1" if req.broker_enabled else "0")
+    if req.auto_research_enabled is not None:
+        r.set(_REDIS_AUTO_RESEARCH_ENABLED, "1" if req.auto_research_enabled else "0")
     if req.unshare_claude_key:
         r.delete(_REDIS_CLAUDE_KEY)
     if req.unshare_deepseek_key:
@@ -174,6 +187,7 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
         r.delete(_REDIS_ALPACA_KEY)
         r.delete(_REDIS_ALPACA_SECRET)
     log.info("admin.config_updated", broker_enabled=req.broker_enabled,
+              auto_research_enabled=req.auto_research_enabled,
               unshared_claude=bool(req.unshare_claude_key), unshared_deepseek=bool(req.unshare_deepseek_key),
               alpaca_key_set=req.alpaca_api_key is not None, unshared_alpaca=bool(req.unshare_alpaca_key))
     return {"status": "ok"}

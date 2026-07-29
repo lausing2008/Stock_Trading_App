@@ -634,6 +634,20 @@ async def trigger_research(symbol: str, background_tasks: BackgroundTasks):
     """INT-4: Auto-trigger background research if no fresh report exists.
     No auth required — only reachable from internal Docker network.
     Cooldown: skips if a report younger than 6 hours is cached.
+
+    CLAUDE-API-COST-AUDIT (2026-07-28): this cooldown check alone had a TOCTOU race — several
+    near-simultaneous /trigger calls for the same symbol (e.g. from market-data's
+    _auto_trigger_research, which used to return duplicate symbol rows in one cycle — see that
+    function's own fix) could all read _cache before any of their background tasks had a
+    chance to write back to it, so all of them would pass this check and each schedule a real,
+    full Sonnet report generation. Now also checks _inflight_research — the SAME guard
+    generate_research() uses to dedupe concurrent generation — so a second /trigger call
+    landing while a PRIOR trigger's background task is already inside generate_research()
+    (i.e. sym already registered there) is skipped instead of also queuing a duplicate
+    background task. Deliberately READ-ONLY here (never sets _inflight_research itself) —
+    generate_research() owns that Event's entire lifecycle (creation, wait/timeout, set+pop on
+    completion); this endpoint pre-emptively creating an entry nothing then resolves would
+    deadlock any later waiter on this symbol.
     """
     try:
         sym = _sanitise_symbol(symbol)
@@ -645,6 +659,8 @@ async def trigger_research(symbol: str, background_tasks: BackgroundTasks):
         age = (datetime.now(timezone.utc) - ts).total_seconds()
         if age < 21_600:  # 6 hours
             return {"status": "fresh", "symbol": sym, "age_hours": round(age / 3600, 1)}
+    if sym in _inflight_research:
+        return {"status": "already_in_flight", "symbol": sym}
     background_tasks.add_task(_generate_with_service_token, sym)
     return {"status": "triggered", "symbol": sym}
 

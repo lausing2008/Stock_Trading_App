@@ -363,25 +363,45 @@ def _post(url: str, **kwargs) -> None:
 
 _AUTO_RESEARCH_TOP_N = 5        # max BUY signals to trigger per refresh cycle
 _AUTO_RESEARCH_MIN_CONF = 65.0  # only trigger for signals with confidence >= 65%
+_AUTO_RESEARCH_ENABLED_KEY = "stockai:admin:feature:auto_research_enabled"
+# CLAUDE-API-COST-AUDIT: this Claude-Sonnet-calling feature was the dominant real cost driver
+# found in a 2026-07-28 usage audit — 72 real full-report generations/24h in production,
+# traced to two compounding bugs (both fixed here): (1) this query had NO dedup by symbol —
+# a stock with multiple BUY-confidence horizon rows (SHORT/SWING/LONG/GROWTH) could occupy
+# several of the top-5 slots at once (confirmed live: "[RXT, SMTC, RXT, MU, RXT]" — 3 of 5
+# slots were the same symbol); (2) the downstream /trigger endpoint's "6h cooldown" was a
+# plain dict age-check with a TOCTOU race, not an actual lock — see research-engine's
+# trigger_research() fix for the other half. Per-symbol-per-cycle SET NX EX lock added below
+# closes both: it's now impossible for this function itself to POST /trigger for the same
+# symbol more than once per _AUTO_RESEARCH_COOLDOWN_S window, regardless of how many duplicate
+# rows the query returns or how many refresh cycles fire in that window.
+_AUTO_RESEARCH_COOLDOWN_S = 21_600  # 6h — matches research-engine's own cache-freshness window
 
 
 def _auto_trigger_research(market: str) -> None:
     """Fire background research trigger for the top-N BUY signals that lack a fresh report.
 
-    The research engine's /trigger endpoint has a 6-hour cooldown — it skips
-    automatically if a report was generated recently, so it is safe to call on
-    every refresh cycle without risk of repeated expensive AI requests.
+    Gated behind a global admin feature flag (default OFF — CLAUDE-API-COST-AUDIT, 2026-07-28)
+    since this is the only Claude-calling feature in the app with no opt-in/opt-out anywhere,
+    despite using the most expensive model+prompt combination (full Sonnet report generation).
     """
+    try:
+        if _get_redis().get(_AUTO_RESEARCH_ENABLED_KEY) != "1":
+            return
+    except Exception:
+        return  # fail closed — an unreachable admin-flag store must not silently re-enable this
+
     with SessionLocal() as session:
         rows = session.execute(
-            select(Stock.symbol, Signal.confidence)
+            select(Stock.symbol, func.max(Signal.confidence).label("confidence"))
             .join(Signal, Signal.stock_id == Stock.id)
             .where(
                 Stock.market == market,
                 Signal.signal == "BUY",
                 Signal.confidence >= _AUTO_RESEARCH_MIN_CONF,
             )
-            .order_by(Signal.confidence.desc())
+            .group_by(Stock.symbol)
+            .order_by(func.max(Signal.confidence).desc())
             .limit(_AUTO_RESEARCH_TOP_N)
         ).all()
 
@@ -391,6 +411,10 @@ def _auto_trigger_research(market: str) -> None:
     triggered = []
     for sym, conf in rows:
         try:
+            _lock_key = f"stockai:auto_research_sent:{sym}"
+            if not _get_redis().set(_lock_key, "1", nx=True, ex=_AUTO_RESEARCH_COOLDOWN_S):
+                triggered.append({"symbol": sym, "conf": round(conf, 1), "status": "cooldown_local"})
+                continue
             with httpx.Client(timeout=5) as client:
                 r = client.post(
                     f"{_settings.research_engine_url}/research/{sym}/trigger",
