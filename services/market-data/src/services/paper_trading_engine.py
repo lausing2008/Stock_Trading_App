@@ -2962,6 +2962,12 @@ def _call_decision_engine(
                     **( {"llm_scoring_enabled": True, "llm_score_weight": cfg.get("llm_score_weight", 1),
                          **( {"llm_model": cfg["llm_model"]} if cfg.get("llm_model") else {} )}
                         if cfg.get("llm_scoring_enabled") else {} ),
+                    # CLAUDE-API-COST-AUDIT: risk_check_enabled had the EXACT same T203-LLMWIRE
+                    # gap as llm_scoring_enabled above — decision-engine's risk_agent.py reads
+                    # cfg.get("risk_check_enabled", False) (routes.py:283) but nothing ever
+                    # threaded the portfolio's own setting into this request, so it was a
+                    # built-but-dormant opt-in with no way to turn it on for any real portfolio.
+                    **( {"risk_check_enabled": True} if cfg.get("risk_check_enabled") else {} ),
                 },
             },
             headers={"Authorization": f"Bearer {_svc_token()}"},

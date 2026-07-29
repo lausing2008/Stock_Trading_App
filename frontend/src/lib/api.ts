@@ -187,10 +187,11 @@ export const api = {
     claude_api_key?: string; deepseek_api_key?: string;
     claude_model?: string; deepseek_model?: string;
     broker_enabled?: boolean;
+    auto_research_enabled?: boolean;
     unshare_claude_key?: boolean; unshare_deepseek_key?: boolean;
     alpaca_api_key?: string; alpaca_secret_key?: string; unshare_alpaca_key?: boolean;
   }) => request<{ status: string }>(`/admin/config`, { method: 'POST', body: JSON.stringify(keys) }),
-  getFeatureFlags: () => request<{ broker_enabled: boolean }>(`/admin/feature-flags/public`),
+  getFeatureFlags: () => request<{ broker_enabled: boolean; auto_research_enabled: boolean }>(`/admin/feature-flags/public`),
 
   getAdminSignalLog: (params?: {
     symbol?: string; signal_type?: string; horizon?: string;
@@ -1496,6 +1497,10 @@ export type PaperPortfolioConfig = {
   llm_scoring_enabled?: boolean;
   llm_score_weight?: number;
   llm_model?: string;
+  // T258-WHATCOULDGOWRONG-AGENT: adversarial pre-trade risk check (decision-engine's
+  // risk_agent.py) — opt-in per portfolio, same Claude/DeepSeek key as llm_scoring_enabled.
+  // Was built with zero frontend toggle until the Admin AI Assistant Features page.
+  risk_check_enabled?: boolean;
 };
 
 export type PaperPortfolioSummary = {

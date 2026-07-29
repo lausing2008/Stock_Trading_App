@@ -788,6 +788,12 @@ def configure_portfolio(
         # config_overrides — this was a built-but-dormant feature with no way to turn it on
         # for any real portfolio. See paper_trading_engine.py's config_overrides dict.
         "llm_scoring_enabled", "llm_score_weight", "llm_model",
+        # CLAUDE-API-COST-AUDIT: risk_check_enabled (decision-engine's risk_agent.py,
+        # T258-WHATCOULDGOWRONG-AGENT) had the EXACT same T203-LLMWIRE gap as
+        # llm_scoring_enabled above — built, opt-in, gated in code, but never in this
+        # allowlist, so any attempt to set it via the API was silently dropped as "unknown"
+        # (T232-CONFIGGAP). Found while building the Admin AI Assistant Features page.
+        "risk_check_enabled",
     }
     # PT-H1: Validate decimal fraction params — reject values that look like % integers
     # (e.g. risk_per_trade_pct=1 meaning "1%" but engine expects 0.01).
