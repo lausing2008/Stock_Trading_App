@@ -18,6 +18,7 @@ import {
   type MarketPulse,
 } from '@/lib/api';
 import { getSession } from '@/lib/auth';
+import NewsCard from '@/components/NewsCard';
 
 type Tab = 'overview' | 'economic' | 'earnings' | 'insider' | 'congress' | 'catalyst' | 'risk' | 'political' | 'valuation';
 
@@ -80,12 +81,20 @@ function MarketPulseCard() {
   // real-time alert feed (see T249-MARKETMOVER-P4's tracker note for why real-time breaking
   // news is an explicit non-goal for the free-tier data sources this reads from).
   const { data, isLoading } = useSWR('marketPulse', () => api.marketPulse(), { refreshInterval: 300_000 });
+  const [showAllHeadlines, setShowAllHeadlines] = useState(false);
 
   if (isLoading) return null;
   if (!data) return null;
 
   const pulse = data as MarketPulse;
   const color = pulseColor(pulse.label);
+  // T249-MARKETMOVER-P4 follow-up: the backend already fetches/returns the real headlines
+  // driving the score/themes above (MarketPulse.headlines) — this was fetched, typed, and
+  // silently dropped by this component. Surfacing it (reusing the same NewsCard already used
+  // for per-symbol news, not a new component) is the actual "detail" underneath the 3 short
+  // theme chips, with zero new API/Claude cost since the data is already on the wire.
+  const HEADLINE_COLLAPSED_COUNT = 4;
+  const visibleHeadlines = showAllHeadlines ? pulse.headlines : pulse.headlines.slice(0, HEADLINE_COLLAPSED_COUNT);
 
   return (
     <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: 8, padding: '16px 20px', marginBottom: 24 }}>
@@ -102,12 +111,30 @@ function MarketPulseCard() {
         <span style={{ color: '#6b7280', fontSize: 12 }}>({fmt(pulse.score)}/100 · {pulse.source})</span>
       </div>
       {pulse.themes.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: pulse.headlines.length ? 14 : 0 }}>
           {pulse.themes.map(t => (
             <span key={t} style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10, color: '#d1d5db', background: 'rgba(148,163,184,0.12)', border: '1px solid rgba(148,163,184,0.3)' }}>
               {t}
             </span>
           ))}
+        </div>
+      )}
+      {pulse.headlines.length > 0 && (
+        <div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {visibleHeadlines.map((item, i) => <NewsCard key={item.url || i} item={item} />)}
+          </div>
+          {pulse.headlines.length > HEADLINE_COLLAPSED_COUNT && (
+            <button
+              onClick={() => setShowAllHeadlines(v => !v)}
+              style={{
+                marginTop: 10, background: 'none', border: 'none', color: '#60a5fa',
+                fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: 0,
+              }}
+            >
+              {showAllHeadlines ? 'Show fewer' : `Show ${pulse.headlines.length - HEADLINE_COLLAPSED_COUNT} more headline${pulse.headlines.length - HEADLINE_COLLAPSED_COUNT === 1 ? '' : 's'}`}
+            </button>
+          )}
         </div>
       )}
     </div>

@@ -9417,4 +9417,109 @@ docker logs stockai-market-data-1 --since 24h | grep 'price_alert.delisted_deact
 # Confirm a specific delisted symbol's open trades actually closed:
 docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
   "SELECT symbol, stage, exit_reason FROM paper_trades WHERE symbol IN (SELECT symbol FROM stocks WHERE delisted = true);"
+
+---
+
+## Recurring Issue: `feedparser` Missing From event-intelligence — FOMC/CPI/PPI/GDP/NFP Reaction Polls Silently Never Fired (Fixed 2026-07-29)
+
+**Symptom:** on a real FOMC decision day, the "Latest Macro Reaction" card on both `/reports`
+and `/intelligence` still showed "No macro reaction generated yet." User directly reported
+this — a real FOMC statement had already been released, the card should have populated.
+
+**Root cause:** `check_fomc_statement_poll()` (`services/event-intelligence/src/services/
+macro_reaction.py`) crashed with `ModuleNotFoundError: No module named 'feedparser'` on
+`import feedparser` — the VERY FIRST line of the function, before the RSS fetch, before the
+DB row check, before `generate_reaction()` ever ran. This is the exact same jose-missing-
+from-container bug class documented multiple times elsewhere in this file (signal-engine,
+ml-prediction, ranking-engine, portfolio-optimizer) — except here the gap was in the
+`requirements.txt` itself, not just the running container: `feedparser==6.0.11` is correctly
+pinned in `market-data/requirements.txt` and `news-intelligence/requirements.txt`, but was
+NEVER added to `event-intelligence/requirements.txt`, even though `macro_reaction.py` has
+imported it since T249-MARKETMOVER-P2 first shipped (2026-07-15). Confirmed live: the job
+fired correctly every minute across its full armed window (14:50–14:59 EDT,
+`_FOMC_DATES` correctly contained today's real date), and logged the identical import error
+on every single run — the poll was never actually broken by the Fed's RSS feed, the FOMC
+date list, or the `macro_llm_reaction_enabled` flag (confirmed on, and confirmed irrelevant
+regardless — it only gates delivery, not generation). Every other piece of the pipeline
+(today's pending `economic_events` row with `actual_value IS NULL`, the flag, the date list)
+was correctly in place and ready; the crash on the very first line was the sole cause.
+
+**This is also, separately, the CPI/PPI/GDP/NFP poll's bug** — `check_release_day_fast_poll()`
+imports the same `macro_reaction.py` module and would hit the identical crash on its own
+8:30-9:59am ET armed window. Both polls were silently non-functional the entire time this
+dependency was missing, not just the FOMC one — the FOMC report is what happened to surface
+it, since a real FOMC date + the exact 2:00-2:59pm ET window overlapping a live user
+Report-page visit is what made the gap visible.
+
+**Fix applied:** added `feedparser==6.0.11` to `services/event-intelligence/requirements.txt`
+(matching the exact version already pinned in the two sibling services), `pip install`'d it
+into the live container for immediate recovery, then manually re-triggered
+`check_fomc_statement_poll()` directly to backfill TODAY'S already-past reaction (its armed
+window had already closed for the day by the time this was fixed) — confirmed live: the poll
+found and processed the real Fed statement, wrote a genuine `reaction_text` to today's
+`economic_events` row, and `check_macro_reaction_alerts()`'s own next 1-minute cycle correctly
+picked it up and set `reaction_sent_at`, and `GET /events/overview` confirmed serving the real
+reaction end-to-end. The image itself is still owed a real rebuild to persist the dependency
+through the next full container recreate (`docker cp`/`pip install` are both session-scoped
+hotfixes per this file's own standing invariant) — tracked via the `requirements.txt` commit,
+which forces a real image rebuild on next deploy rather than staying a silent runtime patch.
+
+**What to check if this recurs (or a similar poll goes silently dead again):**
+```bash
+docker exec stockai-event-intelligence-1 python3 -c 'import feedparser; print("OK")'
+# If this fails despite feedparser being in requirements.txt, the image predates that line —
+# pip install for an immediate fix, then confirm a real image rebuild actually ran (not just
+# a docker cp) before trusting it survives the next container recreate.
+
+docker logs stockai-event-intelligence-1 --since 24h | grep -i 'fomc\|release_day_fast_poll' | grep -i error
+```
+
+---
+
+## Feature Reference: Market Pulse Card Now Shows Its Own Underlying Headlines (Built 2026-07-29)
+
+**User report**: on the Market Pulse card (`intelligence.tsx`'s Overview tab), "I don't see
+much details about the market too" — the card showed only a sentiment score and 3 short theme
+chips.
+
+**Investigation finding (not a bug, not a Claude-fallback-degraded state)**: confirmed via
+live production logs that every real Market Pulse generation this session was a genuine
+`source: "claude"` success (no VADER fallback) — the 3-theme cap and bare score are exactly
+what the backend has always returned for those two specific fields, working as designed. The
+REAL gap: `GET /stocks/market/pulse`'s response (`MarketPulse` type, `frontend/src/lib/
+api.ts:844`) has ALWAYS also included a full `headlines: NewsItem[]` array — up to ~10 real,
+specific, per-source-attributed headlines (each with its own `title`/`url`/`source`/
+`sentiment_label`) that the Claude call's own sentiment score and themes are actually derived
+from. This field was fetched, typed, and delivered over the wire the entire time — the
+frontend component simply never rendered it. The "not much detail" the user was seeing wasn't
+a data gap at all — it was a rendering omission of data that already existed on every single
+response.
+
+**Fix**: `MarketPulseCard` now renders `pulse.headlines` using the EXISTING `NewsCard`
+component (`frontend/src/components/NewsCard.tsx`) already used for per-symbol news
+elsewhere in this app — no new component, no new API call, zero new Claude cost, since this
+data was already being fetched every time. Capped to 4 visible headlines by default with a
+"Show N more headlines" toggle (`showAllHeadlines` state) to keep the card's original compact-
+dashboard framing intact rather than turning it into a long scrolling feed.
+
+**Also answered directly, since it came up in the same investigation**: Market Pulse's real
+trigger cadence is NOT a fixed schedule — `useSWR`'s `refreshInterval: 300_000` (5 min) only
+controls how often the FRONTEND re-fetches while a page is open; the backend Redis-caches the
+result for `_PULSE_TTL = 30 * 60` (30 min, `services/market-data/src/api/news.py:331`), so a
+real Claude call only happens on a cache-miss — i.e., whenever someone actually visits a page
+that reads this endpoint AND the prior cache entry has expired. Confirmed live: over a real
+24h production window, exactly 4 real Claude calls fired (`news.market_pulse_claude` log
+lines), each ~1-5 hours apart depending on page-visit timing, not a background cron running on
+its own schedule.
+
+**Verification**: `npx tsc --noEmit` clean, full 89-test frontend vitest suite unaffected
+(pure presentational addition, no logic under test), a full `next build` clean, and confirmed
+the compiled `intelligence-*.js` bundle contains the new "Show N more headlines" string —
+proving the change reached what would actually ship, not just correct-looking in source.
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the backend is actually returning headlines (it always has):
+docker exec stockai-market-data-1 curl -s 'http://localhost:8001/stocks/market/pulse' | python3 -c "import sys, json; print(len(json.load(sys.stdin).get('headlines', [])))"
+```
 ```
