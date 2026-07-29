@@ -436,8 +436,28 @@ def _bulk_persist(symbols: list[str]) -> None:
                             import httpx as _httpx
                             _url = _settings.research_engine_url
                             if not _research_fetched:
-                                # INT-4: trigger background research if stale
-                                _httpx.post(f"{_url}/research/{symbol}/trigger", timeout=1.5)
+                                # CLAUDE-API-COST-AUDIT (2026-07-29): this /trigger call was
+                                # NEVER gated by auto_research_enabled — the 2026-07-28 cost
+                                # audit only found and fixed market-data's OWN scheduler-side
+                                # _auto_trigger_research() (a bounded top-5-per-cycle sweep);
+                                # this completely independent INT-4 call site fires on EVERY
+                                # symbol with a BUY signal on ANY horizon, every _bulk_persist()
+                                # cycle, with no cap at all. Confirmed live: 46 distinct symbols
+                                # had a BUY signal in one 24h window, and research-engine logged
+                                # 68 real Sonnet report generations the same day despite the
+                                # user never clicking "Generate Report" — this call site was the
+                                # actual cause. trigger_research()'s own 6h cooldown + in-flight
+                                # dedup (already fixed 2026-07-28) still applies underneath this
+                                # gate, but the gate itself was completely missing here.
+                                #
+                                # INT-7's own research-divergence check below reads the SAME
+                                # /summary response this fetch already made — gating only the
+                                # /trigger POST (the call that actually schedules a new Sonnet
+                                # generation) leaves INT-7 fully intact, since the summary GET
+                                # itself just reads whatever's already cached and costs nothing.
+                                if _get_redis().get("stockai:admin:feature:auto_research_enabled") == "1":
+                                    # INT-4: trigger background research if stale
+                                    _httpx.post(f"{_url}/research/{symbol}/trigger", timeout=1.5)
                                 # INT-7: fetch summary once; reused for all BUY styles
                                 _tok = _service_token()
                                 _sr = _httpx.get(

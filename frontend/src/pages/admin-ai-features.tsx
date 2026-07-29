@@ -222,9 +222,9 @@ export default function AdminAiFeaturesPage() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
             <ToggleRow
               title="Auto Research Report Generation"
-              desc="Automatically writes a full AI research report (fundamentals, technicals, DCF valuation, catalysts) for the top BUY-signal stocks every refresh cycle, so a report is ready before you click into a stock. Off by default — this is the most expensive AI feature in the app, and a 2026-07-28 usage audit found it was firing far more often than intended due to a bug (now fixed) before this toggle existed at all."
+              desc="Automatically writes a full AI research report (fundamentals, technicals, DCF valuation, catalysts) for BUY-signal stocks, so a report is ready before you click into a stock. Off by default — this is the most expensive AI feature in the app. A 2026-07-28 usage audit found and fixed a duplicate-trigger bug in market-data's own scheduler-side sweep; a 2026-07-29 follow-up found a SECOND, completely independent trigger inside signal-engine (every symbol with a BUY signal on any horizon, every signal-refresh cycle, with no cap at all) that had never been gated by this toggle at all — confirmed live: 46 distinct symbols BUY-signaled in one 24h window, generating 68 real reports despite nobody clicking Generate Report. Both trigger paths are now gated by this one switch."
               model="Sonnet"
-              cadence="Would fire up to 5 symbols per market refresh cycle (~77×/day for US alone) if left on"
+              cadence="Scheduler sweep: up to 5 symbols per market refresh cycle (~77×/day for US alone). Signal-engine trigger: one per distinct BUY-signaled symbol per signal-refresh cycle (uncapped) if left on."
               on={autoResearchEnabled}
               onChange={handleToggleAutoResearch}
               disabled={globalSaving === 'auto_research'}
