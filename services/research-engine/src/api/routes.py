@@ -22,6 +22,9 @@ from pydantic import BaseModel
 from common.config import get_settings
 from common.logging import get_logger
 from common.indicators import sma as _canon_sma, rsi as _canon_rsi, macd as _canon_macd
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as _pg_insert
+from db import SessionLocal, ResearchReportCache
 
 log = get_logger("research-engine")
 router = APIRouter(prefix="/research", tags=["research"])
@@ -44,6 +47,88 @@ _inflight_research: dict[str, asyncio.Event] = {}  # in-flight events; waiters p
 CACHE_TTL_SEC = 86_400       # 24 h — full quality reports
 CACHE_TTL_PARTIAL_SEC = 1_800  # 30 min — partial (missing services)
 CACHE_TTL_FALLBACK_SEC = 300   # 5 min — fallback (AI timeout/error)
+
+
+def _report_ttl(report: dict) -> int:
+    quality = report.get("report_quality", "full")
+    return CACHE_TTL_FALLBACK_SEC if quality == "fallback" else CACHE_TTL_PARTIAL_SEC if quality == "partial" else CACHE_TTL_SEC
+
+
+def _db_save_report(sym: str, report: dict, req: "ResearchRequest") -> None:
+    """Durable persistence — research reports found the in-memory _cache is a research-
+    engine restart away from being permanently lost (see CLAUDE-API-COST-AUDIT). Best-effort:
+    a DB write failure must never break the actual report generation the caller is waiting on.
+    """
+    try:
+        with SessionLocal() as session:
+            stmt = _pg_insert(ResearchReportCache).values(
+                symbol=sym,
+                portfolio_size=req.portfolio_size,
+                max_risk_pct=req.max_risk_pct,
+                report_json=report,
+                generated_at=datetime.now(timezone.utc),
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["symbol"],
+                set_={
+                    "portfolio_size": req.portfolio_size,
+                    "max_risk_pct": req.max_risk_pct,
+                    "report_json": report,
+                    "generated_at": datetime.now(timezone.utc),
+                },
+            )
+            session.execute(stmt)
+            session.commit()
+    except Exception as exc:
+        log.warning("research.db_save_failed", symbol=sym, error=str(exc))
+
+
+def _db_load_report(sym: str) -> tuple[dict, datetime] | None:
+    """Read-through fallback for when the in-memory _cache has nothing (e.g. right after a
+    restart) — returns the same (report, generated_at) shape _cache values use, so callers
+    can reuse the exact same TTL/quality logic regardless of which layer served the hit.
+    Fail-open: a DB read error degrades to "no cached report" rather than a 500.
+    """
+    try:
+        with SessionLocal() as session:
+            row = session.execute(
+                select(ResearchReportCache).where(ResearchReportCache.symbol == sym)
+            ).scalar_one_or_none()
+        if row is None:
+            return None
+        return row.report_json, row.generated_at.replace(tzinfo=timezone.utc)
+    except Exception as exc:
+        log.warning("research.db_load_failed", symbol=sym, error=str(exc))
+        return None
+
+
+def _get_cached_report(sym: str) -> tuple[dict, datetime] | None:
+    """In-memory _cache first (fast path, no DB round-trip); DB second (survives a restart).
+    A DB hit is also written back into _cache so subsequent requests in the same process
+    don't re-hit the DB every time.
+    """
+    entry = _cache.get(sym)
+    if entry is not None:
+        return entry
+    entry = _db_load_report(sym)
+    if entry is not None:
+        _cache[sym] = entry
+    return entry
+
+
+def _db_clear_report(sym: str) -> None:
+    """Must be called alongside every _cache.pop(sym, None) that's meant to force a REAL
+    regeneration (not just an expiry-driven cache miss) — otherwise clear_research()'s
+    "Regenerate" button would still serve the stale row straight back out of the DB via
+    _get_cached_report()'s own fallback, defeating the button's whole purpose."""
+    try:
+        with SessionLocal() as session:
+            session.execute(
+                ResearchReportCache.__table__.delete().where(ResearchReportCache.symbol == sym)
+            )
+            session.commit()
+    except Exception as exc:
+        log.warning("research.db_clear_failed", symbol=sym, error=str(exc))
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -555,13 +640,11 @@ async def get_research_batch(symbols: str, _: str = Depends(get_current_username
             sym = _sanitise_symbol(raw)
         except ValueError:
             continue
-        entry = _cache.get(sym)
+        entry = _get_cached_report(sym)
         if not entry:
             continue
         report, ts = entry
-        quality = report.get("report_quality", "full")
-        ttl = CACHE_TTL_FALLBACK_SEC if quality == "fallback" else CACHE_TTL_PARTIAL_SEC if quality == "partial" else CACHE_TTL_SEC
-        if (datetime.now(timezone.utc) - ts).total_seconds() >= ttl:
+        if (datetime.now(timezone.utc) - ts).total_seconds() >= _report_ttl(report):
             _cache.pop(sym, None)
             continue
         results[sym] = {
@@ -583,12 +666,10 @@ async def get_research_summary(symbol: str, _: str = Depends(get_current_usernam
         sym = _sanitise_symbol(symbol)
     except ValueError:
         raise HTTPException(400, f"Invalid symbol: {symbol!r}")
-    entry = _cache.get(sym)
+    entry = _get_cached_report(sym)
     if entry:
         report, ts = entry
-        quality = report.get("report_quality", "full")
-        ttl = CACHE_TTL_FALLBACK_SEC if quality == "fallback" else CACHE_TTL_PARTIAL_SEC if quality == "partial" else CACHE_TTL_SEC
-        if (datetime.now(timezone.utc) - ts).total_seconds() < ttl:
+        if (datetime.now(timezone.utc) - ts).total_seconds() < _report_ttl(report):
             return {
                 "recommendation": report.get("recommendation"),
                 "overall_score": report.get("overall_score"),
@@ -606,12 +687,10 @@ async def get_research(symbol: str, _: str = Depends(get_current_username)):
         sym = _sanitise_symbol(symbol)
     except ValueError:
         raise HTTPException(400, f"Invalid symbol: {symbol!r}")
-    entry = _cache.get(sym)
+    entry = _get_cached_report(sym)
     if entry:
         report, ts = entry
-        quality = report.get("report_quality", "full")
-        ttl = CACHE_TTL_FALLBACK_SEC if quality == "fallback" else CACHE_TTL_PARTIAL_SEC if quality == "partial" else CACHE_TTL_SEC
-        if (datetime.now(timezone.utc) - ts).total_seconds() < ttl:
+        if (datetime.now(timezone.utc) - ts).total_seconds() < _report_ttl(report):
             return report
         # Cache expired for this quality level — remove stale entry
         _cache.pop(sym, None)
@@ -626,6 +705,7 @@ async def clear_research(symbol: str, _: str = Depends(get_current_username)):
     except ValueError:
         raise HTTPException(400, f"Invalid symbol: {symbol!r}")
     _cache.pop(sym, None)
+    _db_clear_report(sym)
     return {"status": "cleared", "symbol": sym}
 
 
@@ -653,7 +733,7 @@ async def trigger_research(symbol: str, background_tasks: BackgroundTasks):
         sym = _sanitise_symbol(symbol)
     except ValueError:
         return {"status": "skipped", "reason": "invalid symbol"}
-    entry = _cache.get(sym)
+    entry = _get_cached_report(sym)
     if entry:
         _, ts = entry
         age = (datetime.now(timezone.utc) - ts).total_seconds()
@@ -698,12 +778,13 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
     # Cache check (fast path — no waiting)
     # T247-RESEARCHENGINE-CACHEKEY: also require the cached report's own baked-in
     # portfolio_size/max_risk_pct to match this request's — see _position_sizing_matches().
-    entry = _cache.get(sym)
+    # CLAUDE-API-COST-AUDIT: _get_cached_report() also falls back to the DB, so a symbol whose
+    # in-memory _cache was wiped by a restart doesn't trigger a needless (expensive) re-generation
+    # if a durable, still-fresh report already exists.
+    entry = _get_cached_report(sym)
     if entry:
         report, ts = entry
-        quality = report.get("report_quality", "full")
-        ttl = CACHE_TTL_FALLBACK_SEC if quality == "fallback" else CACHE_TTL_PARTIAL_SEC if quality == "partial" else CACHE_TTL_SEC
-        if (datetime.now(timezone.utc) - ts).total_seconds() < ttl and _position_sizing_matches(report, req):
+        if (datetime.now(timezone.utc) - ts).total_seconds() < _report_ttl(report) and _position_sizing_matches(report, req):
             return report
 
     # Deduplicate concurrent AI calls for the same symbol using asyncio.Event.
@@ -910,6 +991,7 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
     }
 
     _cache[sym] = (report, datetime.now(timezone.utc))
+    _db_save_report(sym, report, req)
     ttl = CACHE_TTL_FALLBACK_SEC if report_quality == "fallback" else CACHE_TTL_PARTIAL_SEC if report_quality == "partial" else CACHE_TTL_SEC
     log.info("research.generated", symbol=sym, overall=overall, recommendation=recommendation,
              quality=report_quality, cache_ttl_s=ttl)
@@ -940,7 +1022,7 @@ async def chat_research(symbol: str, req: ChatRequest, _: str = Depends(get_curr
         sym = _sanitise_symbol(symbol)
     except ValueError:
         raise HTTPException(400, f"Invalid symbol: {symbol!r}")
-    entry = _cache.get(sym)
+    entry = _get_cached_report(sym)
     if not entry:
         raise HTTPException(404, "No research report found. Generate a report first.")
 

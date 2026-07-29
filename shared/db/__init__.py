@@ -47,6 +47,7 @@ from .models import (
     VolumeAreaLevel,
     SectorRotationSnapshot,
     RealtimeNewsItem,
+    ResearchReportCache,
 )
 from .session import SessionLocal, engine, get_session, init_db
 
@@ -99,6 +100,7 @@ __all__ = [
     "VolumeAreaLevel",
     "SectorRotationSnapshot",
     "RealtimeNewsItem",
+    "ResearchReportCache",
     "SessionLocal",
     "engine",
     "get_session",

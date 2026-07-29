@@ -9053,3 +9053,132 @@ docker exec stockai-market-data-1 curl -s -X POST 'http://localhost:8001/paper-p
 # The response's config.risk_check_enabled must be true, and ignored_keys must NOT
 # contain "risk_check_enabled" — if it does, this fix didn't deploy.
 ```
+
+---
+
+## Recurring Issue: Research Reports Vanished on Every research-engine Restart — No DB Persistence At All (Fixed 2026-07-29)
+
+**Symptom:** a user asked "where can I see auto research reports?" and reported that visiting
+`/research/RXT` (a symbol confirmed auto-triggered multiple times earlier the same day, per
+`scheduler.auto_research_triggered` logs) showed "Generate Report" instead of the actual
+report — as if it had never been generated at all.
+
+**Root cause:** `services/research-engine/src/api/routes.py`'s `_cache` was a **plain
+in-memory Python dict** (`_cache: dict[str, tuple[dict, datetime]] = {}`) with **zero database
+persistence** — confirmed via grep, the ENTIRE research report cache lived only in process
+memory. `stockai-research-engine-1` had been restarted at `2026-07-29T00:01:48Z` (to deploy
+this session's own earlier `trigger_research()` in-flight-check fix, see the
+CLAUDE-API-COST-AUDIT entry above) — which silently wiped every report generated earlier that
+day (RXT/SMTC/MU/UNH), with zero indication to the user that a report had ever existed. This
+is a genuinely separate, previously-undocumented architectural gap from the auto-trigger cost
+bug fixed earlier the same session — that fix was about HOW OFTEN reports get generated; this
+gap is about reports having NO durability at all once generated, by either the auto-trigger or
+a real user clicking "Generate Report" themselves.
+
+**Fix**: new `ResearchReportCache` DB table (`shared/db/models.py`) — one row per symbol
+(upserted via `on_conflict_do_update` on the `symbol` unique index, matching
+`VolumeAreaLevel`'s established upsert pattern), storing the full report JSON blob plus the
+`portfolio_size`/`max_risk_pct` params it was generated with (needed to preserve
+`T247-RESEARCHENGINE-CACHEKEY`'s existing cache-key-matching semantics across the DB
+boundary too). research-engine had **zero DB access of any kind** before this — confirmed via
+grep (`from db import`/`SessionLocal` appeared nowhere in the service). This required no new
+dependency (`sqlalchemy`/`psycopg2-binary` were already in `requirements.txt`, unused) and no
+docker-compose change (the service already `depends_on: postgres` via the shared `py-common`
+YAML anchor, and already gets DB credentials via the shared `env_file`) — purely a matter of
+actually using infrastructure that was already wired at the compose level but never called
+from code.
+
+**Implementation**:
+- `main.py` gained an `on_startup` callback calling `init_db()` — the same idempotent
+  `create_all()` + migrations + admin-seeding call every other service already makes at
+  startup, now run here for the first time.
+- New helper functions in `routes.py`: `_report_ttl(report)` (extracted from the 5 places that
+  independently re-derived the same quality→TTL mapping), `_db_save_report()`/
+  `_db_load_report()`/`_db_clear_report()` (all fail-open/best-effort — a DB hiccup must never
+  break a real report generation the caller is waiting on), and `_get_cached_report(sym)` — the
+  in-memory `_cache` first (fast path, zero DB round-trip on the common case), falling back to
+  the DB second (survives a restart), writing a DB hit back into `_cache` so a second request
+  in the same process doesn't re-hit the DB.
+- Every read site now goes through `_get_cached_report()` instead of a bare `_cache.get()`:
+  `GET /{symbol}`, `/summary`, `/batch`, `/{symbol}/chat`, `trigger_research()`'s 6h cooldown
+  check, and `generate_research()`'s own fast-path cache check.
+- `generate_research()` now calls `_db_save_report(sym, report, req)` immediately after its
+  existing `_cache[sym] = (report, ...)` write — every real generation (manual or
+  auto-triggered) is now durable, not just cached in memory.
+- `clear_research()` (the "Regenerate" button, `DELETE /{symbol}`) now also calls
+  `_db_clear_report(sym)` — a real gap that would otherwise have defeated the button entirely:
+  without this, clicking Regenerate would only clear the in-memory entry, and the very next
+  read would silently serve the stale row straight back out of the DB via
+  `_get_cached_report()`'s own fallback.
+
+**Tests**: `services/research-engine/tests/test_report_persistence.py` (18 cases) —
+`_report_ttl()` tested directly (a pure, DB-independent function); `_get_cached_report()`'s
+fast-path/fallback/write-back/miss behavior tested via monkeypatching `_db_load_report`
+directly (mocking the DB boundary, not the SQL — `db` is stubbed as a bare `MagicMock()` in
+`conftest.py`); every read/write/clear site's wiring confirmed via source-text regression
+checks, matching this repo's established technique for this exact DB-dependency constraint.
+
+**Adversarial verification** — 3 sabotage cycles, all caught and reverted: removing the
+`_db_save_report()` write-through call (caught by the write-through test); reverting `GET
+/{symbol}` to a bare `_cache.get()` (caught by its dedicated wiring test); removing
+`clear_research()`'s `_db_clear_report()` call (caught by its dedicated test — the exact "the
+Regenerate button silently doesn't work" regression this fix closes).
+
+Full 76-test research-engine suite (up from 58, modulo the 3 pre-existing, unrelated
+`test_scoring.py` failures already documented elsewhere in this file) green.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT symbol, generated_at FROM research_report_cache ORDER BY generated_at DESC LIMIT 10;"
+# A symbol you know was generated recently should show up here — if not, _db_save_report()
+# is failing silently; check:
+docker logs stockai-research-engine-1 --since 1h | grep 'research.db_save_failed\|research.db_load_failed'
+```
+
+---
+
+## Feature Reference: Research Tab on the Stock Detail Page (Built 2026-07-29)
+
+**User ask**: "I don't see the research tab under stock detail page" — the stock detail page
+(`frontend/src/pages/stock/[symbol].tsx`) never had a real tab system at all (unlike e.g.
+`intelligence.tsx`), only a small "Research Intelligence" sidebar card linking out to a
+separate `/research/[symbol]` URL — easy to miss, and not what "tab" implies.
+
+**Implementation — reuses the existing `/research/[symbol]` page component directly, rather
+than re-implementing report rendering a second time**: `ResearchPage` (the default export of
+`frontend/src/pages/research/[symbol].tsx`) reads its symbol from `router.query.symbol` — the
+exact same dynamic route param name `stock/[symbol].tsx` already has on its own URL. This
+meant `<ResearchPage />` could be imported and rendered directly inside a new "Research" tab
+with **zero prop-passing** — no refactor of either page's internals, no shared-component
+extraction needed.
+
+**The stock detail page's entire existing body is a single `return ( <div className="space-y-4">
+... 4000+ lines ... </div> )`** with no tab abstraction to hook into. Rather than risk a large,
+error-prone edit re-indenting thousands of lines, the fix wraps the ENTIRE pre-existing return
+value verbatim inside a new `{pageTab === 'Overview' && ( ...unchanged... )}` conditional,
+adding a small tab-bar `<div>` and a sibling `{pageTab === 'Research' && <ResearchPage />}`
+right before it — the existing "Overview" content is byte-for-byte unchanged, just
+conditionally rendered.
+
+**Verification**: `npx tsc --noEmit` clean on the first attempt (confirming the JSX braces
+balanced correctly despite the large wrap), full 89-test Vitest suite unaffected, and — the
+real proof this actually works, since typecheck alone doesn't catch a hooks-order/duplicate-
+`useRouter` conflict from rendering one page's component inside another — a full `next build`
+compiled clean, with `/research/[symbol]`'s own bundle shrinking from ~12kB to 193B (Next.js
+correctly deduping the now-shared component into a common chunk) and `/stock/[symbol]` growing
+only ~200B. Confirmed the tab bar's actual labels ("Overview"/"Research") are present in the
+real compiled `stock/[symbol]-*.js` chunk, not just correct-looking in source.
+
+**Deliberately not touched**: the small "Research Intelligence" sidebar card on the Overview
+tab (recommendation badge, alignment vs. AI signal, conviction score) — that's a genuinely
+different, complementary summary (cross-referencing the signal against the research verdict),
+not a duplicate of the new full-report tab, so it stays exactly as it was.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-frontend-1 sh -c "grep -o 'Overview.,.Research' /app/.next/static/chunks/pages/stock/\[symbol\]-*.js"
+```
+If the Research tab shows a blank/error state that `/research/SYMBOL` directly does not, check
+the browser console for a hooks-related React warning first — that would indicate the
+component-reuse approach hit an edge case this build-time check didn't catch.

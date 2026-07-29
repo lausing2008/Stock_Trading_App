@@ -46,6 +46,7 @@ import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
 import { activeNewsSources, loadSettings } from '@/lib/settings';
 import { getUsername } from '@/lib/auth';
+import ResearchPage from '@/pages/research/[symbol]';
 
 function RefreshButton({ onClick, loading }: { onClick: () => void; loading: boolean }) {
   return (
@@ -150,6 +151,11 @@ export default function StockDetail() {
     symbol ? `news-${symbol}-${newsSources}` : null,
     () => api.getNews(symbol, newsSources),
   );
+
+  // Overview/Research top-level tab (this page previously had no tab system at all — the
+  // research report was only reachable via a small sidebar card + a separate /research/[symbol]
+  // URL; a user asked directly for a real 'Research' tab here).
+  const [pageTab, setPageTab] = useState<'Overview' | 'Research'>('Overview');
 
   const [watched, setWatched] = useState(false);
   const [watchMenuOpen, setWatchMenuOpen] = useState(false);
@@ -863,6 +869,33 @@ Return ONLY valid JSON — no markdown, no prose:
   const fibLevels = levels?.fibonacci ?? {};
 
   return (
+    <div className="space-y-4">
+      {/* Overview / Research tab bar — this page previously had no tab system at all; the
+          research report was only reachable via a small sidebar card + a separate
+          /research/[symbol] URL. Reuses the actual ResearchPage component directly (it reads
+          router.query.symbol, the same param this page's own route already has) rather than
+          re-implementing report rendering a second time. */}
+      <div style={{ display: 'flex', gap: '4px', borderBottom: '1px solid #1e293b', marginBottom: '4px' }}>
+        {(['Overview', 'Research'] as const).map(t => (
+          <button
+            key={t}
+            onClick={() => setPageTab(t)}
+            style={{
+              padding: '8px 18px', fontSize: '13px', fontWeight: 700, cursor: 'pointer',
+              background: 'transparent', border: 'none',
+              borderBottom: pageTab === t ? '2px solid #818cf8' : '2px solid transparent',
+              color: pageTab === t ? '#e2e8f0' : '#64748b',
+              marginBottom: '-1px',
+            }}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {pageTab === 'Research' && <ResearchPage />}
+
+      {pageTab === 'Overview' && (
     <div className="space-y-4">
       {/* Back button */}
       <div>
@@ -4181,6 +4214,8 @@ Return ONLY valid JSON — no markdown, no prose:
           prices={priceMap}
           onClose={() => setCompareOpen(false)}
         />
+      )}
+    </div>
       )}
     </div>
   );
