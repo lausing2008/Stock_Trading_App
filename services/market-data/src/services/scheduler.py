@@ -4046,6 +4046,7 @@ def _run_watchlist_auto_rotation() -> None:
                     .where(
                         Ranking.as_of == latest_as_of,
                         Stock.active.is_(True),
+                        Stock.delisted.is_(False),  # BUG-DELISTED-GENERATION-BLIND
                         Stock.market == dominant_market,
                     )
                     .order_by(desc(Ranking.score))
@@ -5079,9 +5080,12 @@ def send_post_open_digest(market: str, window: str) -> None:
                 _avg_vol_cache = json.loads(redis_client.get("stockai:avg_volume") or "{}")
             except Exception:
                 _live_raw, _avg_vol_cache = [], {}
+            # BUG-DELISTED-GENERATION-BLIND: a delisted symbol's frozen last-known price/
+            # volume can look like a real "anomaly" against its own stale average — exclude
+            # it, same reasoning already applied to BUG-VOLANOM-STALEMARKET's market-hours fix.
             _market_symbols = {
                 sym for (sym,) in session.execute(
-                    select(Stock.symbol).where(Stock.market == market, Stock.active.is_(True))
+                    select(Stock.symbol).where(Stock.market == market, Stock.active.is_(True), Stock.delisted.is_(False))
                 ).all()
             }
             # T241-AUDIT-RVOL-INTRADAY-BIAS (fixed 2026-07-10, found via a Fable 5 audit):
@@ -6002,8 +6006,14 @@ def start_scheduler() -> None:
     def _avg_volume_refresh_job() -> None:
         from db import SessionLocal
         with SessionLocal() as session:
+            # BUG-DELISTED-GENERATION-BLIND: Stock.delisted never flips Stock.active — this
+            # job calls real yfinance downloads (a 1mo volume history) per stock; a confirmed-
+            # delisted symbol will just fail/return nothing useful every single run. Sibling
+            # of the same 2026-07-29 gap fixed in signal-engine/ranking-engine's own /refresh
+            # endpoints (unlike _symbols_for(), which deliberately still includes delisted
+            # symbols since ingestion is what DETECTS/reconfirms delisting in the first place).
             stocks = list(session.execute(
-                select(Stock.symbol, Stock.currency).where(Stock.active.is_(True))
+                select(Stock.symbol, Stock.currency).where(Stock.active.is_(True), Stock.delisted.is_(False))
             ).all())
         if stocks:
             refresh_avg_volume_cache(stocks)

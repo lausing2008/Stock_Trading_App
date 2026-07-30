@@ -635,8 +635,11 @@ def rank_symbol(symbol: str, session: Session = Depends(get_session)):
     # scheduler invokes /rankings/refresh once per market, so this single-symbol endpoint's
     # value/growth score diverged from the leaderboard's score for the same stock on the same
     # day. Scope the peer universe to the target stock's own market, matching that path.
+    # BUG-DELISTED-GENERATION-BLIND: a delisted peer's stale fundamentals would pollute this
+    # stock's sector value/growth peer-comparison basis — exclude it, matching the same fix
+    # applied to /rankings/refresh above.
     universe = list(session.execute(
-        select(Stock).where(Stock.active.is_(True), Stock.market == stock.market)
+        select(Stock).where(Stock.active.is_(True), Stock.delisted.is_(False), Stock.market == stock.market)
     ).scalars())
     stock_sectors = {s.symbol: (s.sector or "Unknown") for s in universe}
     stock_sectors.setdefault(symbol, stock.sector or "Unknown")
@@ -780,7 +783,9 @@ def leaderboard(
 
 def _leaderboard_live(market: str | None, limit: int, session: Session) -> dict:
     """Fallback: compute rankings live when no persisted data exists."""
-    stmt = select(Stock).where(Stock.active.is_(True))
+    # BUG-DELISTED-GENERATION-BLIND: same fix as /rankings/refresh — this is a real live-compute
+    # path too, not just a display query.
+    stmt = select(Stock).where(Stock.active.is_(True), Stock.delisted.is_(False))
     if market:
         stmt = stmt.where(Stock.market == market.upper())
     stocks = list(session.execute(stmt).scalars())
@@ -841,7 +846,13 @@ def refresh(
     _: str = Depends(get_current_username),
 ):
     """Compute + persist rankings for the whole universe."""
-    stmt = select(Stock).where(Stock.active.is_(True))
+    # BUG-DELISTED-GENERATION-BLIND: Stock.delisted (aud14-survivorship) never flips
+    # Stock.active — a confirmed-delisted stock stays "active" forever, so this endpoint kept
+    # recomputing fresh K-Scores for it on every refresh cycle, wasting real work on a stock
+    # that can never be traded again. Confirmed sibling of BUG-PAPERPOS-DELISTED-FROZEN/
+    # BUG-ALERTS-DELISTED-SILENT (2026-07-29, market-data) — same gap, the ranking-engine and
+    # signal-engine generation side.
+    stmt = select(Stock).where(Stock.active.is_(True), Stock.delisted.is_(False))
     if market:
         stmt = stmt.where(Stock.market == market.upper())
     stocks = list(session.execute(stmt).scalars())

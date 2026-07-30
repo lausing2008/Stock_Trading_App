@@ -184,7 +184,14 @@ def refresh_signals(
     _: str = Depends(get_current_username),
 ):
     """Recompute and persist signals for all active stocks, optionally filtered by market."""
-    q = select(Stock.symbol).where(Stock.active.is_(True))
+    # BUG-DELISTED-GENERATION-BLIND: Stock.delisted (aud14-survivorship) never flips
+    # Stock.active — a confirmed-delisted stock stays "active" forever, so this endpoint kept
+    # regenerating fresh BUY/SELL signals for it on every refresh cycle (this is called from
+    # market-data's _refresh_market(), ~77x/day for US alone), wasting real yfinance/ML work
+    # on a stock that can never be traded again. Confirmed sibling of BUG-PAPERPOS-DELISTED-
+    # FROZEN/BUG-ALERTS-DELISTED-SILENT (2026-07-29) — those fixed CONSUMING the flag once a
+    # signal already existed; this is the generation side that produces those signals.
+    q = select(Stock.symbol).where(Stock.active.is_(True), Stock.delisted.is_(False))
     if market:
         q = q.where(Stock.market == market.upper())
     symbols = list(session.execute(q).scalars())
@@ -203,7 +210,10 @@ def reset_signals(tasks: BackgroundTasks, session: Session = Depends(get_session
     """Wipe all persisted signals then re-persist fresh ones for every active stock."""
     deleted = session.query(Signal).delete()
     session.commit()
-    symbols = list(session.execute(select(Stock.symbol).where(Stock.active.is_(True))).scalars())
+    # BUG-DELISTED-GENERATION-BLIND: see refresh_signals()'s comment above — same fix.
+    symbols = list(session.execute(
+        select(Stock.symbol).where(Stock.active.is_(True), Stock.delisted.is_(False))
+    ).scalars())
     try:
         r = _get_redis()
         for key in r.scan_iter("signals:cache:*"):
