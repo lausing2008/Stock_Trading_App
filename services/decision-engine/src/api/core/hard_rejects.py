@@ -285,6 +285,29 @@ def check_hard_rejects(
                 f"— thin market, elevated slippage/exit risk (T200)"
             )
 
+    # T232-DL-DUALSCORER-DEBT: Price-drift HARD REJECT (T196, max_price_drift_pct default 3.0,
+    # i.e. 3%), ported from paper_trading_engine.py's _scan_for_entries(). Genuinely distinct
+    # from the T171 gap-filter gate just below (which fires on ANY positive gap over a looser
+    # 4% bar off reasons["last_price"]) — T196 uses a tighter 3% bar off a freshly re-derived
+    # daily-close reference price (sig_ref_price, threaded through config_overrides), not the
+    # frozen reasons["last_price"] snapshot captured at signal-generation time — those two
+    # values were verified to diverge in a real (not hypothetical) way whenever a candidate is
+    # evaluated in a LATER refresh cycle than the one that generated its signal, so this gate
+    # deliberately does NOT reuse reasons["last_price"] the way T171 does. cfg["sig_ref_price"]
+    # is only present when the caller sent a real reference price (see
+    # paper_trading_engine.py's config_overrides), matching this function's established
+    # optional-parameter fail-open convention (symbol/style/sig_ts, min_kscore, etc.).
+    if cfg.get("max_price_drift_pct") is not None:
+        _ref_price = cfg.get("sig_ref_price")
+        if _ref_price is not None and float(_ref_price) > 0:
+            _drift_pct = (live_price / float(_ref_price) - 1) * 100
+            _max_drift = float(cfg["max_price_drift_pct"])
+            if _drift_pct > _max_drift:
+                return (
+                    f"Price drifted {_drift_pct:.1f}% above signal reference ${float(_ref_price):.2f} "
+                    f"exceeds max drift {_max_drift:.0f}% — chasing blocked (T196)"
+                )
+
     # T171: Premarket gap filter — reject if price has already gapped up significantly
     # from its signal-time close. reasons["last_price"] is the close at signal-compute time.
     _signal_close = _reasons.get("last_price")

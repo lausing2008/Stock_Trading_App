@@ -634,6 +634,95 @@ def test_low_volume_gate_respects_custom_min_volume_z():
     assert result is not None and "Volume z-score" in result
 
 
+# ── Price-drift hard reject (T196, T232-DL-DUALSCORER-DEBT) ──────────────────────────────
+# Genuinely distinct from the gap-filter (T171) directly below — T171 uses reasons["last_price"]
+# (a frozen snapshot captured at signal-GENERATION time) at a looser 4% bar, whereas this gate
+# uses cfg["sig_ref_price"] (a fresh, per-candidate reference re-derived by _scan_for_entries
+# every scan cycle — deliberately NOT reused from reasons, since the two were verified to
+# genuinely diverge whenever a candidate is evaluated in a later cycle than the one that
+# generated its signal) at a tighter default 3% bar. Runs AFTER the R:R gate (see gate order at
+# the top of this file), so tests move stop_price/take_profit along with live_price to keep R:R
+# clearing its floor — otherwise the R:R gate fires first and masks this gate's result.
+
+def test_price_drift_beyond_threshold_blocks():
+    live_price = 104.0  # 4% above sig_ref_price of 100 -> exceeds default 3% limit
+    result = hr.check_hard_rejects(**_base_kwargs(
+        live_price=live_price, stop_price=live_price - 5.0, take_profit=live_price + 15.0,
+        cfg={"sig_ref_price": 100.0, "max_price_drift_pct": 3.0},
+    ))
+    assert result is not None and "Price drifted" in result and "4.0" in result
+
+
+def test_price_drift_at_or_within_threshold_does_not_block():
+    """The real gate uses strict > (not >=) — within the threshold does not block, matching
+    _scan_for_entries' own `_drift > _max_drift` comparison exactly. Uses a comfortably-below
+    value rather than the exact 3.0% boundary — (103.0/100.0-1)*100 computes to
+    3.0000000000000027 in real floating-point arithmetic, not exactly 3.0, so a test asserting
+    "exactly at the threshold does not reject" would be inherently flaky on that exact float
+    boundary (the same class of gotcha already documented in CLAUDE.md for the earlier
+    time-of-day/extended-move hard-reject tests)."""
+    live_price = 102.5  # 2.5% drift — comfortably within the default 3% limit
+    result = hr.check_hard_rejects(**_base_kwargs(
+        live_price=live_price, stop_price=live_price - 5.0, take_profit=live_price + 15.0,
+        cfg={"sig_ref_price": 100.0, "max_price_drift_pct": 3.0},
+    ))
+    assert result is None
+    live_price2 = 102.0  # comfortably within the limit
+    result2 = hr.check_hard_rejects(**_base_kwargs(
+        live_price=live_price2, stop_price=live_price2 - 5.0, take_profit=live_price2 + 15.0,
+        cfg={"sig_ref_price": 100.0, "max_price_drift_pct": 3.0},
+    ))
+    assert result2 is None
+
+
+def test_price_drift_gate_skipped_when_max_price_drift_pct_absent():
+    """An older caller not yet sending max_price_drift_pct (or sig_ref_price) must not be
+    blocked — this gate is opt-in via cfg, matching every other optional gate in this file.
+    reasons["last_price"] is set to match live_price so the unrelated T171 gap-filter gate
+    (which runs later, off a different value) doesn't also fire and confound the result."""
+    result = hr.check_hard_rejects(**_base_kwargs(
+        live_price=200.0, stop_price=195.0, take_profit=215.0,
+        cfg={"sig_ref_price": 100.0},
+        reasons={"macro_blackout": None, "last_price": 200.0},
+    ))
+    assert result is None
+
+
+def test_price_drift_gate_skipped_when_sig_ref_price_itself_absent():
+    """max_price_drift_pct present but no actual sig_ref_price value sent — must not crash or
+    spuriously block; there's nothing to compare against. reasons["last_price"] matches
+    live_price for the same reason as the test above."""
+    result = hr.check_hard_rejects(**_base_kwargs(
+        live_price=200.0, stop_price=195.0, take_profit=215.0,
+        cfg={"max_price_drift_pct": 3.0},
+        reasons={"macro_blackout": None, "last_price": 200.0},
+    ))
+    assert result is None
+
+
+def test_price_drift_gate_respects_custom_max_price_drift_pct():
+    """paper_trading_engine.py's real default is 3.0, but cfg can override it — a value that
+    clears the default must still be blocked under a tighter custom threshold."""
+    live_price = 102.0  # 2% drift — clears the default 3% but not a tightened 1.5% cap
+    result = hr.check_hard_rejects(**_base_kwargs(
+        live_price=live_price, stop_price=live_price - 5.0, take_profit=live_price + 15.0,
+        cfg={"sig_ref_price": 100.0, "max_price_drift_pct": 1.5},
+    ))
+    assert result is not None and "Price drifted" in result
+
+
+def test_price_drift_gate_ignores_a_zero_or_negative_sig_ref_price():
+    """A degenerate reference price (0 or negative — would otherwise divide/compare nonsense)
+    must fail open rather than crash or produce a meaningless drift percentage.
+    reasons["last_price"] matches live_price so T171's gap-filter gate doesn't also fire."""
+    result = hr.check_hard_rejects(**_base_kwargs(
+        live_price=200.0, stop_price=195.0, take_profit=215.0,
+        cfg={"sig_ref_price": 0.0, "max_price_drift_pct": 3.0},
+        reasons={"macro_blackout": None, "last_price": 200.0},
+    ))
+    assert result is None
+
+
 # ── Gap filter (T171) ──────────────────────────────────────────────────────────
 # NOTE: the gap filter runs AFTER the R:R gate (see gate order at the top of this file), so
 # every test here must also move stop_price/take_profit along with live_price to keep R:R

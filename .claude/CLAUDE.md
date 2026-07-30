@@ -8736,6 +8736,117 @@ only closes the gap for the REAL trading path, which always goes through
 
 ---
 
+## Feature Reference: T232-DL-DUALSCORER-DEBT — Price-Drift Gate (T196) Ported — a Look-Alike Free Port That Turned Out Not To Be (2026-07-30)
+
+**Gap closed**: another divergence in the ongoing dual-scorer reconciliation series — the
+price-drift gate. `_scan_for_entries()`'s T196 gate hard-blocks a BUY candidate whose live
+price has already drifted more than `max_price_drift_pct` (default 3%) above the daily close
+recorded as-of the signal's own date — don't chase a stock that has already rallied hard since
+the signal was computed. decision-engine had zero equivalent, so `/decide/{symbol}` called
+standalone (e.g. `decide.tsx`) could silently approve an entry already extended well past the
+signal's own reference price.
+
+**Before writing any code, verified whether this could be a "free" port** (like the HK-flow/
+low-volume gates, whose values were already flowing to decision-engine via `sig.reasons`) —
+the natural-looking candidate was `reasons["last_price"]`, which the ALREADY-ported T171
+gap-filter gate immediately below T196 in `hard_rejects.py` already uses for a materially
+similar purpose (a looser 4% gap-vs-signal-close bar). A dedicated investigation traced where
+`reasons["last_price"]` is set (`signal-engine/src/generators/signals.py`'s `_last_price =
+float(_close.iloc[-1])`, the tail of the same daily-bar HTTP fetch T196 independently
+re-queries) and found the two are **not provably equivalent**: `reasons["last_price"]` is a
+**frozen snapshot captured once, at signal-generation time**, while T196's own `_sig_ref_prices`
+lookup (`paper_trading_engine.py:4001-4022`) is **re-derived fresh, as-of-the-signal's-own-date**,
+every time `_scan_for_entries()` runs. The two values only coincide when a candidate is
+evaluated in the SAME refresh cycle that generated its signal — true in the common case, but
+`_scan_for_entries()` evaluates freshly-fetched `buy_signals` every cycle with no guarantee a
+given candidate's signal was generated in that same cycle (an older still-pending candidate
+carried over from an earlier cycle is a real, non-hypothetical case). Reusing the frozen
+`reasons["last_price"]` snapshot would have silently reintroduced exactly the staleness gap
+this gate exists to guard against. **Decision made: thread a genuine fresh value through,
+matching the index-trend gate's (T221) write-side pattern, not the free-port pattern.**
+
+**Implementation**:
+1. `paper_trading_engine.py`'s `_call_decision_engine()` gained a `sig_ref_price: float | None
+   = None` parameter (appended last, matching every prior gate-parity param's ordering
+   convention). Added `"sig_ref_price"`/`"max_price_drift_pct"` to `config_overrides`, both
+   conditional on `sig_ref_price is not None` — the same conditional-inclusion pattern as every
+   other gate in this series. The real call site inside `_scan_for_entries()` passes
+   `sig_ref_price=_sig_ref_prices.get(stock.id)` — a **fresh, per-candidate** lookup from the
+   same dict T196's own gate reads from a few lines earlier in the loop (unlike
+   `index_return_pct`, a once-per-scan value; this is per-candidate like `kscore`/`ta_score`).
+2. `hard_rejects.py`'s `check_hard_rejects()` — placed directly before the T171 gap-filter gate
+   (matching `_scan_for_entries()`'s own gate ordering — T196 runs before T171 in the fallback
+   engine), needing zero new function parameters (`cfg` already carries both keys):
+   ```python
+   if cfg.get("max_price_drift_pct") is not None:
+       _ref_price = cfg.get("sig_ref_price")
+       if _ref_price is not None and float(_ref_price) > 0:
+           _drift_pct = (live_price / float(_ref_price) - 1) * 100
+           _max_drift = float(cfg["max_price_drift_pct"])
+           if _drift_pct > _max_drift:
+               return f"Price drifted {_drift_pct:.1f}% above signal reference ${float(_ref_price):.2f} exceeds max drift {_max_drift:.0f}% — chasing blocked (T196)"
+   ```
+   A zero/negative `sig_ref_price` (a degenerate reference) fails open rather than dividing by
+   a meaningless value.
+
+**A real floating-point boundary flake caught before it could recur** (the same class already
+documented for the earlier time-of-day/extended-move hard-reject tests): a test asserting
+"exactly 3.0% drift does not block" computed `(103.0/100.0-1)*100 == 3.0000000000000027` in
+real Python floating-point arithmetic — not exactly `3.0` — making `3.0000000000000027 > 3.0`
+true and the test fail against CORRECT code. Fixed by using a comfortably-below value (2.5%)
+instead of chasing the exact float boundary, matching this repo's own established convention
+for this exact gotcha.
+
+**Tests**: `services/market-data/tests/test_price_drift_config_wiring.py` (new, 6 cases,
+source-text extraction matching `test_index_trend_config_wiring.py`'s established technique)
+— confirms both keys reach `config_overrides`, the threshold's fallback matches the real `3.0`
+literal, both keys are conditional on presence, the call site passes the fresh
+`_sig_ref_prices.get(stock.id)` lookup (not the frozen `reasons["last_price"]` snapshot), and a
+dedicated regression guard specifically confirming the call site never substitutes
+`reasons["last_price"]`/`reasons.get("last_price")` for `sig_ref_price`. `services/
+decision-engine/tests/test_hard_rejects.py` gained 6 cases (177 total, up from 171) —
+below/within/above the threshold, gate skipped when either `max_price_drift_pct` or
+`sig_ref_price` itself is absent, a custom-threshold case, and a degenerate zero/negative
+reference price failing open.
+
+**Adversarial verification** — 3 sabotage cycles, all caught and reverted:
+1. The comparison logic in `hard_rejects.py` (`if False:`) — caught by exactly the 2 dedicated
+   blocking tests (beyond-threshold and custom-threshold), the other 4 skip/edge-case tests
+   correctly stayed green.
+2. The write-side `config_overrides` conditional inclusion in `paper_trading_engine.py`
+   (removed both dict-spread lines) — caught by 3 of the 6 wiring tests via a real `ValueError`
+   from `.index()` no longer finding the string, matching the exact failure mode of prior
+   similar sabotages.
+3. The call site's fresh lookup, swapped for the frozen `reasons["last_price"]` snapshot (the
+   exact regression this port was designed to avoid) — caught by both dedicated call-site
+   tests, one via a real assertion failure, one via a real `ValueError`.
+
+Full 630-test market-data suite (up from 624) and 177-test decision-engine suite (up from 171)
+green after every revert; `pyflakes` clean on both touched files (confirmed via `git stash`
+that all 3 pre-existing `paper_trading_engine.py` warnings predate this change — only a line
+number shifted, nothing new).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n '"sig_ref_price":\|sig_ref_price=_sig_ref_prices' /app/src/services/paper_trading_engine.py
+docker exec stockai-decision-engine-1 grep -n 'max_price_drift_pct\|sig_ref_price' /app/src/api/core/hard_rejects.py
+```
+Both should show the fix present. If a chasing entry (well above its signal's own reference
+close) is still approved by `/decide/{symbol}` after confirming both, check whether the caller
+is actually sending `sig_ref_price`/`max_price_drift_pct` in `config_overrides` — the gate is a
+no-op without both (correctly — like the index-trend gate, this only closes the gap for the
+REAL trading path via `_call_decision_engine()`, not a standalone caller with no fresh
+reference price of its own).
+
+**Design invariant reinforced**: a gate that "looks like" it should be a free port (its
+description sounds identical to an already-ported gate's data source) still needs the same
+divergence check the genuinely-new-data gates got — don't assume equivalence between two
+similarly-named values just because they're both "the signal's reference price" in prose;
+trace where each is actually computed and confirm they resolve to the same query, at the same
+moment, before reusing one for the other.
+
+---
+
 ## Feature Reference: CI Coverage Gap Closed + T255-REPORTS-TAB Phase 2 (HK Breadth + Flow Leaderboard) (2026-07-28)
 
 **Two unrelated fixes shipped together this pass — a CI/tracker correction, and a real

@@ -2878,6 +2878,7 @@ def _call_decision_engine(
     regime_state: str = "neutral",
     confidence_delta: float | None = None,
     index_return_pct: float | None = None,
+    sig_ref_price: float | None = None,
 ) -> tuple[bool, str, int, str | None] | None:
     """Call Decision Engine and return (should_enter, verdict, score, blocked_reason).
 
@@ -2989,6 +2990,28 @@ def _call_decision_engine(
                     **( {"index_return_pct": index_return_pct} if index_return_pct is not None else {} ),
                     **( {"index_trend_gate_pct": cfg.get("index_trend_gate_pct", -0.015)}
                         if index_return_pct is not None else {} ),
+                    # T232-DL-DUALSCORER-DEBT: T196's price-drift gate is _scan_for_entries'
+                    # own HARD pre-filter (live_price / sig_ref_price - 1 > max_price_drift_pct,
+                    # default 3%) — don't chase a stock that has already rallied hard since the
+                    # signal's own reference close. A candidate is discarded before DE is ever
+                    # called on the real production path. DE had no equivalent at all, so
+                    # /decide/{symbol} called standalone (e.g. decide.tsx) could silently
+                    # approve an entry already extended well past the signal's own reference
+                    # price. Deliberately NOT reused from sig.reasons["last_price"] — that
+                    # value is a frozen snapshot captured at signal-GENERATION time (signal-
+                    # engine's own daily-close read), whereas T196's own query is re-derived
+                    # fresh, as-of-the-signal's-date, every time the gate runs; the two only
+                    # coincide when the gate evaluates a signal from the SAME refresh cycle
+                    # that generated it (true today, but not a safe assumption for a candidate
+                    # carried over from an earlier cycle/day) — verified this divergence risk
+                    # directly before choosing to thread a genuine fresh value instead of
+                    # reusing the reasons field. sig_ref_price is looked up fresh from
+                    # _sig_ref_prices at the real call site, matching this file's other
+                    # per-candidate values (kscore, ta_score) rather than a once-per-scan value
+                    # like index_return_pct.
+                    **( {"sig_ref_price": sig_ref_price} if sig_ref_price is not None else {} ),
+                    **( {"max_price_drift_pct": cfg.get("max_price_drift_pct", 3.0)}
+                        if sig_ref_price is not None else {} ),
                     # T203-LLMWIRE: llm_scoring_enabled existed in decision-engine's
                     # llm_scorer.py since T203 but was never threaded from portfolio config
                     # into this request — a built-but-dormant feature with no way to turn it
@@ -4489,6 +4512,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             regime_state=(live_regime.get("state", "neutral") if live_regime else "neutral"),
             confidence_delta=confidence_delta,          # T232-DL-DUALSCORER-DEBT: T202 gate parity
             index_return_pct=_idx_ret,                  # T232-DL-DUALSCORER-DEBT: T221 gate parity
+            sig_ref_price=_sig_ref_prices.get(stock.id), # T232-DL-DUALSCORER-DEBT: T196 gate parity
         )
         _max_corr = _max_correlation_with_open_positions(
             session, stock.id, _open_stock_ids, _open_closes_cache,
