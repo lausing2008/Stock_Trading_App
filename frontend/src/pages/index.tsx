@@ -108,7 +108,7 @@ function MarketOverview({ indices, signals, breadth }: { indices: MarketIndex[];
 
   return (
     <>
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '10px' }}>
+    <div className="dashboard-markets-grid" style={{ display: 'grid', gap: '10px' }}>
 
       {/* US Markets */}
       <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0b1120', padding: '12px 16px' }}>
@@ -150,7 +150,7 @@ function MarketOverview({ indices, signals, breadth }: { indices: MarketIndex[];
                 ) : null;
               })}
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
+            <div className="dashboard-pulse-legend-grid" style={{ display: 'grid', gap: '4px' }}>
               {[
                 { key: 'BUY',  color: '#4ade80', label: 'Buy'  },
                 { key: 'HOLD', color: '#facc15', label: 'Hold' },

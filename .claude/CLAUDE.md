@@ -9847,3 +9847,102 @@ docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
   "SELECT symbol, delisted FROM stocks WHERE delisted = true;"
 docker logs stockai-signal-engine-1 --since 1h | grep 'signals.refresh\|signals.reset'
 ```
+
+---
+
+## Feature Reference: T230-UX-MOBILE-RESPONSIVE (Phase 2 continued) — Positions Page + Dashboard Now Collapse on Mobile (Built 2026-07-30)
+
+**Scoped down deliberately** from the tracker's full ~57-file audit to the two single
+highest-traffic pages after the already-twice-fixed stock detail page: `positions.tsx` (the
+page anyone actively holding a portfolio checks constantly) and `index.tsx` (the literal
+dashboard landing page at `/`). Matches the same Phase 1/Phase 2 incremental-scope pattern
+already established for the mobile nav drawer and the stock detail page's own 2 prior passes.
+
+**Explicitly did NOT trust the prior "audited and found nothing else" claims** — this exact
+claim was proven wrong twice already for `stock/[symbol].tsx` alone (documented in this file's
+own 2026-07-20 and 2026-07-23 entries). A fresh, exhaustive grep across all 49 page files and
+12 component files for rigid `gridTemplateColumns:` occurrences (excluding self-wrapping
+`repeat(auto-fill/auto-fit, minmax(...))` patterns) found dozens more across the app —
+`alerts.tsx`, `journal.tsx`, `portfolio.tsx`, `board.tsx`, `strategies.tsx`,
+`research/[symbol].tsx`, `decide.tsx`, `regime.tsx`, `insider.tsx`, `congress.tsx`,
+`sector-rotation.tsx`, `intelligence.tsx`, `forecast.tsx`, `settings.tsx`, and several
+admin-only pages — all deliberately left untouched this pass as a documented, scoped-out
+remainder rather than silently claimed as covered.
+
+**`positions.tsx` — 4 fixes**:
+- 3 straightforward `1fr 1fr` grids (the Add/Edit trade modal's Shares/Price fields, the
+  Sector/Market allocation donut-chart row, the Allocation-donut + Best/Worst-performer row) —
+  new `.positions-modal-fields-grid`/`.positions-donut-row-grid`/`.positions-highlights-row-grid`
+  classes, following the exact `.stock-detail-*-grid` pattern (base rule matches the pre-existing
+  inline value, `@media (max-width: 767px) { grid-template-columns: 1fr !important; }`).
+- The positions **table** itself needed a genuinely different fix, not a `1fr` collapse: an
+  8-fixed-column row (Symbol/Shares/Avg Cost/Cur Price/Mkt Value/P&L$/P&L%/Actions) forced to
+  `1fr` would destroy the table's column alignment entirely (every field stacked vertically per
+  row, unreadable as a table). Instead wrapped the header + per-position rows in a new
+  `.positions-table-scroll` container (`overflow-x: auto` + a `min-width: 640px` floor on its
+  direct child) so the table degrades to horizontally-scrollable on a phone — this app's own
+  established dense-table fallback convention (already used elsewhere for wide content), applied
+  here for the first time on a page that had it missing entirely (confirmed via grep: zero
+  `overflowX`/`overflow-x` occurrences anywhere in the file before this fix).
+
+**`index.tsx` (dashboard) — 2 fixes**: the top-of-page US Markets / HK Markets / Portfolio Pulse
+3-column row (`.dashboard-markets-grid`, `1fr 1fr auto`) and the nested Buy/Hold/Wait/Sell legend
+inside the Portfolio Pulse panel (`.dashboard-pulse-legend-grid`, `1fr 1fr`) — both collapse
+cleanly to a single stacked column, same pattern as every other fix in this pass.
+
+**A real JSX-nesting bug caught before shipping, not shipped**: the positions-table wrap
+required inserting 2 new opening `<div>` elements (the scroll container + an inner flex-column,
+since the header row and the `.map()`'d position rows previously sat as direct siblings inside
+one existing flex-column div) — the first attempt at closing them miscounted by one (added only
+2 closing tags where 3 were needed, since the pre-existing structure already owed one closing
+tag to the ORIGINAL outer div). `npx tsc --noEmit` caught this immediately and precisely
+(`JSX element 'div' has no corresponding closing tag`) — fixed by tracing the actual open/close
+balance line by line rather than trusting a quick manual count, and re-verified clean.
+
+**Verification, deliberately more thorough than either prior stock-detail pass** (both of which
+were later found to have missed real rigid grids elsewhere on the same page): `npx tsc --noEmit`
+clean, full 89-test frontend vitest suite unaffected (no test imports either page directly — the
+same seam gap already documented for `PriceChart.tsx`/`_app.tsx`-only changes), and a full
+`next build` compiling all 51 routes clean (`/positions` 11.3 kB, `/` unchanged in the build
+summary since `index.tsx`'s change added negligible bytes). Confirmed the actual COMPILED output
+contains the fix, not just correct-looking source: grepped `.next/static/css/*.css` for all 5
+new class names' rules (including the shared `@media (max-width: 767px)` block correctly
+bundling `dashboard-markets-grid`/`dashboard-pulse-legend-grid` together) and grepped both pages'
+own compiled JS chunks (`positions-*.js`, `index-*.js`) confirming the `className` attributes
+actually reached the shipped bundles.
+
+**Still no real device/browser verification performed** — same limitation already noted for the
+original stock-detail Phase 2 fix (no browser/device-emulator tool available in this
+environment). This remains a CSS-compile-time verification only, not a confirmed real-device
+render check — flagged explicitly here rather than silently claimed as fully verified, per this
+file's own standing discipline around this exact gap.
+
+**Deliberately NOT touched this pass, documented not silently dropped** (real rigid grids found
+by the same exhaustive audit, left for a future scoped session): `alerts.tsx` (4 grids,
+including a very tight 9-fixed-column subscription-list row), `journal.tsx` (3 grids, including
+a 9-fixed-column trade-journal row), `portfolio.tsx`, `board.tsx`, `strategies.tsx` (one grid
+has the exact same `'240px 1fr'` shape as the ORIGINAL stock-detail bug), `research/[symbol].tsx`
+(9 identical `1fr 1fr` occurrences, one per report tab — fixable in a single shared CSS rule
+since they're all the same shape), `decide.tsx`, `regime.tsx`, `insider.tsx`, `congress.tsx`,
+`sector-rotation.tsx`, `intelligence.tsx`, `forecast.tsx`, `settings.tsx`, and several admin-only
+pages (`admin-health.tsx`, `signal-accuracy.tsx`, `paper-portfolio.tsx`, `horizon-compare.tsx`,
+`watchlist-rotation-explainer.tsx`, `improvements.tsx` itself) — all lower-traffic than the two
+fixed here. `screener.tsx` and `watchlist.tsx` were confirmed genuinely clean (all flex-with-wrap
+or flex-column stacks, zero rigid grids) — not overlooked, actually checked and found safe.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-frontend-1 sh -c "grep -o 'positions-table-scroll[^}]*}\|dashboard-markets-grid[^}]*}' /app/.next/static/css/*.css"
+docker exec stockai-frontend-1 sh -c "grep -l 'positions-table-scroll' /app/.next/static/chunks/pages/positions-*.js"
+```
+If either shows nothing, the CSS/JS didn't compile/deploy correctly — confirm a real frontend
+rebuild (not a `docker cp` hotfix — this is CSS/JSX baked into the Next.js build) actually ran.
+
+**Lesson reinforced (again)**: this is now the 3rd time in this codebase's history that a
+"mobile responsiveness" fix on one page was followed by a LATER, independent re-check finding
+more rigid grids the original pass missed (stock detail: twice; now this pass's own exhaustive
+audit found dozens more across the rest of the app that this session deliberately scoped out
+rather than rushing). Treat "I audited page X and found nothing else" as a claim scoped to the
+one page it was made about, never as evidence the REST of the app is clean — only an actual
+fresh, exhaustive grep across every page file establishes that, and even then only as of the
+moment it was run on an actively-growing codebase.

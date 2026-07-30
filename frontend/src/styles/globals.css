@@ -48,6 +48,43 @@ a { color: inherit; text-decoration: none; }
   }
 }
 
+/* T230-UX-MOBILE-RESPONSIVE (positions.tsx pass): same fixed-N-up-grid bug class as the stock
+   detail page fixes above, found on the Positions page — the highest-traffic page after the
+   dashboard for anyone actively holding a portfolio. The trade modal's Shares/Price fields and
+   the two allocation-donut/highlights rows are simple 2-column panels that stack cleanly under
+   1fr; the positions TABLE itself is different — an 8-fixed-column row (Symbol/Shares/Avg Cost/
+   Cur Price/Mkt Value/P&L$/P&L%/Actions) forced to 1fr would destroy the table semantics
+   entirely (every field stacked vertically per row, losing all column alignment), so instead
+   .positions-table-scroll makes the table scroll horizontally on a phone — the same
+   dense-table fallback convention already used elsewhere in this app for wide content. */
+.positions-modal-fields-grid,
+.positions-donut-row-grid,
+.positions-highlights-row-grid {
+  grid-template-columns: 1fr 1fr;
+}
+@media (max-width: 767px) {
+  .positions-modal-fields-grid,
+  .positions-donut-row-grid,
+  .positions-highlights-row-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+.positions-table-scroll { overflow-x: auto; }
+.positions-table-scroll > * { min-width: 640px; }
+
+/* T230-UX-MOBILE-RESPONSIVE (dashboard pass): the literal landing page's own market-overview
+   strip (US Markets / HK Markets / Portfolio Pulse) is a rigid 3-column row, plus a nested
+   2-column Buy/Hold/Wait/Sell legend inside the Portfolio Pulse panel — both collapse cleanly
+   to a single stacked column on a phone, same shape as every other fix in this pass. */
+.dashboard-markets-grid { grid-template-columns: 1fr 1fr auto; }
+.dashboard-pulse-legend-grid { grid-template-columns: 1fr 1fr; }
+@media (max-width: 767px) {
+  .dashboard-markets-grid,
+  .dashboard-pulse-legend-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
 .fixed { position: fixed; }
 .absolute { position: absolute; }
 .relative { position: relative; }

@@ -67,7 +67,7 @@ function TradeModal({ mode, position, currentPrice, onConfirm, onClose }: ModalP
                 </div>
               </div>
             )}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+            <div className="positions-modal-fields-grid" style={{ display: 'grid', gap: '10px' }}>
               <div>
                 <label style={{ fontSize: '11px', fontWeight: 600, color: '#64748b', display: 'block', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Shares</label>
                 <input type="number" min="0.001" step="any" value={shares} onChange={e => setShares(e.target.value)} placeholder="100" required style={{ width: '100%', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(148,163,184,0.12)', borderRadius: '8px', padding: '9px 12px', fontSize: '13px', color: '#f1f5f9', outline: 'none', boxSizing: 'border-box' }} />
@@ -429,7 +429,7 @@ export default function Positions() {
 
             {/* T230: Sector & Market allocation donuts */}
             {activeRows.length > 1 && Object.keys(sectorMap).length > 0 && (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              <div className="positions-donut-row-grid" style={{ display: 'grid', gap: '12px' }}>
                 <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0f172a', padding: '14px 16px' }}>
                   <div style={{ fontSize: '11px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>By Sector</div>
                   <DonutChart
@@ -453,7 +453,7 @@ export default function Positions() {
 
             {/* Chart + highlights */}
             {activeRows.length > 1 && (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              <div className="positions-highlights-row-grid" style={{ display: 'grid', gap: '12px' }}>
                 <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0f172a', padding: '16px' }}>
                   <div style={{ fontSize: '11px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>Allocation</div>
                   <DonutChart labels={activeRows.map(r => r.symbol)} values={activeRows.map(r => r.mktVal ?? r.cost)} colors={activeCfg.colors} height={210} />
@@ -510,12 +510,17 @@ export default function Positions() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#475569', paddingLeft: '2px' }}>
                 Sort: {sortBtn('symbol','Symbol')} {sortBtn('value','Value')} {sortBtn('pnl','P&L$')} {sortBtn('pnlPct','P&L%')} {sortBtn('change','Today')} {sortBtn('score','K-Score')}
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 70px 85px 85px 95px 105px 105px 120px', gap: '6px', padding: '6px 14px', fontSize: '10px', fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
-                <div>Symbol</div><div style={{ textAlign: 'right' }}>Shares</div><div style={{ textAlign: 'right' }}>Avg Cost</div><div style={{ textAlign: 'right' }}>Cur Price</div><div style={{ textAlign: 'right' }}>Mkt Value</div><div style={{ textAlign: 'right' }}>P&L ({activeCfg.cashKey})</div><div style={{ textAlign: 'right' }}>P&L (%)</div><div style={{ textAlign: 'right' }}>Actions</div>
-              </div>
               {activeRows.length === 0 && (
                 <div style={{ textAlign: 'center', padding: '30px 0', color: '#334155', fontSize: '13px' }}>No {activeMarket} positions yet.</div>
               )}
+              {/* T230-UX-MOBILE-RESPONSIVE: an 8-fixed-column table row can't collapse to 1fr
+                  without destroying its column alignment — instead this scrolls horizontally
+                  on a phone, matching this app's established dense-table fallback convention. */}
+              <div className="positions-table-scroll">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 70px 85px 85px 95px 105px 105px 120px', gap: '6px', padding: '6px 14px', fontSize: '10px', fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+                <div>Symbol</div><div style={{ textAlign: 'right' }}>Shares</div><div style={{ textAlign: 'right' }}>Avg Cost</div><div style={{ textAlign: 'right' }}>Cur Price</div><div style={{ textAlign: 'right' }}>Mkt Value</div><div style={{ textAlign: 'right' }}>P&L ({activeCfg.cashKey})</div><div style={{ textAlign: 'right' }}>P&L (%)</div><div style={{ textAlign: 'right' }}>Actions</div>
+              </div>
           {activeRows.map(r => {
             const ss = r.sig ? sigStyle(r.sig) : null;
             return (
@@ -578,6 +583,8 @@ export default function Positions() {
               </div>
             );
           })}
+              </div>
+              </div>
             </div>
           </>
         );
