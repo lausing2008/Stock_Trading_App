@@ -218,9 +218,16 @@ async def sync_8k(_: str = Depends(get_current_username)):
     The ingest manages its own DB sessions internally.
     """
     with SessionLocal() as s:
+        # BUG-DELISTED-GENERATION-BLIND (sibling instance, found in event-intelligence):
+        # Stock.delisted (aud14-survivorship) never flips Stock.active — a confirmed-delisted
+        # stock stays "active" forever, so this daily 8-K sync kept polling EDGAR for a
+        # company that can no longer file anything. Fixed the same way as the original
+        # signal-engine/ranking-engine/market-data/technical-analysis pass.
         symbols = list(
             s.execute(
-                select(Stock.symbol).where(Stock.active.is_(True), Stock.market == "US")
+                select(Stock.symbol).where(
+                    Stock.active.is_(True), Stock.delisted.is_(False), Stock.market == "US"
+                )
             ).scalars()
         )
     result = edgar_8k.ingest_8k_filings(symbols, days_back=7)

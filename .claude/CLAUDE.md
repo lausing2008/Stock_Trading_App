@@ -9946,3 +9946,92 @@ rather than rushing). Treat "I audited page X and found nothing else" as a claim
 one page it was made about, never as evidence the REST of the app is clean — only an actual
 fresh, exhaustive grep across every page file establishes that, and even then only as of the
 moment it was run on an actively-growing codebase.
+
+---
+
+## Recurring Issue: BUG-DELISTED-GENERATION-BLIND — 2 More Sibling Instances Found in Services BUG-DELISTED-GENERATION-BLIND's Own Original Sweep Never Checked (Fixed 2026-07-30)
+
+**Found via**: a routine "next improvements" survey explicitly asked to check whether the
+delisted-stock generation-blind bug class (already fixed 3 times: signal-engine, ranking-engine,
+market-data — see the earlier `BUG-DELISTED-GENERATION-BLIND` entry) had an undiscovered sibling
+elsewhere. The original fix's own grep sweep was scoped to only those 3 services — this pass
+extended the identical `grep -rn "Stock.active\|Stock\.delisted"` check across the other 9
+backend services, exactly the "found one instance ≠ found every instance" discipline already
+documented multiple times in this file (the `shared/common/` file-sync sweeps, the INT-4
+auto-research trigger, the earlier 8-instance delisted-generation pass itself).
+
+**Two real, confirmed generation/scan sites found, both correctly distinguished from harmless
+lookup/display queries in the same files** (`event-intelligence`'s `_symbol_to_id()` disambiguation
+helper and `news-intelligence`'s ticker-matching universe cache were both investigated and
+correctly left untouched — neither generates new per-symbol work, they only match/resolve
+against already-existing data):
+
+1. **`services/technical-analysis/src/api/routes.py`'s `get_patterns_bulk()`** (`GET
+   /ta/patterns/bulk`) — a real, module-level-cached (6h TTL) bulk chart-pattern scan: fetches
+   400 days of daily bars per active stock and runs `detect_patterns()` on each. Called by
+   ranking-engine's `_fetch_patterns_bulk()` to populate the leaderboard/screener patterns
+   column (confirmed via grep — a real, live caller, not dead code). A confirmed-delisted stock
+   kept getting a full fresh price fetch + pattern-detection pass every single 6-hour cache
+   cycle, forever, for a stock that can never be traded again.
+2. **`services/event-intelligence/src/api/routes.py`'s `sync_8k()`** (`POST /events/sync/8k`) —
+   the daily SEC EDGAR 8-K filing sync for all active US stocks (per its own docstring: fetches
+   the last 7 days of filings per symbol). A confirmed-delisted stock kept having its (now
+   permanently empty) EDGAR filing history polled daily forever.
+
+**Fix**: identical pattern to the original 8-instance pass — added `Stock.delisted.is_(False)`
+alongside the existing `Stock.active` filter in both queries, with a comment cross-referencing
+`BUG-DELISTED-GENERATION-BLIND` and explaining why it's a sibling instance.
+
+**Tests**: `services/technical-analysis/tests/test_delisted_excluded_from_patterns_bulk.py`
+(3 cases) and `services/event-intelligence/tests/test_delisted_excluded_from_8k_sync.py`
+(3 cases) — both source-text regression checks (neither service's `routes.py` can be imported
+directly in its local test environment: technical-analysis needs the Docker-only `db` package,
+event-intelligence's conftest.py stubs `sqlalchemy`/`db` wholesale as `MagicMock`), matching the
+established pattern used throughout this codebase for exactly this constraint. Each confirms the
+filter is present, is ADDED alongside the pre-existing filters rather than replacing them (an
+inactive-but-not-delisted stock, and any HK stock for the 8-K sync, must still be excluded), and
+is on the SAME query line as the other filters (not a dead/unused variable elsewhere in the
+function).
+
+**Adversarial verification** — 2 sabotage cycles, both caught and reverted: reverting the
+technical-analysis filter (all 3 dedicated tests caught it correctly) and reverting the
+event-intelligence filter (all 3 dedicated tests caught it correctly, via a real `AssertionError`
+in each case, not a false pass).
+
+Full 52-test technical-analysis suite (unchanged count from the last documented baseline — the 3
+new tests replace what would otherwise have been a net gain, confirming this service's suite was
+already at 52 before this pass, not a stale count) and 180-test event-intelligence suite (up from
+177) green after every revert; `pyflakes` clean on both touched files.
+
+**What was investigated and correctly left alone in the same services** (found by the same grep,
+NOT the generation-blind bug class):
+- `event-intelligence`'s `_symbol_to_id()` (line ~330) — uses `Stock.active.desc()` purely to
+  disambiguate which of two same-symbol-different-exchange rows to resolve to (an unrelated,
+  correct use of the column, per its own `T247-EVENTINTELLIGENCE-SYMBOLEXCHANGE` comment).
+- `news-intelligence`'s `tickers.py::_load_universe()` (line 38) — a 15-minute-cached universe
+  cache used only for MATCHING a headline's ticker/company-name mentions against the app's real
+  stock list, never generating new per-symbol work; a delisted stock remaining matchable so an
+  old news item about it can still be tagged is harmless, arguably even correct behavior.
+- `portfolio-optimizer`, `strategy-engine`, `decision-engine`, `research-engine`, `api-gateway`
+  — confirmed via grep to have ZERO `Stock.active`/`Stock.delisted` references of any kind
+  (these services don't query `Stock` directly at all, or don't filter by active status where
+  they do).
+
+**Design invariant reinforced (again — this is now the 4th recurrence of this exact lesson in
+this session's own documented history)**: any bug-class fix that closes SOME instances of a
+pattern should never be assumed to have found EVERY instance — the only reliable check is
+re-running the same grep against every OTHER service in the repo, not just the ones an original
+bug report or investigation happened to point at. Worth treating as a standing checklist item:
+whenever a new `Stock.delisted` consumer is found and fixed, re-grep ALL remaining services for
+the same `Stock.active`-without-`Stock.delisted` pattern before considering the class closed.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-technical-analysis-1 grep -n "Stock.delisted" /app/src/api/routes.py
+docker exec stockai-event-intelligence-1 grep -n "Stock.delisted" /app/src/api/routes.py
+# Confirm a real delisted stock (once one exists) stops appearing in the bulk patterns scan
+# and stops getting a daily 8-K sync attempt after the next cache cycle / daily run:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT symbol, delisted FROM stocks WHERE delisted = true;"
+docker logs stockai-event-intelligence-1 --since 24h | grep 'sync_8k\|sync/8k'
+```

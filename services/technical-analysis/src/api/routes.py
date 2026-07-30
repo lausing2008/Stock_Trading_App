@@ -112,7 +112,11 @@ def get_patterns_bulk(
             return {"patterns": data, "count": len(data)}
 
     # Build stock query
-    stmt = select(Stock).where(Stock.active == True)  # noqa: E712
+    # BUG-DELISTED-GENERATION-BLIND (sibling instance, found in technical-analysis): Stock.delisted
+    # (aud14-survivorship) never flips Stock.active — a confirmed-delisted stock stays "active"
+    # forever, so this bulk pattern scan kept recomputing chart patterns for it every 6h cache
+    # cycle. Fixed the same way as the original signal-engine/ranking-engine/market-data pass.
+    stmt = select(Stock).where(Stock.active == True, Stock.delisted.is_(False))  # noqa: E712
     if market is not None:
         stmt = stmt.where(Stock.market == market)
     stocks = session.execute(stmt).scalars().all()
