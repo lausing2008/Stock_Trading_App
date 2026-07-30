@@ -84,7 +84,7 @@ from sqlalchemy.orm import selectinload, Session
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, EarningsEvent, EconomicEvent, Market, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
+from db import AlertCondition, EarningsEvent, EconomicEvent, Market, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -1423,6 +1423,138 @@ def _fetch_premarket_gappers(session: Session) -> list[dict]:
     return results
 
 
+_OPTIONS_FLOW_TOP_K = 20  # top-K by K-Score, unioned with PriceAlert-subscribed symbols
+
+
+def _bounded_options_flow_symbols(session: Session) -> list[tuple[int, str]]:
+    """T257-OVERNIGHT-FLOW-BRIEF Phase 2: the bounded symbol set for the EOD options-flow
+    snapshot job — PriceAlert-subscribed US symbols, unioned with the top-K US stocks by
+    K-Score. NOT the whole universe — yfinance's options-chain endpoint is the most rate-
+    limit-fragile call this app makes (see check_volume_anomalies()'s own docstring for the
+    same rate-limit discipline applied to a different feature), so this deliberately stays
+    small: only symbols a real recipient could plausibly see in tomorrow's brief.
+
+    Returns (stock_id, symbol) pairs, deduplicated by stock_id. US-only — HK has no
+    yfinance-listed options coverage in this app (matches every other options-flow call site).
+    """
+    from sqlalchemy import desc as _desc
+
+    alerts = session.execute(
+        select(PriceAlert).where(PriceAlert.triggered.is_(False))
+    ).scalars().all()
+    alert_symbols = {a.symbol.upper() for a in alerts if not a.symbol.upper().endswith(".HK")}
+
+    by_id: dict[int, str] = {}
+    if alert_symbols:
+        rows = session.execute(
+            select(Stock.id, Stock.symbol).where(
+                Stock.symbol.in_(alert_symbols),
+                Stock.active.is_(True), Stock.delisted.is_(False),
+            )
+        ).all()
+        for sid, sym in rows:
+            by_id[sid] = sym
+
+    latest_as_of = session.execute(select(func.max(Ranking.as_of))).scalar_one_or_none()
+    if latest_as_of is not None:
+        top_k_rows = session.execute(
+            select(Ranking.score, Stock.id, Stock.symbol)
+            .join(Stock, Ranking.stock_id == Stock.id)
+            .where(
+                Ranking.as_of == latest_as_of,
+                Stock.active.is_(True), Stock.delisted.is_(False),
+                Stock.market == Market.US,
+            )
+            .order_by(_desc(Ranking.score))
+            .limit(_OPTIONS_FLOW_TOP_K)
+        ).all()
+        for _score, sid, sym in top_k_rows:
+            by_id[sid] = sym
+
+    return list(by_id.items())
+
+
+def compute_options_flow_snapshots_eod() -> None:
+    """T257-OVERNIGHT-FLOW-BRIEF Phase 2: end-of-day options-flow snapshot job.
+
+    Runs shortly after US market close (17:00 ET) so the resulting rows are already in the DB
+    well before the next day's 08:00 ET pre-market brief queries them. Rate-limited via a fixed
+    inter-symbol sleep — options-chain fetches are more rate-limit-fragile than the fundamentals
+    batch this pattern is otherwise modeled on (_refresh_fundamentals_batch), so this uses a
+    longer per-symbol delay given the bounded (not universe-wide) symbol set.
+    """
+    _t0 = time.monotonic()
+    ok = failed = 0
+    from .options_flow_snapshot import compute_options_flow, upsert_options_flow_snapshot
+
+    try:
+        with SessionLocal() as session:
+            symbols = _bounded_options_flow_symbols(session)
+            if not symbols:
+                log.info("scheduler.options_flow_eod_done", ok=0, failed=0, note="no_symbols")
+                _record_job_status("options_flow_eod", "ok", time.monotonic() - _t0)
+                return
+
+            for stock_id, symbol in symbols:
+                try:
+                    result = compute_options_flow(symbol)
+                    if result is not None:
+                        upsert_options_flow_snapshot(session, stock_id, result)
+                        ok += 1
+                    else:
+                        failed += 1
+                except Exception as exc:
+                    log.warning("scheduler.options_flow_eod.symbol_error", symbol=symbol, error=str(exc))
+                    failed += 1
+                time.sleep(2.0)  # spread over minutes with backoff — see this file's own
+                # rate-limit discipline for the options-chain endpoint specifically
+
+            session.commit()
+    except Exception as exc:
+        log.error("scheduler.options_flow_eod_error", error=str(exc))
+        _record_job_status("options_flow_eod", "error", time.monotonic() - _t0)
+        return
+
+    elapsed = time.monotonic() - _t0
+    log.info("scheduler.options_flow_eod_done", ok=ok, failed=failed, elapsed_s=round(elapsed))
+    _record_job_status("options_flow_eod", "ok" if failed == 0 else "partial", elapsed)
+
+
+def _fetch_recent_options_flow(session: Session) -> list[dict]:
+    """T257-OVERNIGHT-FLOW-BRIEF Phase 2: yesterday's late-day options flow for the pre-market
+    brief — reads only already-persisted OptionsFlowSnapshot rows (no live yfinance call here),
+    matching this file's own established discipline of never hammering yfinance from a report
+    path. Ranked by |cp_ratio - 1| descending (the most directionally lopsided flow first, not
+    just the highest raw ratio, so a bearish reading with a low cp_ratio still surfaces).
+    """
+    latest_as_of = session.execute(select(func.max(OptionsFlowSnapshot.as_of))).scalar_one_or_none()
+    if latest_as_of is None:
+        return []
+    rows = session.execute(
+        select(
+            Stock.symbol, OptionsFlowSnapshot.cp_ratio, OptionsFlowSnapshot.sentiment,
+            OptionsFlowSnapshot.call_premium, OptionsFlowSnapshot.put_premium,
+            OptionsFlowSnapshot.whale_count, OptionsFlowSnapshot.top_whale_premium,
+        )
+        .join(Stock, OptionsFlowSnapshot.stock_id == Stock.id)
+        .where(OptionsFlowSnapshot.as_of == latest_as_of)
+    ).all()
+    results = [
+        {
+            "symbol": symbol,
+            "cp_ratio": round(float(cp_ratio), 2) if cp_ratio is not None else None,
+            "sentiment": sentiment,
+            "call_premium": round(float(call_premium), 2) if call_premium is not None else None,
+            "put_premium": round(float(put_premium), 2) if put_premium is not None else None,
+            "whale_count": whale_count or 0,
+            "top_whale_premium": round(float(top_whale_premium), 2) if top_whale_premium else 0,
+        }
+        for symbol, cp_ratio, sentiment, call_premium, put_premium, whale_count, top_whale_premium in rows
+    ]
+    results.sort(key=lambda r: abs((r["cp_ratio"] or 1.0) - 1.0), reverse=True)
+    return results[:10]
+
+
 def send_premarket_brief(markets: list | None = None) -> None:
     """T249-MARKETMOVER-P3: pre-market brief — combines the three already-shipped MarketMover
     pieces (P0 release-date calendar, P1 earnings day-of reminders, P2 macro fast-reactions)
@@ -1446,7 +1578,11 @@ def send_premarket_brief(markets: list | None = None) -> None:
     (ES/NQ/YM/RTY) via _fetch_overnight_futures() — a measured reading of the market's own
     current expectation for the open, never a prediction of whether it holds, (5) premarket
     gappers via _fetch_premarket_gappers() — US stocks moving significantly vs. yesterday's
-    close, fed by the new _refresh_premarket_5m() ingest job (4:00-9:25 ET).
+    close, fed by the new _refresh_premarket_5m() ingest job (4:00-9:25 ET), (6) T257-OVERNIGHT-
+    FLOW-BRIEF Phase 2: yesterday's late-day options flow via _fetch_recent_options_flow() — a
+    real observed positioning read (cp_ratio, whale premium) for the bounded set of symbols
+    compute_options_flow_snapshots_eod() persisted the evening before, never a live yfinance
+    call from this report path.
 
     Called once per day per market, ~30-40 min before that market's open — mirrors
     send_morning_digest's own cadence choice for the same reason (enough lead time to read
@@ -1535,7 +1671,14 @@ def send_premarket_brief(markets: list | None = None) -> None:
             if "US" in markets:
                 premarket_movers = _fetch_premarket_gappers(session)
 
-            if not macro_today and not any(sym in earnings_by_symbol for syms in user_symbols.values() for sym in syms) and not recent_reactions and not overnight_futures and not premarket_movers:
+            # ── Section 6 (T257-OVERNIGHT-FLOW-BRIEF Phase 2): yesterday's late-day options
+            # flow — US-only, same reasoning as sections 1/3/4/5 (no HK options-flow coverage
+            # anywhere in this app). Reads only already-persisted OptionsFlowSnapshot rows.
+            recent_options_flow: list[dict] = []
+            if "US" in markets:
+                recent_options_flow = _fetch_recent_options_flow(session)
+
+            if not macro_today and not any(sym in earnings_by_symbol for syms in user_symbols.values() for sym in syms) and not recent_reactions and not overnight_futures and not premarket_movers and not recent_options_flow:
                 _record_job_status(_job_name, "ok", time.monotonic() - _t0)
                 log.info("premarket_brief.nothing_to_report", markets=markets)
                 return
@@ -1579,6 +1722,7 @@ def send_premarket_brief(markets: list | None = None) -> None:
                         recent_reactions=recent_reactions,
                         overnight_futures=overnight_futures,
                         premarket_movers=premarket_movers,
+                        options_flow=recent_options_flow,
                     )
                 except Exception as _send_exc:
                     ok = False
@@ -1594,7 +1738,7 @@ def send_premarket_brief(markets: list | None = None) -> None:
             _record_job_status(_job_name, "ok", time.monotonic() - _t0)
             log.info("premarket_brief.done", markets=markets, sent=sent, errors=errors, recipients=len(recipients),
                       macro_events=len(macro_today), reactions=len(recent_reactions), futures=len(overnight_futures),
-                      premarket_movers=len(premarket_movers))
+                      premarket_movers=len(premarket_movers), options_flow=len(recent_options_flow))
     except Exception as exc:
         log.error("premarket_brief.failed", markets=markets, error=str(exc), exc_info=True)
         _record_job_status(_job_name, "error", time.monotonic() - _t0, str(exc))
@@ -5697,6 +5841,13 @@ def start_scheduler() -> None:
         lambda: _refresh_market("US", post_close=True),
         CronTrigger(hour=16, minute=30, day_of_week="mon-fri", timezone="America/New_York"),
         id="us_post_close", replace_existing=True, **_JOB_DEFAULTS,
+    )
+    # T257-OVERNIGHT-FLOW-BRIEF Phase 2: EOD options-flow snapshot — 17:00 ET, well after close
+    # (16:00) and well before the next day's 08:00 ET pre-market brief that reads these rows.
+    _scheduler.add_job(
+        compute_options_flow_snapshots_eod,
+        CronTrigger(hour=17, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
+        id="options_flow_eod", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── HK Market (Asia/Hong_Kong — UTC+8, no DST) ──────────────────────────

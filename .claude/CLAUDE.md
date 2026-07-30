@@ -10035,3 +10035,127 @@ docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
   "SELECT symbol, delisted FROM stocks WHERE delisted = true;"
 docker logs stockai-event-intelligence-1 --since 24h | grep 'sync_8k\|sync/8k'
 ```
+
+---
+
+## Feature Reference: T257-OVERNIGHT-FLOW-BRIEF Phase 2 — Late-Day Options-Flow Snapshot + Brief Section (Built 2026-07-30)
+
+**Closes the other half of Tier 257's original "see where the investors putting money now"
+ask** — Phase 1 (2026-07-22/23) covered overnight futures + premarket gappers, but options
+flow (`GET /{symbol}/options-flow`) was still live-only with a 15-minute Redis cache and zero
+persistence, so nothing could ever answer "what did flow look like yesterday" for the brief.
+
+**New module**: `services/market-data/src/services/options_flow_snapshot.py` —
+`compute_options_flow(symbol)` independently re-derives the SAME aggregate the live endpoint
+computes (`routes.py`'s `get_options_flow()`) directly from a fresh yfinance option-chain
+fetch: cp_ratio (capped at 10.0), call/put volume, call/put premium (a field the live endpoint
+does NOT already aggregate — it only tracks per-contract premium inside its own top-10
+"unusual activity" list, never a running chain-wide total), whale detection (>$500K threshold,
+matching the live endpoint exactly), and the same 5-tier sentiment ladder
+(strongly_bullish/bullish/neutral/slightly_bearish/bearish, gated by `sufficient_put_vol >=
+100` so a near-zero put volume never falsely reads as extreme bullish). **Deliberately NOT a
+shared implementation with `get_options_flow()`** — a second, independent port, matching
+`volume_area.py`'s own established "two independently-ported-not-shared math functions" caveat
+for the same reason (the live endpoint is FastAPI-route-shaped and Redis-cached; this needs a
+pure, DB-facing function). If either's math changes, check whether the other needs the same
+change too.
+
+**New table**: `OptionsFlowSnapshot` (`shared/db/models.py`) — `(stock_id, as_of)` unique, one
+row per symbol per day. A brand-new table, `create_all()`-friendly — no manual `ALTER TABLE`
+needed.
+
+**Bounded symbol set, not the whole universe** — `_bounded_options_flow_symbols()`
+(`scheduler.py`) unions PriceAlert-subscribed US symbols with the top-20-by-K-Score US stocks,
+matching Phase 2's own original design note ("PriceAlert-subscribed + top-K by K-Score, NOT
+the whole universe — yfinance option chains are the most rate-limited endpoint we touch").
+Both queries correctly exclude delisted/inactive stocks
+(`Stock.delisted.is_(False)`/`Stock.active.is_(True)`) — a fresh generation-path query added
+in the same session `BUG-DELISTED-GENERATION-BLIND`'s own 10-instance sweep already covered,
+so this one was built delisted-safe from the start rather than needing an 11th retrofit.
+
+**EOD compute job**: `compute_options_flow_snapshots_eod()`, scheduled at 17:00 ET (after
+US close at 16:00, well before the next day's 08:00 ET pre-market brief that reads these rows)
+— per-symbol try/except isolation (one symbol's fetch failure doesn't abort the batch) plus a
+fixed 2-second inter-symbol sleep (rate-limit discipline for yfinance's most fragile endpoint,
+matching this file's own established convention for options-chain calls). Upserts via `ON
+CONFLICT DO UPDATE` on `(stock_id, as_of)`, matching `volume_area.py`/`sector_trajectory.py`'s
+established idempotent-upsert pattern for this exact class of dated-snapshot table.
+
+**Read side**: `_fetch_recent_options_flow()` reads ONLY already-persisted `OptionsFlowSnapshot`
+rows for the most recent `as_of` — no live yfinance call in this path at all, matching
+`check_volume_anomalies()`'s/`_fetch_premarket_gappers()`'s own established discipline. Ranks
+by `|cp_ratio - 1.0|` descending (most-extreme-sentiment-first) and caps at 10.
+
+**Wired into `send_premarket_brief()`** as a 6th section, US-only-gated (no HK options-flow
+coverage anywhere in this app — matches sections 1/3/4/5's own gating), folded into the
+existing nothing-to-report guard and `.done` log line.
+`send_premarket_brief_email()` gained an `options_flow: list[dict] | None = None` parameter
+(defaults to `None` → treated as `[]`, so no existing caller needed to change), rendered via
+the same `_section()` helper every prior section already uses — symbol/cp_ratio/sentiment,
+plus an optional whale-trade note when `whale_count > 0`, `None`-safe em-dash fallbacks for a
+missing cp_ratio, and `sentiment=None` degrading to `"neutral"` rather than crashing.
+
+**Tests**: `services/market-data/tests/test_options_flow_snapshot.py` (11 cases) —
+`compute_options_flow()` tested directly against a mocked `yfinance.Ticker`/`option_chain()`
+returning real pandas DataFrames (no source-text extraction needed — this module has zero
+Docker-only import at its top level besides `db`/`sqlalchemy`, both already stubbed by
+`conftest.py`), covering no-options/zero-volume returning `None`, all 5 sentiment tiers,
+cp_ratio capping at 10.0, the near-zero-put-volume-doesn't-falsely-declare-bullish guard,
+call/put premium aggregation across the FULL chain (not just the top-10 "unusual" list),
+whale detection at the exact $500K threshold, and per-expiry fetch-failure isolation.
+`services/market-data/tests/test_options_flow_brief_wiring.py` (15 cases, source-text
+regression checks matching `test_premarket_gappers.py`'s established pattern for functions in
+`scheduler.py` that can't be imported directly in this test environment) — the bounded-symbol
+query's delisted/inactive/US-only filters, the EOD job's registration/schedule/per-symbol
+sleep/error-isolation, `send_premarket_brief()`'s US-only gate on the fetch call + inclusion in
+both the email-call kwarg/`.done` log and the nothing-to-report guard, and
+`_fetch_recent_options_flow()`'s no-live-yfinance-call discipline. Plus 5 direct
+`send_premarket_brief_email()` composition tests for the new section (render, explicit empty
+state, `None`-default backward compatibility, missing-whale-count/missing-cp_ratio/
+missing-sentiment graceful degradation).
+
+**Adversarial verification** — 5 sabotage cycles, all caught and reverted: removing
+`Stock.delisted.is_(False)` from the alert-symbol lookup (caught by the delisted/inactive
+exclusion test, `1 == 2` count mismatch); removing the US-only market filter from the top-K
+K-Score query (caught by the US-only test); removing the `if "US" in markets:` gate around the
+fetch call in `send_premarket_brief()` (caught by the gate-proximity test — the fetch found
+the PRECEDING section's gate 7 lines away instead of its own, 2 lines); removing
+`recent_options_flow` from the nothing-to-report guard (caught directly); and — the one real
+runtime-crash catch — removing the `None`-safety guards on `cp_str`/`sentiment` in
+`email_service.py`'s row builder (caught with a genuine `TypeError: unsupported format string
+passed to NoneType.__format__`, confirming the test exercises a real crash path, not just a
+value mismatch).
+
+Full 656-test market-data suite green after every revert (up from 630); `pyflakes` clean on
+all 3 touched/new files (confirmed via `git stash` that all pre-existing warnings in
+`scheduler.py`/`email_service.py` predate this change — only line numbers shifted, plus one
+new harmless `f-string is missing placeholders` warning matching 4 pre-existing sibling
+occurrences of the exact same style in the same function).
+
+**Not built this pass, matching Phase 1's own explicit phasing**: Phase 3 (the "day
+attention-list" combining premarket gap + options flow + earnings + macro into one
+scored-attention section) remains unbuilt — this Phase 2 delivers the raw options-flow data
+Phase 3 would need as one of its inputs, but the cross-referencing/scoring logic itself is a
+separate, larger piece of work.
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the new table exists and has real rows after the next 17:00 ET run:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT st.symbol, ofs.cp_ratio, ofs.sentiment, ofs.as_of FROM options_flow_snapshots ofs JOIN stocks st ON ofs.stock_id = st.id ORDER BY ofs.as_of DESC LIMIT 10;"
+
+# Check job status/logs directly:
+docker logs stockai-market-data-1 --since 24h | grep 'options_flow_eod'
+
+# Manually trigger the EOD compute job (safe — idempotent upsert, real yfinance calls with a
+# 2s inter-symbol sleep, so this can take a few minutes for a real bounded set):
+docker exec stockai-market-data-1 python3 -c "
+import sys; sys.path.insert(0, '/app'); sys.path.insert(0, '/app/src')
+from src.services.scheduler import compute_options_flow_snapshots_eod
+compute_options_flow_snapshots_eod()
+"
+```
+If the brief's new section always shows the empty state despite real recent flow existing,
+first confirm the EOD job actually ran and populated a row for TODAY's `as_of` —
+`_fetch_recent_options_flow()` never computes live, it only reads whatever the daily job
+already persisted for the most recent date.

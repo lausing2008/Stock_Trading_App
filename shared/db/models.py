@@ -1223,6 +1223,42 @@ class SectorRotationSnapshot(Base):
     computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class OptionsFlowSnapshot(Base):
+    """T257-OVERNIGHT-FLOW-BRIEF Phase 2: end-of-day persisted options-flow read per symbol/date.
+
+    Before this table, GET /{symbol}/options-flow (services/market-data/src/api/routes.py) was
+    live-only, 15-minute Redis cache, no history — nothing could answer "what did yesterday's
+    late-day flow look like" the way the pre-market brief's design always intended to report.
+    Deliberately scoped to a BOUNDED symbol set (PriceAlert-subscribed + top-K by K-Score, NOT
+    the whole universe) — yfinance's options-chain endpoint is the most rate-limit-fragile call
+    this app makes (see check_volume_anomalies()'s own docstring for the same rate-limit
+    discipline applied to a different feature), so this table is never intended to cover every
+    stock, only the ones a real recipient could plausibly care about in tomorrow's brief.
+
+    Reuses get_options_flow()'s own response shape/field names directly (cp_ratio, sentiment,
+    call_volume/put_volume, whale_count/top_whale_premium) rather than inventing a parallel
+    vocabulary — call_premium/put_premium are the two fields that endpoint does NOT already
+    aggregate (it only tracks per-contract premium inside its top-10 "unusual activity" list),
+    so the EOD job computes those two directly from the full option chain, not by re-deriving
+    them from get_options_flow()'s own truncated "unusual" list.
+    """
+    __tablename__ = "options_flow_snapshots"
+    __table_args__ = (UniqueConstraint("stock_id", "as_of", name="uq_options_flow_snapshot_stock_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    as_of: Mapped[date] = mapped_column(Date, index=True)
+    cp_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    call_volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    put_volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    call_premium: Mapped[float | None] = mapped_column(Float, nullable=True)
+    put_premium: Mapped[float | None] = mapped_column(Float, nullable=True)
+    whale_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    top_whale_premium: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sentiment: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class RealtimeNewsItem(Base):
     """New news-intelligence service (port 8011) — real-time financial headline ingestion.
 

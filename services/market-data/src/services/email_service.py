@@ -943,6 +943,7 @@ def send_premarket_brief_email(
     recent_reactions: list,
     overnight_futures: list[dict] | None = None,
     premarket_movers: list[dict] | None = None,
+    options_flow: list[dict] | None = None,
 ) -> bool:
     """T249-MARKETMOVER-P3: pre-market brief — combines P0 (today's macro releases), P1
     (recipient's own symbols reporting earnings today), and P2 (macro reactions generated in
@@ -963,9 +964,16 @@ def send_premarket_brief_email(
     ({"symbol", "pre_close", "prior_close", "change_pct", "as_of"}) — reports a MEASURED gap
     vs. yesterday's close, same non-predictive framing as overnight_futures. Also defaults to
     `None` (treated as empty) for the same backward-compatibility reason.
+
+    T257-OVERNIGHT-FLOW-BRIEF Phase 2: `options_flow` items are the dict shape
+    _fetch_recent_options_flow() returns ({"symbol", "cp_ratio", "sentiment", "call_premium",
+    "put_premium", "whale_count", "top_whale_premium"}) — reports yesterday's OBSERVED options
+    positioning (a real, already-happened flow read), never a prediction of what today's flow
+    will do. Also defaults to `None` (treated as empty) for the same reason.
     """
     overnight_futures = overnight_futures or []
     premarket_movers = premarket_movers or []
+    options_flow = options_flow or []
     subject = f"🔔 Pre-Market Brief — {market} — {date_str}"
 
     _impact_color = {"critical": "#ef4444", "high": "#f97316", "medium": "#facc15"}
@@ -1047,6 +1055,25 @@ def send_premarket_brief_email(
         )
         movers_rows_text += f'  {m.get("symbol","")}: {pre_str} ({chg_str} vs. yesterday\'s close)\n'
 
+    # ── Section 6: late-day options flow (T257-OVERNIGHT-FLOW-BRIEF Phase 2) ───
+    flow_rows_html = ""
+    flow_rows_text = ""
+    for o in options_flow:
+        cp = o.get("cp_ratio")
+        cp_str = f"{cp:.2f}" if cp is not None else "—"
+        sentiment = (o.get("sentiment") or "neutral").replace("_", " ")
+        whale_note = ""
+        if o.get("whale_count"):
+            whale_note = f' · {o["whale_count"]} whale trade{"s" if o["whale_count"] != 1 else ""} (${o.get("top_whale_premium", 0):,.0f} top)'
+        flow_rows_html += (
+            f'<div style="padding:8px 0;border-bottom:1px solid #f1f5f9;display:flex;'
+            f'justify-content:space-between">'
+            f'<strong style="font-size:13px">{o.get("symbol","")}</strong>'
+            f'<span style="font-size:12px;color:#64748b">cp_ratio {cp_str} · {sentiment}{whale_note}</span>'
+            f'</div>'
+        )
+        flow_rows_text += f'  {o.get("symbol","")}: cp_ratio {cp_str}, {sentiment}{whale_note}\n'
+
     def _section(title: str, rows_html: str, empty_note: str) -> str:
         if not rows_html:
             return (
@@ -1073,14 +1100,16 @@ def send_premarket_brief_email(
 
     {_section("Overnight Futures", futures_rows_html, "Overnight futures data unavailable this morning.")}
     {_section("Premarket Movers", movers_rows_html, "No significant premarket movers detected.")}
+    {_section("Late-Day Options Flow", flow_rows_html, "No notable options flow detected in yesterday's session.")}
     {_section("Today's Macro Releases", macro_rows_html, "No high/critical-importance releases scheduled today.")}
     {_section("Your Symbols Reporting Today", earnings_rows_html, "None of your watched symbols report earnings today.")}
     {_section("Recent Macro Reactions (18h)", reaction_rows_html, "No macro reactions generated in the last 18 hours.")}
 
     <p style="font-size:11px;color:#94a3b8;margin-top:28px;border-top:1px solid #e2e8f0;padding-top:14px">
       Futures reflect the market's own current expectation for the open — not a prediction of
-      whether it holds through the cash session. Historical-scenario context only elsewhere in
-      this brief — not financial advice. StockAI · {date_str}
+      whether it holds through the cash session. Options flow reflects yesterday's already-
+      observed positioning, not a forecast. Historical-scenario context only elsewhere in this
+      brief — not financial advice. StockAI · {date_str}
     </p>
   </div>
 </body></html>"""
@@ -1091,6 +1120,8 @@ def send_premarket_brief_email(
         + (futures_rows_text or "  Unavailable this morning.\n")
         + f"\nPREMARKET MOVERS\n"
         + (movers_rows_text or "  None detected.\n")
+        + f"\nLATE-DAY OPTIONS FLOW\n"
+        + (flow_rows_text or "  None detected in yesterday's session.\n")
         + f"\nTODAY'S MACRO RELEASES\n"
         + (macro_rows_text or "  None scheduled today.\n")
         + f"\nYOUR SYMBOLS REPORTING TODAY\n"
@@ -1098,7 +1129,8 @@ def send_premarket_brief_email(
         + f"\nRECENT MACRO REACTIONS (18h)\n"
         + (reaction_rows_text or "  None.\n")
         + "\nFutures reflect the market's current expectation for the open, not a prediction of"
-        " whether it holds. Historical-scenario context only elsewhere — not financial advice.\n"
+        " whether it holds. Options flow reflects yesterday's already-observed positioning, not"
+        " a forecast. Historical-scenario context only elsewhere — not financial advice.\n"
     )
     return send_email(to, subject, body_html, body_text)
 
