@@ -10284,3 +10284,162 @@ A consistently `0` attention-list total across many days is expected and correct
 market days — the ≥2-signal bar is deliberately strict; an empty attention list most days is
 the bar working as intended, not a sign the feature is broken (matching the same
 "most cycles qualify zero picks" honesty already documented for T257-TOP3-CONVICTION-ALERT).
+
+---
+
+## Feature Reference: T232-SIG10-SELLGATE — Symmetric, Data-Validated SELL Pillar Gate (Built 2026-07-31)
+
+**Closes the gap this tracker item's own 2026-07-21 build deliberately left open**:
+`bearish_pillars_active` (a 0-4 count of independent bearish TA sub-scores, mirroring the
+LIVE `independent_pillars_active` bullish gate) was computed into `Signal.reasons` starting
+2026-07-21, explicitly as pure telemetry — "not yet wired into any live gate/compression,"
+per that session's own comment, because there wasn't yet enough non-bull-regime SELL outcome
+data to fit a real gate against. This session re-verified that finding is STILL true (a live
+production query confirmed 3,063 bull-regime SELL outcomes vs. 57 unknown vs. **zero**
+bear/high_vol/choppy/risk_off samples, unchanged from the 2026-07-20 count) — regime-tiered
+SELL thresholds remain unjustifiable by data. But the user explicitly asked to "research it
+more and see what's the best solution... I want the best buy and sell signals," which led to
+a real, previously-undiscovered finding that reframed the whole approach.
+
+### The real finding: `bearish_pillars_active` was NOT accumulating usable history at all
+
+A dedicated research pass discovered `Signal.reasons` is silently overwritten on every
+refresh — `signals` is upsert-per-`(stock_id, horizon, day)` (a real, existing unique
+constraint), so a signal's `reasons` JSON reflects only its MOST RECENT computation, never a
+point-in-time snapshot. Live-verified directly against production: of **3,120 resolved SELL
+`SignalOutcome` rows**, only **70** still carried `bearish_pillars_active` (SHORT 34/835,
+SWING 20/832, LONG 0/786, GROWTH 16/667) — all dated within days of the field first shipping.
+Waiting longer would NOT have fixed this: older rows keep losing the field on their very next
+refresh, and LONG (rarely refreshed) would need months to reach a usable sample regardless.
+**A live gate built on "wait for outcomes to accumulate naturally" was never going to reach
+statistical power.**
+
+### The fix: deterministic backfill from stored price history, not waiting
+
+`_ta_score(df)` (the function that computes `bearish_pillars_active`) is a **pure function of
+one OHLCV DataFrame** — verified directly: every bearish-pillar input (`death_cross_event`,
+`di_minus`/`di_plus`, `macd_line`, `k_smooth`, `obv_trend_bullish`, `bb_pct_b`, `vol_z`,
+`price_above_vwap` — itself a rolling VWMA, not intraday VWAP, so also OHLCV-only) derives
+from `close`/`high`/`low`/`volume` alone, nothing live/Redis/network-dependent. This makes it
+fully reproducible for ANY historical date with enough prior daily bars on file (this app's
+`Price` table for `TimeFrame.D1` goes back to 2023-04-21 — 113,767 rows, far more than needed).
+
+**New backfill function**: `_backfill_bearish_pillars_for_stock()` +
+`POST /signals/backfill_bearish_pillars` (`services/signal-engine/src/api/outcomes.py`) —
+for each stock with resolved SELL outcomes still missing the field, one bulk `Price` fetch
+(not one query per row), then for each of that stock's own `signal_date`s, slices the
+DataFrame to `Price.ts <= that date` (point-in-time correctness — **never** leaks a later bar
+into an earlier date's computation, the exact class of look-ahead bias `SE-F2` already cost
+this repo a 3,808-row rebuild over) and calls the real `_ta_score()` to recompute the value
+fresh. Requires `_BACKFILL_MIN_BARS = 220` bars of prior history (SMA200 plus warmup buffer)
+before attempting a date — a date with insufficient prior history is skipped, not scored as 0.
+
+**New column**: `SignalOutcome.bearish_pillars_active` (`shared/db/models.py`) — an existing,
+already-populated table, so a manual `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` was added to
+`shared/db/session.py`'s migration function (per this file's own standing `create_all()`-gap
+invariant). `NULL` means "not yet backfilled" — never silently treated as "0 pillars."
+
+### A real train/validation sweep before any live gate change — no unvalidated symmetry assumed
+
+**New endpoint**: `POST /signals/tune_sell_pillars` (`services/signal-engine/src/api/
+calibration.py`) — mirrors `outcomes_calibrate_apply`'s exact discipline (chronological 70/30
+train/validation split, per-slice `min_samples` floor checked both ways, candidate must beat
+the CURRENT LIVE baseline — `min_pillars_for_sell=0`, i.e. no gate at all, the real un-tuned
+production state — on the validation slice's own never-searched EV, unconditional rejection of
+non-positive lift, one `TuneHistory` row per horizon per attempt regardless of outcome).
+Sweeps `min_pillars_for_sell` over 1-4 per horizon and only writes to Redis
+(`stockai:style_tune:{H}:min_pillars_for_sell`, the SAME generic key
+`_get_style_tuned_param()` already knows how to read — zero new read-side code needed for the
+key itself) if a candidate value shows a genuine, validated improvement.
+
+**A real EV-sign gotcha, caught and correctly handled**: `SignalOutcome.pct_return` is stored
+UNSIGNED by direction (`(exit - entry) / entry`, a raw price change) — a SELL "wins" when
+`pct_return` is NEGATIVE (confirmed directly: `is_correct = ret < -hurdle` for SELL). The
+sweep's EV metric is therefore `-mean(pct_return)`, matching the EXACT convention the sibling
+SELL-threshold sweep inside `outcomes_calibrate_apply` already uses for the identical reason
+(`rets = [-o.pct_return for o in sub ...]`) — copied verbatim from that established precedent,
+not re-derived from scratch.
+
+**Deliberately does NOT reuse `min_pillars_for_buy`'s own values (2 default, 3 for SWING/
+LONG)** — the bearish pillar sub-scores are NOT calibrated to the same base rate as the
+bullish ones (e.g. `pb_volume` gives 0.6 for `not obv_trend_bullish` ALONE — a much weaker bar
+than the bullish side's own AND-logic requiring BOTH OBV and volume expansion together).
+Assuming symmetry would repeat the exact "overfit argmax on an unvalidated assumption"
+mistake already documented at `T232-OC3`. The sweep tries all of 1-4 and lets the validation
+slice decide — nothing is assumed.
+
+### The live gate itself — symmetric structure, regime-agnostic, off by default
+
+`services/signal-engine/src/generators/signals.py`'s `_apply_style_signal()` gained a new
+"symmetric SELL-side pillar gate" block, placed directly after the existing BUY pillar gate
+(SA-19/SA-30) it mirrors: applies ONLY to `fused < 0.5` (the exact opposite restriction of
+`T232-SIG3`'s own comment on the bullish gate, which applies ONLY to `fused > 0.5` — a deeply
+bullish stock naturally has 0-1 bearish pillars by definition, so this must never touch BUY
+candidates, just as the bullish gate must never touch SELL candidates). Reads
+`min_pillars_for_sell` via the ALREADY-GENERIC `_get_style_tuned_param(style_key,
+"min_pillars_for_sell", 0)` — **defaults to 0 (no gate at all) until `tune_sell_pillars` has
+found and validated a real, positive-EV-lift value for that specific style**. This means the
+gate is a complete, verified no-op in production the moment it deploys — it can only ever
+start compressing SELL signals once a real backtest has proven doing so improves outcomes,
+never as an assumption. Missing/`None` `bearish_pillars_active` (a BUY-only signal, or a
+computation failure) fails open to 0 bearish pillars, matching the neutral un-gated state —
+never silently treated as the worst case.
+
+### Tests
+
+`services/signal-engine/tests/test_sell_pillar_gate.py` (19 cases) — the live gate itself is
+tested directly (`signals.py` imports cleanly via `conftest.py`'s stubbing, matching
+`test_hot_news_gate.py`'s established convention): the un-tuned default is a genuine no-op
+regardless of bearish-pillar count, the gate compresses below the validated minimum and is
+inert at/above it, the `fused < 0.5`-only restriction (mirroring `T232-SIG3` in reverse), a
+missing key fails open to 0 (never the worst case), and the compression ratio matches the
+BUY gate's own documented ×0.70 for the below-minimum case. The backfill/sweep endpoints live
+in `outcomes.py`/`calibration.py`, which need `common.jwt_auth` and can't be imported directly
+in this test environment — covered via source-text regression checks matching this repo's
+established pattern for that exact constraint: the point-in-time-correctness filter, the
+minimum-bar-count guard, per-stock batching (not per-row), the negated-EV sign convention, the
+chronological (not random) train/validation split, the unconditional non-positive-lift
+rejection, the generic Redis key the read side already knows how to consume, and
+`_record_tune_history()` being called on every branch including skips.
+
+**Adversarial verification** — 5 sabotage cycles, all caught and reverted: removing the
+`fused < 0.5` restriction on the live gate (caught by the dedicated BUY-side-inertness test);
+defaulting `min_pillars_for_sell` to a nonzero value instead of 0 (caught by 2 tests — the
+no-gate-by-default test and the missing-key-fails-open test); removing the point-in-time
+`Price.ts <= sd` filter in the backfill helper (caught directly); removing the `-o.pct_return`
+negation in the sweep's EV metric (caught directly, reproducing the exact sign-inversion
+gotcha this fix was built to avoid); disabling the non-positive-EV-lift rejection entirely
+(caught directly). Full 142-in-scope-test signal-engine suite green (up from 123, excluding
+the 2 pre-existing, unrelated failure groups already documented elsewhere in this file —
+`test_signal_generator.py`'s `_decide` import-collection error and 4
+`test_analyst_momentum.py` failures, both confirmed via `git stash` to predate this change).
+`pyflakes` clean on all 3 touched files (confirmed via `git stash` that both pre-existing
+warnings — `signals.py`'s unused `macd_line`, `outcomes.py`'s unused `httpx` import — predate
+this change).
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the new column exists and check backfill progress:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT horizon, COUNT(*) AS resolved_sell, COUNT(*) FILTER (WHERE bearish_pillars_active IS NOT NULL) AS backfilled
+   FROM signal_outcomes WHERE signal_direction='SELL' AND is_correct IS NOT NULL GROUP BY horizon;"
+
+# Trigger the backfill (safe, idempotent — only touches rows still missing the field):
+docker exec stockai-signal-engine-1 curl -s -X POST 'http://localhost:8005/signals/backfill_bearish_pillars?limit=5000' \
+  -H "Authorization: Bearer <token>"
+
+# Run the sweep (needs the backfill to have run first):
+docker exec stockai-signal-engine-1 curl -s -X POST 'http://localhost:8005/signals/tune_sell_pillars' \
+  -H "Authorization: Bearer <token>"
+
+# Check whether any horizon got a real, validated gate applied:
+docker exec stockai-redis-1 redis-cli keys 'stockai:style_tune:*:min_pillars_for_sell'
+
+# Check tune_history rows this mechanism wrote (promoted or not):
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT style, old_value, new_value, promoted, gate_failures FROM tune_history WHERE parameter_name='min_pillars_for_sell' ORDER BY ts DESC LIMIT 10;"
+```
+If `tune_sell_pillars` skips every horizon with `insufficient_total_samples`, that means the
+backfill hasn't been run yet (or hasn't found enough historical price data for enough
+symbols) — check the backfill's own `remaining_unbackfilled_sell_outcomes` count first before
+assuming the sweep itself is broken.

@@ -425,6 +425,12 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "ALTER TABLE earnings_events ADD COLUMN IF NOT EXISTS sectors_hurt TEXT"
         ))
+        # T232-SIG10-SELLGATE: bearish-pillar count backfilled onto existing signal_outcomes
+        # rows — see SignalOutcome.bearish_pillars_active's own docstring for why this can't
+        # be copied live from Signal.reasons the way market_regime is.
+        conn.execute(text(
+            "ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS bearish_pillars_active INTEGER"
+        ))
 
 
 def _seed_admin() -> None:

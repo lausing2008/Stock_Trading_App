@@ -2552,6 +2552,127 @@ def gate_backtest(
     return result
 
 
+# ── T232-SIG10-SELLGATE: backfill bearish_pillars_active onto resolved SELL outcomes ──────────
+# bearish_pillars_active started accumulating in Signal.reasons on 2026-07-21, but `signals` is
+# upsert-per-(stock_id, horizon, day) — reasons gets overwritten on every refresh, not preserved
+# as a point-in-time snapshot. Live-verified: of 3120 resolved SELL SignalOutcome rows, only 70
+# still carry the field (all dated within days of it shipping) — nowhere near enough for a real
+# train/validation sweep, and waiting longer doesn't help since older rows keep losing it on
+# their NEXT refresh. The only path to real statistical power is recomputing it directly from
+# historical Price rows as-of each signal's own date — _ta_score() is a pure function of one
+# OHLCV DataFrame (verified: every bearish-pillar input — death_cross_event, di_minus/di_plus,
+# macd_line, k_smooth, obv_trend_bullish, bb_pct_b, vol_z — derives from close/high/low/volume
+# alone, nothing live/Redis/network-dependent), so this is fully deterministic and reproducible.
+_BACKFILL_MIN_BARS = 220  # SMA200 needs 200 bars; a small buffer above that for warmup effects
+
+
+def _backfill_bearish_pillars_for_stock(
+    session: Session, stock_id: int, signal_dates: list,
+) -> dict:
+    """For one stock, compute bearish_pillars_active as-of each of its own signal_dates,
+    using ONLY Price rows with ts <= that date (point-in-time correct — never leaks a later
+    bar into an earlier date's computation, the same class of bug SE-F2 already cost this
+    repo a 3,808-row rebuild over). One bulk Price fetch per stock, not one query per row.
+    """
+    from ..generators.signals import _ta_score
+    import pandas as pd
+
+    max_date = max(signal_dates)
+    rows = session.execute(
+        select(Price.ts, Price.open, Price.high, Price.low, Price.close, Price.volume)
+        .where(
+            Price.stock_id == stock_id,
+            Price.timeframe == TimeFrame.D1,
+            Price.ts <= datetime.combine(max_date, datetime.max.time()),
+        )
+        .order_by(Price.ts)
+    ).all()
+    if not rows:
+        return {}
+
+    full_df = pd.DataFrame(
+        [{"ts": r.ts, "open": r.open, "high": r.high, "low": r.low, "close": r.close, "volume": r.volume} for r in rows]
+    )
+    full_df["date"] = full_df["ts"].apply(lambda t: t.date() if hasattr(t, "date") else t)
+
+    result: dict = {}
+    for sd in signal_dates:
+        # Point-in-time slice: every bar up to and including this signal's own date, never
+        # anything after it — the same lookahead-safety discipline _lookup_outcome_price()
+        # already applies to entry/exit price lookups elsewhere in this file.
+        df_upto = full_df[full_df["date"] <= sd]
+        if len(df_upto) < _BACKFILL_MIN_BARS:
+            continue
+        try:
+            _, reasons = _ta_score(df_upto.tail(300))
+        except Exception:
+            continue
+        pillars = reasons.get("bearish_pillars_active")
+        if pillars is not None:
+            result[sd] = int(pillars)
+    return result
+
+
+@router.post("/backfill_bearish_pillars")
+def backfill_bearish_pillars(
+    limit: int = Query(2000, ge=1, le=20000, description="Max SignalOutcome rows to backfill this call"),
+    session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
+):
+    """Backfill bearish_pillars_active onto resolved SELL SignalOutcome rows missing it, by
+    recomputing _ta_score() against historical Price data as-of each signal's own date. Safe
+    to re-run — only considers rows where bearish_pillars_active IS NULL, and batches by
+    stock_id (one bulk Price fetch per stock covering every one of that stock's outstanding
+    signal_dates) rather than one query per row.
+    """
+    candidates = session.execute(
+        select(SignalOutcome.id, SignalOutcome.stock_id, SignalOutcome.signal_date)
+        .where(
+            SignalOutcome.signal_direction == "SELL",
+            SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.bearish_pillars_active.is_(None),
+        )
+        .order_by(SignalOutcome.stock_id)
+        .limit(limit)
+    ).all()
+
+    by_stock: dict[int, list] = {}
+    for row in candidates:
+        by_stock.setdefault(row.stock_id, []).append(row)
+
+    updated = 0
+    skipped_insufficient_history = 0
+    for stock_id, stock_rows in by_stock.items():
+        dates = [r.signal_date for r in stock_rows]
+        computed = _backfill_bearish_pillars_for_stock(session, stock_id, dates)
+        for row in stock_rows:
+            pillars = computed.get(row.signal_date)
+            if pillars is None:
+                skipped_insufficient_history += 1
+                continue
+            outcome_obj = session.get(SignalOutcome, row.id)
+            if outcome_obj is not None:
+                outcome_obj.bearish_pillars_active = pillars
+                updated += 1
+    session.commit()
+
+    remaining = session.execute(
+        select(func.count()).select_from(SignalOutcome).where(
+            SignalOutcome.signal_direction == "SELL",
+            SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.bearish_pillars_active.is_(None),
+        )
+    ).scalar_one()
+
+    return {
+        "candidates_considered": len(candidates),
+        "stocks_processed": len(by_stock),
+        "updated": updated,
+        "skipped_insufficient_history": skipped_insufficient_history,
+        "remaining_unbackfilled_sell_outcomes": remaining,
+    }
+
+
 # T232-OC5: /{symbol} MUST be registered after every other static-path route in this router.
 # FastAPI matches routes in registration order, and a bare /{symbol} catch-all placed earlier
 # swallows any later static route with the same prefix depth (e.g. /signals/gate_backtest was

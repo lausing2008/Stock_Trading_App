@@ -1373,6 +1373,191 @@ def outcomes_calibrate_apply(
     }
 
 
+@router.post("/tune_sell_pillars")
+def tune_sell_pillars(
+    min_samples: int = Query(50, description="Minimum SELL outcomes required per train/validation slice"),
+    session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
+):
+    """T232-SIG10-SELLGATE: sweep min_pillars_for_sell per horizon against real, backfilled
+    SELL outcome history — the symmetric SELL-side counterpart to the LIVE min_pillars_for_buy
+    gate (SA-19/SA-30, signals.py's _apply_style_signal(), fused > 0.5 only). Requires
+    POST /signals/backfill_bearish_pillars to have already run — this sweep only reads rows
+    where bearish_pillars_active IS NOT NULL, never treating a missing value as "0 pillars".
+
+    Deliberately does NOT reuse min_pillars_for_buy's own values (2 default, 3 for SWING/LONG)
+    — the bearish pillar sub-scores are NOT calibrated to the same base rate as the bullish
+    ones (e.g. pb_volume gives 0.6 for `not obv_trend_bullish` ALONE, a much weaker bar than
+    the bullish side's own AND-logic), so assuming symmetry would repeat the exact "overfit
+    argmax on unvalidated assumption" mistake already documented at T232-OC3. Sweeps 1-4 and
+    lets the validation slice decide, mirroring outcomes_calibrate_apply's own walk-forward
+    discipline exactly: chronological 70/30 split, per-slice min_samples floor, candidate must
+    beat the CURRENT LIVE gate (no gate at all — pillars=0, i.e. never compress) on the
+    validation slice's own never-searched EV, unconditional rejection of negative EV lift.
+
+    Applies through the SAME stockai:style_tune:{H}:min_pillars_for_sell Redis key
+    _get_style_tuned_param() already knows how to read generically — the read side needs no
+    new code once a caller in _apply_style_signal() actually asks for this key.
+    """
+    import statistics as _stats
+
+    _REDIS_TTL = 30 * 86400  # 30 days, matching every sibling calibration mechanism
+    redis_client = _get_redis()
+
+    all_sell_outcomes = session.execute(
+        select(SignalOutcome).where(
+            SignalOutcome.signal_direction == "SELL",
+            SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.bearish_pillars_active.is_not(None),
+        )
+    ).scalars().all()
+
+    import uuid as _uuid
+    _run_id = str(_uuid.uuid4())
+
+    applied: list[dict] = []
+    skipped: list[dict] = []
+
+    for h in ("SHORT", "SWING", "LONG", "GROWTH"):
+        bucket = sorted(
+            [o for o in all_sell_outcomes if o.horizon.value == h],
+            key=lambda o: o.signal_date,
+        )
+        _bucket_dates = (bucket[0].signal_date, bucket[-1].signal_date) if bucket else (date.today(), date.today())
+
+        if len(bucket) < min_samples * 2:
+            skipped.append({"horizon": h, "reason": f"only {len(bucket)} backfilled SELL samples (need {min_samples * 2} for a valid train/validation split)"})
+            _record_tune_history(
+                session, _run_id, "signal_gate", "min_pillars_for_sell", h, "ALL",
+                old_value={"min_pillars_for_sell": 0}, new_value={},
+                train_window=_bucket_dates, validation_window=_bucket_dates,
+                train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=None, promoted=False,
+                gate_failures=[f"insufficient_total_samples:{len(bucket)}<{min_samples * 2}"],
+            )
+            continue
+
+        split = max(1, int(len(bucket) * 0.7))
+        train_bucket = bucket[:split]
+        val_bucket = bucket[split:]
+        _train_window = (train_bucket[0].signal_date, train_bucket[-1].signal_date)
+        _val_window = (val_bucket[0].signal_date, val_bucket[-1].signal_date)
+
+        def _stats_at(min_pillars: int, samples: list) -> dict | None:
+            # A candidate gate blocks (compresses) any SELL with FEWER than min_pillars active
+            # bearish pillars — the "would this SELL have fired" set is the ones that pass, i.e.
+            # bearish_pillars_active >= min_pillars. min_pillars=0 means every SELL passes (the
+            # current live behavior — no gate at all), the true baseline to beat.
+            sub = [o for o in samples if o.bearish_pillars_active >= min_pillars]
+            if len(sub) < min_samples:
+                return None
+            wins = sum(1 for o in sub if o.is_correct)
+            # T232-OC4 / the SELL threshold sweep's own established convention (above): a SELL
+            # wins on a NEGATIVE pct_return, so EV must be the negated mean, never the raw mean.
+            rets = [-o.pct_return for o in sub if o.pct_return is not None]
+            acc = wins / len(sub)
+            avg_ret = _stats.mean(rets) if rets else 0.0
+            ev = avg_ret * 100
+            return {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
+
+        current_pillars = 0  # no gate — the real current live behavior for SELL
+        best_ev = -999.0
+        best_p: int | None = None
+        for p_i in (1, 2, 3, 4):
+            st = _stats_at(p_i, train_bucket)
+            if st is not None and st["ev_pct"] > best_ev:
+                best_ev = st["ev_pct"]
+                best_p = p_i
+
+        if best_p is None:
+            skipped.append({"horizon": h, "reason": "no min_pillars_for_sell value met criteria on the train slice"})
+            _record_tune_history(
+                session, _run_id, "signal_gate", "min_pillars_for_sell", h, "ALL",
+                old_value={"min_pillars_for_sell": current_pillars}, new_value={},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=len(val_bucket), promoted=False,
+                gate_failures=["no_candidate_met_train_criteria"],
+            )
+            continue
+
+        best_stats = _stats_at(best_p, val_bucket)
+        current_stats = _stats_at(current_pillars, val_bucket)
+
+        if best_stats is None:
+            skipped.append({"horizon": h, "reason": "suggested min_pillars_for_sell unmeasurable on the validation slice"})
+            _record_tune_history(
+                session, _run_id, "signal_gate", "min_pillars_for_sell", h, "ALL",
+                old_value={"min_pillars_for_sell": current_pillars}, new_value={"min_pillars_for_sell": best_p},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=len(val_bucket), promoted=False,
+                gate_failures=["candidate_unmeasurable_on_validation"],
+            )
+            continue
+
+        if current_stats is None:
+            # T232-OC3: no honest baseline measurable at the current (no-gate) setting on this
+            # validation slice — do not assume EV 0, that overstates lift. Skip instead.
+            skipped.append({"horizon": h, "reason": "baseline (no gate) unmeasurable on the validation slice"})
+            _record_tune_history(
+                session, _run_id, "signal_gate", "min_pillars_for_sell", h, "ALL",
+                old_value={"min_pillars_for_sell": current_pillars}, new_value={"min_pillars_for_sell": best_p},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=best_stats["ev_pct"], baseline_validation_ev_pct=None,
+                validation_n=best_stats["n"], promoted=False,
+                gate_failures=["baseline_unmeasurable_on_validation"],
+            )
+            continue
+
+        ev_lift = round(best_stats["ev_pct"] - current_stats["ev_pct"], 2)
+
+        # T232-OC3-FOLLOWUP: never apply a gate with negative or zero validated EV lift,
+        # regardless of how large the pillar-count shift looks — matches every sibling
+        # mechanism's own unconditional-rejection convention exactly.
+        if ev_lift <= 0:
+            skipped.append({
+                "horizon": h,
+                "reason": f"validation-slice EV lift {ev_lift}% is not positive — never apply a non-improving gate",
+                "suggested": best_p,
+                "current": current_pillars,
+            })
+            _record_tune_history(
+                session, _run_id, "signal_gate", "min_pillars_for_sell", h, "ALL",
+                old_value={"min_pillars_for_sell": current_pillars}, new_value={"min_pillars_for_sell": best_p},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=best_stats["ev_pct"],
+                baseline_validation_ev_pct=current_stats["ev_pct"], validation_n=best_stats["n"],
+                promoted=False, gate_failures=["ev_lift_not_positive"],
+            )
+            continue
+
+        redis_client.setex(f"stockai:style_tune:{h}:min_pillars_for_sell", _REDIS_TTL, str(best_p))
+        _record_tune_history(
+            session, _run_id, "signal_gate", "min_pillars_for_sell", h, "ALL",
+            old_value={"min_pillars_for_sell": current_pillars}, new_value={"min_pillars_for_sell": best_p},
+            train_window=_train_window, validation_window=_val_window,
+            train_ev_pct=best_ev, validation_ev_pct=best_stats["ev_pct"],
+            baseline_validation_ev_pct=current_stats["ev_pct"], validation_n=best_stats["n"],
+            promoted=True, gate_failures=[],
+        )
+        applied.append({
+            "horizon": h,
+            "previous_min_pillars_for_sell": current_pillars,
+            "new_min_pillars_for_sell": best_p,
+            "ev_lift_pct": ev_lift,
+            "train_n": len(train_bucket),
+            "validation_stats": best_stats,
+        })
+
+    return {
+        "applied": applied,
+        "skipped": skipped,
+        "redis_ttl_days": 30,
+        "note": "Requires POST /signals/backfill_bearish_pillars to have run first — this sweep only reads rows with bearish_pillars_active already backfilled.",
+    }
+
+
 @router.post("/tune_style_profiles")
 def tune_style_profiles(
     days: int = Query(120, description="Look-back window in calendar days"),

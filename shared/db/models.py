@@ -546,6 +546,14 @@ class SignalOutcome(Base):
     # Widened with margin above the longest current value (10-char "STRONG BUY").
     research_rec: Mapped[str | None] = mapped_column(String(32), nullable=True)
     research_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # T232-SIG10-SELLGATE: bearish-pillar count (0-4) for this signal, backfilled from
+    # historical Price rows as-of signal_date via POST /signals/backfill_bearish_pillars —
+    # NOT copied live from Signal.reasons at evaluation time like market_regime is, because
+    # signals is upsert-per-(stock_id, horizon, day) and reasons gets overwritten on every
+    # refresh, so the vast majority of older resolved outcomes never had a chance to capture
+    # this field before it was overwritten. NULL means not yet backfilled/computed (a BUY row,
+    # or a SELL row not yet covered by a backfill run) — never treated as 0 real pillars.
+    bearish_pillars_active: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ts_evaluated: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     # T232-OC6: set when the hold window closed but no exit price was ever found (delisting,
     # halt, or ingestion gap) — is_correct/pct_return/exit_date stay NULL. NULL means normal,

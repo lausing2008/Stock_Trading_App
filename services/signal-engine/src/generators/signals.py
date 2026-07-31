@@ -1327,20 +1327,22 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
     reasons["pillar_volume"]    = round(p_volume, 2)
     reasons["pillar_structure"] = round(p_structure, 2)
 
-    # T232-SIG10: bearish mirror of the 4 pillars above — observability-only, not wired into
-    # any live gate/compression yet. Deliberately NOT `1 - bullish_score`: that would just be a
-    # restatement of the bullish pillar, not independent bearish evidence, and would score a
-    # merely-neutral stock (bullish pillar ~0.5) as equally bearish, which is wrong. Each
-    # bearish pillar is scored from its own bearish-specific conditions (death cross, RSI/MACD
-    # breaking down, OBV distribution, price below VWAP/BB), mirroring the bullish pillar's
-    # exact structure inverted. This exists so bear/high_vol/choppy/risk_off SELL outcome data
-    # starts accumulating a `bearish_pillars_active` value from today — per this tracker item's
-    # own prior finding (2026-07-04, re-confirmed 2026-07-20: 2474 bull-regime SELL outcomes vs.
-    # 33 unknown vs. ZERO bear/high_vol samples), there is not yet enough non-bull SELL outcome
-    # data to fit a real min_pillars_for_sell gate or regime-tiered sell_threshold against —
-    # inventing one now would repeat the exact "overfit argmax on thin data" mistake already
-    # documented at T232-OC3. This block collects the feature so a future calibration pass has
-    # something real to validate against, without gating/compressing any live signal yet.
+    # T232-SIG10: bearish mirror of the 4 pillars above. Deliberately NOT `1 - bullish_score`:
+    # that would just be a restatement of the bullish pillar, not independent bearish evidence,
+    # and would score a merely-neutral stock (bullish pillar ~0.5) as equally bearish, which is
+    # wrong. Each bearish pillar is scored from its own bearish-specific conditions (death
+    # cross, RSI/MACD breaking down, OBV distribution, price below VWAP/BB), mirroring the
+    # bullish pillar's exact structure inverted.
+    #
+    # T232-SIG10-SELLGATE (2026-07-31): now wired into a real, regime-AGNOSTIC gate — see
+    # _apply_style_signal()'s "symmetric SELL-side pillar gate" block below, which reads a
+    # min_pillars_for_sell value that ONLY exists once POST /signals/tune_sell_pillars has
+    # validated it against real (backfilled) SELL outcome history; defaults to 0 (no gate) until
+    # then. Deliberately still NOT regime-tiered — per this tracker item's own prior finding
+    # (2026-07-04, re-confirmed 2026-07-20 and again 2026-07-31: bull-regime SELL outcomes
+    # outnumber bear/high_vol ones by roughly 50-to-1, still zero bear/high_vol samples as of
+    # this fix), regime-tiered SELL thresholds remain unjustified by data — a flat, regime-
+    # agnostic pillar-count gate is the tractable slice; regime tiers stay deferred.
     bearish_trend = trending and di_minus > di_plus
     macd_zero_cross_down = False
     if len(macd_line.dropna()) >= 2:
@@ -1928,6 +1930,34 @@ def _apply_style_signal(
         reasons["pillar_gate"] = "boosted_4_pillar_confluence"
     else:
         reasons["pillar_gate"] = f"{_pillars}_pillars"
+    fused = float(np.clip(fused, 0.0, 1.0))
+
+    # ── T232-SIG10-SELLGATE: symmetric SELL-side pillar gate ─────────────────
+    # Mirrors the BUY gate above exactly, but reads bearish_pillars_active (T232-SIG10) and
+    # applies only to fused < 0.5 (SELL-leaning candidates) — the exact opposite restriction
+    # of T232-SIG3's own reasoning above: a deeply BULLISH stock naturally has 0-1 bearish
+    # pillars by definition, so this must never touch BUY candidates, just as the bullish
+    # gate must never touch SELL candidates.
+    #
+    # min_pillars_for_sell defaults to 0 (no gate at all — the historical, unchanged behavior)
+    # unless POST /signals/tune_sell_pillars has found and validated a real, positive-EV-lift
+    # value for this style on real backfilled SELL outcome history (requires
+    # POST /signals/backfill_bearish_pillars to have populated SignalOutcome.
+    # bearish_pillars_active first) — this repo's own established discipline of never shipping
+    # an unvalidated symmetric assumption (the bearish pillars are NOT calibrated to the same
+    # base rate as the bullish ones, so blindly copying min_pillars_for_buy's 2/3 would repeat
+    # the exact T232-OC3 argmax-on-thin-data mistake).
+    _bearish_pillars_raw = base_reasons.get("bearish_pillars_active")
+    if _bearish_pillars_raw is None:
+        _bearish_pillars = 0  # neutral fallback: no gate (matches the default un-tuned state)
+    else:
+        _bearish_pillars = int(_bearish_pillars_raw)
+    _min_pillars_sell = int(_get_style_tuned_param(style_key, "min_pillars_for_sell", 0))
+    if fused < 0.5 and _min_pillars_sell > 0 and _bearish_pillars < _min_pillars_sell:
+        fused = 0.5 + (fused - 0.5) * 0.70  # same strong-compress ratio as the BUY below-min case
+        reasons["sell_pillar_gate"] = f"compressed_{_bearish_pillars}_bearish_pillar_below_min{_min_pillars_sell}"
+    else:
+        reasons["sell_pillar_gate"] = f"{_bearish_pillars}_bearish_pillars"
     fused = float(np.clip(fused, 0.0, 1.0))
 
     # ── SA-14 / SA-32: Pullback-recovery boost (deferred from _ta_score) ─────
