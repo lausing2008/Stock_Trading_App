@@ -507,7 +507,20 @@ def calibrate_ta_weights(
     regression model. The resulting coefficients (clipped to [0, ∞]) become the new TA weights
     and are written to ta_weights.json next to the ML models directory.
 
-    Returns the fitted weights and in-sample accuracy for review.
+    BUG233-TAWEIGHTS-NOVALIDATION (2026-07-31): this function previously (a) fed rows in
+    arbitrary DB-heap order into TimeSeriesSplit, which assumes chronological order — the
+    reported "walk-forward" in_sample_accuracy was therefore not a walk-forward number in any
+    real sense, just a cross-validation score computed over an unordered shuffle; and (b) wrote
+    production weights to disk/Redis/the live process UNCONDITIONALLY, fit on the FULL sample
+    with zero held-out check against the CURRENT live weights' own accuracy — the only mutation
+    path in this file with no baseline comparison, no promotion gate, and no TuneHistory record
+    at all. A badly-overfit 16-feature fit at n=30-50 could go live with nothing to catch it.
+    Fixed to match every sibling mechanism's own chronological-split + validation-beats-baseline
+    + TuneHistory convention (calibrate_ml_weight above is the closest precedent: an accuracy-
+    based fit using validation-slice mean return as its comparable EV-shaped metric, recorded
+    via _record_tune_history exactly like every threshold sweep in this file).
+
+    Returns the fitted weights (if validated) and validation-slice accuracy for review.
     """
     import json
     from pathlib import Path
@@ -519,18 +532,28 @@ def calibrate_ta_weights(
     except ImportError:
         raise HTTPException(status_code=500, detail="scikit-learn not installed in signal-engine")
 
-    from ..generators.signals import _TA_WEIGHTS_DEFAULT, _TA_WEIGHTS_PATH, set_ta_weights
+    from ..generators.signals import (
+        _TA_WEIGHTS_DEFAULT,
+        _TA_WEIGHTS_PATH,
+        _ta_weights as _current_live_ta_weights,
+        set_ta_weights,
+    )
 
     cutoff = date.today() - timedelta(days=lookback_days)
     rows = session.execute(
-        select(SignalOutcome.is_correct, Signal.reasons)
+        select(SignalOutcome.is_correct, SignalOutcome.pct_return, Signal.reasons, SignalOutcome.signal_date)
         .join(Signal, Signal.id == SignalOutcome.signal_id)
         .where(
             SignalOutcome.signal_direction == "BUY",
             SignalOutcome.signal_date >= cutoff,
             SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.pct_return.is_not(None),
             Signal.reasons.is_not(None),
         )
+        # Chronological order is load-bearing: TimeSeriesSplit assumes the input is already
+        # time-ordered — feeding it unordered rows (the pre-fix behavior) makes its CV folds
+        # meaningless, and this fix's own train/validation split below depends on it too.
+        .order_by(SignalOutcome.signal_date)
     ).all()
 
     if len(rows) < 50:
@@ -572,8 +595,8 @@ def calibrate_ta_weights(
         "volume_z":               lambda r: (r.get("volume_z") or 0) > 0.5,
     }
 
-    X_rows, y_rows, skipped = [], [], 0
-    for is_correct, reasons_raw in rows:
+    X_rows, y_rows, ret_rows, date_rows, skipped = [], [], [], [], 0
+    for is_correct, pct_return, reasons_raw, signal_date in rows:
         try:
             reasons = json.loads(reasons_raw) if isinstance(reasons_raw, str) else (reasons_raw or {})
         except Exception:
@@ -581,22 +604,38 @@ def calibrate_ta_weights(
             continue
 
         y_rows.append(int(is_correct))
+        ret_rows.append(float(pct_return))
+        date_rows.append(signal_date)
         X_rows.append([float(REASONS_MAP[f](reasons)) for f in TA_FEATURES])
 
     if len(X_rows) < 30:
         raise HTTPException(status_code=400, detail=f"Only {len(X_rows)} usable rows after reasons parsing (skipped {skipped})")
 
-    X = np.array(X_rows)
-    y = np.array(y_rows)
+    # BUG233-TAWEIGHTS-NOVALIDATION: chronological 70/30 split (rows are already ordered by
+    # signal_date from the query above) — the OLDER slice trains the model, the NEWER slice
+    # (never seen during fitting) validates it, matching every sibling calibration mechanism.
+    MIN_VAL_SAMPLES = 15  # same floor already established by calibrate_ml_weight/T232-OC3
+    split = max(1, int(len(X_rows) * 0.7))
+    X_train, y_train = X_rows[:split], y_rows[:split]
+    X_val, y_val, ret_val = X_rows[split:], y_rows[split:], ret_rows[split:]
+
+    if len(X_val) < MIN_VAL_SAMPLES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only {len(X_val)} validation-slice rows after a 70/30 chronological split (need {MIN_VAL_SAMPLES})",
+        )
+
+    X = np.array(X_train)
+    y = np.array(y_train)
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     clf = LogisticRegression(max_iter=500, C=1.0, random_state=42)
 
     from sklearn.model_selection import TimeSeriesSplit, cross_val_score
     cv_scores = cross_val_score(clf, X_scaled, y, cv=TimeSeriesSplit(n_splits=5), scoring="accuracy")
-    accuracy = float(np.mean(cv_scores))
+    train_cv_accuracy = float(np.mean(cv_scores))
 
-    # Fit on full data to derive the production weights
+    # Fit on the TRAIN slice only — the validation slice below is held out from this fit.
     clf.fit(X_scaled, y)
     coefs = clf.coef_[0]
 
@@ -610,32 +649,109 @@ def calibrate_ta_weights(
     fitted_scaled = {k: round(v * scale_factor, 4) for k, v in fitted.items()}
 
     # Merge with defaults: keep penalty weights from defaults unchanged
-    new_weights = dict(_TA_WEIGHTS_DEFAULT)
-    new_weights.update(fitted_scaled)
+    candidate_weights = dict(_TA_WEIGHTS_DEFAULT)
+    candidate_weights.update(fitted_scaled)
+
+    def _weighted_score_accuracy_and_ev(weights: dict, X_rows_: list, y_rows_: list, ret_rows_: list):
+        """Score each validation row as sum(weight[f] * feature_value), threshold at the median
+        score (a simple, weight-scale-agnostic decision rule — this function only needs to
+        compare TWO weight vectors' relative accuracy/EV on the SAME rows, not reproduce
+        _ta_score()'s full production blending logic), and report accuracy/EV among rows that
+        clear that threshold. Mirrors calibrate_ml_weight's own _accuracy_and_return() shape."""
+        scores = [sum(weights.get(f, 0.0) * x for f, x in zip(TA_FEATURES, row)) for row in X_rows_]
+        if not scores:
+            return None, 0, None
+        median_score = sorted(scores)[len(scores) // 2]
+        fired_idx = [i for i, s in enumerate(scores) if s >= median_score]
+        if not fired_idx:
+            return None, 0, None
+        correct = sum(1 for i in fired_idx if y_rows_[i])
+        acc = correct / len(fired_idx)
+        avg_ret = sum(ret_rows_[i] for i in fired_idx) / len(fired_idx)
+        return acc, len(fired_idx), avg_ret
+
+    candidate_acc, candidate_n, candidate_ev = _weighted_score_accuracy_and_ev(
+        candidate_weights, X_val, y_val, ret_val,
+    )
+    baseline_acc, baseline_n, baseline_ev = _weighted_score_accuracy_and_ev(
+        dict(_current_live_ta_weights), X_val, y_val, ret_val,
+    )
+
+    import uuid as _uuid
+    _run_id = str(_uuid.uuid4())
+    _train_start, _train_end = date_rows[0], date_rows[split - 1]
+    _val_start, _val_end = date_rows[split], date_rows[-1]
+
+    validated = (
+        candidate_ev is not None
+        and baseline_ev is not None
+        and candidate_n >= MIN_VAL_SAMPLES
+        and candidate_ev > baseline_ev
+    )
+
+    if not validated:
+        _record_tune_history(
+            session, _run_id, "ta_weights", "ta_weights_vector", "ALL", "ALL",
+            old_value={"ta_weights": dict(_current_live_ta_weights)},
+            new_value={"ta_weights": candidate_weights},
+            train_window=(_train_start, _train_end), validation_window=(_val_start, _val_end),
+            train_ev_pct=None,
+            validation_ev_pct=round(candidate_ev, 2) if candidate_ev is not None else None,
+            baseline_validation_ev_pct=round(baseline_ev, 2) if baseline_ev is not None else None,
+            validation_n=candidate_n, promoted=False,
+            gate_failures=["ev_lift_not_positive_on_validation"] if candidate_ev is not None else ["candidate_unmeasurable_on_validation"],
+        )
+        return {
+            "applied": False,
+            "reason": "candidate weights did not beat the current live weights on the held-out validation slice",
+            "n_signals": len(rows),
+            "n_usable": len(X_rows),
+            "n_skipped": skipped,
+            "train_cv_accuracy": round(train_cv_accuracy, 4),
+            "candidate_validation_accuracy": round(candidate_acc, 4) if candidate_acc is not None else None,
+            "candidate_validation_ev_pct": round(candidate_ev, 2) if candidate_ev is not None else None,
+            "baseline_validation_ev_pct": round(baseline_ev, 2) if baseline_ev is not None else None,
+            "candidate_weights": candidate_weights,
+        }
 
     Path(_TA_WEIGHTS_PATH).parent.mkdir(parents=True, exist_ok=True)
     _tmp = Path(_TA_WEIGHTS_PATH).with_suffix(".tmp")
-    _tmp.write_text(json.dumps(new_weights, indent=2))
+    _tmp.write_text(json.dumps(candidate_weights, indent=2))
     _os.replace(str(_tmp), str(_TA_WEIGHTS_PATH))
     # T228: also persist to Redis so weights survive Docker rebuilds (90-day TTL)
     try:
-        _get_redis().setex("stockai:ta_weights", 90 * 86400, json.dumps(new_weights))
+        _get_redis().setex("stockai:ta_weights", 90 * 86400, json.dumps(candidate_weights))
     except Exception:
         pass
     # T232-SIG6: the persistence writes above only affect the NEXT process restart unless the
     # in-process globals are also refreshed here — this used to be the entire bug (calibration
     # reported success but the running process kept scoring signals against the old weights
     # until it happened to restart for an unrelated reason).
-    set_ta_weights(new_weights)
-    log.info("calibrate_ta_weights: wrote %s (accuracy=%.3f, n=%d)", _TA_WEIGHTS_PATH, accuracy, len(X_rows))
+    set_ta_weights(candidate_weights)
+    log.info(
+        "calibrate_ta_weights: applied %s (val_acc=%.3f, val_ev=%.2f%%, baseline_ev=%.2f%%, n=%d)",
+        _TA_WEIGHTS_PATH, candidate_acc or 0.0, candidate_ev or 0.0, baseline_ev or 0.0, len(X_rows),
+    )
+    _record_tune_history(
+        session, _run_id, "ta_weights", "ta_weights_vector", "ALL", "ALL",
+        old_value={"ta_weights": dict(_current_live_ta_weights)},
+        new_value={"ta_weights": candidate_weights},
+        train_window=(_train_start, _train_end), validation_window=(_val_start, _val_end),
+        train_ev_pct=None, validation_ev_pct=round(candidate_ev, 2),
+        baseline_validation_ev_pct=round(baseline_ev, 2), validation_n=candidate_n,
+        promoted=True, gate_failures=[],
+    )
 
     return {
-        "status":           "ok",
+        "applied":          True,
         "n_signals":        len(rows),
         "n_usable":         len(X_rows),
         "n_skipped":        skipped,
-        "in_sample_accuracy": round(accuracy, 4),
-        "weights":          new_weights,
+        "train_cv_accuracy": round(train_cv_accuracy, 4),
+        "validation_accuracy": round(candidate_acc, 4),
+        "candidate_validation_ev_pct": round(candidate_ev, 2),
+        "baseline_validation_ev_pct": round(baseline_ev, 2),
+        "weights":          candidate_weights,
     }
 
 

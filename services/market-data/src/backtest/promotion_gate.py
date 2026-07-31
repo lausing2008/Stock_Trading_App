@@ -31,7 +31,12 @@ from sqlalchemy.orm import Session
 
 from db import TuneHistory
 
-from .gate_harness import MIN_SAMPLES_PER_SPLIT, replay_should_enter, walk_forward_min_entry_score
+from .gate_harness import (
+    MIN_SAMPLES_PER_SPLIT,
+    _resolvable_window_end,
+    replay_should_enter,
+    walk_forward_min_entry_score,
+)
 
 # Tolerance for the approximate worst-trade check: reject a candidate whose worst single
 # validation-slice trade is more than this many percentage points worse than the baseline's
@@ -80,18 +85,23 @@ def evaluate_and_record(
     # Rule #3: recompute just the two validation-slice replays to get their raw per-trade
     # returns (walk_forward_min_entry_score's dict output doesn't carry BacktestResult.returns).
     # Same window/cfg as what the harness already validated — deterministic, not a new search.
-    total_days = (window_end - window_start).days
+    # BUG233-BACKTESTHARNESS-EMPTYVALIDATION: must re-derive the SAME resolvable_end-adjusted
+    # split the harness itself now uses (gate_harness.py), or this recompute's validation slice
+    # would silently disagree with the one walk_forward_min_entry_score actually validated
+    # against.
+    resolvable_end = _resolvable_window_end(window_end, style)
+    total_days = (resolvable_end - window_start).days
     split_days = max(1, int(total_days * 0.7))
     train_end = window_start + timedelta(days=split_days)
     val_start = train_end + timedelta(days=1)
 
     candidate_score = harness_result["candidate_min_entry_score"]
     candidate_val = replay_should_enter(
-        session, style, market, {**base_cfg, "min_entry_score": candidate_score}, val_start, window_end,
+        session, style, market, {**base_cfg, "min_entry_score": candidate_score}, val_start, resolvable_end,
         cfg_label=f"min_entry_score={candidate_score} (validation, worst-trade check)",
     )
     baseline_val = replay_should_enter(
-        session, style, market, base_cfg, val_start, window_end,
+        session, style, market, base_cfg, val_start, resolvable_end,
         cfg_label="baseline (validation, worst-trade check)",
     )
 
@@ -149,7 +159,11 @@ def _write_history(
     gate_failures: list[str],
     triggered_by: str,
 ) -> None:
-    total_days = (window_end - window_start).days
+    # BUG233-BACKTESTHARNESS-EMPTYVALIDATION: same resolvable_end adjustment as
+    # evaluate_and_record()'s own recompute above — keeps the recorded train/validation window
+    # boundaries consistent with what was actually replayed, not the raw pre-adjustment window.
+    resolvable_end = _resolvable_window_end(window_end, style)
+    total_days = (resolvable_end - window_start).days
     split_days = max(1, int(total_days * 0.7))
     train_end = window_start + timedelta(days=split_days)
     val_start = train_end + timedelta(days=1)
@@ -171,7 +185,7 @@ def _write_history(
         train_window_start=window_start,
         train_window_end=train_end,
         validation_window_start=val_start,
-        validation_window_end=window_end,
+        validation_window_end=resolvable_end,
         train_ev_pct=train_result.get("avg_return_pct"),
         validation_ev_pct=candidate_validation.get("avg_return_pct"),
         baseline_validation_ev_pct=baseline_validation.get("avg_return_pct"),

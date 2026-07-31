@@ -65,7 +65,21 @@ def _retro_ev_for(session: Session, style: str, market: str, since: "date") -> d
         return None
     wins = sum(1 for o in rows if o.is_correct)
     win_rate = wins / len(rows)
-    ev_pct = (sum(o.pct_return for o in rows) / len(rows)) * 100
+    # BUG233-RETROEV-SIGNMIX (2026-07-31): this function's own comment above already documents
+    # that it deliberately pools BOTH directions' outcomes together — but SELL "wins" on a
+    # NEGATIVE pct_return (is_correct = ret < -hurdle for SELL, per evaluate_signal_outcomes),
+    # so averaging a SELL row's raw pct_return alongside a BUY row's raw pct_return mixes two
+    # opposite sign conventions into one meaningless number. Every sibling SELL-aware EV
+    # computation in this codebase (calibration.py's outcomes_calibrate_apply/tune_sell_pillars)
+    # already negates pct_return for SELL rows before averaging — this is the one site that
+    # hadn't. Live-verified against production: the un-negated aggregate flipped sign on 6 of 8
+    # style/market slices tested (e.g. overall: -3.23% mixed vs. +0.34% sign-corrected) — this
+    # is the app's only retrospective "did a promoted tuning change actually help" ground truth,
+    # so a sign error here misleads exactly the check meant to catch mistuned parameters.
+    signed_returns = [
+        (-o.pct_return if o.signal_direction == "SELL" else o.pct_return) for o in rows
+    ]
+    ev_pct = (sum(signed_returns) / len(rows)) * 100
     return {"n": len(rows), "win_rate": round(win_rate, 3), "ev_pct": round(ev_pct, 2)}
 
 

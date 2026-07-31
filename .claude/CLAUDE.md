@@ -10542,3 +10542,283 @@ for style in ('SHORT', 'SWING', 'LONG', 'GROWTH'):
 The two must match exactly (or the harness's side must correctly show `None`/`skipped_reason`
 below the sample floor) — any OTHER disagreement means a real bug was introduced in either the
 harness's own computation or its column/bucket selection since this check last ran.
+
+---
+
+## Full Signal-Testing-Framework Review (2026-07-31) — 4 Critical Fixes
+
+**User ask, verbatim**: "Review the signal testing framework and make sure it's the correct
+way of testing the signal accuracy and performance so that we can use it truthfully for
+testing the win rates and returns and tuning. AI Signal is the core and the main feature of
+this platform." A comprehensive audit, not a single-bug hunt — triggered by, and building on,
+the trust-building cross-check documented immediately above.
+
+**Process**: 3 parallel deep-dive reviews (each independently reading the actual code, not
+assuming correctness), one per layer of the testing stack: (1) `evaluate_signal_outcomes()`
+and every win-rate/EV computation site in `services/signal-engine/src/api/outcomes.py`; (2)
+every self-tuning calibration mechanism in `services/signal-engine/src/api/calibration.py`;
+(3) `services/market-data/src/backtest/gate_harness.py` + `promotion_gate.py`. Findings were
+ranked by REAL-WORLD IMPACT (does this actually corrupt what gets promoted to live trading, or
+is it a cosmetic reporting inconsistency nobody acts on) before deciding what to fix. 4 findings
+were judged CRITICAL and fixed this session; several HIGH findings were documented but
+deliberately deferred (see below).
+
+### Fixed — CRITICAL
+
+**1. `gate_harness.py`'s validation slice was structurally empty at the default window
+(BUG233-BACKTESTHARNESS-EMPTYVALIDATION).** All 3 walk-forward functions (`walk_forward_
+min_entry_score`, `walk_forward_extended_gate`, and `promotion_gate.py`'s own two independent
+re-derivations of the same split) computed the 70/30 train/validation split directly off the
+raw `window_end` (usually `date.today()`), with no account for the fact that a `SignalOutcome`
+row can't have a resolved `return_{bucket}`/`is_correct_{bucket}` value until enough calendar
+days have passed since its own `signal_date` — 7 days for SHORT, 14 for SWING/GROWTH, 20 for
+LONG (the same calendar-day cutoffs `paper_trading_engine.py`'s AUD19-DB3 bucket-assignment
+logic already uses). At the harness's own documented 60-day default window, this meant the
+newest ~30% of the window (the validation slice) contained ZERO resolvable outcomes for 3 of 4
+styles — not a rare edge case, the DEFAULT configuration for most of this mechanism's life.
+Confirmed live before the fix: `GET /paper-portfolio/backtest/min-entry-score?style=SWING&
+window_days=60` returned `n_signals_seen: 0` on the validation slice. This silently defeated
+the ENTIRE held-out-validation defense against train-slice overfitting — a candidate could
+"win" on the train slice and then trivially "beat" an unmeasurable/empty baseline, or the
+mechanism would just always report `skipped_reason` (failing safe, but for the wrong reason —
+no data, not a real protective check).
+
+**Fix**: new `_HORIZON_RESOLUTION_LAG_DAYS` map (SHORT=7, SWING=14, LONG=20, GROWTH=14 —
+duplicated from signal-engine's own `_OUTCOME_HOLD_DAYS` rather than a cross-service import,
+matching this module's own stated reason for living in market-data at all) and a new
+`_resolvable_window_end(window_end, style)` helper that pulls `window_end` back by that lag
+BEFORE any split happens. All 3 walk-forward functions, plus `promotion_gate.py`'s two
+independent re-derivations of the SAME split (`evaluate_and_record`'s worst-trade-check
+recompute, and `_write_history`'s own third re-derivation for the persisted TuneHistory row),
+now call this helper first — closing all 3 places this exact split math was duplicated, not
+just the one the bug was originally found in.
+
+**2. `gate_harness.py`'s promotion criterion was a coin flip under the null hypothesis
+(BUG233-BACKTESTHARNESS-COINFLIP).** All 3 walk-forward functions promoted a candidate on a
+bare `best_val.avg_return_pct > baseline_val.avg_return_pct` — no minimum lift, no confidence
+margin, no correction for the train-slice grid search's own multiple-comparisons exposure.
+Simulated directly (best-of-k selection on a train slice, independent validation check, both
+slices drawn from the SAME distribution — i.e., no real edge at all): **~50% false-promotion
+rate at every sample size tested, n=15 through n=50** — comparing two noisy sample means with
+no margin is statistically indistinguishable from noise at any realistic n. Real production
+per-trade return SD across all 4 styles is ~9.6-10.6pp (10-day returns); at n=15 that's a
+±5.2pp 95% CI on the mean — the harness cannot detect a real edge smaller than its own
+measurement error. Fixing Finding 1 without this would have converted a currently-inert
+mechanism (mostly `skipped_reason` due to empty validation) into an actively noise-promoting
+one the moment real validation data started flowing through.
+
+**Fix**: new `_passes_promotion_margin(best_val, baseline_val)` replacing the bare `>`
+comparison everywhere it was used — requires BOTH a minimum absolute EV-lift margin
+(`_MIN_PROMOTION_EV_LIFT_PCT = 0.5` percentage points) AND that the lift be at least half
+(`_MIN_PROMOTION_LIFT_SD_RATIO = 0.5`) of the combined validation-slice return dispersion (a
+crude but real signal-vs-noise check, not a formal significance test — `BacktestResult`
+doesn't carry per-candidate SDs separately at every call site, but this is strictly stronger
+than no margin at all). Every `note` field returned alongside a `promoted` verdict now states
+this margin explicitly, and explicitly states it does NOT correct for the grid search's own
+multiple-comparisons exposure (a real, distinct, still-open issue — see below).
+
+**3. `calibrate_ta_weights()` (signal-engine) had zero out-of-sample validation before writing
+production TA weights (BUG233-TAWEIGHTS-NOVALIDATION).** Two compounding defects: (a) rows
+were fed to `TimeSeriesSplit` in arbitrary DB-heap order — `TimeSeriesSplit` assumes
+chronologically-ordered input, so the reported "walk-forward" `in_sample_accuracy` was never a
+real walk-forward number, just a cross-validation score computed over what amounted to a
+random shuffle; (b) the fitted 16-feature logistic-regression weights were written to
+`ta_weights.json`/Redis/the live in-process global UNCONDITIONALLY — fit on the FULL sample
+with no held-out check against the CURRENT live weights' own accuracy, no baseline comparison,
+no promotion gate, and no `TuneHistory` record at all. This was the only mutation path in the
+entire calibration file with zero audit trail and zero safety net — a badly-overfit fit at
+n=30-50 could go live with nothing to catch it, unlike every sibling mechanism
+(`calibrate_ml_weight`, `outcomes_calibrate_apply`, `tune_style_profiles`, `tune_strategy`,
+`tune_sell_pillars`) which all already enforce chronological-split + validation-beats-baseline
++ `TuneHistory` recording.
+
+**Fix**: the DB query now `ORDER BY SignalOutcome.signal_date` (chronological, load-bearing —
+`TimeSeriesSplit`'s CV folds are only meaningful on already-ordered input, and the new 70/30
+split below depends on it too). A genuine 70/30 chronological train/validation split is now
+enforced (`MIN_VAL_SAMPLES = 15`, matching `calibrate_ml_weight`'s own established floor); the
+model fits on the TRAIN slice ONLY. A new `_weighted_score_accuracy_and_ev()` helper scores
+both the fitted candidate weights AND the CURRENT live weights (read from the real in-process
+`_ta_weights` global, not a hardcoded literal — `_current_live_ta_weights`) against the SAME
+held-out validation rows (median-score threshold, chosen since this needs only a
+weight-scale-agnostic way to compare two vectors' relative accuracy/EV, not to reproduce
+`_ta_score()`'s full production blending logic). Weights are only written to disk/Redis/the
+live process if the candidate's validation-slice EV beats the live weights' own EV on that
+same held-out slice — otherwise the function returns `applied: false` and the live weights are
+left completely untouched. Every attempt (promoted or not) now writes a `TuneHistory` row via
+`_record_tune_history()`, `parameter_class="ta_weights"`, matching every sibling mechanism's
+own convention — `old_value` records the REAL current live weights (not a fixed default), so a
+future weights change shows up as a genuine delta in the audit trail.
+
+**4. `_retro_ev_for()` (signal-engine) mixed BUY and SELL `pct_return` with no sign correction
+(BUG233-RETROEV-SIGNMIX).** This is the app's ONLY retrospective "did a promoted tuning change
+actually help" ground truth — feeding `backfill_realized_ev()`, which populates
+`TuneHistory.realized_ev_pct_after`, read by the read-only `GET /watchdog_self_tuning_report`
+diagnostic. The function's own docstring already documented that it deliberately pools BOTH
+directions' outcomes together (since a `tune_history` row's `style` has no BUY/SELL split of
+its own) — but SELL "wins" on a NEGATIVE `pct_return` (`is_correct = ret < -hurdle` for SELL,
+per `evaluate_signal_outcomes`), so averaging a SELL row's raw `pct_return` alongside a BUY
+row's raw `pct_return` mixes two OPPOSITE sign conventions into one meaningless number. Every
+sibling SELL-aware EV computation in this codebase (`outcomes_calibrate_apply`,
+`tune_sell_pillars`) already negates `pct_return` for SELL rows before averaging — this was the
+one site that hadn't. Live-verified against production before fixing: the un-negated aggregate
+inverted sign on 6 of 8 real style/market slices tested (e.g. aggregate across all 4 styles:
+harness-style raw average **-3.23%** mixed vs. **+0.34%** sign-corrected — a change from "this
+tuning history looks like a net loss" to "it's actually been a net gain").
+
+**Fix**: `signed_returns = [(-o.pct_return if o.signal_direction == "SELL" else o.pct_return)
+for o in rows]`, then `ev_pct = (sum(signed_returns) / len(rows)) * 100` — a one-line,
+surgical fix matching the sibling functions' own established convention exactly. `win_rate`
+was already correct (it reads `is_correct` directly, which `evaluate_signal_outcomes` already
+computes with the correct per-direction sign) — only `ev_pct` needed the fix.
+
+### Documented, deliberately deferred (HIGH severity, real, but not fixed this pass)
+
+- **`calibrate_ml_weight()` validates against a fixed neutral `0.5`, not the actual current
+  live cap** (`prev_cap` is already in scope and used for `TuneHistory.old_value`, but never
+  used as the baseline comparison itself) — a real ratchet risk: if the live cap is already,
+  say, 0.70, a candidate of 0.65 that beats a neutral 0.5 but is WORSE than the live 0.70 can
+  still promote, repeatedly walking the cap in a bad direction with no requirement to ever beat
+  where it actually is.
+- **`tune_style_profiles()`'s `ml_weight_cap` baseline is a nested-subset comparison** — the
+  candidate's own filtered subset is compared against the full, unfiltered validation slice
+  (a strict superset), which is close to structurally rigged to always look like an
+  improvement (excluding any below-average tail row from just one side of the comparison).
+  `tune_strategy()`'s own sibling grid sweep already shows the correct pattern (compare against
+  the CURRENT LIVE cap's own filtered subset) to copy.
+- **decision-engine's harness only ever replays the FALLBACK gate** (`_should_enter()`) — per
+  `T232-DL-DUALSCORER-DEBT`, `decision_engine_mode="primary"` is the live default, so
+  `min_entry_score` (the one parameter this whole Phase 2a/2b harness tunes) only actually
+  governs live entries during a decision-engine OUTAGE. Neither the harness's own docstring nor
+  its `note` field currently tells a human reading `promoted: true` that they're tuning the
+  outage path, not the live one.
+- **The harness's replayed inputs systematically diverge from what live scoring sees** — `live_
+  regime` is always `None` (can't be reconstructed historically without a stored regime
+  time-series), and `replay_should_enter()` (unlike `replay_extended_gates()`) never threads
+  `confidence_delta`/correlation either — compressing the replayed score distribution toward
+  zero relative to live by up to several points on a threshold whose candidate grid spans a
+  similarly narrow range. A `min_entry_score` tuned on this compressed distribution may not
+  transfer cleanly to the live one.
+- **`gate_backtest()` (signal-engine) uses same-day-close entry** — reintroducing the exact
+  SE-F2 look-ahead bias the rest of this file already fixed everywhere else. Currently
+  confirmed dead code (no caller anywhere in the codebase, and its own docstring already
+  concedes there's nothing left to decide) — zero live impact today, but a landmine if anyone
+  ever wires it up; the docstring's own "no look-ahead" claim is also false and should be
+  corrected or the endpoint removed outright in a future pass.
+
+None of these four were judged critical enough to bundle into this same session (each needs
+either a design decision — e.g. how to correct for decision-engine-outage-only scope — or is a
+lower-probability, already-fully-mitigated-by-other-gates risk), but are recorded here so a
+future pass doesn't have to re-derive them.
+
+### Categories independently confirmed CLEAN by this review (worth trusting, not just
+### absence-of-a-finding)
+
+- **Point-in-time correctness in the primary outcome writer** (`evaluate_signal_outcomes()`) —
+  T+1 entry, correct bulk-price-query bounds, an unclosed hold window is never scored. Clean.
+- **Multi-window (`return_5d/10d/20d`) T+1 correctness** — anchors on the already-T+1
+  `entry_date`, never re-derives from `signal_date`. Clean.
+- **Win/loss hurdle consistency** — the premise that `signal_accuracy()`/`rolling_accuracy()`
+  still use a bare `> 0` (no cost hurdle) is OUTDATED; both were already fixed under AUD232-047
+  and correctly apply `_OUTCOME_WIN_HURDLE_PCT`. The remaining bare-`>0` sites
+  (`walkforward_backtest`, `gate_backtest`, `filter_audit`) are all BUY-only, so no sign error
+  arises — only a minor overstatement of win rate for sub-hurdle moves, all display-only.
+- **SELL sign correctness everywhere EXCEPT `_retro_ev_for()`** — every real tuning sweep in
+  `calibration.py` is direction-scoped or correctly negates; `_retro_ev_for()` (fixed above) was
+  the only mixed-direction EV aggregate in the codebase.
+- **Censoring correctness** — a `skip_reason="no_exit_price"` row (`is_correct=NULL`) is
+  genuinely excluded everywhere a win-rate/EV is computed (every site filters
+  `is_correct.is_not(None)`); the `delisted_loss` classification correctly counts toward
+  win-rate denominators while being excluded from every EV mean (guarded by `pct_return is not
+  None`, since `delisted_loss` rows leave `pct_return` NULL).
+- **`_historical_kscore()`/`_historical_atr()`/`_entry_as_of()`** (all previously fixed this
+  same tracker item, `T233-SELFIMPROVE-PHASE2b`) — re-confirmed correct: no residual
+  `datetime.now()` in the replayed decision path, no future-dated Ranking/Price leak.
+- **The harness replays the REAL, unmodified `_should_enter()`** — imported directly from
+  `paper_trading_engine.py`, not a parallel reimplementation that could drift. (The three
+  pre-filter gates in `_passes_prefilter_gates()` ARE a reimplementation of `_scan_for_entries`'
+  own logic and could drift from it — documented as such in that function's own docstring, not
+  a new finding.)
+- **Tightening-only limitation is real and consistently documented** — every stored-outcome
+  sweep in this codebase (including the ones fixed this session) can only ever evaluate
+  TIGHTENING an existing threshold, never a genuinely looser one, since that would require
+  regenerating signals against historical price data rather than re-filtering already-computed
+  ones. Now stated explicitly in every walk-forward function's own `note` field (this fix
+  extended that disclosure into `walk_forward_extended_gate`, which already had it, and kept it
+  worded consistently in `walk_forward_min_entry_score`, which previously lacked any mention).
+
+### Tests
+
+`services/market-data/tests/test_gate_harness_review_fixes.py` (14 cases) — `_resolvable_
+window_end()`'s per-style lag mapping (including the GROWTH/SWING-share-a-bucket case and an
+unknown-style fallback that must NOT silently resolve to a 0-day lag) and `_passes_promotion_
+margin()`'s full decision surface (below-floor lift, at/above both thresholds, above the floor
+but small relative to real dispersion, missing/skipped baseline or candidate, negative lift,
+degenerate empty-returns input). `services/market-data/tests/test_promotion_gate_review_
+fixes.py` (4 cases, source-text regression — `promotion_gate.py` imports `gate_harness.py`,
+which pulls in the full Docker-only dependency chain) confirm `_resolvable_window_end` is
+imported and used in BOTH of `promotion_gate.py`'s own independent window re-derivations (the
+worst-trade-check recompute AND `_write_history`'s persisted-row computation), and that the
+persisted `validation_window_end` reflects the adjusted value, not the raw one.
+`services/signal-engine/tests/test_backfill_realized_ev.py` gained 3 new cases for the sign
+fix (a mixed BUY-winner/SELL-winner fixture that must show a POSITIVE aggregate EV despite half
+the raw `pct_return` values being negative; the mirror SELL-loser case; a pure-BUY fixture
+confirming zero behavioral change for the common case).
+`services/signal-engine/tests/test_calibrate_ta_weights_validation.py` (7 cases, source-text
+extraction of the function's computational core — real numpy/sklearn, no DB/FastAPI
+dependency) — the chronological-ordering requirement, a genuine promoting case (weights beat
+baseline and are applied + `TuneHistory`-recorded with `promoted=True`), a genuine rejecting
+case (an oracle baseline no real fit can beat — correctly leaves live weights untouched and
+records `promoted=False`), and confirms `old_value` in the recorded row reflects the real
+passed-in live weights, not a hardcoded default.
+
+**A real test-design trap hit and fixed while building the ta_weights promoting-case
+fixture** — matching this repo's own documented T255-STRATEGY-TUNER-PER-HORIZON lesson
+("check that each axis of a 2D-fit test actually produces a DIFFERENT selected subset between
+candidate and baseline"): an initial fixture varied only the two features the fit was meant to
+learn were predictive, with every other feature held flatly False for every row — both the
+uniform-default baseline's median-split AND the fitted candidate's concentrated-weight
+median-split ended up selecting the IDENTICAL subset (both were driven entirely by the same
+two features either way), showing zero real lift regardless of whether the fit itself was
+correct. Fixed by adding NOISE features (uncorrelated with the true label) that the flat-weight
+baseline gets pulled off-course by but the fitted candidate correctly learns to down-weight —
+only then did the two vectors produce a genuinely different split and a real, measurable EV gap.
+
+**Adversarial verification performed on every fix**, all guards sabotaged and confirmed to
+fail correctly before being restored: the min-lift-margin check, the SD-ratio check, and the
+`_HORIZON_RESOLUTION_LAG_DAYS` mapping in `gate_harness.py` (3 cycles); `promotion_gate.py`'s
+`_write_history` window-recording fix (1 cycle); the SELL-negation line in `_retro_ev_for()`
+(1 cycle, caught by 2 of the 3 new tests); `calibrate_ta_weights()`'s validation gate and its
+chronological `.order_by()` (2 cycles). Full 697-test market-data suite and 152-in-scope-test
+signal-engine suite (excluding the 2 pre-existing, unrelated failure groups already documented
+elsewhere in this file — `test_signal_generator.py`'s `_decide` import-collection error and 4
+`test_analyst_momentum.py` failures, both reconfirmed via `git stash` to predate this session)
+green after every revert. `pyflakes` clean on all 4 touched files (both remaining warnings —
+an unused `httpx` import in `outcomes.py`, an unused `MIN_SAMPLES_PER_SPLIT` import in
+`promotion_gate.py` — confirmed pre-existing via `git stash`, only line numbers shifted).
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the validation-slice fix is live — a real backtest call should now show a genuinely
+# non-empty validation slice at the default 60-day window for SWING/LONG/GROWTH, not just SHORT:
+docker exec stockai-market-data-1 curl -s \
+  'http://localhost:8001/paper-portfolio/backtest/min-entry-score?style=SWING&market=US&window_days=60' \
+  -H "Authorization: Bearer <admin token>" | python3 -m json.tool
+# baseline_validation.n_signals_seen should be > 0, not 0.
+
+# Confirm the promotion-margin note is present on any promoted=true result:
+docker exec stockai-market-data-1 curl -s \
+  'http://localhost:8001/paper-portfolio/backtest/extended-gate?style=SWING&market=US&param=min_kscore&window_days=60' \
+  -H "Authorization: Bearer <admin token>" | python3 -c "import sys, json; print(json.load(sys.stdin).get('note'))"
+
+# Confirm calibrate_ta_weights now requires validation (needs ≥50 evaluated BUY outcomes and
+# ≥15 in the validation slice to even attempt a fit; safe to re-run, does nothing if rejected):
+docker exec stockai-signal-engine-1 curl -s -X POST 'http://localhost:8005/signals/calibrate_ta_weights' \
+  -H "Authorization: Bearer <token>" | python3 -m json.tool
+# "applied": false with a real reason means the fit was correctly rejected — NOT a bug.
+
+# Confirm _retro_ev_for's sign fix against real production data (compare before/after this
+# deploy by re-running the exact independent-verification script from the trust-building
+# cross-check entry above, adapted to also negate SELL rows):
+docker exec stockai-signal-engine-1 curl -s 'http://localhost:8005/watchdog_self_tuning_report' \
+  -H "Authorization: Bearer <token>"
+```

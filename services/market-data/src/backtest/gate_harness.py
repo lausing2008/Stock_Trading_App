@@ -48,6 +48,26 @@ _HORIZON_BUCKET = {
     "GROWTH": "10d",
 }
 
+# BUG233-BACKTESTHARNESS-EMPTYVALIDATION (2026-07-31): the calendar-day count that must have
+# elapsed since a signal's own signal_date before that style's _HORIZON_BUCKET column can even
+# be non-NULL (AUD19-DB3's own days_held<=7/<=14/else cutoffs in paper_trading_engine.py,
+# mirrored from signal-engine's _OUTCOME_HOLD_DAYS — duplicated here rather than a cross-service
+# import, matching this module's own stated reason for living in market-data at all: no
+# shared/->service precedent exists). Every walk-forward split below MUST pull window_end back
+# by this many days before splitting train/validation, or the newest ~30% of the window (the
+# validation slice) is guaranteed to contain zero resolved outcomes — a signal from yesterday
+# cannot possibly have a populated LONG bucket yet. Live-verified: at the default 60-day window,
+# the unadjusted split left SWING/LONG/GROWTH's validation slice with n_signals_seen=0 every
+# time, silently defeating the ENTIRE held-out-validation defense against train-slice overfitting
+# for 3 of 4 styles — not a rare edge case, the default configuration for most of this harness's
+# life.
+_HORIZON_RESOLUTION_LAG_DAYS = {
+    "SHORT": 7,
+    "SWING": 14,
+    "LONG": 20,
+    "GROWTH": 14,
+}
+
 
 @dataclass
 class BacktestResult:
@@ -393,19 +413,35 @@ def walk_forward_extended_gate(
     style = style.upper()
     current_value = base_cfg.get(param, 0.0)
 
-    total_days = (window_end - window_start).days
+    # BUG233-BACKTESTHARNESS-EMPTYVALIDATION: pull the resolvable window back BEFORE splitting,
+    # so the validation slice (the newest ~30%) contains signals old enough to have a resolved
+    # outcome for this style's horizon bucket. Splitting on the raw, unadjusted window_end
+    # produces a validation slice of entirely too-recent signals with zero resolved outcomes.
+    resolvable_end = _resolvable_window_end(window_end, style)
+    if resolvable_end <= window_start:
+        return {
+            "style": style, "market": market,
+            "skipped_reason": (
+                f"window too short to leave any resolvable validation slice after accounting "
+                f"for {style}'s {_HORIZON_RESOLUTION_LAG_DAYS.get(style, 14)}-day outcome "
+                f"resolution lag (requested window ends {window_end}, resolvable end is "
+                f"{resolvable_end}, window starts {window_start})"
+            ),
+        }
+
+    total_days = (resolvable_end - window_start).days
     split_days = max(1, int(total_days * 0.7))
     train_end = window_start + timedelta(days=split_days)
     val_start = train_end + timedelta(days=1)
 
-    if val_start > window_end:
+    if val_start > resolvable_end:
         return {
             "style": style, "market": market,
-            "skipped_reason": f"window too short to split ({total_days} days)",
+            "skipped_reason": f"window too short to split ({total_days} resolvable days)",
         }
 
     baseline_val = replay_extended_gates(
-        session, style, market, base_cfg, val_start, window_end,
+        session, style, market, base_cfg, val_start, resolvable_end,
         cfg_label=f"baseline {param}={current_value} (validation)",
     )
 
@@ -432,35 +468,35 @@ def walk_forward_extended_gate(
         }
 
     best_val = replay_extended_gates(
-        session, style, market, {**base_cfg, param: best_cand}, val_start, window_end,
+        session, style, market, {**base_cfg, param: best_cand}, val_start, resolvable_end,
         cfg_label=f"{param}={best_cand} (validation)",
     )
 
-    promoted = (
-        best_val.skipped_reason is None
-        and baseline_val.skipped_reason is None
-        and best_val.avg_return_pct is not None
-        and baseline_val.avg_return_pct is not None
-        and best_val.avg_return_pct > baseline_val.avg_return_pct
-    )
+    promoted = _passes_promotion_margin(best_val, baseline_val)
 
     return {
         "style": style, "market": market, "param": param,
         "current_value": current_value,
         "candidate_value": best_cand,
         "train_window": [str(window_start), str(train_end)],
-        "validation_window": [str(val_start), str(window_end)],
+        "validation_window": [str(val_start), str(resolvable_end)],
         "train_result": _result_dict(best_train),
         "candidate_validation": _result_dict(best_val),
         "baseline_validation": _result_dict(baseline_val),
         "promoted": promoted,
         "note": (
             "promoted=True means the candidate beat baseline on the held-out validation slice "
-            "with all three pre-filter gates active — this is a Phase 2b research signal, NOT "
-            "an automatic config change. Like Phase 2a, this can only evaluate TIGHTENING an "
-            "existing gate (re-filtering signals that already fired under the CURRENT "
-            "threshold) — testing a genuinely LOOSER value would require regenerating signals "
-            "against historical price data, which this replay does not do."
+            "by at least "
+            f"{_MIN_PROMOTION_EV_LIFT_PCT}pp AND by at least {_MIN_PROMOTION_LIFT_SD_RATIO}x "
+            "the validation slice's own return dispersion (BUG233-BACKTESTHARNESS-COINFLIP — a "
+            "bare 'any positive difference' comparison was found to be a ~50% false-promotion "
+            "coin flip at realistic sample sizes and was replaced with this margin). This is a "
+            "Phase 2b research signal, NOT an automatic config change, and does not correct for "
+            "the train-slice grid search's own multiple-comparisons exposure. Like Phase 2a, "
+            "this can only evaluate TIGHTENING an existing gate (re-filtering signals that "
+            "already fired under the CURRENT threshold) — testing a genuinely LOOSER value "
+            "would require regenerating signals against historical price data, which this "
+            "replay does not do."
         ),
     }
 
@@ -483,19 +519,34 @@ def walk_forward_min_entry_score(
     current_score = base_cfg.get("min_entry_score", 4)
     candidates = candidates if candidates is not None else sorted(set([3, 4, 5, 6, current_score]))
 
-    total_days = (window_end - window_start).days
+    # BUG233-BACKTESTHARNESS-EMPTYVALIDATION: see walk_forward_extended_gate's identical fix
+    # above for the full explanation — pull window_end back by this style's own outcome
+    # resolution lag BEFORE splitting, or the validation slice is guaranteed empty.
+    resolvable_end = _resolvable_window_end(window_end, style)
+    if resolvable_end <= window_start:
+        return {
+            "style": style, "market": market,
+            "skipped_reason": (
+                f"window too short to leave any resolvable validation slice after accounting "
+                f"for {style}'s {_HORIZON_RESOLUTION_LAG_DAYS.get(style, 14)}-day outcome "
+                f"resolution lag (requested window ends {window_end}, resolvable end is "
+                f"{resolvable_end}, window starts {window_start})"
+            ),
+        }
+
+    total_days = (resolvable_end - window_start).days
     split_days = max(1, int(total_days * 0.7))
     train_end = window_start + timedelta(days=split_days)
     val_start = train_end + timedelta(days=1)
 
-    if val_start > window_end:
+    if val_start > resolvable_end:
         return {
             "style": style, "market": market,
-            "skipped_reason": f"window too short to split ({total_days} days)",
+            "skipped_reason": f"window too short to split ({total_days} resolvable days)",
         }
 
     baseline_val = replay_should_enter(
-        session, style, market, base_cfg, val_start, window_end, cfg_label="baseline (validation)",
+        session, style, market, base_cfg, val_start, resolvable_end, cfg_label="baseline (validation)",
     )
 
     train_results = []
@@ -521,34 +572,88 @@ def walk_forward_min_entry_score(
         }
 
     best_val = replay_should_enter(
-        session, style, market, {**base_cfg, "min_entry_score": best_cand}, val_start, window_end,
+        session, style, market, {**base_cfg, "min_entry_score": best_cand}, val_start, resolvable_end,
         cfg_label=f"min_entry_score={best_cand} (validation)",
     )
 
-    promoted = (
-        best_val.skipped_reason is None
-        and baseline_val.skipped_reason is None
-        and best_val.avg_return_pct is not None
-        and baseline_val.avg_return_pct is not None
-        and best_val.avg_return_pct > baseline_val.avg_return_pct
-    )
+    promoted = _passes_promotion_margin(best_val, baseline_val)
 
     return {
         "style": style, "market": market,
         "current_min_entry_score": current_score,
         "candidate_min_entry_score": best_cand,
         "train_window": [str(window_start), str(train_end)],
-        "validation_window": [str(val_start), str(window_end)],
+        "validation_window": [str(val_start), str(resolvable_end)],
         "train_result": _result_dict(best_train),
         "candidate_validation": _result_dict(best_val),
         "baseline_validation": _result_dict(baseline_val),
         "promoted": promoted,
         "note": (
-            "promoted=True means the candidate beat baseline on the held-out validation slice — "
-            "this is a Phase 2a research signal, NOT an automatic config change. No promotion "
-            "gate or tune_history table exists yet (Phase 3, still todo)."
+            "promoted=True means the candidate beat baseline on the held-out validation slice "
+            "by at least "
+            f"{_MIN_PROMOTION_EV_LIFT_PCT}pp AND by at least {_MIN_PROMOTION_LIFT_SD_RATIO}x "
+            "the validation slice's own return dispersion (BUG233-BACKTESTHARNESS-COINFLIP — a "
+            "bare 'any positive difference' comparison was found to be a ~50% false-promotion "
+            "coin flip at realistic sample sizes and was replaced with this margin). This is a "
+            "Phase 2a research signal, NOT an automatic config change, and does not correct for "
+            "the train-slice grid search's own multiple-comparisons exposure. No promotion gate "
+            "or tune_history table exists yet for this specific endpoint (Phase 3, still todo)."
         ),
     }
+
+
+def _resolvable_window_end(window_end: date, style: str) -> date:
+    """Pull window_end back by the style's own resolution lag (_HORIZON_RESOLUTION_LAG_DAYS) so
+    a subsequent 70/30 split's validation slice actually contains signals old enough to have a
+    resolved SignalOutcome for that style's bucket. See BUG233-BACKTESTHARNESS-EMPTYVALIDATION."""
+    return window_end - timedelta(days=_HORIZON_RESOLUTION_LAG_DAYS.get(style, 14))
+
+
+# BUG233-BACKTESTHARNESS-COINFLIP (2026-07-31): a bare `best_val.avg_return_pct >
+# baseline_val.avg_return_pct` promotion criterion is a coin flip under the null hypothesis of
+# no real edge — simulated directly (best-of-k selection on train, independent validation
+# check, both slices drawn from the SAME distribution): ~50% false-promotion rate at every
+# sample size from n=15 to n=50, because comparing two noisy sample means with no margin is
+# statistically indistinguishable from noise at any n. Real production per-trade return SD
+# across all 4 styles is ~9.6-10.6pp (10-day returns) — at n=15 that is a +-5.2pp 95% CI on the
+# mean; the harness cannot detect a real edge smaller than its own measurement error, so "any
+# positive difference, however small" is not evidence.
+#
+# Fix: require BOTH (a) a minimum absolute EV-lift margin, AND (b) that the lift is large
+# relative to the combined slices' own return dispersion (a crude but real signal-vs-noise
+# check — not a formal significance test, since BacktestResult doesn't carry per-trade SDs
+# separately per candidate at this call site, but strictly stronger than no margin at all).
+# This does not eliminate the multiple-comparisons risk from the train-slice grid search (that
+# would need a formal correction across candidates), but it closes the specific, simulated-and-
+# confirmed ~50% coin-flip failure mode of the bare `>` comparison.
+_MIN_PROMOTION_EV_LIFT_PCT = 0.5   # candidate must beat baseline by at least this many pct points
+_MIN_PROMOTION_LIFT_SD_RATIO = 0.5  # ...and by at least this fraction of the validation slice's own return SD
+
+
+def _passes_promotion_margin(best_val: "BacktestResult", baseline_val: "BacktestResult") -> bool:
+    """Stricter replacement for a bare `best_val.avg_return_pct > baseline_val.avg_return_pct`
+    check — see BUG233-BACKTESTHARNESS-COINFLIP above for why the bare comparison is a coin
+    flip. Requires both slices to be genuinely measurable, a minimum absolute EV-lift margin,
+    and the lift to be a meaningful fraction of the validation slice's own return dispersion."""
+    if (
+        best_val.skipped_reason is not None
+        or baseline_val.skipped_reason is not None
+        or best_val.avg_return_pct is None
+        or baseline_val.avg_return_pct is None
+    ):
+        return False
+    lift = best_val.avg_return_pct - baseline_val.avg_return_pct
+    if lift < _MIN_PROMOTION_EV_LIFT_PCT:
+        return False
+    combined_returns = list(best_val.returns) + list(baseline_val.returns)
+    if len(combined_returns) < 2:
+        return False
+    mean = sum(combined_returns) / len(combined_returns)
+    variance = sum((r - mean) ** 2 for r in combined_returns) / (len(combined_returns) - 1)
+    sd_pct = (variance ** 0.5) * 100  # returns are stored as fractions; result is in pct points
+    if sd_pct <= 0:
+        return True  # zero dispersion means the lift (already >= the absolute floor) is real
+    return lift >= _MIN_PROMOTION_LIFT_SD_RATIO * sd_pct
 
 
 def _result_dict(r: BacktestResult) -> dict:

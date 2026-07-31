@@ -70,10 +70,10 @@ def _make_session():
     return Session(engine)
 
 
-def _make_outcome(i, horizon, entry_date, is_correct, pct_return, stock_id=1):
+def _make_outcome(i, horizon, entry_date, is_correct, pct_return, stock_id=1, signal_direction="BUY"):
     return SignalOutcome(
         id=i, signal_id=i, stock_id=stock_id, symbol="TEST", horizon=horizon,
-        signal_direction="BUY", signal_date=entry_date - timedelta(days=1),
+        signal_direction=signal_direction, signal_date=entry_date - timedelta(days=1),
         confidence=50.0, entry_date=entry_date, is_correct=is_correct, pct_return=pct_return,
     )
 
@@ -156,6 +156,64 @@ def test_filters_by_stock_market_when_market_is_not_all():
 
     all_result = _retro_ev_for(session, "SWING", "ALL", date(2026, 6, 1))
     assert all_result["n"] == 100
+
+
+# ── BUG233-RETROEV-SIGNMIX (2026-07-31) ────────────────────────────────────────────────────────
+# SELL "wins" on a NEGATIVE pct_return (is_correct = ret < -hurdle for SELL, per
+# evaluate_signal_outcomes) — this function deliberately pools BOTH directions together (see its
+# own docstring), so a SELL row's raw pct_return must be NEGATED before averaging with a BUY
+# row's raw pct_return, or the two opposite sign conventions cancel/invert each other.
+
+def test_sell_rows_pct_return_is_negated_before_averaging_with_buy_rows():
+    """The exact bug: without negation, a real SELL winner (pct_return=-0.05, is_correct=True —
+    the stock genuinely fell 5% after a SELL signal) would drag the aggregate ev_pct DOWN as if
+    it were a loss. With the fix, a mix of BUY winners and SELL winners should show a POSITIVE
+    aggregate ev_pct, reflecting that every row in this fixture is actually a real win."""
+    session = _make_session()
+    # 25 BUY winners: price rose 5% after a BUY signal — a real win, positive raw pct_return.
+    for i in range(25):
+        session.add(_make_outcome(i, "SWING", date(2026, 7, 1), True, 0.05, signal_direction="BUY"))
+    # 25 SELL winners: price FELL 5% after a SELL signal — also a real win, but stored as a
+    # NEGATIVE raw pct_return (matching evaluate_signal_outcomes' own SELL is_correct rule).
+    for i in range(25, 50):
+        session.add(_make_outcome(i, "SWING", date(2026, 7, 1), True, -0.05, signal_direction="SELL"))
+    session.commit()
+    result = _retro_ev_for(session, "SWING", "ALL", date(2026, 6, 1))
+    assert result is not None
+    # Every one of the 50 rows is a genuine winner — the sign-corrected aggregate must be
+    # positive. The pre-fix bug would have produced exactly 0.0% here (25 * +0.05 cancelling
+    # 25 * -0.05 when averaged un-negated) despite ALL 50 rows being real wins.
+    assert result["ev_pct"] > 0
+    assert abs(result["ev_pct"] - 5.0) < 0.01
+
+
+def test_all_sell_losers_produce_a_negative_sign_corrected_ev():
+    """The mirror case: a SELL LOSER (price rose after a SELL signal — is_correct=False) is
+    stored with a POSITIVE raw pct_return. Sign-corrected, this must read as a real loss
+    (negative ev_pct), not get double-flipped back to looking like a win."""
+    session = _make_session()
+    for i in range(50):
+        session.add(_make_outcome(i, "SWING", date(2026, 7, 1), False, 0.05, signal_direction="SELL"))
+    session.commit()
+    result = _retro_ev_for(session, "SWING", "ALL", date(2026, 6, 1))
+    assert result is not None
+    assert result["ev_pct"] < 0
+    assert abs(result["ev_pct"] - (-5.0)) < 0.01
+
+
+def test_buy_only_rows_are_completely_unaffected_by_the_sign_fix():
+    """A pure-BUY slice (the common case for most tune_history rows, e.g. gate_threshold/
+    min_entry_score which is BUY-only) must produce the exact same result as before this fix —
+    the sign correction only ever touches SELL rows."""
+    session = _make_session()
+    for i in range(30):
+        session.add(_make_outcome(i, "SWING", date(2026, 7, 1), True, 0.05, signal_direction="BUY"))
+    for i in range(30, 50):
+        session.add(_make_outcome(i, "SWING", date(2026, 7, 1), False, -0.03, signal_direction="BUY"))
+    session.commit()
+    result = _retro_ev_for(session, "SWING", "ALL", date(2026, 6, 1))
+    expected_ev = ((30 * 0.05 + 20 * -0.03) / 50) * 100
+    assert abs(result["ev_pct"] - round(expected_ev, 2)) < 0.01
 
 
 def test_excludes_still_open_outcomes_with_null_is_correct_or_pct_return():
