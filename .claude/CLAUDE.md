@@ -10443,3 +10443,102 @@ If `tune_sell_pillars` skips every horizon with `insufficient_total_samples`, th
 backfill hasn't been run yet (or hasn't found enough historical price data for enough
 symbols) — check the backfill's own `remaining_unbackfilled_sell_outcomes` count first before
 assuming the sweep itself is broken.
+
+---
+
+## Closed: T233-SELFIMPROVE-PHASE2's Trust-Building Cross-Check (2026-07-31)
+
+**What this was**: `docs/DESIGN_BACKTEST_HARNESS_PHASE2_2026-07-06.md`'s own §3 ("Trust-
+building step") described a check that was never actually run: before trusting Phase 2a/2b's
+`gate_harness.py` numbers for any real decision, verify its reported `win_rate`/`avg_return_pct`
+against an independent computation over the same underlying data. This had sat as an open item
+across the harness's entire build history (Phase 2a, 2b, and the wall-clock bug fix all
+shipped without it) — closed this session on the user's request to "self improve" the codebase.
+
+**Corrected the literal comparison target before running anything**: the design doc's prose
+named `GET /signals/outcomes/calibrate` as the comparison, but that endpoint sweeps
+`fused_prob >= buy_threshold` — a fundamentally different gate from `min_entry_score`
+(`_should_enter()`'s own composite score threshold). The two can never produce identical
+`n`/`win_rate` numbers by construction, since they filter to different subsets of the same
+signals. The REAL trust-building question is narrower and more useful: **does the harness's
+own internal win_rate/EV arithmetic match an independent, from-scratch computation over the
+exact same rows it says it entered** — i.e., is the harness's *code* correct, not whether two
+different gates agree on a number they were never going to agree on.
+
+**Method**: called `replay_should_enter()` directly (not through the HTTP endpoint, to get the
+full `entered_signal_ids` list) at the REAL current production config for each of the 4
+styles, over a real 60-day US window. For each style, took the harness's own reported
+`entered_signal_ids` and ran a **completely separate, fresh SQL query** against
+`SignalOutcome` to independently recompute `win_rate`/`avg_return_pct` from raw
+`is_correct_{bucket}`/`return_{bucket}` columns, bypassing every line of the harness's own
+computation logic.
+
+**First pass surfaced a real near-miss, self-caught**: an initial independent check used the
+PRIMARY `is_correct`/`pct_return` columns and found a real, material disagreement (SWING:
+harness reported `win_rate=0.524, avg_return_pct=-0.1613`; my own from-scratch SQL query said
+`0.4891` / `-1.0122` — a 6x difference on the return figure). Investigated before concluding
+the harness was broken, and found the harness deliberately reads `return_{bucket}`/
+`is_correct_{bucket}` (SWING → the `10d` bucket, per `_HORIZON_BUCKET` in `gate_harness.py`) —
+a real, documented, INTENTIONAL design choice (each style's forward-return window
+approximates its actual trading horizon), not the primary hold-to-exit columns I'd used.
+Re-ran the independent check against the CORRECT columns and got an **exact match**.
+
+**Result across all 4 styles, US, 60-day window, real current production config**:
+
+| Style | n_entered | Harness (win_rate, avg_return_pct) | Independent SQL (win_rate, avg_return_pct) | Match |
+|---|---|---|---|---|
+| SHORT | 12 | `None, None` — correctly below the `MIN_SAMPLES_PER_SPLIT=15` floor | `0.1667, -0.211` (computable, but the harness is RIGHT not to report it) | ✅ (floor working as designed) |
+| SWING | 229 | `0.524, -0.1613` | `0.524, -0.1613` | ✅ exact |
+| LONG | 462 | `0.3874, -4.857` | `0.3874, -4.857` | ✅ exact |
+| GROWTH | 927 | `0.4164, -1.8028` | `0.4164, -1.8028` | ✅ exact |
+
+**Conclusion: the harness's core arithmetic is trustworthy.** 3 of 4 styles matched
+byte-for-byte against a from-scratch, independently-written SQL computation; the 4th (SHORT)
+correctly declined to report a number rather than fabricate one from too few samples — exactly
+the documented, intended behavior of the `MIN_SAMPLES_PER_SPLIT` guard, not a discrepancy.
+
+**Also ran the originally-named comparison** (`GET /signals/outcomes/calibrate?days=60` for
+SWING) as a secondary sanity check, even though it can't match numerically by construction:
+both endpoints independently reported **negative expected value** for SWING BUY signals in
+this window (harness: -0.16% to -4.86% across styles; calibrate: -2.84% at the current
+`buy_threshold=0.72`) — directionally consistent, not contradictory, which is the real bar this
+secondary check was ever capable of clearing.
+
+**This closes the last open item on `T233-SELFIMPROVE-PHASE2`** besides Phase 2c
+(decision-engine path), which remains explicitly, correctly blocked on `T232-DL-DUALSCORER-DEBT`
+resolving first (still `todo`) — not attempted this session, per the design doc's own §4.
+
+**What to check if this needs re-running (e.g., after any future change to `gate_harness.py`'s
+computation logic)**:
+```bash
+docker exec stockai-market-data-1 python3 -c "
+import sys; sys.path.insert(0, '/app'); sys.path.insert(0, '/app/src')
+from datetime import date, timedelta
+from db import SessionLocal, SignalOutcome
+from src.backtest.gate_harness import replay_should_enter, _HORIZON_BUCKET
+from src.services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+from sqlalchemy import select
+
+window_end = date.today()
+window_start = window_end - timedelta(days=60)
+for style in ('SHORT', 'SWING', 'LONG', 'GROWTH'):
+    base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    bucket = _HORIZON_BUCKET[style]
+    with SessionLocal() as s:
+        r = replay_should_enter(s, style, 'US', base_cfg, window_start, window_end, cfg_label=f'{style}-check')
+        if r.n_entered == 0:
+            print(f'{style}: n_entered=0'); continue
+        rows = s.execute(
+            select(getattr(SignalOutcome, f'is_correct_{bucket}'), getattr(SignalOutcome, f'return_{bucket}'))
+            .where(SignalOutcome.signal_id.in_(r.entered_signal_ids))
+        ).all()
+        scoreable = [(c, ret) for c, ret in rows if ret is not None]
+        wins = sum(1 for c, ret in scoreable if c)
+        ind_wr = round(wins / len(scoreable), 4) if scoreable else None
+        ind_ev = round(sum(ret for _, ret in scoreable) / len(scoreable) * 100, 4) if scoreable else None
+        print(f'{style}: harness(wr={r.win_rate}, ev={r.avg_return_pct}) independent(wr={ind_wr}, ev={ind_ev})')
+"
+```
+The two must match exactly (or the harness's side must correctly show `None`/`skipped_reason`
+below the sample floor) — any OTHER disagreement means a real bug was introduced in either the
+harness's own computation or its column/bucket selection since this check last ran.
