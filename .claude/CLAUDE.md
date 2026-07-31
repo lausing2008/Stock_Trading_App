@@ -10159,3 +10159,128 @@ If the brief's new section always shows the empty state despite real recent flow
 first confirm the EOD job actually ran and populated a row for TODAY's `as_of` —
 `_fetch_recent_options_flow()` never computes live, it only reads whatever the daily job
 already persisted for the most recent date.
+
+---
+
+## Feature Reference: T257-OVERNIGHT-FLOW-BRIEF Phase 3 — Per-Recipient "Day Layout" Attention List (Built 2026-07-30)
+
+**Closes the final phase of Tier 257's original ask** — Phase 1 (futures + premarket gappers)
+and Phase 2 (late-day options-flow persistence) both shipped earlier; Phase 3 was always
+scoped as "combine the 4 already-computed signals into one scored attention list, never a new
+buy/sell direction call of its own" (`.claude/CLAUDE.md`, Research: Tier 257, section 3, Phase
+3 — "an attention list, not a plan-of-trades").
+
+**New pure function**: `_build_attention_list()` (`services/market-data/src/services/
+scheduler.py`) — for each of a recipient's own watched symbols, checks up to 4 independent,
+already-computed signals and requires **≥2 hits** before the symbol qualifies:
+1. **Premarket gap ≥2.0%** (`_ATTENTION_GAP_THRESHOLD_PCT`) vs. yesterday's close, from the
+   SAME `premarket_movers` list `send_premarket_brief()` already computes for its own Section 5
+   — no new query. 2.0% was chosen as a real, non-noise premarket move; the underlying
+   `_fetch_premarket_gappers()` itself has no floor (just top-10-by-magnitude), so this is the
+   first place a genuine significance threshold applies to that data.
+2. **Notable options-flow sentiment** — `strongly_bullish`/`bullish`/`bearish`
+   (`_ATTENTION_NOTABLE_SENTIMENTS`, deliberately excluding `neutral`/`slightly_bearish` as too
+   weak to flag on their own) OR a real whale trade (`whale_count > 0`) regardless of
+   sentiment tier — from the SAME `recent_options_flow` list Section 6 (Phase 2) already reads.
+3. **Reports earnings today** — from the SAME `earnings_by_symbol` dict Section 2 already
+   builds.
+4. **A high/critical macro release is scheduled today** — a single MARKET-WIDE bool
+   (`macro_has_high_impact = bool(macro_today)`, computed ONCE before the per-recipient send
+   loop, not per-symbol) from the SAME `macro_today` list Section 1 already computes — matching
+   the design's own framing of "macro release today" as a shared, market-wide fact rather than
+   something scoped to one stock.
+
+Each qualifying symbol carries its own list of human-readable reason strings (the specific
+gap %, the specific sentiment tier, etc.) — deliberately NEVER a synthesized buy/sell verdict
+of its own, exactly matching the design's explicit rejection of "duplicating direction calls
+here with no outcome tracking" — that's what the signal pipeline and the T257-TOP3 conviction
+alert are for, both of which have real tracked accuracy this ad-hoc list does not.
+
+**Computed per-recipient, inside the send loop** — unlike every other section in this
+function (all market-wide, computed once before the loop), the attention list is genuinely
+per-USER since it only scores each recipient's OWN watched symbols
+(`user_symbols.get(uid, set())`), matching how `my_earnings` (Section 2) is already
+per-recipient-filtered the same way, just one level further (an actual scoring pass, not only
+a filter).
+
+**Wiring**: `send_premarket_brief_email()` gained an `attention_list: list[dict] | None = None`
+parameter (defaults to `None` → treated as `[]`, so no existing caller needed to change),
+rendered as a new "Today's Attention List" section (symbol + a bulleted `<ul>` of its own
+reasons) via the same `_section()` helper every prior section uses, placed right after "Late-
+Day Options Flow" (its natural position matching the code's own numbered-section ordering).
+The `.done` log gained a running `attention_symbols_total` counter (summed across every
+recipient in the loop) — the ONE section in this function whose count can't be reported as a
+single market-wide number the way the others are, since it's inherently per-recipient.
+
+**Deliberately NOT added to the "nothing to report" early-return guard** — a symbol can only
+ever qualify when at least 2 of the 4 ALREADY-GUARDED inputs (macro/earnings/reactions/
+futures/movers/options_flow) are non-empty, so the existing guard already transitively covers
+the attention list; adding it there too would be a redundant, always-true clause, not a real
+protection — a dedicated test documents this choice explicitly so a future "fix" doesn't
+mistakenly add it back in.
+
+**Tests**: `services/market-data/tests/test_attention_list.py` (23 cases) —
+`_build_attention_list()`'s real source is extracted via `exec()` (matching this file's
+established source-text-extraction technique for pure functions in `scheduler.py`, which can't
+be imported directly in this test environment) and exercised with real dict/set/list inputs,
+no mocking needed since the function has zero DB/network dependency: the ≥2-signal threshold
+(a single signal never qualifies, exactly 2 does), the gap-threshold boundary (0.5% doesn't
+count, a negative gap beyond threshold correctly counts via `abs()`), the sentiment-tier
+boundary (`neutral`/`slightly_bearish` don't count without a whale, `strongly_bullish` does,
+and a whale trade counts even at `neutral` sentiment), the market-wide macro flag applying
+identically to every scored symbol but never qualifying one alone, alphabetical result
+ordering, and symbols outside every input never appearing. Plus 5 source-text regression
+checks for the `scheduler.py` wiring (the per-recipient call site, the once-before-the-loop
+macro flag, the email-call kwarg, the `.done` log counter, and the deliberate absence from the
+nothing-to-report guard) and 4 direct `send_premarket_brief_email()` composition tests (render,
+explicit empty state, `None`-default backward compatibility, multi-reason rendering).
+
+**A real test-writing mistake caught and fixed before shipping** (the same class already
+documented for `test_overnight_futures_brief.py`/`test_premarket_gappers.py` earlier in this
+tracker item's own history): the first version of the per-recipient-call-site test anchored on
+`body.index("_build_attention_list(")`, which matched the function's own DOCSTRING mention
+(where it's named in prose, describing Section 7) before the real call site — making the test
+pass or fail for the wrong reason depending on relative ordering. Fixed by anchoring on the
+more specific assignment form `"attention_list = _build_attention_list("`, which only appears
+once, at the real call site — this is now the third time this exact `.index()`-finds-the-
+docstring-first trap has been hit and fixed in this same tracker item's history, worth
+remembering as a standing gotcha whenever a new function's own docstring happens to name it.
+
+**Adversarial verification** — 4 sabotage cycles, all caught and reverted: loosening the `>=2`
+threshold to `>=1` (5 of 23 tests failed correctly, each with a real assertion diff showing an
+under-qualified symbol slipping through); removing the gap-threshold check entirely (caught
+directly, a real 0.5% gap wrongly qualifying); widening `_ATTENTION_NOTABLE_SENTIMENTS` to
+include `neutral`/`slightly_bearish` (both dedicated boundary tests caught it); severing the
+email-call wiring (`attention_list=[]` hardcoded instead of the real computed value) — caught
+by the dedicated wiring test. Full 679-test market-data suite (up from 656) green after every
+revert; `pyflakes` clean on both touched files (confirmed via `git stash` that all pre-existing
+warnings predate this change — only line numbers shifted, plus 2 more harmless `f-string is
+missing placeholders` warnings matching the exact same pre-existing sibling style already
+noted for Phase 2's own new section).
+
+**T257-OVERNIGHT-FLOW-BRIEF is now fully built across all 3 phases** — futures + premarket
+gappers (Phase 1), late-day options-flow persistence (Phase 2), and this scored attention list
+(Phase 3). Nothing from the original Tier 257 design remains unbuilt for this specific item.
+
+**What to check if this looks wrong**:
+```bash
+# Live-check the scoring function directly against real per-recipient data (safe — read-only,
+# computes but does not send anything):
+docker exec stockai-market-data-1 python3 -c "
+import sys; sys.path.insert(0, '/app'); sys.path.insert(0, '/app/src')
+from src.services.scheduler import _build_attention_list, _fetch_premarket_gappers, _fetch_recent_options_flow
+from db import SessionLocal
+with SessionLocal() as s:
+    movers = _fetch_premarket_gappers(s)
+    flow = _fetch_recent_options_flow(s)
+    result = _build_attention_list({'AAPL', 'NVDA', 'TSLA'}, {}, movers, flow, macro_has_high_impact=False)
+    print(result)
+"
+
+# Check how many symbols qualified across all recipients on a real recent brief send:
+docker logs stockai-market-data-1 --since 24h | grep 'premarket_brief.done' | grep -o 'attention_symbols_total=[0-9]*'
+```
+A consistently `0` attention-list total across many days is expected and correct on quiet
+market days — the ≥2-signal bar is deliberately strict; an empty attention list most days is
+the bar working as intended, not a sign the feature is broken (matching the same
+"most cycles qualify zero picks" honesty already documented for T257-TOP3-CONVICTION-ALERT).

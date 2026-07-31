@@ -944,6 +944,7 @@ def send_premarket_brief_email(
     overnight_futures: list[dict] | None = None,
     premarket_movers: list[dict] | None = None,
     options_flow: list[dict] | None = None,
+    attention_list: list[dict] | None = None,
 ) -> bool:
     """T249-MARKETMOVER-P3: pre-market brief — combines P0 (today's macro releases), P1
     (recipient's own symbols reporting earnings today), and P2 (macro reactions generated in
@@ -970,10 +971,18 @@ def send_premarket_brief_email(
     "put_premium", "whale_count", "top_whale_premium"}) — reports yesterday's OBSERVED options
     positioning (a real, already-happened flow read), never a prediction of what today's flow
     will do. Also defaults to `None` (treated as empty) for the same reason.
+
+    T257-OVERNIGHT-FLOW-BRIEF Phase 3: `attention_list` items are the dict shape
+    _build_attention_list() returns ({"symbol", "reasons"}) — each already-computed, measured
+    fact that made this symbol qualify (>=2 of premarket gap / unusual options flow / earnings
+    today / a high-impact macro release today). Deliberately never a buy/sell direction call
+    of its own — that's what the signal pipeline and the T257-TOP3 conviction alert are for,
+    with their own tracked accuracy. Also defaults to `None` (treated as empty).
     """
     overnight_futures = overnight_futures or []
     premarket_movers = premarket_movers or []
     options_flow = options_flow or []
+    attention_list = attention_list or []
     subject = f"🔔 Pre-Market Brief — {market} — {date_str}"
 
     _impact_color = {"critical": "#ef4444", "high": "#f97316", "medium": "#facc15"}
@@ -1074,6 +1083,20 @@ def send_premarket_brief_email(
         )
         flow_rows_text += f'  {o.get("symbol","")}: cp_ratio {cp_str}, {sentiment}{whale_note}\n'
 
+    # ── Section 7: today's attention list (T257-OVERNIGHT-FLOW-BRIEF Phase 3) ──
+    attention_rows_html = ""
+    attention_rows_text = ""
+    for a in attention_list:
+        reasons_html = "".join(f'<li>{r}</li>' for r in a.get("reasons", []))
+        attention_rows_html += (
+            f'<div style="padding:8px 0;border-bottom:1px solid #f1f5f9">'
+            f'<strong style="font-size:13px">{a.get("symbol","")}</strong>'
+            f'<ul style="margin:4px 0 0;padding-left:18px;font-size:11px;color:#64748b">{reasons_html}</ul>'
+            f'</div>'
+        )
+        reasons_text = "; ".join(a.get("reasons", []))
+        attention_rows_text += f'  {a.get("symbol","")}: {reasons_text}\n'
+
     def _section(title: str, rows_html: str, empty_note: str) -> str:
         if not rows_html:
             return (
@@ -1101,6 +1124,7 @@ def send_premarket_brief_email(
     {_section("Overnight Futures", futures_rows_html, "Overnight futures data unavailable this morning.")}
     {_section("Premarket Movers", movers_rows_html, "No significant premarket movers detected.")}
     {_section("Late-Day Options Flow", flow_rows_html, "No notable options flow detected in yesterday's session.")}
+    {_section("Today's Attention List", attention_rows_html, "No symbols currently qualify (need 2+ independent signals).")}
     {_section("Today's Macro Releases", macro_rows_html, "No high/critical-importance releases scheduled today.")}
     {_section("Your Symbols Reporting Today", earnings_rows_html, "None of your watched symbols report earnings today.")}
     {_section("Recent Macro Reactions (18h)", reaction_rows_html, "No macro reactions generated in the last 18 hours.")}
@@ -1108,8 +1132,9 @@ def send_premarket_brief_email(
     <p style="font-size:11px;color:#94a3b8;margin-top:28px;border-top:1px solid #e2e8f0;padding-top:14px">
       Futures reflect the market's own current expectation for the open — not a prediction of
       whether it holds through the cash session. Options flow reflects yesterday's already-
-      observed positioning, not a forecast. Historical-scenario context only elsewhere in this
-      brief — not financial advice. StockAI · {date_str}
+      observed positioning, not a forecast. The Attention List surfaces symbols where 2+
+      independent signals overlap — it is not a buy/sell recommendation. Historical-scenario
+      context only elsewhere in this brief — not financial advice. StockAI · {date_str}
     </p>
   </div>
 </body></html>"""
@@ -1122,6 +1147,8 @@ def send_premarket_brief_email(
         + (movers_rows_text or "  None detected.\n")
         + f"\nLATE-DAY OPTIONS FLOW\n"
         + (flow_rows_text or "  None detected in yesterday's session.\n")
+        + f"\nTODAY'S ATTENTION LIST\n"
+        + (attention_rows_text or "  No symbols currently qualify (need 2+ independent signals).\n")
         + f"\nTODAY'S MACRO RELEASES\n"
         + (macro_rows_text or "  None scheduled today.\n")
         + f"\nYOUR SYMBOLS REPORTING TODAY\n"
@@ -1130,7 +1157,9 @@ def send_premarket_brief_email(
         + (reaction_rows_text or "  None.\n")
         + "\nFutures reflect the market's current expectation for the open, not a prediction of"
         " whether it holds. Options flow reflects yesterday's already-observed positioning, not"
-        " a forecast. Historical-scenario context only elsewhere — not financial advice.\n"
+        " a forecast. The Attention List surfaces symbols with 2+ independent signals — it is"
+        " not a buy/sell recommendation. Historical-scenario context only elsewhere — not"
+        " financial advice.\n"
     )
     return send_email(to, subject, body_html, body_text)
 

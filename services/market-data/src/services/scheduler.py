@@ -1555,6 +1555,70 @@ def _fetch_recent_options_flow(session: Session) -> list[dict]:
     return results[:10]
 
 
+# T257-OVERNIGHT-FLOW-BRIEF Phase 3: the "day layout" attention list — a symbol qualifies
+# only when >=2 of 4 independent, already-computed signals point at it, per the design's own
+# "an attention list, not a plan-of-trades" framing (.claude/CLAUDE.md, Research: Tier 257,
+# section 3, Phase 3). Each reason is a measured fact (a real gap %, a real sentiment tier, a
+# real earnings date, a real high/critical macro release today) — this deliberately never
+# emits a buy/sell direction call of its own, which is what the signal pipeline + T257-TOP3
+# conviction alert are for, with their own tracked accuracy; duplicating a direction call here
+# with no outcome tracking would be the dishonest version the design doc explicitly rejects.
+_ATTENTION_GAP_THRESHOLD_PCT = 2.0  # a real, non-noise premarket move
+_ATTENTION_NOTABLE_SENTIMENTS = {"strongly_bullish", "bullish", "bearish"}  # excludes
+# "neutral"/"slightly_bearish" as too weak on their own to flag — see the live options-flow
+# endpoint's own 5-tier ladder (services/market-data/src/api/routes.py's get_options_flow())
+# for why these three specifically read as genuinely lopsided, not marginal.
+
+
+def _build_attention_list(
+    symbols: set[str],
+    earnings_by_symbol: dict,
+    premarket_movers: list[dict],
+    recent_options_flow: list[dict],
+    macro_has_high_impact: bool,
+) -> list[dict]:
+    """Score each of `symbols` against the 4 Phase-3 inputs, keeping only symbols with >=2
+    hits. Pure function (no DB/network) so it's independently testable — send_premarket_brief()
+    supplies the already-computed inputs it has in scope for every other section.
+
+    macro_has_high_impact is a single market-wide bool (today has >=1 high/critical macro
+    release), not per-symbol — every qualifying symbol shares that one reason in common when
+    it applies, matching the design's own "macro release today" bullet as a market-wide fact,
+    not something scoped to one stock.
+    """
+    gappers_by_symbol = {m["symbol"]: m for m in premarket_movers}
+    flow_by_symbol = {f["symbol"]: f for f in recent_options_flow}
+
+    results: list[dict] = []
+    for sym in sorted(symbols):
+        reasons: list[str] = []
+
+        gap = gappers_by_symbol.get(sym)
+        if gap is not None and abs(gap.get("change_pct") or 0) >= _ATTENTION_GAP_THRESHOLD_PCT:
+            reasons.append(f"Premarket gap {gap['change_pct']:+.1f}% vs. yesterday's close")
+
+        flow = flow_by_symbol.get(sym)
+        if flow is not None:
+            sentiment = flow.get("sentiment")
+            has_whale = (flow.get("whale_count") or 0) > 0
+            if sentiment in _ATTENTION_NOTABLE_SENTIMENTS or has_whale:
+                note = f"Options flow {(sentiment or 'unknown').replace('_', ' ')}"
+                if has_whale:
+                    note += f" · {flow['whale_count']} whale trade{'s' if flow['whale_count'] != 1 else ''}"
+                reasons.append(note)
+
+        if sym in earnings_by_symbol:
+            reasons.append("Reports earnings today")
+
+        if macro_has_high_impact:
+            reasons.append("High/critical macro release scheduled today")
+
+        if len(reasons) >= 2:
+            results.append({"symbol": sym, "reasons": reasons})
+
+    return results
+
+
 def send_premarket_brief(markets: list | None = None) -> None:
     """T249-MARKETMOVER-P3: pre-market brief — combines the three already-shipped MarketMover
     pieces (P0 release-date calendar, P1 earnings day-of reminders, P2 macro fast-reactions)
@@ -1582,7 +1646,10 @@ def send_premarket_brief(markets: list | None = None) -> None:
     FLOW-BRIEF Phase 2: yesterday's late-day options flow via _fetch_recent_options_flow() — a
     real observed positioning read (cp_ratio, whale premium) for the bounded set of symbols
     compute_options_flow_snapshots_eod() persisted the evening before, never a live yfinance
-    call from this report path.
+    call from this report path, (7) T257-OVERNIGHT-FLOW-BRIEF Phase 3: a per-recipient "day
+    layout" attention list via _build_attention_list() — a symbol only qualifies when >=2 of
+    (premarket gap, unusual options flow, earnings today, a high/critical macro release today)
+    independently point at it; never an auto-generated buy/sell call of its own.
 
     Called once per day per market, ~30-40 min before that market's open — mirrors
     send_morning_digest's own cadence choice for the same reason (enough lead time to read
@@ -1678,6 +1745,12 @@ def send_premarket_brief(markets: list | None = None) -> None:
             if "US" in markets:
                 recent_options_flow = _fetch_recent_options_flow(session)
 
+            # ── Section 7 (T257-OVERNIGHT-FLOW-BRIEF Phase 3): "day layout" attention list —
+            # per-recipient, computed inside the send loop below since it depends on each
+            # user's own symbol set; macro_has_high_impact is the one market-wide input,
+            # computed once here rather than per-recipient.
+            macro_has_high_impact = bool(macro_today)
+
             if not macro_today and not any(sym in earnings_by_symbol for syms in user_symbols.values() for sym in syms) and not recent_reactions and not overnight_futures and not premarket_movers and not recent_options_flow:
                 _record_job_status(_job_name, "ok", time.monotonic() - _t0)
                 log.info("premarket_brief.nothing_to_report", markets=markets)
@@ -1689,6 +1762,7 @@ def send_premarket_brief(markets: list | None = None) -> None:
             _rc = _get_redis()
             sent = 0
             errors = 0
+            attention_symbols_total = 0
             for uid, user in recipients.items():
                 # AUD256-PREMARKETBRIEF-DEDUP: a restart within the misfire-grace window
                 # (misfire_grace_time=60 on this job's registration) could otherwise re-fire
@@ -1707,6 +1781,11 @@ def send_premarket_brief(markets: list | None = None) -> None:
                     for sym in sorted(user_symbols.get(uid, set()))
                     if sym in earnings_by_symbol
                 ]
+                attention_list = _build_attention_list(
+                    user_symbols.get(uid, set()), earnings_by_symbol, premarket_movers,
+                    recent_options_flow, macro_has_high_impact,
+                )
+                attention_symbols_total += len(attention_list)
                 # AUD256-PREMARKETBRIEF-ISOLATION: previously unguarded — one recipient
                 # raising (a malformed email address, a transient SMTP error) would propagate
                 # to the outer except, aborting the whole batch and silently skipping every
@@ -1723,6 +1802,7 @@ def send_premarket_brief(markets: list | None = None) -> None:
                         overnight_futures=overnight_futures,
                         premarket_movers=premarket_movers,
                         options_flow=recent_options_flow,
+                        attention_list=attention_list,
                     )
                 except Exception as _send_exc:
                     ok = False
@@ -1738,7 +1818,8 @@ def send_premarket_brief(markets: list | None = None) -> None:
             _record_job_status(_job_name, "ok", time.monotonic() - _t0)
             log.info("premarket_brief.done", markets=markets, sent=sent, errors=errors, recipients=len(recipients),
                       macro_events=len(macro_today), reactions=len(recent_reactions), futures=len(overnight_futures),
-                      premarket_movers=len(premarket_movers), options_flow=len(recent_options_flow))
+                      premarket_movers=len(premarket_movers), options_flow=len(recent_options_flow),
+                      attention_symbols_total=attention_symbols_total)
     except Exception as exc:
         log.error("premarket_brief.failed", markets=markets, error=str(exc), exc_info=True)
         _record_job_status(_job_name, "error", time.monotonic() - _t0, str(exc))
