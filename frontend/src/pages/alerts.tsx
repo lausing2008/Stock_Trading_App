@@ -163,7 +163,7 @@ function BulkPatternAlertCard({ onDone }: { onDone: () => void }) {
         <h2 style={{ margin: '0 0 4px', fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>Bulk Pattern Alert — Apply to Watchlist</h2>
         <p style={{ margin: '0 0 16px', fontSize: '12px', color: '#475569' }}>Creates one alert per stock in the selected watchlist.</p>
         <form onSubmit={handleApply}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', alignItems: 'end' }}>
+          <div className="alerts-bulk-pattern-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', alignItems: 'end' }}>
             <div>
               <label style={lbl}>Watchlist</label>
               <select value={listId} onChange={e => setListId(e.target.value === '' ? '' : Number(e.target.value))} required style={inp}>
@@ -414,7 +414,7 @@ function PriceAlertsTab() {
         <div style={{ padding: '20px 24px' }}>
           <h2 style={{ margin: '0 0 18px', fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>Create Price Alert</h2>
           <form onSubmit={handleCreate}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 200px 1fr', gap: '12px', alignItems: 'end' }}>
+            <div className="alerts-price-form-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 200px 1fr', gap: '12px', alignItems: 'end' }}>
               <div>
                 <label style={lbl}>Stock</label>
                 <select value={symbol} onChange={e => setSymbol(e.target.value)} required style={inp}>
@@ -854,7 +854,7 @@ function SignalAlertsTab() {
         <div style={{ padding: '20px 24px' }}>
           <h2 style={{ margin: '0 0 16px', fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>Add Subscription</h2>
           <form onSubmit={handleAdd}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 120px 1fr auto', gap: '12px', alignItems: 'end' }}>
+            <div className="alerts-signal-form-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 120px 1fr auto', gap: '12px', alignItems: 'end' }}>
               <div>
                 <label style={lbl}>Stock</label>
                 <select value={addSymbol} onChange={e => setAddSymbol(e.target.value)} required style={inp}>
@@ -922,6 +922,7 @@ function SignalAlertsTab() {
             <div style={{ fontSize: '12px' }}>Add stocks above to get notified when the AI signal improves.</div>
           </div>
         ) : (
+          <div className="alerts-table-scroll">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {subscriptions.map(sub => {
               const sig = sigMap[sub.symbol];
@@ -1040,6 +1041,7 @@ function SignalAlertsTab() {
                 </div>
               );
             })}
+          </div>
           </div>
         )}
       </div>

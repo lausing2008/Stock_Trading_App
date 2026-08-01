@@ -10822,3 +10822,90 @@ docker exec stockai-signal-engine-1 curl -s -X POST 'http://localhost:8005/signa
 docker exec stockai-signal-engine-1 curl -s 'http://localhost:8005/watchdog_self_tuning_report' \
   -H "Authorization: Bearer <token>"
 ```
+
+---
+
+## Feature Reference: T230-UX-MOBILE-RESPONSIVE-3 — alerts.tsx Now Collapses on Mobile (Built 2026-08-01)
+
+**Continues the same incremental page-by-page pass** already run against stock detail (twice),
+positions.tsx, and index.tsx — each of those passes' own "found nothing else" claim was
+explicitly NOT trusted for the next page; instead, `alerts.tsx` was picked because the prior
+pass's own exhaustive grep (2026-07-30) had already named it as the next real, deferred
+candidate (a 9-fixed-column subscription row), and a fresh grep against the current file
+confirmed exactly 4 rigid grids remained — no more, no fewer than the prior pass's own count.
+
+**The 4 grids**: 3 create-alert form rows (bulk-pattern watchlist/pattern/threshold, price-alert
+stock/condition/value, signal-subscription stock/horizon/email) — all simple 2-3 column panels
+collapsed to `1fr` under 767px via new `.alerts-bulk-pattern-grid`/`.alerts-price-form-grid`/
+`.alerts-signal-form-grid` classes, matching the established `.stock-detail-*-grid`/
+`.positions-*-grid` pattern (base rule matches the pre-existing inline style exactly — a no-op
+above 768px). The 4th — the subscriptions LIST, a 9-fixed-column row (Symbol/Horizon/Email/
+Signal/Confidence/Last Sent/Cooldown/Toggle/Delete) rendered once per subscription — got the
+same different treatment the positions table needed before it: forcing 9 columns to `1fr` would
+destroy the row's alignment entirely, so it's wrapped in a new `.alerts-table-scroll` class
+(`overflow-x: auto` + a 760px `min-width` floor) instead. Deliberately a NEW class, not a reuse
+of `.positions-table-scroll` — sharing a class name across two unrelated pages risks a future
+change to one page's `min-width` silently affecting the other.
+
+**One thing checked and correctly left alone**: the page's OTHER list (`PriceAlertsTab`'s own
+alert rows, a separate section from the SignalAlert subscriptions list above) was confirmed
+already mobile-safe via grep — it uses `display: 'flex'`/`flexWrap: 'wrap'`, not a rigid grid —
+so no fix was needed there. This is why the fix count matches the prior pass's own "4 grids"
+tally exactly rather than needing a 5th.
+
+**Verification**: `tsc --noEmit` clean, full 89-test frontend vitest suite unaffected, full
+`next build` (51 routes) clean, and confirmed the actual COMPILED output contains the fix, not
+just correct-looking source — grepped `.next/static/css/*.css` for all 4 new class rules
+(including the combined `@media (max-width: 767px)` selector correctly bundling all 3 form-grid
+classes together) and grepped the compiled `alerts-*.js` chunk for both new class names.
+
+**Still no real device/browser verification performed** — same standing limitation already
+noted on every prior page in this series (no browser/device-emulator tool available in this
+environment).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-frontend-1 sh -c "grep -o 'alerts-table-scroll[^}]*}\|alerts-bulk-pattern-grid[^}]*}' /app/.next/static/css/*.css"
+docker exec stockai-frontend-1 sh -c "grep -l 'alerts-table-scroll' /app/.next/static/chunks/pages/alerts-*.js"
+```
+If either shows nothing, the CSS/JS didn't compile/deploy correctly — confirm a real frontend
+rebuild (not a `docker cp` hotfix — this is CSS/JSX baked into the Next.js build) actually ran.
+
+**Remaining deferred pages** (from the prior pass's own exhaustive 2026-07-30 audit, still
+open, not silently dropped): `journal.tsx` (3 grids, incl. a 9-fixed-column trade row),
+`research/[symbol].tsx` (9 identical `1fr 1fr` tab-panel grids), `portfolio.tsx`, `board.tsx`,
+`strategies.tsx` (one grid has the exact `240px 1fr` shape as the original stock-detail bug),
+`decide.tsx`, `regime.tsx`, `insider.tsx`, `congress.tsx`, `sector-rotation.tsx`,
+`intelligence.tsx`, `forecast.tsx`, `settings.tsx`, and several lower-traffic admin-only pages.
+
+---
+
+## Recurring Issue: T230-NEWS-REALTIME — Stale Tracker Entry, Same Staleness Pattern As SE-F2/aud14 (Corrected 2026-08-01)
+
+**Found via a routine "next improvements" survey** — the tracker entry claimed real-time news
+was still `todo`, deferred because it "requires a paid real-time news subscription (Benzinga
+Pro ~$40/mo or Polygon.io). Not feasible without upgrading data sources." Verified directly
+against current code before trusting that claim (per this file's own standing "verify tracker
+status in both directions" discipline) and found it false: `T259-NEWS-INTELLIGENCE` (2026-07-27,
+already documented at length elsewhere in this file) built a full standalone
+`news-intelligence` service (port 8011) with a genuine PUSH-based real-time source — an Alpaca
+news WebSocket (`wss://stream.data.alpaca.markets/v1beta1/news`,
+`services/news-intelligence/src/services/alpaca_source.py`) with auto-reconnect, plus 3 polled
+sources (PR Newswire, Business Wire, SEC EDGAR real-time filings) on 1-2 minute cycles — all
+materially faster than the 30-60 minute yfinance/Google-News staleness this entry's own `what`
+text described. The real gap was already closed under a DIFFERENT tracker ID with no
+cross-reference back to this one — the exact SE-F2/aud14 staleness pattern already documented
+multiple times in this file, just recurring on a new item.
+
+**Fix applied**: flipped `T230-NEWS-REALTIME`'s `defaultStatus` to `'done'` with an
+`implementedNote` cross-referencing `T259-NEWS-INTELLIGENCE` and noting the one real
+difference from the original ask — Alpaca's free-tier news WebSocket was used instead of the
+named paid Benzinga/Polygon subscription, achieving the same real-time-push goal without the
+paid cost.
+
+**Design invariant reinforced (yet again)**: whenever a broader ask gets closed under a
+DIFFERENT, later tracker id (a common pattern in this tracker), the ORIGINAL item must be
+updated too, or it stays a standing false-positive for every future "what's still open" survey.
+Always verify a `todo`-tagged item's actual current-code status before either building it fresh
+or reporting it as a real gap — this is now a repeatedly-recurring category of finding in this
+tracker's own history, not a one-off.

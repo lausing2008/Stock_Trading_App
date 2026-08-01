@@ -85,6 +85,30 @@ a { color: inherit; text-decoration: none; }
   }
 }
 
+/* T230-UX-MOBILE-RESPONSIVE (alerts.tsx pass): same fixed-N-up-grid bug class as the stock
+   detail/positions/dashboard fixes above. 3 form-field rows (bulk-pattern-alert watchlist/
+   pattern/threshold; price-alert stock/condition/value; signal-subscription stock/horizon/
+   email) are simple 2-3 column panels that stack cleanly under 1fr. The subscriptions LIST is
+   different — a 9-fixed-column row (Symbol/Horizon/Email/Signal/Confidence/Last Sent/Cooldown/
+   Toggle/Delete) rendered once per subscription — forcing it to 1fr would destroy the row's
+   column alignment the same way the positions table would have, so it gets the identical
+   .positions-table-scroll-style horizontal-scroll treatment instead (a new, alerts-scoped
+   class rather than reusing .positions-table-scroll directly, since sharing a class name
+   across unrelated pages risks an unrelated future change to one page's min-width silently
+   affecting the other). */
+.alerts-bulk-pattern-grid { grid-template-columns: 1fr 1fr 1fr; }
+.alerts-price-form-grid { grid-template-columns: 1fr 200px 1fr; }
+.alerts-signal-form-grid { grid-template-columns: 1fr 120px 1fr auto; }
+@media (max-width: 767px) {
+  .alerts-bulk-pattern-grid,
+  .alerts-price-form-grid,
+  .alerts-signal-form-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+.alerts-table-scroll { overflow-x: auto; }
+.alerts-table-scroll > * { min-width: 760px; }
+
 .fixed { position: fixed; }
 .absolute { position: absolute; }
 .relative { position: relative; }
