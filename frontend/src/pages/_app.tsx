@@ -99,7 +99,6 @@ const NAV_GROUPS: NavGroupDef[] = [
     items: [
       { label: 'Strategies',      href: '/strategies' },
       { label: 'Alerts',          href: '/alerts' },
-      { label: 'Alerts Guide',    href: '/alerts-guide', color: '#f59e0b', tag: 'new' },
       { label: 'Decision Engine', href: '/decide',   color: '#34d399', tag: 'new' },
       { label: 'Market Regime',   href: '/regime',   color: '#6366f1', tag: 'new' },
       { label: 'Insider Trading', href: '/insider',  color: '#fb923c' },
@@ -110,6 +109,8 @@ const NAV_GROUPS: NavGroupDef[] = [
     label: 'Learning',
     items: [
       { label: 'Platform Guide', href: '/learn' },
+      { label: 'Alerts Guide',   href: '/alerts-guide', color: '#f59e0b', tag: 'new' },
+      { label: 'Watchlist Rotation — How It Works', href: '/watchlist-rotation-explainer', color: '#f59e0b', tag: 'new' },
     ],
   },
   {
@@ -126,7 +127,6 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Signal Tuning',    href: '/signal-tuning',    color: '#a78bfa', tag: 'new' },
       { label: 'Trade Performance', href: '/trade-performance', color: '#34d399' },
       { label: 'Watchlist Performance', href: '/watchlist-performance', color: '#f59e0b', tag: 'new' },
-      { label: 'Watchlist Rotation — How It Works', href: '/watchlist-rotation-explainer', color: '#f59e0b', tag: 'new' },
       { label: 'Signal Log',       href: '/admin-signals',    color: '#f87171' },
       { label: 'System Health',    href: '/admin-health',     color: '#38bdf8' },
       { label: 'AI Assistant Features', href: '/admin-ai-features', color: '#a78bfa', tag: 'new' },
