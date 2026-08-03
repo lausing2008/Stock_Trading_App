@@ -109,6 +109,23 @@ a { color: inherit; text-decoration: none; }
 .alerts-table-scroll { overflow-x: auto; }
 .alerts-table-scroll > * { min-width: 760px; }
 
+/* T230-UX-MOBILE-RESPONSIVE (research/[symbol].tsx pass): the report page has 9 BYTE-IDENTICAL
+   `1fr 1fr` panel grids across its tabs (technical/fundamental checklist rows, DCF assumptions,
+   risk factors, etc.) — the simplest fix in this whole series, since one class covers all 9
+   with no shape variation to account for. A 10th grid on the same page
+   (`repeat(auto-fill, minmax(160px, 1fr))`, the peer-comparison card row) is already
+   self-wrapping and deliberately NOT touched here. This is a DIFFERENT class from the
+   pre-existing `.research-tab-panel` (line 437 already carries both) — that one only has a
+   `@media print` rule (forces `display:block` for PDF/print export) and is unrelated to
+   screen-width responsiveness; reusing it here would have been a coincidental name collision,
+   not a real shared concern, so a dedicated class was added instead. */
+.research-panel-grid { grid-template-columns: 1fr 1fr; }
+@media (max-width: 767px) {
+  .research-panel-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
 .fixed { position: fixed; }
 .absolute { position: absolute; }
 .relative { position: relative; }

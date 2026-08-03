@@ -10909,3 +10909,65 @@ updated too, or it stays a standing false-positive for every future "what's stil
 Always verify a `todo`-tagged item's actual current-code status before either building it fresh
 or reporting it as a real gap — this is now a repeatedly-recurring category of finding in this
 tracker's own history, not a one-off.
+
+---
+
+## Feature Reference: T230-UX-MOBILE-RESPONSIVE-4 — research/[symbol].tsx Now Collapses on Mobile (Built 2026-08-02)
+
+**Continues the same incremental page-by-page pass** (stock detail twice, positions.tsx,
+index.tsx, alerts.tsx) — `research/[symbol].tsx` was picked because the prior pass's own
+exhaustive grep (2026-07-30) had already named it as a deferred candidate with "9 identical
+`1fr 1fr` tab-panel grids, fixable in one shared CSS rule." A fresh grep against the current
+file confirmed exactly 9 such grids, plus a 10th (`repeat(auto-fill, minmax(160px, 1fr))`, the
+peer-comparison card row) already self-wrapping and correctly left untouched.
+
+**The cheapest instance of this bug class fixed so far** — all 9 grids are BYTE-IDENTICAL
+(`display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px'`), so this was one new class
+(`.research-panel-grid`) applied 9 times plus one `@media (max-width: 767px)` block, with no
+shape variation to account for (unlike `alerts.tsx`'s 4 differently-shaped grids) and no dense-
+table scroll-wrapper edge case (unlike `positions.tsx`'s/`alerts.tsx`'s table rows).
+
+**One real name-collision check performed before touching anything**: line 437's grid already
+carried a `research-tab-panel` class — before assuming that class already handled layout
+responsiveness (which would have made this fix a no-op, or worse, meant reusing it for a
+different concern), traced its only rule directly: a `@media print` block (in an inline
+`<style>` tag at the bottom of the page component) that forces `display: block !important` for
+PDF/print export — completely unrelated to screen-width responsiveness. Added the new
+`research-panel-grid` class ALONGSIDE the existing one on that single line, rather than
+repurposing `research-tab-panel` itself, so print behavior and screen-width behavior stay two
+genuinely independent concerns rather than an accidental shared name.
+
+**A real "where did the fix actually land" check, not assumed**: this page's component is
+deduped by Next.js into a SHARED chunk (`9915-*.js`) rather than its own
+`research/[symbol]-*.js` route chunk — the same dedup this file already documented when the
+Research tab was added to `stock/[symbol].tsx` (that page imports and renders the same
+`ResearchPage` component directly). An initial verification grep against the page's own
+per-route chunk found nothing and could have been mistaken for the fix not landing at all;
+re-checked with a repo-wide grep across all of `.next/static/chunks/` instead, which found it
+correctly bundled into the shared chunk.
+
+**Verification**: `tsc --noEmit` clean, full 89-test frontend vitest suite unaffected, full
+`next build` (51 routes) clean, and confirmed the actual COMPILED output contains the fix —
+both `.next/static/css/*.css` (the base rule + the `max-width:767px` override) and the shared
+JS chunk it was actually bundled into (found via the repo-wide grep above, not the page's own
+chunk).
+
+**Still no real device/browser verification performed** — same standing limitation noted on
+every prior page in this series (no browser/device-emulator tool available in this
+environment).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-frontend-1 sh -c "grep -o 'research-panel-grid[^}]*}' /app/.next/static/css/*.css"
+docker exec stockai-frontend-1 sh -c "grep -rl 'research-panel-grid' /app/.next/static/chunks/"
+```
+If the CSS check passes but the JS check finds nothing in the page's own `research/[symbol]-
+*.js` chunk, don't conclude the fix is missing — grep the WHOLE `.next/static/chunks/`
+directory first, since this page's component is deduped into a shared chunk, not its own.
+
+**Remaining deferred pages** (from the T230-UX-MOBILE-RESPONSIVE-3 pass's own exhaustive
+2026-07-30 audit, still open, not silently dropped): `journal.tsx` (3 grids, incl. a
+9-fixed-column trade row), `portfolio.tsx`, `board.tsx`, `strategies.tsx` (one grid has the
+exact `240px 1fr` shape as the original stock-detail bug), `decide.tsx`, `regime.tsx`,
+`insider.tsx`, `congress.tsx`, `sector-rotation.tsx`, `intelligence.tsx`, `forecast.tsx`,
+`settings.tsx`, and several lower-traffic admin-only pages.

@@ -434,7 +434,7 @@ export default function ResearchPage() {
 
           {/* ── Tab: Summary ─────────────────────────────────────────────────── */}
           {(tab === 'Summary' || printMode) && (
-            <div className="research-tab-panel" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+            <div className="research-tab-panel research-panel-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
               <Section title="Bullish Factors">
                 {report.executive_summary.bullish_factors.map((f, i) => (
                   <div key={i} style={{ display: 'flex', gap: '8px', padding: '7px 0', borderBottom: '1px solid rgba(255,255,255,0.03)', fontSize: '13px', color: '#94a3b8', lineHeight: 1.4 }}>
@@ -479,7 +479,7 @@ export default function ResearchPage() {
                   </div>
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                <div className="research-panel-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
                   <Section title="Trend Analysis">
                     <DataRow label="Price vs 50-day SMA" value={t.price_vs_50_ema.ema ? `${fmt$(t.price_vs_50_ema.ema)} (${fmtPct(t.price_vs_50_ema.pct_diff)})` : '—'} color={t.price_vs_50_ema.value === 'above' ? '#4ade80' : '#f87171'} />
                     <DataRow label="Price vs 200-day SMA" value={t.price_vs_200_ema.ema ? `${fmt$(t.price_vs_200_ema.ema)} (${fmtPct(t.price_vs_200_ema.pct_diff)})` : '—'} color={t.price_vs_200_ema.value === 'above' ? '#4ade80' : '#f87171'} />
@@ -546,7 +546,7 @@ export default function ResearchPage() {
                   <div style={{ fontSize: '28px', fontWeight: 800, color: scoreColor(f.score) }}>{f.score}</div>
                   <div style={{ fontSize: '14px', color: '#64748b' }}>Fundamental Score</div>
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                <div className="research-panel-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
 
                   <Section title="Revenue &amp; EPS">
                     <DataRow label="Revenue Growth YoY" value={f.revenue.yoy_growth != null ? `${fmtPct(f.revenue.yoy_growth)}` : '—'}
@@ -613,7 +613,7 @@ export default function ResearchPage() {
                   <div style={{ fontSize: '28px', fontWeight: 800, color: scoreColor(report.scores.company) }}>{report.scores.company}</div>
                   <div style={{ fontSize: '14px', color: '#64748b' }}>Company Score</div>
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                <div className="research-panel-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
 
                   <Section title="Business Model">
                     <p style={{ fontSize: '13px', color: '#94a3b8', lineHeight: 1.7, margin: 0 }}>{c.business_model}</p>
@@ -667,7 +667,7 @@ export default function ResearchPage() {
                     <div style={{ fontSize: '12px', color: '#475569' }}>Industry Status: {ind?.status}</div>
                   </div>
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                <div className="research-panel-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
 
                   <Section title="Industry Overview">
                     <DataRow label="Status" value={ind?.status ?? '—'} color={ind?.status === 'Growing' ? '#4ade80' : ind?.status === 'Declining' ? '#f87171' : '#facc15'} />
@@ -722,7 +722,7 @@ export default function ResearchPage() {
                   <div style={{ fontSize: '28px', fontWeight: 800, color: scoreColor(report.scores.economic) }}>{report.scores.economic}</div>
                   <div style={{ fontSize: '14px', color: '#64748b' }}>Economic Score</div>
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                <div className="research-panel-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
 
                   <Section title="Federal Reserve">
                     <DataRow label="Fed Policy" value={eco?.fed?.status ?? '—'} color={eco?.fed?.status === 'Cutting' ? '#4ade80' : eco?.fed?.status === 'Hiking' ? '#f87171' : '#facc15'} />
@@ -774,7 +774,7 @@ export default function ResearchPage() {
               { title: 'Layer 4 — Technical', items: cl.layer4_technical },
             ];
             return (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+              <div className="research-panel-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
                 {layers.map(({ title, items }) => {
                   const passes = items.filter(i => i.status === 'pass').length;
                   const warns = items.filter(i => i.status === 'warning').length;
@@ -800,7 +800,7 @@ export default function ResearchPage() {
             const ps = report.position_sizing;
             return (
               <div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                <div className="research-panel-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
 
                   <Section title="Entry Zones">
                     <div style={{ padding: '12px', borderRadius: '8px', background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)', marginBottom: '10px' }}>
@@ -917,7 +917,7 @@ export default function ResearchPage() {
                   )}
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                <div className="research-panel-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
 
                   <Section title="Biggest Risks">
                     {(v?.biggest_risks || []).map((r, i) => (
