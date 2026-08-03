@@ -3693,6 +3693,22 @@ def _weekly_full_refresh() -> None:
     _post(f"{_settings.signal_engine_url}/signals/tune_strategy")
     _record_job_status("tune_strategy_sent", "ok", 0.0)
 
+    # T232-SIG10-SELLGATE: backfill bearish_pillars_active onto resolved SELL outcomes, then
+    # sweep min_pillars_for_sell against that backfilled history — the symmetric SELL-side
+    # counterpart to the BUY-side min_pillars gate. Backfill must run first (the sweep only
+    # reads rows where bearish_pillars_active IS NOT NULL); both were built and manually
+    # verified but never scheduled, the same SELFIMPROVE-MISSING-SCHEDULE-REGISTRATIONS gap
+    # class as calibrate_ml_weight/tune_strategy above. Applies through the SAME generic
+    # stockai:style_tune:{H}:min_pillars_for_sell Redis key _get_style_tuned_param() already
+    # knows how to read — purely additive, no read-side changes needed.
+    log.info("scheduler.backfill_bearish_pillars_start")
+    _post(f"{_settings.signal_engine_url}/signals/backfill_bearish_pillars")
+    _record_job_status("backfill_bearish_pillars_sent", "ok", 0.0)
+
+    log.info("scheduler.tune_sell_pillars_start")
+    _post(f"{_settings.signal_engine_url}/signals/tune_sell_pillars")
+    _record_job_status("tune_sell_pillars_sent", "ok", 0.0)
+
     # PT-3: calibrate entry factor weights from closed paper trades.
     # Fits logistic regression on (rr_ratio, confidence, entry_score, kscore) vs win/loss.
     # Called directly (not via HTTP) because the service token has no DB user record.

@@ -18,9 +18,12 @@ Scope (deliberately narrower than the original 4-rule design — see the design 
      ("not_yet_available") rather than silently omitted, so a future reader of tune_history
      knows this promotion was never cross-validated against real trade outcomes.
 
-Still manually triggered — this module does not write to portfolio.config and does not run on
-a schedule (Phase 5). It writes one tune_history row per call, promoted or not, and returns a
-verdict for a human to act on.
+Scheduled weekly (see scheduler.py's _weekly_full_refresh(), SELFIMPROVE-PROMOTION-GATES-
+INCOMPLETE fix, 2026-08-02 or earlier) across all 4 styles x 2 markets, called directly (not
+via HTTP) since the route requires an admin User dependency the scheduler's service token
+doesn't have. This module still does NOT write to portfolio.config — a human still decides
+whether to act on a promoted verdict, since scheduling only adds observability (one more
+tune_history row per style/market per week), it never silently changes live trading behavior.
 """
 from __future__ import annotations
 

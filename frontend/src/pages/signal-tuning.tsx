@@ -15,7 +15,14 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
-import { api, type MlMetricsList, type MetaModelPromotionEntry, type PositionScalingPromotionEntry } from '@/lib/api';
+import {
+  api,
+  type MlMetricsList,
+  type MetaModelPromotionEntry,
+  type PositionScalingPromotionEntry,
+  type TuneHistoryRow,
+  type WatchdogSelfTuningReport,
+} from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -266,6 +273,20 @@ export default function SignalTuningPage() {
   const { data: promotionData } = useSWR(
     username ? 'promotion-history' : null,
     () => api.promotionHistory(),
+    { revalidateOnFocus: false },
+  );
+
+  // T233-SELFIMPROVE-DESIGN: closes the loop — every calibration mechanism already writes to
+  // tune_history and backfill_realized_ev already computes realized_ev_pct_after; neither had
+  // a human-facing surface before this.
+  const { data: tuneHistoryData } = useSWR(
+    username ? 'tune-history' : null,
+    () => api.tuneHistory({ limit: 30 }),
+    { revalidateOnFocus: false },
+  );
+  const { data: watchdogReportData } = useSWR(
+    username ? 'watchdog-self-tuning-report' : null,
+    () => api.watchdogSelfTuningReport(),
     { revalidateOnFocus: false },
   );
 
@@ -525,6 +546,96 @@ export default function SignalTuningPage() {
                 </table>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* T233-SELFIMPROVE-DESIGN: watchdog self-tuning retro-feedback report */}
+      {watchdogReportData && watchdogReportData.n_total_realized_rows > 0 && (
+        <div style={{ marginTop: 28, borderTop: '1px solid #1e293b', paddingTop: 18 }}>
+          <h2 style={{ color: '#94a3b8', fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+            Watchdog Self-Tuning Retro-Feedback
+          </h2>
+          <p style={{ color: '#64748b', fontSize: 11, margin: '0 0 14px' }}>
+            Did the watchdog&apos;s own past tighten/relax actions actually help? Realized EV is
+            computed once enough real outcomes have accumulated since the change
+            (backfill_realized_ev) — {watchdogReportData.n_total_realized_rows} watchdog actions
+            have a trustworthy verdict so far. Step sizes: +{watchdogReportData.watchdog_step} tighten,
+            -{watchdogReportData.watchdog_relax_step} relax.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+            {STYLES.map(style => {
+              const r = watchdogReportData.by_style[style];
+              if (!r) return null;
+              const hasData = r.n_tighten_actions > 0 || r.n_relax_actions > 0;
+              return (
+                <div key={style} style={{ background: '#0f172a', border: `1px solid ${STYLE_COLORS[style]}33`, borderRadius: 6, padding: 12 }}>
+                  <div style={{ color: STYLE_COLORS[style], fontWeight: 600, fontSize: 12, marginBottom: 8 }}>{style}</div>
+                  {!hasData ? (
+                    <div style={{ color: '#475569', fontSize: 11 }}>No realized watchdog actions yet</div>
+                  ) : (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 4 }}>
+                        <span style={{ color: '#64748b' }}>Tighten ({r.n_tighten_actions})</span>
+                        <span style={{ color: (r.mean_realized_ev_pct_after_tighten ?? 0) >= 0 ? '#4ade80' : '#f87171', fontWeight: 600 }}>
+                          {r.mean_realized_ev_pct_after_tighten != null ? `${r.mean_realized_ev_pct_after_tighten.toFixed(2)}%` : '—'}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 8 }}>
+                        <span style={{ color: '#64748b' }}>Relax ({r.n_relax_actions})</span>
+                        <span style={{ color: (r.mean_realized_ev_pct_after_relax ?? 0) >= 0 ? '#4ade80' : '#f87171', fontWeight: 600 }}>
+                          {r.mean_realized_ev_pct_after_relax != null ? `${r.mean_realized_ev_pct_after_relax.toFixed(2)}%` : '—'}
+                        </span>
+                      </div>
+                      {r.weak_tighten_note && (
+                        <div style={{ color: '#fbbf24', fontSize: 10 }}>{r.weak_tighten_note}</div>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* T233-SELFIMPROVE-DESIGN: recent calibration tuning attempts across every mechanism */}
+      {tuneHistoryData && tuneHistoryData.rows.length > 0 && (
+        <div style={{ marginTop: 28, borderTop: '1px solid #1e293b', paddingTop: 18 }}>
+          <h2 style={{ color: '#94a3b8', fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+            Recent Calibration Tuning Attempts
+          </h2>
+          <p style={{ color: '#64748b', fontSize: 11, margin: '0 0 14px' }}>
+            Every attempted tune across every mechanism (calibrate_ta_weights, tune_strategy,
+            tune_sell_pillars, the watchdog, etc.) — promoted or rejected, with the
+            train/validation EV that decided it. Last {tuneHistoryData.count} shown.
+          </p>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 640 }}>
+              <thead>
+                <tr>
+                  {['When', 'Mechanism', 'Style/Market', 'Verdict', 'Train EV%', 'Val EV%', 'Baseline EV%', 'N'].map((h, i) => (
+                    <th key={h} style={{ padding: '3px 8px', color: '#475569', fontWeight: 500, fontSize: 10, textAlign: i === 0 || i === 1 || i === 2 ? 'left' : 'right', textTransform: 'uppercase' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {tuneHistoryData.rows.map((row: TuneHistoryRow) => (
+                  <tr key={row.id} style={{ borderTop: '1px solid #1e293b' }}>
+                    <td style={{ padding: '4px 8px', color: '#94a3b8', fontSize: 10, whiteSpace: 'nowrap' }}>{new Date(row.ts).toLocaleString()}</td>
+                    <td style={{ padding: '4px 8px', color: '#e2e8f0' }}>{row.parameter_name}</td>
+                    <td style={{ padding: '4px 8px', color: '#64748b' }}>{[row.style, row.market].filter(Boolean).join(' / ') || '—'}</td>
+                    <td style={{ padding: '4px 8px', color: row.promoted ? '#4ade80' : '#f87171', fontWeight: 600 }}>
+                      {row.promoted ? 'Promoted' : 'Rejected'}
+                    </td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right', color: '#94a3b8' }}>{row.train_ev_pct != null ? row.train_ev_pct.toFixed(2) : '—'}</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right', color: '#e2e8f0' }}>{row.validation_ev_pct != null ? row.validation_ev_pct.toFixed(2) : '—'}</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{row.baseline_validation_ev_pct != null ? row.baseline_validation_ev_pct.toFixed(2) : '—'}</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{row.validation_n ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

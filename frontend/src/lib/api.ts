@@ -551,6 +551,19 @@ export const api = {
     meta_model_history: MetaModelPromotionEntry[];
     position_scaling_history: PositionScalingPromotionEntry[];
   }>('/admin/promotion-history'),
+  // T233-SELFIMPROVE-DESIGN: closes the "no human-facing surface for the retro-feedback loop"
+  // gap — tune_history is already written by every calibration mechanism, and
+  // realized_ev_pct_after (backfill_realized_ev) is already computed, but neither had a
+  // frontend consumer before this.
+  tuneHistory: (params?: { style?: string; market?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.style) q.set('style', params.style);
+    if (params?.market) q.set('market', params.market);
+    if (params?.limit) q.set('limit', String(params.limit));
+    const qs = q.toString();
+    return request<TuneHistoryResponse>(`/paper-portfolio/tune-history${qs ? `?${qs}` : ''}`);
+  },
+  watchdogSelfTuningReport: () => request<WatchdogSelfTuningReport>('/signals/watchdog_self_tuning_report'),
   healthDeep: () => request<ServiceHealthReport>('/health/deep'),
   mlMetrics: (model = 'xgboost') => request<MlMetricsList>(`/ml/metrics?model=${model}`),
   mlFeatureImportance: (symbol: string, model = 'xgboost') =>
@@ -1718,6 +1731,55 @@ export type PositionScalingPromotionEntry = {
   new_hit_rate: number | null;
   previous_hit_rate: number | null;
   n_candidates: number;
+};
+
+// T233-SELFIMPROVE-DESIGN: GET /paper-portfolio/tune-history — every attempted calibration
+// tune (promoted or rejected) across every mechanism (calibrate_ta_weights, tune_strategy,
+// tune_sell_pillars, the watchdog, etc.), with full before/after backtest numbers.
+export type TuneHistoryRow = {
+  id: number;
+  run_id: string;
+  ts: string;
+  parameter_class: string;
+  parameter_name: string;
+  style: string | null;
+  market: string | null;
+  old_value: Record<string, unknown> | null;
+  new_value: Record<string, unknown> | null;
+  train_window: [string, string];
+  validation_window: [string, string];
+  train_ev_pct: number | null;
+  validation_ev_pct: number | null;
+  baseline_validation_ev_pct: number | null;
+  validation_n: number | null;
+  approx_worst_trade_pct: number | null;
+  baseline_worst_trade_pct: number | null;
+  promoted: boolean;
+  gate_failures: string[] | null;
+  triggered_by: string | null;
+};
+
+export type TuneHistoryResponse = {
+  count: number;
+  rows: TuneHistoryRow[];
+};
+
+// GET /signals/watchdog_self_tuning_report — read-only diagnostic on the daily watchdog's own
+// historical effectiveness (tighten vs relax actions), grouped by style.
+export type WatchdogSelfTuningStyleReport = {
+  n_tighten_actions: number;
+  n_relax_actions: number;
+  mean_realized_ev_pct_after_tighten: number | null;
+  mean_realized_ev_pct_after_relax: number | null;
+  n_weak_tightens: number;
+  weak_tighten_note: string | null;
+};
+
+export type WatchdogSelfTuningReport = {
+  watchdog_step: number;
+  watchdog_relax_step: number;
+  by_style: Record<string, WatchdogSelfTuningStyleReport>;
+  n_total_realized_rows: number;
 };
 
 export type ServiceHealthResult = {
