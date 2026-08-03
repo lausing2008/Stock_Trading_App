@@ -101,7 +101,7 @@ const GATE_PIPELINE: GateRow[] = [
     gate: 'consecutive_losses', label: 'Consecutive-loss streak',
     type: 'portfolio', severity: 'hard',
     trigger: '3 consecutive losing trades without a winner.',
-    clears: 'Next trade closes positive.',
+    clears: 'Next trade closes positive. Only blocks NEW entries while an open trade still exists to close positive — if the portfolio has zero open trades while this gate is active, it self-clears automatically and allows one recovery entry rather than staying deadlocked forever.',
     hk_diff: 'Same 3-loss threshold as US — tightened from 5 after a 0% HK win-rate incident (T222).',
   },
   {
