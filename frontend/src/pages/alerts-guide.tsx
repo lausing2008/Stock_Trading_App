@@ -52,11 +52,18 @@ const USER_ALERTS: AlertRow[] = [
     note: 'The "conviction BUY" alert: only fires a BUY when 5 things line up at once — AI signal flips to BUY, confidence ≥60%, bullish analyst consensus, and K-Score/Technical/Momentum confluence ≥75. Exit/bearish transitions (BUY→HOLD/WAIT/SELL) always fire, no gate. Also folds in earnings-proximity reminders (1/2/3/5 days out) as one consolidated table, not a separate email per stock.',
   },
   {
-    job: 'earnings_reaction_check',
+    job: 'check_earnings_reactions',
     schedule: 'Every 1 min',
     scope: 'price-alert',
     cooldown: '7 days per (user, symbol, report date)',
-    note: 'Fires once a watched stock’s actual EPS has posted (within the last 2 days) — beat/missed/met, with the real surprise %. This is the "what just happened" half; the pre-market brief below covers the "what’s coming" half.',
+    note: 'Fires once a watched stock’s actual EPS has posted (within the last 2 days) — beat/missed/met, with the real surprise %. This is the "what just happened" half; the pre-market brief below covers the "what’s coming" half. See the known-limitations callout below for a real, sometimes multi-hour gap between when a company reports and when this data actually lands.',
+  },
+  {
+    job: 'check_earnings_impact_alerts',
+    schedule: 'Every 1 min',
+    scope: 'price-alert',
+    cooldown: 'One-shot per (stock, report date)',
+    note: 'The LLM-generated version of the row above: 2-3 sentences from Claude on what a beat/miss actually means and which sectors it plausibly helps or hurts, not just the raw beat/miss numbers. OFF by default — turn it on in Admin → AI Assistant Features. A separate background poll (check_earnings_impact_poll, every 5 min) does the actual generation; this job only delivers it once ready.',
   },
   {
     job: 'macro_reaction_alert_check',
@@ -466,6 +473,41 @@ export default function AlertsGuidePage() {
             Both alerts are also currently scoped to symbols this app already tracks (its own ~150-stock
             universe, or the bounded Price-Alert + top-K-by-K-Score set for the options-chain call) — they
             cannot discover a brand-new, not-yet-tracked stock the way a true market-wide screener could.
+          </li>
+        </ul>
+      </Callout>
+
+      <Callout tone="warn" title="Known limitations of the two earnings alerts, and what would make them better">
+        <ul style={{ paddingLeft: 18, lineHeight: 1.7 }}>
+          <li>
+            <strong>Fixed 2026-08-03</strong>: <Code>check_earnings_reactions</Code> /{' '}
+            <Code>check_earnings_impact_alerts</Code> only had eps_actual/surprise_pct to work with once
+            the underlying <Code>earnings_events</Code> row was synced — and that sync used to run
+            <strong> once/day at 06:30 UTC</strong>, before the US market even opened. A company reporting
+            during market hours or after the close (the normal case) never had its actual results picked
+            up until the next morning. A new job, <Code>sync_todays_earnings</Code>, now re-checks just
+            today’s/yesterday’s still-unresolved reporters every 15 minutes, 7am–9pm ET.
+          </li>
+          <li>
+            <strong>Still a real, unfixed gap</strong>: even with the sync running every 15 minutes, the
+            underlying data source (yfinance’s <Code>earnings_history</Code>) can itself lag the real
+            announcement by <strong>several hours</strong> — confirmed live 2026-08-03: PLTR’s real Q2
+            results (EPS beat, guidance raised) were reported and covered by real-time news at ~20:05 UTC,
+            but yfinance still hadn’t posted the actual EPS to its own earnings-history endpoint hours
+            later. No amount of polling more often fixes this — the bottleneck is Yahoo’s own aggregation
+            speed, not this app’s sync cadence.
+          </li>
+          <li>
+            <strong>Future action to close that gap</strong>: this app’s own real-time news pipeline
+            (<Code>/news</Code>, T259-NEWS-INTELLIGENCE) already has the real EPS/revenue-actual numbers
+            in structured headline text (e.g. <em>&quot;Q2 Adj. EPS $0.41 Beats $0.35 Estimate, Sales
+            $1.935B Beat $1.802B Estimate&quot;</em>) within minutes of the release — hours before yfinance
+            catches up. A future fix would parse these already-classified <Code>category=&quot;earnings&quot;</Code>{' '}
+            headlines as a faster fallback data source, feeding the SAME two alert jobs above so they can
+            fire same-hour instead of waiting on yfinance. Not built yet — a reliable parser needs to
+            handle correction/re-issue headlines from the same wire (a real print sometimes arrives twice,
+            once with a typo’d number) without double-firing or picking up the wrong value, which is a
+            genuinely fiddly parsing problem worth its own careful pass rather than a rushed regex.
           </li>
         </ul>
       </Callout>
