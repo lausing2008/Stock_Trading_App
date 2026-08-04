@@ -1046,6 +1046,20 @@ def _fetch_market_regime(cfg: dict) -> dict:
         "hmm_bear_prob": None,        # raw bear posterior probability
         "hmm_state": None,            # "bull" | "neutral" | "choppy" | "bear"
     }
+    # T232-DL-REGIME5X: this function was previously called fresh (a real yfinance download +
+    # full reclassification) on EVERY _refresh_5m tick during market hours, with no debounce
+    # of any kind — _regime_cache/_regime_cache_ts existed only as a 4-hour FAILURE fallback
+    # (see the except block below), never as a rate limiter for the normal happy path. Mirrors
+    # _fetch_hk_market_regime()'s own already-proven 30-minute freshness cache exactly — the
+    # SAME TTL, not a new number invented for this fix, since HK's value already has its own
+    # bug-fix history (T237-REG1/REG2) confirming it's safe in production. 30 minutes is also
+    # comfortably ABOVE this function's own _REGIME_HYSTERESIS_TICKS mechanism (2 consecutive
+    # calls, ~10 min at the 5-min refresh cadence) — hysteresis alone already guarantees no
+    # state CHANGE takes effect faster than ~10 min, so classifying against data no older than
+    # 30 min doesn't sacrifice any real responsiveness the rest of the system could act on.
+    import time as _time
+    if _regime_cache and (_time.time() - _regime_cache_ts) < 1800:
+        return dict(_regime_cache)
     try:
         import yfinance as yf
         # 300 days needed to warm up the 200EMA; group_by default = by column
