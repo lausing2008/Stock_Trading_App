@@ -190,11 +190,21 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function Callout({ tone, title, children }: { tone: 'info' | 'warn' | 'good'; title: string; children: React.ReactNode }) {
+function SubSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: '20px' }}>
+      <h3 style={{ fontSize: '13px', fontWeight: 700, color: '#cbd5e1', marginBottom: '8px' }}>{title}</h3>
+      <div style={{ fontSize: '13px', lineHeight: 1.7, color: '#94a3b8' }}>{children}</div>
+    </div>
+  );
+}
+
+function Callout({ tone, title, children }: { tone: 'info' | 'warn' | 'good' | 'example'; title: string; children: React.ReactNode }) {
   const colors = {
     info: { bg: 'rgba(56,189,248,0.08)', border: 'rgba(56,189,248,0.3)', text: '#38bdf8' },
     warn: { bg: 'rgba(239,68,68,0.08)', border: 'rgba(239,68,68,0.3)', text: '#f87171' },
     good: { bg: 'rgba(34,197,94,0.08)', border: 'rgba(34,197,94,0.3)', text: '#22c55e' },
+    example: { bg: 'rgba(168,85,247,0.08)', border: 'rgba(168,85,247,0.3)', text: '#a78bfa' },
   }[tone];
   return (
     <div style={{ padding: '12px 16px', borderRadius: '10px', background: colors.bg, border: `1px solid ${colors.border}`, marginBottom: '16px' }}>
@@ -346,6 +356,104 @@ export default function AlertsGuidePage() {
           send anything itself, but every alert above depends on it.
         </p>
         <WorkflowDiagram />
+      </Section>
+
+      <Section title="How to read the Options Expiry Watch (gamma-unwind) email">
+        <p>
+          This is the trickiest alert in the app to read, because it deliberately does NOT tell
+          you to buy or sell — it&rsquo;s the one alert built to say &ldquo;watch this closely,&rdquo;
+          full stop. Here&rsquo;s what every number in the email actually means, and how to use it.
+        </p>
+
+        <div style={{
+          padding: '16px 20px', borderRadius: 10, background: '#0d1424', border: '1px solid #1e293b',
+          marginTop: 12, marginBottom: 16, fontFamily: 'monospace', fontSize: '12.5px',
+        }}>
+          <div style={{ color: '#f59e0b', fontWeight: 700, marginBottom: 8 }}>
+            ⚡ Options Expiry Watch — directional watch, not a call
+          </div>
+          <div style={{ color: '#64748b', marginBottom: 10 }}>
+            1 stock with heavy, lopsided options open interest near the current price, close to expiry.
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', color: '#e2e8f0' }}>
+            <strong>GME</strong>
+            <span style={{ color: '#22c55e', fontWeight: 700 }}>72% calls</span>
+          </div>
+          <div style={{ color: '#64748b', marginTop: 2 }}>
+            $145.20 · 1,250 contracts near the money · expires in 2d (2026-08-06)
+          </div>
+        </div>
+
+        <SubSection title="What each field on the row means">
+          <ul style={{ paddingLeft: 18, margin: '4px 0 0', lineHeight: 1.7 }}>
+            <li><strong>72% calls</strong> (or puts) — of all the near-the-money option <em>open interest</em> (contracts still outstanding, not yet closed out), 72% sits on the call side. The alert only fires when one side holds <strong>≥55%</strong> — anything more balanced isn&rsquo;t a clean enough signal to report.</li>
+            <li><strong>1,250 contracts near the money</strong> — total call+put open interest at strikes within <strong>5%</strong> of the current price ($145.20 here → roughly the $138–$152 strike band). Each contract controls 100 shares, so this is a real, sizeable block — the alert also has a floor (≥500 total contracts) so a thin, illiquid chain never triggers it.</li>
+            <li><strong>expires in 2d (2026-08-06)</strong> — how close that block is to its own expiration. The alert only looks at expiries <strong>0–3 days out</strong>, since OI concentration and expiry proximity are what make this a live risk, not something that matters weeks in advance.</li>
+          </ul>
+        </SubSection>
+
+        <SubSection title="Calls, contracts, and 'is this all short selling?' — no">
+          <p>
+            This alert has <strong>nothing to do with short selling stock</strong> — that&rsquo;s
+            the separate <Code>short_squeeze_alert_check</Code> below. Here, &ldquo;calls&rdquo;
+            and &ldquo;puts&rdquo; are option <em>contracts</em>, and the number reported is open
+            interest in those contracts, not shares sold short.
+          </p>
+          <p>
+            What actually drives the alert is <strong>who sold those contracts</strong> — usually
+            market makers — and what they have to do to stay hedged as expiry approaches. A market
+            maker who sold a large block of calls is typically <em>short</em> that call position
+            (they took the other side of your trade), and to stay delta-neutral they may need to buy
+            or sell the underlying stock as price moves and expiry nears. <em>That hedging activity
+            in the stock itself</em> — not a short-seller being squeezed — is the mechanism this
+            alert is watching for.
+          </p>
+        </SubSection>
+
+        <SubSection title="Why the same setup can go either way">
+          <p>
+            A calls-heavy block near expiry has historically resolved two opposite ways, and this
+            app genuinely can&rsquo;t tell you which one is coming — that&rsquo;s the one honest
+            limitation baked into this alert:
+          </p>
+          <ul style={{ paddingLeft: 18, margin: '4px 0 0', lineHeight: 1.7 }}>
+            <li><strong>Upside continuation</strong> — if the market makers who sold those calls are net <em>short</em> the position, a rising stock forces them to keep buying more shares to stay hedged, which itself pushes price higher — a self-reinforcing move upward.</li>
+            <li><strong>&ldquo;Max pain&rdquo; pin or reversal</strong> — if they&rsquo;re net <em>long</em>, the opposite dynamic applies, and price can instead get pulled back toward the heaviest strike as expiry approaches.</li>
+          </ul>
+          <p style={{ marginTop: 8 }}>
+            Telling those two apart needs each contract&rsquo;s real gamma exposure and a model of
+            dealer positioning — neither is computed anywhere in this app today (see the
+            known-limitations callout below for exactly what a real upgrade would need). That&rsquo;s
+            why the email is framed as a watch, not a call.
+          </p>
+        </SubSection>
+
+        <Callout tone="example" title="Worked example 1 — calls-heavy, near expiry">
+          <div style={{ fontFamily: 'monospace', marginBottom: 6 }}>NVDA: $128.40 · 3,400 contracts near the money · expires TODAY (2026-08-04) · 81% calls</div>
+          Read: 81% of a large (3,400-contract) near-the-money block expires <em>today</em> — the
+          most time-pressured version of this signal, since dealers have to finish hedging before
+          the close. What to do: don&rsquo;t assume upside — check the AI Signal/Confluence Score
+          for a real directional lean first, then watch for unusually large intraday swings in
+          either direction into the close specifically. This is exactly the kind of day where price
+          can whipsaw more than the chart alone would suggest.
+        </Callout>
+
+        <Callout tone="example" title="Worked example 2 — puts-heavy, a few days out">
+          <div style={{ fontFamily: 'monospace', marginBottom: 6 }}>XYZ: $42.10 · 900 contracts near the money · expires in 3d (2026-08-07) · 63% puts</div>
+          Read: puts dominate here, not calls — the mirror case. 900 contracts and 63% concentration
+          both clear the alert&rsquo;s floors, but less dramatically than example 1 (lower OI, lower
+          concentration, more days left). What to do: treat this as a lower-urgency version of the
+          same watch — worth noting the date on your calendar, less worth staring at minute-to-minute
+          yet. As expiry gets closer, concentration and urgency both tend to build.
+        </Callout>
+
+        <Callout tone="warn" title="What NOT to do with this alert">
+          Don&rsquo;t treat &ldquo;calls dominant&rdquo; as a buy signal or &ldquo;puts dominant&rdquo;
+          as a sell signal on its own — that&rsquo;s the one mistake this whole alert is designed to
+          prevent. Pair it with the stock&rsquo;s real AI Signal, Confluence Score, or your own
+          directional read before acting; use this alert to decide <em>when</em> to pay closer
+          attention, not <em>which way</em> to trade.
+        </Callout>
       </Section>
 
       <Section title="User-facing alerts">
