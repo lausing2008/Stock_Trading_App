@@ -1221,10 +1221,18 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
     """One email per recipient listing every symbol that NEWLY crossed into "shorts likely
     getting squeezed RIGHT NOW" territory this cycle: short_percent_of_float >= 15 AND the
     stock is already up >=3% intraday. Each dict: {symbol, short_percent_of_float, change_pct,
-    price}. Explicitly framed as a BUY-direction signal — the thesis is that heavily-shorted
-    sellers are being forced to cover into a rise already in progress, adding buying pressure
-    on top of whatever started the move. Reports the MEASURED setup, never a claim that the
-    squeeze will keep going — that depends on the move continuing, which this cannot predict.
+    price, game_plan (optional)}. Explicitly framed as a BUY-direction signal — the thesis is
+    that heavily-shorted sellers are being forced to cover into a rise already in progress,
+    adding buying pressure on top of whatever started the move. Reports the MEASURED setup,
+    never a claim that the squeeze will keep going — that depends on the move continuing,
+    which this cannot predict.
+
+    game_plan (when present, from scheduler.py's _squeeze_game_plan()) reuses the SAME
+    entry/stop/target math the real paper-trading engine computes for every actual trade —
+    not separate, invented numbers for this alert — via _build_game_plan_for_style()'s
+    SWING-style profile. Omitted for a symbol with no recent SWING signal on file (a real,
+    honest gap — not every squeeze candidate has one), in which case the email simply skips
+    that section for that stock rather than showing a placeholder.
     """
     n = len(candidates)
     subject = f"🚀 Short Squeeze Alert (BUY signal) — {n} stock{'s' if n != 1 else ''} shorts may be covering"
@@ -1238,6 +1246,20 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
         price = c.get("price")
         chg_str = f"+{chg:.2f}%" if chg is not None else "—"
         price_str = f"${price:.2f}" if price else "—"
+        plan = c.get("game_plan")
+        plan_html = ""
+        plan_text = ""
+        if plan:
+            plan_html = (
+                f'<div style="font-size:11px;color:#475569;margin-top:6px;padding-top:6px;border-top:1px dashed #e2e8f0">'
+                f'Game plan (SWING): entry ~${plan["entry1"]:.2f} · stop ${plan["stop"]:.2f} · '
+                f'target ${plan["take_profit"]:.2f}'
+                f'</div>'
+            )
+            plan_text = (
+                f"    Game plan (SWING): entry ~${plan['entry1']:.2f}, "
+                f"stop ${plan['stop']:.2f}, target ${plan['take_profit']:.2f}\n"
+            )
         rows_html += (
             f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
             f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
@@ -1245,9 +1267,10 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
             f'<span style="font-size:13px;color:#22c55e;font-weight:700">{chg_str}</span>'
             f'</div>'
             f'<div style="font-size:12px;color:#64748b;margin-top:2px">{price_str} · <strong style="color:#ef4444">{spf:.1f}%</strong> of float short</div>'
+            f'{plan_html}'
             f'</div>'
         )
-        rows_text += f"  {sym}: {price_str}, {chg_str} today, {spf:.1f}% of float short\n"
+        rows_text += f"  {sym}: {price_str}, {chg_str} today, {spf:.1f}% of float short\n" + plan_text
 
     body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
   <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
@@ -1258,14 +1281,18 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
       Thesis: high short interest + a real rally already in progress means shorts may be
       forced to cover, adding buying pressure on top of the move. This reports a MEASURED
       setup, not a prediction the move continues — a squeeze can reverse just as fast as it
-      started. Not financial advice.
+      started. Game plan (where shown) is the same illustrative SWING-style entry/stop/target
+      math the paper-trading engine uses — a reference point, not a guaranteed fill. Not
+      financial advice.
     </p>
   </div>
 </body></html>"""
     body_text = (
         f"Short Squeeze Alert (BUY signal) — {n} stock{'s' if n != 1 else ''}\n\n"
         + rows_text
-        + "\nMeasured setup, not a prediction the move continues. Not financial advice.\n"
+        + "\nMeasured setup, not a prediction the move continues. Game plan (where shown) is "
+        + "illustrative SWING-style entry/stop/target math, not a guaranteed fill. "
+        + "Not financial advice.\n"
     )
     return send_email(to, subject, body_html, body_text)
 

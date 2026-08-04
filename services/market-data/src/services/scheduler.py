@@ -2059,6 +2059,42 @@ _SQUEEZE_MIN_SHORT_FLOAT = 15.0  # % of float — matches short-squeeze.tsx's "P
 _SQUEEZE_MIN_INTRADAY_MOVE_PCT = 3.0  # a real move already in progress, not just "green today"
 
 
+def _squeeze_game_plan(session, symbol: str, price: float) -> dict | None:
+    """Entry/stop/target for a short-squeeze candidate — reuses paper_trading_engine.py's own
+    _build_game_plan_for_style(), the SAME function that computes the real game plan every
+    paper trade is entered against, rather than inventing separate math for this alert.
+
+    Deliberately does NOT make a fresh yfinance call in this 1-minute-cadence loop — atr_14 is
+    read from the SWING signal's already-computed reasons dict (populated by the normal signal-
+    generation pipeline that runs on every tracked stock regardless of squeeze status), via one
+    cheap indexed query against the already-existing signals table. Falls back to the style's
+    plain percentage-based stop/target (no ATR) if no recent SWING signal exists for this
+    symbol — matches _build_game_plan_for_style()'s own documented ATR-unavailable behavior.
+
+    SWING is used as the horizon regardless of which watchlist/style the recipient actually
+    trades — a squeeze alert has no per-recipient style context to key off of (unlike the
+    paper-trading engine, which always knows its own portfolio's style), and SWING's own
+    entry/stop/target percentages are this app's most general-purpose, non-extreme profile.
+    """
+    from .paper_trading_engine import _build_game_plan_for_style
+
+    try:
+        stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
+        if stock is None:
+            return None
+        sig = session.execute(
+            select(Signal)
+            .where(Signal.stock_id == stock.id, Signal.horizon == SignalHorizon.SWING)
+            .order_by(Signal.ts.desc())
+            .limit(1)
+        ).scalars().first()
+        reasons = (sig.reasons or {}) if sig else {}
+        atr = reasons.get("atr_14")
+        return _build_game_plan_for_style(symbol, "SWING", price, reasons, atr)
+    except Exception:
+        return None
+
+
 def check_short_squeeze_alerts() -> None:
     """Classic short-squeeze alert: high short-interest-of-float AND a real upward price move
     already happening RIGHT NOW, intraday. Framed explicitly as a BUY-direction signal — the
@@ -2162,6 +2198,14 @@ def check_short_squeeze_alerts() -> None:
             if not candidates:
                 _record_job_status("check_short_squeeze_alerts", "ok", time.monotonic() - _t0)
                 return
+
+            # Game plan (entry/stop/target) only computed for symbols that actually cleared
+            # every filter above — never wasted on a candidate that got discarded earlier in
+            # the loop. One cheap indexed DB query per symbol, no yfinance call.
+            for sym, cand in candidates.items():
+                plan = _squeeze_game_plan(session, sym, float(cand["price"]))
+                if plan is not None:
+                    cand["game_plan"] = plan
 
             from .email_service import send_short_squeeze_email
             sent = 0
