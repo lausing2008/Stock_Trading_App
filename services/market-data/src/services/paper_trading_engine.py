@@ -211,8 +211,17 @@ def _place_broker_exit(session, trade: "PaperTrade", portfolio: "PaperPortfolio"
                 trade.pct_return  = round(total_pnl_pct * 100, 4)
                 log.info("broker.exit_filled", symbol=trade.symbol, fill_price=fill_p,
                          pnl=trade.pnl)
-        except Exception:
-            pass
+        except Exception as exc:
+            # AUD232-SILENT-BROKER-RECONCILE: the ORDER itself already placed successfully
+            # (broker.exit_order_placed logged above) — this block only reconciles OUR OWN
+            # accounting (exit_price/pnl/portfolio.current_cash) against the broker's real
+            # fill. A failure here (bad filled_avg_price, a division error, a DB write
+            # issue) previously vanished with zero trace, leaving our records silently
+            # desynced from the broker's actual filled state — the trade shows as closed
+            # with stale/wrong P&L while the real money moved correctly at the broker.
+            log.error("broker.exit_fill_reconciliation_failed", symbol=trade.symbol,
+                      order_id=order.order_id, error=str(exc))
+            trade.broker_error = f"exit fill reconciliation failed: {exc}"[:512]
     except Exception as exc:
         if not _handle_broker_error_if_token_rejected(session, portfolio, exc):
             log.warning("broker.exit_order_failed", symbol=trade.symbol, error=str(exc))
@@ -612,8 +621,12 @@ def _apply_tuned_hold_days() -> None:
         for style, result in data.items():
             if style in _STYLE_OVERRIDES and "best_max_hold_days" in result:
                 _STYLE_OVERRIDES[style]["max_hold_days"] = result["best_max_hold_days"]
-    except Exception:
-        pass
+    except Exception as exc:
+        # AUD232-SILENT-EXCEPTION-AUDIT: falls back to the hardcoded _STYLE_OVERRIDES
+        # defaults on any failure, which is a safe fallback — but a malformed tuned-params
+        # file silently means every style keeps stale/default hold-days config indefinitely
+        # with zero indication the tuning file even exists and isn't being applied.
+        log.warning("paper.tuned_hold_days_load_failed", error=str(exc))
 
 
 def _round_step(price: float) -> float:
@@ -3117,8 +3130,13 @@ def _record_de_shadow_comparison(
         _r = _rb.Redis.from_url(_gs_shadow().redis_url, decode_responses=True)
         _r.lpush(key, _json.dumps(payload))
         _r.ltrim(key, 0, _DE_SHADOW_LIST_MAXLEN - 1)
-    except Exception:
-        pass
+    except Exception as exc:
+        # AUD232-SILENT-EXCEPTION-AUDIT: still fail-silent (this function's own contract
+        # above — shadow logging must never affect the real entry decision), but a
+        # persistent failure here would silently repeat the exact "endpoint always
+        # returns zero data with no clue why" bug this whole mechanism was built to fix
+        # in the first place (see the docstring above) — now at least visible in logs.
+        log.warning("paper.de_shadow_comparison_write_failed", symbol=symbol, error=str(exc))
 
 
 # T241-P6: position-scaling shadow verdicts, same bounded-Redis-list pattern as
@@ -3188,8 +3206,12 @@ def _record_position_scaling_shadow_verdict(
             return  # already recorded this symbol+portfolio+day — skip the duplicate
         _r.lpush("ps:shadow:pending", _json.dumps(payload))
         _r.ltrim("ps:shadow:pending", 0, _PS_SHADOW_LIST_MAXLEN - 1)
-    except Exception:
-        pass
+    except Exception as exc:
+        # AUD232-SILENT-EXCEPTION-AUDIT: still fail-silent (this function's own contract
+        # above), but now visible — a persistent failure here silently starves the position-
+        # scaling gate's own promotion decision of the verdicts it needs to ever accumulate
+        # enough resolved outcomes to evaluate going live.
+        log.warning("paper.position_scaling_shadow_write_failed", symbol=symbol, error=str(exc))
 
 
 def resolve_position_scaling_shadow_verdicts(session) -> dict:
@@ -3271,8 +3293,22 @@ def resolve_position_scaling_shadow_verdicts(session) -> dict:
         try:
             r.lpush("ps:shadow:resolved", _json.dumps(resolved_payload))
             r.ltrim("ps:shadow:resolved", 0, _PS_SHADOW_LIST_MAXLEN - 1)
-        except Exception:
-            pass
+        except Exception as exc:
+            # AUD232-SILENT-SHADOW-DATALOSS: previously this failure was swallowed and the
+            # code fell straight through to to_remove.append(raw)/resolved_count += 1 below
+            # — permanently dropping this verdict into neither "pending" NOR "resolved" (a
+            # real data-loss bug, not just a missing log) while ALSO inflating the reported
+            # hit_rate denominator with an outcome that was never actually persisted. This
+            # feeds _retrain_position_scaling_gate/_check_position_scaling_gate_drift's own
+            # promotion decision for whether to let position-scaling touch real trades — a
+            # corrupted hit_rate here has real downstream consequences. Now logged AND left
+            # in ps:shadow:pending (skip this raw entry this run) so the next run retries it
+            # instead of losing it — matches the DB-hiccup branch's own "try again on the
+            # next run, don't lose it" convention a few lines above.
+            log.error("paper.position_scaling_shadow_resolve_write_failed",
+                      symbol=symbol, error=str(exc))
+            still_pending_count += 1
+            continue
         to_remove.append(raw)
         resolved_count += 1
         if outcome_correct:
