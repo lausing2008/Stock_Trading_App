@@ -15,6 +15,13 @@ class DecisionRequest(BaseModel):
     style: str = Field("SWING", description="SHORT | SWING | GROWTH | LONG")
     portfolio_id: int | None = None
     equity: float = Field(10_000.0, ge=0, description="Current portfolio equity in dollars")
+    # T232-DL-DUALSCORER-DEBT / T201: needed alongside `equity` above to reconstruct
+    # _scan_for_entries' own equity-floor circuit breaker (suspend all new entries once
+    # equity/initial_capital falls below equity_floor_pct, default 80%) — `equity` alone was
+    # already sent (used by sizer.py's illustrative position-sizing preview), but the ratio
+    # this gate needs requires BOTH values; unlike equity, initial_capital was never sent at
+    # all before this field existed.
+    initial_capital: float = Field(10_000.0, ge=0, description="Portfolio's starting capital, for the equity-floor circuit breaker")
     open_positions: int = Field(0, ge=0)
     max_positions: int = Field(6, ge=1)
     daily_pnl_pct: float = Field(0.0, description="Today's P&L as fraction of equity (e.g. -0.015)")

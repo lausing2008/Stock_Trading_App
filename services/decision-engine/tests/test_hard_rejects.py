@@ -41,6 +41,14 @@ class _FrozenDateTime(datetime):
             return cls._frozen_now.replace(tzinfo=None)
         return cls._frozen_now.astimezone(tz)
 
+    @classmethod
+    def utcnow(cls):
+        # T232-DL-DUALSCORER-DEBT / T226-A: the risk_off-override check uses datetime.utcnow()
+        # (matching the naive-ISO-string convention paper_trading_engine.py's own
+        # POST /paper-portfolio/risk-off-override writer uses) — .now() alone doesn't
+        # intercept this separate classmethod.
+        return cls._frozen_now.replace(tzinfo=None)
+
 
 @pytest.fixture(autouse=True)
 def _frozen_market_hours(monkeypatch):
@@ -920,3 +928,113 @@ def test_conviction_gate_ignores_non_buy_signal_in_cached_data():
         assert result is None
     finally:
         mp.undo()
+
+
+# ── T226-A: risk_off hard block ──────────────────────────────────────────────
+
+def test_risk_off_blocks_by_default():
+    result = hr.check_hard_rejects(**_base_kwargs(regime_state="risk_off"))
+    assert result is not None
+    assert "risk-off" in result.lower()
+    assert "T226-A" in result
+
+
+def test_risk_off_does_not_block_bull_regime():
+    result = hr.check_hard_rejects(**_base_kwargs(regime_state="bull"))
+    assert result is None
+
+
+def test_risk_off_can_be_disabled_via_config():
+    result = hr.check_hard_rejects(
+        **_base_kwargs(regime_state="risk_off", cfg={"regime_risk_off_gate": False})
+    )
+    assert result is None
+
+
+def test_risk_off_override_still_active_allows_entry():
+    future = (_INSIDE_MARKET_HOURS_UTC.replace(tzinfo=None) + timedelta(hours=2)).isoformat()
+    result = hr.check_hard_rejects(
+        **_base_kwargs(regime_state="risk_off", cfg={"regime_risk_off_override_until": future})
+    )
+    assert result is None
+
+
+def test_risk_off_override_already_expired_still_blocks():
+    past = (_INSIDE_MARKET_HOURS_UTC.replace(tzinfo=None) - timedelta(hours=2)).isoformat()
+    result = hr.check_hard_rejects(
+        **_base_kwargs(regime_state="risk_off", cfg={"regime_risk_off_override_until": past})
+    )
+    assert result is not None
+    assert "T226-A" in result
+
+
+def test_risk_off_override_malformed_timestamp_fails_safe_and_still_blocks():
+    result = hr.check_hard_rejects(
+        **_base_kwargs(regime_state="risk_off", cfg={"regime_risk_off_override_until": "not-a-timestamp"})
+    )
+    assert result is not None
+    assert "T226-A" in result
+
+
+def test_choppy_regime_does_not_trigger_the_risk_off_block():
+    # choppy already gets the T190 R:R-stiffening treatment — it must not ALSO trip the
+    # risk_off-specific hard block, which is scoped to exactly "risk_off".
+    result = hr.check_hard_rejects(**_base_kwargs(regime_state="choppy"))
+    assert result is None
+
+
+# ── T201: equity-floor circuit breaker ───────────────────────────────────────
+
+def test_equity_floor_blocks_when_below_the_default_80pct():
+    result = hr.check_hard_rejects(
+        **_base_kwargs(equity=7_900.0, initial_capital=10_000.0)
+    )
+    assert result is not None
+    assert "T201" in result
+    assert "79.0%" in result
+
+
+def test_equity_floor_does_not_block_right_at_the_floor():
+    result = hr.check_hard_rejects(
+        **_base_kwargs(equity=8_000.0, initial_capital=10_000.0)
+    )
+    assert result is None
+
+
+def test_equity_floor_does_not_block_above_the_floor():
+    result = hr.check_hard_rejects(
+        **_base_kwargs(equity=9_500.0, initial_capital=10_000.0)
+    )
+    assert result is None
+
+
+def test_equity_floor_respects_a_custom_configured_pct():
+    result = hr.check_hard_rejects(
+        **_base_kwargs(equity=8_500.0, initial_capital=10_000.0, cfg={"equity_floor_pct": 0.90})
+    )
+    assert result is not None
+    assert "90%" in result
+
+
+def test_equity_floor_can_be_disabled_via_config():
+    result = hr.check_hard_rejects(
+        **_base_kwargs(equity=1_000.0, initial_capital=10_000.0, cfg={"equity_floor_pct": 0.0})
+    )
+    assert result is None
+
+
+def test_equity_floor_skipped_when_equity_itself_absent():
+    result = hr.check_hard_rejects(**_base_kwargs(equity=None, initial_capital=10_000.0))
+    assert result is None
+
+
+def test_equity_floor_skipped_when_initial_capital_itself_absent():
+    result = hr.check_hard_rejects(**_base_kwargs(equity=1_000.0, initial_capital=None))
+    assert result is None
+
+
+def test_equity_floor_skipped_when_initial_capital_is_zero():
+    # Guards the real division — a genuinely zero/uninitialized portfolio must fail open,
+    # not raise a ZeroDivisionError.
+    result = hr.check_hard_rejects(**_base_kwargs(equity=1_000.0, initial_capital=0.0))
+    assert result is None

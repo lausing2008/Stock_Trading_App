@@ -180,6 +180,8 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         open_positions=req.open_positions,
         max_positions=req.max_positions,
         daily_pnl_pct=req.daily_pnl_pct,
+        equity=req.equity,
+        initial_capital=req.initial_capital,
         cfg=cfg,
         research_rec=research_rec,
         game_plan=game_plan,

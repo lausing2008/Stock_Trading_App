@@ -2868,6 +2868,7 @@ def _call_decision_engine(
     equity: float,
     open_count: int,
     cfg: dict,
+    initial_capital: float | None = None,
     daily_pnl_pct: float = 0.0,
     recent_win_rate: float | None = None,
     open_sector_counts: dict | None = None,
@@ -2894,6 +2895,13 @@ def _call_decision_engine(
             json={
                 "style":            cfg.get("trading_style", "SWING"),
                 "equity":           equity,
+                # T232-DL-DUALSCORER-DEBT / T201: needed alongside equity above so
+                # hard_rejects.py can reconstruct _scan_for_entries' own equity-floor circuit
+                # breaker (equity/initial_capital < equity_floor_pct). Falls back to `equity`
+                # itself (a 100% ratio, i.e. the gate can never fire) when the real caller
+                # doesn't have a portfolio to reference — matches decision-engine's own
+                # DecisionRequest default (10_000.0) semantics of "no real portfolio context."
+                "initial_capital":  initial_capital if initial_capital is not None else equity,
                 "open_positions":   open_count,
                 "max_positions":    cfg.get("max_positions", 6),
                 "live_price":       live_price,
@@ -3012,6 +3020,17 @@ def _call_decision_engine(
                     **( {"sig_ref_price": sig_ref_price} if sig_ref_price is not None else {} ),
                     **( {"max_price_drift_pct": cfg.get("max_price_drift_pct", 3.0)}
                         if sig_ref_price is not None else {} ),
+                    # T232-DL-DUALSCORER-DEBT / T226-A: _scan_for_entries' risk_off hard block
+                    # (T226-A — data-backed: 9/30 real closed paper trades entered in risk_off
+                    # had a 0% win rate) has no decision-engine equivalent — DE only has the
+                    # SOFT R:R-stiffening check (T190). Threaded through unconditionally (like
+                    # regime_min_rr_ratio above) rather than gated on regime_state being set,
+                    # since regime_state is ALWAYS sent on the real call site regardless — this
+                    # is a genuinely free port, no new value needed, just the config that
+                    # controls whether/how the ALREADY-sent regime_state should hard-block.
+                    "regime_risk_off_gate": cfg.get("regime_risk_off_gate", True),
+                    **( {"regime_risk_off_override_until": cfg["regime_risk_off_override_until"]}
+                        if cfg.get("regime_risk_off_override_until") else {} ),
                     # T203-LLMWIRE: llm_scoring_enabled existed in decision-engine's
                     # llm_scorer.py since T203 but was never threaded from portfolio config
                     # into this request — a built-but-dormant feature with no way to turn it
@@ -4499,6 +4518,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             equity=equity,
             open_count=open_count,
             cfg=cfg,
+            initial_capital=portfolio.initial_capital,  # T232-DL-DUALSCORER-DEBT: T201 gate parity
             daily_pnl_pct=_daily_pnl_pct,
             recent_win_rate=_recent_wr,
             open_sector_counts=_open_sector_counts,   # T186: sector gate

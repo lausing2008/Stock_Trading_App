@@ -34,6 +34,8 @@ def check_hard_rejects(
     max_positions: int,
     daily_pnl_pct: float,
     cfg: dict,
+    equity: float | None = None,
+    initial_capital: float | None = None,
     research_rec: str | None = None,
     game_plan: dict | None = None,
     market: str = "US",
@@ -81,6 +83,26 @@ def check_hard_rejects(
 
     if regime_state == "bear":
         return "Bear regime — all long entries blocked"
+
+    # T232-DL-DUALSCORER-DEBT / T201: _scan_for_entries' equity-floor circuit breaker —
+    # suspends ALL new entries once the portfolio's equity has dropped below equity_floor_pct
+    # (default 80%) of its starting capital. A portfolio-wide gate, not per-symbol scoring,
+    # so it belongs alongside the bear-regime check above rather than the per-symbol checks
+    # below. `equity` was already sent to decision-engine (used by sizer.py's illustrative
+    # position-sizing preview) but `initial_capital` was never sent at all — both are needed
+    # for the ratio, so this required a genuine new DecisionRequest field, not a free port.
+    _equity_floor_pct = float(cfg.get("equity_floor_pct", 0.80))
+    if (
+        _equity_floor_pct > 0
+        and equity is not None
+        and initial_capital is not None
+        and initial_capital > 0
+        and (equity / initial_capital) < _equity_floor_pct
+    ):
+        return (
+            f"Account equity {equity / initial_capital * 100:.1f}% of starting capital, "
+            f"below the {_equity_floor_pct * 100:.0f}% floor — all new entries suspended (T201)"
+        )
 
     # T232-DL-DUALSCORER-DEBT: Index-trend HARD REJECT (T221), ported from
     # paper_trading_engine.py's _scan_for_entries() (index_return_pct < index_trend_gate_pct,
@@ -151,6 +173,26 @@ def check_hard_rejects(
         min_rr = max(min_rr, cfg.get("regime_min_rr_ratio", 3.0))
     if rr < min_rr:
         return f"R:R {rr:.2f}:1 below minimum {min_rr:.1f}:1"
+
+    # T232-DL-DUALSCORER-DEBT / T226-A: paper_trading_engine.py's _scan_for_entries() blocks
+    # ALL new entries outright in a risk_off regime (data-backed: 9/30 real closed paper
+    # trades entered during risk_off had a 0% win rate) — decision-engine only had the SOFT
+    # R:R-stiffening check above (T190), never a hard block, so /decide/{symbol} could still
+    # approve an entry a risk_off regime should categorically block whenever a candidate's
+    # R:R happened to clear the raised bar. A time-boxed override (regime_risk_off_override_
+    # until) mirrors the fallback engine's own POST /paper-portfolio/risk-off-override
+    # mechanism exactly — an ISO-format expiry timestamp in cfg, checked fresh on every call
+    # so it self-expires without any cron job clearing it.
+    if regime_state == "risk_off" and cfg.get("regime_risk_off_gate", True):
+        _override_until = cfg.get("regime_risk_off_override_until")
+        _override_active = False
+        if _override_until:
+            try:
+                _override_active = datetime.utcnow() < datetime.fromisoformat(_override_until)
+            except (ValueError, TypeError):
+                _override_active = False
+        if not _override_active:
+            return "Risk-off regime — no new entries until regime improves (T226-A)"
 
     if days_to_earnings is not None and days_to_earnings <= 5:
         return f"Earnings in {days_to_earnings} days — binary event risk"
