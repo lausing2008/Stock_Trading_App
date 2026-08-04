@@ -1166,6 +1166,25 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
         {field('llm_score_weight', 'Score Weight (1-5)', 1, 'default 1', 1)}
       </div>
 
+      {section('Position Scaling (opt-in)')}
+      <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-end' }}>
+        <div style={{ fontSize: 11, color: '#64748b', width: '100%', marginBottom: 4 }}>
+          Shadow Mode runs a conviction-based &quot;add on a pullback&quot; model against every real open
+          position and logs what it WOULD have done — it never places a real order or touches cash. See the
+          Position Scaling tab above for the running comparison report. There is no &quot;live&quot; mode yet;
+          real order placement is intentionally deferred until enough shadow-mode verdicts have resolved
+          against real trades to trust it.
+        </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#94a3b8' }}>
+          <input
+            type="checkbox"
+            checked={((draft.position_scaling_mode ?? config.position_scaling_mode) ?? 'off') === 'shadow'}
+            onChange={e => setDraft(d => ({ ...d, position_scaling_mode: e.target.checked ? 'shadow' : 'off' }))}
+          />
+          Enable Shadow Mode
+        </label>
+      </div>
+
       {section('Regime Gate Override')}
       <div style={{ marginTop: 10 }}>
         <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>
@@ -2942,7 +2961,8 @@ export default function PaperPortfolioPage() {
 
             {!psShadow || (psShadow.total_pending === 0 && psShadow.total_resolved === 0) ? (
               <div style={{ padding: 24, background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, textAlign: 'center', color: '#475569' }}>
-                No shadow data yet. Enable position_scaling_mode="shadow" on a portfolio to start collecting verdicts.
+                No shadow data yet. Turn on &quot;Shadow Mode&quot; under Portfolio Config → Position Scaling
+                below to start collecting real verdicts — nothing is ever placed as a real trade in this mode.
               </div>
             ) : (
               <>

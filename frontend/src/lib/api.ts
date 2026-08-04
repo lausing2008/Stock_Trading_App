@@ -1538,6 +1538,10 @@ export type PaperPortfolioConfig = {
   // risk_agent.py) — opt-in per portfolio, same Claude/DeepSeek key as llm_scoring_enabled.
   // Was built with zero frontend toggle until the Admin AI Assistant Features page.
   risk_check_enabled?: boolean;
+  // T241-POSITION-SCALING-DESIGN: "shadow" runs the real conviction-based pullback-add gate
+  // against real trades and logs the verdict for later comparison (never places a real
+  // order or touches cash) — "off" (default) skips it entirely. No "live" mode exists yet.
+  position_scaling_mode?: 'off' | 'shadow';
 };
 
 export type PaperPortfolioSummary = {

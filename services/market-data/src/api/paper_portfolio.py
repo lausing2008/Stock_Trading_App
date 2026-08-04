@@ -794,6 +794,16 @@ def configure_portfolio(
         # allowlist, so any attempt to set it via the API was silently dropped as "unknown"
         # (T232-CONFIGGAP). Found while building the Admin AI Assistant Features page.
         "risk_check_enabled",
+        # T241-POSITION-SCALING-DESIGN: same T232-CONFIGGAP class again — the entire
+        # position-scaling shadow-mode mechanism (Phase 6 of the design doc: log real
+        # verdicts against real trades for later comparison, before ever considering going
+        # live) was fully built and code-complete, but position_scaling_mode was never in
+        # this allowlist — meaning there was literally no way for anyone to turn shadow mode
+        # on for a real portfolio through the app. Found while verifying the design doc's own
+        # cited validation numbers (1213 mined events, AUC 0.936, 89% hit rate) were live-
+        # verified — they were not: ps:shadow:pending/resolved were both completely empty in
+        # production, because every real portfolio had this stuck at "off" the whole time.
+        "position_scaling_mode",
     }
     # PT-H1: Validate decimal fraction params — reject values that look like % integers
     # (e.g. risk_per_trade_pct=1 meaning "1%" but engine expects 0.01).
@@ -832,8 +842,23 @@ def configure_portfolio(
     _RANGE_CHECKS_INT: dict[str, tuple[int, int, str]] = {
         "llm_score_weight": (1, 5, "How many points the LLM verdict adds/subtracts. Keep small relative to the ~0-10 total entry score."),
     }
+    # T241-POSITION-SCALING-DESIGN: paper_trading_engine.py's own real code only ever checks
+    # for the literal string "shadow" — "off" is the only other value it treats as anything
+    # (implicitly, via the shadow-check simply not matching). No "live" mode exists anywhere
+    # in the engine yet, so accepting that string here would silently no-op rather than
+    # erroring — reject anything outside the two real, currently-meaningful values instead.
+    _ENUM_CHECKS: dict[str, tuple[set[str], str]] = {
+        "position_scaling_mode": (
+            {"off", "shadow"},
+            'Only "off" or "shadow" are implemented — "live" order placement does not exist yet.',
+        ),
+    }
     errors: list[str] = []
     for key, val in body.items():
+        if key in _ENUM_CHECKS and val is not None:
+            allowed_values, hint = _ENUM_CHECKS[key]
+            if val not in allowed_values:
+                errors.append(f"{key}={val!r}: must be one of {sorted(allowed_values)}. {hint}")
         if key in _RANGE_CHECKS and val is not None:
             lo, hi, hint = _RANGE_CHECKS[key]
             try:
