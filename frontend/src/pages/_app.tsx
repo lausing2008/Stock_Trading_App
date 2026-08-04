@@ -112,6 +112,7 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Platform Guide', href: '/learn' },
       { label: 'Alerts Guide',   href: '/alerts-guide', color: '#f59e0b', tag: 'new' },
       { label: 'Watchlist Rotation — How It Works', href: '/watchlist-rotation-explainer', color: '#f59e0b', tag: 'new' },
+      { label: 'Session Changelog', href: '/session-changelog', color: '#a78bfa', tag: 'new' },
     ],
   },
   {
