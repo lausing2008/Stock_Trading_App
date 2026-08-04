@@ -43,6 +43,13 @@ async def job_sync_earnings():
     await _run("sync_earnings", earnings.sync_all_earnings())
 
 
+async def job_sync_todays_earnings():
+    # AUD-EARNINGS-INTRADAY-SYNC-GAP: closes the gap where a company reporting during
+    # market hours or after the close (the normal case) never had eps_actual picked up
+    # until the NEXT morning's 06:30 UTC sync — see sync_todays_earnings()'s own docstring.
+    await _run("sync_todays_earnings", earnings.sync_todays_earnings())
+
+
 async def job_check_earnings_impact_poll():
     await _run("check_earnings_impact_poll", earnings.check_earnings_impact_poll())
 
@@ -126,6 +133,18 @@ async def start_scheduler():
     _scheduler.add_job(job_sync_economic,      "cron", hour=6,  minute=0,  id="sync_economic")
     _scheduler.add_job(job_sync_fred_release_dates, "cron", hour=6, minute=15, id="sync_fred_release_dates")
     _scheduler.add_job(job_sync_earnings,      "cron", hour=6,  minute=30, id="sync_earnings")
+    # AUD-EARNINGS-INTRADAY-SYNC-GAP: sync_earnings above only runs once/day before the US
+    # open — a report released during market hours or after the close (the normal case) sat
+    # with eps_actual=NULL until the next morning otherwise, silently starving both
+    # check_earnings_reactions() and check_earnings_impact_poll() of the data they need to
+    # fire on. Runs every 15 min, 7am-9pm ET weekdays (covers pre-market, regular session,
+    # and after-hours prints — the vast majority of real releases land in the last hour).
+    # Cheap: a single indexed query, zero yfinance calls, whenever nobody unresolved is left.
+    _scheduler.add_job(
+        job_sync_todays_earnings,
+        CronTrigger(minute="*/15", hour="7-20", day_of_week="mon-fri", timezone="America/New_York"),
+        id="sync_todays_earnings",
+    )
     # T249-EARNINGS-LLM-IMPACT: unlike macro's release-day-armed polls (exact release times are
     # known in advance), earnings land unpredictably per company throughout the day — a plain
     # 5-min interval poll is the simplest correct fit. Cheap no-op (one indexed query, zero

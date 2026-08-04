@@ -332,6 +332,52 @@ async def sync_all_earnings() -> dict:
     return {"symbols_processed": len(stocks), "rows_upserted": total}
 
 
+async def sync_todays_earnings() -> dict:
+    """AUD-EARNINGS-INTRADAY-SYNC-GAP: sync_all_earnings() only runs once/day at 06:30 UTC —
+    before the US market session — so a company reporting during market hours or after the
+    close (the overwhelming majority of real earnings releases) never gets its eps_actual/
+    surprise_pct picked up until THE NEXT MORNING's 06:30 sync. check_earnings_reactions()
+    (market-data, runs every minute) and check_earnings_impact_poll() (this service, every
+    5 min) both correctly fire the instant eps_actual lands — the gap was purely upstream,
+    that nothing ever re-synced a stock's row same-day once it actually reported. Confirmed
+    live 2026-08-03: PLTR posted real, materially strong Q2 results (EPS $0.41 beat $0.35,
+    guidance raised) at ~20:05 UTC, but its earnings_events row still showed eps_actual=NULL
+    hours later because nothing had re-checked it since that morning's sync.
+
+    Deliberately NOT a second full-universe rescan (that's what the 06:30 UTC job is for,
+    and running it again intraday would repeat the same ~178-symbol yfinance sweep every
+    cycle for no reason) — scoped to just the stocks that ACTUALLY need a fresh check:
+    report_date in {yesterday, today} (yesterday covers an after-market print Yahoo still
+    files against the prior calendar day) with eps_actual still NULL. On a quiet day with
+    nobody reporting, or once all of today's reporters have already resolved, this is a
+    single cheap indexed query with zero yfinance calls at all.
+    """
+    cutoff_start = date.today() - timedelta(days=1)
+    cutoff_end = date.today()
+    with SessionLocal() as s:
+        rows = s.execute(
+            select(EarningsEvent.stock_id, Stock.symbol)
+            .join(Stock, EarningsEvent.stock_id == Stock.id)
+            .where(
+                EarningsEvent.report_date >= cutoff_start,
+                EarningsEvent.report_date <= cutoff_end,
+                EarningsEvent.eps_actual.is_(None),
+            )
+        ).all()
+
+    if not rows:
+        return {"symbols_checked": 0, "rows_upserted": 0}
+
+    loop = asyncio.get_running_loop()
+    total = 0
+    for stock_id, symbol in rows:
+        n = await loop.run_in_executor(_executor, _fetch_earnings_for_symbol, symbol, stock_id)
+        total += n
+        await asyncio.sleep(0.2)  # gentle rate limiting, matching sync_all_earnings()
+
+    return {"symbols_checked": len(rows), "rows_upserted": total}
+
+
 def get_earnings_for_symbol(stock_id: int, days_back: int = 365) -> list[dict]:
     since = date.today() - timedelta(days=days_back)
     with SessionLocal() as s:
