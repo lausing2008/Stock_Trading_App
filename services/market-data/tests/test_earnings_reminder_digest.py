@@ -138,6 +138,27 @@ def test_days_to_earnings_rendered_per_row():
     assert "3d" in calls[0]["html"]
 
 
+def test_days_to_earnings_zero_renders_today_not_0d():
+    """BUG-EARNINGS-REMINDER-SKIPS-DAY-OF: a symbol reporting on the actual day (dte=0) must
+    read as "Today" — not the literal, confusing "0d" a naive f-string would produce."""
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_earnings_reminder_digest_email("user@example.com", [_row("SPCX", 0)])
+    assert "Today" in calls[0]["html"]
+    assert "0d" not in calls[0]["html"]
+    assert "reports TODAY" in calls[0]["text"]
+    assert "reports in 0d" not in calls[0]["text"]
+
+
+def test_mixed_dte_zero_and_nonzero_both_render_correctly():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_earnings_reminder_digest_email("user@example.com", [_row("TODAY_CO", 0), _row("SOON_CO", 3)])
+    html = calls[0]["html"]
+    assert "Today" in html and "3d" in html
+    assert "0d" not in html
+
+
 def test_forward_eps_rendered_with_dollar_sign():
     calls, fake = _capture_send()
     with patch("src.services.email_service.send_email", fake):

@@ -1501,11 +1501,16 @@ def send_earnings_reminder_digest_email(to: str, rows: list[dict]) -> bool:
 
     rows_sorted = sorted(rows, key=lambda r: r.get("days_to_earnings", 999))
 
+    def _fmt_dte(r: dict) -> str:
+        dte = r.get("days_to_earnings")
+        if dte is None:
+            return "—"
+        return "Today" if dte == 0 else f"{dte}d"
+
     table_rows_html = ""
     for r in rows_sorted:
         sym = r["symbol"]
-        dte = r.get("days_to_earnings")
-        dte_str = f"{dte}d" if dte is not None else "—"
+        dte_str = _fmt_dte(r)
         eps_est = r.get("forward_eps")
         eps_str = f"${eps_est:.2f}" if eps_est is not None else "—"
         table_rows_html += (
@@ -1542,8 +1547,14 @@ def send_earnings_reminder_digest_email(to: str, rows: list[dict]) -> bool:
   </div>
 </body></html>"""
 
+    def _fmt_dte_text(r: dict) -> str:
+        dte = r.get("days_to_earnings")
+        if dte is None:
+            return "in ?d"
+        return "TODAY" if dte == 0 else f"in {dte}d"
+
     text_rows = "\n".join(
-        f"  {r['symbol']}: reports in {r.get('days_to_earnings', '?')}d, "
+        f"  {r['symbol']}: reports {_fmt_dte_text(r)}, "
         f"price {r.get('price', '—')}, est EPS {r.get('forward_eps', '—')}, "
         f"beat rate {_fmt_beat_rate(r)}, K-Score {_fmt_kscore(r)}"
         for r in rows_sorted

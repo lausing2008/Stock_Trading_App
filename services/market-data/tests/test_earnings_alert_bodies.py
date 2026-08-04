@@ -83,6 +83,14 @@ def test_reminder_dedup_key_granularity_unchanged():
     assert "72000" in _source  # 20-hour TTL, unchanged
 
 
+def test_reminder_trigger_set_includes_the_report_day_itself():
+    """BUG-EARNINGS-REMINDER-SKIPS-DAY-OF: the trigger set used to be (1, 2, 3, 5) — a symbol
+    reporting TODAY (days_to_earnings=0) never got a same-day reminder at all, only ever a
+    heads-up a day or more in advance. Found live: a real user with active subscriptions on a
+    stock reporting that exact day got no reminder. 0 must now be included."""
+    assert "dte_int not in (0, 1, 2, 3, 5)" in _source
+
+
 def test_earnings_reaction_check_is_registered_as_a_scheduled_job():
     """Source-text check: check_earnings_reactions must actually be wired into
     start_scheduler()'s add_job calls, not just exist as an unused function."""

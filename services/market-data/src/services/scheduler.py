@@ -3251,6 +3251,8 @@ def check_signal_alerts() -> None:
             # (still per-(user, symbol, days_to_earnings), 20h TTL) — only delivery is batched:
             # a symbol already reminded at dte=3 still gets a fresh row when it later hits
             # dte=1, but multiple DIFFERENT symbols due the same cycle now land in one email.
+            # BUG-EARNINGS-REMINDER-SKIPS-DAY-OF (2026-08-04): trigger set was (1,2,3,5) — a
+            # symbol reporting TODAY (dte=0) never got any reminder at all. 0 added below.
             try:
                 user_symbols: dict[int, set[str]] = {}
                 for a in alerts:
@@ -3276,7 +3278,7 @@ def check_signal_alerts() -> None:
                             dte_int = int(dte)
                         except (TypeError, ValueError):
                             continue
-                        if dte_int not in (1, 2, 3, 5):
+                        if dte_int not in (0, 1, 2, 3, 5):
                             continue
                         redis_key = f"stockai:earnings_remind:{uid}:{sym}:{dte_int}"
                         try:
