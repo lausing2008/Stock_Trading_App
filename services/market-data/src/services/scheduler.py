@@ -629,6 +629,10 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
     Disqualifiers (false-BUY flags from FEATURES.md — block even if all layers pass):
         • Bearish RSI divergence (price rising but momentum fading)
         • Stoch RSI overbought (RSI itself overextended)
+        • Stoch RSI overbought last bar, barely cooled (AUD232-BUY-FROM-TOP-1 — a single
+          noisy tick below the 0.80 cutoff isn't a real reset if the prior bar was still hot)
+        • Price within 3% of its 20-day high with RSI still >65 (AUD232-BUY-FROM-TOP-2 —
+          genuinely still extended, independent of the stochastic)
     """
     reasons = signal_data.get("reasons") or {}
 
@@ -747,6 +751,22 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
         failed.append("Bearish RSI divergence: price rising but momentum fading — high false-BUY risk")
     if bool(reasons.get("stoch_rsi_overbought")):
         failed.append("Stoch RSI overbought: RSI itself overextended — pullback risk elevated")
+    # AUD232-BUY-FROM-TOP-1: stoch_rsi_overbought alone can clear on a single noisy tick
+    # while the stock is still, in every other respect, overbought (confirmed live 2026-08-04
+    # with 0939.HK: stoch_k ticked from 0.824 to 0.735 in one bar while RSI stayed at 70 and
+    # price stayed within 1.5% of its 20-day high). stoch_rsi_still_hot requires the PRIOR bar
+    # to have ALSO been overbought before treating a dip below 0.80 as genuine cooling — a
+    # real, sustained move out of overbought territory clears this within one bar of crossing
+    # back, same as before; this only blocks the exact single-tick-flicker case.
+    elif bool(reasons.get("stoch_rsi_still_hot")):
+        failed.append("Stoch RSI overbought last cycle, barely cooled — one noisy tick isn't a real reset")
+    # AUD232-BUY-FROM-TOP-2: independent of the stochastic entirely — price still within 3%
+    # of its own 20-day high with RSI still >65 means this is genuinely still an extended
+    # entry, not a pullback. Complements the check above rather than replacing it.
+    if bool(reasons.get("near_recent_high_hot")):
+        pct = reasons.get("pct_from_20d_high")
+        pct_str = f"{pct * 100:.1f}%" if pct is not None else "?"
+        failed.append(f"Price {pct_str} from its 20-day high with RSI still hot — buying near a recent peak, not a pullback")
 
     # CB-4: Near-conviction tier — allow 1 soft failure (OBV, ADX, ML, or MACD) to still send.
     # MACD is a lagging indicator; when all other layers (TA structure, RSI, ML, K-Score)

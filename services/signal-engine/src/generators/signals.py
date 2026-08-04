@@ -1097,11 +1097,44 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
     if len(k_smooth.dropna()) >= 2:
         stoch_cross_up = bool(k_smooth.iloc[-1] > 0.20 and k_smooth.iloc[-2] <= 0.20)
 
-    reasons["stoch_rsi_k"]          = round(stoch_k, 3)
-    reasons["stoch_rsi_d"]          = round(stoch_d, 3)
-    reasons["stoch_rsi_oversold"]   = stoch_oversold
-    reasons["stoch_rsi_overbought"] = stoch_overbought
-    reasons["stoch_rsi_cross_up"]   = stoch_cross_up
+    # AUD232-BUY-FROM-TOP-1: stoch_overbought above is a single-bar cutoff (stoch_k > 0.80)
+    # with no persistence check — a genuinely overbought stock can flicker from "overbought"
+    # to "cleared" in one refresh cycle from ordinary oscillator noise, with RSI/price barely
+    # moving at all. Confirmed live 2026-08-04: 0939.HK held stoch_k 0.82-1.0 for a full week
+    # (7/27-8/3) while _is_conviction_buy()'s disqualifier correctly blocked the alert every
+    # cycle, then stoch_k ticked to 0.735 on one bar (RSI still 70, price still within 1.5% of
+    # its 20-day high) — the disqualifier vanished on that single tick and the BUY alert fired
+    # at essentially the same overbought level it had been blocking all week. stoch_rsi_still_hot
+    # requires the PRIOR bar to have also been overbought before letting a dip below 0.80 count
+    # as genuine cooling — a real, sustained move out of overbought territory still clears it
+    # within one bar of crossing back, this only closes the single-tick-noise gap.
+    stoch_rsi_still_hot = bool(
+        stoch_overbought or
+        (len(k_smooth.dropna()) >= 2 and float(k_smooth.iloc[-2]) > 0.80)
+    )
+
+    reasons["stoch_rsi_k"]           = round(stoch_k, 3)
+    reasons["stoch_rsi_d"]           = round(stoch_d, 3)
+    reasons["stoch_rsi_oversold"]    = stoch_oversold
+    reasons["stoch_rsi_overbought"]  = stoch_overbought
+    reasons["stoch_rsi_still_hot"]   = stoch_rsi_still_hot
+    reasons["stoch_rsi_cross_up"]    = stoch_cross_up
+
+    # AUD232-BUY-FROM-TOP-2: a second, independent "don't buy from the top" signal that
+    # doesn't depend on the noisy stochastic at all — a stock can be genuinely still
+    # extended (within a few % of its own 20-day high) with RSI still hot, even at a moment
+    # stoch_rsi has ticked below 0.80. 0939.HK sat 1.5% below its 20-day high (9.36 on 7/30,
+    # 9.215 now) with RSI still 70 at the exact moment its BUY alert fired — this check
+    # flags that condition directly, independent of stoch_rsi_still_hot above.
+    high_20d_ta = close.iloc[:-1].rolling(20).max().iloc[-1] if len(close) >= 21 else None
+    near_recent_high = False
+    pct_from_20d_high = None
+    if high_20d_ta is not None and not pd.isna(high_20d_ta) and high_20d_ta > 0:
+        pct_from_20d_high = round(float((high_20d_ta - close.iloc[-1]) / high_20d_ta), 4)
+        near_recent_high = bool(pct_from_20d_high < 0.03 and rsi_val is not None and rsi_val > 65)
+
+    reasons["pct_from_20d_high"]     = pct_from_20d_high
+    reasons["near_recent_high_hot"]  = near_recent_high
 
     # ── RSI divergence (peak-to-peak, 20-bar window) ─────────────────────
     # H3/H4 DISABLED: RSI divergence was comparing peak *timing* (argmax index position)

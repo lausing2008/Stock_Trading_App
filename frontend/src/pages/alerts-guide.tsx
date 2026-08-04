@@ -49,7 +49,7 @@ const USER_ALERTS: AlertRow[] = [
     schedule: 'Every ~5 min (market-refresh cycle) + once at startup',
     scope: 'signal-alert',
     cooldown: '2h same-direction cooldown; full BUY↔SELL reversals bypass it',
-    note: 'The "conviction BUY" alert: only fires a BUY when 5 things line up at once — AI signal flips to BUY, confidence ≥60%, bullish analyst consensus, and K-Score/Technical/Momentum confluence ≥75. Exit/bearish transitions (BUY→HOLD/WAIT/SELL) always fire, no gate. Also folds in earnings-proximity reminders (1/2/3/5 days out) as one consolidated table, not a separate email per stock.',
+    note: 'The "conviction BUY" alert: only fires a BUY when 5 things line up at once — AI signal flips to BUY, confidence ≥60%, bullish analyst consensus, and K-Score/Technical/Momentum confluence ≥75. Exit/bearish transitions (BUY→HOLD/WAIT/SELL) always fire, no gate. Also folds in earnings-proximity reminders (1/2/3/5 days out) as one consolidated table, not a separate email per stock. Includes an overextension check that blocks buying near a recent peak — see the known-limitations callout below.',
   },
   {
     job: 'check_earnings_reactions',
@@ -508,6 +508,41 @@ export default function AlertsGuidePage() {
             handle correction/re-issue headlines from the same wire (a real print sometimes arrives twice,
             once with a typo’d number) without double-firing or picking up the wrong value, which is a
             genuinely fiddly parsing problem worth its own careful pass rather than a rushed regex.
+          </li>
+        </ul>
+      </Callout>
+
+      <Callout tone="warn" title="check_signal_alerts: preventing a BUY from firing at the top of a peak">
+        <ul style={{ paddingLeft: 18, lineHeight: 1.7 }}>
+          <li>
+            <strong>Fixed 2026-08-04</strong>: a real live BUY alert fired on 0939.HK at essentially
+            the same overbought level it had held all week. Root cause: the existing overbought
+            disqualifier (Stoch RSI &gt; 0.80, a single-bar cutoff) flickered from &quot;blocked&quot;
+            to &quot;cleared&quot; on one noisy tick — the oscillator dipped below 0.80 for one
+            5-minute refresh cycle while RSI (70) and price (within 1.5% of the 20-day high) barely
+            moved at all. Two new checks close this gap: (1) <Code>stoch_rsi_still_hot</Code> now
+            requires the PRIOR bar to have also cooled below 0.80 before treating a dip as a genuine
+            reset, not just the current bar&apos;s noisy value; (2) an independent{' '}
+            <Code>near_recent_high_hot</Code> check blocks any BUY where price sits within 3% of its
+            own 20-day high with RSI still above 65 — this one doesn&apos;t depend on the stochastic
+            at all, so it still catches an extended entry even if the first check somehow misses one.
+          </li>
+          <li>
+            <strong>What this changes in practice</strong>: a genuinely healthy pullback-and-recovery
+            still clears both checks fine (RSI cooling for real, or price genuinely off its recent
+            high) — only the specific &quot;still basically at the top, one noisy tick away from the
+            cutoff&quot; case now gets blocked. You&apos;ll see the new reasons (&quot;barely
+            cooled&quot; / &quot;buying near a recent peak&quot;) in the ✗ hover-tooltip on the{' '}
+            <a href="/signal-filters" style={{ color: '#38bdf8', textDecoration: 'none' }}>Signal
+            Filter page</a> when they&apos;re what blocked an alert.
+          </li>
+          <li>
+            <strong>Still a real, honest limitation</strong>: both checks are still ultimately reading
+            a daily-bar RSI/stochastic snapshot, refreshed a few times a day — a stock can still
+            genuinely reverse intraday between refreshes in a way neither check sees until the next
+            cycle. Neither check claims to know the difference between &quot;a healthy pause before
+            continuing higher&quot; and &quot;this is actually the top&quot; — they only catch the
+            specific, narrower case of buying at an unchanged, already-known-overbought level.
           </li>
         </ul>
       </Callout>
