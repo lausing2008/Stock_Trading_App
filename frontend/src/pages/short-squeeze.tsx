@@ -3,6 +3,14 @@ import useSWR from 'swr';
 import Link from 'next/link';
 import { api, type SqueezeCandidate } from '@/lib/api';
 
+function Code({ children }: { children: React.ReactNode }) {
+  return (
+    <code style={{ background: '#0d1424', border: '1px solid #1e293b', borderRadius: '4px', padding: '1px 6px', fontSize: '12px', color: '#f59e0b', fontFamily: 'monospace' }}>
+      {children}
+    </code>
+  );
+}
+
 function fmtShares(n: number | null): string {
   if (n == null) return '—';
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
@@ -42,6 +50,7 @@ export default function ShortSqueezePage() {
   const [market, setMarket] = useState<'All' | 'US' | 'HK'>('All');
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'short_pct', dir: 'desc' });
+  const [showGuide, setShowGuide] = useState(false);
 
   const { data, error, isLoading, mutate } = useSWR<SqueezeCandidate[]>(
     `short-squeeze-${minShortFloat}`,
@@ -96,11 +105,111 @@ export default function ShortSqueezePage() {
             without checking this page yourself? See <Link href="/alerts-guide" style={{ color: '#38bdf8', textDecoration: 'none' }}>short_squeeze_alert_check</Link> in the Alerts Guide — fires the moment a heavily-shorted stock starts moving fast, intraday.
           </p>
         </div>
-        <button
-          onClick={() => mutate()}
-          style={{ padding: '6px 14px', borderRadius: '6px', border: '1px solid #1e293b', background: 'transparent', color: '#64748b', fontSize: '12px', cursor: 'pointer' }}
-        >↻ Refresh</button>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button
+            onClick={() => setShowGuide(s => !s)}
+            style={{ padding: '6px 14px', borderRadius: '6px', border: '1px solid #1e293b', background: showGuide ? '#334155' : 'transparent', color: showGuide ? '#e2e8f0' : '#64748b', fontSize: '12px', cursor: 'pointer' }}
+          >{showGuide ? '✕ Hide guide' : '📖 How to read this page'}</button>
+          <button
+            onClick={() => mutate()}
+            style={{ padding: '6px 14px', borderRadius: '6px', border: '1px solid #1e293b', background: 'transparent', color: '#64748b', fontSize: '12px', cursor: 'pointer' }}
+          >↻ Refresh</button>
+        </div>
       </div>
+
+      {showGuide && (
+        <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: '12px', padding: '18px 20px', marginBottom: '18px', fontSize: '12.5px', lineHeight: 1.7, color: '#94a3b8' }}>
+          <div style={{ fontSize: '13px', fontWeight: 800, color: '#e2e8f0', marginBottom: 10 }}>
+            What a short squeeze actually is
+          </div>
+          <p style={{ marginBottom: 14 }}>
+            A short seller has borrowed and sold shares, betting the price falls, and must eventually buy
+            them back to close the position (&quot;cover&quot;). If the price rises instead, every short
+            seller is losing money and under pressure to buy back before the loss grows — that buying
+            adds on top of whatever pushed the price up in the first place, which pushes it up further,
+            which pressures the remaining shorts even harder. That self-reinforcing spiral is the squeeze.
+            The columns below measure exactly how much fuel exists for that spiral, and whether it&apos;s
+            already igniting.
+          </p>
+
+          <div style={{ fontSize: '13px', fontWeight: 800, color: '#e2e8f0', marginBottom: 10 }}>
+            What each column means
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
+            <div style={{ padding: '12px 14px', borderRadius: '10px', background: '#0d1424', border: '1px solid #1e293b' }}>
+              <div style={{ fontSize: '12px', fontWeight: 800, color: '#facc15', marginBottom: 6 }}>Short % (of Float)</div>
+              <div>
+                How much of the stock&apos;s <em>tradeable</em> shares (its &quot;float&quot;, excluding
+                insider/locked-up stock) are currently sold short. This is the <strong style={{ color: '#e2e8f0' }}>fuel</strong> —
+                the more of the float is short, the more forced buying exists to potentially unwind.
+                ≥15% is this app&apos;s own threshold for &quot;genuinely crowded.&quot; ≥40% is extreme
+                and historically rare outside a handful of well-known squeeze events.
+              </div>
+            </div>
+            <div style={{ padding: '12px 14px', borderRadius: '10px', background: '#0d1424', border: '1px solid #1e293b' }}>
+              <div style={{ fontSize: '12px', fontWeight: 800, color: '#facc15', marginBottom: 6 }}>Days to Cover</div>
+              <div>
+                Shares short ÷ average daily trading volume — literally, how many normal trading days
+                it would take for every short seller to buy back their position using only typical
+                volume. This is the <strong style={{ color: '#e2e8f0' }}>fuse length</strong>: a high
+                number means shorts can&apos;t exit quickly without moving the price a lot themselves,
+                even in an orderly unwind. Under ~1-2 days, shorts can slip out quietly; 5+ days means
+                real trapped exposure; 10+ is a genuinely thin market relative to the short position.
+              </div>
+            </div>
+            <div style={{ padding: '12px 14px', borderRadius: '10px', background: '#0d1424', border: '1px solid #1e293b' }}>
+              <div style={{ fontSize: '12px', fontWeight: 800, color: '#facc15', marginBottom: 6 }}>Shares Short (+ MoM change)</div>
+              <div>
+                The raw share count currently sold short, with the month-over-month change shown
+                underneath. <span style={{ color: '#f87171' }}>↑ rising</span> short interest into a
+                stock that&apos;s already moving up is a warning sign for shorts (more of them are
+                adding to the position that&apos;s hurting them); <span style={{ color: '#4ade80' }}>↓
+                falling</span> short interest can mean shorts are already voluntarily covering — often
+                a sign a squeeze has already peaked and faded, not that one is building.
+              </div>
+            </div>
+            <div style={{ padding: '12px 14px', borderRadius: '10px', background: '#0d1424', border: '1px solid #1e293b' }}>
+              <div style={{ fontSize: '12px', fontWeight: 800, color: '#facc15', marginBottom: 6 }}>Change % / Momentum / K-Score</div>
+              <div>
+                These are the <strong style={{ color: '#e2e8f0' }}>spark</strong> — is the stock actually
+                moving right now? A stock with huge short interest and a 10-day cover ratio sitting flat
+                for weeks is <em>loaded</em>, not <em>active</em> — the squeeze mechanics can&apos;t start
+                without price already rising. Momentum/K-Score come from this app&apos;s own ranking
+                model (see the <Link href="/rankings" style={{ color: '#38bdf8', textDecoration: 'none' }}>Rankings page</Link> for
+                what feeds into them), refreshed a few times a day rather than live intraday.
+              </div>
+            </div>
+          </div>
+
+          <div style={{ fontSize: '13px', fontWeight: 800, color: '#e2e8f0', marginBottom: 10 }}>
+            How to use this to find what to focus on
+          </div>
+          <p style={{ marginBottom: 14 }}>
+            Read the three signals together, not any single column alone: <strong style={{ color: '#e2e8f0' }}>Short %
+            + Days to Cover</strong> tell you how much fuel/fuse exists (is this stock even structurally
+            capable of a violent squeeze?), while <strong style={{ color: '#e2e8f0' }}>Change % and
+            Momentum</strong> tell you whether it&apos;s already igniting <em>right now</em>. The{' '}
+            <span style={{ color: '#f87171' }}>🔥 Prime Candidate</span> badge on this page marks rows
+            where BOTH are true — short float ≥15% <em>and</em> real bullish momentum already underway —
+            which is the closest thing to &quot;stop scanning and look at this one.&quot; A high-short-
+            float stock with no 🔥 badge is worth bookmarking (it has the fuel), not acting on yet (no
+            spark).
+          </p>
+
+          <div style={{ padding: '12px 14px', borderRadius: '10px', background: 'rgba(56,189,248,0.06)', border: '1px solid rgba(56,189,248,0.2)' }}>
+            <div style={{ fontSize: '11px', fontWeight: 800, color: '#38bdf8', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
+              Don&apos;t want to scan this page yourself?
+            </div>
+            The <Code>short_squeeze_alert_check</Code> job does exactly this combined read
+            automatically, every minute, and pushes it to you the instant a heavily-shorted stock
+            actually starts moving intraday — see{' '}
+            <Link href="/alerts-guide" style={{ color: '#38bdf8', textDecoration: 'none' }}>the Alerts Guide</Link>{' '}
+            for its exact thresholds and known limitations (it&apos;s deliberately long-only — no
+            symmetric &quot;crowded longs unwinding&quot; version exists, since there&apos;s no reliable
+            data source for that the way short interest exists for shorts).
+          </div>
+        </div>
+      )}
 
       {/* Alert banner for top candidates */}
       {!isLoading && topCandidates.length > 0 && (
