@@ -1217,6 +1217,120 @@ def send_volume_anomaly_email(to: str, alerts: list[dict]) -> bool:
     return send_email(to, subject, body_html, body_text)
 
 
+def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
+    """One email per recipient listing every symbol that NEWLY crossed into "shorts likely
+    getting squeezed RIGHT NOW" territory this cycle: short_percent_of_float >= 15 AND the
+    stock is already up >=3% intraday. Each dict: {symbol, short_percent_of_float, change_pct,
+    price}. Explicitly framed as a BUY-direction signal — the thesis is that heavily-shorted
+    sellers are being forced to cover into a rise already in progress, adding buying pressure
+    on top of whatever started the move. Reports the MEASURED setup, never a claim that the
+    squeeze will keep going — that depends on the move continuing, which this cannot predict.
+    """
+    n = len(candidates)
+    subject = f"🚀 Short Squeeze Alert (BUY signal) — {n} stock{'s' if n != 1 else ''} shorts may be covering"
+
+    rows_html = ""
+    rows_text = ""
+    for c in candidates:
+        sym = c["symbol"]
+        spf = c["short_percent_of_float"]
+        chg = c.get("change_pct")
+        price = c.get("price")
+        chg_str = f"+{chg:.2f}%" if chg is not None else "—"
+        price_str = f"${price:.2f}" if price else "—"
+        rows_html += (
+            f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
+            f'<strong style="font-size:14px">{sym}</strong>'
+            f'<span style="font-size:13px;color:#22c55e;font-weight:700">{chg_str}</span>'
+            f'</div>'
+            f'<div style="font-size:12px;color:#64748b;margin-top:2px">{price_str} · <strong style="color:#ef4444">{spf:.1f}%</strong> of float short</div>'
+            f'</div>'
+        )
+        rows_text += f"  {sym}: {price_str}, {chg_str} today, {spf:.1f}% of float short\n"
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:#ef4444">🚀 Short Squeeze Alert — BUY-direction signal</h2>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} heavily-shorted stock{'s' if n != 1 else ''} just started moving up hard, right now.</p>
+    <div style="margin-top:12px">{rows_html}</div>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      Thesis: high short interest + a real rally already in progress means shorts may be
+      forced to cover, adding buying pressure on top of the move. This reports a MEASURED
+      setup, not a prediction the move continues — a squeeze can reverse just as fast as it
+      started. Not financial advice.
+    </p>
+  </div>
+</body></html>"""
+    body_text = (
+        f"Short Squeeze Alert (BUY signal) — {n} stock{'s' if n != 1 else ''}\n\n"
+        + rows_text
+        + "\nMeasured setup, not a prediction the move continues. Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
+def send_gamma_unwind_email(to: str, candidates: list[dict]) -> bool:
+    """Options-expiry gamma-unwind alert — the SECOND squeeze mechanism (see check_gamma_
+    unwind_alerts()'s own docstring for the full explanation vs. the classic short-squeeze
+    alert above). Each dict: {symbol, expiry, days_to_expiry, dominant_side ("calls"/"puts"),
+    concentration_pct, total_oi_near_money, price}.
+
+    Deliberately framed as a DIRECTIONAL WATCH, not a firm BUY/SELL call — unlike the classic
+    short-squeeze alert (which has a clean long-only thesis), which way a gamma unwind actually
+    pushes price depends on whether market makers are net long or short gamma at that strike,
+    which this app does not compute. A calls-dominant near-the-money block near expiry has
+    historically been associated with EITHER a sharp upside continuation (dealers short gamma,
+    forced to chase) OR a "max pain" pin/reversal toward the heaviest strike — reported as
+    "watch closely," never asserted as one specific direction.
+    """
+    n = len(candidates)
+    subject = f"⚡ Options Expiry Watch — {n} stock{'s' if n != 1 else ''} with concentrated OI near expiry"
+
+    rows_html = ""
+    rows_text = ""
+    for c in candidates:
+        sym = c["symbol"]
+        side = c["dominant_side"]
+        side_color = "#22c55e" if side == "calls" else "#ef4444"
+        conc = c["concentration_pct"]
+        dte = c["days_to_expiry"]
+        dte_str = "expires TODAY" if dte == 0 else f"expires in {dte}d"
+        oi = c["total_oi_near_money"]
+        price_str = f"${c['price']:.2f}" if c.get("price") else "—"
+        rows_html += (
+            f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
+            f'<strong style="font-size:14px">{sym}</strong>'
+            f'<span style="font-size:13px;color:{side_color};font-weight:700">{conc:.0f}% {side}</span>'
+            f'</div>'
+            f'<div style="font-size:12px;color:#64748b;margin-top:2px">{price_str} · {oi:,} contracts near the money · {dte_str} ({c["expiry"]})</div>'
+            f'</div>'
+        )
+        rows_text += f"  {sym}: {price_str}, {conc:.0f}% {side}-dominant, {oi:,} near-money OI, {dte_str} ({c['expiry']})\n"
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:#f59e0b">⚡ Options Expiry Watch — directional watch, not a call</h2>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} stock{'s' if n != 1 else ''} with heavy, lopsided options open interest near the current price, close to expiry.</p>
+    <div style="margin-top:12px">{rows_html}</div>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      Thesis: when market makers who sold this options block unwind their hedge near/at
+      expiry, that unwind itself can move the stock sharply. This is a proxy signal (near-
+      the-money open-interest concentration), NOT a real gamma-exposure calculation — which
+      way the unwind actually pushes price is genuinely uncertain from this data alone, so
+      this is a WATCH, not a directional BUY/SELL signal. Not financial advice.
+    </p>
+  </div>
+</body></html>"""
+    body_text = (
+        f"Options Expiry Watch — {n} stock{'s' if n != 1 else ''} (directional watch, not a call)\n\n"
+        + rows_text
+        + "\nProxy signal, not a real gamma-exposure calc — direction is genuinely uncertain. Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_top3_conviction_email(to: str, picks: list[dict]) -> bool:
     """T257-TOP3-CONVICTION-ALERT: up to 3 picks, each gated on a MEASURED historical win
     rate (not raw model confidence) — the email's whole point is to make that accuracy claim

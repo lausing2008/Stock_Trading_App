@@ -87,6 +87,20 @@ const USER_ALERTS: AlertRow[] = [
     note: 'The "give me your best picks" alert, built to be genuinely honest: it gates on a stock’s tracked, historical win rate at that exact confidence level (≥70%, at least 30 real past outcomes) — not the model’s raw confidence score. Most days this correctly sends nothing; an empty inbox means the bar is working, not that the feature is broken.',
   },
   {
+    job: 'short_squeeze_alert_check',
+    schedule: 'Every 1 min',
+    scope: 'price-alert',
+    cooldown: 'Fires only on a state transition; re-fires if it drops out and later re-qualifies',
+    note: 'Classic short squeeze — explicitly a BUY-direction signal. Fires when a stock with ≥15% of its float sold short is ALSO up ≥3% intraday, right now: the thesis is that shorts are being forced to cover into the rise, adding buying pressure on top of the move. One-directional by design — see the known-limitations callout below for why there’s no symmetric SELL version.',
+  },
+  {
+    job: 'gamma_unwind_alert_check',
+    schedule: 'Every 4 hours',
+    scope: 'price-alert',
+    cooldown: 'Once per (symbol, expiry) — a later, different expiry can re-alert',
+    note: 'Options-expiry squeeze — a DIRECTIONAL WATCH, not a BUY/SELL call. Fires when a stock has a large block of options open interest concentrated near the current price (calls OR puts, ≥55% one-sided) close to expiry (0–3 days out): when the market makers who sold those options unwind their hedge near expiry, that unwind can move the stock sharply either way. Genuinely can’t predict the direction from this data alone — see the known-limitations callout below.',
+  },
+  {
     job: 'premarket_brief_us / premarket_brief_hk',
     schedule: 'Daily 8:00am local (US/HK), weekdays',
     scope: 'price-alert',
@@ -411,7 +425,49 @@ export default function AlertsGuidePage() {
         <Code>check_signal_alerts</Code> require you to have actually created a Price Alert / Signal
         Alert on that symbol on the{' '}
         <a href="/alerts" style={{ color: '#38bdf8', textDecoration: 'none' }}>Alerts page</a> — nothing
-        fires for a symbol you haven’t subscribed to.
+        fires for a symbol you haven’t subscribed to. Also worth knowing: <Code>short_squeeze_alert_check</Code>{' '}
+        and <Code>volume_anomaly_check</Code> BOTH gate on the same 20-day average-volume baseline (RVOL) —
+        a stock whose own trailing average is itself inflated by a prior extreme-volume run can look "quiet"
+        by comparison even on a genuinely large-volume day, so an expected alert can legitimately not fire.
+
+        <div style={{ marginTop: 14, fontSize: '13px', fontWeight: 800, color: '#e2e8f0' }}>
+          Known limitations of the two squeeze alerts, and what would make them better
+        </div>
+        <ul style={{ marginTop: 8, paddingLeft: 18, lineHeight: 1.7 }}>
+          <li>
+            <Code>short_squeeze_alert_check</Code> is <strong>long-only by design</strong> — it has no
+            symmetric "crowded longs unwinding" SELL version, because this app has no reliable "long
+            interest of float" data source the way short interest exists for the classic squeeze case.
+            A future version could lean on options call/put skew as a rougher proxy, but that would be a
+            genuinely weaker, more speculative signal than the current one — left unbuilt rather than
+            shipped as something that could mislead a trade decision.
+          </li>
+          <li>
+            <Code>gamma_unwind_alert_check</Code> is a <strong>proxy signal, not a real gamma-exposure
+            (GEX) calculation</strong>. A true GEX model needs each option contract’s actual gamma (a
+            Black-Scholes calculation from strike/expiry/implied-volatility/rate) plus an assumption about
+            whether market makers are net long or short gamma at each strike — neither is computed
+            anywhere in this app today. What IS measured — large open interest concentrated near the
+            current price, close to expiry, lopsided toward one side — is a real, defensible proxy for
+            "hedge-unwind risk is elevated," but it genuinely cannot tell you which direction the unwind
+            pushes price, which is why this alert is framed as a watch, never a BUY/SELL call.
+          </li>
+          <li>
+            <strong>Future action to close that gap</strong>: a real GEX upgrade would need (1) per-
+            contract Greeks computed from the already-fetched strike/expiry/IV data (a real but
+            self-contained quant task — Black-Scholes gamma has a closed-form formula, no new data source
+            needed), and (2) a maker-positioning model (commonly approximated as "dealers are short gamma
+            below the zero-gamma flip level, long gamma above it" using aggregate OI-weighted gamma across
+            all strikes) to actually call a direction. This is a real, scoped follow-up — not attempted
+            here since it’s a meaningfully bigger and riskier build than the proxy signal shipped today,
+            and a wrong GEX-direction call would be worse than an honest "we don’t know" watch.
+          </li>
+          <li>
+            Both alerts are also currently scoped to symbols this app already tracks (its own ~150-stock
+            universe, or the bounded Price-Alert + top-K-by-K-Score set for the options-chain call) — they
+            cannot discover a brand-new, not-yet-tracked stock the way a true market-wide screener could.
+          </li>
+        </ul>
       </Callout>
     </div>
   );

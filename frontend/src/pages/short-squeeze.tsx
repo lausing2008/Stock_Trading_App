@@ -91,7 +91,10 @@ export default function ShortSqueezePage() {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
         <div>
           <h1 style={{ fontSize: '22px', fontWeight: 800, color: '#e2e8f0', marginBottom: '4px' }}>Short Squeeze Scanner</h1>
-          <p style={{ fontSize: '12px', color: '#475569' }}>High short interest stocks with upward momentum — classic squeeze setup</p>
+          <p style={{ fontSize: '12px', color: '#475569' }}>
+            High short interest stocks with upward momentum — classic squeeze setup. Want this proactively,
+            without checking this page yourself? See <Link href="/alerts-guide" style={{ color: '#38bdf8', textDecoration: 'none' }}>short_squeeze_alert_check</Link> in the Alerts Guide — fires the moment a heavily-shorted stock starts moving fast, intraday.
+          </p>
         </div>
         <button
           onClick={() => mutate()}

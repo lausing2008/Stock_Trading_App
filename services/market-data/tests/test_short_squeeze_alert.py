@@ -1,0 +1,127 @@
+"""Tests for the classic short-squeeze alert (check_short_squeeze_alerts()).
+
+send_short_squeeze_email() is pure string composition (no DB/network dependency), so it's
+tested directly with real inputs. check_short_squeeze_alerts() itself can't be imported in this
+test environment — scheduler.py's import chain pulls in apscheduler and other unstubbed
+modules (see test_price_alert_price_check.py's docstring for the same constraint) — so the
+scan logic/job registration is covered by source-text regression checks instead, matching
+test_scheduler_static_names.py's / test_volume_anomaly_alert.py's established pattern.
+"""
+import pathlib
+from unittest.mock import patch
+
+from src.services.email_service import send_short_squeeze_email
+
+_scheduler_path = pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "scheduler.py"
+_scheduler_source = _scheduler_path.read_text()
+
+
+def _capture_send():
+    calls = []
+    def _fake_send(to, subject, body_html, body_text):
+        calls.append({"to": to, "subject": subject, "html": body_html, "text": body_text})
+        return True
+    return calls, _fake_send
+
+
+def _check_short_squeeze_alerts_body() -> str:
+    start = _scheduler_source.index("def check_short_squeeze_alerts(")
+    end = _scheduler_source.index("\ndef ", start + 1)
+    return _scheduler_source[start:end]
+
+
+# ── send_short_squeeze_email() — pure composition, tested directly ──────────────────────────
+
+def test_single_candidate_renders_symbol_short_pct_and_change():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_short_squeeze_email("user@example.com", [
+            {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10},
+        ])
+    html, text = calls[0]["html"], calls[0]["text"]
+    assert "GME" in html and "22.5%" in html and "+8.30%" in html and "$25.10" in html
+    assert "GME" in text and "22.5%" in text
+
+
+def test_subject_explicitly_labels_this_a_buy_signal():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_short_squeeze_email("user@example.com", [
+            {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10},
+        ])
+    assert "BUY signal" in calls[0]["subject"]
+
+
+def test_body_states_not_a_prediction_the_move_continues():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_short_squeeze_email("user@example.com", [
+            {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10},
+        ])
+    html = calls[0]["html"]
+    assert "not a prediction" in html.lower() or "not a prediction the move continues" in html.lower()
+
+
+def test_multiple_candidates_all_rendered():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_short_squeeze_email("user@example.com", [
+            {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10},
+            {"symbol": "AMC", "short_percent_of_float": 18.0, "change_pct": 5.1, "price": 4.50},
+        ])
+    html = calls[0]["html"]
+    assert "GME" in html and "AMC" in html
+
+
+def test_missing_change_pct_or_price_degrades_gracefully_not_crash():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        result = send_short_squeeze_email("user@example.com", [
+            {"symbol": "XYZ", "short_percent_of_float": 20.0, "change_pct": None, "price": None},
+        ])
+    assert result is True
+    assert "—" in calls[0]["html"]
+
+
+# ── check_short_squeeze_alerts() — source-text regression checks ────────────────────────────
+
+def test_uses_stockai_live_prices_not_yfinance_in_the_scan_loop():
+    """MUST read the same cache check_volume_anomalies() reads (never a per-symbol yfinance
+    call inside the universe loop) — this repo has hit real yfinance rate-limiting from
+    exactly this class of tight loop before."""
+    body = _check_short_squeeze_alerts_body()
+    assert '"stockai:live_prices"' in body
+    assert "import yfinance" not in body
+
+
+def test_uses_is_market_hours_helper():
+    body = _check_short_squeeze_alerts_body()
+    assert "_is_market_hours" in body
+
+
+def test_uses_a_redis_lock():
+    body = _check_short_squeeze_alerts_body()
+    assert "_SQUEEZE_LOCK_KEY" in body
+    assert 'nx=True' in body
+
+
+def test_requires_both_short_float_and_intraday_move_thresholds():
+    body = _check_short_squeeze_alerts_body()
+    assert "_SQUEEZE_MIN_SHORT_FLOAT" in body
+    assert "_SQUEEZE_MIN_INTRADAY_MOVE_PCT" in body
+
+
+def test_fires_only_on_state_transition_via_redis_set_diff():
+    """The dedup mechanism must diff against a PRIOR set, not just re-alert every cycle a
+    stock stays qualified — this is the "only email on the transition" property."""
+    body = _check_short_squeeze_alerts_body()
+    assert "prev_active" in body
+    assert "newly_qualifying" in body
+    assert "current_active - prev_active" in body
+
+
+def test_job_is_registered_at_one_minute_interval():
+    assert 'id="short_squeeze_alert_check"' in _scheduler_source
+    idx = _scheduler_source.index('id="short_squeeze_alert_check"')
+    preceding = _scheduler_source[max(0, idx - 300):idx]
+    assert "minutes=1" in preceding

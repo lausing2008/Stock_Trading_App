@@ -4060,6 +4060,32 @@ Return ONLY valid JSON — no markdown, no prose:
               </div>
             </div>
 
+            {/* Put-volume spike callout — surfaces whether TODAY's put activity is genuinely
+                elevated (volume already exceeding existing open interest on the put side),
+                not just restating the raw put_volume number already shown in the bar above. */}
+            {optionsFlow.unusual && optionsFlow.unusual.length > 0 && (() => {
+              const putUnusual = optionsFlow.unusual.filter(c => c.side === 'put');
+              if (putUnusual.length === 0) return null;
+              const putPremium = putUnusual.reduce((sum, c) => sum + c.premium, 0);
+              const maxVolOi = Math.max(...putUnusual.map(c => c.vol_oi));
+              const putWhales = putUnusual.filter(c => c.is_whale).length;
+              return (
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                  background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)',
+                  borderRadius: 6, padding: '8px 12px', marginBottom: 12, fontSize: 11,
+                }}>
+                  <span style={{ fontWeight: 700, color: '#f87171' }}>📉 Elevated put activity</span>
+                  <span style={{ color: '#94a3b8' }}>
+                    {putUnusual.length} put contract{putUnusual.length !== 1 ? 's' : ''} trading at{' '}
+                    {maxVolOi.toFixed(1)}× today&apos;s volume vs. existing open interest
+                    {putPremium > 0 && ` · $${putPremium >= 1_000_000 ? (putPremium / 1_000_000).toFixed(1) + 'M' : Math.round(putPremium / 1_000) + 'K'} premium`}
+                    {putWhales > 0 && ` · ${putWhales} whale trade${putWhales !== 1 ? 's' : ''}`}
+                  </span>
+                </div>
+              );
+            })()}
+
             {/* Unusual contracts table */}
             {optionsFlow.unusual && optionsFlow.unusual.length > 0 && (
               <>

@@ -73,6 +73,7 @@ const NAV_GROUPS: NavGroupDef[] = [
     label: 'Research',
     items: [
       { label: 'Screener',      href: '/screener' },
+      { label: 'Market Screener (New Stocks)', href: '/market-screener', color: '#38bdf8', tag: 'new' },
       { label: 'Compare',       href: '/compare',       color: '#818cf8' },
       { label: 'Opportunities', href: '/opportunities', color: '#a78bfa' },
       { label: 'Earnings',      href: '/earnings',      color: '#fb923c', tag: 'cal' },

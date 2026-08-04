@@ -2038,6 +2038,105 @@ def short_squeeze(
     return results
 
 
+# ── Market-Wide Screener (beyond this app's own tracked universe) ────────────
+# Closes the gap documented in .claude/CLAUDE.md's "Reports Tab" research (2026-07-16): every
+# other screener/scanner page in this app (rankings, short-interest, short-squeeze) only
+# joins against Stock — symbols this app ALREADY tracks. This is the one genuinely new
+# capability: find a stock BEFORE it's on your radar at all, using yfinance's own free
+# screener (yf.screen() / PREDEFINED_SCREENER_QUERIES) rather than a paid screener API.
+
+_MARKET_SCREENER_QUERIES = ["small_cap_gainers", "aggressive_small_caps", "most_actives"]
+_MARKET_SCREENER_TTL = 300  # 5 min — a real intraday-mover screen, not a slow-changing one
+
+
+def _rank_screener_quotes(quotes: list[dict], tracked_symbols: set[str]) -> list[dict]:
+    """Pure transform: raw yfinance screen() quote dicts -> this endpoint's own response
+    shape. Pulled to module level (not an inline closure) so it's testable with a plain list
+    of dicts, no real yfinance/HTTP call needed — the only real logic in market_screener()
+    worth testing directly, matching _options_chain_rows()'s established convention above."""
+    out = []
+    seen: set[str] = set()
+    for q in quotes:
+        sym = q.get("symbol")
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        change_pct = q.get("regularMarketChangePercent")
+        volume = q.get("regularMarketVolume")
+        avg_vol_3m = q.get("averageDailyVolume3Month")
+        rvol = round(volume / avg_vol_3m, 2) if volume and avg_vol_3m else None
+        out.append({
+            "symbol": sym,
+            "name": q.get("longName") or q.get("shortName") or sym,
+            "price": q.get("regularMarketPrice"),
+            "change_pct": round(change_pct, 2) if change_pct is not None else None,
+            "volume": volume,
+            "rvol": rvol,
+            "market_cap": q.get("marketCap"),
+            "exchange": q.get("fullExchangeName") or q.get("exchange"),
+            "already_tracked": sym in tracked_symbols,
+        })
+    out.sort(key=lambda r: (r["change_pct"] if r["change_pct"] is not None else -999), reverse=True)
+    return out
+
+
+@router.get("/market-screener")
+def market_screener(_user=Depends(get_current_user)):
+    """Market-wide screener USING yfinance's own free screening capability — finds a stock
+    BEFORE it's already in your tracked universe, unlike every other screener page in this
+    app. Runs 3 predefined Yahoo screens (small_cap_gainers, aggressive_small_caps,
+    most_actives — chosen as the ones most likely to surface an early-stage explosive mover,
+    the exact "catch something like DFNS before it's already on my radar" ask this feature was
+    built for) and merges/dedupes the results, flagging which symbols this app already tracks.
+
+    Read-only and safe for any logged-in user (not admin-gated) — it never writes anything.
+    Actually adding a new symbol to this app's tracked universe still goes through the
+    existing, admin-only POST /admin/add_stock endpoint — this screener only surfaces
+    candidates, it does not itself mutate the Stock table.
+
+    Cached 5 minutes (a real intraday-mover screen changes fast — not a slow-refresh cache
+    like most fundamentals-driven pages in this app).
+    """
+    from db import SessionLocal
+
+    cache_key = "stockai:market_screener"
+    try:
+        rdb = _get_redis()
+        cached = rdb.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        rdb = None
+
+    with SessionLocal() as session:
+        tracked_symbols = {
+            s for (s,) in session.execute(
+                select(Stock.symbol).where(Stock.active.is_(True), Stock.delisted.is_(False))
+            ).all()
+        }
+
+    all_quotes: list[dict] = []
+    errors: list[str] = []
+    for query in _MARKET_SCREENER_QUERIES:
+        try:
+            result = yf.screen(query, count=25)
+            all_quotes.extend(result.get("quotes", []))
+        except Exception as exc:
+            log.warning("market_screener.query_failed", query=query, error=str(exc))
+            errors.append(query)
+
+    rows = _rank_screener_quotes(all_quotes, tracked_symbols)
+    response = {"rows": rows, "queries_used": _MARKET_SCREENER_QUERIES, "queries_failed": errors}
+
+    if rdb is not None:
+        try:
+            rdb.setex(cache_key, _MARKET_SCREENER_TTL, json.dumps(response))
+        except Exception:
+            pass
+
+    return response
+
+
 # ── Relative Performance (multi-symbol normalized price series) ───────────────
 
 @router.get("/relative_performance")

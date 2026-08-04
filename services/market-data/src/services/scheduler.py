@@ -2033,6 +2033,314 @@ def check_volume_anomalies() -> None:
             pass
 
 
+_SQUEEZE_LOCK_KEY = "stockai:lock:check_short_squeeze_alerts"
+_SQUEEZE_LOCK_TTL = 55  # seconds — runs every 60s, same pattern as check_volume_anomalies
+_SQUEEZE_MIN_SHORT_FLOAT = 15.0  # % of float — matches short-squeeze.tsx's "Prime Candidate" bar exactly
+_SQUEEZE_MIN_INTRADAY_MOVE_PCT = 3.0  # a real move already in progress, not just "green today"
+
+
+def check_short_squeeze_alerts() -> None:
+    """Classic short-squeeze alert: high short-interest-of-float AND a real upward price move
+    already happening RIGHT NOW, intraday. Framed explicitly as a BUY-direction signal — the
+    thesis is that shorts are being forced to cover into the rise, which itself adds buying
+    pressure on top of whatever started the move.
+
+    Deliberately intraday-price-driven (stockai:live_prices, same 1-min cache every other fast
+    alert in this file reads — no yfinance/DB call in the loop), NOT K-Score/Ranking-momentum-
+    driven like short-squeeze.tsx's own "Prime Candidate" banner. That banner's momentum_score
+    only updates a few times/day (the ranking-engine refresh cycle) — too slow for "a squeeze
+    is happening RIGHT NOW." Short-interest-of-float itself still comes from the slower-
+    changing stockai:fundamentals:v2:{symbol} cache (weekly refresh) since that's genuinely how
+    often that data changes — only the MOVE-IN-PROGRESS half needs to be fast.
+
+    Deliberately ONE-DIRECTIONAL (long/BUY only) — there is no reliable "long interest of
+    float" data source in this app the way short interest exists for the classic case, so a
+    symmetric "crowded longs unwinding on a drop" alert would lean on a much fuzzier proxy
+    (options call/put skew) with no real equivalent conviction. Left unbuilt rather than
+    shipped as a weaker, potentially-misleading mirror signal — see the separate options-expiry
+    gamma-unwind alert (check_gamma_unwind_alerts) for the OTHER mechanism this app now covers,
+    which IS direction-agnostic since it's driven by measured options positioning, not a proxy.
+
+    Fires only on a state TRANSITION (not-a-candidate -> candidate), not every minute a stock
+    stays qualified — tracked via a Redis set of "currently qualifying" symbols per user,
+    diffed each cycle. A stock that stays a candidate for hours doesn't re-email every minute;
+    one that drops out and re-qualifies later DOES re-alert (a real second setup, not a repeat).
+
+    Delivery scoped to the same PriceAlert-subscribed audience as every other T249/T257-era
+    alert in this file (not full watchlist/portfolio membership) — matches this repo's
+    established v1 scope-narrowing convention.
+    """
+    try:
+        acquired = _get_redis().set(_SQUEEZE_LOCK_KEY, "1", nx=True, ex=_SQUEEZE_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    _t0 = time.monotonic()
+    try:
+        import json as _json
+
+        _rc = _get_redis()
+        try:
+            _live_raw = _json.loads(_rc.get("stockai:live_prices") or "[]")
+        except Exception:
+            _live_raw = []
+        if not _live_raw:
+            _record_job_status("check_short_squeeze_alerts", "ok", time.monotonic() - _t0)
+            return
+
+        from .paper_trading_engine import _is_market_hours
+        _us_market_open = _is_market_hours("US")
+        _hk_market_open = _is_market_hours("HK")
+        if not _us_market_open and not _hk_market_open:
+            _record_job_status("check_short_squeeze_alerts", "ok", time.monotonic() - _t0)
+            return
+
+        with SessionLocal() as session:
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            if not alerts:
+                _record_job_status("check_short_squeeze_alerts", "ok", time.monotonic() - _t0)
+                return
+            recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            if not recipients:
+                _record_job_status("check_short_squeeze_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            candidates: dict[str, dict] = {}
+            for row in _live_raw:
+                sym = row.get("symbol")
+                price = row.get("price")
+                prev_close = row.get("prev_close")
+                if not sym or not price or not prev_close:
+                    continue
+                _is_hk_sym = sym.upper().endswith(".HK")
+                if _is_hk_sym and not _hk_market_open:
+                    continue
+                if not _is_hk_sym and not _us_market_open:
+                    continue
+                change_pct = (float(price) - float(prev_close)) / float(prev_close) * 100
+                if change_pct < _SQUEEZE_MIN_INTRADAY_MOVE_PCT:
+                    continue
+                try:
+                    cached = _rc.get(f"stockai:fundamentals:v2:{sym}")
+                    if not cached:
+                        continue
+                    data = _json.loads(cached)
+                    spf = data.get("short_percent_of_float")
+                    if spf is None or spf * 100 < _SQUEEZE_MIN_SHORT_FLOAT:
+                        continue
+                except Exception:
+                    continue
+                candidates[sym] = {
+                    "symbol": sym,
+                    "short_percent_of_float": round(spf * 100, 2),
+                    "change_pct": round(change_pct, 2),
+                    "price": price,
+                }
+            if not candidates:
+                _record_job_status("check_short_squeeze_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            from .email_service import send_short_squeeze_email
+            sent = 0
+            for uid, user in recipients.items():
+                state_key = f"stockai:squeeze_active:{uid}"
+                try:
+                    prev_active = set(_rc.smembers(state_key) or set())
+                except Exception:
+                    prev_active = set()
+                current_active = set(candidates.keys())
+                newly_qualifying = sorted(current_active - prev_active)
+                if newly_qualifying:
+                    payload = [candidates[sym] for sym in newly_qualifying]
+                    if send_short_squeeze_email(user.email, payload):
+                        sent += 1
+                # Always resync the active set — a stock that drops out (no longer above the
+                # move threshold) must be removed so it correctly re-alerts if it re-qualifies.
+                try:
+                    _rc.delete(state_key)
+                    if current_active:
+                        _rc.sadd(state_key, *current_active)
+                    _rc.expire(state_key, 20 * 3600)  # same-day dedup window, matches vol-anomaly
+                except Exception:
+                    pass
+
+            _record_job_status("check_short_squeeze_alerts", "ok", time.monotonic() - _t0)
+            log.info("short_squeeze_alert.done", candidates=len(candidates), sent=sent, recipients=len(recipients))
+    except Exception as exc:
+        log.error("short_squeeze_alert.failed", error=str(exc), exc_info=True)
+        _record_job_status("check_short_squeeze_alerts", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        try:
+            _get_redis().delete(_SQUEEZE_LOCK_KEY)
+        except Exception:
+            pass
+
+
+_GAMMA_UNWIND_LOCK_KEY = "stockai:lock:check_gamma_unwind_alerts"
+_GAMMA_UNWIND_LOCK_TTL = 3600  # generous — a few-times-a-day job, only needs to prevent true overlap
+_GAMMA_UNWIND_MAX_DAYS_TO_EXPIRY = 3  # "imminent" — today through 3 calendar days out
+_GAMMA_UNWIND_MIN_OI_CONCENTRATION = 0.55  # one side must hold >=55% of near-the-money OI
+_GAMMA_UNWIND_STRIKE_BAND_PCT = 0.05  # "near the money" = within 5% of current price
+_GAMMA_UNWIND_MIN_TOTAL_OI = 500  # floor so a thin/illiquid chain doesn't produce a false signal
+
+
+def check_gamma_unwind_alerts() -> None:
+    """Options-expiry gamma-unwind alert — the SECOND, mechanistically DIFFERENT squeeze type
+    from check_short_squeeze_alerts() above. That one detects shorts being forced to cover a
+    STOCK position as price rises; this one detects a large block of OPTIONS open interest
+    concentrated near the current price, approaching expiry — when market makers who sold
+    those options unwind their delta-hedge (buying/selling the underlying to stay neutral) as
+    the position nears/crosses expiry, that unwind itself can move the stock sharply, often
+    right around Friday/monthly options-expiration dates. Same general phenomenon "GME-style"
+    squeezes are associated with, but the trigger here is options EXPIRY dynamics, not short-
+    stock covering.
+
+    HONEST LIMITATION, stated explicitly rather than papered over: this is NOT a real gamma-
+    exposure (GEX) calculation. A true GEX model needs each contract's actual gamma (from a
+    Black-Scholes calc using strike/expiry/IV/rate) and a maker-positioning assumption (are
+    dealers net long or short gamma at each strike) — neither is computed anywhere in this
+    app. What IS built here is a defensible PROXY: large open interest concentrated near the
+    current price, close to expiry, lopsided toward one side (calls or puts) — a real,
+    measurable "max pain"-style signal that MM hedge-unwind risk is elevated, without claiming
+    to know the unwind's actual direction with GEX-level precision. The alert is DIRECTIONAL
+    watch, not a firm BUY/SELL call, for exactly this reason — see the email's own explicit
+    caveat. See docs/FEATURE_SQUEEZE_ALERTS.md for the full write-up and what a real GEX
+    upgrade would require.
+
+    Bounded symbol set (same _bounded_options_flow_symbols() PriceAlert+top-K-by-K-Score US
+    universe already used by the EOD options-flow snapshot job) — yfinance's options-chain
+    endpoint is this app's most rate-limit-fragile call, so this never scans the whole
+    universe. Runs a few times a day (not every minute — expiry proximity and OI concentration
+    don't change minute-to-minute), with a fixed inter-symbol sleep matching
+    compute_options_flow_snapshots_eod()'s own established rate-limit discipline.
+    """
+    try:
+        acquired = _get_redis().set(_GAMMA_UNWIND_LOCK_KEY, "1", nx=True, ex=_GAMMA_UNWIND_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    _t0 = time.monotonic()
+    try:
+        import json as _json
+        import yfinance as _yf
+
+        with SessionLocal() as session:
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            if not alerts:
+                _record_job_status("check_gamma_unwind_alerts", "ok", time.monotonic() - _t0)
+                return
+            recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            if not recipients:
+                _record_job_status("check_gamma_unwind_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            symbols = _bounded_options_flow_symbols(session)
+            if not symbols:
+                _record_job_status("check_gamma_unwind_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            _rc = _get_redis()
+            try:
+                _live_raw = {row["symbol"]: row for row in _json.loads(_rc.get("stockai:live_prices") or "[]")}
+            except Exception:
+                _live_raw = {}
+
+            today = date.today()
+            candidates: dict[str, dict] = {}
+            for _stock_id, symbol in symbols:
+                try:
+                    live = _live_raw.get(symbol)
+                    price = live.get("price") if live else None
+                    if not price:
+                        continue
+                    t = _yf.Ticker(symbol)
+                    expiries = t.options
+                    if not expiries:
+                        continue
+                    near_expiries = [
+                        e for e in expiries
+                        if 0 <= (date.fromisoformat(e) - today).days <= _GAMMA_UNWIND_MAX_DAYS_TO_EXPIRY
+                    ]
+                    if not near_expiries:
+                        continue
+                    exp = near_expiries[0]
+                    chain = t.option_chain(exp)
+                    calls = chain.calls.fillna(0)
+                    puts = chain.puts.fillna(0)
+
+                    lo, hi = price * (1 - _GAMMA_UNWIND_STRIKE_BAND_PCT), price * (1 + _GAMMA_UNWIND_STRIKE_BAND_PCT)
+                    call_oi = int(calls[(calls["strike"] >= lo) & (calls["strike"] <= hi)]["openInterest"].sum())
+                    put_oi = int(puts[(puts["strike"] >= lo) & (puts["strike"] <= hi)]["openInterest"].sum())
+                    total_oi = call_oi + put_oi
+                    if total_oi < _GAMMA_UNWIND_MIN_TOTAL_OI:
+                        continue
+                    call_share = call_oi / total_oi
+                    if call_share >= _GAMMA_UNWIND_MIN_OI_CONCENTRATION:
+                        dominant_side = "calls"
+                    elif (1 - call_share) >= _GAMMA_UNWIND_MIN_OI_CONCENTRATION:
+                        dominant_side = "puts"
+                    else:
+                        continue  # no real concentration either way — not a clean signal
+
+                    candidates[symbol] = {
+                        "symbol": symbol,
+                        "expiry": exp,
+                        "days_to_expiry": (date.fromisoformat(exp) - today).days,
+                        "dominant_side": dominant_side,
+                        "concentration_pct": round(max(call_share, 1 - call_share) * 100, 1),
+                        "total_oi_near_money": total_oi,
+                        "price": price,
+                    }
+                except Exception as exc:
+                    log.warning("gamma_unwind.symbol_error", symbol=symbol, error=str(exc))
+                    continue
+                time.sleep(1.0)  # rate-limit discipline, matching compute_options_flow_snapshots_eod
+
+            if not candidates:
+                _record_job_status("check_gamma_unwind_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            from .email_service import send_gamma_unwind_email
+            sent = 0
+            for uid, user in recipients.items():
+                state_key = f"stockai:gamma_unwind_sent:{uid}"
+                new_candidates = []
+                for sym, c in candidates.items():
+                    dedup_field = f"{sym}:{c['expiry']}"
+                    try:
+                        if _rc.sismember(state_key, dedup_field):
+                            continue
+                    except Exception:
+                        pass
+                    new_candidates.append(c)
+                if not new_candidates:
+                    continue
+                if send_gamma_unwind_email(user.email, new_candidates):
+                    sent += 1
+                    try:
+                        _rc.sadd(state_key, *[f"{c['symbol']}:{c['expiry']}" for c in new_candidates])
+                        _rc.expire(state_key, 10 * 86400)  # one notice per symbol+expiry, then it passes
+                    except Exception:
+                        pass
+
+            _record_job_status("check_gamma_unwind_alerts", "ok", time.monotonic() - _t0)
+            log.info("gamma_unwind_alert.done", candidates=len(candidates), sent=sent, recipients=len(recipients))
+    except Exception as exc:
+        log.error("gamma_unwind_alert.failed", error=str(exc), exc_info=True)
+        _record_job_status("check_gamma_unwind_alerts", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        try:
+            _get_redis().delete(_GAMMA_UNWIND_LOCK_KEY)
+        except Exception:
+            pass
+
+
 _VALUE_AREA_COMPUTE_LOCK_KEY = "stockai:lock:compute_value_area_levels"
 _VALUE_AREA_COMPUTE_LOCK_TTL = 3600  # generous — daily job, only needs to prevent true overlap
 
@@ -6154,6 +6462,31 @@ def start_scheduler() -> None:
         "interval",
         minutes=1,
         id="volume_anomaly_check",
+        replace_existing=True,
+        max_instances=1, coalesce=True,
+    )
+
+    # ── Options-expiry gamma-unwind alert — a few times a day ───────────────
+    # OI concentration/expiry-proximity data doesn't change minute-to-minute — see
+    # check_gamma_unwind_alerts()'s own docstring for the full mechanism + honest limitations.
+    _scheduler.add_job(
+        check_gamma_unwind_alerts,
+        "interval",
+        hours=4,
+        id="gamma_unwind_alert_check",
+        replace_existing=True,
+        max_instances=1, coalesce=True,
+    )
+
+    # ── Short-squeeze prime-candidate alert — every minute ──────────────────
+    # Fires only on a state transition (not-a-candidate -> candidate) — see
+    # check_short_squeeze_alerts()'s own docstring. 1-minute cadence, matching every other
+    # fast intraday alert in this file, since a real squeeze can move fast.
+    _scheduler.add_job(
+        check_short_squeeze_alerts,
+        "interval",
+        minutes=1,
+        id="short_squeeze_alert_check",
         replace_existing=True,
         max_instances=1, coalesce=True,
     )

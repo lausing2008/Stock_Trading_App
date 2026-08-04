@@ -405,6 +405,7 @@ export const api = {
 
   // Short squeeze scanner
   shortSqueeze: (minShortFloat = 10) => request<SqueezeCandidate[]>(`/stocks/short_squeeze?min_short_float=${minShortFloat}`),
+  marketScreener: () => request<MarketScreenerResponse>('/stocks/market-screener'),
 
   // Short interest dashboard
   shortInterest: () => request<ShortInterestRow[]>('/stocks/short-interest'),
@@ -1182,6 +1183,24 @@ export type SqueezeCandidate = {
   momentum_score: number | null;
   k_score: number | null;
   volume: number | null;
+};
+
+export type MarketScreenerRow = {
+  symbol: string;
+  name: string;
+  price: number | null;
+  change_pct: number | null;
+  volume: number | null;
+  rvol: number | null;
+  market_cap: number | null;
+  exchange: string | null;
+  already_tracked: boolean;
+};
+
+export type MarketScreenerResponse = {
+  rows: MarketScreenerRow[];
+  queries_used: string[];
+  queries_failed: string[];
 };
 
 export type RelPerfPoint = {
