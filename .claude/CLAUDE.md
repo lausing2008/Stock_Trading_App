@@ -11611,3 +11611,46 @@ RVOL's design intent). **Both need re-running against production before being ac
 audit):** a subagent without production access will confidently report local-environment
 observations as live-system facts. Always re-verify any environment-dependent claim directly
 before recording or acting on it — and prefer having the agent state what it could NOT verify.
+
+---
+
+## INCIDENT 2026-08-05 (RESOLVED): TLS Certificate Expired — No Auto-Renewal Was Configured At All
+
+**Root cause of the "site externally unreachable" symptom** (distinct from, and diagnosed after,
+the container-reboot recovery documented above): the Let's Encrypt cert for `lausing.com` expired
+at **2026-08-05 04:20:57 UTC**. Confirmed via `curl -sv https://lausing.com`: TLS handshake
+completed through ServerHello/Certificate, then the client sent
+`TLS alert, certificate expired (557)` — a genuine expired-cert rejection, not a network or DNS
+issue. Port 443 was open at the TCP level the whole time; nginx, the frontend container, and
+api-gateway were all healthy and responding on localhost — the failure was purely the TLS
+handshake, which is why `docker ps`/local `curl` checks looked completely fine while the public
+site was down.
+
+**Why it expired**: there was **no renewal automation of any kind** —
+`systemctl list-timers | grep certbot` returned nothing, no root crontab entry, no
+`/etc/cron.d` entry. The cert was a one-time `certbot` issuance (authenticator=nginx,
+installer=nginx per `/etc/letsencrypt/renewal/lausing.com.conf`) that was never wired to renew.
+Let's Encrypt certs are 90-day; this was simply the first time nobody manually renewed it in time.
+
+**Fix applied**:
+1. `sudo certbot renew --force-renewal --non-interactive` — succeeded, nginx auto-reloaded by
+   certbot's own nginx installer plugin. New expiry: **2026-11-03**.
+2. Added a root cron entry: `17 3 * * * /usr/bin/certbot renew --quiet --deploy-hook
+   "systemctl reload nginx"`. Safe to run daily — certbot's own `renew` subcommand only actually
+   renews a cert within ~30 days of its expiry, so this doesn't re-issue needlessly.
+3. Verified end-to-end: `sudo certbot renew --dry-run` succeeds; `https://lausing.com` and
+   `https://lausing.com/earnings` both return real 200s through the public path (not just
+   localhost).
+
+**What to check if this recurs**:
+```bash
+sudo certbot certificates                     # check Expiry Date / VALID-vs-INVALID
+sudo crontab -l | grep certbot                 # confirm the renewal cron still exists
+curl -sv https://lausing.com 2>&1 | grep -i "certificate expired"   # the exact symptom signature
+```
+
+**Design invariant**: any manually-provisioned TLS cert on this infra needs an explicit renewal
+cron/timer checked in at setup time — a working cert today gives zero signal that it will keep
+renewing itself. This is the SSL-equivalent of the repo's own standing "a container that looks
+running can still be silently broken" discipline — a green `docker ps` said nothing about the
+one thing that was actually broken.
