@@ -10971,3 +10971,90 @@ directory first, since this page's component is deduped into a shared chunk, not
 exact `240px 1fr` shape as the original stock-detail bug), `decide.tsx`, `regime.tsx`,
 `insider.tsx`, `congress.tsx`, `sector-rotation.tsx`, `intelligence.tsx`, `forecast.tsx`,
 `settings.tsx`, and several lower-traffic admin-only pages.
+
+---
+
+## Deep Audit #1 of 6: AI Signal Performance / Accuracy / Win Rate / Return (2026-08-05)
+
+**Scope**: documentation-only audit (explicit user instruction: "don't fix it just document and
+update improvement tracker"). Tracked as **Tier 261** in `improvements.tsx`, 12 entries
+(11 findings + 1 CLEAN reference entry).
+
+**The question asked was NOT "is the strategy good"** — real production data already answers
+that, and the answer is no. It was: **can the reported numbers be trusted?** The answer is also
+no, and critically, **every significant defect biases in the same direction: it makes a losing
+system look less bad.**
+
+### Ground truth from production (9,001 rows, signal_date 2026-05-25 → 2026-07-29)
+
+| horizon | direction | n | win_rate | avg_ret (raw, unsigned) |
+|---|---|---|---|---|
+| SHORT | BUY | 1279 | 40.9% | -2.060% |
+| SHORT | SELL | 913 | 39.6% | +0.804% |
+| SWING | BUY | 1423 | 37.9% | -3.802% |
+| SWING | SELL | 884 | 46.0% | -0.621% |
+| LONG | BUY | 1095 | 34.5% | -9.136% |
+| LONG | SELL | 847 | 44.0% | +0.498% |
+| GROWTH | BUY | 1851 | 37.4% | -4.068% |
+| GROWTH | SELL | 709 | 41.2% | +1.024% |
+
+**Reading these correctly**: `pct_return` is stored UNSIGNED (raw price change), so a SELL wins
+when it is NEGATIVE. Therefore SELL rows showing a POSITIVE average are LOSING. **SWING/SELL at
+-0.621% is the only genuinely profitable direction in the entire system.** No direction on any
+horizon clears a 50% win rate.
+
+### The four critical/high findings, all biasing the same way
+
+1. **`outcomes_summary()` pools unsigned SELL into 8 aggregates** — verified against real data:
+   the UI shows **-2.693%** Overall; sign-corrected is **-2.990%**; BUY-only reality is
+   **-4.529%**. The headline is pulled **1.84pp toward zero**. `_retro_ev_for()` was already
+   fixed for exactly this bug (with an explicit comment); the fix was never propagated to the
+   endpoint that feeds the UI. `by_direction` is the only safe aggregate. `by_symbol` sorts by
+   `-avg_return_pct`, so a symbol whose SELLs lost badly ranks as a **top performer**.
+2. **`/signals/accuracy` is mark-to-TODAY but the UI labels it "5-day"** — `most_recent_close()`
+   returns `_pclose[sid][-1]` for every signal regardless of age, so at the 90d default an
+   89-day-old signal is held 89 days and a 2-day-old one 2 days, pooled into one number. The
+   backend's own comment says *"shows running P&L from entry to today"*; the stat card beneath
+   says *"5-day avg after BUY"*. This is the **page headline metric**.
+3. **`profit_factor` decouples magnitude from real P&L** — `abs()` bucketed by the `correct`
+   label, displayed with the explicit reading *"Above 1.5 = good; below 1.0 = signals losing
+   money"*, and it is the one card colored green on a fixed threshold.
+4. **"Paper Trade Results · actual closed trades written back by PT-J1"** — confirmed by grep
+   that `paper_trading_engine.py` **never writes** `return_5d`/`is_correct_5d`. These are
+   hypothetical forward returns from `evaluate_signal_outcomes()`, with no stops, no sizing, no
+   real exits. The attribution in the UI is simply false, and the count label says "trades".
+
+### One finding where the headline observation was NOT the bug
+
+`skip_reason` is NULL for all 9,001 rows (zero censored, zero `delisted_loss`). Traced fully:
+the branch **is** reachable and has simply never triggered, because no symbol stopped producing
+D1 bars for >10 days past an exit target in this window. **The real defect underneath it**:
+`_lookup_outcome_price` uses `bisect_left` (on-or-after) with **no upper staleness bound**, so a
+symbol with a long ingestion gap that later resumes gets scored against a far-future price as a
+clean exit instead of being censored. "Zero censored rows" is consistent with correct behavior
+but is **not evidence** of it.
+
+### The most dangerous property, stated plainly
+
+A user opening `/signal-accuracy` sees: a "5-day" return that is really a 90-day drift, an
+Overall return inflated 1.84pp by counting SELL losses as gains, a Profit Factor that treats
+short-side losses as wins, and a "Paper Trade Results" panel that never touched the trading
+engine — **all colored green above fixed thresholds**. The one honest panel (`by_direction`,
+showing the real 34-46% win rates) is a small sub-table two scrolls down, sitting next to a
+`rolling_accuracy` drift alarm that is **permanently red** (its 55% threshold vs. a real 34-41%
+BUY win rate), which trains the user to read the one truthful indicator as broken.
+
+### Verified CLEAN (do not "fix" these)
+
+`evaluate_signal_outcomes()` core labeling (both `is_correct` and `is_correct_Nd` apply
+direction-aware hurdle logic correctly); T+1 entry genuinely avoids same-day look-ahead;
+per-row `begin_nested()` savepoints; `_retro_ev_for()`'s sign fix; `by_direction`;
+`alpha_decay`/`information_coefficient`/`factor_attribution` all correctly BUY-scoped at the
+query level; `_build_confidence_calibration()` (keyed by horizon+direction+market, 30-sample
+floor, uses `is_correct` only); the `is_correct_5d/10d/20d` write path; `censored_count`'s
+specific `no_exit_price` filter; hold-window constant consistency.
+
+**Checked and explicitly NOT reported as a finding**: the 7-day gap between the newest outcome
+`signal_date` (07-29) and the newest signal (08-05) is the expected hold-window resolution lag,
+and the evaluation job IS running (last write 2026-08-04 20:30 UTC) — verified before filing,
+rather than reported as a stalled job.
