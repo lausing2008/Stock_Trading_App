@@ -11526,3 +11526,88 @@ Six sequential documentation-only audits, 74 tracker entries total. Recurring th
 4. **The corrupted `SignalOutcome` writeback (262) propagates furthest** — into entry-gate tuning
    and ML features (263), and into the Top-3 alert's win-rate gate (266). Fixing it resolves
    several downstream findings for free, but every `gate_threshold` result then needs re-running.
+
+---
+
+## INCIDENT 2026-08-05: Full EC2 Reboot Reverted signal-engine to a PRE-SPLIT Image — SA-33 No Longer Live
+
+**Status at time of writing: NOT yet remediated.** Recorded so the recovery is not lost.
+
+**What happened**: mid-session the instance became fully unreachable (SSH refused, HTTPS 000,
+100% ping loss; own connectivity verified fine via a github.com control). User restarted the
+server. All 15 containers came back **healthy** — but the reboot recreated every container, which
+per this file's own standing invariant reverts every `docker cp` hotfix.
+
+**Confirmed damage (verified against the running container, not assumed):**
+
+| | running container | EC2 git checkout |
+|---|---|---|
+| `signals.py` | **2,439 lines** | 2,833 lines |
+| `calibration.py` | **does not exist** | 2,614 lines |
+| `outcomes.py` | **does not exist** | present |
+| SA-33 / `early_recovery_trend` | **0 matches** | present |
+| `tune_sell_pillars` | **absent** | present |
+
+So signal-engine is running a **pre-2026-07-22 (pre-routes-split)** image. The T233 routes split,
+SA-33 entry timing, `tune_sell_pillars`, and `bearish_pillars_active` generation are all **not
+live right now**.
+
+**Not an outage** — the service booted cleanly (`Application startup complete`, no crash loop)
+and endpoints respond correctly (`/signals/accuracy` 200, `/signals/tune_status` 401 = auth
+required). Those routes existed in the old single-file `routes.py`, so traffic is served. What is
+lost is the newer *logic*, not availability — which is exactly why this is easy to miss.
+
+**Proof this was caused by the reboot, not a pre-existing state**: earlier the same session I
+verified against production that SA-33 was live and firing — **284 of 1,100 signals in 24h**
+carried `early_recovery_trend=true`, and 1,084 carried `bearish_pillars_active`. Both are now
+gone from the container.
+
+**Recovery (standard pattern, per the 2026-07-17 incident section above):** do NOT trust a
+remembered subset. Run an exhaustive sweep — for every `.py` under every `services/*/src/`, diff
+the container copy against the EC2 checkout — plus `shared/db/` and `shared/common/` across all
+backend containers. Then `docker cp`, clear `__pycache__`, restart, and confirm a clean startup
+log. signal-engine additionally needs `main.py`'s 3-router mount and the `routers=[...]` ordering
+(catch-all `/{symbol}` LAST — see `BUG233-ROUTERORDER`).
+
+**Standing exposure this re-proves**: `docker cp` is session-scoped. Every one of these files is
+still owed a real image rebuild; until then any reboot silently reverts them again.
+
+---
+
+## Design Review (forward-looking) 2026-08-05 — and a Correction About Its Evidence Base
+
+A forward-looking design review against 5 user goals (better signals; "don't buy from the top but
+when it starts to rally"; better prediction; confidence/trust; better return) was produced at
+`docs/DESIGN_REVIEW_FORWARD_2026-08-05.md`.
+
+**Important caveat on that document — several of its headline claims were REFUTED against
+production and must not be trusted:**
+
+The review was produced without SSH access and read a **stale local** environment, then reported
+those observations as facts about the live system. Refuted by direct production query:
+
+| review claim | production reality |
+|---|---|
+| "`bearish_pillars_active` doesn't exist as a DB column" | **column EXISTS** in `signal_outcomes` |
+| "`calibration.py`/`outcomes.py` don't exist in the container" | **both present** (pre-reboot) |
+| "`tune_history` has zero rows for `min_pillars_for_sell`" | **4 rows exist** (validation_n 238/222/180/56) — matching Audit #3 exactly |
+| "the SELL gate attempts never ran" | they **ran and legitimately failed** validation |
+| "`news-intelligence` was never built; `ml-prediction` unhealthy" | **both healthy** |
+
+**Its analytical work on stored outcome data is a separate matter and may still hold** — that
+analysis is environment-independent. The most actionable hypothesis it produced, **not yet
+verified against production** (the instance went down mid-verification):
+
+> Bucketing resolved BUY outcomes by entry distance below the prior 20-day high, **"within 5% of
+> the high" was the best bucket in all four horizons independently** and the only one near
+> positive EV — while `sr_context='breakout'` was among the *worst*. If true, this materially
+> reframes goal 2: the winning entry is **not** a deep dip, it is a shallow pullback in an intact
+> uptrend, and chasing a confirmed breakout is the losing trade.
+
+It also reported `volume_z >= 1` as the **worst** BUY bucket (contradicting the VOLUME pillar and
+RVOL's design intent). **Both need re-running against production before being acted on.**
+
+**Lesson (a repeat of the one already recorded for the closing-sweep pass in the duplicate-code
+audit):** a subagent without production access will confidently report local-environment
+observations as live-system facts. Always re-verify any environment-dependent claim directly
+before recording or acting on it — and prefer having the agent state what it could NOT verify.
