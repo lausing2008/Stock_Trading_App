@@ -11151,3 +11151,102 @@ value later deducted, per the T247 fix — cannot overdraw); equity recomputatio
 DE hard-reject parity across all recently-ported gates (matching thresholds, correct signs);
 `_recent_win_rate`/`_consec_loss_streak` keying on `pnl` not `exit_reason`; delisted auto-exit
 ordering; trailing-stop floor.
+
+---
+
+## Deep Audit #3 of 6: Model Training / Self-Tuning / Self-Improving (2026-08-05)
+
+**Scope**: documentation-only. Tracked as **Tier 263**, 12 entries (10 findings + 1 REFUTED/CLEAN
+reference + this section).
+
+### Production ground truth: `tune_history`
+
+| parameter_class | n | promoted | rejected | window |
+|---|---|---|---|---|
+| signal_threshold | 104 | 37 | 67 | 07-07 → 08-02 |
+| watchlist_rotation | 103 | 103 | 0 | 07-16 → 08-02 |
+| gate_threshold | 67 | 3 | 64 | 07-05 → 08-02 |
+| ml_hyperparams | 61 | 25 | 36 | **all on 08-02** |
+| joint_strategy | 20 | 3 | 17 | 07-18 → 08-02 |
+| ml_fusion_weight | 4 | 3 | 1 | 07-07 → 08-02 |
+| signal_gate | 4 | 0 | 4 | 07-31 |
+| ta_weights | 1 | 0 | 1 | 08-02 |
+
+**`conviction_weights` is absent from this table entirely — that absence is the headline finding.**
+
+### The headline: an ungated weekly mutation of live weights
+
+`calibrate_conviction_weights` (`calibration.py:759-870`, scheduled `scheduler.py:4296`) runs
+**every Sunday**, fits on the full sample, and `setex`'s straight to disk + Redis + the live
+in-process global. Verified by grep: **zero** `_record_tune_history` calls in its body, no
+train/validation split, no baseline comparison, no rejection branch. Its only guard is a
+30-outcome floor.
+
+This is the *identical* defect `BUG233-TAWEIGHTS-NOVALIDATION` fixed for its sibling
+`calibrate_ta_weights` on 2026-07-31 — conviction_weights was never given the same treatment.
+Confirmed two ways: the grep, and a direct production query returning **0 rows** for
+`parameter_class LIKE '%conviction%'`. Every weight change it has ever made is invisible.
+
+### Audit #2's corruption propagates directly into tuning
+
+`gate_harness.py`'s `_HORIZON_BUCKET` reads `return_5d/10d/20d` and `is_correct_5d/10d/20d` —
+exactly the fields Audit #2 found written from unblended last-tranche P&L. So **all 67
+`gate_threshold` attempts were scored against corrupted labels**, and the bias selectively hits
+high-conviction setups (those are the ones that scale out). Two ML features
+(`sig_acc_30d`, `sig_avg_ret_30d`, `builder.py:238-264`) are built from the same corrupted
+`pct_return`, creating a self-reinforcing loop: the model learns to avoid the setups that were
+actually working.
+
+**Fix ordering matters**: fixing the Audit #2 writeback resolves both of these for free — but
+every `gate_threshold` result to date then needs re-running.
+
+### Other significant findings
+
+- **`ev_gate` never checks direction** (`ev_gate.py:60-71`) — `mean(y_ret[probs >= 0.60])` is
+  only meaningful if high probability means "go long", and nothing enforces that. No sign check,
+  no monotonicity check, no win-rate floor. A passing candidate immediately retrains the live
+  model.
+- **`tune_all` is fire-and-forget** — `_record_job_status("tune_all_sent","ok")` records that the
+  POST succeeded, not that tuning finished. All 61 `ml_hyperparams` rows on one day is the
+  signature of the 21-day *stale guard* firing, not a weekly cadence.
+- **403-cell grid, n=15/cell, no multiple-comparisons correction** (`tune_strategy`). At ~10pp
+  return SD the SE of a cell mean is ~2.6pp; the max of ~403 correlated draws sits 2-3 SE high,
+  implying 5-8pp of EV bias from noise alone. `gate_harness` already has the stricter margin
+  (`_MIN_PROMOTION_EV_LIFT_PCT` + `_MIN_PROMOTION_LIFT_SD_RATIO`) — **it was built for a smaller
+  search space and never applied to the largest grid.**
+- **The watchdog shadows validated thresholds** — its 7-day key is read *first*, so a
+  freshly-validated `tune_strategy` value can be recorded `promoted=True` while never taking
+  effect.
+- **Every tuned param silently reverts on TTL expiry**, and expiry is indistinguishable from
+  never-tuned or from a skipped run. No alert on any of them.
+
+### Two candidate findings REFUTED by checking real data
+
+1. *"`watchlist_rotation` 103/103 promoted = a gate that never rejects."* **False.** Those rows
+   are an audit trail of add/drop *actions*. And for drops, `validation_ev_pct` holds the
+   symbol's **win rate** while `baseline_validation_ev_pct` holds `_WIN_RATE_FLOOR` — so
+   "candidate worse than baseline" on all 49 drops is the **intended trigger**.
+2. *"`ta_weights` 1/0 promoted = a degenerate median-split gate that can only tie."* **False.**
+   Queried the row: candidate −0.04 vs baseline −0.03 — a genuine (tiny) negative lift, not a
+   tie. The gate worked correctly.
+
+A third was **corrected mid-audit**: `signal_gate`'s 0-promotion record was initially attributed
+to a sample-floor lockout; the real rows show `validation_n` of 238/222/180/56 and failures of
+`candidate_unmeasurable_on_validation` (×3) and `ev_lift_not_positive` (×1) — a grid/selection
+defect, not a data shortage.
+
+**Note the semantic trap this exposed**: `validation_ev_pct` / `baseline_validation_ev_pct`
+carry *different meanings per `parameter_class`* (EV for sweeps, win-rate-vs-floor for
+rotations). Any cross-class query over those columns produces nonsense.
+
+### Verified CLEAN
+
+`outcomes_calibrate_apply` (both BUY and SELL sweeps — chronological split, live baseline,
+negative-lift rejection, TuneHistory on all 6 exit paths); **Audit #1's unsigned-SELL bug does
+NOT reach any tuning mechanism** (all filter `signal_direction == "BUY"`) — it is confined to
+reporting; Optuna's CV purge/embargo (`TimeSeriesSplit(gap=horizon)`, T232-ML4); EV-gate holdout
+isolation (last 15% sliced before Optuna sees anything); macro feature merge (trailing windows +
+forward-fill only, no leakage); `fetch_signal_outcome_features`' `.shift(10)` keyed on
+`exit_date` (look-ahead-safe construction, corrupt input notwithstanding); the symmetric
+dead-zone label filter; `gate_harness`'s promotion margin (structurally the strongest gate here —
+its problem is corrupted input, not design).
