@@ -82,6 +82,38 @@ def test_earnings_impact_alert_job_is_registered_every_minute():
     assert "minutes=1" in block
 
 
+def test_earnings_impact_alerts_scoped_to_each_users_own_subscribed_symbols():
+    """BUG-EARNINGS-IMPACT-UNSCOPED: this job used to email EVERY subscribed user for ANY
+    reporting symbol, regardless of whether they'd actually subscribed to it — unlike
+    check_earnings_reactions() (the plain, non-LLM alert), which has always correctly scoped
+    per-symbol. Must now build the same user_symbols map and only send to a user if the
+    reporting symbol is in THEIR OWN subscribed set."""
+    body = _func_body("check_earnings_impact_alerts")
+    assert "user_symbols: dict[int, set[str]] = {}" in body
+    assert "user_symbols.setdefault(a.user_id, set()).add(a.symbol)" in body
+    assert "if sym not in syms:" in body
+    assert "continue" in body
+
+
+def test_earnings_impact_alerts_db_query_filters_to_subscribed_symbols_only():
+    """The pending-impact query itself must filter to Stock.symbol.in_(all_symbols) — not
+    just filter at the Python send-loop level — so an unrelated symbol's impact is never even
+    fetched for a cycle where nobody has subscribed to it."""
+    body = _func_body("check_earnings_impact_alerts")
+    assert "Stock.symbol.in_(all_symbols)" in body
+
+
+def test_earnings_impact_alerts_no_subscribers_for_any_symbol_returns_early():
+    """If nobody has any active PriceAlert subscription at all, the function must bail before
+    ever querying EarningsEvent — matching check_earnings_reactions()'s own early-exit shape."""
+    body = _func_body("check_earnings_impact_alerts")
+    alerts_idx = body.index("alerts = session.execute(")
+    early_exit_idx = body.index("if not alerts:")
+    all_symbols_idx = body.index("all_symbols = {sym for syms in user_symbols.values()")
+    pending_query_idx = body.index("pending = session.execute(")
+    assert alerts_idx < early_exit_idx < all_symbols_idx < pending_query_idx
+
+
 # ── check_macro_reaction_alerts() — feature-flag gate added retroactively ───────────
 
 def test_macro_reaction_alerts_gated_behind_feature_flag_default_on():

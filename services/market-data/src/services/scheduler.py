@@ -1229,14 +1229,16 @@ def check_earnings_impact_alerts() -> None:
     the earnings-side mirror of check_macro_reaction_alerts() above. event-intelligence's
     earnings.py detects eps_actual landing and generates the LLM impact read, writing
     impact_text/impact_generated_at into earnings_events (it owns detection + LLM, not
-    delivery). This job polls for rows with a generated-but-unsent impact (impact_sent_at IS
-    NULL) and emails them to the same PriceAlert-subscribed audience as every other T249 alert
-    type, for audience consistency.
+    delivery).
 
-    Gated behind earnings_llm_impact_enabled (default OFF — a brand-new feature, matching
-    auto_research_enabled's own default-off convention for any NEW Claude-calling feature added
-    since the CLAUDE-API-COST-AUDIT, rather than macro_llm_reaction_enabled's default-on
-    convention for an already-relied-upon feature).
+    BUG-EARNINGS-IMPACT-UNSCOPED (fixed 2026-08-05): this job used to send every generated
+    impact to EVERY PriceAlert-subscribed user, regardless of which symbols they'd actually
+    subscribed to — unlike check_earnings_reactions() above (the plain, non-LLM version of
+    this same alert), which has always correctly scoped delivery to each user's own subscribed
+    symbols. Found live, right before a heavy earnings day, when a user asked "can I pick which
+    stocks I get earnings alerts for" — the plain alert already worked this way, the LLM one
+    silently didn't. Now scoped per-symbol identically to check_earnings_reactions(): a user
+    only receives an impact email for a symbol they have an active PriceAlert on.
     """
     try:
         if _get_redis().get(_REDIS_EARNINGS_LLM_ENABLED) != "1":
@@ -1251,20 +1253,26 @@ def check_earnings_impact_alerts() -> None:
         pass
     try:
         with SessionLocal() as session:
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            if not alerts:
+                return
+            user_symbols: dict[int, set[str]] = {}
+            for a in alerts:
+                user_symbols.setdefault(a.user_id, set()).add(a.symbol)
+            all_symbols = {sym for syms in user_symbols.values() for sym in syms}
+            if not all_symbols:
+                return
+
             pending = session.execute(
                 select(EarningsEvent, Stock.symbol).join(Stock, EarningsEvent.stock_id == Stock.id).where(
+                    Stock.symbol.in_(all_symbols),
                     EarningsEvent.impact_text.isnot(None),
                     EarningsEvent.impact_sent_at.is_(None),
                 )
             ).all()
             if not pending:
-                return
-
-            alerts = session.execute(
-                select(PriceAlert).where(PriceAlert.triggered.is_(False))
-            ).scalars().all()
-            recipients = {a.user_id: a.user for a in alerts if a.user and a.user.email}
-            if not recipients:
                 return
 
             from .email_service import send_email
@@ -1273,7 +1281,12 @@ def check_earnings_impact_alerts() -> None:
                 subject = f"📊 {sym} earnings impact — {verb} estimates"
                 body_text = ev.impact_text
                 any_sent = False
-                for u_obj in recipients.values():
+                for uid, syms in user_symbols.items():
+                    if sym not in syms:
+                        continue
+                    u_obj = next((a.user for a in alerts if a.user_id == uid), None)
+                    if not u_obj or not u_obj.email:
+                        continue
                     if send_email(u_obj.email, subject, f"<p>{body_text}</p>", body_text):
                         any_sent = True
                         log.info("signal_alert.earnings_impact_sent", symbol=sym, user=u_obj.username)
