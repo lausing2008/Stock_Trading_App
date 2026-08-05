@@ -11654,3 +11654,15 @@ cron/timer checked in at setup time — a working cert today gives zero signal t
 renewing itself. This is the SSL-equivalent of the repo's own standing "a container that looks
 running can still be silently broken" discipline — a green `docker ps` said nothing about the
 one thing that was actually broken.
+
+---
+
+## Reference: Domain Audit Series Template
+
+The 6-part sequential audit (Tiers 261-266, above) had its methodology extracted into
+`docs/AUDIT_DOMAIN_SERIES_TEMPLATE.md` — use that template whenever a future request is shaped
+like "audit domain X across the whole platform, one at a time, with my approval between each."
+It covers grounding-before-dispatch, the required subagent prompt shape, independent verification
+of claims before recording them, the tracker-entry format (including the TS2590 union-type
+compiler limit hit on a large ITEMS array), and CLAUDE.md documentation conventions. Distinct
+from `docs/AUDIT_FINDINGS_TEMPLATE.md`, which is a lighter checklist for reviewing a recent diff.
