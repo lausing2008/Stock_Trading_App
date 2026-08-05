@@ -105,7 +105,14 @@ const USER_ALERTS: AlertRow[] = [
     schedule: 'Every 4 hours',
     scope: 'price-alert',
     cooldown: 'Once per (symbol, expiry) — a later, different expiry can re-alert',
-    note: 'Options-expiry squeeze — a DIRECTIONAL WATCH, not a BUY/SELL call. Fires when a stock has a large block of options open interest concentrated near the current price (calls OR puts, ≥55% one-sided) close to expiry (0–3 days out): when the market makers who sold those options unwind their hedge near expiry, that unwind can move the stock sharply either way. Genuinely can’t predict the direction from this data alone — see the known-limitations callout below.',
+    note: 'Options-expiry squeeze — a DIRECTIONAL WATCH, not a BUY/SELL call. Fires when a stock has a large block of options open interest concentrated near the current price (calls OR puts, ≥55% one-sided) close to expiry (0–5 days out, widened from 0–3 on 2026-08-04 to also feed the bearish-puts-watch section on the Short Squeeze page): when the market makers who sold those options unwind their hedge near expiry, that unwind can move the stock sharply either way. Genuinely can’t predict the direction from this data alone — see the known-limitations callout below.',
+  },
+  {
+    job: 'squeeze_watch_revert_check',
+    schedule: 'Every 1 min',
+    scope: 'price-alert',
+    cooldown: 'One-shot per watch — re-adding a reverted watch re-arms tracking',
+    note: 'Manually add a symbol to track from the Short Squeeze page (either the classic squeeze table or the Bearish Puts Watch section) via the ☆ Watch button — this fires ONCE, the moment its short-side pressure genuinely fades: either the price has recovered back above where it was when you added it, OR the short %/puts-concentration metric that qualified it has dropped back below its own threshold. Either signal alone counts, not both together. Built for going long against a fading short/puts thesis — see the "My Squeeze Watches" panel on that page to manage active and reverted watches.',
   },
   {
     job: 'premarket_brief_us / premarket_brief_hk',
@@ -388,7 +395,7 @@ export default function AlertsGuidePage() {
           <ul style={{ paddingLeft: 18, margin: '4px 0 0', lineHeight: 1.7 }}>
             <li><strong>72% calls</strong> (or puts) — of all the near-the-money option <em>open interest</em> (contracts still outstanding, not yet closed out), 72% sits on the call side. The alert only fires when one side holds <strong>≥55%</strong> — anything more balanced isn&rsquo;t a clean enough signal to report.</li>
             <li><strong>1,250 contracts near the money</strong> — total call+put open interest at strikes within <strong>5%</strong> of the current price ($145.20 here → roughly the $138–$152 strike band). Each contract controls 100 shares, so this is a real, sizeable block — the alert also has a floor (≥500 total contracts) so a thin, illiquid chain never triggers it.</li>
-            <li><strong>expires in 2d (2026-08-06)</strong> — how close that block is to its own expiration. The alert only looks at expiries <strong>0–3 days out</strong>, since OI concentration and expiry proximity are what make this a live risk, not something that matters weeks in advance.</li>
+            <li><strong>expires in 2d (2026-08-06)</strong> — how close that block is to its own expiration. The alert only looks at expiries <strong>0–5 days out</strong>, since OI concentration and expiry proximity are what make this a live risk, not something that matters weeks in advance. (Widened from 0–3 to 0–5 on 2026-08-04 — the puts-dominant, 3–5-day slice of this same scan also feeds the &ldquo;Bearish Puts Watch&rdquo; section on the <a href="/short-squeeze" style={{ color: '#38bdf8', textDecoration: 'none' }}>Short Squeeze page</a>, see below.)</li>
           </ul>
         </SubSection>
 
@@ -454,6 +461,52 @@ export default function AlertsGuidePage() {
           directional read before acting; use this alert to decide <em>when</em> to pay closer
           attention, not <em>which way</em> to trade.
         </Callout>
+
+        <SubSection title="Bearish Puts Watch — the 3-5 day, puts-only slice, with real corroboration">
+          <p>
+            The <a href="/short-squeeze" style={{ color: '#38bdf8', textDecoration: 'none' }}>Short
+            Squeeze page</a> has a dedicated &ldquo;Bearish Puts Watch&rdquo; section — the
+            puts-dominant candidates from this same scan, narrowed to a <strong>3-5 day</strong>{' '}
+            expiry window. Unlike the raw email above, this section adds one real piece of honesty
+            the options data alone can&rsquo;t provide: it cross-checks each candidate against that
+            stock&rsquo;s own already-tracked signals — its SWING AI Signal, RSI, and whether it&rsquo;s
+            trading below its own 50-day average.
+          </p>
+          <p>
+            A candidate is only marked <strong style={{ color: '#22c55e' }}>&ldquo;high
+            conviction&rdquo;</strong> (green border) when at least <strong>2 of those 3</strong>{' '}
+            independent signals genuinely agree the stock is ALSO bearish on its own separate merits
+            — real corroborating evidence, not a claim invented from options positioning alone.
+            Without that agreement, the setup is still shown (the options pressure is real and worth
+            watching), it just isn&rsquo;t oversold as a stronger call than the data actually supports.
+          </p>
+          <Callout tone="warn" title="Still never a guarantee">
+            Even a high-conviction bearish setup is not a promise the stock &ldquo;will not recover&rdquo;
+            — it means real, independent evidence currently agrees, which is meaningfully stronger
+            than options data alone, but markets can and do reverse. Treat this as where to focus
+            your attention, not a certainty.
+          </Callout>
+        </SubSection>
+
+        <SubSection title="Tracking a candidate — the ☆ Watch button and revert alert">
+          <p>
+            Both the classic Short Squeeze table and the Bearish Puts Watch section have a{' '}
+            <Code>☆ Watch</Code> button. Click it to start tracking that symbol — the app then
+            checks, every minute, whether the short-side setup you added it for has genuinely
+            faded, and emails you <strong>once</strong> the moment it has (see{' '}
+            <Code>squeeze_watch_revert_check</Code> in the table below for the exact conditions).
+            This is built specifically for going <strong>long</strong> against a fading short/puts
+            thesis — you add a stock while it&rsquo;s under short-side pressure, then get notified
+            the instant that pressure lets up, rather than checking the page yourself.
+          </p>
+          <p>
+            Manage active and reverted watches in the <strong>&ldquo;My Squeeze
+            Watches&rdquo;</strong> panel at the bottom of the Short Squeeze page — reverted watches
+            show the specific reason they fired (price recovery, or the metric fading) and stay
+            visible until you remove them; re-adding a reverted symbol re-arms tracking from scratch
+            with fresh values.
+          </p>
+        </SubSection>
       </Section>
 
       <Section title="User-facing alerts">

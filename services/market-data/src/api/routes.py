@@ -41,7 +41,7 @@ import yfinance as yf
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import Fundamental, Price, Stock, TimeFrame, get_session
+from db import Fundamental, Price, SqueezeWatch, Stock, TimeFrame, get_session
 from .auth import get_current_user
 from ..services.ingestion import _classify_session
 
@@ -2036,6 +2036,132 @@ def short_squeeze(
             continue
     results.sort(key=lambda x: x["short_percent_of_float"], reverse=True)
     return results
+
+
+@router.get("/bearish_puts_watch")
+def bearish_puts_watch():
+    """Puts-dominant options-expiry candidates, 3-5 days out, cross-checked against each
+    stock's own real signals — see check_gamma_unwind_alerts()'s _bearish_puts_watch_
+    candidates() in scheduler.py for the full computation. Read-only passthrough of the
+    Redis cache that job already writes (6h TTL, refreshed a few times a day, same cadence as
+    the underlying gamma-unwind scan) — no live computation here.
+
+    high_conviction=True means at least 2 of 3 independent, already-tracked signals for that
+    stock (SWING AI Signal SELL/HOLD, RSI<50, trading below its own 50-day average) agree with
+    the puts-heavy options read — real corroborating evidence, not a prediction from options
+    data alone. A candidate with high_conviction=False still has genuine puts-heavy pressure,
+    it just isn't independently corroborated yet.
+    """
+    r = _get_redis()
+    raw = r.get("stockai:bearish_puts_watch")
+    if not raw:
+        return []
+    try:
+        return json.loads(raw)
+    except Exception:
+        return []
+
+
+# ── Squeeze Watchlist (T260-BEARISH-PUTS-WATCHLIST) ───────────────────────────
+# Track a short-squeeze or bearish-puts-watch candidate over time and get a one-shot email
+# the moment its short-side pressure fades — see SqueezeWatch in shared/db/models.py for the
+# full design rationale and check_squeeze_watch_reverts() in scheduler.py for the revert logic.
+
+class SqueezeWatchCreate(BaseModel):
+    symbol: str
+    watch_type: str  # "short_squeeze" | "bearish_puts"
+    price_at_add: float | None = None
+    metric_at_add: float | None = None  # short_percent_of_float OR puts concentration_pct
+    note: str | None = None
+
+
+class SqueezeWatchOut(BaseModel):
+    id: int
+    symbol: str
+    watch_type: str
+    added_at: str
+    price_at_add: float | None = None
+    metric_at_add: float | None = None
+    reverted: bool
+    reverted_at: str | None = None
+    revert_reason: str | None = None
+    note: str | None = None
+
+
+def _squeeze_watch_out(w: SqueezeWatch) -> SqueezeWatchOut:
+    return SqueezeWatchOut(
+        id=w.id, symbol=w.symbol, watch_type=w.watch_type,
+        added_at=w.added_at.isoformat(), price_at_add=w.price_at_add,
+        metric_at_add=w.metric_at_add, reverted=w.reverted,
+        reverted_at=w.reverted_at.isoformat() if w.reverted_at else None,
+        revert_reason=w.revert_reason, note=w.note,
+    )
+
+
+@router.get("/squeeze-watch", response_model=list[SqueezeWatchOut])
+def list_squeeze_watches(
+    session: Session = Depends(get_session),
+    _user=Depends(get_current_user),
+):
+    rows = session.execute(
+        select(SqueezeWatch)
+        .where(SqueezeWatch.user_id == _user.id)
+        .order_by(SqueezeWatch.added_at.desc())
+    ).scalars().all()
+    return [_squeeze_watch_out(w) for w in rows]
+
+
+@router.post("/squeeze-watch", response_model=SqueezeWatchOut)
+def add_squeeze_watch(
+    req: SqueezeWatchCreate,
+    session: Session = Depends(get_session),
+    _user=Depends(get_current_user),
+):
+    if req.watch_type not in ("short_squeeze", "bearish_puts"):
+        raise HTTPException(status_code=400, detail="watch_type must be 'short_squeeze' or 'bearish_puts'")
+    existing = session.execute(
+        select(SqueezeWatch).where(
+            SqueezeWatch.user_id == _user.id,
+            SqueezeWatch.symbol == req.symbol,
+            SqueezeWatch.watch_type == req.watch_type,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        # Re-adding an already-reverted watch re-arms it with fresh add-time values, rather
+        # than silently 409-ing — the user explicitly wants to track it again.
+        existing.price_at_add = req.price_at_add
+        existing.metric_at_add = req.metric_at_add
+        existing.note = req.note
+        existing.reverted = False
+        existing.reverted_at = None
+        existing.revert_reason = None
+        session.commit()
+        session.refresh(existing)
+        return _squeeze_watch_out(existing)
+    w = SqueezeWatch(
+        user_id=_user.id, symbol=req.symbol, watch_type=req.watch_type,
+        price_at_add=req.price_at_add, metric_at_add=req.metric_at_add, note=req.note,
+    )
+    session.add(w)
+    session.commit()
+    session.refresh(w)
+    return _squeeze_watch_out(w)
+
+
+@router.delete("/squeeze-watch/{watch_id}")
+def remove_squeeze_watch(
+    watch_id: int,
+    session: Session = Depends(get_session),
+    _user=Depends(get_current_user),
+):
+    w = session.execute(
+        select(SqueezeWatch).where(SqueezeWatch.id == watch_id, SqueezeWatch.user_id == _user.id)
+    ).scalar_one_or_none()
+    if w is None:
+        raise HTTPException(status_code=404, detail="Watch not found")
+    session.delete(w)
+    session.commit()
+    return {"status": "removed"}
 
 
 # ── Market-Wide Screener (beyond this app's own tracked universe) ────────────

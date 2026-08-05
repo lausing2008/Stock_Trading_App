@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type SqueezeCandidate } from '@/lib/api';
+import { api, type SqueezeCandidate, type BearishPutsWatchCandidate, type SqueezeWatchItem } from '@/lib/api';
 
 function Code({ children }: { children: React.ReactNode }) {
   return (
@@ -29,6 +29,52 @@ function fmtScore(v: number | null): string {
   return v.toFixed(1);
 }
 
+// ── T260-BEARISH-PUTS-WATCHLIST: watch/unwatch button, shared by both sections ─────────────
+
+function WatchButton({
+  symbol, watchType, priceAtAdd, metricAtAdd, watches, onChanged,
+}: {
+  symbol: string;
+  watchType: 'short_squeeze' | 'bearish_puts';
+  priceAtAdd: number | null;
+  metricAtAdd: number | null;
+  watches: SqueezeWatchItem[];
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const existing = watches.find(w => w.symbol === symbol && w.watch_type === watchType && !w.reverted);
+
+  async function toggle() {
+    setBusy(true);
+    try {
+      if (existing) {
+        await api.removeSqueezeWatch(existing.id);
+      } else {
+        await api.addSqueezeWatch({ symbol, watch_type: watchType, price_at_add: priceAtAdd, metric_at_add: metricAtAdd });
+      }
+      onChanged();
+    } catch {
+      // best-effort — the button's own busy/disabled state already prevents a double-click
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      onClick={toggle}
+      disabled={busy}
+      title={existing ? 'Stop tracking — no more revert alerts for this symbol' : "Track this symbol and get an email the moment its short-side pressure fades"}
+      style={{
+        padding: '3px 9px', borderRadius: '5px', fontSize: '10.5px', fontWeight: 700, cursor: busy ? 'wait' : 'pointer',
+        border: existing ? '1px solid rgba(56,189,248,0.4)' : '1px solid #1e293b',
+        background: existing ? 'rgba(56,189,248,0.12)' : 'transparent',
+        color: existing ? '#38bdf8' : '#64748b', whiteSpace: 'nowrap',
+      }}
+    >{existing ? '★ Watching' : '☆ Watch'}</button>
+  );
+}
+
 function shortBg(pct: number): string {
   if (pct >= 40) return 'rgba(239,68,68,0.18)';
   if (pct >= 25) return 'rgba(249,115,22,0.15)';
@@ -45,6 +91,154 @@ function shortColor(pct: number): string {
 
 type SortKey = 'short_pct' | 'change_pct' | 'momentum' | 'k_score' | 'short_ratio';
 
+// ── T260-BEARISH-PUTS-WATCHLIST: bearish puts watch section ──────────────────────────────────
+
+function BearishPutsWatchSection({
+  candidates, isLoading, watches, onWatchesChanged,
+}: {
+  candidates: BearishPutsWatchCandidate[];
+  isLoading: boolean;
+  watches: SqueezeWatchItem[];
+  onWatchesChanged: () => void;
+}) {
+  const [showGuide, setShowGuide] = useState(false);
+  if (isLoading) return null;
+
+  return (
+    <div style={{ marginTop: '28px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', flexWrap: 'wrap', gap: '10px' }}>
+        <div>
+          <h2 style={{ fontSize: '16px', fontWeight: 800, color: '#e2e8f0', marginBottom: '2px' }}>Bearish Puts Watch</h2>
+          <p style={{ fontSize: '11.5px', color: '#475569' }}>
+            Puts-dominant options open interest, 3–5 days from expiry — the mirror of the classic squeeze above, for stocks under short-side pressure. See{' '}
+            <Link href="/alerts-guide" style={{ color: '#38bdf8', textDecoration: 'none' }}>the Alerts Guide</Link> for the full mechanism.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowGuide(s => !s)}
+          style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid #1e293b', background: showGuide ? '#334155' : 'transparent', color: showGuide ? '#e2e8f0' : '#64748b', fontSize: '11.5px', cursor: 'pointer', whiteSpace: 'nowrap' }}
+        >{showGuide ? '✕ Hide guide' : '📖 How to read this'}</button>
+      </div>
+
+      {showGuide && (
+        <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: '12px', padding: '16px 18px', marginBottom: '16px', fontSize: '12px', lineHeight: 1.65, color: '#94a3b8' }}>
+          <p style={{ marginBottom: 10 }}>
+            A large block of <strong style={{ color: '#e2e8f0' }}>put</strong> options open interest concentrated
+            near the current price, close to expiry, means market makers who sold those puts have a hedging
+            obligation that intensifies as expiry nears — real pressure, but options positioning ALONE cannot
+            tell you which direction it resolves.
+          </p>
+          <p style={{ marginBottom: 10 }}>
+            <strong style={{ color: '#e2e8f0' }}>High conviction</strong> (green border below) means this stock&apos;s
+            own AI Signal, RSI, and 50-day trend independently agree it&apos;s also bearish on its own separate
+            merits — real corroborating evidence, not a guess from options data alone. Without that agreement,
+            it&apos;s still worth watching, just not a stronger call than the data supports.
+          </p>
+          <p>
+            <strong style={{ color: '#f87171' }}>This is never a guarantee the stock won&apos;t recover</strong> —
+            even a high-conviction setup can reverse. Use ☆ Watch to track a symbol and get a one-shot email
+            the moment the short-side pressure fades (price recovers, or the puts concentration drops back down).
+          </p>
+        </div>
+      )}
+
+      {candidates.length === 0 && (
+        <div style={{ color: '#475569', fontSize: '13px', padding: '24px 0', textAlign: 'center', background: '#0f172a', border: '1px solid #1e293b', borderRadius: '12px' }}>
+          No puts-dominant setups in the 3–5 day window right now.
+        </div>
+      )}
+
+      {candidates.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '12px' }}>
+          {candidates.map(c => (
+            <div key={c.symbol} style={{
+              background: '#0f172a', border: c.high_conviction ? '1px solid rgba(34,197,94,0.4)' : '1px solid #1e293b',
+              borderRadius: '10px', padding: '14px 16px',
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px' }}>
+                <Link href={`/stock/${c.symbol}`} style={{ color: '#818cf8', fontWeight: 700, fontSize: '14px', textDecoration: 'none' }}>{c.symbol}</Link>
+                <span style={{ fontSize: '12.5px', fontWeight: 700, color: '#ef4444' }}>{c.concentration_pct.toFixed(0)}% puts</span>
+              </div>
+              {c.high_conviction && (
+                <div style={{ fontSize: '10px', fontWeight: 800, color: '#22c55e', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  ✓ High conviction — {c.agreeing_signals}/3 signals agree
+                </div>
+              )}
+              <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px' }}>
+                {c.price != null ? `$${c.price.toFixed(2)}` : '—'} · {c.total_oi_near_money.toLocaleString()} contracts near the money
+              </div>
+              <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '10px' }}>
+                {c.days_to_expiry === 0 ? 'expires TODAY' : `expires in ${c.days_to_expiry}d`} ({c.expiry})
+                {c.ai_signal && <> · AI Signal: <span style={{ color: '#94a3b8' }}>{c.ai_signal}</span></>}
+                {c.rsi != null && <> · RSI {c.rsi}</>}
+              </div>
+              <WatchButton
+                symbol={c.symbol} watchType="bearish_puts"
+                priceAtAdd={c.price} metricAtAdd={c.concentration_pct}
+                watches={watches} onChanged={onWatchesChanged}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── T260-BEARISH-PUTS-WATCHLIST: "My Squeeze Watches" tracking panel ─────────────────────────
+
+function MySqueezeWatchesPanel({ watches, onChanged }: { watches: SqueezeWatchItem[]; onChanged: () => void }) {
+  if (watches.length === 0) return null;
+
+  const active = watches.filter(w => !w.reverted);
+  const reverted = watches.filter(w => w.reverted);
+
+  async function remove(id: number) {
+    try {
+      await api.removeSqueezeWatch(id);
+      onChanged();
+    } catch { /* best-effort */ }
+  }
+
+  return (
+    <div style={{ marginTop: '28px' }}>
+      <h2 style={{ fontSize: '16px', fontWeight: 800, color: '#e2e8f0', marginBottom: '4px' }}>My Squeeze Watches</h2>
+      <p style={{ fontSize: '11.5px', color: '#475569', marginBottom: '12px' }}>
+        Symbols you&apos;re tracking from the sections above. You&apos;ll get an email the moment a
+        watch&apos;s short-side pressure fades — checked every minute.
+      </p>
+      <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: '12px', overflow: 'hidden' }}>
+        {active.map(w => (
+          <div key={w.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: '1px solid rgba(30,41,59,0.5)', gap: '10px', flexWrap: 'wrap' }}>
+            <div>
+              <Link href={`/stock/${w.symbol}`} style={{ color: '#818cf8', fontWeight: 700, textDecoration: 'none', fontSize: '13px' }}>{w.symbol}</Link>
+              <span style={{ fontSize: '11px', color: '#64748b', marginLeft: '8px' }}>
+                {w.watch_type === 'short_squeeze' ? 'Short Squeeze' : 'Bearish Puts'} · added {new Date(w.added_at).toLocaleDateString()}
+                {w.price_at_add != null && ` at $${w.price_at_add.toFixed(2)}`}
+              </span>
+            </div>
+            <button onClick={() => remove(w.id)} style={{ padding: '3px 9px', borderRadius: '5px', fontSize: '10.5px', border: '1px solid #1e293b', background: 'transparent', color: '#64748b', cursor: 'pointer' }}>Stop tracking</button>
+          </div>
+        ))}
+        {reverted.map(w => (
+          <div key={w.id} style={{ padding: '10px 16px', borderBottom: '1px solid rgba(30,41,59,0.5)', background: 'rgba(34,197,94,0.03)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
+              <div>
+                <span style={{ color: '#4ade80', fontWeight: 700, fontSize: '13px' }}>↩ {w.symbol}</span>
+                <span style={{ fontSize: '11px', color: '#64748b', marginLeft: '8px' }}>
+                  {w.watch_type === 'short_squeeze' ? 'Short Squeeze' : 'Bearish Puts'} — reverted{w.reverted_at ? ` ${new Date(w.reverted_at).toLocaleDateString()}` : ''}
+                </span>
+              </div>
+              <button onClick={() => remove(w.id)} style={{ padding: '3px 9px', borderRadius: '5px', fontSize: '10.5px', border: '1px solid #1e293b', background: 'transparent', color: '#64748b', cursor: 'pointer' }}>Remove</button>
+            </div>
+            {w.revert_reason && <div style={{ fontSize: '11px', color: '#4ade80', marginTop: '4px' }}>{w.revert_reason}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function ShortSqueezePage() {
   const [minShortFloat, setMinShortFloat] = useState(10);
   const [market, setMarket] = useState<'All' | 'US' | 'HK'>('All');
@@ -57,6 +251,19 @@ export default function ShortSqueezePage() {
     () => api.shortSqueeze(minShortFloat),
     { revalidateOnFocus: false },
   );
+
+  const { data: bearishPuts, isLoading: bearishLoading } = useSWR<BearishPutsWatchCandidate[]>(
+    'bearish-puts-watch',
+    () => api.bearishPutsWatch(),
+    { revalidateOnFocus: false },
+  );
+
+  const { data: myWatches, mutate: mutateWatches } = useSWR<SqueezeWatchItem[]>(
+    'squeeze-watches',
+    () => api.listSqueezeWatches(),
+    { revalidateOnFocus: false },
+  );
+  const watches = myWatches ?? [];
 
   const rows = useMemo(() => {
     let items = data ?? [];
@@ -267,6 +474,7 @@ export default function ShortSqueezePage() {
                   <SortTh label="Change" col="change_pct" right />
                   <SortTh label="Momentum" col="momentum" right />
                   <SortTh label="K-Score" col="k_score" right />
+                  <th style={{ padding: '9px 14px', textAlign: 'right', color: '#475569', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: '1px solid #1e293b', background: '#080f1e', whiteSpace: 'nowrap' }}>Watch</th>
                 </tr>
               </thead>
               <tbody>
@@ -323,6 +531,13 @@ export default function ShortSqueezePage() {
                       <td style={{ padding: '10px 14px', textAlign: 'right', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>
                         {r.k_score != null ? r.k_score.toFixed(1) : '—'}
                       </td>
+                      <td style={{ padding: '10px 14px', textAlign: 'right' }}>
+                        <WatchButton
+                          symbol={r.symbol} watchType="short_squeeze"
+                          priceAtAdd={r.price} metricAtAdd={r.short_percent_of_float}
+                          watches={watches} onChanged={() => mutateWatches()}
+                        />
+                      </td>
                     </tr>
                   );
                 })}
@@ -335,6 +550,9 @@ export default function ShortSqueezePage() {
           </div>
         </div>
       )}
+
+      <BearishPutsWatchSection candidates={bearishPuts ?? []} isLoading={bearishLoading} watches={watches} onWatchesChanged={() => mutateWatches()} />
+      <MySqueezeWatchesPanel watches={watches} onChanged={() => mutateWatches()} />
     </div>
   );
 }

@@ -1358,6 +1358,53 @@ def send_gamma_unwind_email(to: str, candidates: list[dict]) -> bool:
     return send_email(to, subject, body_html, body_text)
 
 
+def send_squeeze_watch_revert_email(
+    to: str, symbol: str, watch_type: str, reason: str,
+    current_price: float | None, current_metric: float | None,
+) -> bool:
+    """T260-BEARISH-PUTS-WATCHLIST: one-shot email the moment a user's manually-tracked
+    short-side watch (from short-squeeze.tsx's "Add to watch" button) shows real evidence the
+    short-side pressure has faded — sent once, then the SqueezeWatch row is marked reverted so
+    it never fires again for the same watch (re-adding it re-arms tracking from scratch).
+
+    watch_type is "short_squeeze" (classic short-interest-of-float squeeze) or "bearish_puts"
+    (the puts-heavy options-expiry watch) — the copy differs slightly per type since the two
+    mechanisms are genuinely different (see SqueezeWatch's own docstring in shared/db/models.py).
+    """
+    label = "Short Squeeze Watch" if watch_type == "short_squeeze" else "Bearish Puts Watch"
+    subject = f"↩ {label} Reverted — {symbol}"
+    price_str = f"${current_price:.2f}" if current_price is not None else "—"
+    metric_label = "Short % of float" if watch_type == "short_squeeze" else "Puts concentration"
+    metric_str = f"{current_metric:.1f}%" if current_metric is not None else "—"
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:#22c55e">↩ {label} Reverted — {symbol}</h2>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">
+      The short-side setup you were tracking on <strong>{symbol}</strong> shows real signs of fading.
+    </p>
+    <div style="background:#f1f5f9;border-radius:8px;padding:16px;margin:16px 0">
+      <div style="font-size:13px;color:#1e293b"><strong>Why:</strong> {reason}</div>
+      <div style="font-size:12px;color:#64748b;margin-top:8px">Current price: {price_str} · {metric_label}: {metric_str}</div>
+    </div>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      This watch has been marked reverted and will not alert again — re-add it from the Short
+      Squeeze page if you want to track it fresh. A faded short-side setup is real, measured
+      evidence, not a guarantee price keeps rising — always confirm with the stock's own AI
+      Signal/Confluence Score before acting. Not financial advice.
+    </p>
+  </div>
+</body></html>"""
+    body_text = (
+        f"{label} Reverted — {symbol}\n\n"
+        f"Why: {reason}\n"
+        f"Current price: {price_str}, {metric_label}: {metric_str}\n\n"
+        "This watch will not alert again — re-add it from the Short Squeeze page to track it fresh. "
+        "Not a guarantee price keeps rising. Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_top3_conviction_email(to: str, picks: list[dict]) -> bool:
     """T257-TOP3-CONVICTION-ALERT: up to 3 picks, each gated on a MEASURED historical win
     rate (not raw model confidence) — the email's whole point is to make that accuracy claim

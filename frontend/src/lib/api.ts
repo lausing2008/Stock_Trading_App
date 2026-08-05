@@ -405,6 +405,11 @@ export const api = {
 
   // Short squeeze scanner
   shortSqueeze: (minShortFloat = 10) => request<SqueezeCandidate[]>(`/stocks/short_squeeze?min_short_float=${minShortFloat}`),
+  bearishPutsWatch: () => request<BearishPutsWatchCandidate[]>('/stocks/bearish_puts_watch'),
+  listSqueezeWatches: () => request<SqueezeWatchItem[]>('/stocks/squeeze-watch'),
+  addSqueezeWatch: (req: SqueezeWatchCreateRequest) =>
+    request<SqueezeWatchItem>('/stocks/squeeze-watch', { method: 'POST', body: JSON.stringify(req) }),
+  removeSqueezeWatch: (id: number) => request(`/stocks/squeeze-watch/${id}`, { method: 'DELETE' }),
   marketScreener: () => request<MarketScreenerResponse>('/stocks/market-screener'),
 
   // Short interest dashboard
@@ -1183,6 +1188,43 @@ export type SqueezeCandidate = {
   momentum_score: number | null;
   k_score: number | null;
   volume: number | null;
+};
+
+// T260-BEARISH-PUTS-WATCHLIST
+export type BearishPutsWatchCandidate = {
+  symbol: string;
+  expiry: string;
+  days_to_expiry: number;
+  dominant_side: 'calls' | 'puts';
+  concentration_pct: number;
+  total_oi_near_money: number;
+  price: number | null;
+  high_conviction: boolean;
+  agreeing_signals: number;
+  ai_signal: string | null;
+  rsi: number | null;
+  below_sma50: boolean | null;
+};
+
+export type SqueezeWatchItem = {
+  id: number;
+  symbol: string;
+  watch_type: 'short_squeeze' | 'bearish_puts';
+  added_at: string;
+  price_at_add: number | null;
+  metric_at_add: number | null;
+  reverted: boolean;
+  reverted_at: string | null;
+  revert_reason: string | null;
+  note: string | null;
+};
+
+export type SqueezeWatchCreateRequest = {
+  symbol: string;
+  watch_type: 'short_squeeze' | 'bearish_puts';
+  price_at_add?: number | null;
+  metric_at_add?: number | null;
+  note?: string | null;
 };
 
 export type MarketScreenerRow = {

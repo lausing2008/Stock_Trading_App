@@ -15,7 +15,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import { getSession } from '@/lib/auth';
 
-type Tab = 'start' | 'charttools' | 'signal' | 'reports' | 'selftuning';
+type Tab = 'start' | 'charttools' | 'signal' | 'reports' | 'selftuning' | 'squeeze';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'start',      label: 'Getting Started' },
@@ -23,10 +23,11 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'signal',     label: 'AI Signal & Confluence' },
   { key: 'reports',    label: 'Reports & Market Intel' },
   { key: 'selftuning', label: 'Self-Tuning System' },
+  { key: 'squeeze',    label: 'Squeeze Alerts & Watchlist' },
 ];
 
 function tabFromQuery(q: unknown): Tab {
-  const valid: Tab[] = ['start', 'charttools', 'signal', 'reports', 'selftuning'];
+  const valid: Tab[] = ['start', 'charttools', 'signal', 'reports', 'selftuning', 'squeeze'];
   return valid.includes(q as Tab) ? (q as Tab) : 'start';
 }
 
@@ -525,6 +526,90 @@ function SelfTuningTab() {
   );
 }
 
+// ── Tab: Squeeze Alerts & Watchlist ──────────────────────────────────────────────────────────
+
+function SqueezeTab() {
+  return (
+    <div style={{ maxWidth: 780 }}>
+      <Section title="Two different squeeze mechanisms — not the same thing">
+        <p>
+          The <a href="/short-squeeze" style={{ color: '#38bdf8', textDecoration: 'none' }}>Short
+          Squeeze</a> page covers two genuinely different phenomena that happen to share the word
+          &ldquo;squeeze&rdquo;:
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10, marginTop: 12 }}>
+          <div style={{ padding: 12, borderRadius: 8, background: '#111827', border: '1px solid #1f2937' }}>
+            <div style={{ fontSize: 12.5, fontWeight: 800, color: '#f87171' }}>Classic Short Squeeze</div>
+            <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
+              High short-interest-of-float + a real upward move already happening, right now.
+              Explicitly a <b>BUY-direction</b> thesis — shorts get forced to cover into the rise.
+            </div>
+          </div>
+          <div style={{ padding: 12, borderRadius: 8, background: '#111827', border: '1px solid #1f2937' }}>
+            <div style={{ fontSize: 12.5, fontWeight: 800, color: '#facc15' }}>Options-Expiry Gamma Unwind</div>
+            <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
+              A large, lopsided block of options open interest (calls OR puts) near the current
+              price, close to expiry. A <b>directional watch</b>, not a firm call — see below.
+            </div>
+          </div>
+        </div>
+      </Section>
+
+      <SubSection title="Bearish Puts Watch — the 3-5 day, puts-only, cross-checked slice">
+        <p>
+          The gamma-unwind scan&rsquo;s <b>puts-dominant</b> candidates, narrowed to a 3-5 day
+          expiry window, get one further treatment on the Short Squeeze page&rsquo;s dedicated
+          &ldquo;Bearish Puts Watch&rdquo; section: each one is cross-checked against that same
+          stock&rsquo;s own already-tracked signals — its SWING AI Signal, RSI, and whether it&rsquo;s
+          trading below its own 50-day average.
+        </p>
+        <p>
+          A candidate is only marked <b style={{ color: '#4ade80' }}>&ldquo;high conviction&rdquo;</b>{' '}
+          (green border) when at least <b>2 of those 3</b> independent signals genuinely agree the
+          stock is ALSO bearish on its own separate merits — real corroborating evidence, not a
+          claim invented from options positioning alone.
+        </p>
+        <Callout tone="warn" title="Why this stops short of predicting a stock 'won't recover'">
+          Puts-dominant open interest tells you hedge-unwind PRESSURE exists — it cannot by itself
+          tell you which direction that pressure resolves, since that depends on real dealer
+          positioning this app doesn&rsquo;t compute. Even a &ldquo;high conviction&rdquo; setup is
+          real, measured evidence pointing the same way, not a guarantee. Treat it as where to
+          focus attention, never as a certainty.
+        </Callout>
+      </SubSection>
+
+      <SubSection title="Tracking a candidate — ☆ Watch and the revert alert">
+        <p>
+          Both the classic squeeze table and the Bearish Puts Watch section have a{' '}
+          <Code>☆ Watch</Code> button. Clicking it starts tracking that symbol — every minute, the
+          app checks whether the short-side setup you added it for has genuinely faded, and emails
+          you <b>once</b>, the moment it has. This is built specifically for going{' '}
+          <b>long</b> against a fading short/puts thesis: add a stock while it&rsquo;s under
+          short-side pressure, then get notified the instant that pressure lets up, instead of
+          checking the page yourself.
+        </p>
+        <p>Either of these — not both together — counts as &ldquo;reverted&rdquo;:</p>
+        <ul style={{ paddingLeft: 20, margin: '4px 0 12px' }}>
+          <li><b>Price recovers</b> back above the price captured when you added the watch.</li>
+          <li><b>The qualifying metric fades</b> — short % of float drops back below the threshold that made it a candidate (classic squeeze), or the puts concentration drops back below 55% / the setup rolls off the scan entirely (bearish puts watch).</li>
+        </ul>
+        <p>
+          Manage active and reverted watches in the <b>&ldquo;My Squeeze Watches&rdquo;</b> panel
+          at the bottom of the Short Squeeze page — a reverted watch shows the exact reason it
+          fired and stays visible until you remove it. Re-adding a reverted symbol re-arms
+          tracking from scratch with fresh values.
+        </p>
+      </SubSection>
+
+      <Callout tone="info" title="Full mechanism details">
+        See <a href="/alerts-guide" style={{ color: '#38bdf8', textDecoration: 'none' }}>the Alerts
+        Guide</a> for every threshold, cadence, and cooldown these alerts use — this tab is the
+        conceptual walkthrough, that page is the exact reference.
+      </Callout>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function LearnPage() {
@@ -579,6 +664,7 @@ export default function LearnPage() {
       {tab === 'signal' && <SignalTab />}
       {tab === 'reports' && <ReportsTab />}
       {tab === 'selftuning' && <SelfTuningTab />}
+      {tab === 'squeeze' && <SqueezeTab />}
     </div>
   );
 }

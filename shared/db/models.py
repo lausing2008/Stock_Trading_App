@@ -100,6 +100,7 @@ class User(Base):
     positions: Mapped[list["UserPosition"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     cash_balances: Mapped[list["UserCash"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     app_notifications: Mapped[list["AppNotification"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    squeeze_watches: Mapped[list["SqueezeWatch"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     push_subscriptions: Mapped[list["PushSubscription"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
@@ -373,6 +374,45 @@ class SignalAlert(Base):
 
     __table_args__ = (
         UniqueConstraint("user_id", "symbol", "horizon", name="uq_signal_alerts_user_symbol_horizon"),
+    )
+
+
+class SqueezeWatch(Base):
+    """T260-BEARISH-PUTS-WATCHLIST: a user manually adds a short-squeeze-page candidate here to
+    track its short-pressure state over time and get a one-shot email the moment that pressure
+    fades — deliberately a NEW, dedicated table rather than reusing PriceAlert/SignalAlert, since
+    neither is aware of the specific squeeze-candidate metrics (short %, puts OI concentration)
+    that need to be captured at add-time to detect a genuine reversal later.
+
+    watch_type distinguishes which scan the candidate came from: "short_squeeze" (classic short-
+    interest-of-float squeeze, from short_squeeze.tsx) or "bearish_puts" (the puts-heavy options-
+    expiry watch, from _bearish_puts_watch_candidates()). Each has its own revert condition,
+    checked in check_squeeze_watch_reverts() (scheduler.py):
+      - short_squeeze: reverts when short_percent_of_float drops back below the ADD-TIME value's
+        own qualifying threshold, OR price recovers back above the price captured at add-time.
+      - bearish_puts: reverts when the puts-OI concentration drops back below the alert's own
+        55% threshold, OR price recovers back above the price captured at add-time.
+    Both use an OR, not an AND — per the user's own explicit choice, either signal alone is a
+    legitimate sign the short-side pressure has faded, not something both must show together.
+    """
+    __tablename__ = "squeeze_watches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    watch_type: Mapped[str] = mapped_column(String(16))  # "short_squeeze" | "bearish_puts"
+    added_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    price_at_add: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metric_at_add: Mapped[float | None] = mapped_column(Float, nullable=True)  # short_percent_of_float OR puts concentration_pct, whichever watch_type applies
+    reverted: Mapped[bool] = mapped_column(Boolean, default=False)
+    reverted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revert_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    note: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    user: Mapped["User"] = relationship(back_populates="squeeze_watches")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "symbol", "watch_type", name="uq_squeeze_watch_user_symbol_type"),
     )
 
 

@@ -2245,7 +2245,13 @@ def check_short_squeeze_alerts() -> None:
 
 _GAMMA_UNWIND_LOCK_KEY = "stockai:lock:check_gamma_unwind_alerts"
 _GAMMA_UNWIND_LOCK_TTL = 3600  # generous — a few-times-a-day job, only needs to prevent true overlap
-_GAMMA_UNWIND_MAX_DAYS_TO_EXPIRY = 3  # "imminent" — today through 3 calendar days out
+# BEARISH-PUTS-WATCH (2026-08-04): widened from 0-3 to 0-5 days — the puts-dominant side of
+# this same scan now also feeds a dedicated 3-5-day "bearish watch" section on the short-squeeze
+# page (see _bearish_puts_watch_candidates() below), which the user explicitly asked to cover
+# out to 5 days. Widening the shared scan (rather than running a second, separate options-chain
+# fetch) avoids doubling the yfinance rate-limit exposure this job already has to be careful
+# about — one fetch per symbol, filtered two different ways downstream.
+_GAMMA_UNWIND_MAX_DAYS_TO_EXPIRY = 5  # "imminent" — today through 5 calendar days out
 _GAMMA_UNWIND_MIN_OI_CONCENTRATION = 0.55  # one side must hold >=55% of near-the-money OI
 _GAMMA_UNWIND_STRIKE_BAND_PCT = 0.05  # "near the money" = within 5% of current price
 _GAMMA_UNWIND_MIN_TOTAL_OI = 500  # floor so a thin/illiquid chain doesn't produce a false signal
@@ -2370,6 +2376,16 @@ def check_gamma_unwind_alerts() -> None:
                 _record_job_status("check_gamma_unwind_alerts", "ok", time.monotonic() - _t0)
                 return
 
+            # BEARISH-PUTS-WATCH: cache the puts-dominant, 3-5-day subset (cross-checked against
+            # each stock's own real bearish signals) for the short-squeeze page to read directly —
+            # no second options-chain fetch, this is a pure filter over the scan that already ran.
+            try:
+                bearish_watch = _bearish_puts_watch_candidates(session, candidates)
+                _rc.setex("stockai:bearish_puts_watch", 6 * 3600, _json.dumps(bearish_watch))
+            except Exception as exc:
+                log.warning("gamma_unwind.bearish_watch_cache_failed", error=str(exc))
+                bearish_watch = []
+
             from .email_service import send_gamma_unwind_email
             sent = 0
             for uid, user in recipients.items():
@@ -2394,13 +2410,219 @@ def check_gamma_unwind_alerts() -> None:
                         pass
 
             _record_job_status("check_gamma_unwind_alerts", "ok", time.monotonic() - _t0)
-            log.info("gamma_unwind_alert.done", candidates=len(candidates), sent=sent, recipients=len(recipients))
+            log.info(
+                "gamma_unwind_alert.done", candidates=len(candidates), sent=sent,
+                recipients=len(recipients), bearish_watch=len(bearish_watch),
+            )
     except Exception as exc:
         log.error("gamma_unwind_alert.failed", error=str(exc), exc_info=True)
         _record_job_status("check_gamma_unwind_alerts", "error", time.monotonic() - _t0, str(exc))
     finally:
         try:
             _get_redis().delete(_GAMMA_UNWIND_LOCK_KEY)
+        except Exception:
+            pass
+
+
+_BEARISH_WATCH_MIN_DAYS_TO_EXPIRY = 3  # the puts-heavy scan the user asked for is 3-5 days out,
+_BEARISH_WATCH_MAX_DAYS_TO_EXPIRY = 5  # a NARROWER window than the shared 0-5 gamma-unwind scan
+_BEARISH_WATCH_MIN_AGREEING_SIGNALS = 2  # of 3 real signals below — needed for "high conviction"
+
+
+def _bearish_puts_watch_candidates(session, gamma_candidates: dict[str, dict]) -> list[dict]:
+    """Filters the ALREADY-COMPUTED gamma-unwind candidates (no second options-chain fetch —
+    reuses the same scan check_gamma_unwind_alerts() already ran) down to the puts-dominant
+    subset within the 3-5 day window the user asked for, then cross-checks each one against
+    that stock's own already-tracked bearish signals to decide whether to call it "high
+    conviction" or leave it a plain "watch."
+
+    HONEST DESIGN, matching check_gamma_unwind_alerts()'s own explicit caveat: puts-dominant
+    options open interest near expiry does NOT by itself tell you the stock will fall — it only
+    tells you hedge-unwind pressure exists, and the direction genuinely depends on data (real
+    dealer positioning) this app doesn't compute. So this function never asserts a stock "will
+    not recover" from options data alone. Instead it checks 3 INDEPENDENT, already-computed
+    real signals for that stock (its own SWING AI Signal, RSI, and whether it's trading below
+    its own 50-day average) — when at least 2 of 3 genuinely agree the stock is ALSO bearish on
+    its own separate merits, that's real corroborating evidence, not a guess, and the candidate
+    is flagged high_conviction=True. When they don't agree, it's still reported (the options
+    pressure is real and worth watching), just not oversold as a stronger call than it is.
+    """
+    from db import Signal, SignalHorizon, SignalType, Stock
+
+    results: list[dict] = []
+    for symbol, cand in gamma_candidates.items():
+        if cand.get("dominant_side") != "puts":
+            continue
+        dte = cand.get("days_to_expiry")
+        if dte is None or not (_BEARISH_WATCH_MIN_DAYS_TO_EXPIRY <= dte <= _BEARISH_WATCH_MAX_DAYS_TO_EXPIRY):
+            continue
+
+        agreeing = 0
+        signal_direction = None
+        rsi_val = None
+        below_sma50 = None
+        try:
+            stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
+            if stock is not None:
+                sig = session.execute(
+                    select(Signal)
+                    .where(Signal.stock_id == stock.id, Signal.horizon == SignalHorizon.SWING)
+                    .order_by(Signal.ts.desc())
+                    .limit(1)
+                ).scalars().first()
+                if sig is not None:
+                    signal_direction = sig.signal.value if sig.signal else None
+                    if sig.signal in (SignalType.SELL, SignalType.HOLD):
+                        agreeing += 1
+                    reasons = sig.reasons or {}
+                    rsi_val = reasons.get("rsi")
+                    if rsi_val is not None and float(rsi_val) < 50:
+                        agreeing += 1
+                    above_sma50 = reasons.get("trend_above_sma50")
+                    if above_sma50 is False:
+                        below_sma50 = True
+                        agreeing += 1
+                    elif above_sma50 is True:
+                        below_sma50 = False
+        except Exception:
+            pass
+
+        results.append({
+            **cand,
+            "high_conviction": agreeing >= _BEARISH_WATCH_MIN_AGREEING_SIGNALS,
+            "agreeing_signals": agreeing,
+            "ai_signal": signal_direction,
+            "rsi": round(float(rsi_val), 1) if rsi_val is not None else None,
+            "below_sma50": below_sma50,
+        })
+    return results
+
+
+_SQUEEZE_WATCH_LOCK_KEY = "stockai:lock:check_squeeze_watch_reverts"
+_SQUEEZE_WATCH_LOCK_TTL = 55  # runs every 1 min, matching check_short_squeeze_alerts' own cadence
+
+
+def check_squeeze_watch_reverts() -> None:
+    """T260-BEARISH-PUTS-WATCHLIST: checks every un-reverted SqueezeWatch row and emails the
+    owner ONCE, the moment the short-side pressure it was added to track genuinely fades — the
+    "I'm long, tell me when the short thesis reverts" alert the user explicitly asked for.
+
+    Reads only already-cached state (stockai:live_prices for price, stockai:fundamentals:v2:*
+    for short_percent_of_float, the SAME stockai:bearish_puts_watch cache
+    check_gamma_unwind_alerts() already writes for puts concentration) — no fresh yfinance call
+    in this 1-minute loop, matching every other fast alert in this file.
+
+    Revert condition is an OR, not an AND, per the user's own explicit choice — either signal
+    alone is treated as real evidence the short-side pressure has faded:
+      - short_squeeze watches: short_percent_of_float has dropped back below
+        _SQUEEZE_MIN_SHORT_FLOAT (the same threshold that made it a candidate in the first
+        place), OR current price is back above the price captured when the watch was added.
+      - bearish_puts watches: the puts concentration_pct for that symbol (read from the same
+        bearish-puts-watch cache) has dropped back below _GAMMA_UNWIND_MIN_OI_CONCENTRATION, OR
+        it's no longer puts-dominant/no longer present in the current scan at all (the setup
+        genuinely rolled off), OR price is back above the add-time price.
+    """
+    try:
+        acquired = _get_redis().set(_SQUEEZE_WATCH_LOCK_KEY, "1", nx=True, ex=_SQUEEZE_WATCH_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    _t0 = time.monotonic()
+    try:
+        import json as _json
+        from db import SqueezeWatch
+
+        with SessionLocal() as session:
+            watches = session.execute(
+                select(SqueezeWatch).where(SqueezeWatch.reverted.is_(False))
+            ).scalars().all()
+            if not watches:
+                _record_job_status("check_squeeze_watch_reverts", "ok", time.monotonic() - _t0)
+                return
+
+            _rc = _get_redis()
+            try:
+                _live_by_symbol = {
+                    row["symbol"]: row for row in _json.loads(_rc.get("stockai:live_prices") or "[]")
+                }
+            except Exception:
+                _live_by_symbol = {}
+            try:
+                _bearish_by_symbol = {
+                    row["symbol"]: row
+                    for row in _json.loads(_rc.get("stockai:bearish_puts_watch") or "[]")
+                }
+            except Exception:
+                _bearish_by_symbol = {}
+
+            from .email_service import send_squeeze_watch_revert_email
+            reverted_count = 0
+            for w in watches:
+                try:
+                    live = _live_by_symbol.get(w.symbol)
+                    current_price = live.get("price") if live else None
+                    price_recovered = (
+                        current_price is not None and w.price_at_add is not None
+                        and float(current_price) > float(w.price_at_add)
+                    )
+
+                    metric_faded = False
+                    current_metric = None
+                    if w.watch_type == "short_squeeze":
+                        try:
+                            cached = _rc.get(f"stockai:fundamentals:v2:{w.symbol}")
+                            if cached:
+                                spf = _json.loads(cached).get("short_percent_of_float")
+                                if spf is not None:
+                                    current_metric = round(spf * 100, 2)
+                                    metric_faded = current_metric < _SQUEEZE_MIN_SHORT_FLOAT
+                        except Exception:
+                            pass
+                    else:  # bearish_puts
+                        bp = _bearish_by_symbol.get(w.symbol)
+                        if bp is None or bp.get("dominant_side") != "puts":
+                            metric_faded = True  # rolled off the scan entirely — setup is gone
+                        else:
+                            current_metric = bp.get("concentration_pct")
+                            if current_metric is not None:
+                                metric_faded = float(current_metric) < (_GAMMA_UNWIND_MIN_OI_CONCENTRATION * 100)
+
+                    if not (price_recovered or metric_faded):
+                        continue
+
+                    reasons = []
+                    if price_recovered:
+                        reasons.append(f"price recovered to ${float(current_price):.2f} (was ${float(w.price_at_add):.2f} when added)")
+                    if metric_faded:
+                        reasons.append("short-side options/interest pressure has faded")
+                    reason_str = "; ".join(reasons)
+
+                    user = w.user
+                    sent_ok = True
+                    if user and user.email:
+                        sent_ok = send_squeeze_watch_revert_email(
+                            user.email, w.symbol, w.watch_type, reason_str,
+                            current_price, current_metric,
+                        )
+                    if sent_ok:
+                        w.reverted = True
+                        w.reverted_at = datetime.now(timezone.utc)
+                        w.revert_reason = reason_str
+                        reverted_count += 1
+                except Exception as exc:
+                    log.warning("squeeze_watch.symbol_error", symbol=w.symbol, error=str(exc))
+                    continue
+
+            session.commit()
+            _record_job_status("check_squeeze_watch_reverts", "ok", time.monotonic() - _t0)
+            log.info("squeeze_watch.done", checked=len(watches), reverted=reverted_count)
+    except Exception as exc:
+        log.error("squeeze_watch.failed", error=str(exc), exc_info=True)
+        _record_job_status("check_squeeze_watch_reverts", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        try:
+            _get_redis().delete(_SQUEEZE_WATCH_LOCK_KEY)
         except Exception:
             pass
 
@@ -6553,6 +6775,18 @@ def start_scheduler() -> None:
         "interval",
         minutes=1,
         id="short_squeeze_alert_check",
+        replace_existing=True,
+        max_instances=1, coalesce=True,
+    )
+
+    # ── T260-BEARISH-PUTS-WATCHLIST: squeeze-watch revert checker — every minute ────────────
+    # Reads only already-cached state (live prices, fundamentals, the bearish-puts-watch cache)
+    # — see check_squeeze_watch_reverts()'s own docstring for the full revert conditions.
+    _scheduler.add_job(
+        check_squeeze_watch_reverts,
+        "interval",
+        minutes=1,
+        id="squeeze_watch_revert_check",
         replace_existing=True,
         max_instances=1, coalesce=True,
     )
