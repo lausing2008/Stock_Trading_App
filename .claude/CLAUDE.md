@@ -11058,3 +11058,96 @@ specific `no_exit_price` filter; hold-window constant consistency.
 `signal_date` (07-29) and the newest signal (08-05) is the expected hold-window resolution lag,
 and the evaluation job IS running (last write 2026-08-04 20:30 UTC) — verified before filing,
 rather than reported as a stalled job.
+
+---
+
+## Deep Audit #2 of 6: Prediction / Decision-Making / Paper Trading (2026-08-05)
+
+**Scope**: documentation-only (per standing instruction). Tracked as **Tier 262** in
+`improvements.tsx`, 13 entries (12 findings + 1 CLEAN reference).
+
+### Production ground truth (5 portfolios, 82 closed trades)
+
+| id | name | closed | avg_ret% | win_rate | total_pnl |
+|---|---|---|---|---|---|
+| 1 | GROWTH | 29 | -0.40 | 27.6% | -1,115 |
+| 2 | HK SWING | 4 | -5.66 | 0.0% | -6,611 |
+| 3 | US SWING | 31 | +0.26 | 35.5% | -1,736 |
+| 4 | HK GROWTH | 11 | -0.44 | 36.4% | +1,058 |
+| 5 | ETrade Sandbox | 7 | -2.27 | 14.3% | -764 |
+
+**`pct_return` is stored as a PERCENTAGE** (`-16.77` = -16.77%), not a fraction. My first query
+multiplied by 100 and produced impossible values (-566%); caught by noticing you cannot lose
+>100% on an unlevered long. Worth remembering before reporting any P&L "anomaly" from this table.
+
+### The root finding: two economically opposite events share one exit label
+
+| exit_reason | n | profitable | losing | best | worst |
+|---|---|---|---|---|---|
+| stop_hit | 49 | **14** | 35 | **+13.96%** | -16.77% |
+| breakeven_stop | 26 | 4 | **22** | +2.36% | **-5.18%** |
+| target_reached | 6 | 6 | 0 | +13.99% | +11.66% |
+| signal_exit | 1 | 0 | 1 | -4.46% | -4.46% |
+
+`stop_hit` is the catch-all `else` at `paper_trading_engine.py:2394-2409` for any stop breach
+where `abs(stop - entry) > entry*0.005`. Trailing stops ratchet **up**, so a stop that trailed to
+well above entry and then fired is a **profitable exit wearing the same label as a loss-cut**.
+Separately, `breakeven_stop` is assigned by comparing the **stop level** to entry, never the
+actual **fill** — so a gap-down through the stop keeps a label asserting it exited flat.
+
+The trailing-stop mechanism itself is **correct** (floor `max(new_trail, stop_loss)`,
+monotonic-raise-only — verified). This is purely a labeling defect. But six consumers key on
+`exit_reason`, and two of them actively harm trading:
+
+- **The heat brake halts ALL entries when the engine performs best** (`:3946-3960`) — three
+  profitable trailing exits in 48h (+8%, +11%, +14%) count as 3 "stops hit", logged as *"adverse
+  conditions, pausing entries"*, and suspend every new entry portfolio-wide. No P&L filter.
+- **The 5-day cooldown blocks re-entry into winners** (`:3725-3737`) — a symbol that exited at
+  +13.96% is banned for 120h *because it made money*. ~29% of cooldowns are misapplied.
+- **The breakeven cooldown is 60× shorter (2h vs 120h)** on a premise production contradicts —
+  22 of 26 `breakeven_stop` trades **lost** money, so the engine can re-enter a genuinely
+  declining stock the same session.
+
+### The most damaging finding: ML ground truth records winners as losses
+
+`paper_trading_engine.py:2562-2563`. T232-PT6 correctly added blended scale-out accounting
+(`total_pnl_dollar = realized_pnl + pnl_dollar`, `total_pnl_pct` against the **original** cost
+basis) *specifically* so "a trade that took profit on the way up and trailed the remainder to
+breakeven is scored as the winner it actually was". **That fix was applied to `trade.pnl` but
+never propagated to the `SignalOutcome` writeback 30 lines later**, which still uses the
+unblended final-tranche `pnl_pct` / `pnl_dollar`.
+
+Because scale-outs only fire on winners, this **only ever corrupts winning trades, always
+downward**. 9 of 82 closed trades (11%) already have `realized_pnl != 0`. It feeds
+`evaluate_signal_outcomes`, confidence calibration, `_build_confidence_calibration` (which gates
+the T257-TOP3 alert users act on), and `gate_harness.py` validation slices.
+
+### Answering the HK 0%-win-rate question honestly
+
+HK SWING is 0/4 (-$6,611 on 300k). Investigated for a code-level cause and **did not find one**:
+the HK overrides are all *tighter* (min_entry_score 4→6, min_confidence 45→65, min_ta_score 0.65,
+risk_per_trade 1%→0.7%, max_position 10%→7%), and sizing is currency-agnostic
+(`risk_dollar / stop_distance`, same unit both sides) so there is **no scale bug**. With n=4 this
+is not statistically distinguishable from noise; combined with a prior 0/9 it is 0/13 —
+suggestive, but more likely signal quality (already tracked as T222-A/T224-C). Reported the one
+concrete HK defect actually found (**no board-lot handling** — `round(shares, 4)` yields
+fractional quantities unfillable on HKEX) rather than manufacturing a cause.
+
+### Explicitly investigated and found NOT to be bugs
+
+- **US SWING: +0.26% average return but -$1,736 total P&L.** Not an accounting error —
+  `pct_return` is size-independent, `pnl` is size-dependent, so a positive mean with a negative
+  sum only requires losers carrying larger cost bases. Reproduced arithmetically before
+  dismissing.
+- **`calibrate_entry_weights`** targets `pnl > 0` and never reads `exit_reason` — so the
+  entry-weight fit is **not** corrupted by the label conflation.
+
+### Verified CLEAN (do not "fix" these)
+
+Scale-out blending on the trade itself; `pct_return` scale consistency; stop-sign/R:R structural
+guarantees; position-size-vs-cash (the `_slipped_position_value` gate uses the *same* slipped
+value later deducted, per the T247 fix — cannot overdraw); equity recomputation between entries;
+`calibrate_entry_weights`' 70/30 chronological split + `_SCORE_SCALE_CUTOFF` + validation gate;
+DE hard-reject parity across all recently-ported gates (matching thresholds, correct signs);
+`_recent_win_rate`/`_consec_loss_streak` keying on `pnl` not `exit_reason`; delisted auto-exit
+ordering; trailing-stop floor.
