@@ -11250,3 +11250,91 @@ forward-fill only, no leakage); `fetch_signal_outcome_features`' `.shift(10)` ke
 `exit_date` (look-ahead-safe construction, corrupt input notwithstanding); the symmetric
 dead-zone label filter; `gate_harness`'s promotion margin (structurally the strongest gate here —
 its problem is corrupted input, not design).
+
+---
+
+## Deep Audit #4 of 6: Market Regime / Trend / Earnings / News / Events (2026-08-05)
+
+**Scope**: documentation-only. Tracked as **Tier 264**, 13 entries (12 findings + 1 CLEAN
+reference).
+
+### Two structural findings dominate
+
+**1. The T249-P0 macro release-date alerting has been dead for 6 of 10 indicators since it
+shipped.** `sync_fred_release_dates()` writes 10 release event types; `check_release_day_fast_poll()`
+— verified to be the *only* writer of `actual_value` to `*_release` rows anywhere — filters on
+`_RELEASE_TO_FRED_SERIES.keys()`, which holds only 5 keys, one of them mapping to `None`. So
+`fed_funds_release`, `retail_sales_release`, `consumer_conf_release`, `housing_starts_release`
+and `jobless_claims_release` are **never even SELECTed**.
+
+Production measurement:
+
+| | rows (past-dated) | with `actual_value` |
+|---|---|---|
+| release-date family | 202 | **2 (1%)** |
+| reference-period family | 153 | 138 (90%) |
+
+`fed_funds_release` alone is 113 of those empty rows. Only **2 of 433** `economic_events` have
+ever had a `reaction_text` generated. A second root cause affects even the 4 "pollable" types:
+the poll fetches the *reference-period* series and writes `obs[0].value`, which `sync_fred()`
+already wrote to the plain `cpi` row — so the release row duplicates the reference row, and if
+FRED hasn't attached the new observation during the poll window, **last month's value is
+silently written as this release's actual**. Explicitly ruled out the cron window as a cause.
+
+**2. signal-engine runs a second, independent regime classifier with an incompatible
+vocabulary.** Grep confirms **zero** references to `/stocks/regime`, `get_last_regime`, or
+`get_last_hk_regime` anywhere in `services/signal-engine/src/`. It derives US regime from
+`/stocks/fear_greed` and HK regime from its own yfinance HSI-vs-SMA20 fetch.
+
+| classifier | vocabulary |
+|---|---|
+| market-data (canonical) | bull / neutral / **choppy** / **risk_off** / bear |
+| signal-engine US | bull / **high_vol** / bear / unknown |
+
+`choppy` and `risk_off` **cannot be emitted** by signal-engine. Concrete divergence: SPY +3%
+over its 200d MA with VIX 27 → market-data says `risk_off` and blocks entries via
+`hard_rejects.py`; signal-engine simultaneously says `bull` and applies bull-tier buy thresholds.
+The T232-DL-REGIME5X consolidation succeeded for decision-engine (verified CLEAN) — signal-engine
+was left behind, which is what makes it the outlier rather than a known-accepted split.
+
+Related: `_REGIME_ML_THRESH` has **no `choppy` or `risk_off` keys**, so via `.get(regime, 0.70)`
+the two most defensive canonical regimes fall through to a threshold *looser* than `bear`'s 0.78.
+
+### Other notable findings
+
+- **Fiscal quarter is inferred from the announcement month** (`earnings.py:201`, comment: *"Infer
+  quarter from month"*). A company announcing 2026-07-14 reports **Q2** but is stored as Q3 —
+  confirmed in production (FY2026 Q3 spans report dates 07-14 → 09-23). Because it's part of the
+  uniqueness key, two reports in one calendar quarter **overwrite each other**, destroying history.
+- **Company-name news matching is an unbounded substring test** (`tickers.py:105`). The ticker
+  rule 25 lines above correctly uses `(?<![A-Za-z0-9])...(?![A-Za-z0-9])`; the name rule is a bare
+  `name_upper in upper`. "Target" matches *"Fed officials target 2% inflation"*.
+- **The LLM already classifies headlines as `"macro"` and the value is stored** (`storage.py:122`)
+  **but the hot-flag condition never consults it** (`:130` checks only `is_material`). One
+  index-level headline naming three megacaps sets three separate 2-hour BUY-compression flags.
+  Nearly-free fix — the data is already there.
+- **Regime failure defaults disagree**: market-data falls back to `choppy` (conservative,
+  deliberate) but `get_last_regime()`'s bare-except and decision-engine both resolve to
+  `neutral` — the *most permissive* state. Failure loosens gating exactly when visibility is lost.
+- **CAPE's staleness flag is structurally unreachable**: `reading_date` is taken from the Atom
+  feed's daily-refreshed `<updated>` on a *monthly* series, so `age_days` stays ~0 forever and
+  `stale = age_days > 45` can never fire.
+
+### Verified CLEAN — several were specifically hypothesised as bugs and traced correct
+
+1. **Earnings surprise sign flip: NO BUG.** `(act − est)/abs(est)*100` handles loss-makers
+   correctly — est −0.50 → act −0.20 gives **+60% (beat)**; −0.50 → −0.80 gives **−60% (miss)**.
+   A naive `/est` would invert both. Zero-estimate guarded.
+2. **The hot-news gate IS direction-aware** — compression fires only on `sentiment_label ==
+   "negative"` AND `fused > 0.5`. The "any material news compresses" hypothesis is false.
+3. **LLM classification fails SAFE** — failure → `is_material=False` → no flag. URL dedup runs
+   *before* classification (the already-fixed `BUG-NEWSCLASSIFY-REPEATCOST`).
+4. **The OGE executive-branch filter is correct** (`congress.py:111`) — properly excludes the
+   ~85% of the feed that isn't congress.
+5. **No DateTime-vs-bare-date bug** in these subsystems (all construct explicit UTC bounds).
+6. **congress/insider date lag is genuine filing delay, not a broken sync** — both wrote rows
+   within 3 days. Checked before flagging.
+7. **decision-engine ↔ market-data regime agreement is correct.**
+8. **39 `cape_readings` rows is expected, not thin** — monthly series with daily-stamped upserts.
+9. **EDGAR and Alpaca news paths are exempt from ticker over-matching** (CIK exact-lookup and
+   source-native tags) — only PR Newswire and Business Wire use `extract_symbols`.
