@@ -41,7 +41,7 @@ import yfinance as yf
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import Fundamental, Price, SqueezeWatch, Stock, TimeFrame, get_session
+from db import EarningsAlertSubscription, Fundamental, Price, SqueezeWatch, Stock, TimeFrame, get_session
 from .auth import get_current_user
 from ..services.ingestion import _classify_session
 
@@ -2160,6 +2160,82 @@ def remove_squeeze_watch(
     if w is None:
         raise HTTPException(status_code=404, detail="Watch not found")
     session.delete(w)
+    session.commit()
+    return {"status": "removed"}
+
+
+# ── Earnings Alert Subscriptions (BUG-EARNINGS-IMPACT-UNSCOPED follow-up) ─────
+# A durable, per-symbol opt-in for earnings result/impact alerts — deliberately independent
+# of PriceAlert's one-shot trigger semantics. See EarningsAlertSubscription's own docstring in
+# shared/db/models.py for why this exists alongside (not instead of) PriceAlert-based coverage.
+
+class EarningsAlertSubCreate(BaseModel):
+    symbol: str
+
+
+class EarningsAlertSubOut(BaseModel):
+    id: int
+    symbol: str
+    created_at: str
+
+
+def _earnings_alert_sub_out(s: "EarningsAlertSubscription") -> EarningsAlertSubOut:
+    return EarningsAlertSubOut(id=s.id, symbol=s.symbol, created_at=s.created_at.isoformat())
+
+
+@router.get("/earnings-alert-subscriptions", response_model=list[EarningsAlertSubOut])
+def list_earnings_alert_subscriptions(
+    session: Session = Depends(get_session),
+    _user=Depends(get_current_user),
+):
+    rows = session.execute(
+        select(EarningsAlertSubscription)
+        .where(EarningsAlertSubscription.user_id == _user.id)
+        .order_by(EarningsAlertSubscription.created_at.desc())
+    ).scalars().all()
+    return [_earnings_alert_sub_out(s) for s in rows]
+
+
+@router.post("/earnings-alert-subscriptions", response_model=EarningsAlertSubOut)
+def add_earnings_alert_subscription(
+    req: EarningsAlertSubCreate,
+    session: Session = Depends(get_session),
+    _user=Depends(get_current_user),
+):
+    symbol = req.symbol.upper().strip()
+    if not symbol:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    existing = session.execute(
+        select(EarningsAlertSubscription).where(
+            EarningsAlertSubscription.user_id == _user.id,
+            EarningsAlertSubscription.symbol == symbol,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return _earnings_alert_sub_out(existing)
+    s = EarningsAlertSubscription(user_id=_user.id, symbol=symbol, email=_user.email)
+    session.add(s)
+    session.commit()
+    session.refresh(s)
+    return _earnings_alert_sub_out(s)
+
+
+@router.delete("/earnings-alert-subscriptions/{symbol}")
+def remove_earnings_alert_subscription(
+    symbol: str,
+    session: Session = Depends(get_session),
+    _user=Depends(get_current_user),
+):
+    sym = symbol.upper().strip()
+    s = session.execute(
+        select(EarningsAlertSubscription).where(
+            EarningsAlertSubscription.user_id == _user.id,
+            EarningsAlertSubscription.symbol == sym,
+        )
+    ).scalar_one_or_none()
+    if s is None:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    session.delete(s)
     session.commit()
     return {"status": "removed"}
 

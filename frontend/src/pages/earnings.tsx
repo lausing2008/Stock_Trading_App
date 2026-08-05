@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type CalendarEvent } from '@/lib/api';
+import { api, type CalendarEvent, type EarningsAlertSub } from '@/lib/api';
 
 type EventType = 'all' | 'earnings' | 'dividend' | 'macro';
 type MacroSubtype = 'fomc' | 'cpi' | 'nfp' | 'pce' | 'gdp';
@@ -67,7 +67,52 @@ function TypeBadge({ type }: { type: string }) {
   );
 }
 
-function EventCard({ ev }: { ev: CalendarEvent }) {
+// Durable, per-symbol opt-in for earnings result/impact alerts — independent of PriceAlert's
+// one-shot trigger (BUG-EARNINGS-IMPACT-UNSCOPED follow-up). Deliberately additive: a symbol
+// with an active PriceAlert already gets earnings coverage too — this button is the more
+// reliable way going forward, not a replacement.
+function AlertMeButton({
+  symbol, subs, onChanged,
+}: {
+  symbol: string;
+  subs: EarningsAlertSub[];
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const existing = subs.find(s => s.symbol === symbol);
+
+  async function toggle() {
+    setBusy(true);
+    try {
+      if (existing) {
+        await api.removeEarningsAlertSubscription(symbol);
+      } else {
+        await api.addEarningsAlertSubscription(symbol);
+      }
+      onChanged();
+    } catch {
+      // best-effort — the button's own busy/disabled state already prevents a double-click
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      onClick={toggle}
+      disabled={busy}
+      title={existing ? 'Stop getting earnings result/impact emails for this stock' : 'Get an email when this stock reports (result + AI impact read, if enabled)'}
+      style={{
+        padding: '3px 9px', borderRadius: 5, fontSize: 10.5, fontWeight: 700, cursor: busy ? 'wait' : 'pointer',
+        border: existing ? '1px solid rgba(74,222,128,0.4)' : '1px solid #1e293b',
+        background: existing ? 'rgba(74,222,128,0.12)' : 'transparent',
+        color: existing ? '#4ade80' : '#64748b', whiteSpace: 'nowrap',
+      }}
+    >{existing ? '🔔 Alerting' : '🔕 Alert me'}</button>
+  );
+}
+
+function EventCard({ ev, subs, onSubsChanged }: { ev: CalendarEvent; subs: EarningsAlertSub[]; onSubsChanged: () => void }) {
   const isMacro = MACRO_SUBTYPES.has(ev.type);
   const meta = EVENT_META[ev.type] ?? { color: '#94a3b8', bg: 'rgba(148,163,184,0.1)', dot: '#94a3b8' };
 
@@ -99,11 +144,12 @@ function EventCard({ ev }: { ev: CalendarEvent }) {
 
       {/* Earnings details */}
       {ev.type === 'earnings' && (
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
           <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>EPS est: </span><span style={{ color: '#e2e8f0', fontWeight: 700 }}>{ev.eps_estimate != null ? `$${ev.eps_estimate.toFixed(2)}` : '—'}</span></span>
           <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>Rev growth: </span><span style={{ color: (ev.revenue_growth ?? 0) >= 0 ? '#4ade80' : '#f87171', fontWeight: 700 }}>{fmtPct(ev.revenue_growth)}</span></span>
           <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>EPS growth: </span><span style={{ color: (ev.earnings_growth ?? 0) >= 0 ? '#4ade80' : '#f87171', fontWeight: 700 }}>{fmtPct(ev.earnings_growth)}</span></span>
           <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>Cap: </span><span style={{ color: '#94a3b8', fontWeight: 700 }}>{fmtCap(ev.market_cap)}</span></span>
+          {ev.symbol && <AlertMeButton symbol={ev.symbol} subs={subs} onChanged={onSubsChanged} />}
         </div>
       )}
 
@@ -119,6 +165,40 @@ function EventCard({ ev }: { ev: CalendarEvent }) {
   );
 }
 
+// ── Earnings alert subscription management panel (mirrors short-squeeze.tsx's
+// "My Squeeze Watches" pattern — the button toggles a subscription, this panel shows/manages
+// the full list in one place) ─────────────────────────────────────────────────────────────
+function MyEarningsAlertsPanel({ subs, onChanged }: { subs: EarningsAlertSub[]; onChanged: () => void }) {
+  if (subs.length === 0) return null;
+
+  async function remove(symbol: string) {
+    try {
+      await api.removeEarningsAlertSubscription(symbol);
+      onChanged();
+    } catch { /* best-effort */ }
+  }
+
+  return (
+    <div style={{ marginTop: 28, marginBottom: 24 }}>
+      <h2 style={{ fontSize: 16, fontWeight: 800, color: '#e2e8f0', marginBottom: 4 }}>My Earnings Alerts</h2>
+      <p style={{ fontSize: 11.5, color: '#475569', marginBottom: 12 }}>
+        Stocks you&apos;ll get an email for when they report — the result, plus an AI impact read
+        if enabled. Toggle &quot;🔔 Alerting&quot; off any earnings card above to unsubscribe.
+      </p>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, background: '#0f172a', border: '1px solid #1e293b', borderRadius: 12, padding: 12 }}>
+        {subs.map(s => (
+          <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 10px', borderRadius: 6, background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.25)' }}>
+            <Link href={`/stock/${s.symbol}`} style={{ color: '#818cf8', fontWeight: 700, textDecoration: 'none', fontSize: 13 }}>{s.symbol}</Link>
+            <button onClick={() => remove(s.symbol)} title="Stop earnings alerts for this stock"
+              style={{ padding: '1px 6px', borderRadius: 4, fontSize: 11, border: '1px solid #1e293b', background: 'transparent', color: '#64748b', cursor: 'pointer' }}
+            >✕</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function EventsCalendarPage() {
   const [daysAhead, setDaysAhead] = useState(45);
   const [tab, setTab] = useState<EventType>('all');
@@ -130,6 +210,13 @@ export default function EventsCalendarPage() {
     () => api.eventsCalendar(daysAhead),
     { revalidateOnFocus: false },
   );
+
+  const { data: subsData, mutate: mutateSubs } = useSWR<EarningsAlertSub[]>(
+    'earnings-alert-subs',
+    () => api.listEarningsAlertSubscriptions(),
+    { revalidateOnFocus: false },
+  );
+  const subs = subsData ?? [];
 
   const filtered = useMemo(() => {
     let items = data ?? [];
@@ -243,10 +330,19 @@ export default function EventsCalendarPage() {
             {group.label} ({group.items.length})
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 8 }}>
-            {group.items.map((ev, i) => <EventCard key={`${ev.type}-${ev.symbol ?? ev.title}-${i}`} ev={ev} />)}
+            {group.items.map((ev, i) => (
+              <EventCard
+                key={`${ev.type}-${ev.symbol ?? ev.title}-${i}`}
+                ev={ev}
+                subs={subs}
+                onSubsChanged={() => mutateSubs()}
+              />
+            ))}
           </div>
         </div>
       ))}
+
+      <MyEarningsAlertsPanel subs={subs} onChanged={() => mutateSubs()} />
     </div>
   );
 }

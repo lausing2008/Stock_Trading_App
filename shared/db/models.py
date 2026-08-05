@@ -101,6 +101,7 @@ class User(Base):
     cash_balances: Mapped[list["UserCash"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     app_notifications: Mapped[list["AppNotification"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     squeeze_watches: Mapped[list["SqueezeWatch"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    earnings_alert_subscriptions: Mapped[list["EarningsAlertSubscription"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     push_subscriptions: Mapped[list["PushSubscription"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
@@ -413,6 +414,41 @@ class SqueezeWatch(Base):
 
     __table_args__ = (
         UniqueConstraint("user_id", "symbol", "watch_type", name="uq_squeeze_watch_user_symbol_type"),
+    )
+
+
+class EarningsAlertSubscription(Base):
+    """BUG-EARNINGS-IMPACT-UNSCOPED follow-up (2026-08-05): a dedicated, DURABLE per-symbol
+    opt-in for earnings result/impact alerts — deliberately a NEW table rather than continuing
+    to piggyback on PriceAlert.
+
+    The gap this closes: check_earnings_reactions()/check_earnings_impact_alerts() previously
+    (and, additively, still) treat any un-triggered PriceAlert on a symbol as earnings-alert
+    consent. But PriceAlert is fundamentally a ONE-SHOT trigger mechanism — `triggered=True`
+    once the price crosses the set threshold, dropping the row out of every future query that
+    filters `PriceAlert.triggered.is_(False)`. A user could have a price alert cross (for any
+    reason, unrelated to earnings) hours or days before a real earnings print and silently lose
+    coverage for that report with no warning at all. Found live, the day before a heavy
+    earnings-release day.
+
+    This table has no `triggered`/one-shot concept at all — subscribing here means "always
+    alert me for this symbol's earnings," full stop, until the user explicitly unsubscribes.
+    Deliberately ADDITIVE, not a replacement: a symbol qualifies for earnings alerts if EITHER
+    an active PriceAlert exists on it OR a row exists here — nobody who was already relying on
+    PriceAlert coverage loses it, and this becomes the more reliable path going forward.
+    """
+    __tablename__ = "earnings_alert_subscriptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    email: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    user: Mapped["User"] = relationship(back_populates="earnings_alert_subscriptions")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "symbol", name="uq_earnings_alert_sub_user_symbol"),
     )
 
 

@@ -412,6 +412,14 @@ export const api = {
   removeSqueezeWatch: (id: number) => request(`/stocks/squeeze-watch/${id}`, { method: 'DELETE' }),
   marketScreener: () => request<MarketScreenerResponse>('/stocks/market-screener'),
 
+  // Earnings alert subscriptions — durable per-symbol opt-in, independent of PriceAlert's
+  // one-shot trigger (BUG-EARNINGS-IMPACT-UNSCOPED follow-up)
+  listEarningsAlertSubscriptions: () => request<EarningsAlertSub[]>('/stocks/earnings-alert-subscriptions'),
+  addEarningsAlertSubscription: (symbol: string) =>
+    request<EarningsAlertSub>('/stocks/earnings-alert-subscriptions', { method: 'POST', body: JSON.stringify({ symbol }) }),
+  removeEarningsAlertSubscription: (symbol: string) =>
+    request(`/stocks/earnings-alert-subscriptions/${symbol}`, { method: 'DELETE' }),
+
   // Short interest dashboard
   shortInterest: () => request<ShortInterestRow[]>('/stocks/short-interest'),
 
@@ -1225,6 +1233,12 @@ export type SqueezeWatchCreateRequest = {
   price_at_add?: number | null;
   metric_at_add?: number | null;
   note?: string | null;
+};
+
+export type EarningsAlertSub = {
+  id: number;
+  symbol: string;
+  created_at: string;
 };
 
 export type MarketScreenerRow = {

@@ -86,13 +86,11 @@ def test_earnings_impact_alerts_scoped_to_each_users_own_subscribed_symbols():
     """BUG-EARNINGS-IMPACT-UNSCOPED: this job used to email EVERY subscribed user for ANY
     reporting symbol, regardless of whether they'd actually subscribed to it — unlike
     check_earnings_reactions() (the plain, non-LLM alert), which has always correctly scoped
-    per-symbol. Must now build the same user_symbols map and only send to a user if the
-    reporting symbol is in THEIR OWN subscribed set."""
+    per-symbol. Must use the shared _earnings_alert_recipient_symbols() merge and only send to
+    a user if the reporting symbol is in THEIR OWN subscribed set."""
     body = _func_body("check_earnings_impact_alerts")
-    assert "user_symbols: dict[int, set[str]] = {}" in body
-    assert "user_symbols.setdefault(a.user_id, set()).add(a.symbol)" in body
+    assert "user_symbols, users_by_id = _earnings_alert_recipient_symbols(session)" in body
     assert "if sym not in syms:" in body
-    assert "continue" in body
 
 
 def test_earnings_impact_alerts_db_query_filters_to_subscribed_symbols_only():
@@ -104,14 +102,42 @@ def test_earnings_impact_alerts_db_query_filters_to_subscribed_symbols_only():
 
 
 def test_earnings_impact_alerts_no_subscribers_for_any_symbol_returns_early():
-    """If nobody has any active PriceAlert subscription at all, the function must bail before
-    ever querying EarningsEvent — matching check_earnings_reactions()'s own early-exit shape."""
+    """If nobody qualifies for earnings alerts at all (no PriceAlert AND no
+    EarningsAlertSubscription), the function must bail before ever querying EarningsEvent —
+    matching check_earnings_reactions()'s own early-exit shape."""
     body = _func_body("check_earnings_impact_alerts")
-    alerts_idx = body.index("alerts = session.execute(")
-    early_exit_idx = body.index("if not alerts:")
+    merge_idx = body.index("user_symbols, users_by_id = _earnings_alert_recipient_symbols(session)")
     all_symbols_idx = body.index("all_symbols = {sym for syms in user_symbols.values()")
+    early_exit_idx = body.index("if not all_symbols:")
     pending_query_idx = body.index("pending = session.execute(")
-    assert alerts_idx < early_exit_idx < all_symbols_idx < pending_query_idx
+    assert merge_idx < all_symbols_idx < early_exit_idx < pending_query_idx
+
+
+# ── _earnings_alert_recipient_symbols() — the shared merge helper ──────────────────
+
+def test_recipient_symbols_helper_merges_both_price_alert_and_earnings_subscription():
+    """The core additive property: a symbol from EITHER source must appear in the merged
+    user_symbols set — this is what makes the fix additive rather than a replacement."""
+    body = _func_body("_earnings_alert_recipient_symbols")
+    assert "PriceAlert.triggered.is_(False)" in body
+    assert "EarningsAlertSubscription" in body
+    assert 'user_symbols.setdefault(a.user_id, set()).add(a.symbol)' in body
+    assert 'user_symbols.setdefault(s.user_id, set()).add(s.symbol)' in body
+
+
+def test_recipient_symbols_helper_skips_users_with_no_email():
+    body = _func_body("_earnings_alert_recipient_symbols")
+    assert "if not a.user or not a.user.email:" in body
+    assert "if not s.user or not s.user.email:" in body
+
+
+def test_both_earnings_functions_use_the_shared_helper_not_duplicated_logic():
+    """Both check_earnings_reactions() and check_earnings_impact_alerts() must call the SAME
+    shared helper — a hand-duplicated second copy could silently drift from it."""
+    reactions_body = _func_body("check_earnings_reactions")
+    impact_body = _func_body("check_earnings_impact_alerts")
+    assert "user_symbols, users_by_id = _earnings_alert_recipient_symbols(session)" in reactions_body
+    assert "user_symbols, users_by_id = _earnings_alert_recipient_symbols(session)" in impact_body
 
 
 # ── check_macro_reaction_alerts() — feature-flag gate added retroactively ───────────

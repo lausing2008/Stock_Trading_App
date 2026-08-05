@@ -1080,6 +1080,44 @@ def _earnings_reaction_body(sym: str, eps_actual: float, eps_estimate: float | N
     return " ".join(parts)
 
 
+def _earnings_alert_recipient_symbols(session) -> tuple[dict[int, set[str]], dict[int, "User"]]:
+    """BUG-EARNINGS-IMPACT-UNSCOPED follow-up: shared merge for both
+    check_earnings_reactions() and check_earnings_impact_alerts() — a symbol qualifies a user
+    for earnings alerts if EITHER they have an active (un-triggered) PriceAlert on it OR a
+    durable EarningsAlertSubscription row exists (see that model's own docstring in
+    shared/db/models.py for why PriceAlert alone isn't reliable: it's a one-shot trigger that
+    can silently expire before an earnings print, for reasons having nothing to do with
+    earnings at all). Additive, not a replacement — a user relying on either path keeps
+    working exactly as before.
+
+    Returns (user_symbols, users_by_id) — the same two shapes both call sites already build
+    inline, factored out once so a future third caller doesn't have to re-derive this merge
+    from scratch.
+    """
+    from db import EarningsAlertSubscription
+
+    user_symbols: dict[int, set[str]] = {}
+    users_by_id: dict[int, "User"] = {}
+
+    price_alerts = session.execute(
+        select(PriceAlert).where(PriceAlert.triggered.is_(False))
+    ).scalars().all()
+    for a in price_alerts:
+        if not a.user or not a.user.email:
+            continue
+        user_symbols.setdefault(a.user_id, set()).add(a.symbol)
+        users_by_id[a.user_id] = a.user
+
+    earnings_subs = session.execute(select(EarningsAlertSubscription)).scalars().all()
+    for s in earnings_subs:
+        if not s.user or not s.user.email:
+            continue
+        user_symbols.setdefault(s.user_id, set()).add(s.symbol)
+        users_by_id[s.user_id] = s.user
+
+    return user_symbols, users_by_id
+
+
 def check_earnings_reactions() -> None:
     """T249-MARKETMOVER-P1: post-release fast-reaction alert — the missing half of the
     "same idea for earnings" ask (T249-MARKETMOVER-P0's design doc: pre-market brief already
@@ -1087,8 +1125,11 @@ def check_earnings_reactions() -> None:
     reaction that had no code at all). Runs every minute (like check_price_alerts) so a
     same-day EPS print is caught quickly once event-intelligence's evening earnings sync
     writes eps_actual, rather than waiting for the next 5x/day check_signal_alerts() cycle.
-    Scoped to the same PriceAlert-subscribed users as the existing earnings reminder, for
-    audience consistency rather than a broader/unbounded watchlist join.
+
+    BUG-EARNINGS-IMPACT-UNSCOPED follow-up (2026-08-05): recipient scoping now merges
+    PriceAlert-subscribed symbols with EarningsAlertSubscription rows (see
+    _earnings_alert_recipient_symbols()'s own docstring for why a one-shot PriceAlert alone
+    isn't reliable coverage) — additive, so existing PriceAlert-based coverage is unaffected.
     """
     try:
         acquired = _get_redis().set(_EARNINGS_REACTION_LOCK_KEY, "1", nx=True, ex=_EARNINGS_REACTION_LOCK_TTL)
@@ -1098,14 +1139,7 @@ def check_earnings_reactions() -> None:
         pass
     try:
         with SessionLocal() as session:
-            alerts = session.execute(
-                select(PriceAlert).where(PriceAlert.triggered.is_(False))
-            ).scalars().all()
-            if not alerts:
-                return
-            user_symbols: dict[int, set[str]] = {}
-            for a in alerts:
-                user_symbols.setdefault(a.user_id, set()).add(a.symbol)
+            user_symbols, users_by_id = _earnings_alert_recipient_symbols(session)
             all_symbols = {sym for syms in user_symbols.values() for sym in syms}
             if not all_symbols:
                 return
@@ -1130,7 +1164,7 @@ def check_earnings_reactions() -> None:
                 for uid, syms in user_symbols.items():
                     if sym not in syms:
                         continue
-                    u_obj = next((a.user for a in alerts if a.user_id == uid), None)
+                    u_obj = users_by_id.get(uid)
                     if not u_obj or not u_obj.email:
                         continue
                     redis_key = f"stockai:earnings_reaction:{uid}:{sym}:{ev.report_date.isoformat()}"
@@ -1237,8 +1271,8 @@ def check_earnings_impact_alerts() -> None:
     this same alert), which has always correctly scoped delivery to each user's own subscribed
     symbols. Found live, right before a heavy earnings day, when a user asked "can I pick which
     stocks I get earnings alerts for" — the plain alert already worked this way, the LLM one
-    silently didn't. Now scoped per-symbol identically to check_earnings_reactions(): a user
-    only receives an impact email for a symbol they have an active PriceAlert on.
+    silently didn't. Now scoped per-symbol via the same _earnings_alert_recipient_symbols()
+    merge check_earnings_reactions() uses (PriceAlert OR EarningsAlertSubscription).
     """
     try:
         if _get_redis().get(_REDIS_EARNINGS_LLM_ENABLED) != "1":
@@ -1253,14 +1287,7 @@ def check_earnings_impact_alerts() -> None:
         pass
     try:
         with SessionLocal() as session:
-            alerts = session.execute(
-                select(PriceAlert).where(PriceAlert.triggered.is_(False))
-            ).scalars().all()
-            if not alerts:
-                return
-            user_symbols: dict[int, set[str]] = {}
-            for a in alerts:
-                user_symbols.setdefault(a.user_id, set()).add(a.symbol)
+            user_symbols, users_by_id = _earnings_alert_recipient_symbols(session)
             all_symbols = {sym for syms in user_symbols.values() for sym in syms}
             if not all_symbols:
                 return
@@ -1284,7 +1311,7 @@ def check_earnings_impact_alerts() -> None:
                 for uid, syms in user_symbols.items():
                     if sym not in syms:
                         continue
-                    u_obj = next((a.user for a in alerts if a.user_id == uid), None)
+                    u_obj = users_by_id.get(uid)
                     if not u_obj or not u_obj.email:
                         continue
                     if send_email(u_obj.email, subject, f"<p>{body_text}</p>", body_text):
