@@ -11338,3 +11338,97 @@ the two most defensive canonical regimes fall through to a threshold *looser* th
 8. **39 `cape_readings` rows is expected, not thin** — monthly series with daily-stamped upserts.
 9. **EDGAR and Alpaca news paths are exempt from ticker over-matching** (CIK exact-lookup and
    source-native tags) — only PR Newswire and Business Wire use `extract_symbols`.
+
+---
+
+## Deep Audit #5 of 6: Short Squeeze / Option Expiry (2026-08-05)
+
+**Scope**: documentation-only. Tracked as **Tier 265**, 12 entries (11 findings + 1 CLEAN
+reference).
+
+### Headline: a data outage silently mass-reverts every bearish_puts watch
+
+Three links, all confirmed by direct code read:
+
+1. `check_gamma_unwind_alerts()` has `if not candidates: ... return` at `scheduler.py:2415-2417`
+   — which fires **before** the `setex` write of `stockai:bearish_puts_watch`. A no-candidate
+   cycle never refreshes the cache, so it simply expires on its 6h TTL.
+2. `check_squeeze_watch_reverts()` builds `_bearish_by_symbol` from
+   `_json.loads(_rc.get("stockai:bearish_puts_watch") or "[]")` inside a `try/except` that sets
+   `{}` — so a missing/expired/unparseable key is **indistinguishable from "the scan ran and
+   found nothing."**
+3. The revert branch does `if bp is None or bp.get("dominant_side") != "puts": metric_faded = True`.
+
+Net: the gamma job's yfinance calls all failing (rate limits — its own most fragile endpoint)
+causes the next 60-second revert cycle to mark **every** un-reverted `bearish_puts` watch as
+faded, email every owner, and set `reverted=True`. Revert is **one-shot**, so the user must
+manually re-add. This fires on infrastructure failure, not a market event. Separately, the scan
+is a *narrowing* 3–5 DTE window filter, so a watch added at 5 DTE naturally exits the window in
+two days and auto-reverts as "faded" purely from calendar drift.
+
+Verified against production Redis: the key currently **exists** with a 56-minute TTL, so this
+hasn't fired yet — it is a live latent risk, not a past incident.
+
+### Short-interest age is never captured or checked anywhere
+
+Grep across `services/`, `shared/` and `frontend/src` for `dateShortInterest` /
+`short_interest_date` / `shortInterestDate` returns **zero hits**. No settlement date is captured
+at ingest, and none of the four consumption sites (alert path, Redis screener, DB screener,
+fundamentals endpoint) applies any age bound.
+
+Exchange short interest settles ~2×/month with a 1–2 week reporting lag, so a reading can
+legitimately be ~6 weeks old. Concrete failure: a stock's real short interest collapses 22% → 6%
+after a covering wave; yfinance still reports 22% for up to ~3 weeks; the stock rallies 4%
+intraday; the alert fires *"22% of float short, shorts may be forced to cover"* with a game plan
+— when the squeeze fuel is already gone. This is the **one place** the subsystem's otherwise
+excellent honesty framing is undermined — not by wording, but by unstated data age.
+
+### Also found
+
+- **An 11th instance of `BUG-DELISTED-GENERATION-BLIND`** — the squeeze screener
+  (`routes.py:1982`) uses `Stock.active.is_(True)` with no `Stock.delisted` filter, so a
+  delisted heavily-shorted name stays pinned at the *top* (results sort by short % descending).
+  The prior 10-site sweep missed it. Reinforces the standing lesson that these sweeps must be
+  re-run across every service rather than assumed complete.
+- **A lapsed ranking refresh silently empties the "Prime Candidates" banner** — the screener
+  joins rankings only within 7 days, and this repo has documented rankings going stale 7+ days.
+  Fails closed and silently.
+- **The 55% OI-concentration threshold is asymmetrically calibrated** — equity options carry a
+  structural call skew, so 55% is near baseline for calls but genuinely selective for puts. One
+  shared constant applied to two very different base rates.
+
+### The production anomaly that traced to CORRECT code
+
+`options_flow_snapshots` showed `neutral` sentiment with `max_cp = 10.00` — the *same* cap as
+`strongly_bullish`, which looked like a broken classification. Traced numerically and it is
+**correct**: `cp_ratio = min(call_vol / max(put_vol, 1), 10.0)` is computed independently of
+`sufficient_put_vol = total_put_vol >= 100`, and every directional tier requires that guard.
+
+| call_vol | put_vol | cp_ratio | sufficient | sentiment |
+|---|---|---|---|---|
+| 1000 | 99 | 10.00 | False | **neutral** |
+| 1000 | 100 | 10.00 | True | strongly_bullish |
+
+Those production rows are illiquid-options symbols correctly refusing to declare extreme
+sentiment. Also killed before filing: `_SQUEEZE_MIN_SHORT_FLOAT = 15.0` was hypothesised as
+possibly unreachable given short data is stored as a *fraction* — verified that **19 real stocks
+clear the 15% bar** (31 clear 10%), so the threshold is well-calibrated.
+
+### Verified CLEAN
+
+The two independent sentiment-ladder ports (`options_flow_snapshot.py` and `routes.py`) are
+numerically identical and have **not drifted**; no NaN/Infinity can reach `json.dumps` anywhere
+in the options math (`max(put_vol,1)`, `max(openInterest,1)`, `df.fillna(0)` on every chain
+read) so the `updown_vol_ratio` bug class does not recur; the squeeze alert **does** correctly
+implement the `BUG-VOLANOM-STALEMARKET` market-hours fix (whole-scan short-circuit + per-row
+HK/US split); its dedup is genuine transition-only firing via a per-user Redis set diff, so it
+cannot re-fire every minute on a sustained move; fraction-vs-percent unit handling is consistent
+at every site checked; revert logic **is** genuinely OR and genuinely one-shot with
+`reverted=True` set only when `sent_ok`; the bearish-puts 3-of-3 checks are genuinely
+independent and correctly use `is False` identity checks; rate-limit discipline is sound;
+`SqueezeWatch` routes are correctly user-scoped.
+
+**The honesty framing across this subsystem is consistently excellent** — the gamma email
+explicitly disclaims being a real GEX calculation, the frontend states in bold *"This is never a
+guarantee the stock won't recover"*, and the squeeze email reports a *"MEASURED setup, not a
+prediction the move continues."* The unstated short-interest age is the sole exception.
