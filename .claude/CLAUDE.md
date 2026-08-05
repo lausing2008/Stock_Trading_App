@@ -11432,3 +11432,97 @@ independent and correctly use `is False` identity checks; rate-limit discipline 
 explicitly disclaims being a real GEX calculation, the frontend states in bold *"This is never a
 guarantee the stock won't recover"*, and the squeeze email reports a *"MEASURED setup, not a
 prediction the move continues."* The unstated short-interest age is the sole exception.
+
+---
+
+## Deep Audit #6 of 6: Recommendations and Alerts (2026-08-05) — SERIES COMPLETE
+
+**Scope**: documentation-only. Tracked as **Tier 266**, 12 entries (10 findings + 2 reference).
+
+### Headline 1: a dead whitelist entry is the dominant suppressor of the entire alert system
+
+`scheduler.py:3405` — `if de_verdict not in ("BUY", "SCALE"):`
+
+Verified by grep: decision-engine returns exactly **BUY / HOLD / SKIP / BLOCKED**. The string
+`"SCALE"` appears **zero times** anywhere in `services/decision-engine/src/`. So the whitelist's
+second entry is dead and the gate reduces to `verdict == "BUY"` — which silently makes **HOLD** a
+rejection. But DE assigns HOLD deliberately as a *near-miss* (score ≥ min_score − 2), i.e.
+exactly the marginal-but-real candidates a whitelist shaped like this was evidently meant to
+admit.
+
+Production, 48h: **4,824** alerts passed the full 5-layer conviction gate → **4,782** rejected by
+DE → **27** fired. Two independently-tuned gates stacked with contradictory bars and nothing
+asserting their intersection is non-empty.
+
+**A framing correction of my own, worth recording**: the raw `signal_alert.skipped` count of
+**61,863** initially read as a runaway per-minute loop. It isn't — `check_signal_alerts()` is
+called from `_run_market_refresh()` (`scheduler.py:527`) on cron refresh bursts, ~240 runs in
+48h ≈ 258 skips/run across all subscribed (symbol, horizon) pairs, dominated by the benign
+`prev == current` no-op. The real finding was *underneath* that number, not the number itself.
+
+### Headline 2: the health page asserts health it cannot verify
+
+Five alert functions make **zero** `_record_job_status()` calls (verified by AWK per function):
+`check_price_alerts`, `check_signal_alerts`, `check_earnings_reactions`,
+`check_earnings_impact_alerts`, `check_macro_reaction_alerts`. `check_top3_conviction` makes 7 —
+the correct pattern exists in the same file.
+
+The health page compounds it: `admin-health.tsx:36` **declares** `price_alert_check` with
+`maxAgeDays: 1`, promising staleness detection it structurally cannot deliver; and both
+`errorCount` and `staleCount` (`:185-186`) filter over jobs that *reported*, so a never-reporting
+job contributes 0 to each and `:213` renders **"All healthy."** A total price-alert outage would
+show green indefinitely. There is no second detection path either — the DQ family derives from
+the same rows.
+
+### Other findings
+
+- **Dedup keys burned before the send** — `check_top3_conviction` sets its 6h key at `:177` then
+  sends at `:180`, so one SMTP hiccup suppresses the alert for 6 hours. Only 2 of 9 alert jobs
+  get this ordering right, despite the correct pattern existing in the same file.
+- **Global `any_sent` flag causes cross-user suppression** — the flag is global across the
+  recipient loop while the sent-marker is per-*event*, so once any one recipient succeeds the
+  remaining users are never retried.
+- **The budget cutoff is a deterministic starve** — both loops iterate a `set`, whose order is
+  fixed *within* a process but varies *across* processes. The same ~80 symbols get zero coverage
+  every cycle until restart, then a different 80. Worst diagnostic shape: it moves on deploy
+  instead of reproducing.
+- **The per-recipient isolation fix never propagated** — AUD256 fixed `send_morning_digest` and
+  `send_premarket_brief`; the other 7 alert loops still lack it. (Mitigating: `send_email()`
+  catches broadly, so plain SMTP failures don't abort — the exposure is *builder*-level errors
+  that run before that guard.)
+- **The guide omits the dominant suppressor** — `alerts-guide.tsx` documents the 5-layer
+  conviction gate accurately but has **zero** mentions of the DE gate that rejects 99.4%.
+
+### The one genuinely strong area, verified rather than assumed
+
+Given Audit #1 established BUY signals lose money on every horizon, I specifically checked
+whether any alert email implies a BUY is likely profitable. **None do.**
+`send_top3_conviction_email` reports the real measured win rate *and* sample count, explicitly
+says "NOT a prediction", and warns that an empty scan means the bar is working. The morning
+digest shows real 30-day win rates with red colouring below 38%. Every builder carries "Not
+financial advice"; ~15 carry explicit "not a prediction" framing. Sign handling is correct
+throughout the email layer.
+
+**This is a deliberate contrast with Audit #1**, where the signal-accuracy *page* was found to
+flatter a losing system. The email layer does not. The Top-3 alert's only defect is *inherited* —
+it gates on a measured win rate computed from the outcome fields Audit #2 corrupts — and the
+email code itself should not be changed.
+
+---
+
+## Audit Series Summary (Tiers 261–266, all 2026-08-05)
+
+Six sequential documentation-only audits, 74 tracker entries total. Recurring themes:
+
+1. **A correct pattern exists in the same file and was not propagated to its siblings.** Seen at
+   least four times: `calibrate_ta_weights` gated but `calibrate_conviction_weights` not (263);
+   `gate_harness`'s promotion margin not applied to the 403-cell grid (263); dedup-after-send in
+   2 of 9 alert jobs (266); per-recipient isolation in 2 of 9 (266).
+2. **Bug-class sweeps declared complete were not.** The delisted-filter sweep covered 10 sites;
+   an 11th was found in the squeeze screener (265).
+3. **Absence of data is repeatedly treated as evidence.** A missing Redis key reads as "the setup
+   faded" (265); a never-reporting job reads as "healthy" (266); zero censored rows read as
+   "censoring works" (261).
+4. **The corrupted `SignalOutcome` writeback (262) propagates furthest** — into entry-gate tuning
+   and ML features (263), and into the Top-3 alert's win-rate gate (266). Fixing it resolves
+   several downstream findings for free, but every `gate_threshold` result then needs re-running.
