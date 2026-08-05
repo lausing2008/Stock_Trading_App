@@ -352,6 +352,9 @@ function FlowTab({ market }: { market: Market }) {
           Rank trajectory compares this week&apos;s sector rank against the snapshot from ~4
           weeks ago — Emerging/Fading track a sector&apos;s rank moving in/out of the top half,
           Established means the rank held steady. Computed weekly (Sunday); US-only for now.
+          A sector newly becoming &ldquo;Emerging Leader&rdquo; also proactively emails your
+          alert-subscribed address with the top stocks in it — no need to check this table
+          yourself every week; see the Alerts Guide for details.
         </div>
         {kscoreRotation ? (
           kscoreEntries.length > 0 ? (

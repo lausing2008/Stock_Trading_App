@@ -50,6 +50,7 @@ from .models import (
     RealtimeNewsItem,
     ResearchReportCache,
     OptionsFlowSnapshot,
+    FundamentalsSnapshot,
 )
 from .session import SessionLocal, engine, get_session, init_db
 
@@ -105,6 +106,7 @@ __all__ = [
     "RealtimeNewsItem",
     "ResearchReportCache",
     "OptionsFlowSnapshot",
+    "FundamentalsSnapshot",
     "SessionLocal",
     "engine",
     "get_session",

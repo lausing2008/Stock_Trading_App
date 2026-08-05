@@ -94,6 +94,20 @@ const USER_ALERTS: AlertRow[] = [
     note: 'The "give me your best picks" alert, built to be genuinely honest: it gates on a stock’s tracked, historical win rate at that exact confidence level (≥70%, at least 30 real past outcomes) — not the model’s raw confidence score. Most days this correctly sends nothing; an empty inbox means the bar is working, not that the feature is broken.',
   },
   {
+    job: 'sector_rotation_alert (part of sector_rotation_weekly)',
+    schedule: 'Sunday 16:00 ET (piggybacks on the existing weekly sector-rotation computation)',
+    scope: 'price-alert',
+    cooldown: 'Fires only on the transition into "Emerging Leader"; re-fires if it later fades and re-emerges',
+    note: 'The opportunity-finding alert, not a risk one: fires when a sector NEWLY becomes an "Emerging Leader" — its K-Score rank among sectors climbing into the top half vs. ~4 weeks ago (same trajectory classification already shown on Reports → Money Flow) — paired with the top 5 US stocks in that sector by K-Score. Reports the measured rank/K-Score trend only, never a claim the sector "will" outperform — cross-check the AI Signal/Confluence Score on any stock listed before acting.',
+  },
+  {
+    job: 'earnings_beat_screener_alert (part of fundamentals_snapshot_weekly)',
+    schedule: 'Sunday 16:30 ET (piggybacks on the existing weekly fundamentals-snapshot computation)',
+    scope: 'price-alert',
+    cooldown: '30 days per (user, symbol, report date) — one alert per genuinely new qualifying beat',
+    note: 'A second opportunity-finding, market-wide scan: stocks with BOTH a real recent earnings beat (surprise_pct > 0, within the last 14 days) AND improving analyst sentiment — recommendation_mean trending down/more-bullish over the trailing 8 weekly snapshots (the SAME already-tracked signal signals.py’s own eps_revision_direction feature uses). Deliberately does NOT claim "rising guidance" — no real forward-guidance/earnings-call-transcript data source exists in this app (see T230-FUNDAMENTALS-EARNINGS-TRANSCRIPT in the Improvements tracker) — improving analyst recommendation is a real, different, honestly-reported proxy.',
+  },
+  {
     job: 'short_squeeze_alert_check',
     schedule: 'Every 1 min',
     scope: 'price-alert',

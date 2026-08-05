@@ -84,7 +84,7 @@ from sqlalchemy.orm import selectinload, Session
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, EarningsEvent, EconomicEvent, Market, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
+from db import AlertCondition, EarningsEvent, EconomicEvent, FundamentalsSnapshot, Market, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -4761,10 +4761,125 @@ def _snapshot_fundamentals() -> None:
         elapsed = time.monotonic() - _t0
         _record_job_status("fundamentals_snapshot", "ok", elapsed)
         log.info("scheduler.fundamentals_snapshot_complete", snapshots=n)
+
+        # AUD-EARNINGS-BEAT-SCREENER: called INLINE right after the snapshot this alert
+        # depends on (analyst-recommendation revision history) is guaranteed fresh — same
+        # "avoid a stale/race-prone re-read from a differently-timed job" reasoning as
+        # check_sector_rotation_alerts()'s own inline call from _compute_sector_rotation().
+        try:
+            check_earnings_beat_screener_alerts()
+        except Exception as exc:
+            log.error("earnings_beat_screener.failed", error=str(exc), exc_info=True)
     except Exception as exc:
         elapsed = time.monotonic() - _t0
         _record_job_status("fundamentals_snapshot", "error", elapsed, str(exc))
         log.error("scheduler.fundamentals_snapshot_failed", error=str(exc))
+
+
+_EARNINGS_BEAT_SCREENER_LOOKBACK_DAYS = 14  # "recent" earnings beat window
+_EARNINGS_BEAT_SCREENER_MIN_SURPRISE_PCT = 0.0  # a real beat, not just "met"
+_EARNINGS_BEAT_SCREENER_MIN_REC_IMPROVEMENT = 0.15  # matches signals.py's own eps_revision_direction threshold
+_EARNINGS_BEAT_SCREENER_TOP_N = 10
+
+
+def check_earnings_beat_screener_alerts() -> None:
+    """AUD-EARNINGS-BEAT-SCREENER: a market-wide, opportunity-finding scan — not a per-stock
+    reminder like check_earnings_reactions()/check_earnings_impact_alerts() above. Finds
+    stocks with BOTH (1) a real, recent earnings beat (EarningsEvent.surprise_pct > 0 within
+    the last _EARNINGS_BEAT_SCREENER_LOOKBACK_DAYS days) AND (2) improving analyst sentiment
+    — recommendation_mean trending down (more bullish) over the trailing 8 weekly
+    fundamentals_snapshot rows, using the EXACT SAME delta/threshold signals.py's own
+    eps_revision_direction feature already uses (never a fresh, second computation of the
+    same concept that could silently drift from it).
+
+    HONEST FRAMING, matching this file's own established discipline for every alert whose data
+    is inherently probabilistic: this deliberately does NOT claim "rising guidance" — no real
+    forward-guidance/earnings-call-transcript data source exists anywhere in this app (see
+    T230-FUNDAMENTALS-EARNINGS-TRANSCRIPT in the Improvements tracker, still todo). Improving
+    analyst recommendation_mean is a real, different, already-tracked proxy for the same
+    underlying idea ("the market's own view of this company is getting more bullish, not just
+    the last quarter's number") — reported as exactly that, not conflated with guidance.
+
+    Fires once per (user, symbol, report_date) — a genuinely new qualifying beat, not a
+    repeat of the same earnings event already reported. Delivered to the same
+    PriceAlert-subscribed audience as every other alert in this file.
+    """
+    try:
+        with SessionLocal() as session:
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            if not recipients:
+                return
+
+            cutoff = datetime.now(timezone.utc) - timedelta(days=_EARNINGS_BEAT_SCREENER_LOOKBACK_DAYS)
+            beat_rows = session.execute(
+                select(EarningsEvent, Stock.symbol, Stock.name)
+                .join(Stock, EarningsEvent.stock_id == Stock.id)
+                .where(
+                    EarningsEvent.report_date >= cutoff,
+                    EarningsEvent.surprise_pct.isnot(None),
+                    EarningsEvent.surprise_pct > _EARNINGS_BEAT_SCREENER_MIN_SURPRISE_PCT,
+                    Stock.active.is_(True), Stock.delisted.is_(False),
+                )
+                .order_by(EarningsEvent.surprise_pct.desc())
+            ).all()
+            if not beat_rows:
+                return
+
+            _rc = _get_redis()
+            candidates: list[dict] = []
+            for event, symbol, name in beat_rows:
+                snaps = session.execute(
+                    select(FundamentalsSnapshot.recommendation_mean)
+                    .where(FundamentalsSnapshot.symbol == symbol)
+                    .order_by(FundamentalsSnapshot.snapshot_date.desc())
+                    .limit(8)
+                ).all()
+                if len(snaps) < 2 or snaps[0][0] is None or snaps[-1][0] is None:
+                    continue
+                rec_delta = float(snaps[-1][0]) - float(snaps[0][0])  # old - recent; positive = upgraded
+                if rec_delta <= _EARNINGS_BEAT_SCREENER_MIN_REC_IMPROVEMENT:
+                    continue
+                candidates.append({
+                    "symbol": symbol,
+                    "name": name,
+                    "report_date": event.report_date.isoformat(),
+                    "surprise_pct": round(float(event.surprise_pct), 1),
+                    "revenue_surprise_pct": round(float(event.revenue_surprise_pct), 1) if event.revenue_surprise_pct is not None else None,
+                    "rec_mean_improvement": round(rec_delta, 2),
+                })
+
+            if not candidates:
+                return
+            candidates.sort(key=lambda c: c["surprise_pct"], reverse=True)
+            candidates = candidates[:_EARNINGS_BEAT_SCREENER_TOP_N]
+
+            from .email_service import send_earnings_beat_screener_email
+            sent = 0
+            for uid, user in recipients.items():
+                new_candidates = []
+                for c in candidates:
+                    dedup_key = f"stockai:earnings_beat_screener:{uid}:{c['symbol']}:{c['report_date']}"
+                    try:
+                        if _rc.exists(dedup_key):
+                            continue
+                    except Exception:
+                        pass
+                    new_candidates.append((c, dedup_key))
+                if not new_candidates:
+                    continue
+                if send_earnings_beat_screener_email(user.email, [c for c, _ in new_candidates]):
+                    sent += 1
+                    for _c, dedup_key in new_candidates:
+                        try:
+                            _rc.setex(dedup_key, 30 * 86400, "1")
+                        except Exception:
+                            pass
+            log.info("earnings_beat_screener.done", candidates=len(candidates), sent=sent, recipients=len(recipients))
+    except Exception as exc:
+        log.error("earnings_beat_screener.symbol_error", error=str(exc), exc_info=True)
 
 
 def _run_watchlist_auto_rotation() -> None:
@@ -5039,10 +5154,109 @@ def _compute_sector_rotation() -> None:
         elapsed = time.monotonic() - _t0
         _record_job_status("sector_rotation", "ok", elapsed)
         log.info("scheduler.sector_rotation_complete", sectors=len(rotation))
+
+        # AUD-SECTOR-EMERGING-ALERT: check_sector_rotation_alerts() is called INLINE here,
+        # right after `rotation` is built, rather than as a separate scheduled job — this
+        # guarantees it always reads the SAME fresh rotation dict this run just computed,
+        # never a stale/race-prone re-read of the Redis cache from a differently-timed job.
+        try:
+            check_sector_rotation_alerts(rotation)
+        except Exception as exc:
+            log.error("sector_rotation_alert.failed", error=str(exc), exc_info=True)
     except Exception as exc:
         elapsed = time.monotonic() - _t0
         _record_job_status("sector_rotation", "error", elapsed, str(exc))
         log.error("scheduler.sector_rotation_failed", error=str(exc))
+
+
+_SECTOR_ROTATION_ALERT_TOP_N = 5  # top-N US stocks by K-Score shown per newly-emerging sector
+
+
+def check_sector_rotation_alerts(rotation: dict[str, dict]) -> None:
+    """AUD-SECTOR-EMERGING-ALERT: fires when a sector NEWLY becomes an "Emerging Leader" this
+    week — a real state TRANSITION (matching every other alert in this file's own "only email
+    on the transition" convention), not every week a sector happens to already be one. Reuses
+    the SAME `trajectory` classification _compute_sector_rotation() already computes (see
+    sector_trajectory.py) — no new classification logic, this is purely a NEW use of already-
+    computed data that previously had no proactive delivery mechanism at all.
+
+    Distinct from every other alert in this file: this finds an OPPORTUNITY (a sector turning),
+    not a risk/exit condition — the point is "look here for new candidates," paired with the
+    top _SECTOR_ROTATION_ALERT_TOP_N US stocks in that sector by K-Score, so the email is
+    directly actionable rather than just naming a sector.
+
+    Delivered to the same PriceAlert-subscribed audience as every other alert in this file
+    (v1 scope-narrowing convention). Dedup: a plain Redis SET diff against last week's set of
+    "currently Emerging Leader" sectors — a sector that stays Emerging Leader for 2+ weeks in a
+    row only alerts on the FIRST week it turned; one that fades and later re-emerges alerts
+    again (a real, second opportunity, not a repeat).
+    """
+    try:
+        emerging = {
+            sector for sector, data in rotation.items()
+            if data.get("trajectory") == "Emerging Leader"
+        }
+        _rc = _get_redis()
+        state_key = "stockai:sector_rotation_emerging_prev"
+        try:
+            prev_emerging = set(_rc.smembers(state_key) or set())
+        except Exception:
+            prev_emerging = set()
+        newly_emerging = sorted(emerging - prev_emerging)
+
+        # Always resync the tracked set, regardless of whether anything newly emerged this
+        # week — a sector that fades out must be removed so it correctly re-alerts if it
+        # later re-emerges, matching check_short_squeeze_alerts()'s own resync pattern.
+        try:
+            _rc.delete(state_key)
+            if emerging:
+                _rc.sadd(state_key, *emerging)
+            _rc.expire(state_key, 10 * 86400)  # generous — this is a weekly job
+        except Exception:
+            pass
+
+        if not newly_emerging:
+            return
+
+        with SessionLocal() as session:
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            if not recipients:
+                return
+
+            candidates: list[dict] = []
+            for sector in newly_emerging:
+                top_rows = session.execute(
+                    select(Stock.symbol, Stock.name, Ranking.score)
+                    .join(Ranking, Ranking.stock_id == Stock.id)
+                    .where(
+                        Stock.sector == sector, Stock.market == Market.US,
+                        Stock.active.is_(True), Stock.delisted.is_(False),
+                        Ranking.as_of >= datetime.now(timezone.utc) - timedelta(days=14),
+                    )
+                    .order_by(Ranking.score.desc())
+                    .limit(_SECTOR_ROTATION_ALERT_TOP_N)
+                ).all()
+                candidates.append({
+                    "sector": sector,
+                    "delta": rotation.get(sector, {}).get("delta"),
+                    "rank": rotation.get(sector, {}).get("rank"),
+                    "top_stocks": [
+                        {"symbol": r.symbol, "name": r.name, "k_score": round(float(r.score), 1)}
+                        for r in top_rows
+                    ],
+                })
+
+            from .email_service import send_sector_rotation_email
+            sent = 0
+            for uid, user in recipients.items():
+                if send_sector_rotation_email(user.email, candidates):
+                    sent += 1
+            log.info("sector_rotation_alert.done", sectors=len(candidates), sent=sent, recipients=len(recipients))
+    except Exception as exc:
+        log.error("sector_rotation_alert.symbol_error", error=str(exc), exc_info=True)
 
 
 def _purge_old_data() -> None:

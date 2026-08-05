@@ -1405,6 +1405,119 @@ def send_squeeze_watch_revert_email(
     return send_email(to, subject, body_html, body_text)
 
 
+def send_sector_rotation_email(to: str, candidates: list[dict]) -> bool:
+    """AUD-SECTOR-EMERGING-ALERT: fires when a sector NEWLY becomes an "Emerging Leader" this
+    week (its K-Score rank among sectors is climbing into the top half) — an OPPORTUNITY-finding
+    alert, not a risk/exit one: the point is "here's a sector turning, and the top stocks in it
+    right now." Each dict: {sector, delta (K-Score point change vs ~4 weeks ago, may be None),
+    rank (this week's rank among sectors, may be None), top_stocks: [{symbol, name, k_score}]}.
+
+    Deliberately reports the MEASURED rank/K-Score trajectory, never a claim that the sector
+    "will" outperform — sector rotation is a real, tracked signal (see sector_trajectory.py),
+    but still a probabilistic tailwind, not a guarantee any specific stock in it performs well.
+    """
+    n = len(candidates)
+    subject = f"📈 Sector Rotation — {n} sector{'s' if n != 1 else ''} newly emerging"
+
+    rows_html = ""
+    rows_text = ""
+    for c in candidates:
+        sector = c["sector"]
+        delta = c.get("delta")
+        rank = c.get("rank")
+        delta_str = f"+{delta:.1f} pts" if delta is not None else "—"
+        rank_str = f"#{rank}" if rank is not None else "—"
+        stocks_html = "".join(
+            f'<span style="display:inline-block;margin:3px 6px 0 0;padding:2px 8px;border-radius:4px;background:#f1f5f9;font-size:11px;font-weight:700;color:#1e293b">{s["symbol"]} ({s["k_score"]:.0f})</span>'
+            for s in c.get("top_stocks", [])
+        )
+        stocks_text = ", ".join(f'{s["symbol"]} ({s["k_score"]:.0f})' for s in c.get("top_stocks", []))
+        rows_html += (
+            f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
+            f'<strong style="font-size:14px">{sector}</strong>'
+            f'<span style="font-size:12px;color:#22c55e;font-weight:700">{rank_str} · {delta_str}</span>'
+            f'</div>'
+            f'<div style="margin-top:6px">{stocks_html or "<span style=\'font-size:11px;color:#94a3b8\'>No top-K-Score stocks available this week</span>"}</div>'
+            f'</div>'
+        )
+        rows_text += f"  {sector}: rank {rank_str}, {delta_str} vs 4wks ago — {stocks_text or 'no candidates'}\n"
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:520px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:#22c55e">📈 Sector Rotation — Newly Emerging</h2>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} sector{'s' if n != 1 else ''} just moved into the top half of K-Score momentum among all sectors.</p>
+    <div style="margin-top:12px">{rows_html}</div>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      Rank/delta are a MEASURED weekly K-Score comparison — a real, tracked tailwind for stocks
+      in this sector, not a guarantee any specific one performs well. Cross-check the AI Signal
+      and Confluence Score for any stock listed before acting. Not financial advice.
+    </p>
+  </div>
+</body></html>"""
+    body_text = (
+        f"Sector Rotation — {n} sector{'s' if n != 1 else ''} newly emerging\n\n"
+        + rows_text
+        + "\nMeasured weekly K-Score trend, not a guarantee. Cross-check AI Signal/Confluence Score. Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
+def send_earnings_beat_screener_email(to: str, candidates: list[dict]) -> bool:
+    """AUD-EARNINGS-BEAT-SCREENER: a market-wide, opportunity-finding scan — stocks with BOTH a
+    real recent earnings beat AND improving analyst sentiment (recommendation_mean trending
+    down/more-bullish over the trailing 8 weekly snapshots). Each dict: {symbol, name,
+    report_date, surprise_pct, revenue_surprise_pct (optional), rec_mean_improvement}.
+
+    Deliberately does NOT say "rising guidance" — no real forward-guidance/earnings-call-
+    transcript data source exists anywhere in this app. rec_mean_improvement is a real,
+    different, already-tracked proxy (analyst recommendation trending more bullish), reported
+    as exactly that.
+    """
+    n = len(candidates)
+    subject = f"🎯 Earnings Beat + Improving Sentiment — {n} stock{'s' if n != 1 else ''}"
+
+    rows_html = ""
+    rows_text = ""
+    for c in candidates:
+        sym = c["symbol"]
+        surprise = c["surprise_pct"]
+        rev_surprise = c.get("revenue_surprise_pct")
+        rev_str = f", revenue +{rev_surprise:.1f}%" if rev_surprise is not None else ""
+        rec_imp = c["rec_mean_improvement"]
+        rows_html += (
+            f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
+            f'<strong style="font-size:14px">{sym}</strong>'
+            f'<span style="font-size:12px;color:#22c55e;font-weight:700">EPS +{surprise:.1f}%</span>'
+            f'</div>'
+            f'<div style="font-size:12px;color:#64748b;margin-top:2px">{c.get("name", sym)}{rev_str} · reported {c["report_date"]}</div>'
+            f'<div style="font-size:11px;color:#38bdf8;margin-top:2px">Analyst recommendation improved {rec_imp:.2f} pts (8-week trend)</div>'
+            f'</div>'
+        )
+        rows_text += f"  {sym}: EPS beat +{surprise:.1f}%{rev_str}, reported {c['report_date']}, analyst rec improved {rec_imp:.2f} pts\n"
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:520px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:#22c55e">🎯 Earnings Beat + Improving Sentiment</h2>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} stock{'s' if n != 1 else ''} just beat earnings estimates AND have analysts turning more bullish over the past 8 weeks.</p>
+    <div style="margin-top:12px">{rows_html}</div>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      Both signals are MEASURED, historical facts — a real reported EPS beat and a real trend
+      in analyst recommendations — not a claim about future guidance (this app has no earnings-
+      call-transcript data source). Cross-check the AI Signal and Confluence Score before
+      acting. Not financial advice.
+    </p>
+  </div>
+</body></html>"""
+    body_text = (
+        f"Earnings Beat + Improving Sentiment — {n} stock{'s' if n != 1 else ''}\n\n"
+        + rows_text
+        + "\nMeasured facts, not a guidance claim. Cross-check AI Signal/Confluence Score. Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_top3_conviction_email(to: str, picks: list[dict]) -> bool:
     """T257-TOP3-CONVICTION-ALERT: up to 3 picks, each gated on a MEASURED historical win
     rate (not raw model confidence) — the email's whole point is to make that accuracy claim
