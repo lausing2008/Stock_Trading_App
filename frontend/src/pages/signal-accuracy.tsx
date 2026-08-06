@@ -4,10 +4,24 @@
  *
  * Data source: GET /signals/accuracy?lookback_days=N (signal-engine service).
  * For each persisted BUY or SELL signal, the backend joins the close price on
- * the signal date to the close price ~5 trading days later and checks:
+ * the signal date to the MOST RECENT AVAILABLE close price (mark-to-today, not
+ * a fixed N-day hold) and checks:
  *   BUY correct  → exit price > entry price
  *   SELL correct → exit price < entry price
- * Only signals at least 7 days old are included (needs time to settle).
+ * A signal only needs 1 day of price history after its own signal date to be
+ * evaluated — so a signal's actual hold length is however many days have
+ * elapsed since it fired, anywhere from 1 day up to the full lookback window.
+ * See hold_days_buy / hold_days_sell in the response for the real distribution
+ * (min/median/max days held) behind Avg BUY/SELL Return below.
+ *
+ * AUD261-ACCURACY-MARKTOTODAY-MISLABELED-5DAY (fixed 2026-08-06): this page
+ * previously labeled the return figures "5-day", which was never true — the
+ * backend has always measured mark-to-today. Relabeled honestly rather than
+ * switching to a real fixed-5-day window, since return_5d/is_correct_5d live
+ * on a DIFFERENT table (SignalOutcome, populated by evaluate_signal_outcomes)
+ * that this endpoint's own Signal+Price query doesn't join against — doing so
+ * safely would be a materially larger, riskier rewrite of this endpoint's
+ * query structure than a one-line honesty fix.
  *
  * How to read the stats
  * ─────────────────────
@@ -15,11 +29,17 @@
  *                      > 50% beats a coin flip; > 60% indicates real signal value.
  * BUY / SELL Accuracy — accuracy split by signal type. Often one direction is
  *                       more reliable than the other.
- * Avg BUY Return     — average price change 5 days after a BUY signal.
- *                      Positive = signals are calling entries at the right time.
- * Avg SELL Return    — shown as the decline after a SELL signal.
- * Profit Factor      — total gain from correct signals ÷ total loss from wrong
- *                      ones. Above 1.5 = good; below 1.0 = signals losing money.
+ * Avg BUY Return     — average price change from entry to TODAY after a BUY
+ *                      signal (variable hold — see hold_days_buy for the real
+ *                      min/median/max days held). Positive = signals are
+ *                      calling entries at the right time.
+ * Avg SELL Return    — shown as the decline after a SELL signal, same
+ *                      variable-hold caveat (see hold_days_sell).
+ * Profit Factor      — total real signed gain from winning signals ÷ total
+ *                      real signed loss from losing signals (SELL wins are
+ *                      counted as real gains, not by abs() magnitude keyed on
+ *                      the correct/incorrect label). Above 1.5 = good; below
+ *                      1.0 = signals losing money.
  *
  * Accuracy bar
  * ────────────
@@ -1640,9 +1660,22 @@ export default function SignalAccuracyPage() {
           {statCard('Overall Accuracy', acc(data.overall_accuracy), `${data.total_signals} signals evaluated`, overallColor)}
           {statCard('BUY Accuracy', acc(data.buy_accuracy), `${data.buy_count} BUY signals`, data.buy_accuracy != null && data.buy_accuracy >= 55 ? '#4ade80' : '#f87171')}
           {statCard('SELL Accuracy', acc(data.sell_accuracy), `${data.sell_count} SELL signals`, data.sell_accuracy != null && data.sell_accuracy >= 55 ? '#4ade80' : '#f87171')}
-          {statCard('Avg BUY Return', pct(data.avg_buy_return_pct), '5-day avg after BUY', data.avg_buy_return_pct != null && data.avg_buy_return_pct > 0 ? '#4ade80' : '#f87171')}
-          {statCard('Avg SELL Return', pct(data.avg_sell_return_pct != null ? -data.avg_sell_return_pct : null), '5-day decline after SELL', data.avg_sell_return_pct != null && data.avg_sell_return_pct < 0 ? '#4ade80' : '#f87171')}
-          {statCard('Profit Factor', data.profit_factor != null ? data.profit_factor.toFixed(2) : '—', 'wins / losses magnitude', data.profit_factor != null && data.profit_factor >= 1.5 ? '#4ade80' : '#facc15')}
+          {statCard(
+            'Avg BUY Return',
+            pct(data.avg_buy_return_pct),
+            /* AUD261-ACCURACY-MARKTOTODAY-MISLABELED-5DAY: this is a mark-to-today figure over
+               a variable hold, never a fixed 5-day return — labeled honestly, with the real
+               median hold length shown instead of a false "5-day" claim. */
+            data.hold_days_buy ? `entry to today, median ${data.hold_days_buy.median}d held (${data.hold_days_buy.min}–${data.hold_days_buy.max}d range)` : 'entry to today (variable hold)',
+            data.avg_buy_return_pct != null && data.avg_buy_return_pct > 0 ? '#4ade80' : '#f87171',
+          )}
+          {statCard(
+            'Avg SELL Return',
+            pct(data.avg_sell_return_pct != null ? -data.avg_sell_return_pct : null),
+            data.hold_days_sell ? `entry to today, median ${data.hold_days_sell.median}d held (${data.hold_days_sell.min}–${data.hold_days_sell.max}d range)` : 'entry to today (variable hold)',
+            data.avg_sell_return_pct != null && data.avg_sell_return_pct < 0 ? '#4ade80' : '#f87171',
+          )}
+          {statCard('Profit Factor', data.profit_factor != null ? data.profit_factor.toFixed(2) : '—', 'real signed gain ÷ real signed loss', data.profit_factor != null && data.profit_factor >= 1.5 ? '#4ade80' : '#facc15')}
         </div>
       )}
 

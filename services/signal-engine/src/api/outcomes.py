@@ -203,7 +203,8 @@ def signal_accuracy(
         return {"lookback_days": lookback_days, "total_signals": 0, "buy_count": 0,
                 "sell_count": 0, "buy_accuracy": None, "sell_accuracy": None,
                 "overall_accuracy": None, "avg_buy_return_pct": None,
-                "avg_sell_return_pct": None, "profit_factor": None, "signals": []}
+                "avg_sell_return_pct": None, "hold_days_buy": None, "hold_days_sell": None,
+                "profit_factor": None, "signals": []}
 
     stock_ids = list({sig.stock_id for sig, _, _ in rows})
 
@@ -305,11 +306,38 @@ def signal_accuracy(
     def _avg_return(items: list) -> float | None:
         return round(sum(i["pct_change"] for i in items) / len(items), 2) if items else None
 
+    def _hold_days_summary(items: list) -> dict | None:
+        """AUD261-ACCURACY-MARKTOTODAY-MISLABELED-5DAY: exit_close is mark-to-TODAY (see
+        most_recent_close() above), not a fixed N-day forward close — an 89-day-old signal is
+        held 89 days, a 2-day-old signal 2 days, all pooled into avg_buy_return_pct/
+        avg_sell_return_pct as if they were the same horizon. Surfacing the real hold-days
+        distribution lets a caller/reader see how variable that hold actually was, instead of
+        trusting a mislabeled "5-day" figure. Median (not mean) since a handful of very old
+        signals would otherwise skew the mean upward on its own."""
+        if not items:
+            return None
+        days = sorted(i["days_held"] for i in items)
+        n = len(days)
+        median = days[n // 2] if n % 2 else (days[n // 2 - 1] + days[n // 2]) / 2
+        return {"min": days[0], "median": median, "max": days[-1]}
+
+    def _signed_pct_change(item: dict) -> float:
+        # AUD261-PROFITFACTOR-ABS-DECOUPLED: a SELL "wins" on a NEGATIVE pct_change (price
+        # fell) — matching _signed_return()'s convention above for SignalOutcome.pct_return,
+        # applied here to this endpoint's own independently-computed pct_change.
+        return -item["pct_change"] if item["signal"] == "SELL" else item["pct_change"]
+
     def _profit_factor(items: list) -> float | None:
-        # Use abs() so correct SELL signals (negative pct_change) count as gains,
-        # not as losses — profit factor measures magnitude of wins vs losses.
-        wins   = sum(abs(i["pct_change"]) for i in items if i["correct"])
-        losses = sum(abs(i["pct_change"]) for i in items if not i["correct"])
+        # AUD261-PROFITFACTOR-ABS-DECOUPLED: previously bucketed abs(pct_change) by the
+        # `correct` label — decoupling magnitude from real P&L direction, so a batch of
+        # high-magnitude correct calls and low-magnitude wrong calls could show PF > 1.5 (the
+        # "good" threshold) while the same rows average a real loss per trade. Now computed
+        # directly from signed real return: positive signed values are real gains (wins),
+        # negative are real losses — this makes PF agree with avg_return_pct by construction,
+        # rather than the two being able to silently disagree.
+        signed = [_signed_pct_change(i) for i in items]
+        wins   = sum(v for v in signed if v > 0)
+        losses = sum(-v for v in signed if v < 0)
         return round(wins / losses, 2) if losses > 0 else None
 
     offset = (page - 1) * page_size
@@ -325,6 +353,8 @@ def signal_accuracy(
         "overall_accuracy": _accuracy(results),
         "avg_buy_return_pct": _avg_return(buy_r),
         "avg_sell_return_pct": _avg_return(sell_r),
+        "hold_days_buy": _hold_days_summary(buy_r),
+        "hold_days_sell": _hold_days_summary(sell_r),
         "profit_factor": _profit_factor(results),
         "page": page,
         "page_size": page_size,
@@ -1342,6 +1372,29 @@ def _wf_benchmark(symbol: str, start: date, windows: list[dict]) -> dict | None:
         return None
 
 
+def _signed_return(pct_return: float | None, signal_direction: str) -> float | None:
+    """AUD261-OUTCOMESSUMMARY-UNSIGNED-SELL: pct_return (and return_5d/10d/20d, which share
+    the identical raw (price - entry_price) / entry_price convention — see _window_return()
+    above) is stored UNSIGNED. A SELL "wins" on a NEGATIVE raw return (is_correct = ret <
+    -hurdle, per evaluate_signal_outcomes/_window_return), so averaging a SELL row's raw
+    value alongside a BUY row's raw value pools two OPPOSITE sign conventions into one
+    meaningless number — a SELL that lost money (positive raw return) gets counted as a gain.
+
+    This is the exact same sign-mix bug BUG233-RETROEV-SIGNMIX already fixed in
+    _retro_ev_for() above, and the same convention outcomes_calibrate_apply/tune_sell_pillars
+    (calibration.py) already use — this is the one function-level place outcomes_summary()'s
+    8 separate aggregates (overall, by_confidence_band, by_horizon, by_market, by_market_
+    regime, by_research_alignment, by_symbol, by_window) can all call instead of each
+    independently inlining `-pct_return if signal_direction == "SELL" else pct_return`.
+    by_direction is unaffected — it already filters direction before averaging, so it never
+    needed this.
+
+    Returns None unchanged (a missing return must never sign-flip to 0.0 or crash)."""
+    if pct_return is None:
+        return None
+    return -pct_return if signal_direction == "SELL" else pct_return
+
+
 @router.get("/outcomes/summary")
 def outcomes_summary(
     horizon: str | None = Query(None, description="SHORT | SWING | LONG"),
@@ -1403,7 +1456,7 @@ def outcomes_summary(
 
     # Overall stats
     wins = [o for o in outcomes if o.is_correct]
-    returns = [o.pct_return for o in outcomes if o.pct_return is not None]
+    returns = [_signed_return(o.pct_return, o.signal_direction) for o in outcomes if o.pct_return is not None]
 
     # By confidence band
     bands = [
@@ -1419,7 +1472,7 @@ def outcomes_summary(
         if not bucket:
             continue
         bucket_wins = sum(1 for o in bucket if o.is_correct)
-        bucket_returns = [o.pct_return for o in bucket if o.pct_return is not None]
+        bucket_returns = [_signed_return(o.pct_return, o.signal_direction) for o in bucket if o.pct_return is not None]
         band_stats.append({
             "band": label,
             "count": len(bucket),
@@ -1433,7 +1486,7 @@ def outcomes_summary(
         hbucket = [o for o in outcomes if o.horizon.value == h]
         if not hbucket:
             continue
-        hreturns = [o.pct_return for o in hbucket if o.pct_return is not None]
+        hreturns = [_signed_return(o.pct_return, o.signal_direction) for o in hbucket if o.pct_return is not None]
         horizon_stats[h] = {
             "count": len(hbucket),
             "win_rate": round(sum(1 for o in hbucket if o.is_correct) / len(hbucket), 3),
@@ -1450,7 +1503,7 @@ def outcomes_summary(
         if o.is_correct:
             regime_stats[reg]["wins"] += 1
         if o.pct_return is not None:
-            regime_stats[reg]["returns"].append(o.pct_return)
+            regime_stats[reg]["returns"].append(_signed_return(o.pct_return, o.signal_direction))
     regime_summary = {
         reg: {
             "count": v["count"],
@@ -1484,7 +1537,7 @@ def outcomes_summary(
         if o.is_correct:
             research_groups[grp]["wins"] += 1
         if o.pct_return is not None:
-            research_groups[grp]["returns"].append(o.pct_return)
+            research_groups[grp]["returns"].append(_signed_return(o.pct_return, o.signal_direction))
 
     research_summary = {
         grp: {
@@ -1497,13 +1550,19 @@ def outcomes_summary(
     }
 
     # Multi-window win rates (INT-8)
+    # AUD261-OUTCOMESSUMMARY-UNSIGNED-SELL: return_5d/10d/20d share pct_return's exact raw
+    # (price - entry_price) / entry_price convention (see _window_return() in
+    # evaluate_signal_outcomes above), so they need the same sign correction via
+    # _signed_return() — a bare getattr(o, attr_return) pooled BUY+SELL unsigned here too.
     def _window_stats(outcomes, attr_correct, attr_return):
-        vals = [(getattr(o, attr_correct), getattr(o, attr_return)) for o in outcomes
-                if getattr(o, attr_correct) is not None]
+        vals = [
+            (getattr(o, attr_correct), getattr(o, attr_return), o.signal_direction)
+            for o in outcomes if getattr(o, attr_correct) is not None
+        ]
         if not vals:
             return None
-        wr = sum(1 for c, _ in vals if c) / len(vals)
-        rets = [r for _, r in vals if r is not None]
+        wr = sum(1 for c, _, _ in vals if c) / len(vals)
+        rets = [_signed_return(r, d) for _, r, d in vals if r is not None]
         return {
             "count": len(vals),
             "win_rate": round(wr, 3),
@@ -1523,13 +1582,23 @@ def outcomes_summary(
     # different numbers for the same nominal horizon+direction slice; `reliable` flags when
     # this bucket's n would NOT clear the calibration gate, so a consumer doesn't mistake a
     # tiny-n diagnostic number for the same reliability as the gated one.
+    #
+    # AUD261-OUTCOMESSUMMARY-UNSIGNED-SELL: this bucket never MIXES BUY+SELL (each key is a
+    # single direction), so it was never subject to the pooling bug the other 7 aggregates had
+    # — but its displayed avg_return_pct was still the RAW unsigned value, meaning a losing
+    # SELL (price rose, positive raw return) displayed as a positive/green number, and a
+    # winning SELL (price fell, negative raw return) displayed as negative/red — the opposite
+    # of what "Avg Ret" should mean to a reader. _signed_return() here makes this field consistent
+    # with every other avg_return_pct this endpoint returns: positive always means "this
+    # direction made money", matching the precedent already established in signal-accuracy.tsx's
+    # own top-level "Avg SELL Return" stat card (`-data.avg_sell_return_pct`).
     direction_stats: dict = {}
     for h in ("SHORT", "SWING", "LONG", "GROWTH"):
         for direction in ("BUY", "SELL"):
             bucket = [o for o in outcomes if o.horizon.value == h and o.signal_direction == direction]
             if not bucket:
                 continue
-            bucket_returns = [o.pct_return for o in bucket if o.pct_return is not None]
+            bucket_returns = [_signed_return(o.pct_return, o.signal_direction) for o in bucket if o.pct_return is not None]
             direction_stats[f"{h}/{direction}"] = {
                 "count": len(bucket),
                 "win_rate": round(sum(1 for o in bucket if o.is_correct) / len(bucket), 3),
@@ -1555,7 +1624,7 @@ def outcomes_summary(
         if o.is_correct:
             market_stats[mkt]["wins"] += 1
         if o.pct_return is not None:
-            market_stats[mkt]["returns"].append(o.pct_return)
+            market_stats[mkt]["returns"].append(_signed_return(o.pct_return, o.signal_direction))
     by_market = {
         mkt: {
             "count": v["count"],
@@ -1587,7 +1656,7 @@ def outcomes_summary(
         if o.is_correct:
             sym_groups[sym]["wins"] += 1
         if o.pct_return is not None:
-            sym_groups[sym]["returns"].append(o.pct_return)
+            sym_groups[sym]["returns"].append(_signed_return(o.pct_return, o.signal_direction))
 
     by_symbol = sorted(
         [
