@@ -3402,7 +3402,15 @@ def check_signal_alerts() -> None:
                         )
                         if de_r.status_code == 200:
                             de_verdict = de_r.json().get("verdict", "SKIP")
-                            if de_verdict not in ("BUY", "SCALE"):
+                            # AUD266-DE-GATE-WHITELISTS-NONEXISTENT-SCALE-VERDICT: decision-engine
+                            # only ever returns BUY/HOLD/SKIP/BLOCKED — "SCALE" was dead (grep: 0
+                            # occurrences), so this gate had silently reduced to BUY-only, making
+                            # DE's HOLD (a deliberate near-miss verdict, score >= min_score - 2)
+                            # a rejection. Admitting HOLD restores alerts on marginal-but-real
+                            # candidates, matching what this whitelist's shape always implied was
+                            # intended. Production: 4,824 alerts passed the 5-layer conviction
+                            # gate in 48h, 4,782 were rejected here, only 27 fired.
+                            if de_verdict not in ("BUY", "HOLD"):
                                 log.info(
                                     "signal_alert.skipped_de_gate",
                                     symbol=alert.symbol,
