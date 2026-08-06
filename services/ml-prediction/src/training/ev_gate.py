@@ -45,21 +45,67 @@ REFERENCE_PROB_THRESHOLD = 0.60
 # style (gate_harness.py's MIN_SAMPLES_PER_SPLIT=15) rather than inventing a new number.
 MIN_HOLDOUT_SIGNALED_ROWS = 10
 
+# AUD263-EVGATE-NO-DIRECTION-CHECK: the gate previously only compared candidate EV to the
+# BASELINE MODEL's EV on the same holdout — it never verified that a high predicted
+# probability actually correlates with a POSITIVE return at all. An inverted model (high
+# probability exactly where forward returns are negative) could still "win" by being
+# less-inverted than an equally-bad baseline, and both would clear a bare `ev_lift > 0` check.
+# A win rate floor among signaled rows gives the gate a real, absolute notion of "does this
+# probability threshold actually pick winners more than half the time" — independent of
+# whatever the baseline happens to do. 0.50 is deliberately the loosest defensible floor (a
+# coin-flip); this is a sanity check against inversion, not a quality bar on its own — EV lift
+# vs. baseline and vs. the unconditional mean are what enforce quality.
+MIN_HOLDOUT_WIN_RATE = 0.50
+
 
 def compute_holdout_ev(probs: np.ndarray, y_ret: np.ndarray, threshold: float = REFERENCE_PROB_THRESHOLD) -> dict:
     """Given holdout predicted probabilities and their real forward returns, compute the mean
-    forward return among rows that would have been signaled (prob >= threshold).
+    forward return among rows that would have been signaled (prob >= threshold), plus the win
+    rate (fraction of those signaled rows with a positive forward return).
 
-    Returns {"ev_pct": float | None, "n": int}. ev_pct is None when fewer than
-    MIN_HOLDOUT_SIGNALED_ROWS rows cross the threshold — not a real 0.0, an unmeasurable value.
+    Returns {"ev_pct": float | None, "n": int, "win_rate": float | None}. ev_pct/win_rate are
+    None when fewer than MIN_HOLDOUT_SIGNALED_ROWS rows cross the threshold — not a real 0.0,
+    an unmeasurable value.
     """
     probs = np.asarray(probs)
     y_ret = np.asarray(y_ret)
     signaled = probs >= threshold
     n = int(signaled.sum())
     if n < MIN_HOLDOUT_SIGNALED_ROWS:
-        return {"ev_pct": None, "n": n}
-    return {"ev_pct": float(np.mean(y_ret[signaled]) * 100.0), "n": n}
+        return {"ev_pct": None, "n": n, "win_rate": None}
+    signaled_rets = y_ret[signaled]
+    return {
+        "ev_pct": float(np.mean(signaled_rets) * 100.0),
+        "n": n,
+        "win_rate": float(np.mean(signaled_rets > 0)),
+    }
+
+
+def _direction_check_failures(candidate_ev: dict, y_ret_holdout: np.ndarray) -> list[str]:
+    """AUD263-EVGATE-NO-DIRECTION-CHECK: applied on EVERY promotion path (first-ever-tune,
+    baseline-unmeasurable, and the head-to-head comparison below) — none of the gate's 3
+    promotion branches previously verified that a high predicted probability actually
+    correlates with a POSITIVE return at all, only that the candidate beat SOME reference
+    (or had nothing to beat). An inverted model could clear every existing check.
+
+    Two checks, both cheap and already-available from data the gate already computed:
+    (1) the candidate's signaled-row EV must beat the UNCONDITIONAL holdout mean return — a
+        model that only matches "what happens on average regardless of the signal" (or does
+        worse) has no real edge, whatever the baseline comparison says.
+    (2) the candidate's win rate among signaled rows must clear MIN_HOLDOUT_WIN_RATE — a
+        coin-flip-or-worse hit rate is itself evidence of no real directional edge (or
+        inversion), independent of any EV-lift comparison.
+    """
+    failures: list[str] = []
+    unconditional_mean_pct = float(np.mean(np.asarray(y_ret_holdout)) * 100.0)
+    if candidate_ev["ev_pct"] <= unconditional_mean_pct:
+        failures.append(
+            f"candidate_ev_below_unconditional_mean:candidate={candidate_ev['ev_pct']:.4f}pp,"
+            f"unconditional={unconditional_mean_pct:.4f}pp"
+        )
+    if candidate_ev["win_rate"] < MIN_HOLDOUT_WIN_RATE:
+        failures.append(f"candidate_win_rate_below_floor:{candidate_ev['win_rate']:.4f}")
+    return failures
 
 
 def evaluate_candidate_ev(
@@ -75,43 +121,59 @@ def evaluate_candidate_ev(
     baseline_probs=None means no live model/params exist yet for this symbol (first-ever tune)
     — there is nothing to beat, so the candidate is promoted automatically (matches
     tune_symbol()'s own pre-existing behavior of always persisting on a first tune) and
-    gate_failures records this explicitly rather than silently treating it as a pass.
+    gate_failures records this explicitly rather than silently treating it as a pass. Even on
+    this "nothing to beat" path, the candidate must still clear _direction_check_failures — a
+    first-ever tune is not exempt from the inversion check.
 
-    Returns a dict with candidate_ev, baseline_ev (each {"ev_pct", "n"} or None), promoted
-    (bool), and gate_failures (list[str]).
+    Returns a dict with candidate_ev, baseline_ev (each {"ev_pct", "n", "win_rate"} or None),
+    promoted (bool), and gate_failures (list[str]).
     """
     candidate_ev = compute_holdout_ev(candidate_probs, y_ret_holdout, threshold)
     gate_failures: list[str] = []
-
-    if baseline_probs is None:
-        gate_failures.append("no_baseline_params:first_tune_for_symbol")
-        return {
-            "candidate_ev": candidate_ev,
-            "baseline_ev": None,
-            "promoted": True,
-            "gate_failures": gate_failures,
-        }
-
-    baseline_ev = compute_holdout_ev(baseline_probs, y_ret_holdout, threshold)
 
     if candidate_ev["ev_pct"] is None:
         gate_failures.append(f"candidate_ev_unmeasurable:only_{candidate_ev['n']}_signaled_rows")
         return {
             "candidate_ev": candidate_ev,
-            "baseline_ev": baseline_ev,
+            "baseline_ev": None,
             "promoted": False,
             "gate_failures": gate_failures,
         }
 
+    direction_failures = _direction_check_failures(candidate_ev, y_ret_holdout)
+
+    if baseline_probs is None:
+        gate_failures.append("no_baseline_params:first_tune_for_symbol")
+        gate_failures.extend(direction_failures)
+        return {
+            "candidate_ev": candidate_ev,
+            "baseline_ev": None,
+            "promoted": not direction_failures,
+            "gate_failures": gate_failures,
+        }
+
+    baseline_ev = compute_holdout_ev(baseline_probs, y_ret_holdout, threshold)
+
     if baseline_ev["ev_pct"] is None:
         # Baseline params exist but signal too rarely on this holdout to compare against —
         # a candidate that DOES clear the sample floor is a strict improvement in measurability
-        # alone; promote, but record why no head-to-head comparison was possible.
+        # alone; promote (if it also clears the direction check), recording why no head-to-head
+        # comparison was possible.
         gate_failures.append(f"baseline_ev_unmeasurable:only_{baseline_ev['n']}_signaled_rows")
+        gate_failures.extend(direction_failures)
         return {
             "candidate_ev": candidate_ev,
             "baseline_ev": baseline_ev,
-            "promoted": True,
+            "promoted": not direction_failures,
+            "gate_failures": gate_failures,
+        }
+
+    gate_failures.extend(direction_failures)
+    if direction_failures:
+        return {
+            "candidate_ev": candidate_ev,
+            "baseline_ev": baseline_ev,
+            "promoted": False,
             "gate_failures": gate_failures,
         }
 

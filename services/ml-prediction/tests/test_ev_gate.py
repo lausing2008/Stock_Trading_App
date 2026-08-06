@@ -20,9 +20,11 @@ _ev_gate_mod = _ilu.module_from_spec(_spec)
 _spec.loader.exec_module(_ev_gate_mod)
 
 MIN_HOLDOUT_SIGNALED_ROWS = _ev_gate_mod.MIN_HOLDOUT_SIGNALED_ROWS
+MIN_HOLDOUT_WIN_RATE = _ev_gate_mod.MIN_HOLDOUT_WIN_RATE
 REFERENCE_PROB_THRESHOLD = _ev_gate_mod.REFERENCE_PROB_THRESHOLD
 compute_holdout_ev = _ev_gate_mod.compute_holdout_ev
 evaluate_candidate_ev = _ev_gate_mod.evaluate_candidate_ev
+_direction_check_failures = _ev_gate_mod._direction_check_failures
 
 
 def _rows(n_signaled_positive, n_signaled_negative, n_unsignaled, pos_return=0.05, neg_return=-0.03):
@@ -86,6 +88,24 @@ class TestComputeHoldoutEv:
     def test_default_threshold_matches_module_constant(self):
         assert REFERENCE_PROB_THRESHOLD == 0.60
 
+    def test_win_rate_is_fraction_of_signaled_rows_with_positive_return(self):
+        probs, y_ret = _rows(n_signaled_positive=9, n_signaled_negative=6, n_unsignaled=40)
+        result = compute_holdout_ev(probs, y_ret)
+        assert result["win_rate"] == pytest.approx(9 / 15, abs=1e-6)
+
+    def test_win_rate_is_none_when_unmeasurable(self):
+        probs, y_ret = _rows(n_signaled_positive=3, n_signaled_negative=2, n_unsignaled=50)
+        result = compute_holdout_ev(probs, y_ret)
+        assert result["win_rate"] is None
+
+    def test_win_rate_never_counts_unsignaled_rows(self):
+        """Poison the unsignaled rows with a positive return that would inflate win_rate if it
+        leaked in — mirrors test_unsignaled_rows_never_affect_ev's discipline for ev_pct."""
+        probs, y_ret = _rows(n_signaled_positive=0, n_signaled_negative=12, n_unsignaled=3, neg_return=-0.01)
+        y_ret[-3:] = 999.0
+        result = compute_holdout_ev(probs, y_ret)
+        assert result["win_rate"] == pytest.approx(0.0, abs=1e-6)
+
 
 class TestEvaluateCandidateEv:
     def test_no_baseline_params_promotes_automatically(self):
@@ -111,12 +131,20 @@ class TestEvaluateCandidateEv:
         assert result["gate_failures"] == []
 
     def test_candidate_loses_to_baseline_is_rejected(self):
-        y_ret = np.concatenate([np.full(20, -0.05), np.full(20, 0.08), np.full(20, 0.0)])
-        cand_probs = np.concatenate([np.full(20, 0.90), np.full(20, 0.10), np.full(20, 0.10)])  # signals the -0.05 rows
-        base_probs = np.concatenate([np.full(20, 0.10), np.full(20, 0.90), np.full(20, 0.10)])  # signals the +0.08 rows
+        """Both candidate and baseline are directionally sound (positive win rate, clear the
+        unconditional mean) — the candidate is rejected purely on ev_lift, isolating this check
+        from the newer direction checks (see TestDirectionCheckAppliesOnEveryPromotionPath for
+        the case where a candidate ALSO fails direction while beating baseline)."""
+        # Small signaled groups (15 each) against a large near-zero bulk (70) keeps the
+        # unconditional mean well below either signaled group's own EV.
+        y_ret = np.concatenate([np.full(15, 0.06), np.full(15, 0.12), np.full(70, 0.0)])
+        cand_probs = np.concatenate([np.full(15, 0.90), np.full(15, 0.10), np.full(70, 0.10)])  # signals the weaker +0.06 rows
+        base_probs = np.concatenate([np.full(15, 0.10), np.full(15, 0.90), np.full(70, 0.10)])  # signals the stronger +0.12 rows
         result = evaluate_candidate_ev(cand_probs, base_probs, y_ret)
         assert result["promoted"] is False
         assert any("ev_lift_not_positive" in f for f in result["gate_failures"])
+        assert not any("candidate_ev_below_unconditional_mean" in f for f in result["gate_failures"])
+        assert not any("candidate_win_rate_below_floor" in f for f in result["gate_failures"])
 
     def test_exactly_equal_ev_is_rejected_not_promoted(self):
         """A zero lift must not be treated as an improvement — matches this codebase's
@@ -151,3 +179,98 @@ class TestEvaluateCandidateEv:
         assert "candidate_ev" in result
         result2 = evaluate_candidate_ev(probs, probs.copy(), y_ret)
         assert "candidate_ev" in result2
+
+
+class TestDirectionCheckFailures:
+    """AUD263-EVGATE-NO-DIRECTION-CHECK: a candidate that beats a bad baseline (or has no
+    baseline to beat) is not necessarily a real edge — it could be inverted (high probability
+    correlating with negative returns) or simply no better than doing nothing."""
+
+    def test_candidate_below_unconditional_mean_fails_even_with_perfect_win_rate(self):
+        """The most direct inversion-adjacent case named in the tracker's own fix description:
+        a candidate whose signaled EV is positive and its win rate is 100%, but the REST of the
+        holdout (rows it never signaled) returned even more on average — the candidate has
+        picked up no real edge over doing nothing at all."""
+        y_ret = np.concatenate([np.full(10, 0.01), np.full(90, 0.20)])
+        probs = np.concatenate([np.full(10, 0.90), np.full(90, 0.10)])  # signals only the weak +0.01 rows
+        candidate_ev = compute_holdout_ev(probs, y_ret)
+        assert candidate_ev["win_rate"] == pytest.approx(1.0)
+        failures = _direction_check_failures(candidate_ev, y_ret)
+        assert any("candidate_ev_below_unconditional_mean" in f for f in failures)
+
+    def test_candidate_above_unconditional_mean_and_above_win_rate_floor_has_no_failures(self):
+        y_ret = np.concatenate([np.full(20, 0.08), np.full(80, 0.0)])
+        probs = np.concatenate([np.full(20, 0.90), np.full(80, 0.10)])
+        candidate_ev = compute_holdout_ev(probs, y_ret)
+        failures = _direction_check_failures(candidate_ev, y_ret)
+        assert failures == []
+
+    def test_win_rate_exactly_at_floor_is_not_a_failure(self):
+        probs, y_ret = _rows(n_signaled_positive=10, n_signaled_negative=10, n_unsignaled=20, pos_return=0.10, neg_return=-0.01)
+        candidate_ev = compute_holdout_ev(probs, y_ret)
+        assert candidate_ev["win_rate"] == pytest.approx(MIN_HOLDOUT_WIN_RATE)
+        failures = _direction_check_failures(candidate_ev, y_ret)
+        assert not any("win_rate_below_floor" in f for f in failures)
+
+    def test_win_rate_just_below_floor_is_a_failure(self):
+        # 9 wins / 20 signaled = 0.45, comfortably below the 0.50 floor
+        probs, y_ret = _rows(n_signaled_positive=9, n_signaled_negative=11, n_unsignaled=20, pos_return=0.20, neg_return=-0.01)
+        candidate_ev = compute_holdout_ev(probs, y_ret)
+        assert candidate_ev["win_rate"] < MIN_HOLDOUT_WIN_RATE
+        failures = _direction_check_failures(candidate_ev, y_ret)
+        assert any("candidate_win_rate_below_floor" in f for f in failures)
+
+
+class TestDirectionCheckAppliesOnEveryPromotionPath:
+    """The bug this whole fix targets: an inverted model could previously clear ANY of the 3
+    promotion branches (first-tune, baseline-unmeasurable, head-to-head) since none of them
+    checked direction at all. Each of these 3 tests constructs a candidate that would have been
+    promoted under the OLD logic on that specific branch, and confirms the new gate blocks it."""
+
+    def test_inverted_candidate_rejected_on_first_tune_path(self):
+        """No baseline at all — under the old logic this promoted unconditionally. An inverted
+        candidate (signals rows with a NEGATIVE forward return) must now be rejected."""
+        y_ret = np.concatenate([np.full(20, -0.08), np.full(80, 0.0)])
+        cand_probs = np.concatenate([np.full(20, 0.90), np.full(80, 0.10)])
+        result = evaluate_candidate_ev(cand_probs, None, y_ret)
+        assert result["promoted"] is False
+        assert any("candidate_ev_below_unconditional_mean" in f for f in result["gate_failures"])
+        assert any("candidate_win_rate_below_floor" in f for f in result["gate_failures"])
+        # the original reason must still be recorded even though promotion is now blocked
+        assert "no_baseline_params:first_tune_for_symbol" in result["gate_failures"]
+
+    def test_inverted_candidate_rejected_on_baseline_unmeasurable_path(self):
+        """Baseline exists but never signals on this holdout — under the old logic a measurable
+        candidate promoted unconditionally regardless of its own direction."""
+        y_ret = np.concatenate([np.full(15, -0.06), np.full(45, 0.0)])
+        cand_probs = np.concatenate([np.full(15, 0.90), np.full(45, 0.10)])
+        base_probs = np.full(60, 0.10)  # baseline never crosses threshold
+        result = evaluate_candidate_ev(cand_probs, base_probs, y_ret)
+        assert result["promoted"] is False
+        assert any("baseline_ev_unmeasurable" in f for f in result["gate_failures"])
+        assert any("candidate_ev_below_unconditional_mean" in f for f in result["gate_failures"])
+
+    def test_inverted_candidate_rejected_on_head_to_head_path_even_when_it_beats_baseline(self):
+        """The core scenario named in the tracker: candidate signals a LESS-bad loss than the
+        baseline (a real, positive ev_lift under the old logic), but both are actually inverted —
+        the candidate has no real directional edge and must still be rejected."""
+        y_ret = np.concatenate([np.full(20, -0.02), np.full(20, -0.06), np.full(20, 0.0)])
+        cand_probs = np.concatenate([np.full(20, 0.90), np.full(20, 0.10), np.full(20, 0.10)])  # signals the -0.02 rows (less bad)
+        base_probs = np.concatenate([np.full(20, 0.10), np.full(20, 0.90), np.full(20, 0.10)])  # signals the -0.06 rows (worse)
+        # confirm the OLD-logic premise: candidate genuinely beats baseline on ev_lift alone
+        assert compute_holdout_ev(cand_probs, y_ret)["ev_pct"] > compute_holdout_ev(base_probs, y_ret)["ev_pct"]
+        result = evaluate_candidate_ev(cand_probs, base_probs, y_ret)
+        assert result["promoted"] is False
+        assert any("candidate_win_rate_below_floor" in f for f in result["gate_failures"])
+        # the ev_lift check must never even run once direction has already failed
+        assert not any("ev_lift_not_positive" in f for f in result["gate_failures"])
+
+    def test_genuinely_good_candidate_still_promotes_on_head_to_head_path(self):
+        """Direction checks must not over-trigger — a real, non-inverted improvement over a
+        real, non-inverted baseline must still promote exactly as before this fix."""
+        y_ret = np.concatenate([np.full(20, 0.09), np.full(20, 0.01), np.full(20, 0.0)])
+        cand_probs = np.concatenate([np.full(20, 0.90), np.full(20, 0.10), np.full(20, 0.10)])  # signals the +0.09 rows
+        base_probs = np.concatenate([np.full(20, 0.10), np.full(20, 0.90), np.full(20, 0.10)])  # signals the +0.01 rows
+        result = evaluate_candidate_ev(cand_probs, base_probs, y_ret)
+        assert result["promoted"] is True
+        assert result["gate_failures"] == []
