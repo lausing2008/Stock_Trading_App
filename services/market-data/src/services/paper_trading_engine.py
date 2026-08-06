@@ -2525,9 +2525,17 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             ).scalar()
 
             wait_days = cfg.get("wait_exit_days", 5)
+            # BUG-MONITORPOS-NAIVEAWARE: last_non_wait_ts comes back naive (Signal.ts is a
+            # plain DateTime column, no timezone=True) while `now` is tz-aware
+            # (datetime.now(timezone.utc), needed elsewhere in this function for exit_time
+            # writes) — comparing them directly raises TypeError and aborts the WHOLE
+            # paper_trading_step() call (a single outer try/except wraps every portfolio in
+            # the loop), silently killing entries for every portfolio, not just this trade's.
+            # Strip tzinfo from `now` for this one naive-vs-naive comparison instead of
+            # changing `now`'s type globally.
             still_waiting = (
                 last_non_wait_ts is None or
-                last_non_wait_ts < now - timedelta(days=wait_days)
+                last_non_wait_ts < now.replace(tzinfo=None) - timedelta(days=wait_days)
             )
 
             if still_waiting:
