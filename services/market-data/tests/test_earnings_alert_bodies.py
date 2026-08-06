@@ -109,9 +109,14 @@ def test_macro_reaction_alerts_only_marks_sent_after_a_successful_send():
     """The exact ordering discipline check_signal_alerts()/check_earnings_reactions() both
     follow: reaction_sent_at must only advance inside the any_sent-gated branch, not
     unconditionally — otherwise a fully-failed send cycle would still mark rows as sent and
-    silently drop the alert forever (no retry on the next minute's tick)."""
+    silently drop the alert forever (no retry on the next minute's tick).
+
+    AUD266-ANY-SENT-GLOBAL-FLAG-CROSS-USER-SUPPRESSION (2026-08-06): any_sent alone is no
+    longer sufficient — it's now any_sent AND all_recipients_notified, so a partial-delivery
+    cycle (some recipients succeeded, at least one didn't) does NOT advance reaction_sent_at
+    either, preventing the un-notified recipient from being silently skipped forever."""
     start = _source.index("def check_macro_reaction_alerts")
     end = _source.index("\n\ndef check_signal_alerts", start)
     body = _source[start:end]
-    assert "if any_sent:" in body
-    assert body.index("if any_sent:") < body.index("ev.reaction_sent_at = ")
+    assert "if any_sent and all_recipients_notified:" in body
+    assert body.index("if any_sent and all_recipients_notified:") < body.index("ev.reaction_sent_at = ")

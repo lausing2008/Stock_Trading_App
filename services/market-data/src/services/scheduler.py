@@ -1026,6 +1026,45 @@ def _round_step(price: float) -> float:
 _alert_fail_counts: dict[int, int] = {}
 
 
+def _rotate_for_fair_budget(items: list, redis_key: str) -> list:
+    """AUD266-BUDGET-DETERMINISTIC-STARVE: check_signal_alerts()'s per-loop wall-clock budget
+    (_SIGNAL_BUDGET_S/_FUND_BUDGET_S) skips whatever's left in the iterable once the budget is
+    exceeded. The caller previously iterated a bare Python set (or list(set(...))), whose
+    iteration order is fixed WITHIN one process but varies ACROSS process restarts (hash
+    randomization) — so the SAME tail-end symbols were silently starved every single cycle
+    until the next deploy, then a DIFFERENT tail was starved instead. Neither shape ever gave
+    every symbol fair coverage, and the shifting-on-deploy behavior is the worst possible
+    diagnostic shape (empirically confirmed: 3 subprocesses each produced a different set
+    iteration order for the identical input).
+
+    Fixed by (1) sorting for a deterministic base order (removes the cross-process variance),
+    then (2) rotating that sorted list by a persisted Redis cursor that advances by exactly 1
+    each call — so if the budget is hit at the same relative position every cycle, a
+    DIFFERENT subset of symbols sits in the now-truncated tail each time, giving every symbol
+    fair coverage over enough cycles instead of a fixed starved set. Fails open to the
+    deterministic sorted (non-rotated) order on any Redis error — still strictly better than
+    the original nondeterministic set order, just without the rotation's fairness bonus.
+
+    Caught and fixed a real bug in an earlier draft of this function before it shipped: the
+    cursor originally advanced by len(sorted_items) each call, making `cursor %
+    len(sorted_items)` ALWAYS 0 (any multiple of a number mod itself is 0) — the rotation
+    never actually moved and every cycle returned the identical order, silently defeating the
+    whole point of this function. Verified with a standalone simulation before landing on the
+    correct fix (advance by a plain +1 increment, independent of len(items)).
+    """
+    sorted_items = sorted(items)
+    if not sorted_items:
+        return sorted_items
+    try:
+        _rc = _get_redis()
+        cursor = int(_rc.get(redis_key) or 0)
+        offset = cursor % len(sorted_items)
+        _rc.set(redis_key, cursor + 1, ex=7 * 86400)
+        return sorted_items[offset:] + sorted_items[:offset]
+    except Exception:
+        return sorted_items
+
+
 _SIGNAL_ALERT_LOCK_KEY = "stockai:lock:check_signal_alerts"
 _SIGNAL_ALERT_LOCK_TTL = 120  # seconds — prevents concurrent runs from US+HK scheduler overlap
 
@@ -1311,16 +1350,39 @@ def check_macro_reaction_alerts() -> None:
                 _record_job_status("check_macro_reaction_alerts", "ok", time.monotonic() - _t0)
                 return
 
+            # AUD266-ANY-SENT-GLOBAL-FLAG-CROSS-USER-SUPPRESSION: any_sent used to be a single
+            # flag shared across the whole recipient loop, gating a PER-EVENT timestamp
+            # (reaction_sent_at). The moment ANY ONE recipient's send succeeded, the event was
+            # marked sent — so a later recipient in the same loop whose send failed (or any
+            # recipient not yet subscribed on a future cycle) would never be retried, since the
+            # DB query above only selects rows where reaction_sent_at IS NULL. Now tracks
+            # delivery per (event, user) via a Redis dedup key, matching check_earnings_
+            # reactions()'s established pattern — reaction_sent_at is only stamped once EVERY
+            # currently-known recipient has actually received it (not merely attempted).
+            _rc = _get_redis()
             from .email_service import send_email
             for ev in pending:
                 subject = f"📈 {ev.title}: {ev.actual_value}"
                 body_text = ev.reaction_text
+                all_recipients_notified = True
                 any_sent = False
-                for u_obj in recipients.values():
+                for uid, u_obj in recipients.items():
+                    redis_key = f"stockai:macro_reaction_sent:{uid}:{ev.id}"
+                    try:
+                        if _rc and _rc.exists(redis_key):
+                            continue
+                    except Exception:
+                        pass
                     if send_email(u_obj.email, subject, f"<p>{body_text}</p>", body_text):
                         any_sent = True
+                        try:
+                            _rc and _rc.setex(redis_key, 30 * 86400, "1")  # 30-day TTL — one alert per user per event
+                        except Exception:
+                            pass
                         log.info("signal_alert.macro_reaction_sent", event_type=ev.event_type, user=u_obj.username)
-                if any_sent:
+                    else:
+                        all_recipients_notified = False
+                if any_sent and all_recipients_notified:
                     ev.reaction_sent_at = datetime.now(timezone.utc)
                     session.commit()
             _record_job_status("check_macro_reaction_alerts", "ok", time.monotonic() - _t0)
@@ -1386,11 +1448,19 @@ def check_earnings_impact_alerts() -> None:
                 _record_job_status("check_earnings_impact_alerts", "ok", time.monotonic() - _t0)
                 return
 
+            # AUD266-ANY-SENT-GLOBAL-FLAG-CROSS-USER-SUPPRESSION: see check_macro_reaction_
+            # alerts()'s identical fix above for the full rationale — any_sent was a single
+            # flag shared across the recipient loop, gating a PER-EVENT timestamp
+            # (impact_sent_at), so one recipient's successful send silently marked the event
+            # delivered for every OTHER recipient too. Now tracks delivery per (event, user)
+            # via a Redis dedup key, matching check_earnings_reactions()'s established pattern.
+            _rc = _get_redis()
             from .email_service import send_email
             for ev, sym in pending:
                 verb = "beat" if (ev.surprise_pct or 0) > 0 else "missed" if (ev.surprise_pct or 0) < 0 else "met"
                 subject = f"📊 {sym} earnings impact — {verb} estimates"
                 body_text = ev.impact_text
+                all_recipients_notified = True
                 any_sent = False
                 for uid, syms in user_symbols.items():
                     if sym not in syms:
@@ -1398,10 +1468,22 @@ def check_earnings_impact_alerts() -> None:
                     u_obj = users_by_id.get(uid)
                     if not u_obj or not u_obj.email:
                         continue
+                    redis_key = f"stockai:earnings_impact_sent:{uid}:{ev.id}"
+                    try:
+                        if _rc and _rc.exists(redis_key):
+                            continue
+                    except Exception:
+                        pass
                     if send_email(u_obj.email, subject, f"<p>{body_text}</p>", body_text):
                         any_sent = True
+                        try:
+                            _rc and _rc.setex(redis_key, 30 * 86400, "1")  # 30-day TTL — one alert per user per event
+                        except Exception:
+                            pass
                         log.info("signal_alert.earnings_impact_sent", symbol=sym, user=u_obj.username)
-                if any_sent:
+                    else:
+                        all_recipients_notified = False
+                if any_sent and all_recipients_notified:
                     ev.impact_sent_at = datetime.now(timezone.utc)
                     session.commit()
             _record_job_status("check_earnings_impact_alerts", "ok", time.monotonic() - _t0)
@@ -2143,6 +2225,7 @@ def check_volume_anomalies() -> None:
                 if already_today >= _VOL_ANOMALY_DAILY_CAP:
                     continue
                 my_alerts = []
+                my_dedup_keys = []
                 for t in triggered:
                     dedup_key = f"stockai:vol_anomaly:{uid}:{t['symbol']}:{today}:{int(t['rvol'] // 1)}"
                     try:
@@ -2151,16 +2234,32 @@ def check_volume_anomalies() -> None:
                     except Exception:
                         pass
                     my_alerts.append(t)
-                    try:
-                        _rc.setex(dedup_key, 20 * 3600, "1")  # same-magnitude dedup for the rest of today
-                    except Exception:
-                        pass
+                    my_dedup_keys.append(dedup_key)
                 if not my_alerts:
                     continue
                 room = _VOL_ANOMALY_DAILY_CAP - already_today
                 my_alerts = my_alerts[:room]
-                if send_volume_anomaly_email(user.email, my_alerts):
+                my_dedup_keys = my_dedup_keys[:room]
+                # AUD266-DEDUP-KEY-SET-BEFORE-SEND: dedup keys must only be written AFTER a
+                # real successful send — writing them unconditionally beforehand meant a
+                # single transient send failure permanently suppressed same-magnitude alerts
+                # on that symbol for the rest of the day (20h TTL), with no retry.
+                # AUD266-PER-RECIPIENT-ISOLATION-NEVER-PROPAGATED: an uncaught exception from
+                # inside send_volume_anomaly_email() (e.g. a malformed alert dict) would
+                # otherwise propagate to this function's outer except, aborting the whole
+                # remaining recipient loop — matching send_premarket_brief's established fix.
+                try:
+                    vol_anomaly_ok = send_volume_anomaly_email(user.email, my_alerts)
+                except Exception as _send_exc:
+                    vol_anomaly_ok = False
+                    log.warning("volume_anomaly.recipient_send_error", user=uid, error=str(_send_exc))
+                if vol_anomaly_ok:
                     sent += 1
+                    for dedup_key in my_dedup_keys:
+                        try:
+                            _rc.setex(dedup_key, 20 * 3600, "1")  # same-magnitude dedup for the rest of today
+                        except Exception:
+                            pass
                     try:
                         _rc.incrby(daily_cap_key, len(my_alerts))
                         _rc.expire(daily_cap_key, 26 * 3600)
@@ -2343,16 +2442,32 @@ def check_short_squeeze_alerts() -> None:
                     prev_active = set()
                 current_active = set(candidates.keys())
                 newly_qualifying = sorted(current_active - prev_active)
+                send_ok = True
                 if newly_qualifying:
                     payload = [candidates[sym] for sym in newly_qualifying]
-                    if send_short_squeeze_email(user.email, payload):
+                    # AUD266-PER-RECIPIENT-ISOLATION-NEVER-PROPAGATED: an uncaught exception
+                    # from inside send_short_squeeze_email() would otherwise propagate to this
+                    # function's outer except, aborting the whole remaining recipient loop.
+                    try:
+                        send_ok = send_short_squeeze_email(user.email, payload)
+                    except Exception as _send_exc:
+                        send_ok = False
+                        log.warning("short_squeeze_alert.recipient_send_error", user=uid, error=str(_send_exc))
+                    if send_ok:
                         sent += 1
-                # Always resync the active set — a stock that drops out (no longer above the
-                # move threshold) must be removed so it correctly re-alerts if it re-qualifies.
+                # AUD266-DEDUP-KEY-SET-BEFORE-SEND: a stock that drops out (no longer above
+                # the move threshold) must still be removed from the active set regardless of
+                # send outcome — that part of the resync is a real, independent fact, not
+                # contingent on the email. But a FAILED send must NOT resync the newly-
+                # qualifying symbols into "active" either, or they'd silently vanish from
+                # `current_active - prev_active` on the next cycle and never get retried.
+                # On failure, resync to (current_active - the unsent newly_qualifying set)
+                # instead of the full current_active, so those symbols remain eligible.
+                resync_set = current_active if send_ok else (current_active - set(newly_qualifying))
                 try:
                     _rc.delete(state_key)
-                    if current_active:
-                        _rc.sadd(state_key, *current_active)
+                    if resync_set:
+                        _rc.sadd(state_key, *resync_set)
                     _rc.expire(state_key, 20 * 3600)  # same-day dedup window, matches vol-anomaly
                 except Exception:
                     pass
@@ -2534,7 +2649,15 @@ def check_gamma_unwind_alerts() -> None:
                     new_candidates.append(c)
                 if not new_candidates:
                     continue
-                if send_gamma_unwind_email(user.email, new_candidates):
+                # AUD266-PER-RECIPIENT-ISOLATION-NEVER-PROPAGATED: an uncaught exception from
+                # inside send_gamma_unwind_email() would otherwise propagate to this function's
+                # outer except, aborting the whole remaining recipient loop.
+                try:
+                    gamma_ok = send_gamma_unwind_email(user.email, new_candidates)
+                except Exception as _send_exc:
+                    gamma_ok = False
+                    log.warning("gamma_unwind.recipient_send_error", user=uid, error=str(_send_exc))
+                if gamma_ok:
                     sent += 1
                     try:
                         _rc.sadd(state_key, *[f"{c['symbol']}:{c['expiry']}" for c in new_candidates])
@@ -2924,6 +3047,7 @@ def check_value_area_breakdown() -> None:
                 if not u_obj or not u_obj.email:
                     continue
                 my_alerts = []
+                my_dedup_keys = []
                 for sym in syms:
                     t = triggered_by_symbol.get(sym)
                     if not t:
@@ -2937,14 +3061,28 @@ def check_value_area_breakdown() -> None:
                     except Exception:
                         pass
                     my_alerts.append(t)
-                    try:
-                        _rc.setex(dedup_key, 26 * 3600, "1")
-                    except Exception:
-                        pass
+                    my_dedup_keys.append(dedup_key)
                 if not my_alerts:
                     continue
-                if send_value_area_breakdown_email(u_obj.email, my_alerts):
+                # AUD266-DEDUP-KEY-SET-BEFORE-SEND: dedup keys must only be written AFTER a
+                # real successful send — writing them unconditionally beforehand meant a
+                # single transient send failure permanently suppressed the alert for the full
+                # 26h TTL, with no retry on the next cycle.
+                # AUD266-PER-RECIPIENT-ISOLATION-NEVER-PROPAGATED: an uncaught exception from
+                # inside send_value_area_breakdown_email() would otherwise propagate to this
+                # function's outer except, aborting the whole remaining recipient loop.
+                try:
+                    va_ok = send_value_area_breakdown_email(u_obj.email, my_alerts)
+                except Exception as _send_exc:
+                    va_ok = False
+                    log.warning("value_area_breakdown.recipient_send_error", user=uid, error=str(_send_exc))
+                if va_ok:
                     sent += 1
+                    for dedup_key in my_dedup_keys:
+                        try:
+                            _rc.setex(dedup_key, 26 * 3600, "1")
+                        except Exception:
+                            pass
 
             _record_job_status("check_value_area_breakdown", "ok", time.monotonic() - _t0)
             log.info("value_area_breakdown.done", triggered=len(triggered_by_symbol), sent=sent)
@@ -3141,11 +3279,27 @@ def check_top3_conviction() -> None:
                 try:
                     if _rc.exists(dedup_key):
                         continue
-                    _rc.setex(dedup_key, 6 * 3600, "1")
                 except Exception:
                     pass
-                if send_top3_conviction_email(user.email, top3):
+                # AUD266-DEDUP-KEY-SET-BEFORE-SEND: the dedup key must only be written AFTER
+                # a real successful send, matching check_gamma_unwind_alerts' established
+                # pattern — writing it unconditionally beforehand meant a single transient
+                # send failure permanently suppressed this alert for the full 6h TTL, with no
+                # retry on the next cycle.
+                # AUD266-PER-RECIPIENT-ISOLATION-NEVER-PROPAGATED: an uncaught exception from
+                # inside send_top3_conviction_email() would otherwise propagate to this
+                # function's outer except, aborting the whole remaining recipient loop.
+                try:
+                    top3_ok = send_top3_conviction_email(user.email, top3)
+                except Exception as _send_exc:
+                    top3_ok = False
+                    log.warning("top3_conviction.recipient_send_error", user=uid, error=str(_send_exc))
+                if top3_ok:
                     sent += 1
+                    try:
+                        _rc.setex(dedup_key, 6 * 3600, "1")
+                    except Exception:
+                        pass
 
             _record_job_status("check_top3_conviction", "ok", time.monotonic() - _t0)
             log.info("top3_conviction.done", qualifying=len(qualifying), sent=sent,
@@ -3299,14 +3453,21 @@ def check_signal_alerts() -> None:
             # live=True (old default) caused intraday oscillation for threshold-boundary
             # stocks: the signal would flip BUY↔HOLD on every 1-minute check.
             # AUD19-PERF1: 45s wall-clock budget prevents blocking APScheduler thread pool.
+            # AUD266-BUDGET-DETERMINISTIC-STARVE: iterate a fair-rotated, deterministically
+            # sorted order (see _rotate_for_fair_budget's own docstring) instead of a bare
+            # Python set — a set's iteration order is fixed within one process but varies
+            # across restarts, so the SAME tail-end symbols were silently starved every cycle
+            # until the next deploy.
             _SIGNAL_BUDGET_S = 45.0
             _alert_t0 = time.monotonic()
             signals: dict[tuple[str, str], str] = {}
             signal_details: dict[tuple[str, str], dict] = {}
             _skipped_signals = 0
-            for sym, style in style_sym_pairs:
+            _skipped_signal_pairs: list = []
+            for sym, style in _rotate_for_fair_budget(list(style_sym_pairs), "stockai:signal_alert_budget_cursor:signals"):
                 if time.monotonic() - _alert_t0 > _SIGNAL_BUDGET_S:
                     _skipped_signals += 1
+                    _skipped_signal_pairs.append(f"{sym}:{style}")
                     continue
                 try:
                     r = httpx.get(
@@ -3321,7 +3482,8 @@ def check_signal_alerts() -> None:
                     pass
             if _skipped_signals:
                 log.warning("signal_alert.budget_exceeded_signals",
-                            skipped=_skipped_signals, budget_s=_SIGNAL_BUDGET_S)
+                            skipped=_skipped_signals, budget_s=_SIGNAL_BUDGET_S,
+                            skipped_pairs=_skipped_signal_pairs[:50])
 
             # Fetch analyst ratings + fundamentals (rec_mean, earnings, insider data)
             _FUND_BUDGET_S = 45.0
@@ -3329,9 +3491,11 @@ def check_signal_alerts() -> None:
             analyst_ratings: dict[str, str] = {}
             fundamentals_cache: dict[str, dict] = {}
             _skipped_fundamentals = 0
-            for sym in symbols:
+            _skipped_fund_symbols: list = []
+            for sym in _rotate_for_fair_budget(symbols, "stockai:signal_alert_budget_cursor:fundamentals"):
                 if time.monotonic() - _fund_t0 > _FUND_BUDGET_S:
                     _skipped_fundamentals += 1
+                    _skipped_fund_symbols.append(sym)
                     continue
                 try:
                     r = httpx.get(f"{_settings.market_data_url}/stocks/{sym}/fundamentals", timeout=10)
@@ -3343,7 +3507,8 @@ def check_signal_alerts() -> None:
                     pass
             if _skipped_fundamentals:
                 log.warning("signal_alert.budget_exceeded_fundamentals",
-                            skipped=_skipped_fundamentals, budget_s=_FUND_BUDGET_S)
+                            skipped=_skipped_fundamentals, budget_s=_FUND_BUDGET_S,
+                            skipped_symbols=_skipped_fund_symbols[:50])
 
             # Fetch K-Scores in one bulk call for Layer 2 conviction check
             kscores: dict[str, float] = {}
@@ -3550,21 +3715,30 @@ def check_signal_alerts() -> None:
                         style=style,
                     )
 
-                email_ok = send_signal_alert_email(
-                    to=effective_email,
-                    symbol=alert.symbol,
-                    prev_signal=prev,
-                    new_signal=current,
-                    analyst=analyst_ratings.get(alert.symbol, ""),
-                    signal_data=signal_details.get(key, {}),
-                    fundamentals=fundamentals_cache.get(alert.symbol),
-                    game_plan=game_plan,
-                    conviction_layers=conviction_passed,
-                    near_conviction=near_conviction,
-                    near_conviction_failed=near_conviction_failed,
-                    horizon=style,
-                    win_rate_90d=sym_wr_map.get(alert.symbol),
-                )
+                # AUD266-PER-RECIPIENT-ISOLATION-NEVER-PROPAGATED: an uncaught exception from
+                # inside send_signal_alert_email() (a malformed game_plan/signal_data dict)
+                # would otherwise propagate to this function's outer except, aborting the
+                # whole remaining alerts loop — every other user/symbol still left in `alerts`
+                # would silently get no alert this cycle.
+                try:
+                    email_ok = send_signal_alert_email(
+                        to=effective_email,
+                        symbol=alert.symbol,
+                        prev_signal=prev,
+                        new_signal=current,
+                        analyst=analyst_ratings.get(alert.symbol, ""),
+                        signal_data=signal_details.get(key, {}),
+                        fundamentals=fundamentals_cache.get(alert.symbol),
+                        game_plan=game_plan,
+                        conviction_layers=conviction_passed,
+                        near_conviction=near_conviction,
+                        near_conviction_failed=near_conviction_failed,
+                        horizon=style,
+                        win_rate_90d=sym_wr_map.get(alert.symbol),
+                    )
+                except Exception as _send_exc:
+                    email_ok = False
+                    log.warning("signal_alert.recipient_send_error", symbol=alert.symbol, alert_id=alert.id, error=str(_send_exc))
                 if email_ok:
                     alert.last_signal = current  # advance state only after successful send
                     now_utc = datetime.now(timezone.utc)
@@ -3693,7 +3867,18 @@ def check_signal_alerts() -> None:
                     if not digest_rows:
                         continue
                     from .email_service import send_earnings_reminder_digest_email
-                    if send_earnings_reminder_digest_email(u_obj.email, digest_rows):
+                    # AUD266-PER-RECIPIENT-ISOLATION-NEVER-PROPAGATED: this whole per-
+                    # recipient loop already sits inside an outer try/except (caught below at
+                    # signal_alert.earnings_reminder_error), but that only stops it from
+                    # reaching THIS function's top-level except — it does not stop one
+                    # recipient's exception from aborting the loop early and silently skipping
+                    # every remaining recipient in user_symbols this cycle.
+                    try:
+                        digest_ok = send_earnings_reminder_digest_email(u_obj.email, digest_rows)
+                    except Exception as _send_exc:
+                        digest_ok = False
+                        log.warning("signal_alert.earnings_reminder_recipient_send_error", user=uid, error=str(_send_exc))
+                    if digest_ok:
                         for row in digest_rows:
                             try:
                                 _rc and _rc.setex(row["_redis_key"], 72000, "1")  # 20-hour TTL
@@ -3970,8 +4155,17 @@ def check_price_alerts() -> None:
                 session.commit()
                 log.info("alert.check_done", fired=fired, checked=len(alerts))
 
+            # AUD266-PER-RECIPIENT-ISOLATION-NEVER-PROPAGATED: an uncaught exception from
+            # inside send_price_alert_email() would otherwise propagate out of this loop,
+            # skipping every remaining triggered alert this cycle (already-triggered flags
+            # were committed above, so those alerts would simply never get their email).
             for kwargs in pending_emails:
-                if not send_price_alert_email(**kwargs):
+                try:
+                    ok = send_price_alert_email(**kwargs)
+                except Exception as _send_exc:
+                    ok = False
+                    log.warning("alert.email_send_error", symbol=kwargs["symbol"], email=kwargs["to"], error=str(_send_exc))
+                if not ok:
                     log.warning("alert.email_failed", symbol=kwargs["symbol"], email=kwargs["to"])
             for url, payload in pending_webhooks:
                 _fire_webhook(url, payload)
@@ -4018,20 +4212,33 @@ def check_price_alerts() -> None:
                         owner_email = (portfolio.config or {}).get("owner_email") if portfolio else None
                         if not owner_email:
                             continue
-                        send_price_alert_email(
-                            to=owner_email,
-                            symbol=trade.symbol,
-                            condition="below",
-                            threshold=trade.entry_price * 0.95,
-                            price=cur_px,
-                            note=f"Position down {abs(pct)*100:.1f}% from entry {trade.entry_price:.2f}",
-                        )
+                        # AUD266-DEDUP-KEY-SET-BEFORE-SEND / AUD266-PER-RECIPIENT-ISOLATION-
+                        # NEVER-PROPAGATED: this call previously ignored its own return value
+                        # (a silent fire-and-forget — no logged failure) AND an uncaught
+                        # exception here would abort the whole `for trade in open_trades:`
+                        # loop, since only the OUTER try (position_drawdown_error) covered it,
+                        # not a per-trade one. The redis_key was also being set unconditionally
+                        # a few lines below regardless of send outcome, matching the exact
+                        # dedup-before-send bug already fixed elsewhere in this file.
                         try:
-                            _rc and _rc.setex(redis_key, 86400, "1")  # 24-hour TTL
-                        except Exception:
-                            pass
-                        log.info("alert.position_drawdown_sent",
-                                 symbol=trade.symbol, pct=round(pct * 100, 1), email=owner_email)
+                            drawdown_ok = send_price_alert_email(
+                                to=owner_email,
+                                symbol=trade.symbol,
+                                condition="below",
+                                threshold=trade.entry_price * 0.95,
+                                price=cur_px,
+                                note=f"Position down {abs(pct)*100:.1f}% from entry {trade.entry_price:.2f}",
+                            )
+                        except Exception as _send_exc:
+                            drawdown_ok = False
+                            log.warning("alert.position_drawdown_send_error", symbol=trade.symbol, error=str(_send_exc))
+                        if drawdown_ok:
+                            try:
+                                _rc and _rc.setex(redis_key, 86400, "1")  # 24-hour TTL
+                            except Exception:
+                                pass
+                            log.info("alert.position_drawdown_sent",
+                                     symbol=trade.symbol, pct=round(pct * 100, 1), email=owner_email)
             except Exception as _pe:
                 log.warning("alert.position_drawdown_error", error=str(_pe))
             _record_job_status("check_price_alerts", "ok", time.monotonic() - _t0)
@@ -4329,8 +4536,16 @@ def check_technical_alerts() -> None:
                 session.commit()
                 log.info("tech_alert.check_done", fired=fired)
 
+            # AUD266-PER-RECIPIENT-ISOLATION-NEVER-PROPAGATED: an uncaught exception from
+            # inside send_price_alert_email() would otherwise propagate out of this loop,
+            # skipping every remaining triggered alert this cycle.
             for kwargs in pending_emails:
-                if not send_price_alert_email(**kwargs):
+                try:
+                    ok = send_price_alert_email(**kwargs)
+                except Exception as _send_exc:
+                    ok = False
+                    log.warning("tech_alert.email_send_error", symbol=kwargs["symbol"], email=kwargs["to"], error=str(_send_exc))
+                if not ok:
                     log.warning("tech_alert.email_failed", symbol=kwargs["symbol"], email=kwargs["to"])
             for url, payload in pending_webhooks:
                 _fire_webhook(url, payload)
@@ -5045,7 +5260,15 @@ def check_earnings_beat_screener_alerts() -> None:
                     new_candidates.append((c, dedup_key))
                 if not new_candidates:
                     continue
-                if send_earnings_beat_screener_email(user.email, [c for c, _ in new_candidates]):
+                # AUD266-PER-RECIPIENT-ISOLATION-NEVER-PROPAGATED: an uncaught exception from
+                # inside send_earnings_beat_screener_email() would otherwise propagate to this
+                # function's outer except, aborting the whole remaining recipient loop.
+                try:
+                    screener_ok = send_earnings_beat_screener_email(user.email, [c for c, _ in new_candidates])
+                except Exception as _send_exc:
+                    screener_ok = False
+                    log.warning("earnings_beat_screener.recipient_send_error", user=uid, error=str(_send_exc))
+                if screener_ok:
                     sent += 1
                     for _c, dedup_key in new_candidates:
                         try:
@@ -5427,7 +5650,15 @@ def check_sector_rotation_alerts(rotation: dict[str, dict]) -> None:
             from .email_service import send_sector_rotation_email
             sent = 0
             for uid, user in recipients.items():
-                if send_sector_rotation_email(user.email, candidates):
+                # AUD266-PER-RECIPIENT-ISOLATION-NEVER-PROPAGATED: an uncaught exception from
+                # inside send_sector_rotation_email() would otherwise propagate to this
+                # function's outer except, aborting the whole remaining recipient loop.
+                try:
+                    rotation_ok = send_sector_rotation_email(user.email, candidates)
+                except Exception as _send_exc:
+                    rotation_ok = False
+                    log.warning("sector_rotation_alert.recipient_send_error", user=uid, error=str(_send_exc))
+                if rotation_ok:
                     sent += 1
             log.info("sector_rotation_alert.done", sectors=len(candidates), sent=sent, recipients=len(recipients))
     except Exception as exc:

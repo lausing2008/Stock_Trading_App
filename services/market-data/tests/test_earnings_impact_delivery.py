@@ -59,11 +59,16 @@ def test_earnings_impact_alerts_polls_for_generated_but_unsent_rows():
 
 
 def test_earnings_impact_alerts_only_marks_sent_after_a_real_successful_send():
-    """impact_sent_at must only advance inside an `if any_sent:` gate — a failed send cycle
-    must retry next minute, not get silently marked done (same discipline already established
-    for check_macro_reaction_alerts()'s own reaction_sent_at)."""
+    """impact_sent_at must only advance inside an `if any_sent and all_recipients_notified:`
+    gate — a failed send cycle must retry next minute, not get silently marked done (same
+    discipline already established for check_macro_reaction_alerts()'s own reaction_sent_at).
+
+    AUD266-ANY-SENT-GLOBAL-FLAG-CROSS-USER-SUPPRESSION (2026-08-06): any_sent alone is no
+    longer sufficient — a partial-delivery cycle (some recipients succeeded, at least one
+    didn't) must NOT advance impact_sent_at either, or the un-notified recipient would be
+    silently skipped forever once the DB query's WHERE impact_sent_at IS NULL stops matching."""
     body = _func_body("check_earnings_impact_alerts")
-    any_sent_idx = body.index("if any_sent:")
+    any_sent_idx = body.index("if any_sent and all_recipients_notified:")
     tail = body[any_sent_idx:any_sent_idx + 150]
     assert "ev.impact_sent_at = datetime.now(timezone.utc)" in tail
 
