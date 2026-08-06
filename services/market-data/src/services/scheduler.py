@@ -603,6 +603,41 @@ def _get_current_regime() -> str:
     return "unknown"
 
 
+# AUD263-CONVICTION-WEIGHTS-UNGATED: calibrate_conviction_weights() (signal-engine) fits
+# per-flag win/loss edge stats from real signal_outcomes but had NO consumer anywhere in the
+# codebase — load_conviction_weights() existed in signals.py with zero callers, so a genuinely
+# calibrated signal was computed weekly and then discarded. This maps each conviction-gate
+# layer's underlying reasons boolean flag to calibrate_conviction_weights' edge_pct output, so
+# the gate's soft-fail allowance becomes DATA-DRIVEN rather than a fixed hardcoded set:
+# a layer failure additionally counts as "soft" (allowed via the existing near-conviction tier)
+# whenever the calibrated data shows that flag has near-zero or negative predictive edge — i.e.
+# historically NOT a reliable signal of a loser. This is strictly ADDITIVE to the existing
+# hardcoded soft layers (OBV/ADX/ML probability/MACD): it can only ever make MORE layers
+# soft-failable, never stricter, and only for flags with real calibration data behind them.
+_CONVICTION_LAYER_FLAG = {
+    "Uptrend": "trend_above_sma50",
+    "OBV": "obv_trend_bullish",
+    "ADX": "adx_trending",
+    "MACD": "macd_zero_cross_up",
+}
+_CONVICTION_EDGE_NOISE_THRESHOLD_PCT = 2.0  # edge_pct below this = not meaningfully predictive
+
+
+def _load_conviction_edges() -> dict[str, float]:
+    """Redis-primary (T228 convention), matching calibrate_conviction_weights' own write side.
+    Returns {flag: edge_pct}; empty dict if never calibrated or unreachable — fails open, since
+    an empty map simply means no layer gets the extra soft-fail allowance (the existing
+    hardcoded soft layers are unaffected either way)."""
+    try:
+        _rc = _get_redis()
+        _raw = _rc.get("stockai:conviction_weights")
+        if _raw:
+            return json.loads(_raw).get("edge_pct", {})
+    except Exception:
+        pass
+    return {}
+
+
 def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: str | None = None, rankings_api_ok: bool = True) -> tuple[bool, str, list[str], list[str]]:
     """Check all conviction layers for a BUY signal across all 4 framework layers.
 
@@ -771,7 +806,17 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
     # CB-4: Near-conviction tier — allow 1 soft failure (OBV, ADX, ML, or MACD) to still send.
     # MACD is a lagging indicator; when all other layers (TA structure, RSI, ML, K-Score)
     # align bullish, a single MACD lag should not hard-block the alert.
-    _SOFT_LAYER_KEYWORDS = ("OBV", "ADX", "ML probability", "MACD")
+    _SOFT_LAYER_KEYWORDS = ["OBV", "ADX", "ML probability", "MACD"]
+    # AUD263-CONVICTION-WEIGHTS-UNGATED: extend the soft-fail set with any layer whose
+    # underlying flag has near-zero or negative calibrated edge (real signal_outcomes data,
+    # not a guess) — additive only, never removes an existing hardcoded soft layer.
+    _conviction_edges = _load_conviction_edges()
+    for _layer_kw, _flag in _CONVICTION_LAYER_FLAG.items():
+        if _layer_kw in _SOFT_LAYER_KEYWORDS:
+            continue
+        _edge = _conviction_edges.get(_flag)
+        if _edge is not None and _edge < _CONVICTION_EDGE_NOISE_THRESHOLD_PCT:
+            _SOFT_LAYER_KEYWORDS.append(_layer_kw)
     soft_failed = [f for f in failed if any(kw in f for kw in _SOFT_LAYER_KEYWORDS)]
     hard_failed = [f for f in failed if f not in soft_failed]
 

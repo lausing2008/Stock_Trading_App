@@ -44,7 +44,22 @@ def _load_constant(name: str):
     return namespace[name]
 
 
-_namespace = {"_REGIME_THRESHOLDS": _load_constant("_REGIME_THRESHOLDS")}
+# AUD263-CONVICTION-WEIGHTS-UNGATED: _is_conviction_buy() now calls _load_conviction_edges()
+# to extend its soft-fail allowance with calibrated data — stubbed here to return {} (no
+# calibration data available), matching this fix's own "empty edge map behaves exactly like
+# before the fix" guarantee (see test_conviction_weights_wired_and_gated.py for the dedicated
+# tests of that new behavior). _CONVICTION_LAYER_FLAG/_CONVICTION_EDGE_NOISE_THRESHOLD_PCT are
+# referenced by _is_conviction_buy()'s body even when the edge map is empty, so both must be
+# present in the namespace too.
+_namespace = {
+    "_REGIME_THRESHOLDS": _load_constant("_REGIME_THRESHOLDS"),
+    "_CONVICTION_LAYER_FLAG": {
+        "Uptrend": "trend_above_sma50", "OBV": "obv_trend_bullish",
+        "ADX": "adx_trending", "MACD": "macd_zero_cross_up",
+    },
+    "_CONVICTION_EDGE_NOISE_THRESHOLD_PCT": 2.0,
+    "_load_conviction_edges": lambda: {},
+}
 _is_conviction_buy = _load_function("_is_conviction_buy", _namespace)
 
 

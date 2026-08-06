@@ -767,6 +767,21 @@ def calibrate_conviction_weights(
     For each boolean reason flag, computes edge = presence_in_winners − presence_in_losers.
     Writes conviction_weights.json with per-flag accuracy and edge data.
     Flags with accuracy < 52% are marked as noise layers.
+
+    AUD263-CONVICTION-WEIGHTS-UNGATED: this function previously fit on the FULL sample and
+    wrote conviction_weights.json/Redis UNCONDITIONALLY — no chronological split, no baseline
+    comparison, no TuneHistory record — the only mutation path in this file with zero audit
+    trail, confirmed empty in production (0 tune_history rows for parameter_class LIKE
+    '%conviction%'). Separately, its output (edge_pct) had NO consumer anywhere in the codebase
+    — load_conviction_weights() existed with zero callers. Both fixed together: (1)
+    market-data's _is_conviction_buy() now reads edge_pct and uses it to extend its soft-fail
+    allowance to any layer whose underlying flag has near-zero/negative calibrated edge — a
+    real, additive consumer; (2) this function now uses the same chronological 70/30 split +
+    validation-beats-baseline + TuneHistory pattern as its sibling calibrate_ta_weights (fixed
+    2026-07-31), scored against the SAME thing its new consumer actually uses the data for:
+    whether the candidate's calibrated edges correctly separate winners from losers on a
+    held-out slice, vs. the currently-live edges (or a neutral "no calibration" baseline for
+    an actual first-ever run).
     """
     import json
     from pathlib import Path
@@ -782,56 +797,74 @@ def calibrate_conviction_weights(
     cutoff = date.today() - timedelta(days=lookback_days)
 
     rows = session.execute(
-        select(SignalOutcome.is_correct, Signal.reasons)
+        select(SignalOutcome.is_correct, SignalOutcome.pct_return, Signal.reasons, SignalOutcome.signal_date)
         .join(Signal, Signal.id == SignalOutcome.signal_id)
         .where(
             SignalOutcome.signal_direction == "BUY",
             SignalOutcome.signal_date >= cutoff,
             SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.pct_return.is_not(None),
             Signal.reasons.is_not(None),
         )
+        # Chronological order is load-bearing: the train/validation split below assumes the
+        # OLDER slice trains and the NEWER slice (never seen while fitting) validates.
+        .order_by(SignalOutcome.signal_date)
     ).all()
 
     if len(rows) < 30:
         raise HTTPException(400, f"Need ≥30 evaluated BUY outcomes, found {len(rows)}")
 
-    n_win = sum(1 for r in rows if r.is_correct)
-    n_los = sum(1 for r in rows if not r.is_correct)
-    key_wins: dict[str, int] = {}
-    key_los: dict[str, int] = {}
+    MIN_VAL_SAMPLES = 15  # same floor established by calibrate_ml_weight/calibrate_ta_weights
+    split = max(1, int(len(rows) * 0.7))
+    train_rows, val_rows = rows[:split], rows[split:]
 
-    for r in rows:
-        reasons = r.reasons or {}
-        bucket = key_wins if r.is_correct else key_los
-        for k, v in reasons.items():
-            if isinstance(v, bool) and v:
-                bucket[k] = bucket.get(k, 0) + 1
+    if len(val_rows) < MIN_VAL_SAMPLES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only {len(val_rows)} validation-slice rows after a 70/30 chronological split (need {MIN_VAL_SAMPLES})",
+        )
 
-    all_keys = set(key_wins) | set(key_los)
-    layer_stats: dict[str, dict] = {}
-    for k in all_keys:
-        wc = key_wins.get(k, 0)
-        lc = key_los.get(k, 0)
-        if wc + lc < min_count:
-            continue
-        wp = wc / n_win if n_win > 0 else 0.0
-        lp = lc / n_los if n_los > 0 else 0.0
-        accuracy = wc / (wc + lc) if (wc + lc) > 0 else 0.5
-        layer_stats[k] = {
-            "win_pct": round(wp * 100, 1),
-            "los_pct": round(lp * 100, 1),
-            "edge_pct": round((wp - lp) * 100, 1),
-            "accuracy": round(accuracy * 100, 1),
-            "is_noise": accuracy < 0.52,
-            "win_count": wc,
-            "los_count": lc,
-        }
+    def _fit_layer_stats(fit_rows: list) -> dict[str, dict]:
+        n_win = sum(1 for r in fit_rows if r.is_correct)
+        n_los = sum(1 for r in fit_rows if not r.is_correct)
+        key_wins: dict[str, int] = {}
+        key_los: dict[str, int] = {}
+        for r in fit_rows:
+            reasons = r.reasons or {}
+            bucket = key_wins if r.is_correct else key_los
+            for k, v in reasons.items():
+                if isinstance(v, bool) and v:
+                    bucket[k] = bucket.get(k, 0) + 1
+        all_keys = set(key_wins) | set(key_los)
+        stats: dict[str, dict] = {}
+        for k in all_keys:
+            wc = key_wins.get(k, 0)
+            lc = key_los.get(k, 0)
+            if wc + lc < min_count:
+                continue
+            wp = wc / n_win if n_win > 0 else 0.0
+            lp = lc / n_los if n_los > 0 else 0.0
+            accuracy = wc / (wc + lc) if (wc + lc) > 0 else 0.5
+            stats[k] = {
+                "win_pct": round(wp * 100, 1),
+                "los_pct": round(lp * 100, 1),
+                "edge_pct": round((wp - lp) * 100, 1),
+                "accuracy": round(accuracy * 100, 1),
+                "is_noise": accuracy < 0.52,
+                "win_count": wc,
+                "los_count": lc,
+            }
+        return stats
 
-    # Fit logistic regression for coefficient-based weights
+    # Fit on the TRAIN slice only — the validation slice below is held out from this fit.
+    layer_stats = _fit_layer_stats(train_rows)
+
+    # Fit logistic regression for coefficient-based weights (reference only, not used in the
+    # gate below — mirrors calibrate_ta_weights' own train_cv_accuracy, a diagnostic figure).
     features = sorted(layer_stats.keys())
-    if len(features) >= 3 and len(rows) >= 50:
-        X = np.array([[int(bool((r.reasons or {}).get(f))) for f in features] for r in rows])
-        y = np.array([int(r.is_correct) for r in rows])
+    if len(features) >= 3 and len(train_rows) >= 50:
+        X = np.array([[int(bool((r.reasons or {}).get(f))) for f in features] for r in train_rows])
+        y = np.array([int(r.is_correct) for r in train_rows])
         try:
             lr = LogisticRegression(max_iter=500, C=1.0, random_state=42)
             lr.fit(X, y)
@@ -841,16 +874,87 @@ def calibrate_conviction_weights(
         except Exception:
             pass
 
+    candidate_edges = {k: v["edge_pct"] for k, v in layer_stats.items()}
+
+    from ..generators.signals import load_conviction_weights as _current_live_edges_fn
+    current_live_edges = _current_live_edges_fn()
+
+    def _edge_separation_ev(edges: dict[str, float], scored_rows: list) -> tuple[float | None, int]:
+        """The property _is_conviction_buy() actually uses this data for: does a NEGATIVE-edge
+        flag correctly predict a loser more often than a POSITIVE-edge flag predicts a winner?
+        Scores each row by sum(edge_pct for present boolean flags with calibration data),
+        splits at the median (weight-scale-agnostic, mirrors calibrate_ta_weights' own
+        _weighted_score_accuracy_and_ev shape), and reports the EV among the top half — a
+        candidate whose edges genuinely separate winners from losers should show a materially
+        better top-half EV than one whose edges are noise."""
+        if not edges:
+            return None, 0
+        scores = []
+        for r in scored_rows:
+            reasons = r.reasons or {}
+            s = sum(edges.get(k, 0.0) for k, v in reasons.items() if isinstance(v, bool) and v and k in edges)
+            scores.append(s)
+        if not scores:
+            return None, 0
+        median_score = sorted(scores)[len(scores) // 2]
+        fired_idx = [i for i, s in enumerate(scores) if s >= median_score]
+        if not fired_idx:
+            return None, 0
+        avg_ret = sum(scored_rows[i].pct_return for i in fired_idx) / len(fired_idx)
+        return avg_ret, len(fired_idx)
+
+    candidate_ev, candidate_n = _edge_separation_ev(candidate_edges, val_rows)
+    baseline_ev, baseline_n = _edge_separation_ev(current_live_edges, val_rows)
+
+    import uuid as _uuid
+    _run_id = str(_uuid.uuid4())
+    _train_start, _train_end = train_rows[0].signal_date, train_rows[-1].signal_date
+    _val_start, _val_end = val_rows[0].signal_date, val_rows[-1].signal_date
+
+    # First-ever calibration (no live edges yet) has nothing to beat — auto-promote, matching
+    # every sibling mechanism's own first-run convention (e.g. calibrate_ta_weights,
+    # tune_strategy), rather than blocking the feature from ever turning on.
+    no_baseline = not current_live_edges
+    validated = no_baseline or (
+        candidate_ev is not None
+        and baseline_ev is not None
+        and candidate_n >= MIN_VAL_SAMPLES
+        and candidate_ev > baseline_ev
+    )
+
     payload = {
         "as_of": date.today().isoformat(),
         "lookback_days": lookback_days,
-        "total_winners": n_win,
-        "total_losers": n_los,
+        "total_winners": sum(1 for r in train_rows if r.is_correct),
+        "total_losers": sum(1 for r in train_rows if not r.is_correct),
         "layer_count": len(layer_stats),
         "noise_count": sum(1 for s in layer_stats.values() if s["is_noise"]),
         "layers": layer_stats,
-        "edge_pct": {k: v["edge_pct"] for k, v in layer_stats.items()},
+        "edge_pct": candidate_edges,
     }
+
+    if not validated:
+        _record_tune_history(
+            session, _run_id, "conviction_weights", "edge_pct_vector", "ALL", "ALL",
+            old_value={"edge_pct": current_live_edges},
+            new_value={"edge_pct": candidate_edges},
+            train_window=(_train_start, _train_end), validation_window=(_val_start, _val_end),
+            train_ev_pct=None,
+            validation_ev_pct=round(candidate_ev, 2) if candidate_ev is not None else None,
+            baseline_validation_ev_pct=round(baseline_ev, 2) if baseline_ev is not None else None,
+            validation_n=candidate_n, promoted=False,
+            gate_failures=["ev_lift_not_positive_on_validation"] if candidate_ev is not None else ["candidate_unmeasurable_on_validation"],
+        )
+        return {
+            "applied": False,
+            "reason": "candidate edges did not beat the current live edges on the held-out validation slice",
+            "n_signals": len(rows),
+            "n_train": len(train_rows),
+            "n_val": len(val_rows),
+            "candidate_validation_ev_pct": round(candidate_ev, 2) if candidate_ev is not None else None,
+            "baseline_validation_ev_pct": round(baseline_ev, 2) if baseline_ev is not None else None,
+            "layers": layer_stats,
+        }
 
     try:
         Path(_CONVICTION_WEIGHTS_PATH).parent.mkdir(parents=True, exist_ok=True)
@@ -863,7 +967,19 @@ def calibrate_conviction_weights(
     except Exception:
         pass
 
-    log.info("conviction_weights.calibrated", layers=len(layer_stats), noise=payload["noise_count"])
+    _record_tune_history(
+        session, _run_id, "conviction_weights", "edge_pct_vector", "ALL", "ALL",
+        old_value={"edge_pct": current_live_edges},
+        new_value={"edge_pct": candidate_edges},
+        train_window=(_train_start, _train_end), validation_window=(_val_start, _val_end),
+        train_ev_pct=None,
+        validation_ev_pct=round(candidate_ev, 2) if candidate_ev is not None else None,
+        baseline_validation_ev_pct=round(baseline_ev, 2) if baseline_ev is not None else None,
+        validation_n=candidate_n, promoted=True, gate_failures=[],
+    )
+
+    log.info("conviction_weights.calibrated", layers=len(layer_stats), noise=payload["noise_count"],
+              validation_ev_pct=candidate_ev, baseline_validation_ev_pct=baseline_ev)
     return payload
 
 
