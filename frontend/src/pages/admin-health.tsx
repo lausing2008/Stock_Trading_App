@@ -34,6 +34,16 @@ const JOB_META: Record<string, { label: string; maxAgeDays: number; desc: string
   // Always-on background jobs
   live_price_cache_refresh:  { label: 'Live Price Cache',            maxAgeDays: 1,  desc: 'Writes live prices to Redis every 1 min during market hours (US/HK 09–17)' },
   price_alert_check:         { label: 'Price Alert Check',           maxAgeDays: 1,  desc: 'Checks user alert thresholds against Redis live cache every 1 min' },
+  // AUD266-FIVE-ALERT-JOBS-RECORD-NO-STATUS: these 5 alert jobs previously made ZERO
+  // _record_job_status() calls, so they never appeared in `jobs` at all — invisible both to
+  // this JOB_META table (falling back to a raw key + generic 7-day maxAge) AND to the
+  // errorCount/staleCount header summary below (which only ever inspects `jobs`, so a
+  // declared job that silently stops reporting entirely never counts against "All healthy").
+  check_price_alerts:        { label: 'Price Alert Check (User Thresholds)', maxAgeDays: 1, desc: 'Fires user price-threshold alerts + delisting deactivation + portfolio drawdown warnings, every 1 min' },
+  check_signal_alerts:       { label: 'Signal Change Alerts',        maxAgeDays: 1,  desc: 'Conviction-gated BUY alerts + exit warnings + earnings reminder digest, every 1 min' },
+  check_earnings_reactions:  { label: 'Earnings Reaction Alerts',    maxAgeDays: 2,  desc: 'Plain (non-LLM) post-earnings reaction email, every 5 min' },
+  check_earnings_impact_alerts: { label: 'Earnings LLM Impact Alerts', maxAgeDays: 2, desc: 'LLM-generated earnings impact read — opt-in via earnings_llm_impact_enabled feature flag' },
+  check_macro_reaction_alerts: { label: 'Macro Reaction Alerts',     maxAgeDays: 2,  desc: 'LLM-generated macro release reaction read — opt-out via macro_llm_reaction_enabled feature flag' },
   // Maintenance
   paper_portfolio_digest:    { label: 'Portfolio Digest Email',      maxAgeDays: 2,  desc: 'After-market portfolio digest email to all users — 17:00 ET on trading days' },
   db_purge_weekly:           { label: 'DB Weekly Purge',             maxAgeDays: 8,  desc: 'Deletes prices_5m + scheduler_jobs rows older than 90 days (Sun 15:00 PST)' },
@@ -188,6 +198,16 @@ export default function AdminHealthPage() {
     if (!meta) return false;
     return (Date.now() - new Date(j.last_run).getTime()) / 86400000 > meta.maxAgeDays;
   }).length;
+  // AUD266-FIVE-ALERT-JOBS-RECORD-NO-STATUS: a job declared in JOB_META with NO matching row
+  // in `jobs` at all (never once called _record_job_status, or Redis lost the key) previously
+  // contributed to neither errorCount nor staleCount — completely invisible to this header,
+  // which could show "All healthy" while a real alert job had silently never run. Only counts
+  // once jobs has actually loaded (data !== undefined) — an empty/loading state must not flash
+  // every declared job as "missing" before the first fetch resolves.
+  const missingJobKeys = data
+    ? Object.keys(JOB_META).filter(key => !jobs.some(j => j.job === key))
+    : [];
+  const missingCount = missingJobKeys.length;
 
   if (!authed) return null;
 
@@ -210,7 +230,15 @@ export default function AdminHealthPage() {
               {staleCount} stale
             </span>
           )}
-          {errorCount === 0 && staleCount === 0 && jobs.length > 0 && (
+          {missingCount > 0 && (
+            <span
+              title={`Declared jobs with zero status record: ${missingJobKeys.join(', ')}`}
+              style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)' }}
+            >
+              {missingCount} missing
+            </span>
+          )}
+          {errorCount === 0 && staleCount === 0 && missingCount === 0 && jobs.length > 0 && (
             <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 700, color: '#4ade80', background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.2)' }}>
               All healthy
             </span>
@@ -332,6 +360,22 @@ export default function AdminHealthPage() {
             })}
           </div>
 
+          {/* Alert & notification jobs — AUD266-FIVE-ALERT-JOBS-RECORD-NO-STATUS */}
+          <div style={{ marginBottom: '8px', fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>ALERT &amp; NOTIFICATION JOBS</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '10px', marginBottom: '24px' }}>
+            {['check_price_alerts', 'check_signal_alerts', 'check_earnings_reactions', 'check_earnings_impact_alerts', 'check_macro_reaction_alerts'].map(key => {
+              const job = jobs.find(j => j.job === key);
+              if (!job) return (
+                <div key={key} style={{ padding: '14px 16px', borderRadius: '10px', background: '#080f1e', border: '1px solid rgba(239,68,68,0.3)' }}>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#334155' }}>{JOB_META[key]?.label ?? key}</div>
+                  {JOB_META[key]?.desc && <div style={{ fontSize: '10px', color: '#1e293b', marginTop: '2px' }}>{JOB_META[key].desc}</div>}
+                  <div style={{ fontSize: '11px', color: '#f87171', marginTop: '4px' }}>⚠ No record yet — this job has never reported status</div>
+                </div>
+              );
+              return <JobCard key={key} job={job} />;
+            })}
+          </div>
+
           {/* Intraday + background jobs */}
           <div style={{ marginBottom: '8px', fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>INTRADAY &amp; BACKGROUND</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '10px' }}>
@@ -340,6 +384,8 @@ export default function AdminHealthPage() {
               'morning_digest_us', 'morning_digest_hk',
               'post_open_digest_us_30min', 'post_open_digest_us_1hr',
               'post_open_digest_hk_30min', 'post_open_digest_hk_1hr',
+              'check_price_alerts', 'check_signal_alerts', 'check_earnings_reactions',
+              'check_earnings_impact_alerts', 'check_macro_reaction_alerts',
             ].includes(j.job)).map(j => (
               <JobCard key={j.job} job={j} />
             ))}

@@ -131,12 +131,59 @@ def test_bearish_puts_metric_faded_uses_the_gamma_unwind_concentration_threshold
     assert "_GAMMA_UNWIND_MIN_OI_CONCENTRATION" in body
 
 
-def test_bearish_puts_watch_rolling_off_the_scan_entirely_counts_as_faded():
-    """If a symbol no longer appears in the current bearish-puts-watch cache at all (or is no
-    longer puts-dominant), that must ALSO count as the setup having faded — not just a
-    concentration % drop while still present."""
+def test_bearish_puts_watch_present_but_not_puts_dominant_counts_as_faded():
+    """If a symbol IS present in a fresh scan but no longer puts-dominant, that counts as the
+    setup having faded — a real, positive signal from a real scan result."""
     body = _check_squeeze_watch_reverts_body()
-    assert 'bp is None or bp.get("dominant_side") != "puts"' in body
+    assert 'if bp is not None and bp.get("dominant_side") != "puts":' in body
+
+
+# ── AUD265-BEARISHPUTS-MASS-AUTOREVERT-ON-OUTAGE ────────────────────────────────────────────
+
+def test_missing_bearish_watch_cache_does_not_count_as_faded():
+    """The core fix: a MISSING/stale/unparseable stockai:bearish_puts_watch cache must NEVER be
+    treated as proof a setup faded — only a symbol genuinely absent from a FRESH scan counts.
+    Before this fix, `bp is None` alone (regardless of cache freshness) set metric_faded = True,
+    so a gamma-job outage (all yfinance calls failing, or a zero-candidate cycle that used to
+    skip the cache write entirely) would silently mass-revert every un-reverted bearish_puts
+    watch and permanently consume the one-shot alert."""
+    body = _check_squeeze_watch_reverts_body()
+    assert "elif bp is None and _bearish_cache_fresh:" in body
+    # The SECOND `elif bp is None:` branch (the stale/missing-cache case, distinct from the
+    # first `elif bp is None and _bearish_cache_fresh:` branch above it) must set
+    # metric_faded = False as the very next non-comment statement — not just "somewhere in
+    # the function", which a sabotage that flips this ONE branch to True would not catch.
+    second_bp_none_idx = body.rindex("elif bp is None:")
+    tail_after_second_branch = body[second_bp_none_idx:second_bp_none_idx + 700]
+    assert "metric_faded = False" in tail_after_second_branch
+    assert "metric_faded = True" not in tail_after_second_branch
+
+
+def test_cache_freshness_is_determined_before_parsing_not_assumed_true():
+    """_bearish_cache_fresh must reflect whether the Redis GET returned real data (key exists),
+    not just default to True — and must be set to False again if the JSON parse itself fails
+    (a corrupted/truncated value is just as untrustworthy as a missing key)."""
+    body = _check_squeeze_watch_reverts_body()
+    assert "_bearish_cache_raw = _rc.get(" in body
+    assert "_bearish_cache_fresh = _bearish_cache_raw is not None" in body
+    except_idx = body.index("except Exception:\n                _bearish_by_symbol = {}")
+    tail = body[except_idx:except_idx + 120]
+    assert "_bearish_cache_fresh = False" in tail
+
+
+def test_gamma_unwind_writes_the_cache_even_with_zero_candidates():
+    """The OTHER half of the fix, in check_gamma_unwind_alerts(): the cache write must happen
+    BEFORE the early-return-on-zero-candidates, not after — a genuinely completed scan that
+    found nothing is real information the revert checker needs to see as a FRESH empty cache,
+    not as a missing one."""
+    _gamma_start = _scheduler_source.index("def check_gamma_unwind_alerts(")
+    _gamma_end = _scheduler_source.index("\ndef ", _gamma_start + 1)
+    gamma_body = _scheduler_source[_gamma_start:_gamma_end]
+    write_idx = gamma_body.index('_rc.setex("stockai:bearish_puts_watch"')
+    # The actual CODE statement, not the explanatory comment above it which legitimately
+    # quotes "if not candidates: return" in prose while describing the bug this fixes.
+    early_return_idx = gamma_body.index("if not candidates:\n                _record_job_status")
+    assert write_idx < early_return_idx
 
 
 def test_marks_reverted_only_after_a_successful_send_not_before():

@@ -2374,7 +2374,14 @@ def gate_backtest(
     # "unknown" was previously missing here and relied on .get(regime, 0.70) coincidentally
     # matching "neutral"'s value — made explicit so a future change to either side's "unknown"/
     # "neutral" value doesn't silently desync this backtest replica from the real gate.
-    _REGIME_ML_THRESH = {"bull": 0.65, "neutral": 0.70, "high_vol": 0.78, "bear": 0.78, "unknown": 0.70}
+    # AUD264-REGIME-ML-THRESH-MISSING-CHOPPY-RISKOFF: choppy/risk_off added to match the real
+    # gate's own values exactly (choppy<-high_vol's 0.78, risk_off<-bear's 0.78) — both were
+    # previously missing here too and would have fallen through to the LOOSER 0.70 "unknown"
+    # default via .get(regime, 0.70) below.
+    _REGIME_ML_THRESH = {
+        "bull": 0.65, "neutral": 0.70, "high_vol": 0.78, "bear": 0.78, "unknown": 0.70,
+        "choppy": 0.78, "risk_off": 0.78,
+    }
 
     def _apply_gate(r: dict, horizon: str, new_macd_cond: bool, new_macd_soft: bool, new_growth_rsi: bool):
         """Inline replay of _is_conviction_buy. Returns (passes, tier, list[failed_keys])."""

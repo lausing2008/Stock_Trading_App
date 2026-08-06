@@ -578,6 +578,17 @@ _REGIME_THRESHOLDS: dict[str, dict] = {
     "high_vol": {"ml": 0.78, "confluence": 82, "confidence": 68, "tier": "high_vol"},
     "bear":     {"ml": 0.78, "confluence": 82, "confidence": 68, "tier": "bear"},
     "unknown":  {"ml": 0.70, "confluence": 75, "confidence": 60, "tier": "neutral"},
+    # AUD264-REGIME-ML-THRESH-MISSING-CHOPPY-RISKOFF / AUD264-SIGNALENGINE-SECOND-REGIME-
+    # CLASSIFIER: signal-engine now sends the canonical regime vocabulary (bull/neutral/
+    # choppy/risk_off/bear) in reasons["market_regime"], which _is_conviction_buy() reads
+    # directly as `effective_regime`. Without these two entries, choppy/risk_off fell through
+    # to .get(effective_regime, _REGIME_THRESHOLDS["unknown"]) — a LOOSER gate (ml=0.70) than
+    # bear's own 0.78, exactly when the tightest gate is wanted. choppy maps to the existing
+    # "high_vol" tier's values (moderately defensive); risk_off maps to "bear"'s (most
+    # defensive) — matching the same conservative mapping already applied when adding these
+    # states to signal-engine's own _STYLE_PROFILES threshold tables.
+    "choppy":   {"ml": 0.78, "confluence": 82, "confidence": 68, "tier": "high_vol"},
+    "risk_off": {"ml": 0.78, "confluence": 82, "confidence": 68, "tier": "bear"},
 }
 # Legacy fallbacks (used outside conviction gate — keep for non-BUY path)
 _MIN_CONFIDENCE  = 60.0
@@ -1176,6 +1187,12 @@ def check_earnings_reactions() -> None:
     _earnings_alert_recipient_symbols()'s own docstring for why a one-shot PriceAlert alone
     isn't reliable coverage) — additive, so existing PriceAlert-based coverage is unaffected.
     """
+    # AUD266-FIVE-ALERT-JOBS-RECORD-NO-STATUS: this function previously made ZERO
+    # _record_job_status() calls, so it was invisible to GET /admin/scheduler-status and the
+    # admin health page — a total outage would render "All healthy" indefinitely. Matches
+    # check_top3_conviction()'s own established pattern: one "ok" call at every early-return
+    # point, one "error" call in the outer except.
+    _t0 = time.monotonic()
     try:
         acquired = _get_redis().set(_EARNINGS_REACTION_LOCK_KEY, "1", nx=True, ex=_EARNINGS_REACTION_LOCK_TTL)
         if not acquired:
@@ -1187,6 +1204,7 @@ def check_earnings_reactions() -> None:
             user_symbols, users_by_id = _earnings_alert_recipient_symbols(session)
             all_symbols = {sym for syms in user_symbols.values() for sym in syms}
             if not all_symbols:
+                _record_job_status("check_earnings_reactions", "ok", time.monotonic() - _t0)
                 return
 
             # Only symbols that reported in the last 2 days AND have eps_actual populated —
@@ -1202,6 +1220,7 @@ def check_earnings_reactions() -> None:
                 )
             ).all()
             if not rows:
+                _record_job_status("check_earnings_reactions", "ok", time.monotonic() - _t0)
                 return
 
             _rc = _get_redis()
@@ -1230,8 +1249,10 @@ def check_earnings_reactions() -> None:
                         except Exception:
                             pass
                         log.info("signal_alert.earnings_reaction_sent", symbol=sym, user=u_obj.username)
+            _record_job_status("check_earnings_reactions", "ok", time.monotonic() - _t0)
     except Exception as exc:
         log.error("signal_alert.earnings_reaction_error", error=str(exc))
+        _record_job_status("check_earnings_reactions", "error", time.monotonic() - _t0, str(exc))
 
 
 _MACRO_REACTION_LOCK_KEY = "stockai:lock:check_macro_reaction_alerts"
@@ -1252,9 +1273,15 @@ def check_macro_reaction_alerts() -> None:
     this feature has been live and relied upon since T249-P2 — unlike auto_research_enabled,
     which had a real production cost-leak bug forcing a default-OFF flip, this flag exists so
     the user can turn it off if wanted, not because it's had a cost problem).
+
+    AUD266-FIVE-ALERT-JOBS-RECORD-NO-STATUS: this function previously made ZERO
+    _record_job_status() calls — invisible to GET /admin/scheduler-status and the admin
+    health page. Matches check_top3_conviction()'s established pattern.
     """
+    _t0 = time.monotonic()
     try:
         if _get_redis().get(_REDIS_MACRO_LLM_ENABLED) == "0":
+            _record_job_status("check_macro_reaction_alerts", "ok", time.monotonic() - _t0)
             return
     except Exception:
         pass
@@ -1273,6 +1300,7 @@ def check_macro_reaction_alerts() -> None:
                 )
             ).scalars().all()
             if not pending:
+                _record_job_status("check_macro_reaction_alerts", "ok", time.monotonic() - _t0)
                 return
 
             alerts = session.execute(
@@ -1280,6 +1308,7 @@ def check_macro_reaction_alerts() -> None:
             ).scalars().all()
             recipients = {a.user_id: a.user for a in alerts if a.user and a.user.email}
             if not recipients:
+                _record_job_status("check_macro_reaction_alerts", "ok", time.monotonic() - _t0)
                 return
 
             from .email_service import send_email
@@ -1294,8 +1323,10 @@ def check_macro_reaction_alerts() -> None:
                 if any_sent:
                     ev.reaction_sent_at = datetime.now(timezone.utc)
                     session.commit()
+            _record_job_status("check_macro_reaction_alerts", "ok", time.monotonic() - _t0)
     except Exception as exc:
         log.error("signal_alert.macro_reaction_error", error=str(exc))
+        _record_job_status("check_macro_reaction_alerts", "error", time.monotonic() - _t0, str(exc))
 
 
 _EARNINGS_IMPACT_LOCK_KEY = "stockai:lock:check_earnings_impact_alerts"
@@ -1318,9 +1349,15 @@ def check_earnings_impact_alerts() -> None:
     stocks I get earnings alerts for" — the plain alert already worked this way, the LLM one
     silently didn't. Now scoped per-symbol via the same _earnings_alert_recipient_symbols()
     merge check_earnings_reactions() uses (PriceAlert OR EarningsAlertSubscription).
+
+    AUD266-FIVE-ALERT-JOBS-RECORD-NO-STATUS: this function previously made ZERO
+    _record_job_status() calls — invisible to GET /admin/scheduler-status and the admin
+    health page. Matches check_top3_conviction()'s established pattern.
     """
+    _t0 = time.monotonic()
     try:
         if _get_redis().get(_REDIS_EARNINGS_LLM_ENABLED) != "1":
+            _record_job_status("check_earnings_impact_alerts", "ok", time.monotonic() - _t0)
             return
     except Exception:
         return
@@ -1335,6 +1372,7 @@ def check_earnings_impact_alerts() -> None:
             user_symbols, users_by_id = _earnings_alert_recipient_symbols(session)
             all_symbols = {sym for syms in user_symbols.values() for sym in syms}
             if not all_symbols:
+                _record_job_status("check_earnings_impact_alerts", "ok", time.monotonic() - _t0)
                 return
 
             pending = session.execute(
@@ -1345,6 +1383,7 @@ def check_earnings_impact_alerts() -> None:
                 )
             ).all()
             if not pending:
+                _record_job_status("check_earnings_impact_alerts", "ok", time.monotonic() - _t0)
                 return
 
             from .email_service import send_email
@@ -1365,8 +1404,10 @@ def check_earnings_impact_alerts() -> None:
                 if any_sent:
                     ev.impact_sent_at = datetime.now(timezone.utc)
                     session.commit()
+            _record_job_status("check_earnings_impact_alerts", "ok", time.monotonic() - _t0)
     except Exception as exc:
         log.error("signal_alert.earnings_impact_error", error=str(exc))
+        _record_job_status("check_earnings_impact_alerts", "error", time.monotonic() - _t0, str(exc))
 
 
 _FUTURES = [
@@ -2457,19 +2498,26 @@ def check_gamma_unwind_alerts() -> None:
                     continue
                 time.sleep(1.0)  # rate-limit discipline, matching compute_options_flow_snapshots_eod
 
-            if not candidates:
-                _record_job_status("check_gamma_unwind_alerts", "ok", time.monotonic() - _t0)
-                return
-
             # BEARISH-PUTS-WATCH: cache the puts-dominant, 3-5-day subset (cross-checked against
             # each stock's own real bearish signals) for the short-squeeze page to read directly —
             # no second options-chain fetch, this is a pure filter over the scan that already ran.
+            # AUD265-BEARISHPUTS-MASS-AUTOREVERT-ON-OUTAGE: this write must happen even when
+            # `candidates` is empty — a genuinely completed scan that found nothing IS real
+            # information (check_squeeze_watch_reverts() needs to see a fresh, empty cache to
+            # correctly treat a symbol's absence as a real fade rather than stale/missing data).
+            # The early "if not candidates: return" that used to sit BEFORE this write meant a
+            # clean zero-candidate cycle never refreshed the cache at all, so the 6h TTL could
+            # expire with no distinction from an outage.
             try:
                 bearish_watch = _bearish_puts_watch_candidates(session, candidates)
                 _rc.setex("stockai:bearish_puts_watch", 6 * 3600, _json.dumps(bearish_watch))
             except Exception as exc:
                 log.warning("gamma_unwind.bearish_watch_cache_failed", error=str(exc))
                 bearish_watch = []
+
+            if not candidates:
+                _record_job_status("check_gamma_unwind_alerts", "ok", time.monotonic() - _t0)
+                return
 
             from .email_service import send_gamma_unwind_email
             sent = 0
@@ -2633,13 +2681,21 @@ def check_squeeze_watch_reverts() -> None:
                 }
             except Exception:
                 _live_by_symbol = {}
+            # AUD265-BEARISHPUTS-MASS-AUTOREVERT-ON-OUTAGE: distinguish "the cache is genuinely
+            # fresh and this symbol really rolled off the scan" from "the cache is missing/
+            # stale/unparseable" — a missing key (gamma job never ran, or ran with 0 candidates
+            # and never refreshed the cache — see check_gamma_unwind_alerts' own early return
+            # above the cache write) must NEVER be treated as proof a bearish_puts setup faded.
+            # _bearish_cache_fresh gates the "rolled off the scan" fade branch below.
+            _bearish_cache_raw = _rc.get("stockai:bearish_puts_watch")
+            _bearish_cache_fresh = _bearish_cache_raw is not None
             try:
                 _bearish_by_symbol = {
-                    row["symbol"]: row
-                    for row in _json.loads(_rc.get("stockai:bearish_puts_watch") or "[]")
+                    row["symbol"]: row for row in _json.loads(_bearish_cache_raw or "[]")
                 }
             except Exception:
                 _bearish_by_symbol = {}
+                _bearish_cache_fresh = False
 
             from .email_service import send_squeeze_watch_revert_email
             reverted_count = 0
@@ -2666,8 +2722,17 @@ def check_squeeze_watch_reverts() -> None:
                             pass
                     else:  # bearish_puts
                         bp = _bearish_by_symbol.get(w.symbol)
-                        if bp is None or bp.get("dominant_side") != "puts":
-                            metric_faded = True  # rolled off the scan entirely — setup is gone
+                        if bp is not None and bp.get("dominant_side") != "puts":
+                            metric_faded = True  # present in a FRESH scan, no longer puts-dominant
+                        elif bp is None and _bearish_cache_fresh:
+                            metric_faded = True  # genuinely rolled off a FRESH scan — setup is gone
+                        elif bp is None:
+                            # Cache missing/stale/unparseable — cannot distinguish "setup faded"
+                            # from "the gamma job hasn't refreshed this cycle" or "it ran with
+                            # zero candidates and never wrote the cache". Absence of data must
+                            # never be read as proof of fade — only price_recovered (checked
+                            # independently above) can revert this watch on this cycle.
+                            metric_faded = False
                         else:
                             current_metric = bp.get("concentration_pct")
                             if current_metric is not None:
@@ -3106,7 +3171,12 @@ def check_signal_alerts() -> None:
 
     Bearish/exit transitions (BUY→HOLD/WAIT/SELL) bypass the gate — exit
     warnings are always sent regardless of scores.
+
+    AUD266-FIVE-ALERT-JOBS-RECORD-NO-STATUS: this function previously made ZERO
+    _record_job_status() calls — invisible to GET /admin/scheduler-status and the admin
+    health page. Matches check_top3_conviction()'s established pattern.
     """
+    _t0 = time.monotonic()
     # Distributed lock: US + HK refreshes both call this function. NX+EX ensures only one
     # run executes at a time — the second caller skips rather than sending duplicate emails.
     try:
@@ -3126,6 +3196,7 @@ def check_signal_alerts() -> None:
                 select(SignalAlert).options(selectinload(SignalAlert.user))
             ).scalars().all()
             if not alerts:
+                _record_job_status("check_signal_alerts", "ok", time.monotonic() - _t0)
                 return
 
             # SCHED-6: Prune stale fail-count entries for deleted alert IDs to prevent unbounded growth.
@@ -3632,8 +3703,10 @@ def check_signal_alerts() -> None:
                                  symbols=[r["symbol"] for r in digest_rows], user=u_obj.username)
             except Exception as exc:
                 log.warning("signal_alert.earnings_reminder_error", error=str(exc))
+            _record_job_status("check_signal_alerts", "ok", time.monotonic() - _t0)
     except Exception as exc:
         log.error("signal_alert.check_error", error=str(exc))
+        _record_job_status("check_signal_alerts", "error", time.monotonic() - _t0, str(exc))
     finally:
         try:
             _get_redis().delete(_SIGNAL_ALERT_LOCK_KEY)
@@ -3757,7 +3830,13 @@ def _is_usable_price(p) -> bool:
 
 
 def check_price_alerts() -> None:
-    """Check all untriggered alerts against latest live prices and fire emails."""
+    """Check all untriggered alerts against latest live prices and fire emails.
+
+    AUD266-FIVE-ALERT-JOBS-RECORD-NO-STATUS: this function previously made ZERO
+    _record_job_status() calls — invisible to GET /admin/scheduler-status and the admin
+    health page. Matches check_top3_conviction()'s established pattern.
+    """
+    _t0 = time.monotonic()
     try:
         acquired = _get_redis().set(_PRICE_ALERT_LOCK_KEY, "1", nx=True, ex=_PRICE_ALERT_LOCK_TTL)
         if not acquired:
@@ -3772,6 +3851,7 @@ def check_price_alerts() -> None:
                 select(PriceAlert).where(PriceAlert.triggered.is_(False))
             ).scalars().all()
             if not alerts:
+                _record_job_status("check_price_alerts", "ok", time.monotonic() - _t0)
                 return
 
             # Fetch live prices for all unique symbols at once
@@ -3954,8 +4034,10 @@ def check_price_alerts() -> None:
                                  symbol=trade.symbol, pct=round(pct * 100, 1), email=owner_email)
             except Exception as _pe:
                 log.warning("alert.position_drawdown_error", error=str(_pe))
+            _record_job_status("check_price_alerts", "ok", time.monotonic() - _t0)
     except Exception as exc:
         log.error("alert.check_error", error=str(exc))
+        _record_job_status("check_price_alerts", "error", time.monotonic() - _t0, str(exc))
     finally:
         try:
             _get_redis().delete(_PRICE_ALERT_LOCK_KEY)

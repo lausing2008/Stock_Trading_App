@@ -392,7 +392,8 @@
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('services/signal-engine/src/api/routes.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(ssh lausing@lausing.com \"cd ~/Stock_Trading_App && git pull origin dev && docker compose -f docker/docker-compose.yml build signal-engine ml-prediction && docker compose -f docker/docker-compose.yml up -d signal-engine ml-prediction\")",
       "Bash(python3 /tmp/check_eps.py)",
-      "Bash(python3 /tmp/check_short.py)"
+      "Bash(python3 /tmp/check_short.py)",
+      "Bash(ssh -i ~/Documents/Stock_AI/lausing.pem ec2-user@18.205.121.71 \"docker restart stockai-market-data-1 && sleep 6 && docker logs stockai-market-data-1 --tail 15\")"
     ]
   }
 }

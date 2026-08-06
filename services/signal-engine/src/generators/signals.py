@@ -419,27 +419,41 @@ def _fetch_ml_data(symbol: str, style_key: str = "SWING") -> tuple[float | None,
 def _fetch_market_regime() -> tuple[str, float | None]:
     """Returns (regime, fear_greed_score).
 
-    Regime is one of: 'bull', 'high_vol', 'bear', 'unknown'.
-    - 'bear'     : S&P 500 below its 200-day MA
-    - 'high_vol' : S&P 500 in bull territory but Fear & Greed score < 30
-                   (market stress despite price holding — elevated crash risk)
-    - 'bull'     : S&P 500 above 200-day MA, fear & greed >= 30
+    AUD264-SIGNALENGINE-SECOND-REGIME-CLASSIFIER: previously derived regime independently
+    from /stocks/fear_greed (a bull/high_vol/bear/unknown vocabulary that could never emit
+    choppy/risk_off), producing a genuinely different classification than the canonical
+    classifier market-data/decision-engine both use — confirmed to disagree at the same
+    instant in real conditions (e.g. SPY above its 200d MA with elevated VIX: this function
+    said "bull", the canonical classifier said "risk_off"). Now calls GET /stocks/regime
+    directly — the SAME single implementation (paper_trading_engine's own
+    _fetch_market_regime()/get_last_regime(), exposed over HTTP specifically so other
+    services stop maintaining independent copies) that decision-engine already uses.
+
+    Regime is one of: 'bull', 'neutral', 'choppy', 'risk_off', 'bear' (canonical 5-state
+    vocabulary), or 'unknown' on a fetch failure (fail-open — this function's own fallback,
+    not part of the canonical vocabulary itself).
+
+    fear_greed_score is still fetched from /stocks/fear_greed separately — it's a genuinely
+    different signal (crowd sentiment, not price/VIX regime) still used elsewhere in this
+    file (reasons["fear_greed_score"]) independent of the regime classification itself.
     """
+    regime = "unknown"
+    try:
+        with httpx.Client(timeout=5) as c:
+            r = c.get(f"{_settings.market_data_url}/stocks/regime", params={"market": "US"})
+            if r.status_code == 200:
+                regime = r.json().get("state", "unknown")
+    except Exception:
+        pass
+    fg_score = None
     try:
         with httpx.Client(timeout=5) as c:
             r = c.get(f"{_settings.market_data_url}/stocks/fear_greed")
             if r.status_code == 200:
-                data = r.json()
-                sp500_regime = data.get("sp500_regime", "unknown")
-                fg_score = data.get("score")
-                if sp500_regime == "bear":
-                    return "bear", fg_score
-                if fg_score is not None and fg_score < 30:
-                    return "high_vol", fg_score
-                return "bull", fg_score
+                fg_score = r.json().get("score")
     except Exception:
         pass
-    return "unknown", None
+    return regime, fg_score
 
 
 def _fetch_market_breadth() -> float | None:
@@ -455,19 +469,33 @@ def _fetch_market_breadth() -> float | None:
 
 
 def _fetch_hsi_regime() -> str:
-    """Returns 'bull', 'bear', or 'unknown' based on HSI vs its 20-day SMA.
+    """Returns 'bull', 'bear', or 'unknown' — only these two real states, since the one real
+    consumer (the hsi_bear_gate compression below) only ever checks for "bear" specifically.
 
     Called only for HK stocks. Returns 'unknown' on any failure (fail-open).
     The US SPY/VIX regime does not reflect HK market conditions — during June 2026,
     all HK signals showed market_regime='bull' while HSI was in a sustained downtrend.
+
+    AUD264-SIGNALENGINE-SECOND-REGIME-CLASSIFIER: previously ran an independent yfinance
+    fetch + its own HSI-vs-SMA20 classification — a THIRD regime classifier alongside the
+    old fear_greed-based one (now fixed, see _fetch_market_regime() above) and the canonical
+    market-data classifier. Now calls GET /stocks/regime?market=HK — the SAME canonical
+    classifier (paper_trading_engine's get_last_hk_regime()) decision-engine already uses for
+    HK, rather than a third independent implementation of "is HSI trending down." The
+    canonical classifier's 5-state output (bull/neutral/choppy/risk_off/bear) is translated
+    down to this function's own bull/bear/unknown, since that's the only distinction its one
+    real consumer (hsi_bear_gate) actually reads: neutral/choppy map to "bull" (not a
+    confirmed bearish HK regime), risk_off maps to "bear" (a confirmed defensive HK state).
     """
     try:
-        import yfinance as yf
-        hist = yf.Ticker("^HSI").history(period="35d")
-        closes = hist["Close"].dropna().tolist()
-        if len(closes) >= 20:
-            sma20 = sum(closes[-20:]) / 20
-            return "bull" if float(closes[-1]) > sma20 else "bear"
+        with httpx.Client(timeout=5) as c:
+            r = c.get(f"{_settings.market_data_url}/stocks/regime", params={"market": "HK"})
+            if r.status_code == 200:
+                state = r.json().get("state", "unknown")
+                if state in ("bear", "risk_off"):
+                    return "bear"
+                if state in ("bull", "neutral", "choppy"):
+                    return "bull"
     except Exception:
         pass
     return "unknown"
@@ -1536,8 +1564,19 @@ _STYLE_PROFILES: dict[str, dict] = {
         "ml_weight_cap": 0.30,
         "ml_weight_floor": 0.10,  # global cap cannot push ML weight below this
         # SA-31: bull raised 0.60→0.63; 16.2% BUY win rate (n=37) — tighter TA alignment needed.
-        "buy_threshold":  {"bull": 0.63, "high_vol": 0.65, "bear": 0.68, "unknown": 0.62},
-        "hold_threshold": {"bull": 0.46, "high_vol": 0.50, "bear": 0.52, "unknown": 0.47},
+        # AUD264-SIGNALENGINE-SECOND-REGIME-CLASSIFIER: added neutral/choppy/risk_off keys
+        # when migrating from the local fear_greed-based classifier (bull/high_vol/bear/
+        # unknown) to the canonical 5-state /stocks/regime classifier. Conservative mapping —
+        # no new untested values invented: neutral <- old "unknown" (closest semantic match,
+        # "no strong directional read"), choppy <- old "high_vol" (moderately defensive),
+        # risk_off <- old "bear" (most defensive, matching bear's own tightness). bull/bear
+        # keep their existing calibrated values unchanged. A future calibration pass can
+        # refine these 3 once enough real choppy/risk_off outcome data accumulates (Audit #1
+        # found bull-regime samples dominate signal_outcomes; non-bull data is still thin).
+        "buy_threshold":  {"bull": 0.63, "high_vol": 0.65, "bear": 0.68, "unknown": 0.62,
+                            "neutral": 0.62, "choppy": 0.65, "risk_off": 0.68},
+        "hold_threshold": {"bull": 0.46, "high_vol": 0.50, "bear": 0.52, "unknown": 0.47,
+                            "neutral": 0.47, "choppy": 0.50, "risk_off": 0.52},
         # SA-31: raised 25→27; SHORT requires a cleaner directional trend to BUY.
         "adx_min": 27, "adx_compression": 0.85,
         "high_vol_compression": 0.92,
@@ -1565,8 +1604,13 @@ _STYLE_PROFILES: dict[str, dict] = {
         # T232-DL6: no separate HK SWING threshold exists — this single buy_threshold dict
         # applies identically to US and HK SWING signals. HK-specific adjustment happens only
         # via the HSI-regime compression gates (hsi_bear_gate etc.), not a per-market threshold.
-        "buy_threshold":  {"bull": 0.72, "high_vol": 0.74, "bear": 0.76, "unknown": 0.72},
-        "hold_threshold": {"bull": 0.50, "high_vol": 0.54, "bear": 0.56, "unknown": 0.50},
+        # AUD264-SIGNALENGINE-SECOND-REGIME-CLASSIFIER: see SHORT profile's comment above for
+        # the migration rationale — same conservative mapping (neutral<-unknown, choppy<-
+        # high_vol, risk_off<-bear) applied consistently across all 4 style profiles.
+        "buy_threshold":  {"bull": 0.72, "high_vol": 0.74, "bear": 0.76, "unknown": 0.72,
+                            "neutral": 0.72, "choppy": 0.74, "risk_off": 0.76},
+        "hold_threshold": {"bull": 0.50, "high_vol": 0.54, "bear": 0.56, "unknown": 0.50,
+                            "neutral": 0.50, "choppy": 0.54, "risk_off": 0.56},
         "adx_min": 15, "adx_compression": 0.90,
         "high_vol_compression": 0.85,
         "breadth_compression": 0.90,
@@ -1583,8 +1627,11 @@ _STYLE_PROFILES: dict[str, dict] = {
     "LONG": {
         "ml_weight_cap": 0.45,
         "ml_weight_floor": 0.12,
-        "buy_threshold":  {"bull": 0.60, "high_vol": 0.65, "bear": 0.70, "unknown": 0.62},
-        "hold_threshold": {"bull": 0.46, "high_vol": 0.50, "bear": 0.54, "unknown": 0.46},
+        # AUD264-SIGNALENGINE-SECOND-REGIME-CLASSIFIER: see SHORT profile's comment above.
+        "buy_threshold":  {"bull": 0.60, "high_vol": 0.65, "bear": 0.70, "unknown": 0.62,
+                            "neutral": 0.62, "choppy": 0.65, "risk_off": 0.70},
+        "hold_threshold": {"bull": 0.46, "high_vol": 0.50, "bear": 0.54, "unknown": 0.46,
+                            "neutral": 0.46, "choppy": 0.50, "risk_off": 0.54},
         "adx_min": None, "adx_compression": None,
         "high_vol_compression": 0.90,
         "breadth_compression": 0.92,
@@ -1610,8 +1657,11 @@ _STYLE_PROFILES: dict[str, dict] = {
         "ml_weight_cap": 0.60,
         "ml_weight_floor": 0.20,
         # SA-28: GROWTH bull threshold raised 0.57→0.60 — aligns with SHORT/LONG in bull markets.
-        "buy_threshold":  {"bull": 0.60, "high_vol": 0.65, "bear": 0.68, "unknown": 0.60},
-        "hold_threshold": {"bull": 0.45, "high_vol": 0.50, "bear": 0.52, "unknown": 0.45},
+        # AUD264-SIGNALENGINE-SECOND-REGIME-CLASSIFIER: see SHORT profile's comment above.
+        "buy_threshold":  {"bull": 0.60, "high_vol": 0.65, "bear": 0.68, "unknown": 0.60,
+                            "neutral": 0.60, "choppy": 0.65, "risk_off": 0.68},
+        "hold_threshold": {"bull": 0.45, "high_vol": 0.50, "bear": 0.52, "unknown": 0.45,
+                            "neutral": 0.45, "choppy": 0.50, "risk_off": 0.52},
         "adx_min": 12, "adx_compression": 0.92,
         "high_vol_compression": 0.88,
         "breadth_compression": 0.95,
@@ -1818,7 +1868,13 @@ def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tupl
     Returns (signal, style_key, threshold_tier).
     """
     p = _STYLE_PROFILES[style_key]
-    reg = market_regime if market_regime in ("bull", "high_vol", "bear", "unknown") else "unknown"
+    # AUD264-SIGNALENGINE-SECOND-REGIME-CLASSIFIER: market_regime is now the canonical
+    # 5-state value (bull/neutral/choppy/risk_off/bear) from /stocks/regime, not the old
+    # local fear_greed-derived bull/high_vol/bear/unknown. "unknown" is kept in the valid
+    # set as the fail-open value _fetch_market_regime() itself still returns on a fetch
+    # failure (see that function's own docstring) — it is NOT part of the canonical
+    # vocabulary, just this function's own "I don't know" fallback.
+    reg = market_regime if market_regime in ("bull", "neutral", "choppy", "risk_off", "bear", "unknown") else "unknown"
     # Dynamic buy override from outcomes-based calibration
     dynamic_buy = _get_dynamic_buy_threshold(style_key, reg)
     buy_t  = dynamic_buy if dynamic_buy is not None else p["buy_threshold"][reg]
@@ -1826,7 +1882,7 @@ def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tupl
     # T228: dynamic SELL threshold from SELL-outcomes calibration; fallback to _SELL_THRESHOLD_FALLBACK
     dynamic_sell = _get_dynamic_sell_threshold(style_key)
     sell_t = dynamic_sell if dynamic_sell is not None else _SELL_THRESHOLD_FALLBACK
-    tier = "bull" if reg == "bull" else ("bear" if reg in ("bear", "high_vol") else "neutral")
+    tier = "bull" if reg == "bull" else ("bear" if reg in ("bear", "risk_off") else "neutral")
     if fused_prob > buy_t:   return "BUY",  style_key, tier
     if fused_prob > hold_t:  return "HOLD", style_key, tier
     if fused_prob >= sell_t: return "WAIT", style_key, tier
@@ -2064,7 +2120,12 @@ def _apply_style_signal(
     # that CONFIRM a SELL — compressing SELL candidates toward neutral here suppressed the
     # signal in the regime that validates it.
     hv_comp = _get_style_tuned_param(style_key, "high_vol_compression", p.get("high_vol_compression"))
-    hv_fired = hv_comp is not None and market_regime == "high_vol" and fused > 0.5
+    # AUD264-SIGNALENGINE-SECOND-REGIME-CLASSIFIER: "high_vol" was the old local classifier's
+    # elevated-risk state; the canonical classifier's equivalent states are "choppy" and
+    # "risk_off" (both used as elevated-risk BUY-compression triggers here, matching the old
+    # single-state behavior — kept intentionally simple rather than differentiating the two,
+    # since neither has enough real outcome data yet to justify separate compression values).
+    hv_fired = hv_comp is not None and market_regime in ("high_vol", "choppy", "risk_off") and fused > 0.5
     if hv_fired:
         fused = 0.5 + (fused - 0.5) * hv_comp
     reasons["high_vol_compression"] = hv_fired
@@ -2103,7 +2164,7 @@ def _apply_style_signal(
         ebr_short = earnings_beat_rate
         if ebr_short is not None and ebr_short >= 0.70 and market_regime == "bull":
             beat_scale_short = 2.0  # reliable beater — halve compression
-        elif market_regime in ("bear", "high_vol"):
+        elif market_regime in ("bear", "high_vol", "choppy", "risk_off"):  # AUD264-SIGNALENGINE-SECOND-REGIME-CLASSIFIER
             beat_scale_short = 0.85 if ebr_short is None else float(np.clip(0.75 + 0.25 * ebr_short, 0.75, 1.0))
         else:
             beat_scale_short = 1.0 if ebr_short is None else float(np.clip(1.0 + 0.20 * (ebr_short - 0.50) / 0.50, 0.80, 1.20))
@@ -2123,7 +2184,7 @@ def _apply_style_signal(
         else:
             if market_regime == "bull" and ebr is not None and ebr >= 0.50:
                 beat_scale = 2.0  # halve compression for moderate bull beater
-            elif market_regime in ("bear", "high_vol"):
+            elif market_regime in ("bear", "high_vol", "choppy", "risk_off"):  # AUD264-SIGNALENGINE-SECOND-REGIME-CLASSIFIER
                 # Tighten: low beat_rate → stronger compression; clamp [0.75, 1.0]
                 beat_scale = 0.85 if ebr is None else float(np.clip(0.75 + 0.25 * ebr, 0.75, 1.0))
             else:
