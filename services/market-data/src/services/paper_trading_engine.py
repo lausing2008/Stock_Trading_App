@@ -2401,6 +2401,22 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                     "message": f"Break-even stop hit: stop ${stop:.2f} ≈ entry ${entry:.2f}, live ${live_price:.2f}",
                     "pnl_pct": round(pnl_pct * 100, 2),
                 }
+            elif stop > entry:
+                # AUD262-EXITREASON-CONFLATION-ROOT: a stop that has RATCHETED UP above entry
+                # (trailing_stop.py's monotonic-raise-only mechanism) and then triggers is a
+                # PROFITABLE exit — it must never share the "stop_hit" label with a genuine
+                # protective loss-cut (stop <= entry). Two economically opposite events were
+                # being labeled identically, which corrupted 6 downstream consumers: the heat
+                # brake counted profitable trailing exits as "adverse conditions" and halted all
+                # new entries; the 5-day re-entry cooldown banned re-entry into a symbol BECAUSE
+                # it made money; and postmortem/Journal exit analytics blended winning and
+                # losing exits into one meaningless average. Confirmed in production: 14 of 49
+                # stop_hit trades exited PROFITABLY, up to +13.96%.
+                exit_reason = "trailing_stop"
+                exit_notes = {**_base_notes,
+                    "message": f"Trailing stop ${stop:.2f} (above entry ${entry:.2f}) hit at live ${live_price:.2f} — a profitable exit, not a loss-cut",
+                    "pnl_pct": round(pnl_pct * 100, 2),
+                }
             else:
                 exit_reason = "stop_hit"
                 exit_notes = {**_base_notes,
@@ -2514,8 +2530,11 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             # PT-B6: apply exit slippage (sells at a slightly lower price than quoted)
             # RISK-2: stop-hit exits fill at stop level (not gap price) — simulates stop-limit semantics
             slippage = cfg.get("entry_slippage_pct", 0.001)
-            # QW-7: use min(stop, live_price) so gap-downs fill at market price, not stop price
-            fill_base = min(stop, live_price) if exit_reason == "stop_hit" else live_price
+            # QW-7: use min(stop, live_price) so gap-downs fill at market price, not stop price.
+            # AUD262-EXITREASON-CONFLATION-ROOT: trailing_stop gets the same stop-level fill
+            # semantics as stop_hit — both are triggered by live_price <= stop, just at
+            # different stop-vs-entry positions.
+            fill_base = min(stop, live_price) if exit_reason in ("stop_hit", "trailing_stop") else live_price
             exit_price = round(fill_base * (1 - slippage), 4)
             exit_commission = round(cfg.get("commission_per_share", 0.0) * trade.shares, 4)
             exit_value = round(exit_price * trade.shares, 2)
@@ -2559,8 +2578,16 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                         # AUD19-DB3: cutoffs are calendar-day approximations of trading-day horizons.
                         # 7 calendar days ≈ 5 trading days (SHORT), 14 ≈ 10 (SWING), 15+ ≈ 11–20+ (LONG).
                         _bucket = "5d" if days_held <= 7 else ("10d" if days_held <= 14 else "20d")
-                        setattr(_so, f"return_{_bucket}", round(pnl_pct, 4))
-                        setattr(_so, f"is_correct_{_bucket}", pnl_dollar > 0)
+                        # AUD262-SIGNALOUTCOME-LASTTRANCHE-WRITEBACK: use the SAME blended
+                        # total_pnl_pct/total_pnl_dollar trade.pct_return/trade.pnl already use
+                        # (T232-PT6, above) — not the unblended final-tranche pnl_pct/pnl_dollar.
+                        # A trade that scaled out profitably on the way up and trailed the
+                        # remainder to a small loss is a real winner; writing the unblended
+                        # last-tranche values here recorded it as a loser in the ML ground truth
+                        # (signal accuracy, confidence calibration, entry-gate tuning) even
+                        # though trade.pnl correctly showed a gain.
+                        setattr(_so, f"return_{_bucket}", round(total_pnl_pct, 4))
+                        setattr(_so, f"is_correct_{_bucket}", total_pnl_dollar > 0)
                         session.flush()
                 except Exception as _soe:
                     # AUD232-016: bumped from warning to error — a failed writeback here

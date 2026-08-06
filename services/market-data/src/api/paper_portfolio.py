@@ -520,7 +520,7 @@ def get_trades(
 # self-improvement/calibration-loop discipline documented elsewhere in this repo says to
 # trust first, before adding an LLM-generated prose layer on top in a later version.
 
-_MECHANICAL_EXIT_REASONS = {"stop_hit", "breakeven_stop", "target_reached", "time_stop"}
+_MECHANICAL_EXIT_REASONS = {"stop_hit", "trailing_stop", "breakeven_stop", "target_reached", "time_stop"}
 
 
 @router.get("/trades/{trade_id}/postmortem")

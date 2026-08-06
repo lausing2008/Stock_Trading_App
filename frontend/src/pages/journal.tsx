@@ -7,6 +7,10 @@ import { api, type PaperDecisionItem, type JournalTrade, type JournalTradeIn, ty
 
 const EXIT_META: Record<string, { label: string; bg: string; color: string }> = {
   stop_hit:           { label: 'Stop Hit',    bg: 'rgba(239,68,68,0.15)',   color: '#f87171' },
+  // AUD262-EXITREASON-CONFLATION-ROOT: a trailing stop that ratcheted above entry and
+  // triggered is a PROFITABLE exit — distinct from stop_hit (a real loss-cut), so it gets its
+  // own green badge rather than sharing stop_hit's red one.
+  trailing_stop:      { label: 'Trail Stop',  bg: 'rgba(34,197,94,0.15)',   color: '#4ade80' },
   target_reached:     { label: 'Target',      bg: 'rgba(34,197,94,0.15)',   color: '#4ade80' },
   signal_exit:        { label: 'Signal Exit', bg: 'rgba(251,191,36,0.15)',  color: '#fbbf24' },
   time_stop:          { label: 'Time Stop',   bg: 'rgba(100,116,139,0.2)',  color: '#94a3b8' },
