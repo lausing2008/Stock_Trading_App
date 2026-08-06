@@ -575,7 +575,11 @@ def factor_exposure(
             continue
 
         total += 1
-        correct = exit_p > entry
+        # AUD261-BARE-GT-ZERO-NO-HURDLE: matches evaluate_signal_outcomes'/rolling_accuracy's
+        # canonical _OUTCOME_WIN_HURDLE_PCT convention instead of a bare price-comparison —
+        # BUY-only here (see the Signal.signal == SignalType.BUY filter above), so no sign
+        # error, but a +0.1% move (below realistic cost) previously counted as a win.
+        correct = (exit_p - entry) / entry > _OUTCOME_WIN_HURDLE_PCT
 
         for fname, _, _, _ in FACTORS:
             raw = reasons.get(fname)
@@ -1050,13 +1054,19 @@ def filter_audit(
                 "signal_date":  signal_date.isoformat(),
                 "filter_count": count,
                 "return_pct":   round(ret * 100, 2),
-                "win":          ret > 0,
+                # AUD261-BARE-GT-ZERO-NO-HURDLE: matches evaluate_signal_outcomes'/
+                # rolling_accuracy's canonical _OUTCOME_WIN_HURDLE_PCT convention — BUY-only
+                # here (line 978's SignalType.BUY filter), so no sign error, but a +0.1% move
+                # (below realistic cost) previously counted as a win. This "win" value drives
+                # filter_audit's "harmful"/"predictive" verdict, which real tuning decisions
+                # read directly.
+                "win":          ret > _OUTCOME_WIN_HURDLE_PCT,
             })
 
     summary = []
     for fc in sorted(buckets):
         rets = buckets[fc]
-        wins = sum(1 for r in rets if r > 0)
+        wins = sum(1 for r in rets if r > _OUTCOME_WIN_HURDLE_PCT)
         summary.append({
             "filter_count":     fc,
             "trade_count":      len(rets),
@@ -1103,8 +1113,8 @@ def filter_audit(
     for fname in all_filter_names:
         act = filter_buckets[fname]["active"]
         inact = filter_buckets[fname]["inactive"]
-        act_wr   = round(sum(1 for r in act   if r > 0) / len(act)   * 100, 1) if act   else None
-        inact_wr = round(sum(1 for r in inact if r > 0) / len(inact) * 100, 1) if inact else None
+        act_wr   = round(sum(1 for r in act   if r > _OUTCOME_WIN_HURDLE_PCT) / len(act)   * 100, 1) if act   else None
+        inact_wr = round(sum(1 for r in inact if r > _OUTCOME_WIN_HURDLE_PCT) / len(inact) * 100, 1) if inact else None
         act_avg   = round(sum(act)   / len(act)   * 100, 2) if act   else None
         inact_avg = round(sum(inact) / len(inact) * 100, 2) if inact else None
         edge = round((act_wr or 0) - (inact_wr or 0), 1)  # negative = filter correctly suppresses bad trades

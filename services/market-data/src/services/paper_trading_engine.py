@@ -2395,13 +2395,23 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             # T197: Distinguish break-even stops (stop ≈ entry) from real losses.
             # A break-even exit means the trade ran positive, came back, and exited flat.
             _be_tol = entry * 0.005  # 0.5% tolerance around entry
-            if abs(stop - entry) <= _be_tol:
+            # AUD262-BREAKEVEN-COOLDOWN-60X-TOO-SHORT: the ORIGINAL check here only compared
+            # the STOP LEVEL to entry (abs(stop - entry) <= _be_tol) — completely independent
+            # of the actual FILL (live_price). A gap-down or next-cycle price can fill well
+            # BELOW a breakeven-tolerance stop, realizing a real loss while still being
+            # labeled "breakeven_stop" — exactly the same label-vs-fill conflation
+            # AUD262-EXITREASON-CONFLATION-ROOT already fixed for stop_hit/trailing_stop
+            # above. Confirmed in production: 22 of 26 breakeven_stop trades LOST money,
+            # worst -5.18%. Now requires the FILL itself to also be within tolerance of
+            # entry — a fill that gapped meaningfully below the stop is a real loss-cut and
+            # falls through to the stop_hit branch below instead.
+            if abs(stop - entry) <= _be_tol and abs(live_price - entry) <= _be_tol:
                 exit_reason = "breakeven_stop"
                 exit_notes = {**_base_notes,
                     "message": f"Break-even stop hit: stop ${stop:.2f} ≈ entry ${entry:.2f}, live ${live_price:.2f}",
                     "pnl_pct": round(pnl_pct * 100, 2),
                 }
-            elif stop > entry:
+            elif stop > entry and live_price >= entry:
                 # AUD262-EXITREASON-CONFLATION-ROOT: a stop that has RATCHETED UP above entry
                 # (trailing_stop.py's monotonic-raise-only mechanism) and then triggers is a
                 # PROFITABLE exit — it must never share the "stop_hit" label with a genuine
@@ -2412,6 +2422,15 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                 # it made money; and postmortem/Journal exit analytics blended winning and
                 # losing exits into one meaningless average. Confirmed in production: 14 of 49
                 # stop_hit trades exited PROFITABLY, up to +13.96%.
+                #
+                # AUD262-BREAKEVEN-COOLDOWN-60X-TOO-SHORT: added `and live_price >= entry` —
+                # without it, a stop sitting only marginally above entry (within the breakeven
+                # tolerance just above, so it fails the breakeven branch's OWN live_price check)
+                # combined with a hard gap-down fill well BELOW entry would still satisfy `stop >
+                # entry` alone and be mislabeled a profitable "trailing_stop" exit, when the real
+                # fill was a genuine loss. Requiring the fill to have actually realized at or
+                # above entry confirms this really is the ratcheted-stop-profitable-exit case,
+                # not a gap-through of a stop that merely started out just above entry.
                 exit_reason = "trailing_stop"
                 exit_notes = {**_base_notes,
                     "message": f"Trailing stop ${stop:.2f} (above entry ${entry:.2f}) hit at live ${live_price:.2f} — a profitable exit, not a loss-cut",

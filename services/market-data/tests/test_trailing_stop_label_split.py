@@ -45,12 +45,17 @@ def test_trailing_stop_is_a_distinct_label_from_stop_hit():
 
 def test_trailing_stop_branch_requires_stop_above_entry():
     """The new branch must only fire when the stop that triggered had ratcheted ABOVE entry —
-    a stop at or below entry (a genuine loss-cut) must still be stop_hit."""
+    a stop at or below entry (a genuine loss-cut) must still be stop_hit.
+
+    AUD262-BREAKEVEN-COOLDOWN-60X-TOO-SHORT (2026-08-06) added `and live_price >= entry` to
+    this condition — a stop marginally above entry combined with a hard gap-down fill well
+    below entry must NOT be mislabeled trailing_stop just because `stop > entry` alone was
+    true; see test_breakeven_fill_price_check.py for the behavioral cases."""
     block = _stop_breach_block()
-    trailing_idx = block.index("elif stop > entry:")
+    trailing_idx = block.index("elif stop > entry and live_price >= entry:")
     stophit_idx = block.index('exit_reason = "stop_hit"')
     assert trailing_idx < stophit_idx
-    assert "elif stop > entry:" in block
+    assert "elif stop > entry and live_price >= entry:" in block
 
 
 def test_breakeven_check_still_runs_before_the_trailing_stop_check():
