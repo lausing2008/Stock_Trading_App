@@ -274,6 +274,83 @@ async def check_release_day_fast_poll() -> dict:
     return {"checked": checked, "found": found, "skipped": None}
 
 
+async def backfill_release_actual_values() -> dict:
+    """AUD264-RELEASE-POLL-COVERS-4-OF-10 one-time backfill: check_release_day_fast_poll() only
+    ever queries for releases due TODAY, so the 6 release types this fix newly added to
+    _RELEASE_TO_FRED_SERIES (previously silently never even SELECTed) have every PAST row still
+    sitting at actual_value=NULL forever — the normal poll cycle will never revisit an old date.
+    Live-confirmed in production: 203 past-dated *_release rows across all 10 types (not just
+    the 113 fed_funds_release the original finding cited) were missing actual_value.
+
+    Unlike the earlier AUD264 earnings backfill, FRED's own vintage query (realtime_start/
+    realtime_end pinned to the SAME past date) can answer "what was actually known/published as
+    of that specific date" — confirmed live: FRED correctly returns a different value for
+    FEDFUNDS queried at realtime_start=2026-01-16 than for "latest". This means, unlike the
+    earnings case, the correct historical value genuinely still exists and can be recovered
+    exactly, not just approximated.
+
+    Deliberately does NOT also generate an LLM reaction for a backfilled row — generate_reaction()
+    reads the CURRENT market regime to frame "how does the market react to this release," which
+    would be actively misleading for a release from months ago (framing stale historical data
+    through today's market context, not what was actually true at the time). This backfill fills
+    only the two objective, historically-verifiable fields (actual_value, previous_value);
+    reaction_text/sectors_helped/sectors_hurt are left NULL for these rows — no fabricated
+    context is better than a wrong one, matching this codebase's own established discipline.
+    """
+    api_key = getattr(_settings, "fred_api_key", "")
+    if not api_key:
+        return {"checked": 0, "filled": 0, "skipped": "no_api_key"}
+
+    today = datetime.now(timezone.utc).date()
+    checked = 0
+    filled = 0
+    with SessionLocal() as s:
+        past_missing = s.execute(
+            select(EconomicEvent).where(
+                EconomicEvent.event_type.in_(list(_RELEASE_TO_FRED_SERIES.keys())),
+                EconomicEvent.event_date < datetime(today.year, today.month, today.day, tzinfo=timezone.utc),
+                EconomicEvent.actual_value.is_(None),
+            )
+        ).scalars().all()
+
+        loop = asyncio.get_running_loop()
+        for ev in past_missing:
+            series_id = _RELEASE_TO_FRED_SERIES.get(ev.event_type)
+            if not series_id:
+                continue
+            checked += 1
+            release_date = ev.event_date.date().isoformat()
+            try:
+                r = await loop.run_in_executor(
+                    _macro_reaction_executor,
+                    lambda sid=series_id, rd=release_date: httpx.get(
+                        "https://api.stlouisfed.org/fred/series/observations",
+                        params={
+                            "series_id": sid, "api_key": api_key, "file_type": "json",
+                            "realtime_start": rd, "realtime_end": rd,
+                            "sort_order": "desc", "limit": 2,
+                        },
+                        timeout=10,
+                    ),
+                )
+                if r.status_code != 200:
+                    continue
+                obs = r.json().get("observations", [])
+                if not obs or obs[0]["value"] in (".", ""):
+                    continue
+                ev.actual_value = float(obs[0]["value"])
+                ev.previous_value = (
+                    float(obs[1]["value"]) if len(obs) > 1 and obs[1]["value"] not in (".", "") else None
+                )
+                s.commit()
+                filled += 1
+                log.info("macro_reaction.backfill_filled", event_type=ev.event_type, release_date=release_date)
+            except Exception as exc:
+                log.warning("macro_reaction.backfill_error", event_type=ev.event_type, release_date=release_date, error=str(exc))
+
+    return {"checked": checked, "filled": filled, "skipped": None}
+
+
 def _is_fomc_day(today) -> bool:
     return any(d == today.isoformat() for d, _, _ in _FOMC_DATES)
 

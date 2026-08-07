@@ -10,7 +10,7 @@ from db import get_session, SessionLocal, Stock, EconomicEvent
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..services import economic, earnings, insider, congress, institutional, political, catalyst, edgar_8k, valuation
+from ..services import economic, earnings, insider, congress, institutional, political, catalyst, edgar_8k, valuation, macro_reaction
 
 router = APIRouter()
 
@@ -37,6 +37,17 @@ def get_economic(
 @router.post("/events/sync/economic")
 async def sync_economic(_: str = Depends(get_current_username)):
     result = await economic.sync_fred()
+    return result
+
+
+@router.post("/events/economic/backfill_release_actuals")
+async def backfill_release_actuals(_: str = Depends(get_current_username)):
+    """AUD264-RELEASE-POLL-COVERS-4-OF-10: one-time (but safe to re-run) backfill of
+    actual_value/previous_value for past-dated *_release rows that check_release_day_fast_poll()
+    could never have filled (it only ever queries for releases due TODAY). See
+    macro_reaction.backfill_release_actual_values()'s own docstring for why no LLM reaction is
+    generated for these backfilled rows."""
+    result = await macro_reaction.backfill_release_actual_values()
     return result
 
 
