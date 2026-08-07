@@ -1492,6 +1492,131 @@ def check_earnings_impact_alerts() -> None:
         _record_job_status("check_earnings_impact_alerts", "error", time.monotonic() - _t0, str(exc))
 
 
+_EARLY_EARNINGS_NEWS_LOCK_KEY = "stockai:lock:check_early_earnings_news_alerts"
+_EARLY_EARNINGS_NEWS_LOCK_TTL = 55  # seconds — runs every 60s, same pattern as check_price_alerts
+
+
+def check_early_earnings_news_alerts() -> None:
+    """User-requested follow-up to T249-MARKETMOVER-P1/check_earnings_reactions(): that alert
+    only fires once EarningsEvent.eps_actual lands via yfinance's earnings_history/earnings_dates
+    (event-intelligence's sync_todays_earnings(), every 15 min 7am-9pm ET) — confirmed live
+    2026-08-06 that yfinance itself can lag the REAL announcement by hours (a company can
+    genuinely report after-hours with the structured EPS number not appearing in yfinance's
+    data until later, sometimes the next morning's full sync).
+
+    news-intelligence (T259-NEWS-INTELLIGENCE, port 8011) already ingests real-time headlines
+    from 4 sources (PR Newswire ~under 30s observed latency, Business Wire, SEC EDGAR's
+    real-time filing feed ~2min latency, Alpaca's push WebSocket) and already classifies each
+    one's `category` via Claude — "earnings" is one of the 6 fixed categories
+    (classify.py's own _SYSTEM prompt). This is very likely to see a real earnings
+    announcement (a press release, or an 8-K furnished alongside one) BEFORE yfinance's
+    structured EPS data catches up — it's the actual news landing, not a downstream aggregator.
+
+    This is deliberately a SEPARATE, additive alert, not a replacement for
+    check_earnings_reactions() — it has no EPS actual/estimate/surprise to report (that data
+    doesn't exist yet, which is the whole reason this alert fires earlier), so it can only
+    honestly say "we spotted earnings news for this stock," with the raw headline, framed as
+    an early heads-up. Once eps_actual lands, check_earnings_reactions()'s own alert (or the
+    optional LLM impact alert) delivers the actual result — this alert intentionally stops
+    firing for a symbol the moment EarningsEvent.eps_actual is populated (checked below), so a
+    user is never told about the same earnings twice with two different alert types.
+    """
+    _t0 = time.monotonic()
+    try:
+        acquired = _get_redis().set(_EARLY_EARNINGS_NEWS_LOCK_KEY, "1", nx=True, ex=_EARLY_EARNINGS_NEWS_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    try:
+        with SessionLocal() as session:
+            user_symbols, users_by_id = _earnings_alert_recipient_symbols(session)
+            all_symbols = {sym for syms in user_symbols.values() for sym in syms}
+            if not all_symbols:
+                _record_job_status("check_early_earnings_news_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            # Only symbols whose most recent {yesterday, today}-dated EarningsEvent row still
+            # has eps_actual NULL — once the real number has landed, check_earnings_reactions()
+            # already owns the alert for that symbol; this early-heads-up alert must not also
+            # fire (or re-fire) once the full reaction has already been sent.
+            cutoff = date.today() - timedelta(days=1)
+            still_pending = set(session.execute(
+                select(Stock.symbol).join(EarningsEvent, EarningsEvent.stock_id == Stock.id).where(
+                    Stock.symbol.in_(all_symbols),
+                    EarningsEvent.report_date >= cutoff,
+                    EarningsEvent.eps_actual.is_(None),
+                )
+            ).scalars().all())
+            if not still_pending:
+                _record_job_status("check_early_earnings_news_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            _rc = _get_redis()
+            from .email_service import send_email
+            today_str = date.today().isoformat()
+            for sym in sorted(still_pending):
+                headline = _fetch_earnings_news_headline(sym)
+                if headline is None:
+                    continue
+                subject = f"📰 {sym} — earnings news spotted"
+                body_text = (
+                    f"We spotted a real-time news item classified as earnings-related for {sym}: "
+                    f"\"{headline}\". The structured EPS actual/estimate isn't available yet — "
+                    f"you'll get a follow-up alert with the full numbers once they land. "
+                    f"This is a detection of the news itself, not a confirmed result."
+                )
+                for uid, syms in user_symbols.items():
+                    if sym not in syms:
+                        continue
+                    u_obj = users_by_id.get(uid)
+                    if not u_obj or not u_obj.email:
+                        continue
+                    redis_key = f"stockai:early_earnings_news:{uid}:{sym}:{today_str}"
+                    try:
+                        if _rc and _rc.exists(redis_key):
+                            continue
+                    except Exception:
+                        pass
+                    try:
+                        sent_ok = send_email(u_obj.email, subject, f"<p>{body_text}</p>", body_text)
+                    except Exception as _send_exc:
+                        log.warning("signal_alert.early_earnings_news_send_error", symbol=sym, error=str(_send_exc))
+                        sent_ok = False
+                    if sent_ok:
+                        try:
+                            _rc and _rc.setex(redis_key, 86400, "1")  # 1-day TTL — one per user/symbol/day
+                        except Exception:
+                            pass
+                        log.info("signal_alert.early_earnings_news_sent", symbol=sym, user=u_obj.username)
+            _record_job_status("check_early_earnings_news_alerts", "ok", time.monotonic() - _t0)
+    except Exception as exc:
+        log.error("signal_alert.early_earnings_news_error", error=str(exc))
+        _record_job_status("check_early_earnings_news_alerts", "error", time.monotonic() - _t0, str(exc))
+
+
+def _fetch_earnings_news_headline(symbol: str) -> str | None:
+    """Queries news-intelligence's GET /news?symbol=X (T259-NEWS-INTELLIGENCE, port 8011) for
+    the most recent item classified category=="earnings" within the last 24h. Returns None on
+    any failure/absence — news-intelligence being unreachable or a symbol having no recent
+    earnings-classified headline must never block the wider alert cycle, matching every other
+    optional cross-service enrichment call in this codebase (signal-engine's _fetch_hot_news(),
+    _fetch_options_flow(), etc.)."""
+    try:
+        url = f"{_settings.news_intelligence_url}/news"
+        with httpx.Client(timeout=5) as c:
+            r = c.get(url, params={"symbol": symbol, "since_hours": 24, "limit": 20})
+            if r.status_code != 200:
+                return None
+            items = r.json()
+            for item in items:
+                if item.get("category") == "earnings":
+                    return item.get("headline")
+    except Exception:
+        pass
+    return None
+
+
 _FUTURES = [
     ("E-mini S&P 500", "ES=F"),
     ("E-mini Nasdaq 100", "NQ=F"),
@@ -7470,6 +7595,21 @@ def start_scheduler() -> None:
         "interval",
         minutes=1,
         id="earnings_impact_alert_check",
+        replace_existing=True,
+        max_instances=1, coalesce=True,
+    )
+
+    # ── Early earnings news alert — every minute ─────────────────────────────
+    # User-requested follow-up (2026-08-06): yfinance's own earnings_history/earnings_dates
+    # can lag the real announcement by hours, so this checks news-intelligence's real-time
+    # feed (PR Newswire/Business Wire/SEC EDGAR/Alpaca, already classifying category=="earnings")
+    # for a same-day heads-up ahead of the full check_earnings_reactions() alert above, which
+    # still owns the actual EPS-actual/estimate/surprise result once yfinance catches up.
+    _scheduler.add_job(
+        check_early_earnings_news_alerts,
+        "interval",
+        minutes=1,
+        id="early_earnings_news_alert_check",
         replace_existing=True,
         max_instances=1, coalesce=True,
     )
