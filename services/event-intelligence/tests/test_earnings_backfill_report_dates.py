@@ -89,6 +89,22 @@ def _make_reported_row(session, stock_id, report_date, eps_actual, fiscal_year=N
     return ev
 
 
+def _make_pending_row(session, stock_id, report_date):
+    """A calendar-path row for an UPCOMING (not yet reported) event — eps_actual is NULL."""
+    ev = _models.EarningsEvent(
+        stock_id=stock_id,
+        report_date=report_date,
+        eps_actual=None,
+        fiscal_year=report_date.year,
+        fiscal_quarter=(report_date.month - 1) // 3 + 1,
+        period="placeholder",
+    )
+    session.add(ev)
+    session.commit()
+    session.refresh(ev)
+    return ev
+
+
 class _FakeYFFrame:
     """Minimal stand-in for a yfinance DataFrame — supports .empty and .iterrows()."""
     def __init__(self, rows):
@@ -269,3 +285,86 @@ class TestBackfillReportDatesForSymbol:
                 ev_b = session.query(_models.EarningsEvent).filter_by(stock_id=stock_b_id).one()
                 assert ev_a.report_date == date(2025, 10, 30)  # corrected
                 assert ev_b.report_date == date(2025, 9, 30)   # untouched (different stock_id)
+
+    # ── AUD264-BACKFILL-PENDING-ROW-COLLISION: found live against real production AAPL data ──
+
+    def test_deletes_a_redundant_pending_row_already_sitting_at_the_real_date(self):
+        """The exact scenario found live in production: the normal daily sync ran AFTER this
+        fix shipped but BEFORE the one-time backfill, so its own existing_pending logic had
+        already inserted a pending row (eps_actual NULL) at the real announcement date for
+        this same event. Without handling this, moving the stale reported row onto that same
+        date raises a real UniqueViolation (confirmed live) — the fix must instead delete the
+        now-redundant pending duplicate and move the reported row (which carries the real
+        data) onto its correct date."""
+        with patch.object(earnings, "SessionLocal", _SessionLocal), \
+             patch.object(earnings, "EarningsEvent", _models.EarningsEvent), \
+             patch.object(earnings, "select", select):
+            with _SessionLocal() as session:
+                stock = _make_stock(session, symbol="COLLIDE")
+                stock_id = stock.id
+                _make_reported_row(session, stock_id, date(2025, 9, 30), eps_actual=1.85)
+                _make_pending_row(session, stock_id, date(2025, 10, 30))
+
+            with _patch_yfinance(
+                hist_rows=[{"period_end": date(2025, 9, 30), "eps_actual": 1.85}],
+                announce_rows=[{"announce_date": date(2025, 10, 30), "eps_actual": 1.85}],
+            ):
+                corrected = earnings._backfill_report_dates_for_symbol("COLLIDE", stock_id)
+
+            assert corrected == 1
+            with _SessionLocal() as session:
+                rows = session.query(_models.EarningsEvent).filter_by(stock_id=stock_id).all()
+                assert len(rows) == 1  # the redundant pending row was deleted, not duplicated
+                assert rows[0].report_date == date(2025, 10, 30)
+                assert rows[0].eps_actual == 1.85  # the real, reported data survived
+
+    def test_does_not_clobber_a_different_already_reported_row_at_the_same_date(self):
+        """A genuinely different, already-reported row (eps_actual IS NOT NULL) sitting at the
+        target date is NOT a redundant pending duplicate — it's real, independent data. The
+        backfill must skip this row rather than silently delete or overwrite it, leaving it
+        for manual review."""
+        with patch.object(earnings, "SessionLocal", _SessionLocal), \
+             patch.object(earnings, "EarningsEvent", _models.EarningsEvent), \
+             patch.object(earnings, "select", select):
+            with _SessionLocal() as session:
+                stock = _make_stock(session, symbol="REALCONFLICT")
+                stock_id = stock.id
+                _make_reported_row(session, stock_id, date(2025, 9, 30), eps_actual=1.85)
+                _make_reported_row(session, stock_id, date(2025, 10, 30), eps_actual=9.99)
+
+            with _patch_yfinance(
+                hist_rows=[{"period_end": date(2025, 9, 30), "eps_actual": 1.85}],
+                announce_rows=[{"announce_date": date(2025, 10, 30), "eps_actual": 1.85}],
+            ):
+                corrected = earnings._backfill_report_dates_for_symbol("REALCONFLICT", stock_id)
+
+            assert corrected == 0
+            with _SessionLocal() as session:
+                rows = session.query(_models.EarningsEvent).filter_by(stock_id=stock_id).all()
+                assert len(rows) == 2  # both rows survive, untouched
+                dates = sorted(r.report_date for r in rows)
+                assert dates == [date(2025, 9, 30), date(2025, 10, 30)]
+
+    def test_no_collision_when_target_date_is_genuinely_free(self):
+        """The common case (re-confirmed here alongside the two collision tests above) — no
+        row occupies the target date at all, so the update proceeds with no delete/skip
+        branch involved."""
+        with patch.object(earnings, "SessionLocal", _SessionLocal), \
+             patch.object(earnings, "EarningsEvent", _models.EarningsEvent), \
+             patch.object(earnings, "select", select):
+            with _SessionLocal() as session:
+                stock = _make_stock(session, symbol="NOCOLLIDE")
+                stock_id = stock.id
+                _make_reported_row(session, stock_id, date(2025, 9, 30), eps_actual=1.85)
+
+            with _patch_yfinance(
+                hist_rows=[{"period_end": date(2025, 9, 30), "eps_actual": 1.85}],
+                announce_rows=[{"announce_date": date(2025, 10, 30), "eps_actual": 1.85}],
+            ):
+                corrected = earnings._backfill_report_dates_for_symbol("NOCOLLIDE", stock_id)
+
+            assert corrected == 1
+            with _SessionLocal() as session:
+                rows = session.query(_models.EarningsEvent).filter_by(stock_id=stock_id).all()
+                assert len(rows) == 1
+                assert rows[0].report_date == date(2025, 10, 30)

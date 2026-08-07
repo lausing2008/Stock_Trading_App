@@ -501,6 +501,30 @@ def _backfill_report_dates_for_symbol(symbol: str, stock_id: int) -> int:
                 real_date = real_date_by_eps.get(round(ev.eps_actual, 2))
                 if real_date is None or real_date == ev.report_date:
                     continue
+                # AUD264-BACKFILL-PENDING-ROW-COLLISION: if the normal daily sync has already
+                # run since this fix shipped, it may have ALREADY inserted (or updated a
+                # pending row to) the correct real_date for this exact event via its own
+                # existing_pending logic — the (stock_id, report_date) uniqueness constraint
+                # would otherwise reject this UPDATE outright. Confirmed live: AAPL's calendar
+                # path had already written a pending row (eps_actual NULL) at the real
+                # announcement date before this backfill ran. Since the ALREADY-REPORTED row
+                # (ev, with real eps_actual/surprise_pct/strength) carries the data worth
+                # keeping, delete the redundant pending duplicate and move ev onto its date.
+                conflicting = s.execute(
+                    select(EarningsEvent).where(
+                        EarningsEvent.stock_id == stock_id,
+                        EarningsEvent.report_date == real_date,
+                        EarningsEvent.id != ev.id,
+                    )
+                ).scalars().first()
+                if conflicting is not None:
+                    if conflicting.eps_actual is not None:
+                        # A genuinely different, already-reported row already sits at this
+                        # date — do not silently clobber real, independent data; skip this
+                        # one for manual review rather than guessing which is correct.
+                        continue
+                    s.delete(conflicting)
+                    s.flush()
                 ev.report_date = real_date
                 ev.fiscal_year = real_date.year
                 ev.fiscal_quarter = (real_date.month - 1) // 3 + 1
