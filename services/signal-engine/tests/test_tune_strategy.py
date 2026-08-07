@@ -73,6 +73,16 @@ def _extract_tune_strategy(fake_redis, tune_history_calls, style_profiles=None):
             "validation_ev_pct": validation_ev_pct, "baseline_validation_ev_pct": baseline_validation_ev_pct,
         })
 
+    # AUD263-TUNESTRATEGY-NO-MULTIPLE-COMPARISONS-CORRECTION: _passes_promotion_margin() and
+    # its two constants are extracted from the REAL source too (not hand-copied) — a duplicate
+    # hardcoded reimplementation in this test file could silently drift from the real one and
+    # mask a regression, the same lesson already documented elsewhere in this codebase.
+    _margin_start = _ROUTES_SOURCE.index("_MIN_PROMOTION_EV_LIFT_PCT = 0.5")
+    _margin_end = _ROUTES_SOURCE.index("\n\n\n@router.post(\"/tune_strategy\")")
+    _margin_source = _ROUTES_SOURCE[_margin_start:_margin_end]
+    _margin_namespace = {}
+    exec(_margin_source, _margin_namespace)  # noqa: S102
+
     namespace = {
         "select": select,
         "SignalOutcome": SignalOutcome,
@@ -86,6 +96,9 @@ def _extract_tune_strategy(fake_redis, tune_history_calls, style_profiles=None):
         "_TUNE_STRATEGY_ML_CAP_GRID": [i / 100.0 for i in range(15, 76, 5)],
         "_TUNE_STRATEGY_BUY_BOUNDS": (0.55, 0.85),
         "_TUNE_STRATEGY_ML_CAP_BOUNDS": (0.15, 0.75),
+        "_passes_promotion_margin": _margin_namespace["_passes_promotion_margin"],
+        "_MIN_PROMOTION_EV_LIFT_PCT": _margin_namespace["_MIN_PROMOTION_EV_LIFT_PCT"],
+        "_MIN_PROMOTION_LIFT_SD_RATIO": _margin_namespace["_MIN_PROMOTION_LIFT_SD_RATIO"],
         "__import__": __import__,
     }
     # `from ..generators.signals import _STYLE_PROFILES` inside the function body needs a real
@@ -163,14 +176,18 @@ def test_applies_through_the_existing_redis_keys_not_new_ones():
     assert 'f"stockai:style_tune:{h}:ml_weight_cap"' in body
 
 
-def test_never_applies_negative_ev_lift():
+def test_never_applies_below_the_promotion_margin():
+    """AUD263-TUNESTRATEGY-NO-MULTIPLE-COMPARISONS-CORRECTION: the old two-stage
+    ev_lift < 0 / ev_lift < _MIN_EV_LIFT check was replaced with a single call to
+    _passes_promotion_margin() — a genuinely stricter gate (no shift-size escape hatch), so a
+    negative-lift candidate is still always rejected, just via the new gate."""
     start = _ROUTES_SOURCE.index("def tune_strategy(")
     end = _ROUTES_SOURCE.index('@router.post("/watchdog")', start)
     body = _ROUTES_SOURCE[start:end]
-    assert "if ev_lift < 0:" in body
-    idx = body.index("if ev_lift < 0:")
+    assert "if not _passes_promotion_margin(" in body
+    idx = body.index("if not _passes_promotion_margin(")
     next_gate_idx = body.index("if not (_TUNE_STRATEGY_BUY_BOUNDS", idx)
-    assert 'gate_failures=["ev_lift_negative"]' in body[idx:next_gate_idx]
+    assert 'gate_failures=["ev_lift_below_promotion_margin"]' in body[idx:next_gate_idx]
 
 
 def test_records_one_tune_history_row_per_horizon_regardless_of_outcome():
@@ -179,11 +196,12 @@ def test_records_one_tune_history_row_per_horizon_regardless_of_outcome():
     start = _ROUTES_SOURCE.index("def tune_strategy(")
     end = _ROUTES_SOURCE.index('@router.post("/watchdog")', start)
     body = _ROUTES_SOURCE[start:end]
-    # 7 skip/reject gates (insufficient_total_samples, no_candidate_met_train_criteria,
+    # 6 skip/reject gates (insufficient_total_samples, no_candidate_met_train_criteria,
     # candidate_unmeasurable_on_validation, baseline_unmeasurable_on_validation,
-    # ev_lift_negative, ev_lift_below_min_and_shift_too_small, suggested_outside_sane_bounds)
-    # + 1 success/applied path = 8.
-    assert body.count("_record_tune_history(") == 8
+    # ev_lift_below_promotion_margin — the old ev_lift_negative + ev_lift_below_min_and_shift_
+    # too_small pair merged into this one gate, suggested_outside_sane_bounds)
+    # + 1 success/applied path = 7.
+    assert body.count("_record_tune_history(") == 7
 
 
 # ── behavioral checks against the real, extracted tune_strategy() ─────────────
@@ -238,7 +256,7 @@ def test_never_promotes_a_tied_or_near_zero_lift_with_a_trivial_grid_shift():
         f"a tied (ev_lift_pct == 0) candidate with only a trivial grid shift must never be applied: {result}"
     )
     short_skip = next(s for s in result["skipped"] if s["horizon"] == "SHORT")
-    assert "below min" in short_skip["reason"]
+    assert "does not clear the promotion margin" in short_skip["reason"]
 
 
 def test_never_promotes_when_candidate_does_not_beat_baseline_on_validation():
@@ -297,3 +315,66 @@ def test_grid_search_only_considers_ml_weight_within_cap_plus_tolerance():
     end = _ROUTES_SOURCE.index('@router.post("/watchdog")', start)
     body = _ROUTES_SOURCE[start:end]
     assert 'r.get("ml_weight", 0) <= cap + 0.05' in body
+
+
+# ── _passes_promotion_margin() — direct unit tests against the real, extracted function ──────
+#
+# AUD263-TUNESTRATEGY-NO-MULTIPLE-COMPARISONS-CORRECTION: with real per-trade return SD around
+# 10pp, a 403-cell grid argmax at n=15/cell has an expected upward bias of 5-8pp of EV from
+# noise alone (see the module-level comment in calibration.py for the full derivation) — a bare
+# `ev_lift > 0` comparison rejects only about half of pure-noise "winners". These tests exercise
+# the real, extracted _passes_promotion_margin() (matching gate_harness.py's own
+# _passes_promotion_margin(), the function this was ported from) directly, rather than only
+# indirectly via the full grid-search tests above.
+
+def _extract_passes_promotion_margin():
+    start = _ROUTES_SOURCE.index("_MIN_PROMOTION_EV_LIFT_PCT = 0.5")
+    end = _ROUTES_SOURCE.index("\n\n\n@router.post(\"/tune_strategy\")")
+    namespace = {}
+    exec(_ROUTES_SOURCE[start:end], namespace)  # noqa: S102
+    return namespace["_passes_promotion_margin"], namespace["_MIN_PROMOTION_EV_LIFT_PCT"], namespace["_MIN_PROMOTION_LIFT_SD_RATIO"]
+
+
+def test_rejects_a_lift_below_the_absolute_floor_even_with_zero_dispersion():
+    passes, min_lift, _ = _extract_passes_promotion_margin()
+    candidate = [0.001] * 20  # 0.1% constant return
+    baseline = [0.0] * 20     # 0% constant return -> lift = 0.1pp, below the 0.5pp floor
+    assert not passes(candidate, baseline, ev_lift=0.1)
+
+
+def test_accepts_a_lift_that_clears_both_the_absolute_and_sd_ratio_floors():
+    passes, _, _ = _extract_passes_promotion_margin()
+    candidate = [0.06] * 20   # tight, low-dispersion winners
+    baseline = [0.0] * 20     # tight, low-dispersion baseline -> lift = 6pp, dispersion is low
+    assert passes(candidate, baseline, ev_lift=6.0)
+
+
+def test_rejects_a_lift_that_clears_the_absolute_floor_but_not_the_sd_ratio_floor():
+    """The exact scenario the multiple-comparisons fix targets: a lift that LOOKS real by the
+    old bare `> 0` (or even a small fixed `_MIN_EV_LIFT`) standard, but is small relative to how
+    noisy the underlying per-trade returns actually are — the hallmark of a grid-search false
+    positive, not a genuine edge."""
+    passes, min_lift, _ = _extract_passes_promotion_margin()
+    # High-dispersion returns (±20pp swings) shifted by only 0.6pp between groups — clears the
+    # 0.5pp absolute floor but the combined-pool SD (~16.7pp) requires >= 8.36pp to pass.
+    baseline = [0.20, -0.20, 0.15, -0.15, 0.10, -0.10, 0.25, -0.25, 0.05, -0.05] * 3
+    candidate = [r + 0.006 for r in baseline]
+    ev_lift = round((sum(candidate) / len(candidate) - sum(baseline) / len(baseline)) * 100, 2)
+    assert ev_lift > min_lift  # clears the absolute floor alone
+    assert not passes(candidate, baseline, ev_lift=ev_lift)  # but not the SD-ratio floor
+
+
+def test_zero_combined_dispersion_passes_on_the_absolute_floor_alone():
+    """When every return in both groups is identical, sd_pct is exactly 0 — the SD-ratio check
+    degenerates (a lift already >= the absolute floor is trivially "real" by definition, since
+    there is no measurement noise to distinguish it from)."""
+    passes, _, _ = _extract_passes_promotion_margin()
+    candidate = [0.05] * 10
+    baseline = [0.05 - 0.006] * 10  # constant, non-zero lift, zero dispersion in each group
+    ev_lift = round((sum(candidate) / len(candidate) - sum(baseline) / len(baseline)) * 100, 2)
+    assert passes(candidate, baseline, ev_lift=ev_lift)
+
+
+def test_insufficient_combined_data_points_rejects():
+    passes, _, _ = _extract_passes_promotion_margin()
+    assert not passes([0.10], [], ev_lift=10.0)  # only 1 combined data point, can't compute variance
