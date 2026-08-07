@@ -437,6 +437,100 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
         return 0
 
 
+def _backfill_report_dates_for_symbol(symbol: str, stock_id: int) -> int:
+    """AUD264-EARNINGS-FISCAL-QUARTER-FROM-ANNOUNCEMENT-MONTH one-time backfill: rows already
+    persisted BEFORE this fix shipped have report_date set to the fiscal PERIOD-END date, not
+    the real announcement date (see _match_report_dates_to_history()'s own docstring). The
+    normal sync path (_fetch_earnings_for_symbol) does NOT self-heal these — its
+    existing_pending lookup only matches eps_actual IS NULL rows, so re-running the ordinary
+    daily sync against an already-reported stale row would INSERT A DUPLICATE under the
+    correct date rather than fix the original. This function instead finds each already-
+    reported row (eps_actual IS NOT NULL) for the symbol and updates report_date/period/
+    fiscal_year/fiscal_quarter IN PLACE, matched by eps_actual — the exact same reliable join
+    key _match_report_dates_to_history() already uses. Returns the count of rows corrected.
+
+    Safe to run repeatedly: a row whose report_date already matches the real announcement
+    date needs no update (skipped), and a row with no matching announce-side data is left
+    untouched (matching _fetch_earnings_for_symbol's own fail-open fallback).
+    """
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker(symbol)
+        hist = ticker.earnings_history
+        if hist is None or hist.empty:
+            return 0
+        ed = ticker.earnings_dates
+        if ed is None or ed.empty:
+            return 0
+
+        hist_rows = []
+        for idx, row in hist.iterrows():
+            pe = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
+            ea = row.get("epsActual")
+            hist_rows.append({"period_end": pe, "eps_actual": float(ea) if pd.notna(ea) else None})
+
+        announce_rows = []
+        for idx, row in ed.iterrows():
+            ad = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
+            ea = row.get("Reported EPS")
+            announce_rows.append({"announce_date": ad, "eps_actual": float(ea) if pd.notna(ea) else None})
+
+        real_dates_by_period_end = _match_report_dates_to_history(hist_rows, announce_rows)
+        # Also index the real dates by eps_actual directly, so a stored row can be matched
+        # even if its OWN report_date no longer matches any period_end in the current
+        # earnings_history window (yfinance's history window rolls forward over time).
+        real_date_by_eps: dict[float, date] = {}
+        for row in hist_rows:
+            ea = row.get("eps_actual")
+            pe = row.get("period_end")
+            if ea is None or pe is None:
+                continue
+            matched = real_dates_by_period_end.get(pe.isoformat())
+            if matched is not None:
+                real_date_by_eps.setdefault(round(ea, 2), matched)
+
+        corrected = 0
+        with SessionLocal() as s:
+            rows = s.execute(
+                select(EarningsEvent).where(
+                    EarningsEvent.stock_id == stock_id,
+                    EarningsEvent.eps_actual.is_not(None),
+                )
+            ).scalars().all()
+            for ev in rows:
+                real_date = real_date_by_eps.get(round(ev.eps_actual, 2))
+                if real_date is None or real_date == ev.report_date:
+                    continue
+                ev.report_date = real_date
+                ev.fiscal_year = real_date.year
+                ev.fiscal_quarter = (real_date.month - 1) // 3 + 1
+                ev.period = f"Q{ev.fiscal_quarter} {ev.fiscal_year}"
+                corrected += 1
+            s.commit()
+        return corrected
+    except Exception as exc:
+        log.warning("earnings.backfill_report_dates_failed", symbol=symbol, error=str(exc))
+        return 0
+
+
+async def backfill_report_dates() -> dict:
+    """One-time, safe-to-re-run backfill correcting every already-stored, already-reported
+    earnings_events row's report_date from the pre-fix period-end date to the real
+    announcement date. See _backfill_report_dates_for_symbol()'s own docstring for why this
+    is a separate function from the normal daily sync, not something that self-heals."""
+    with SessionLocal() as s:
+        stocks = s.execute(select(Stock.id, Stock.symbol)).all()
+
+    loop = asyncio.get_running_loop()
+    total = 0
+    for stock_id, symbol in stocks:
+        n = await loop.run_in_executor(_executor, _backfill_report_dates_for_symbol, symbol, stock_id)
+        total += n
+        await asyncio.sleep(0.2)  # gentle rate limiting, matching sync_all_earnings()
+
+    return {"symbols_processed": len(stocks), "rows_corrected": total}
+
+
 def _compute_strength(eps_est: float | None, eps_act: float | None, surprise_pct: float | None) -> float | None:
     """0-100 earnings strength score based on beat size."""
     if eps_act is None:

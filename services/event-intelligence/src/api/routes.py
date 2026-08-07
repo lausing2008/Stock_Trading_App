@@ -77,6 +77,17 @@ async def sync_earnings(_: str = Depends(get_current_username)):
     return result
 
 
+@router.post("/events/earnings/backfill_report_dates")
+async def backfill_earnings_report_dates(_: str = Depends(get_current_username)):
+    """AUD264-EARNINGS-FISCAL-QUARTER-FROM-ANNOUNCEMENT-MONTH: one-time (but safe to re-run)
+    correction of every already-stored, already-reported earnings_events row's report_date
+    from the pre-fix period-end date to the real announcement date. See
+    earnings.backfill_report_dates()'s own docstring for why the normal daily sync doesn't
+    self-heal these rows."""
+    result = await earnings.backfill_report_dates()
+    return result
+
+
 # ── Insider Trading ───────────────────────────────────────────────────────────
 # NOTE: fixed-path routes MUST appear before {symbol} routes in FastAPI
 
