@@ -1,4 +1,5 @@
-"""Regression tests for BUG-MONITORPOS-STALEPRICE.
+"""Regression tests for BUG-MONITORPOS-STALEPRICE and its follow-up
+AUD262-STALE-PRICE-COUNTER-GATES-NOTHING.
 
 _monitor_positions()'s missing-live-quote fallback (T234-PT-MONITOR-MISSING-PRICE-FALLBACK)
 previously fired silently forever — trade.current_price was unconditionally overwritten with
@@ -7,7 +8,13 @@ docstring), with no tracking of how many consecutive cycles a real quote hadn't 
 genuinely bad multi-cycle data outage (feed issue, halt, delisting) could leave a position's
 stop/target checks running against an increasingly frozen price for an unbounded time with
 zero visibility — a single log.warning() per cycle looked identical whether this was cycle 1
-or cycle 50.
+or cycle 50. BUG-MONITORPOS-STALEPRICE (2026-07-21) added the escalating counter, but the
+escalation itself GATED NOTHING — every stop/target/trailing-stop comparison still ran
+unconditionally against the frozen price even past the escalation threshold, which could hold
+a position through an entire decline (stop never fires against a frozen too-high price) or
+fire a phantom exit at a price that never actually traded. AUD262-STALE-PRICE-COUNTER-GATES-
+NOTHING (2026-08-07) closes this: past the threshold, the entire exit-evaluation chain is
+skipped for that trade this cycle — hold, don't act on a price known to be stale.
 
 _monitor_positions() itself is not exercised end-to-end here (200+ lines, heavy Signal/RSI/
 regime dependencies that would need a large fixture harness disproportionate to this fix's
@@ -29,6 +36,15 @@ def _fallback_block() -> str:
     just before `trade.current_price = live_price`."""
     start = _SOURCE.index("if not live_price:")
     end = _SOURCE.index("trade.current_price = live_price", start)
+    return _SOURCE[start:end]
+
+
+def _exit_chain_block() -> str:
+    """The full exit-evaluation if/elif chain inside _monitor_positions()'s per-trade loop —
+    from the BUG-PAPERPOS-DELISTED-FROZEN check through the end of the WAIT-decay branch,
+    just before the "Execute exit" comment."""
+    start = _SOURCE.index("if trade.symbol in delisted_symbols:")
+    end = _SOURCE.index("# ── Execute exit", start)
     return _SOURCE[start:end]
 
 
@@ -110,12 +126,72 @@ def test_a_real_quote_arriving_clears_the_stale_streak():
 
 
 def test_staleness_tracking_never_changes_which_price_is_used_for_exit_math():
-    """This fix is diagnostic-only by design — it must not alter the existing 3-tier fallback
-    (live -> cached current_price -> entry_price) or the exit-check math that follows. The
-    fallback price computation must appear BEFORE the staleness-tracking block, and
-    trade.current_price must still be set to the same `live_price` variable regardless of
-    whether escalation fired."""
+    """The staleness-tracking mechanism itself must not alter the existing 3-tier fallback
+    (live -> cached current_price -> entry_price) — the fallback price computation must
+    appear BEFORE the staleness-tracking block, and trade.current_price must still be set to
+    the same `live_price` variable regardless of whether escalation fired. (Escalation DOES
+    now change what happens LATER, in the exit-evaluation chain — see the
+    AUD262-STALE-PRICE-COUNTER-GATES-NOTHING tests below — but not the fallback price itself.)"""
     body = _fallback_block()
     fallback_price_idx = body.index("live_price = trade.current_price or trade.entry_price")
     stale_tracking_idx = body.index("_stale_count = 0")
     assert fallback_price_idx < stale_tracking_idx
+
+
+# ── AUD262-STALE-PRICE-COUNTER-GATES-NOTHING ─────────────────────────────────────────────
+
+def test_escalation_flag_is_set_when_the_threshold_is_crossed():
+    """The core new mechanism: crossing _STALE_ESCALATION_THRESHOLD must set
+    _price_is_stale_escalated = True, the flag the exit-evaluation chain below checks."""
+    body = _fallback_block()
+    threshold_idx = body.index("if _stale_count >= _STALE_ESCALATION_THRESHOLD:")
+    tail = body[threshold_idx:threshold_idx + 1600]
+    assert "_price_is_stale_escalated = True" in tail
+
+
+def test_escalation_flag_defaults_false_before_the_stale_check_runs():
+    """_price_is_stale_escalated must be initialized to False before the `if not live_price:`
+    branch — a trade with a genuinely fresh quote this cycle must never accidentally inherit
+    a stale escalation state from a prior trade in the same loop iteration."""
+    start = _SOURCE.index("_price_is_stale_escalated = False")
+    not_live_idx = _SOURCE.index("if not live_price:")
+    assert start < not_live_idx
+    assert not_live_idx - start < 100
+
+
+def test_exit_evaluation_chain_checks_the_escalation_flag_as_a_high_priority_branch():
+    """The escalation-gate branch must be an `elif` positioned directly after the delisted
+    check and BEFORE every price-based exit branch (stop/target/etc.) — Python's elif
+    semantics mean this correctly short-circuits every subsequent branch in the chain once it
+    matches, without needing to individually guard each one."""
+    body = _exit_chain_block()
+    delisted_idx = body.index("if trade.symbol in delisted_symbols:")
+    escalation_idx = body.index("elif _price_is_stale_escalated:")
+    stop_idx = body.index("elif live_price <= stop:")
+    assert delisted_idx < escalation_idx < stop_idx
+
+
+def test_escalated_branch_never_sets_an_exit_reason():
+    """The whole point of this fix: past the threshold, the position must be HELD, not
+    exited — the escalation branch's own body must never assign exit_reason, which would
+    trigger a real position closure against a price known to be stale."""
+    body = _exit_chain_block()
+    escalation_idx = body.index("elif _price_is_stale_escalated:")
+    next_elif_idx = body.index("elif live_price <= stop:")
+    escalation_branch = body[escalation_idx:next_elif_idx]
+    assert "exit_reason =" not in escalation_branch
+
+
+def test_delisted_check_is_not_gated_by_the_stale_escalation():
+    """A confirmed delisted stock has no real market left at all — this is a fundamentally
+    different situation from a temporarily-blind feed, and must still exit even if the price
+    escalation flag happens to also be set for that trade (both conditions could co-occur:
+    the feed goes stale right as a stock is confirmed delisted). Only the delisted branch's
+    OWN code body is checked here (up to its final log.warning call) — not the connective
+    comment/prose between it and the next elif, which legitimately names the flag for
+    documentation purposes without actually referencing it in a real condition."""
+    body = _exit_chain_block()
+    delisted_idx = body.index("if trade.symbol in delisted_symbols:")
+    delisted_end_idx = body.index('exit_price=live_price, pnl_pct=round(pnl_pct * 100, 2))', delisted_idx)
+    delisted_branch = body[delisted_idx:delisted_end_idx]
+    assert "_price_is_stale_escalated" not in delisted_branch

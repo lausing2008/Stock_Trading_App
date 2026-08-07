@@ -2296,6 +2296,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         days_held = int(np.busday_count(trade.entry_date, _et_date + timedelta(days=1)))
         trade.hold_days = days_held
 
+        _price_is_stale_escalated = False
         live_price = live_prices.get(trade.symbol)
         if not live_price:
             # T234-PT-MONITOR-MISSING-PRICE-FALLBACK: a missing live quote used to skip
@@ -2318,8 +2319,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             # transient monitoring state, not something that needs to survive a restart)
             # and escalate to log.error() once it crosses a real, actionable threshold, so
             # a genuinely stuck feed is distinguishable in logs/alerts from one normal
-            # missed tick. Never changes which price is actually used for exit math —
-            # that's a separate, larger, more consequential decision than this fix.
+            # missed tick.
             _stale_count = 0
             try:
                 from common.redis_client import get_redis as _get_pool_redis
@@ -2332,10 +2332,23 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
 
             _STALE_ESCALATION_THRESHOLD = 5  # ~25-50 min of missing quotes at 5-10 min cadence
             if _stale_count >= _STALE_ESCALATION_THRESHOLD:
+                # AUD262-STALE-PRICE-COUNTER-GATES-NOTHING: this escalation previously only
+                # logged — every stop/target/trailing-stop comparison below still ran
+                # unconditionally against the same frozen fallback price, so a genuinely stuck
+                # feed could hold a position through an entire decline (stop never fires against
+                # a frozen too-high price) or fire a phantom exit at a price that never actually
+                # traded. Now actually gates: past the threshold, the whole exit-evaluation chain
+                # is skipped for this trade this cycle (see _price_is_stale_escalated below) —
+                # hold the position rather than act on a price known to be stale, matching this
+                # tracker item's own explicit fix description. Does NOT skip the
+                # BUG-PAPERPOS-DELISTED-FROZEN check just below (confirmed delisted is a
+                # fundamentally different case — no real market exists at all, vs. a market
+                # exists but the feed is temporarily blind to it).
+                _price_is_stale_escalated = True
                 log.error("paper.monitor_price_stale_escalation", symbol=trade.symbol,
                           trade_id=trade.id, fallback_price=live_price, stale_cycles=_stale_count,
-                          note="live quote missing for many consecutive cycles — exit checks "
-                               "running against an increasingly stale price")
+                          note="live quote missing for many consecutive cycles — exit evaluation "
+                               "skipped this cycle rather than acting on a stale price")
             else:
                 log.warning("paper.monitor_price_fallback", symbol=trade.symbol,
                             trade_id=trade.id, fallback_price=live_price, stale_cycles=_stale_count,
@@ -2390,6 +2403,20 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             }
             log.warning("paper.delisted_auto_exit", symbol=trade.symbol, trade_id=trade.id,
                         exit_price=live_price, pnl_pct=round(pnl_pct * 100, 2))
+
+        # AUD262-STALE-PRICE-COUNTER-GATES-NOTHING: once the missing-quote streak has
+        # escalated (see _price_is_stale_escalated above), skip the ENTIRE stop/target/
+        # signal/time-based exit-evaluation chain below rather than cherry-picking which
+        # individual branches to gate — every remaining branch below is an `elif`, so this
+        # one taking priority correctly short-circuits all of them for this cycle. Matches
+        # this tracker item's own explicit fix: "hold, do not exit on a price known to be
+        # stale." exit_reason stays None, so "Execute exit" below is a no-op this cycle —
+        # the position is simply held until either a real quote returns (clearing the
+        # streak) or the position is later confirmed delisted (handled separately above).
+        elif _price_is_stale_escalated:
+            log.warning("paper.exit_check_skipped_stale_price", symbol=trade.symbol,
+                        trade_id=trade.id, fallback_price=live_price,
+                        note="holding position — stale-price escalation active, not evaluating exits this cycle")
 
         elif live_price <= stop:
             # T197: Distinguish break-even stops (stop ≈ entry) from real losses.
