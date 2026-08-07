@@ -40,9 +40,10 @@ class _FakeRedis:
         self.writes[key] = value
 
 
-def _extract_tune_strategy(fake_redis, tune_history_calls, style_profiles=None):
+def _extract_tune_strategy(fake_redis, tune_history_calls, style_profiles=None, watchdog_clear_calls=None):
     """Pulls tune_strategy()'s real body out of routes.py, exec()s it against real
-    sqlalchemy/models with _get_redis/_record_tune_history/_STYLE_PROFILES stubbed."""
+    sqlalchemy/models with _get_redis/_record_tune_history/_STYLE_PROFILES/
+    _clear_watchdog_override stubbed."""
     start = _ROUTES_SOURCE.index("def tune_strategy(")
     end = _ROUTES_SOURCE.index('@router.post("/watchdog")', start)
     raw = _ROUTES_SOURCE[start:end]
@@ -73,6 +74,13 @@ def _extract_tune_strategy(fake_redis, tune_history_calls, style_profiles=None):
             "validation_ev_pct": validation_ev_pct, "baseline_validation_ev_pct": baseline_validation_ev_pct,
         })
 
+    # AUD263-WATCHDOG-MASKS-VALIDATED-THRESHOLD: tune_strategy() now calls this on every
+    # promoted write — stubbed here so this test file's own extraction stays in sync with the
+    # real source's actual dependencies, matching how _passes_promotion_margin is handled below.
+    _watchdog_clear_calls = watchdog_clear_calls if watchdog_clear_calls is not None else []
+    def _clear_watchdog_override_stub(style):
+        _watchdog_clear_calls.append(style)
+
     # AUD263-TUNESTRATEGY-NO-MULTIPLE-COMPARISONS-CORRECTION: _passes_promotion_margin() and
     # its two constants are extracted from the REAL source too (not hand-copied) — a duplicate
     # hardcoded reimplementation in this test file could silently drift from the real one and
@@ -91,6 +99,7 @@ def _extract_tune_strategy(fake_redis, tune_history_calls, style_profiles=None):
         "timedelta": timedelta,
         "_get_redis": lambda: fake_redis,
         "_record_tune_history": _record_tune_history_stub,
+        "_clear_watchdog_override": _clear_watchdog_override_stub,
         "_TUNE_STRATEGY_MIN_SAMPLES": 15,
         "_TUNE_STRATEGY_BUY_GRID": [i / 100.0 for i in range(55, 86)],
         "_TUNE_STRATEGY_ML_CAP_GRID": [i / 100.0 for i in range(15, 76, 5)],
@@ -223,8 +232,9 @@ def test_skips_horizon_with_insufficient_total_samples():
 def test_promotes_a_genuinely_better_combination_on_a_clean_dataset():
     session = _make_session()
     tune_history_calls = []
+    watchdog_clear_calls = []
     fake_redis = _FakeRedis()
-    func = _extract_tune_strategy(fake_redis, tune_history_calls)
+    func = _extract_tune_strategy(fake_redis, tune_history_calls, watchdog_clear_calls=watchdog_clear_calls)
     _seed_clean_promotable_horizon(session, "SWING", n=200)
     result = func(days=3650, min_samples=15, session=session)
     swing_applied = [a for a in result["applied"] if a["horizon"] == "SWING"]
@@ -233,6 +243,33 @@ def test_promotes_a_genuinely_better_combination_on_a_clean_dataset():
     # Applied through the existing keys, not new ones.
     assert "stockai:signal_thresholds:SWING" in fake_redis.writes
     assert "stockai:style_tune:SWING:ml_weight_cap" in fake_redis.writes
+
+
+def test_promoted_write_clears_the_watchdog_override_for_that_style():
+    """AUD263-WATCHDOG-MASKS-VALIDATED-THRESHOLD: a fresh, validated write must clear any
+    stale watchdog emergency-nudge override for the SAME style, so it can't outlive the
+    recalibration that just superseded it."""
+    session = _make_session()
+    watchdog_clear_calls = []
+    fake_redis = _FakeRedis()
+    func = _extract_tune_strategy(fake_redis, [], watchdog_clear_calls=watchdog_clear_calls)
+    _seed_clean_promotable_horizon(session, "SWING", n=200)
+    func(days=3650, min_samples=15, session=session)
+    assert watchdog_clear_calls == ["SWING"]
+
+
+def test_a_skipped_horizon_never_clears_the_watchdog_override():
+    """The clear must only fire on a genuinely PROMOTED write — a skipped/rejected horizon
+    must leave any existing watchdog override completely untouched."""
+    session = _make_session()
+    watchdog_clear_calls = []
+    fake_redis = _FakeRedis()
+    func = _extract_tune_strategy(fake_redis, [], watchdog_clear_calls=watchdog_clear_calls)
+    for i in range(5):
+        _add_pair(session, i, "SHORT", date(2026, 1, 1), 0.70, 0.30, True, 0.03)
+    session.commit()
+    func(days=3650, min_samples=15, session=session)
+    assert watchdog_clear_calls == []
 
 
 def test_never_promotes_a_tied_or_near_zero_lift_with_a_trivial_grid_shift():

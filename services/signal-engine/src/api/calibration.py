@@ -24,6 +24,36 @@ from .signals_shared import (
 
 router = APIRouter(prefix="/signals", tags=["signals"])
 
+
+def _clear_watchdog_override(style: str) -> None:
+    """AUD263-WATCHDOG-MASKS-VALIDATED-THRESHOLD: _get_dynamic_buy_threshold() reads
+    stockai:watchdog:{style}:threshold BEFORE stockai:signal_thresholds:{style} — a validated,
+    walk-forward-tested threshold write from outcomes_calibrate_apply/tune_strategy could
+    previously be silently shadowed by a stale, unvalidated watchdog emergency nudge until
+    that nudge's own 7-day TTL happened to expire. Concrete scenario this fixes: Sunday
+    outcomes_calibrate_apply validates SWING at 0.68 on a held-out slice; Monday the watchdog
+    sees a rolling win-rate dip and writes 0.71; Wednesday tune_strategy validates and writes
+    0.66 — under the old read priority, that 0.66 would never take effect until the watchdog's
+    key expired on its own.
+
+    A validated recalibration is a genuinely new baseline for the watchdog to react from, not
+    something it should keep silently overriding — call this immediately after any fresh,
+    validated buy_threshold write so the watchdog's prior state (both the threshold override
+    and its escalation counter) doesn't outlive the recalibration it was reacting to. The
+    watchdog can always re-tighten from this new baseline on its own next daily run if the
+    underlying win-rate problem is still real — this only clears a now-stale premise, it does
+    not disable the watchdog going forward.
+    """
+    try:
+        redis_client = _get_redis()
+        had_override = redis_client.get(f"stockai:watchdog:{style}:threshold") is not None
+        redis_client.delete(f"stockai:watchdog:{style}:threshold")
+        redis_client.delete(f"stockai:watchdog:{style}:tighten_count")
+        if had_override:
+            log.info("signal_watchdog.override_cleared_by_validated_recalibration", style=style)
+    except Exception as exc:
+        log.warning("signal_watchdog.override_clear_failed", style=style, error=str(exc))
+
 # ── SELFIMPROVE-WATCHDOG-SELF-TUNING ────────────────────────────────────────────
 # signal_watchdog()'s own meta-parameters (38% win-rate floor, +0.03/-0.02 step size, 15
 # min-samples, 3x max-tighten) are exactly as hardcoded and never-revisited as any of the base
@@ -1403,6 +1433,9 @@ def outcomes_calibrate_apply(
         # Write to Redis — signal generator reads this at decision time (fused-probability scale)
         redis_key = f"stockai:signal_thresholds:{h}"
         redis_client.setex(redis_key, _REDIS_TTL, str(round(best_t, 4)))
+        # AUD263-WATCHDOG-MASKS-VALIDATED-THRESHOLD: a fresh, validated recalibration must not
+        # be silently shadowed by a stale watchdog emergency nudge that predates it.
+        _clear_watchdog_override(h)
         _record_tune_history(
             session, _run_id, "signal_threshold", "buy_threshold", h, "ALL",
             old_value={"buy_threshold": current_t}, new_value={"buy_threshold": best_t},
@@ -2358,6 +2391,10 @@ def tune_strategy(
         # needs zero changes to pick this up.
         redis_client.setex(f"stockai:signal_thresholds:{h}", _REDIS_TTL, str(round(best_buy, 4)))
         redis_client.setex(f"stockai:style_tune:{h}:ml_weight_cap", _REDIS_TTL, str(round(best_cap, 2)))
+        # AUD263-WATCHDOG-MASKS-VALIDATED-THRESHOLD: same reasoning as outcomes_calibrate_apply's
+        # own call — a fresh, validated recalibration must not stay shadowed by a stale watchdog
+        # emergency nudge that predates it.
+        _clear_watchdog_override(h)
         _record_tune_history(
             session, _run_id, "joint_strategy", "buy_threshold+ml_weight_cap", h, "ALL",
             old_value=_old_value, new_value=_new_value,
