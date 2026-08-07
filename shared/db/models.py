@@ -946,7 +946,18 @@ class EarningsEvent(Base):
     sectors_hurt: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("stock_id", "fiscal_year", "fiscal_quarter", name="uq_earnings_stock_period"),
+        # AUD264-EARNINGS-FISCAL-QUARTER-FROM-ANNOUNCEMENT-MONTH: uniqueness used to be keyed
+        # on (fiscal_year, fiscal_quarter), inferred via a naive (month-1)//3+1 calendar-month
+        # bucket. This mislabeled every calendar-year company's report one quarter ahead (the
+        # ANNOUNCEMENT lands ~1-6 weeks after the fiscal period it covers, often crossing into
+        # the next calendar-quarter bucket) — and because it was the uniqueness key, two genuine
+        # reports landing in the same calendar quarter would silently upsert-overwrite each
+        # other, losing a real quarter of history. report_date is the genuinely unique,
+        # unambiguous identity of a specific earnings event — see earnings.py's
+        # _fetch_earnings_for_symbol() for how a shifting calendar-projected report_date is kept
+        # from creating duplicate rows (finds and updates the existing eps_actual IS NULL
+        # pending row in place, rather than relying on this constraint alone).
+        UniqueConstraint("stock_id", "report_date", name="uq_earnings_stock_report_date"),
         Index("ix_earnings_stock_date", "stock_id", "report_date"),
         Index("ix_earnings_report_date", "report_date"),
     )

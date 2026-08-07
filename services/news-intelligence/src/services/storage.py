@@ -127,7 +127,15 @@ def persist_news_items(
                 result = session.execute(stmt)
                 if result.rowcount:
                     inserted += 1
-                    if sym and cls and cls["is_material"]:
+                    # AUD264-NEWS-MACRO-CATEGORY-IGNORED: a headline classified "macro" (e.g.
+                    # "Nasdaq slides as AAPL, MSFT and NVDA drag megacaps lower") is a story
+                    # about the MARKET, not about any of the symbols it happens to name — it
+                    # must never set a per-symbol hot-news flag, which exists specifically to
+                    # suppress a BUY signal on company-specific bad news, not on an index-level
+                    # move that mentions the company in passing. The classification already
+                    # exists (classify.py) and is already persisted (category, just above) —
+                    # this was previously the one place that computed it but never read it back.
+                    if sym and cls and cls["is_material"] and cls["category"] != "macro":
                         _mark_hot(sym, headline, cls["sentiment_label"])
         session.commit()
 

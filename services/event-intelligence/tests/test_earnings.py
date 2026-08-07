@@ -1,6 +1,9 @@
-"""Tests for earnings.py's _compute_strength() — fully pure, zero DB dependency, the strongest
-unit-test candidate in event-intelligence."""
-from src.services.earnings import _compute_strength
+"""Tests for earnings.py's _compute_strength() and _match_report_dates_to_history() — both
+fully pure, zero DB/pandas dependency, the strongest unit-test candidates in event-intelligence.
+"""
+from datetime import date
+
+from src.services.earnings import _compute_strength, _match_report_dates_to_history
 
 
 def test_no_actual_eps_returns_none():
@@ -69,3 +72,95 @@ def test_score_minimum_attainable_value():
     can only add, never subtract, so the source's max(0.0, ...) floor is likewise unreachable
     through this function's own logic."""
     assert _compute_strength(1.0, -0.01, -500.0) == 30.0
+
+
+# ── AUD264-EARNINGS-FISCAL-QUARTER-FROM-ANNOUNCEMENT-MONTH: _match_report_dates_to_history ──
+#
+# Fixture data below is real, live-verified yfinance output for AAPL (2026-08-06): a single
+# historical earnings_history row (period-end 2025-09-30, epsActual=1.85) genuinely joins to
+# an earnings_dates row (real announce date 2025-10-30, Reported EPS=1.85) — confirmed to be
+# the SAME real-world event by matching the reported EPS value, since earnings_history has no
+# announcement-date field of its own at all.
+
+def test_matches_period_end_to_real_announcement_date_via_eps_value():
+    hist_rows = [{"period_end": date(2025, 9, 30), "eps_actual": 1.85}]
+    announce_rows = [{"announce_date": date(2025, 10, 30), "eps_actual": 1.85}]
+    result = _match_report_dates_to_history(hist_rows, announce_rows)
+    assert result == {"2025-09-30": date(2025, 10, 30)}
+
+
+def test_multiple_quarters_all_match_independently():
+    hist_rows = [
+        {"period_end": date(2025, 9, 30), "eps_actual": 1.85},
+        {"period_end": date(2025, 12, 31), "eps_actual": 2.84},
+        {"period_end": date(2026, 3, 31), "eps_actual": 2.01},
+        {"period_end": date(2026, 6, 30), "eps_actual": 2.02},
+    ]
+    announce_rows = [
+        {"announce_date": date(2026, 7, 30), "eps_actual": 2.02},
+        {"announce_date": date(2026, 4, 30), "eps_actual": 2.01},
+        {"announce_date": date(2026, 1, 29), "eps_actual": 2.84},
+        {"announce_date": date(2025, 10, 30), "eps_actual": 1.85},
+    ]
+    result = _match_report_dates_to_history(hist_rows, announce_rows)
+    assert result == {
+        "2025-09-30": date(2025, 10, 30),
+        "2025-12-31": date(2026, 1, 29),
+        "2026-03-31": date(2026, 4, 30),
+        "2026-06-30": date(2026, 7, 30),
+    }
+
+
+def test_eps_values_are_rounded_before_matching_not_exact_float_compare():
+    """earnings_history and earnings_dates report the same real EPS value but can carry
+    slightly different float precision (e.g. epsActual=1.85 vs Reported EPS=1.850000001 from
+    a different rounding path) — matching must tolerate this via a 2dp round, not require an
+    exact float equality that would silently never match in production."""
+    hist_rows = [{"period_end": date(2025, 9, 30), "eps_actual": 1.8499999}]
+    announce_rows = [{"announce_date": date(2025, 10, 30), "eps_actual": 1.8500001}]
+    result = _match_report_dates_to_history(hist_rows, announce_rows)
+    assert result == {"2025-09-30": date(2025, 10, 30)}
+
+
+def test_no_matching_announce_row_is_simply_absent_not_fabricated():
+    """A period-end with no corresponding announce-side row (a data gap on one side) must be
+    absent from the result — the caller falls back to the period-end date itself, never a
+    fabricated or guessed date."""
+    hist_rows = [{"period_end": date(2025, 9, 30), "eps_actual": 1.85}]
+    announce_rows = []
+    result = _match_report_dates_to_history(hist_rows, announce_rows)
+    assert result == {}
+
+
+def test_rows_with_none_eps_actual_are_skipped_on_both_sides():
+    hist_rows = [
+        {"period_end": date(2025, 9, 30), "eps_actual": None},
+        {"period_end": date(2025, 12, 31), "eps_actual": 2.84},
+    ]
+    announce_rows = [
+        {"announce_date": date(2025, 10, 30), "eps_actual": None},
+        {"announce_date": date(2026, 1, 29), "eps_actual": 2.84},
+    ]
+    result = _match_report_dates_to_history(hist_rows, announce_rows)
+    assert result == {"2025-12-31": date(2026, 1, 29)}
+
+
+def test_ambiguous_duplicate_eps_values_take_the_first_announce_match():
+    """Two genuinely different quarters could coincidentally report the exact same EPS value
+    (a real, if rare, possibility) — the join is inherently best-effort in that case. Confirm
+    the behavior is at least deterministic (first match wins) rather than crashing or picking
+    randomly, since .setdefault() is the mechanism that guarantees this."""
+    hist_rows = [{"period_end": date(2025, 9, 30), "eps_actual": 1.00}]
+    announce_rows = [
+        {"announce_date": date(2025, 10, 30), "eps_actual": 1.00},
+        {"announce_date": date(2026, 1, 29), "eps_actual": 1.00},
+    ]
+    result = _match_report_dates_to_history(hist_rows, announce_rows)
+    assert result == {"2025-09-30": date(2025, 10, 30)}
+
+
+def test_missing_dict_keys_degrade_to_skipped_not_a_crash():
+    hist_rows = [{"period_end": date(2025, 9, 30)}]  # no eps_actual key at all
+    announce_rows = [{"announce_date": date(2025, 10, 30), "eps_actual": 1.85}]
+    result = _match_report_dates_to_history(hist_rows, announce_rows)
+    assert result == {}

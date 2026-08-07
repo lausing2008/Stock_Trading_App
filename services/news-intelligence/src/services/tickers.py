@@ -81,16 +81,33 @@ def _symbol_pattern(symbol: str) -> re.Pattern[str]:
     return re.compile(rf"(?<![A-Za-z0-9]){re.escape(base)}(?![A-Za-z0-9])")
 
 
+# AUD264-NEWS-COMPANY-NAME-UNBOUNDED-SUBSTRING: the company-name branch used to be a bare
+# `name_upper in upper` substring test with only a 4-character length floor — no boundary at
+# all. "Target" matched "target"/"targets"/"targeted"; "Block" matched "Regulators block
+# merger"; "Match" matched "...matched...". Reuses the exact same alphanumeric-boundary
+# construction _symbol_pattern() already applies to ticker matching, so "TARGETS"/"TARGETED"
+# (a different WORD, not the same word with trailing punctuation) can no longer match — this
+# does not eliminate every false positive a common-English-word company name can produce (a
+# headline genuinely using "target" as a verb, same letters, same case-insensitive match, is
+# structurally indistinguishable from the company name without much heavier NLP), but it closes
+# the concrete substring-continuation cases named above, matching the fix this tracker item
+# scopes to.
+def _name_pattern(name_upper: str) -> re.Pattern[str]:
+    return re.compile(rf"(?<![A-Za-z0-9]){re.escape(name_upper)}(?![A-Za-z0-9])")
+
+
 def extract_symbols(headline: str, max_matches: int = 5) -> list[str]:
     """Return real, universe-matched stock symbols mentioned in `headline`.
 
     Matches on two independent signals, either is sufficient: (1) the stock's own ticker
     symbol appears as a standalone token (only checked for symbols with 3+ base characters,
     to avoid 1-2 letter symbols matching common short words), or (2) the stock's full company
-    name (or a distinctive multi-word prefix of it) appears verbatim in the headline. Company-
-    name matching catches headlines that never spell out the ticker at all ("Apple announces
-    ..." with no "AAPL" anywhere) — the more common real-world case for PR Newswire/GlobeNewswire
-    headlines, which are written for a general audience, not a trading terminal.
+    name (or a distinctive multi-word prefix of it) appears as a standalone word/phrase in the
+    headline (see _name_pattern() — same alphanumeric-boundary construction as the ticker
+    branch, not a bare substring test). Company-name matching catches headlines that never
+    spell out the ticker at all ("Apple announces ..." with no "AAPL" anywhere) — the more
+    common real-world case for PR Newswire/GlobeNewswire headlines, which are written for a
+    general audience, not a trading terminal.
     """
     if not headline:
         return []
@@ -102,7 +119,7 @@ def extract_symbols(headline: str, max_matches: int = 5) -> list[str]:
         matched = False
         if len(base) >= 3 and _symbol_pattern(symbol).search(headline):
             matched = True
-        elif name_upper and len(name_upper) >= 4 and name_upper in upper:
+        elif name_upper and len(name_upper) >= 4 and _name_pattern(name_upper).search(upper):
             matched = True
         if matched:
             matches.append(symbol)

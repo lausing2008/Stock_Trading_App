@@ -437,6 +437,44 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS bearish_pillars_active INTEGER"
         ))
+        # AUD264-EARNINGS-FISCAL-QUARTER-FROM-ANNOUNCEMENT-MONTH: drop the old fiscal-quarter
+        # uniqueness constraint (which silently collided two genuine reports in the same
+        # calendar quarter, upsert-overwriting one with the other) and replace it with one
+        # keyed on report_date — see EarningsEvent.__table_args__'s own comment in models.py.
+        conn.execute(text("""
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'uq_earnings_stock_period'
+                ) THEN
+                    ALTER TABLE earnings_events DROP CONSTRAINT uq_earnings_stock_period;
+                END IF;
+            END $$;
+        """))
+        # A pre-existing DB can genuinely have duplicate (stock_id, report_date) rows already —
+        # the old constraint never prevented that (different fiscal_year/fiscal_quarter values
+        # could share the same real report_date, e.g. the fiscal-quarter-collision bug this fix
+        # closes). Keep only the most-recently-fetched row per (stock_id, report_date) before
+        # adding the new constraint, or the ADD CONSTRAINT below would fail outright.
+        conn.execute(text("""
+            DELETE FROM earnings_events a USING earnings_events b
+            WHERE a.stock_id = b.stock_id
+              AND a.report_date = b.report_date
+              AND a.id < b.id
+        """))
+        conn.execute(text("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'uq_earnings_stock_report_date'
+                ) THEN
+                    ALTER TABLE earnings_events
+                    ADD CONSTRAINT uq_earnings_stock_report_date UNIQUE (stock_id, report_date);
+                END IF;
+            END $$;
+        """))
 
 
 def _seed_admin() -> None:

@@ -178,6 +178,46 @@ async def check_earnings_impact_poll() -> dict:
     return {"checked": checked, "generated": generated, "skipped": None}
 
 
+def _match_report_dates_to_history(
+    hist_rows: list[dict], announce_rows: list[dict]
+) -> dict[str, date]:
+    """AUD264-EARNINGS-FISCAL-QUARTER-FROM-ANNOUNCEMENT-MONTH: ticker.earnings_history's own
+    index is the fiscal PERIOD-END date (labeled "quarter" by yfinance itself), NOT the real
+    announcement date — confirmed live: AAPL's history shows an index entry of 2025-09-30 for
+    the report whose real announcement (per ticker.earnings_dates, a separate property) landed
+    2025-10-30, a full month later. The old code stored this period-end date directly into
+    report_date, which every consumer in this codebase (is_upcoming, day-of-earnings matching,
+    get_days_to_earnings, dedup keys) treats as the real announcement date — silently wrong for
+    every historical row, not just future ones.
+
+    earnings_history has no announcement-date field of its own, but earnings_dates does (its
+    own index) — the two are joined here by matching on the reported EPS value (rounded to 2dp,
+    which both sources report to), since that's the only value genuinely shared between them
+    and confirmed to match exactly for the same real event. Returns {period_end_iso:
+    real_announcement_date} for every period-end date a match was found for; a period-end with
+    no matching announce row (a data gap on one side) is simply absent from the returned dict —
+    the caller falls back to the period-end date itself rather than fabricating one.
+    """
+    by_eps: dict[float, date] = {}
+    for row in announce_rows:
+        eps_act = row.get("eps_actual")
+        announce_date = row.get("announce_date")
+        if eps_act is None or announce_date is None:
+            continue
+        by_eps.setdefault(round(eps_act, 2), announce_date)
+
+    matched: dict[str, date] = {}
+    for row in hist_rows:
+        period_end = row.get("period_end")
+        eps_act = row.get("eps_actual")
+        if period_end is None or eps_act is None:
+            continue
+        real_date = by_eps.get(round(eps_act, 2))
+        if real_date is not None:
+            matched[period_end.isoformat()] = real_date
+    return matched
+
+
 def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
     """Fetch earnings history + calendar from yfinance and upsert to DB. Returns rows upserted."""
     try:
@@ -189,18 +229,55 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
         try:
             hist = ticker.earnings_history
             if hist is not None and not hist.empty:
+                # AUD264-EARNINGS-FISCAL-QUARTER-FROM-ANNOUNCEMENT-MONTH: fetch earnings_dates
+                # too so real announcement dates (see _match_report_dates_to_history's own
+                # docstring) can be joined in — best-effort, a failure here just means every
+                # row falls back to the period-end date (the pre-fix behavior), not a hard stop.
+                real_dates_by_period_end: dict[str, date] = {}
+                try:
+                    ed = ticker.earnings_dates
+                    if ed is not None and not ed.empty:
+                        hist_rows_for_match = []
+                        for idx, row in hist.iterrows():
+                            pe = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
+                            ea = row.get("epsActual")
+                            hist_rows_for_match.append({
+                                "period_end": pe,
+                                "eps_actual": float(ea) if pd.notna(ea) else None,
+                            })
+                        announce_rows = []
+                        for idx, row in ed.iterrows():
+                            ad = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
+                            ea = row.get("Reported EPS")
+                            announce_rows.append({
+                                "announce_date": ad,
+                                "eps_actual": float(ea) if pd.notna(ea) else None,
+                            })
+                        real_dates_by_period_end = _match_report_dates_to_history(hist_rows_for_match, announce_rows)
+                except Exception as exc:
+                    log.debug("earnings.earnings_dates_join_skip", symbol=symbol, error=str(exc))
+
                 with SessionLocal() as s:
                     for idx, row in hist.iterrows():
                         try:
-                            report_date = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
+                            period_end = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
                             eps_est = row.get("epsEstimate") if pd.notna(row.get("epsEstimate")) else None
                             eps_act = row.get("epsActual") if pd.notna(row.get("epsActual")) else None
                             surprise = None
                             if eps_est is not None and eps_act is not None and eps_est != 0:
                                 surprise = round((eps_act - eps_est) / abs(eps_est) * 100, 2)
-                            # Infer quarter from month
-                            fq = (report_date.month - 1) // 3 + 1
-                            fy = report_date.year
+                            # AUD264: prefer the real, joined announcement date; fall back to the
+                            # period-end date (the pre-fix value) only when no match was found —
+                            # still better than nothing, and matches this function's own existing
+                            # fail-open convention throughout.
+                            report_date = real_dates_by_period_end.get(period_end.isoformat(), period_end)
+                            # Fiscal quarter/year are still a best-effort calendar-month label
+                            # (non-calendar-fiscal-year companies, e.g. AAPL's Sep year-end,
+                            # aren't exactly representable this way) — but they're read-only
+                            # display fields with zero downstream logic depending on their exact
+                            # value (see the AUD264 fix note on the uniqueness constraint below).
+                            fq = (period_end.month - 1) // 3 + 1
+                            fy = period_end.year
                             strength = _compute_strength(eps_est, eps_act, surprise)
                             # DQ-EARNINGS-FETCHED-AT-FROZEN: fetched_at has server_default=func.now(),
                             # which only fires on a fresh INSERT — once every (stock_id, period) row
@@ -213,34 +290,60 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
                             # upsert so it reflects "last time this row was actually touched," not
                             # "first time this row ever existed."
                             _now = datetime.now(timezone.utc)
-                            stmt = (
-                                pg_insert(EarningsEvent)
-                                .values(
-                                    stock_id=stock_id,
-                                    report_date=report_date,
-                                    period=f"Q{fq} {fy}",
-                                    fiscal_year=fy,
-                                    fiscal_quarter=fq,
-                                    eps_estimate=eps_est,
-                                    eps_actual=eps_act,
-                                    surprise_pct=surprise,
-                                    earnings_strength_score=strength,
-                                    fetched_at=_now,
+                            # AUD264: the calendar path (below) may have already written a
+                            # PENDING row (eps_actual IS NULL) for this exact event under its
+                            # own earlier, projected report_date — which can genuinely differ
+                            # from the real, joined announcement date resolved above. A bare
+                            # ON CONFLICT (stock_id, report_date) would miss that row entirely
+                            # (different dates) and insert a second, duplicate row for the same
+                            # event. Find and update any such pending row in place first, same
+                            # reasoning as the calendar path's own existing_pending handling.
+                            existing_pending = s.execute(
+                                select(EarningsEvent).where(
+                                    EarningsEvent.stock_id == stock_id,
+                                    EarningsEvent.eps_actual.is_(None),
                                 )
-                                .on_conflict_do_update(
-                                    constraint="uq_earnings_stock_period",
-                                    set_=dict(
+                            ).scalars().first()
+                            if existing_pending is not None:
+                                existing_pending.report_date = report_date
+                                existing_pending.period = f"Q{fq} {fy}"
+                                existing_pending.fiscal_year = fy
+                                existing_pending.fiscal_quarter = fq
+                                existing_pending.eps_estimate = eps_est
+                                existing_pending.eps_actual = eps_act
+                                existing_pending.surprise_pct = surprise
+                                existing_pending.earnings_strength_score = strength
+                                existing_pending.fetched_at = _now
+                                s.flush()
+                                upserted += 1
+                            else:
+                                stmt = (
+                                    pg_insert(EarningsEvent)
+                                    .values(
+                                        stock_id=stock_id,
+                                        report_date=report_date,
+                                        period=f"Q{fq} {fy}",
+                                        fiscal_year=fy,
+                                        fiscal_quarter=fq,
                                         eps_estimate=eps_est,
                                         eps_actual=eps_act,
                                         surprise_pct=surprise,
                                         earnings_strength_score=strength,
-                                        report_date=report_date,
                                         fetched_at=_now,
-                                    ),
+                                    )
+                                    .on_conflict_do_update(
+                                        constraint="uq_earnings_stock_report_date",
+                                        set_=dict(
+                                            eps_estimate=eps_est,
+                                            eps_actual=eps_act,
+                                            surprise_pct=surprise,
+                                            earnings_strength_score=strength,
+                                            fetched_at=_now,
+                                        ),
+                                    )
                                 )
-                            )
-                            result = s.execute(stmt)
-                            upserted += result.rowcount
+                                result = s.execute(stmt)
+                                upserted += result.rowcount
                         except Exception:
                             continue
                     s.commit()
@@ -261,35 +364,68 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
                         upcoming = date.fromisoformat(str(earnings_dt)[:10])
                     eps_est = cal.get("EPS Estimate")
                     rev_est = cal.get("Revenue Estimate")
+                    # AUD264-EARNINGS-FISCAL-QUARTER-FROM-ANNOUNCEMENT-MONTH: fiscal_year/
+                    # fiscal_quarter are still only a best-effort calendar-month label (see the
+                    # historical-path comment above for why) — the real fix here is switching
+                    # the uniqueness key from (fiscal_year, fiscal_quarter) to (stock_id,
+                    # report_date), which is what actually stops two genuine reports in the same
+                    # calendar quarter from silently overwriting each other.
                     fq = (upcoming.month - 1) // 3 + 1
                     fy = upcoming.year
                     with SessionLocal() as s:
+                        # AUD264: report_date is now the uniqueness key (not fiscal_year/
+                        # fiscal_quarter), but yfinance's own PROJECTED earnings date for an
+                        # unreported quarter routinely shifts by a few days as the real date is
+                        # confirmed closer to the event — daily re-syncs (sync_earnings runs
+                        # every day at 06:30 UTC) would otherwise insert a brand-new row each
+                        # time the estimate moves instead of updating the one real pending
+                        # event. There can only ever be one legitimate "next unreported" row per
+                        # stock (eps_actual IS NULL, the same predicate already used elsewhere
+                        # in this codebase to mean "not yet reported") — find and update it in
+                        # place if it exists under a DIFFERENT date than today's estimate,
+                        # rather than letting the insert path create a duplicate.
+                        existing_pending = s.execute(
+                            select(EarningsEvent).where(
+                                EarningsEvent.stock_id == stock_id,
+                                EarningsEvent.eps_actual.is_(None),
+                            )
+                        ).scalars().first()
                         # See DQ-EARNINGS-FETCHED-AT-FROZEN comment above — same reasoning applies
                         # to the upcoming-earnings-calendar upsert path.
                         _now = datetime.now(timezone.utc)
-                        stmt = (
-                            pg_insert(EarningsEvent)
-                            .values(
-                                stock_id=stock_id,
-                                report_date=upcoming,
-                                period=f"Q{fq} {fy}",
-                                fiscal_year=fy,
-                                fiscal_quarter=fq,
-                                eps_estimate=float(eps_est) if eps_est and pd.notna(eps_est) else None,
-                                revenue_estimate=float(rev_est) if rev_est and pd.notna(rev_est) else None,
-                                fetched_at=_now,
-                            )
-                            .on_conflict_do_update(
-                                constraint="uq_earnings_stock_period",
-                                set_=dict(
+                        _est = float(eps_est) if eps_est and pd.notna(eps_est) else None
+                        _rev_est = float(rev_est) if rev_est and pd.notna(rev_est) else None
+                        if existing_pending is not None:
+                            existing_pending.report_date = upcoming
+                            existing_pending.period = f"Q{fq} {fy}"
+                            existing_pending.fiscal_year = fy
+                            existing_pending.fiscal_quarter = fq
+                            existing_pending.eps_estimate = _est
+                            existing_pending.revenue_estimate = _rev_est
+                            existing_pending.fetched_at = _now
+                        else:
+                            stmt = (
+                                pg_insert(EarningsEvent)
+                                .values(
+                                    stock_id=stock_id,
                                     report_date=upcoming,
-                                    eps_estimate=float(eps_est) if eps_est and pd.notna(eps_est) else None,
-                                    revenue_estimate=float(rev_est) if rev_est and pd.notna(rev_est) else None,
+                                    period=f"Q{fq} {fy}",
+                                    fiscal_year=fy,
+                                    fiscal_quarter=fq,
+                                    eps_estimate=_est,
+                                    revenue_estimate=_rev_est,
                                     fetched_at=_now,
-                                ),
+                                )
+                                .on_conflict_do_update(
+                                    constraint="uq_earnings_stock_report_date",
+                                    set_=dict(
+                                        eps_estimate=_est,
+                                        revenue_estimate=_rev_est,
+                                        fetched_at=_now,
+                                    ),
+                                )
                             )
-                        )
-                        s.execute(stmt)
+                            s.execute(stmt)
                         s.commit()
                         upserted += 1
         except Exception as exc:

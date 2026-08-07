@@ -75,6 +75,46 @@ class TestExtractSymbols:
         ])
         assert set(tickers.extract_symbols("AAPL and MSFT both beat estimates")) == {"AAPL", "MSFT"}
 
+    # ── AUD264-NEWS-COMPANY-NAME-UNBOUNDED-SUBSTRING: name matching now boundary-aware ───────
+
+    def test_company_name_does_not_match_as_a_continuation_of_a_longer_word(self, monkeypatch):
+        """The exact bug this closes: a company literally named "Target" (a common English
+        word) used to match "targets"/"targeted" — a DIFFERENT word, not the same word with
+        trailing punctuation — purely because the old code was a bare substring test."""
+        _fake_universe(monkeypatch, [("TGT", "TARGET", "US")])
+        assert tickers.extract_symbols("The company targets a new market segment") == []
+        assert tickers.extract_symbols("Sales figures were targeted for review") == []
+
+    def test_company_name_still_matches_as_its_own_standalone_word(self, monkeypatch):
+        """The fix must not be so strict it breaks the legitimate, common case — a real mention
+        of the company name on its own is still a real match."""
+        _fake_universe(monkeypatch, [("TGT", "TARGET", "US")])
+        assert tickers.extract_symbols("Target reports strong holiday sales") == ["TGT"]
+
+    def test_company_name_with_apostrophe_s_possessive_still_matches(self, monkeypatch):
+        """A possessive ("Target's") is the SAME word with trailing punctuation, not a
+        different word — the boundary check (apostrophe isn't alphanumeric) must still match
+        this, unlike the plural/continuation cases above."""
+        _fake_universe(monkeypatch, [("TGT", "TARGET", "US")])
+        assert tickers.extract_symbols("Target's stock surged after earnings") == ["TGT"]
+
+    def test_company_named_block_matches_blocked_headline_but_not_a_different_word(self, monkeypatch):
+        """Honest scope of this fix: the boundary regex correctly rejects "blocked"/"blockchain"
+        (a DIFFERENT word than "Block"), but a headline genuinely using the standalone word
+        "block" as a common verb ("Regulators block merger...") is, letter-for-letter, the SAME
+        word as the company name — no boundary check can distinguish them without heavier NLP,
+        and this fix does not claim to. What it DOES eliminate is the substring-continuation
+        case (a different, longer word containing "block")."""
+        _fake_universe(monkeypatch, [("SQ", "BLOCK", "US")])
+        assert tickers.extract_symbols("The transaction was blocked by regulators") == []
+        assert tickers.extract_symbols("Blockchain adoption continues to grow") == []
+        assert tickers.extract_symbols("Block Inc announces new CEO") == ["SQ"]
+
+    def test_datasets_matched_perfectly_does_not_match_company_named_match(self, monkeypatch):
+        _fake_universe(monkeypatch, [("MTCH", "MATCH GROUP", "US")])
+        assert tickers.extract_symbols("The two datasets matched perfectly") == []
+        assert tickers.extract_symbols("Match Group reports Q3 subscriber growth") == ["MTCH"]
+
 
 class TestSymbolForCik:
     def test_resolves_real_cik(self, monkeypatch):
