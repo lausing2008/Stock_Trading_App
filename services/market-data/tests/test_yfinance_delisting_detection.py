@@ -12,7 +12,19 @@ import sys
 from unittest.mock import MagicMock, patch
 
 _STUBBED_MODULES = ("yfinance", "tenacity", "structlog", "common", "common.logging")
-_saved_stubs = {_mod: sys.modules.pop(_mod, None) for _mod in _STUBBED_MODULES}
+_saved_stubs = {}
+for _mod in _STUBBED_MODULES:
+    if _mod in ("yfinance", "tenacity") and not isinstance(sys.modules.get(_mod), MagicMock):
+        # BUG-ADDSTOCK-NORETRY's discovery: already swapped to the real module by an earlier
+        # test file in this same process (or by this file on a re-collection) — do NOT pop and
+        # reimport a second time. A second cold pop+import of the real yfinance package does
+        # not reliably re-run yfinance/__init__.py's own lazy `.exceptions` submodule binding,
+        # leaving `yf.exceptions` absent even though `yfinance.exceptions` is independently
+        # importable. Confirmed directly, isolated from pytest entirely. See the matching note
+        # on the restore step below and in test_add_stock_yfinance_retry.py.
+        _saved_stubs[_mod] = None
+        continue
+    _saved_stubs[_mod] = sys.modules.pop(_mod, None)
 
 import importlib.util  # noqa: E402
 import pathlib  # noqa: E402
@@ -54,8 +66,19 @@ _yf_adapter_mod = importlib.util.module_from_spec(_spec)
 sys.modules["src.adapters.yfinance_adapter"] = _yf_adapter_mod
 _spec.loader.exec_module(_yf_adapter_mod)
 
-# Restore the stubs for every OTHER test file collected in the same pytest run.
+# Restore the stubs for every OTHER test file collected in the same pytest run — EXCEPT
+# yfinance/tenacity themselves. BUG-ADDSTOCK-NORETRY's own test file (test_add_stock_yfinance_
+# retry.py) needs the REAL yfinance/tenacity too, and popping a real yfinance package back out
+# and reimporting it a SECOND time within the same pytest process does not reliably re-run
+# yfinance/__init__.py's own lazy `.exceptions` submodule binding — confirmed directly: whichever
+# of these two files collects SECOND fails with `AttributeError: module 'yfinance' has no
+# attribute 'exceptions'`, regardless of collection order, if either one restores the stub. No
+# other test file in this suite needs `yfinance`/`tenacity` to specifically be a MagicMock
+# (grepped: none reference them as an imported name) — leaving the REAL modules loaded for the
+# rest of the process is safe.
 for _mod, _val in _saved_stubs.items():
+    if _mod in ("yfinance", "tenacity"):
+        continue
     if _val is not None:
         sys.modules[_mod] = _val
     else:

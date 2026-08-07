@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 import json
 import yfinance as yf
 import redis as redis_lib
+from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 
 from common.config import get_settings
 from common.logging import get_logger
@@ -268,6 +269,23 @@ def delete_stock(symbol: str, _: User = Depends(get_admin_user)):
     return {"status": "deactivated", "symbol": sym}
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    # BUG-ADDSTOCK-NORETRY: yf.Ticker(symbol).info had zero retry — a single transient
+    # YFRateLimitError (Yahoo's own "Too Many Requests", not a real 404) immediately failed
+    # the whole add-to-universe flow with no second chance, unlike YFinanceAdapter.fetch_ohlcv
+    # (the bulk-ingestion path), which already tolerates the exact same condition via this
+    # identical 3-attempt/1-8s-backoff policy. YFTickerMissingError ("no data found, symbol
+    # may be delisted") is excluded since retrying it can never resolve the real 404 case this
+    # function's own name==symbol-and-empty-info check already handles.
+    retry=retry_if_not_exception_type(yf.exceptions.YFTickerMissingError),
+    reraise=True,
+)
+def _fetch_yf_info(symbol: str) -> dict:
+    return yf.Ticker(symbol).info or {}
+
+
 @router.post("/add_stock")
 def add_stock(req: AddStockRequest, tasks: BackgroundTasks, _: User = Depends(get_admin_user)):
     symbol = req.symbol.upper().strip()
@@ -283,8 +301,7 @@ def add_stock(req: AddStockRequest, tasks: BackgroundTasks, _: User = Depends(ge
 
     # Fetch metadata from yfinance
     try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.info or {}
+        info = _fetch_yf_info(symbol)
     except Exception as exc:
         raise HTTPException(502, f"yfinance error: {exc}")
 
