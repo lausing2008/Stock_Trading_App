@@ -15,13 +15,13 @@ channel — market-data's check_macro_reaction_alerts() owns delivery (see its o
 import pathlib
 
 from src.services.macro_reaction import _is_fomc_day, _RELEASE_TO_FRED_SERIES
-from src.services.economic import _FOMC_DATES, _FRED_RELEASES
+from src.services.economic import _FOMC_DATES, _FRED_RELEASES, _FRED_SERIES
 
 _macro_reaction_path = pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "macro_reaction.py"
 _source = _macro_reaction_path.read_text()
 
 
-# ── _RELEASE_TO_FRED_SERIES integrity ──────────────────────────────────────────
+# ── _RELEASE_TO_FRED_SERIES integrity (AUD264-RELEASE-POLL-COVERS-4-OF-10) ────
 
 def test_every_mapped_release_event_type_exists_in_fred_releases():
     """A typo'd or renamed event_type key here would silently mean check_release_day_fast_poll
@@ -31,12 +31,33 @@ def test_every_mapped_release_event_type_exists_in_fred_releases():
         assert event_type in release_event_types, f"{event_type} not in _FRED_RELEASES"
 
 
-def test_pce_release_is_explicitly_none_not_silently_missing():
-    """PCE price index isn't in _FRED_SERIES today — must be an explicit None (documented,
-    skipped intentionally) rather than absent from the dict entirely, which would make the
-    gap look like an oversight rather than a known, deliberate limitation."""
-    assert "pce_release" in _RELEASE_TO_FRED_SERIES
-    assert _RELEASE_TO_FRED_SERIES["pce_release"] is None
+def test_all_10_fred_releases_have_a_real_mapped_series_not_just_5_of_10():
+    """The actual bug this fix closes: 6 of the 10 real release types (economic.py's
+    _FRED_RELEASES) were never even SELECTed by check_release_day_fast_poll()'s own query,
+    because _RELEASE_TO_FRED_SERIES only had 5 entries (one of which, pce_release, mapped to
+    None and was skipped too) — confirmed in production as 113 fed_funds_release rows with
+    zero actuals ever written. Every _FRED_RELEASES event_type must now resolve to a real,
+    non-None series_id."""
+    release_event_types = {event_type for _, event_type, _, _ in _FRED_RELEASES}
+    for event_type in release_event_types:
+        assert event_type in _RELEASE_TO_FRED_SERIES, f"{event_type} still missing from _RELEASE_TO_FRED_SERIES"
+        assert _RELEASE_TO_FRED_SERIES[event_type] is not None, f"{event_type} still maps to None"
+
+
+def test_every_mapped_series_id_is_a_real_series_in_fred_series():
+    """Each _RELEASE_TO_FRED_SERIES value must correspond to a real entry in _FRED_SERIES (the
+    reference-period series economic.py's own sync_fred() already polls) — a made-up or
+    mistyped series_id would 404 against the real FRED API forever, silently, since the poll's
+    own `if r.status_code != 200: continue` swallows it."""
+    known_series_ids = {series_id for series_id, _, _, _ in _FRED_SERIES}
+    for event_type, series_id in _RELEASE_TO_FRED_SERIES.items():
+        assert series_id in known_series_ids, f"{event_type} -> {series_id} not in _FRED_SERIES"
+
+
+def test_pce_release_now_maps_to_a_real_series_not_none():
+    """PCE previously mapped to None because PCEPI wasn't in _FRED_SERIES at all — now that a
+    real PCE Price Index series has been added, pce_release must resolve to it, not None."""
+    assert _RELEASE_TO_FRED_SERIES["pce_release"] == "PCEPI"
 
 
 # ── _is_fomc_day() ──────────────────────────────────────────────────────────────
@@ -285,6 +306,46 @@ def test_both_call_sites_write_sectors_helped_and_hurt_columns():
     fast_poll_body = _source[fast_poll_start:fast_poll_end]
     assert "ev.sectors_helped" in fast_poll_body
     assert "ev.sectors_hurt" in fast_poll_body
+
+
+# ── AUD264-RELEASE-POLL-COVERS-4-OF-10 (second root cause): realtime_start guard ──
+
+def _fast_poll_body() -> str:
+    start = _source.index("async def check_release_day_fast_poll")
+    end = _source.index("\n\ndef _is_fomc_day", start)
+    return _source[start:end]
+
+
+def test_obs0_realtime_start_is_checked_against_today_before_accepting_the_value():
+    """The core second-root-cause fix: obs[0] is just the NEWEST reference-period observation
+    on the series — nothing previously confirmed it was actually published TODAY rather than
+    some earlier date sync_fred() (the separate reference-period sync) had already captured.
+    A same-day release has realtime_start == today (verified live, per this module's own
+    docstring); anything else means nothing new has posted yet."""
+    body = _fast_poll_body()
+    assert 'obs[0].get("realtime_start") != today.isoformat()' in body
+
+
+def test_realtime_start_check_happens_before_actual_value_is_extracted_and_written():
+    """The guard must gate BEFORE `actual = float(obs[0]["value"])` and the ev.actual_value
+    write — a guard added after extraction, or on a separate unreachable branch, would not
+    actually prevent a stale value from being written."""
+    body = _fast_poll_body()
+    guard_idx = body.index('obs[0].get("realtime_start") != today.isoformat()')
+    extract_idx = body.index('actual = float(obs[0]["value"])')
+    write_idx = body.index("ev.actual_value = actual")
+    assert guard_idx < extract_idx < write_idx
+
+
+def test_realtime_start_mismatch_continues_the_loop_not_raises_or_returns():
+    """A `continue` (not a raise or early `return`) is required — this poll processes
+    MULTIPLE due-today events in one call (e.g. both cpi_release and ppi_release on the same
+    morning), and one series not having a fresh observation yet must not abort checking the
+    others."""
+    body = _fast_poll_body()
+    guard_idx = body.index('obs[0].get("realtime_start") != today.isoformat()')
+    tail = body[guard_idx:guard_idx + 150]
+    assert "continue" in tail
 
     fomc_start = _source.index("async def check_fomc_statement_poll")
     fomc_body = _source[fomc_start:]

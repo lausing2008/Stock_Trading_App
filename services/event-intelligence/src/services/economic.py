@@ -59,6 +59,7 @@ _FRED_SERIES: list[tuple[str, str, str, str]] = [
     ("HOUST",       "housing_starts", "Housing Starts",                "medium"),
     ("ICSA",        "jobless_claims", "Initial Jobless Claims",        "medium"),
     ("FEDFUNDS",    "fed_funds",      "Fed Funds Rate",                "high"),
+    ("PCEPI",       "pce",            "PCE Price Index",               "high"),
 ]
 
 # T249-MARKETMOVER-P0: FRED release_id → (event_type, title, importance) for the REAL release

@@ -71,12 +71,25 @@ lists to look complete."""
 # event_type (from _FRED_RELEASES/_FRED_SERIES) -> the reference-period FRED series_id used to
 # fetch actual_value fast. Distinct from _FRED_SERIES' own event_type keys (e.g. "cpi") since
 # these dict keys are the *_release family the release-date calendar uses.
+#
+# AUD264-RELEASE-POLL-COVERS-4-OF-10: this dict previously had only 5 entries (one of which,
+# pce_release, mapped to None and was skipped) against economic.py's 10-entry _FRED_RELEASES —
+# 6 of 10 release types were never even SELECTed by check_release_day_fast_poll()'s own query
+# below, silently leaving their actual_value permanently null (confirmed in production: 113
+# fed_funds_release rows with zero actuals). All 10 _FRED_RELEASES event_types now have a real
+# reference-period series here, each pulled directly from _FRED_SERIES (the same series
+# sync_fred() already polls for the reference-period axis) rather than guessed.
 _RELEASE_TO_FRED_SERIES: dict[str, str] = {
     "cpi_release": "CPIAUCSL",
     "ppi_release": "PPIACO",
     "gdp_release": "GDP",
     "nfp_release": "PAYEMS",
-    "pce_release": None,  # PCE price index isn't in _FRED_SERIES today; skipped until added
+    "pce_release": "PCEPI",
+    "retail_sales_release": "RSXFS",
+    "consumer_conf_release": "UMCSENT",
+    "housing_starts_release": "HOUST",
+    "jobless_claims_release": "ICSA",
+    "fed_funds_release": "FEDFUNDS",
 }
 
 
@@ -226,6 +239,21 @@ async def check_release_day_fast_poll() -> dict:
                     continue
                 obs = r.json().get("observations", [])
                 if not obs or obs[0]["value"] in (".", ""):
+                    continue
+                # AUD264-RELEASE-POLL-COVERS-4-OF-10 (second root cause): obs[0] is just the
+                # NEWEST reference-period observation on the series — nothing here confirmed it
+                # was actually published TODAY rather than some earlier date. sync_fred() (the
+                # separate reference-period sync) already writes this same value the moment it
+                # first appears; if this poll runs on a day the series happens not to have a
+                # brand-new observation attached yet, obs[0] would silently be LAST month's
+                # value, written here as if it were today's release. FRED's own realtime_start
+                # field on each observation is the date that value was actually made available
+                # in this vintage — a genuine same-day release has realtime_start == today
+                # (verified live against production, see this module's own docstring). Anything
+                # else means nothing new has actually posted yet; skip and let a later poll
+                # cycle (armed 8:30-9:59am ET, per this function's own scheduler registration)
+                # pick it up once FRED actually attaches it.
+                if obs[0].get("realtime_start") != today.isoformat():
                     continue
                 actual = float(obs[0]["value"])
                 previous = float(obs[1]["value"]) if len(obs) > 1 and obs[1]["value"] not in (".", "") else None
