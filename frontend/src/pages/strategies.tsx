@@ -474,7 +474,7 @@ export default function StrategiesPage() {
       </div>
 
       {/* Builder */}
-      <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: '16px', alignItems: 'start' }}>
+      <div className="strategies-templates-grid" style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: '16px', alignItems: 'start' }}>
 
         {/* Templates */}
         <div>
@@ -568,7 +568,7 @@ export default function StrategiesPage() {
               );
             })}
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 140px 140px', gap: '12px', marginBottom: '16px' }}>
+            <div className="strategies-backtest-config-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 140px 140px', gap: '12px', marginBottom: '16px' }}>
               <div>
                 <label style={lbl}>Stock to Backtest</label>
                 <select value={symbol} onChange={e => setSymbol(e.target.value)} style={{ ...inp, width: '100%' }}>

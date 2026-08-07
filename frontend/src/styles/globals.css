@@ -126,6 +126,36 @@ a { color: inherit; text-decoration: none; }
   }
 }
 
+/* T230-UX-MOBILE-RESPONSIVE (strategies.tsx pass): the builder's Templates sidebar + main
+   content area is the EXACT `240px 1fr` shape as the original stock-detail bug this whole
+   series exists to fix — same collapse. The Stock/Start Date/End Date backtest-config row is
+   a simple 3-field panel that stacks cleanly under 1fr, same as every other form-row fix in
+   this series. */
+.strategies-templates-grid { grid-template-columns: 240px 1fr; }
+.strategies-backtest-config-grid { grid-template-columns: 1fr 140px 140px; }
+@media (max-width: 767px) {
+  .strategies-templates-grid,
+  .strategies-backtest-config-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* T230-UX-MOBILE-RESPONSIVE (journal.tsx pass): two 2-column form/summary panels collapse
+   cleanly under 1fr; the trade-history row is a 9-fixed-column row (Date/Symbol/Side/Entry/
+   Exit/P&L/P&L%/Hold/Notes) rendered once per journal entry — forcing it to 1fr would destroy
+   the row's column alignment the same way the positions/alerts tables would have, so it gets
+   the same horizontal-scroll treatment as those (a new, journal-scoped class rather than
+   reusing an existing one, matching this series' own established reasoning for why each page
+   gets its own scroll class instead of sharing one across unrelated pages). */
+.journal-form-grid { grid-template-columns: 1fr 1fr; }
+@media (max-width: 767px) {
+  .journal-form-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+.journal-table-scroll { overflow-x: auto; }
+.journal-table-scroll > * { min-width: 760px; }
+
 .fixed { position: fixed; }
 .absolute { position: absolute; }
 .relative { position: relative; }

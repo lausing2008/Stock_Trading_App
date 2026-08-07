@@ -248,6 +248,7 @@ function AITradesTab() {
           No trades in the last {daysBack} days.
         </div>
       ) : (
+        <div className="journal-table-scroll">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {filtered.map(item => {
             const isOpen = item.stage === 'open';
@@ -319,7 +320,7 @@ function AITradesTab() {
                 {/* Expanded detail */}
                 {isExpanded && (
                   <div style={{ padding: '12px 14px 14px', borderTop: '1px solid #1e293b', background: '#020617' }}>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                    <div className="journal-form-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                       {/* Left: entry context */}
                       <div>
                         <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', marginBottom: 6 }}>ENTRY CONTEXT</div>
@@ -383,6 +384,7 @@ function AITradesTab() {
               </div>
             );
           })}
+        </div>
         </div>
       )}
 
@@ -660,7 +662,7 @@ function ManualLogTab() {
             <h2 style={{ fontSize: 16, fontWeight: 700, color: '#e2e8f0', marginBottom: 20 }}>
               {editingId ? 'Edit Trade' : 'Log New Trade'}
             </h2>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div className="journal-form-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div>
                 <label style={{ fontSize: 11, color: '#64748b', display: 'block', marginBottom: 4 }}>Symbol *</label>
                 <input value={form.symbol} onChange={e => setForm(f => ({ ...f, symbol: e.target.value.toUpperCase() }))}
