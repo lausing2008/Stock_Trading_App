@@ -731,6 +731,76 @@ def test_price_drift_gate_ignores_a_zero_or_negative_sig_ref_price():
     assert result is None
 
 
+# ── Multi-timeframe confluence hard reject (T215/T222-B, T232-DL-DUALSCORER-DEBT) ─────────
+# A GROWTH/LONG/SWING BUY whose SHORT-horizon signal has already flipped to SELL means
+# near-term momentum is working against the trade — ported from _scan_for_entries' own
+# hard pre-filter. cfg["short_signal"] is only present when the real caller sent a fresh
+# SHORT-horizon signal; cfg["confluence_check_enabled"] defaults True.
+
+def test_confluence_short_sell_blocks_growth_buy():
+    result = hr.check_hard_rejects(**_base_kwargs(
+        style="GROWTH", cfg={"short_signal": "SELL"},
+    ))
+    assert result is not None and "SHORT-horizon" in result and "GROWTH" in result
+
+
+def test_confluence_short_sell_blocks_long_and_swing_buy_too():
+    result_long = hr.check_hard_rejects(**_base_kwargs(
+        style="LONG", cfg={"short_signal": "SELL"},
+    ))
+    assert result_long is not None and "LONG" in result_long
+    result_swing = hr.check_hard_rejects(**_base_kwargs(
+        style="SWING", cfg={"short_signal": "SELL"},
+    ))
+    assert result_swing is not None and "SWING" in result_swing
+
+
+def test_confluence_short_sell_does_not_block_short_style_itself():
+    """The gate only applies to GROWTH/LONG/SWING BUYs (matching _scan_for_entries' own
+    `style in ("GROWTH", "LONG", "SWING")` restriction) — a SHORT-style candidate must never
+    be blocked by its own horizon's signal."""
+    result = hr.check_hard_rejects(**_base_kwargs(
+        style="SHORT", cfg={"short_signal": "SELL"},
+    ))
+    assert result is None
+
+
+def test_confluence_short_signal_not_sell_does_not_block():
+    """A SHORT signal of BUY, HOLD, or WAIT agrees with (or is at least not opposed to) the
+    entry — only an explicit SELL contradicts it."""
+    for sig in ("BUY", "HOLD", "WAIT"):
+        result = hr.check_hard_rejects(**_base_kwargs(
+            style="GROWTH", cfg={"short_signal": sig},
+        ))
+        assert result is None, f"short_signal={sig} should not block"
+
+
+def test_confluence_gate_skipped_when_short_signal_absent():
+    """An older caller not yet sending short_signal must not be blocked — this gate is opt-in
+    via cfg, matching every other optional gate in this file."""
+    result = hr.check_hard_rejects(**_base_kwargs(style="GROWTH", cfg={}))
+    assert result is None
+
+
+def test_confluence_gate_respects_confluence_check_enabled_false():
+    """A portfolio that has explicitly disabled the check (confluence_check_enabled=False)
+    must not have decision-engine silently re-enforce it."""
+    result = hr.check_hard_rejects(**_base_kwargs(
+        style="GROWTH", cfg={"short_signal": "SELL", "confluence_check_enabled": False},
+    ))
+    assert result is None
+
+
+def test_confluence_gate_defaults_enabled_when_flag_absent():
+    """confluence_check_enabled must default to True (matching _scan_for_entries' own default)
+    — a caller that sends short_signal but never explicitly sets the flag must still be
+    gated."""
+    result = hr.check_hard_rejects(**_base_kwargs(
+        style="GROWTH", cfg={"short_signal": "SELL"},
+    ))
+    assert result is not None
+
+
 # ── Gap filter (T171) ──────────────────────────────────────────────────────────
 # NOTE: the gap filter runs AFTER the R:R gate (see gate order at the top of this file), so
 # every test here must also move stop_price/take_profit along with live_price to keep R:R

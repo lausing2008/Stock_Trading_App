@@ -2988,6 +2988,7 @@ def _call_decision_engine(
     confidence_delta: float | None = None,
     index_return_pct: float | None = None,
     sig_ref_price: float | None = None,
+    short_signal: str | None = None,
 ) -> tuple[bool, str, int, str | None] | None:
     """Call Decision Engine and return (should_enter, verdict, score, blocked_reason).
 
@@ -3153,6 +3154,19 @@ def _call_decision_engine(
                     # threaded the portfolio's own setting into this request, so it was a
                     # built-but-dormant opt-in with no way to turn it on for any real portfolio.
                     **( {"risk_check_enabled": True} if cfg.get("risk_check_enabled") else {} ),
+                    # T232-DL-DUALSCORER-DEBT / T215+T222-B: multi-timeframe confluence is
+                    # _scan_for_entries' own HARD pre-filter — a GROWTH/LONG/SWING BUY whose
+                    # SHORT-horizon signal has already flipped to SELL (near-term momentum
+                    # working against the entry) is discarded before DE is ever called on the
+                    # real production path. DE had no equivalent, so /decide/{symbol} called
+                    # standalone (e.g. decide.tsx, which never runs _scan_for_entries' own
+                    # pre-filter) could silently approve an entry its own near-term signal
+                    # already contradicts. short_signal is looked up fresh from the SAME
+                    # _short_signals batch query _scan_for_entries already builds once per scan
+                    # cycle (not re-fetched per-candidate) — threaded through here rather than
+                    # reused from anywhere in sig.reasons, since no such field exists there.
+                    **( {"short_signal": short_signal, "confluence_check_enabled": cfg.get("confluence_check_enabled", True)}
+                        if short_signal is not None else {} ),
                 },
             },
             headers={"Authorization": f"Bearer {_svc_token()}"},
@@ -4664,6 +4678,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             confidence_delta=confidence_delta,          # T232-DL-DUALSCORER-DEBT: T202 gate parity
             index_return_pct=_idx_ret,                  # T232-DL-DUALSCORER-DEBT: T221 gate parity
             sig_ref_price=_sig_ref_prices.get(stock.id), # T232-DL-DUALSCORER-DEBT: T196 gate parity
+            short_signal=_short_signals.get(stock.id),  # T232-DL-DUALSCORER-DEBT: T215/T222-B gate parity
         )
         _max_corr = _max_correlation_with_open_positions(
             session, stock.id, _open_stock_ids, _open_closes_cache,

@@ -350,6 +350,24 @@ def check_hard_rejects(
                     f"exceeds max drift {_max_drift:.0f}% — chasing blocked (T196)"
                 )
 
+    # T232-DL-DUALSCORER-DEBT: Multi-timeframe confluence HARD REJECT (T215, extended to
+    # SWING by T222-B), ported from paper_trading_engine.py's _scan_for_entries(). A GROWTH/
+    # LONG/SWING BUY whose SHORT-horizon signal has already flipped to SELL means near-term
+    # momentum is working against the trade — the fallback discards these before ever scoring
+    # them. cfg["short_signal"] is only present when the caller sent a real SHORT-horizon
+    # signal (see paper_trading_engine.py's config_overrides) and cfg["confluence_check_enabled"]
+    # defaults True to match _scan_for_entries' own default — a portfolio that has explicitly
+    # disabled the check must not have DE silently re-enforce it.
+    if (
+        cfg.get("confluence_check_enabled", True)
+        and style in ("GROWTH", "LONG", "SWING")
+        and cfg.get("short_signal") == "SELL"
+    ):
+        return (
+            "SHORT-horizon signal is SELL — near-term momentum contradicts this "
+            f"{style} BUY (T215/T222-B)"
+        )
+
     # T171: Premarket gap filter — reject if price has already gapped up significantly
     # from its signal-time close. reasons["last_price"] is the close at signal-compute time.
     _signal_close = _reasons.get("last_price")
