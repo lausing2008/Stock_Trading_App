@@ -83,6 +83,33 @@ def test_missing_change_pct_or_price_degrades_gracefully_not_crash():
     assert "—" in calls[0]["html"]
 
 
+# ── AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED: settlement date surfaced in the email ──────────
+
+def test_short_interest_date_rendered_when_present():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_short_squeeze_email("user@example.com", [
+            {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10,
+             "short_interest_date": "2026-07-15"},
+        ])
+    html, text = calls[0]["html"], calls[0]["text"]
+    assert "2026-07-15" in html
+    assert "2026-07-15" in text
+
+
+def test_missing_short_interest_date_degrades_gracefully_not_crash():
+    """An older candidate dict (or a symbol whose fundamentals cache predates this fix) has no
+    short_interest_date key at all — must not crash or render a placeholder that looks like a
+    real date."""
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        result = send_short_squeeze_email("user@example.com", [
+            {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10},
+        ])
+    assert result is True
+    assert "as of" not in calls[0]["html"]
+
+
 # ── check_short_squeeze_alerts() — source-text regression checks ────────────────────────────
 
 def test_uses_stockai_live_prices_not_yfinance_in_the_scan_loop():
@@ -125,3 +152,42 @@ def test_job_is_registered_at_one_minute_interval():
     idx = _scheduler_source.index('id="short_squeeze_alert_check"')
     preceding = _scheduler_source[max(0, idx - 300):idx]
     assert "minutes=1" in preceding
+
+
+# ── AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED: stale short-interest rejected outright ──────────
+
+def test_stale_short_interest_is_rejected_not_just_flagged():
+    """This alert is the highest-consequence consumer (an unsolicited email explicitly
+    claiming a squeeze thesis) — unlike the browsable screener endpoints, which surface
+    is_stale for a human to judge, this must REJECT a stale candidate outright before it can
+    ever reach the email."""
+    body = _check_short_squeeze_alerts_body()
+    assert "_squeeze_stale_cutoff_str" in body
+    assert '_si_date is None or _si_date < _squeeze_stale_cutoff_str' in body
+
+
+def test_stale_cutoff_is_computed_fresh_each_cycle_not_a_frozen_constant():
+    """The cutoff must be derived from date.today() INSIDE the function body, not a module-
+    level constant computed once at import time (which would never advance and eventually
+    reject everything, or nothing, depending on when the process started)."""
+    body = _check_short_squeeze_alerts_body()
+    assert "_squeeze_stale_cutoff_str = (" in body
+    assert "_sq_date.today()" in body
+
+
+def test_staleness_check_happens_before_the_candidate_is_added():
+    """The reject must fire INSIDE the same try block that reads spf, before
+    candidates[sym] = {...} — a staleness check added after the candidate is already queued
+    would be a no-op."""
+    body = _check_short_squeeze_alerts_body()
+    staleness_idx = body.index("_si_date is None or _si_date < _squeeze_stale_cutoff_str")
+    candidate_add_idx = body.index('candidates[sym] = {')
+    assert staleness_idx < candidate_add_idx
+
+
+def test_short_interest_date_is_threaded_into_the_candidate_dict():
+    """The real settlement date must reach the candidate dict passed to
+    send_short_squeeze_email() — otherwise the email builder's own date-rendering (tested
+    above) would never actually have anything to show."""
+    body = _check_short_squeeze_alerts_body()
+    assert '"short_interest_date": _si_date' in body

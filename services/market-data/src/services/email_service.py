@@ -1244,6 +1244,11 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
         spf = c["short_percent_of_float"]
         chg = c.get("change_pct")
         price = c.get("price")
+        # AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED: surfaces the real settlement date so a
+        # recipient can judge for themselves how current the short-interest figure is, rather
+        # than every reading implicitly reading as "measured just now."
+        si_date = c.get("short_interest_date")
+        si_str = f" (as of {si_date})" if si_date else ""
         chg_str = f"+{chg:.2f}%" if chg is not None else "—"
         price_str = f"${price:.2f}" if price else "—"
         plan = c.get("game_plan")
@@ -1266,11 +1271,11 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
             f'<strong style="font-size:14px">{sym}</strong>'
             f'<span style="font-size:13px;color:#22c55e;font-weight:700">{chg_str}</span>'
             f'</div>'
-            f'<div style="font-size:12px;color:#64748b;margin-top:2px">{price_str} · <strong style="color:#ef4444">{spf:.1f}%</strong> of float short</div>'
+            f'<div style="font-size:12px;color:#64748b;margin-top:2px">{price_str} · <strong style="color:#ef4444">{spf:.1f}%</strong> of float short{si_str}</div>'
             f'{plan_html}'
             f'</div>'
         )
-        rows_text += f"  {sym}: {price_str}, {chg_str} today, {spf:.1f}% of float short\n" + plan_text
+        rows_text += f"  {sym}: {price_str}, {chg_str} today, {spf:.1f}% of float short{si_str}\n" + plan_text
 
     body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
   <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">

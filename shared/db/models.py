@@ -849,6 +849,14 @@ class Fundamental(Base):
     # Sentiment
     short_percent_of_float: Mapped[float | None] = mapped_column(Float, nullable=True)
     short_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED: exchange short interest settles ~2x/month with
+    # a 1-2 week reporting lag, so a shortPercentOfFloat reading can legitimately be up to ~6
+    # weeks stale by the time a user sees it. Yahoo's own quoteSummary schema (the same module
+    # shortPercentOfFloat/sharesShort/shortRatio all come from) carries a settlement date
+    # (dateShortInterest) alongside the figures — captured here so downstream consumers
+    # (alerts, screeners) can finally distinguish "measured 3 days ago" from "measured 6 weeks
+    # ago" instead of treating every reading as equally fresh.
+    short_interest_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     # Analyst consensus
     recommendation_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
     number_of_analysts: Mapped[int | None] = mapped_column(Integer, nullable=True)

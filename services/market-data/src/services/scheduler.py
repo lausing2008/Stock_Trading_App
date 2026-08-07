@@ -2485,6 +2485,11 @@ def check_short_squeeze_alerts() -> None:
     _t0 = time.monotonic()
     try:
         import json as _json
+        from datetime import date as _sq_date, timedelta as _sq_timedelta
+
+        # AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED: computed fresh each cycle (not a module-
+        # level constant, which would freeze at import time and never advance).
+        _squeeze_stale_cutoff_str = (_sq_date.today() - _sq_timedelta(days=30)).isoformat()
 
         _rc = _get_redis()
         try:
@@ -2537,11 +2542,27 @@ def check_short_squeeze_alerts() -> None:
                     spf = data.get("short_percent_of_float")
                     if spf is None or spf * 100 < _SQUEEZE_MIN_SHORT_FLOAT:
                         continue
+                    # AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED: this is the highest-consequence
+                    # consumer of short_percent_of_float in the app — an unsolicited email
+                    # explicitly claiming "shorts may be forced to cover" (see
+                    # send_short_squeeze_email's own copy). Exchange short interest settles
+                    # ~2x/month with a 1-2 week reporting lag, so a reading can legitimately be
+                    # up to ~6 weeks stale — e.g. real short interest collapses 22%->6% after a
+                    # covering wave, yfinance still reports 22% for up to ~3 weeks, the stock
+                    # rallies intraday, and this alert would fire the squeeze thesis when the
+                    # fuel is already gone. Unlike the browsable screener/dashboard endpoints
+                    # (which surface is_stale for a human to judge visually), this alert
+                    # REJECTS a stale candidate outright rather than merely flagging it, since
+                    # there's no human in the loop before the email sends.
+                    _si_date = data.get("short_interest_date")
+                    if _si_date is None or _si_date < _squeeze_stale_cutoff_str:
+                        continue
                 except Exception:
                     continue
                 candidates[sym] = {
                     "symbol": sym,
                     "short_percent_of_float": round(spf * 100, 2),
+                    "short_interest_date": _si_date,
                     "change_pct": round(change_pct, 2),
                     "price": price,
                 }

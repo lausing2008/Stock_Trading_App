@@ -304,6 +304,12 @@ def _run_migrations() -> None:  # noqa: C901
             conn.execute(text(
                 f"ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS {_fund_col} FLOAT"
             ))
+        # AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED: settlement date for short_percent_of_float/
+        # short_ratio above — a real DATE column, not FLOAT, so it needs its own ALTER TABLE
+        # rather than joining the loop above.
+        conn.execute(text(
+            "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS short_interest_date DATE"
+        ))
         # INT-8 forward-return tracking columns added to signal_outcomes after initial table creation
         for _col, _type in [
             ("price_5d",       "FLOAT"),

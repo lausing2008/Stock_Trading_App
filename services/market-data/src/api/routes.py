@@ -859,6 +859,10 @@ class FundamentalsOut(BaseModel):
     short_ratio: float | None = None
     shares_short: int | None = None
     shares_short_prior_month: int | None = None  # prior month short interest (yfinance sharesShortPriorMonth)
+    # AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED: the settlement date short_percent_of_float/
+    # short_ratio/shares_short above are AS OF — exchange short interest settles ~2x/month with
+    # a 1-2 week reporting lag, so this can legitimately be up to ~6 weeks old. YYYY-MM-DD string.
+    short_interest_date: str | None = None
     # Ownership breakdown
     held_percent_institutions: float | None = None
     held_percent_insiders: float | None = None
@@ -1112,6 +1116,11 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
         analyst_actions=analyst_actions,
         short_percent_of_float=_safe(info, "shortPercentOfFloat"),
         short_ratio=_safe(info, "shortRatio"),
+        # AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED: dateShortInterest is the settlement date
+        # Yahoo's own quoteSummary schema carries alongside shortPercentOfFloat/shortRatio —
+        # same Unix-timestamp shape as exDividendDate above, so the same conversion helper
+        # applies directly.
+        short_interest_date=_parse_ex_div_date(_safe(info, "dateShortInterest")),
         shares_short=_safe(info, "sharesShort"),
         shares_short_prior_month=_safe(info, "sharesShortPriorMonth"),
         held_percent_institutions=_safe(info, "heldPercentInstitutions"),
@@ -1198,6 +1207,7 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
         if stock_row:
             mkt_cap = info.get("marketCap")
             fcf = data.free_cashflow
+            _si_date = _date.fromisoformat(data.short_interest_date) if data.short_interest_date else None
             stmt = pg_insert(Fundamental).values(
                 stock_id=stock_row.id,
                 as_of=_date.today(),
@@ -1214,6 +1224,7 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
                 market_cap=int(mkt_cap) if mkt_cap else None,
                 short_percent_of_float=data.short_percent_of_float,
                 short_ratio=data.short_ratio,
+                short_interest_date=_si_date,
                 recommendation_mean=data.recommendation_mean,
                 number_of_analysts=data.number_of_analysts,
                 peg_ratio=data.peg_ratio,
@@ -1235,6 +1246,7 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
                     market_cap=int(mkt_cap) if mkt_cap else None,
                     short_percent_of_float=data.short_percent_of_float,
                     short_ratio=data.short_ratio,
+                    short_interest_date=_si_date,
                     recommendation_mean=data.recommendation_mean,
                     number_of_analysts=data.number_of_analysts,
                     peg_ratio=data.peg_ratio,
@@ -1912,15 +1924,27 @@ def short_interest(
     _user=Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    """Return stocks sorted by short percent of float (from fundamentals table)."""
+    """Return stocks sorted by short percent of float (from fundamentals table).
+
+    AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED: short_interest_date (the exchange's own
+    settlement date for this reading — can legitimately be up to ~6 weeks old, see
+    short_interest_date's own column comment in models.py) is now surfaced alongside the
+    percentage so the UI can show real data age instead of implying every row is equally
+    fresh. is_stale flags readings older than 30 days (a real, if imperfect, threshold —
+    settlement lag alone can be ~2 weeks, so 30 days catches genuinely aged data without
+    flagging every normal reading) — deliberately NOT filtered out entirely, since a stale
+    reading is still the best data available and hiding it outright would be a worse UX than
+    honestly labeling it.
+    """
+    from datetime import date as _date, timedelta as _timedelta
     from sqlalchemy import text as _text
     rows = session.execute(_text("""
         SELECT st.symbol, st.name, st.market,
-               f.short_percent_of_float, f.short_ratio, f.market_cap
+               f.short_percent_of_float, f.short_ratio, f.market_cap, f.short_interest_date
         FROM stocks st
         JOIN (
             SELECT DISTINCT ON (stock_id) stock_id,
-                   short_percent_of_float, short_ratio, market_cap
+                   short_percent_of_float, short_ratio, market_cap, short_interest_date
             FROM fundamentals
             WHERE short_percent_of_float IS NOT NULL
             ORDER BY stock_id, as_of DESC
@@ -1929,6 +1953,7 @@ def short_interest(
         ORDER BY f.short_percent_of_float DESC
         LIMIT 200
     """)).fetchall()
+    _stale_cutoff = _date.today() - _timedelta(days=30)
     return [
         {
             "symbol": r.symbol,
@@ -1937,6 +1962,8 @@ def short_interest(
             "short_percent_of_float": float(r.short_percent_of_float) * 100 if r.short_percent_of_float is not None else None,
             "short_ratio": float(r.short_ratio) if r.short_ratio is not None else None,
             "market_cap": int(r.market_cap) if r.market_cap is not None else None,
+            "short_interest_date": r.short_interest_date.isoformat() if r.short_interest_date is not None else None,
+            "is_stale": (r.short_interest_date is None) or (r.short_interest_date < _stale_cutoff),
         }
         for r in rows
     ]
@@ -1978,7 +2005,12 @@ def short_squeeze(
 ):
     """Return high-short-interest stocks with positive momentum (squeeze candidates)."""
     from db import Ranking
-    from datetime import date as _sdate
+    from datetime import date as _sdate, timedelta as _stimedelta
+    # AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED: compared as ISO-format strings (not date
+    # objects) since short_interest_date arrives from the JSON-serialized Redis cache below,
+    # not a DB row — ISO-format string comparison is lexicographically equivalent to date
+    # comparison for same-length YYYY-MM-DD strings.
+    _stale_cutoff_str = (_sdate.today() - _stimedelta(days=30)).isoformat()
     stocks = session.execute(select(Stock).where(Stock.active.is_(True))).scalars().all()
     stock_map = {s.symbol: s for s in stocks}
     r = _get_redis()
@@ -2031,6 +2063,14 @@ def short_squeeze(
                 "momentum_score": rank.momentum if rank else None,
                 "k_score": rank.score if rank else None,
                 "volume": p.get("volume") if p else None,
+                # AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED: see short_interest()'s own docstring
+                # above for the same reasoning — surfaced here too, not filtered out, since a
+                # stale reading is still the best data available.
+                "short_interest_date": data.get("short_interest_date"),
+                "is_stale": (
+                    data.get("short_interest_date") is None
+                    or data.get("short_interest_date") < _stale_cutoff_str
+                ),
             })
         except Exception:
             continue
