@@ -1532,20 +1532,37 @@ def get_last_hk_regime() -> dict:
 # ── Live price fetch ──────────────────────────────────────────────────────────
 
 def _fetch_live_prices(symbols: list[str]) -> dict[str, float]:
-    """Batch-fetch live prices via yfinance fast_info (same method as price alerts)."""
+    """Batch-fetch live prices via ONE yf.download() call.
+
+    BUG-YFCALLVOL (2026-08-07): this used to loop `tickers.tickers[sym].fast_info` per
+    symbol — despite the docstring's own "batch" claim, `yf.Tickers(...)` does not actually
+    batch `.fast_info` under the hood; each `.fast_info` access is still a separate HTTP
+    request. Called every 5 min during market hours across ~100+ symbols (open positions +
+    watchlist candidates), this was silently issuing ~100+ individual yfinance requests per
+    cycle — a real, avoidable amplifier of yfinance rate-limit pressure. `_fetch_live_bulk()`
+    in api/routes.py already solves the identical problem correctly with one `yf.download()`
+    call for the dashboard's live prices — mirrored here.
+    """
     if not symbols:
         return {}
     prices: dict[str, float] = {}
     try:
         import yfinance as yf
-        tickers = yf.Tickers(" ".join(symbols))
+        raw = yf.download(
+            symbols, period="2d", interval="1d", auto_adjust=True, progress=False, group_by="ticker",
+        )
+        if raw is None or raw.empty:
+            return {}
         for sym in symbols:
             try:
-                p = tickers.tickers[sym].fast_info.last_price
-                if p and float(p) >= 0.50:  # reject zero, $0.01 delisted/error prices
-                    prices[sym] = float(p)
+                closes = raw[sym]["Close"].dropna() if len(symbols) > 1 else raw["Close"].dropna()
+                if closes.empty:
+                    continue
+                p = float(closes.iloc[-1])
+                if p >= 0.50:  # reject zero, $0.01 delisted/error prices
+                    prices[sym] = p
             except Exception:
-                pass
+                continue
     except Exception as exc:
         log.warning("paper.live_price_fetch_failed", error=str(exc))
     return prices

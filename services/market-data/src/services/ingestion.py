@@ -1,7 +1,7 @@
 """Ingestion service — incremental loads, validation, Parquet + Postgres sinks."""
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from datetime import time as dtime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -22,6 +22,36 @@ from ..adapters import get_adapter, get_adapters
 log = get_logger("ingestion")
 
 _settings = get_settings()
+
+# BUG-POLYGONBUDGET (2026-08-07): Polygon's own free-tier plan caps at 5 requests/minute
+# (services/market-data/src/adapters/polygon_adapter.py's own docstring: "Polygon.io
+# free-tier adapter"). With ~121 active US symbols eligible for the Polygon-first
+# incremental path (see the adapter-selection comment below), every ingest cycle sent the
+# large majority of them into a Polygon call that was mathematically certain to 429 before
+# ever reaching yfinance — confirmed live: 24,949 of 25,825 Polygon calls (97%) rate-limited
+# in a single 24h window, each one adding a wasted round-trip ahead of the yfinance fallback
+# that was going to be needed anyway. RateLimitError is already excluded from Polygon's own
+# retry policy (fails fast on the first 429, no wasted backoff) — this doesn't change that;
+# it stops SENDING the doomed request in the first place once the real per-minute budget for
+# THIS cycle is already spent, going straight to yfinance instead.
+_POLYGON_BUDGET_PER_MINUTE = 5
+_POLYGON_BUDGET_KEY_PREFIX = "stockai:polygon_budget:"
+
+
+def _polygon_budget_available() -> bool:
+    """True if we're still under Polygon's free-tier ~5-req/min budget for the current
+    minute. Fails OPEN (returns True) on any Redis error — worst case we send one wasted
+    Polygon call, same as before this fix; we never want a Redis hiccup to silently disable
+    Polygon entirely."""
+    try:
+        redis_client = get_redis()
+        minute_key = _POLYGON_BUDGET_KEY_PREFIX + datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+        count = redis_client.incr(minute_key)
+        if count == 1:
+            redis_client.expire(minute_key, 90)  # a little past 60s so a slow cycle can't undercount
+        return count <= _POLYGON_BUDGET_PER_MINUTE
+    except Exception:
+        return True
 
 
 class IngestionError(Exception):
@@ -191,12 +221,16 @@ def ingest_symbol(
         #   - Explicit provider requested → use that provider
         #   - HK stocks → always yfinance (Polygon doesn't support HK)
         #   - Batch context (force or no existing bars) → yfinance (preserve Polygon quota for incremental)
-        #   - US incremental → Polygon first (Polygon 429 fast-fails → yfinance fallback)
+        #   - US incremental → Polygon first, UNLESS the free-tier per-minute budget for this
+        #     cycle is already spent (BUG-POLYGONBUDGET) — go straight to yfinance instead of
+        #     sending a Polygon request we already know will 429.
         if provider:
             adapters = [get_adapter(provider, market)]
         elif symbol.endswith(".HK") or market == "HK":
             adapters = [get_adapter("yfinance")]
         elif force or head is None:
+            adapters = [get_adapter("yfinance")]
+        elif not _polygon_budget_available():
             adapters = [get_adapter("yfinance")]
         else:
             adapters = get_adapters(market, timeframe)
