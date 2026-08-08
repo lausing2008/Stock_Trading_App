@@ -10,6 +10,7 @@ Endpoints:
   POST /broker/connections/{id}/reconnect      — renew E*Trade access token (daily)
   GET  /broker/connections/{id}/account        — live account summary (balance + positions)
   GET  /broker/connections/{id}/orders         — real order history from the broker itself
+  GET  /broker/connections/{id}/quote          — real-time quote(s) via the broker's own session
 
   GET  /broker/paper-portfolios/{portfolio_id}/broker  — get assigned broker
   PUT  /broker/paper-portfolios/{portfolio_id}/broker  — assign / unassign broker
@@ -398,6 +399,59 @@ def get_order_history(
                 "placed_at":        o.placed_at,
             }
             for o in orders
+        ],
+    }
+
+
+@router.get("/connections/{conn_id}/quote")
+def get_broker_quote(
+    conn_id: int,
+    symbols: str,
+    current: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """T230-DATA-BROKERQUOTE: real-time quote(s) via the broker's own already-authenticated
+    session — e.g. E*Trade's /v1/market/quote — rather than a separate market-data provider.
+    symbols is a comma-separated list (e.g. "AAPL,MSFT"). Returns 501 for broker types that
+    don't implement get_quote, matching list_orders/get_order_history's own established
+    convention rather than silently returning an empty list (which would look identical to
+    "authorized but genuinely no quote data").
+    """
+    conn = _fetch(conn_id, current, session)
+    if not conn.is_authorized:
+        raise HTTPException(400, "Broker not yet authorized")
+
+    sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not sym_list:
+        raise HTTPException(400, "symbols must be a non-empty comma-separated list")
+
+    from src.services.broker import get_broker
+    broker = get_broker(conn.broker_type, _decrypt_config(conn.config))
+    try:
+        quotes = broker.get_quote(sym_list)
+    except NotImplementedError:
+        raise HTTPException(501, f"{conn.broker_type} does not support get_quote")
+    except Exception as exc:
+        # BUG-BROKERROUTE-STALEAUTH: same fix as get_account_info()/get_order_history() above —
+        # an expired token must flip is_authorized and notify the user immediately, not
+        # silently 502 while the DB keeps claiming the connection is still authorized.
+        from ..services.scheduler import _is_token_rejected_error, _mark_broker_unauthorized_and_notify
+        if _is_token_rejected_error(exc):
+            _mark_broker_unauthorized_and_notify(session, conn)
+            raise HTTPException(401, f"E*Trade session expired — a fresh re-authorize link has been emailed to you. ({exc})")
+        raise HTTPException(502, f"Broker quote fetch failed: {exc}")
+
+    return {
+        "quotes": [
+            {
+                "symbol":     q.symbol,
+                "last_price": q.last_price,
+                "bid":        q.bid,
+                "ask":        q.ask,
+                "prev_close": q.prev_close,
+                "volume":     q.volume,
+            }
+            for q in quotes
         ],
     }
 

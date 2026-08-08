@@ -35,6 +35,16 @@ class BrokerOrder:
 
 
 @dataclass
+class BrokerQuote:
+    symbol: str
+    last_price: float | None
+    bid: float | None = None
+    ask: float | None = None
+    prev_close: float | None = None
+    volume: float | None = None
+
+
+@dataclass
 class BrokerPosition:
     symbol: str
     qty: float
@@ -97,3 +107,10 @@ class BrokerInterface(ABC):
     # Optional — brokers that don't support this raise NotImplementedError
     def list_orders(self, account_id: str | None = None, status: str = "open") -> list[BrokerOrder]:
         raise NotImplementedError(f"{type(self).__name__} does not support list_orders")
+
+    # T230-DATA-BROKERQUOTE: optional — a broker whose account is already authenticated can
+    # sometimes serve real-time quotes on that same session at zero extra integration cost
+    # vs. onboarding a whole new market-data provider. Brokers that don't support this raise
+    # NotImplementedError, matching list_orders()'s own established convention exactly.
+    def get_quote(self, symbols: list[str]) -> list[BrokerQuote]:
+        raise NotImplementedError(f"{type(self).__name__} does not support get_quote")

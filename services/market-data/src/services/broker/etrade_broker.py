@@ -19,7 +19,7 @@ import requests
 from requests_oauthlib import OAuth1
 
 from .interface import (
-    BrokerAccount, BrokerInterface, BrokerOrder, BrokerPosition, OrderSide, OrderType,
+    BrokerAccount, BrokerInterface, BrokerOrder, BrokerPosition, BrokerQuote, OrderSide, OrderType,
 )
 
 _PROD_BASE   = "https://api.etrade.com"
@@ -378,6 +378,48 @@ class EtradeBroker(BrokerInterface):
                 filled_avg_price  = float(detail.get("averageExecutionPrice", 0)) or None,
                 placed_at         = placed_at,
             ))
+        return results
+
+    def get_quote(self, symbols: list[str]) -> list[BrokerQuote]:
+        """T230-DATA-BROKERQUOTE: real-time quotes via E*Trade's own /v1/market/quote endpoint
+        on the SAME already-authenticated OAuth session used for orders/accounts — zero new
+        integration/subscription cost for a US-symbol quote source, since the hardened
+        auth/renewal infrastructure (start_oauth/renew_access_token) already exists for this
+        connection. E*Trade caps this endpoint at 25 symbols per call; batches transparently
+        so a caller can pass an arbitrary-length list without knowing that limit.
+
+        E*Trade-only (US equities) — this broker has no Hong Kong market access at all, so
+        this can only ever supplement, never replace, this app's yfinance-based HK coverage.
+        """
+        results: list[BrokerQuote] = []
+        for i in range(0, len(symbols), 25):
+            batch = symbols[i:i + 25]
+            resp = requests.get(
+                f"{self._base}/v1/market/quote/{','.join(batch)}.json",
+                auth=self._oauth1(),
+                headers={"Content-Type": "application/json"},
+                timeout=15,
+            )
+            if not resp.ok:
+                raise RuntimeError(f"E*Trade get_quote failed: {resp.status_code} {resp.text}")
+            quote_data = resp.json().get("QuoteResponse", {}).get("QuoteData", [])
+            for q in quote_data:
+                sym = q.get("Product", {}).get("symbol", "")
+                # "All" is the standard equity-quote detail block per E*Trade's docs; a symbol
+                # E*Trade can't quote (bad ticker, delisted) returns a "Messages" block instead
+                # with no "All" key at all — .get(..., {}) degrades that to an all-None quote
+                # rather than raising, matching this file's established fail-soft-per-item
+                # convention (list_orders/_get_positions_raw skip/degrade individual bad rows
+                # rather than aborting the whole batch).
+                detail = q.get("All", {})
+                results.append(BrokerQuote(
+                    symbol      = sym,
+                    last_price  = float(detail["lastTrade"]) if detail.get("lastTrade") else None,
+                    bid         = float(detail["bid"]) if detail.get("bid") else None,
+                    ask         = float(detail["ask"]) if detail.get("ask") else None,
+                    prev_close  = float(detail["previousClose"]) if detail.get("previousClose") else None,
+                    volume      = float(detail["totalVolume"]) if detail.get("totalVolume") else None,
+                ))
         return results
 
     def is_market_open(self) -> bool:
