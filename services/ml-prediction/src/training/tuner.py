@@ -59,6 +59,7 @@ _SEARCH = {
 def _record_tune_history(
     symbol: str, style: str, window_start: date, window_end: date,
     current_params: dict, best_params: dict, ev_gate_result: dict, promoted: bool,
+    triggered_by: str = "manual",
 ) -> None:
     """T233-SELFIMPROVE-PHASE4: one tune_history row per tune_symbol() call, matching every
     other tuning mechanism's "record the attempt regardless of outcome" convention
@@ -89,7 +90,7 @@ def _record_tune_history(
                 validation_n=candidate_ev.get("n"),
                 promoted=promoted,
                 gate_failures=ev_gate_result.get("gate_failures") or [],
-                triggered_by="scheduled",
+                triggered_by=triggered_by,
             ))
             session.commit()
     except Exception as exc:
@@ -127,7 +128,10 @@ def _suggest(trial: optuna.Trial, name: str) -> int | float:
     return trial.suggest_float(name, spec[1], spec[2], log=log_scale)
 
 
-def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = "SWING") -> dict:
+def tune_symbol(
+    symbol: str, n_trials: int = 60, horizon: int = 5, style: str = "SWING",
+    triggered_by: str = "manual",
+) -> dict:
     """Run Optuna search for `symbol`, save best params, retrain final model.
 
     Returns a result dict with best_params, best_cv_auc, and final train metrics.
@@ -340,6 +344,7 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
     _record_tune_history(
         symbol, style, _window_start, _window_end,
         current_params, best_params, ev_gate_result, gate_promoted,
+        triggered_by=triggered_by,
     )
 
     if not gate_promoted:

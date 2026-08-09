@@ -51,6 +51,44 @@ def _redis_get_float(key: str) -> float | None:
         return None
 
 
+# ── AUD263-TUNED-PARAMS-SILENTLY-REVERT-ON-TTL ─────────────────────────────────
+# Every real tuned parameter (buy_threshold, ml_weight_cap, adx_min, breadth_compression,
+# ta_weights, conviction_weights) lives behind a TTL'd Redis key (30/90 days depending on
+# mechanism) — on expiry the read side silently falls back to the hardcoded _STYLE_PROFILES
+# default, indistinguishable from "this parameter was never tuned at all". A companion marker
+# with NO TTL, written alongside every real value write, lets the read side tell the two apart:
+# marker absent = genuinely never tuned; marker present but the value key expired = a real,
+# detectable silent reversion.
+
+def _mark_tuned(value_key: str) -> None:
+    """Call this immediately after writing any TTL'd tuned-parameter key. Stores today's date
+    (no expiry) under f"{value_key}:last_tuned_at" — fails open (a Redis hiccup here must
+    never abort an otherwise-successful calibration write, matching every other Redis
+    write-side helper's own fail-open convention in this file)."""
+    try:
+        _get_redis().set(f"{value_key}:last_tuned_at", date.today().isoformat())
+    except Exception:
+        pass
+
+
+def _tuning_staleness(value_key: str) -> dict:
+    """Read-side companion to _mark_tuned(). Returns:
+      {"last_tuned_at": "YYYY-MM-DD" | None, "reverted": bool}
+    reverted=True means this parameter WAS successfully tuned at some point (the marker
+    exists) but its value key has since expired — the exact silent-reversion state this
+    mechanism exists to make visible. reverted is always False when last_tuned_at is None
+    (never tuned at all is a different, non-alarming state)."""
+    try:
+        last_tuned_at = _get_redis().get(f"{value_key}:last_tuned_at")
+        value_present = _get_redis().exists(value_key)
+    except Exception:
+        return {"last_tuned_at": None, "reverted": False}
+    return {
+        "last_tuned_at": last_tuned_at,
+        "reverted": bool(last_tuned_at) and not value_present,
+    }
+
+
 # ── T233-SELFIMPROVE-PHASE3 extension: shared tune_history recorder ────────────
 # See docs/DESIGN_TUNE_HISTORY_EXTENSION_2026-07-06.md for the full scoping. This mirrors
 # market-data's promotion_gate.py._write_history but lives here since signal-engine writes

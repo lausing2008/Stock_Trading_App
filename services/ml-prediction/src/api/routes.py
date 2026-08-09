@@ -114,12 +114,24 @@ def tune(req: TuneRequest, tasks: BackgroundTasks, _: str = Depends(get_current_
 
 
 @router.post("/tune_all")
-def tune_all(tasks: BackgroundTasks, n_trials: int = 60, style: str = "SWING", _: str = Depends(get_current_username)):
+def tune_all(
+    tasks: BackgroundTasks, n_trials: int = 60, style: str = "SWING",
+    triggered_by: str = "weekly",
+    _: str = Depends(get_current_username),
+):
     """Run Optuna tuning sequentially for every active stock (weekend job).
 
     Each symbol gets `n_trials` Optuna trials then a full retrain. Runs in background.
     Horizon is derived from style: SHORT=5d, SWING=10d, LONG=20d.
     With 123 symbols × 60 trials this takes roughly 3-5 hours on EC2.
+
+    AUD263-TUNEALL-STALE-GUARD-NOT-WEEKLY: triggered_by ("weekly" | "stale_guard") is stamped
+    into the completion marker this endpoint writes on real finish (see _run_all() below) —
+    market-data's scheduler.py previously only recorded that this POST was DISPATCHED
+    ("tune_all_sent", not "tuned_all_finished"), so a container recreate mid-run (2-4h in the
+    background) silently killed tuning under a green job status. The 21-day stale guard's own
+    repeated rescue firings (all 61 ml_hyperparams TuneHistory rows landing on a single day) was
+    the visible symptom of the weekly path repeatedly failing to complete undetected.
     """
     from sqlalchemy import or_, select
     from db import Stock, SessionLocal
@@ -144,7 +156,7 @@ def tune_all(tasks: BackgroundTasks, n_trials: int = 60, style: str = "SWING", _
         results = []
         for sym in symbols:
             try:
-                result = tune_symbol(sym, n_trials=n_trials, horizon=horizon, style=style)
+                result = tune_symbol(sym, n_trials=n_trials, horizon=horizon, style=style, triggered_by=triggered_by)
             except Exception as exc:
                 log.warning("tune_all.symbol_failed", symbol=sym, error=str(exc))
                 result = {"symbol": sym, "skipped": True, "reason": str(exc)}
@@ -153,6 +165,31 @@ def tune_all(tasks: BackgroundTasks, n_trials: int = 60, style: str = "SWING", _
         # TIER95: After all models are retrained, trigger signal refreshes so new models
         # are used immediately (not at the next scheduled refresh 5× per day).
         tuned_count = sum(1 for r in results if not r.get("skipped"))
+
+        # AUD263-TUNEALL-STALE-GUARD-NOT-WEEKLY: this is the real completion marker
+        # (scheduler.py's own "tune_all_sent" only records that the POST was DISPATCHED, not
+        # that this ~2-4h background run actually finished). Written unconditionally, even
+        # when tuned_count is 0 — a run that genuinely finished with zero symbols tuned (e.g.
+        # every symbol legitimately failed) must still be distinguishable from a run that never
+        # finished at all (container recreate mid-run, an unhandled crash outside the per-symbol
+        # try/except above). Fails open — a Redis hiccup here must never mask that tuning itself
+        # genuinely completed.
+        try:
+            from common.redis_client import get_redis as _get_pool_redis
+            import json as _json
+            from datetime import datetime as _dt, timezone as _tz
+            _get_pool_redis().set(
+                "stockai:tune_all_completed",
+                _json.dumps({
+                    "completed_at": _dt.now(_tz.utc).isoformat(),
+                    "tuned": tuned_count,
+                    "total": len(symbols),
+                    "triggered_by": triggered_by,
+                }),
+            )
+        except Exception as _mark_exc:
+            log.warning("tune_all.completion_marker_failed", error=str(_mark_exc))
+
         if tuned_count > 0:
             log.info("tune_all.complete", tuned=tuned_count, total=len(symbols))
             try:

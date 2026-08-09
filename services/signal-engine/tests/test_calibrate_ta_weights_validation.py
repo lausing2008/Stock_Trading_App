@@ -99,6 +99,11 @@ def _extract_calibrate_ta_weights_core():
         "Path": pathlib.Path,
         "_os": _real_os,
         "_get_redis": lambda: (_ for _ in ()).throw(RuntimeError("stubbed redis should never be reached in tests")),
+        # AUD263-TUNED-PARAMS-SILENTLY-REVERT-ON-TTL: real function calls _mark_tuned() right
+        # after its real Redis setex() write — this test never exercises that Redis path at
+        # all (set_ta_weights/log/etc. above are the only side effects under test here), so a
+        # no-op stub is sufficient; nothing in this file asserts on staleness-marker behavior.
+        "_mark_tuned": lambda *a, **kw: None,
     }
     exec(func_source, namespace)  # noqa: S102 — isolated eval of real source
     return namespace["_core"]

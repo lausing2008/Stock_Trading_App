@@ -1264,7 +1264,12 @@ def walkforward_backtest(
         wsigs = [(d, r) for d, r in evaluated if window_start <= d <= wend]
         if len(wsigs) >= 3:
             n = len(wsigs)
-            n_correct = sum(1 for _, r in wsigs if r > 0)
+            # AUD261-BARE-GT-ZERO-NO-HURDLE (this function's own instance): a bare `r > 0`
+            # counted a below-cost move (e.g. +0.1%) as a win — apply the same cost hurdle
+            # already used everywhere else in this file (T232-OC4/_OUTCOME_WIN_HURDLE_PCT is
+            # a FRACTION, 0.005 = 0.5%; ret_pct here is already *100, so scale the hurdle to
+            # match). BUY-only (this function's own rows filter), so no sign error either way.
+            n_correct = sum(1 for _, r in wsigs if r > _OUTCOME_WIN_HURDLE_PCT * 100)
             avg_ret = sum(r for _, r in wsigs) / n
             windows.append({
                 "start": window_start.isoformat(),
@@ -1279,18 +1284,33 @@ def walkforward_backtest(
     if not windows:
         return _wf_empty(train_days, test_days, lookback_days, hold_days)
 
-    # Equity curve — compound per-window average returns
+    # AUD261-WALKFORWARD-COMPOUNDS-CROSSSECTIONAL: each window's avg_return_pct is the MEAN
+    # return of every (overlapping, concurrent) BUY signal active in that window — a
+    # cross-sectional average, not one sequential position's return. Compounding that mean
+    # window-over-window (equity *= 1 + avg_return_pct/100) treats N-signals-averaged-together
+    # as if it were a single trade held sequentially across windows — that is NOT what an
+    # executable strategy's equity curve looks like, and cross-sectional averaging structurally
+    # SUPPRESSES variance relative to any real tradeable path (a mean cancels out the very
+    # dispersion Sharpe/drawdown are supposed to measure), so this reliably OVERSTATES both.
+    # Building a real per-signal sequential equity path (position-by-position, respecting
+    # capital/overlap constraints) is the correct fix but is a materially larger, separate
+    # engineering effort (comparable to market-data's own gate_harness.py backtest engine) —
+    # deliberately not attempted here. Instead: kept the compounding math (it's still an
+    # internally-consistent SUMMARY STATISTIC of the per-window mean-return series), but
+    # stopped asserting it represents an executable equity curve — see cross_sectional_caveat
+    # below and the corrected frontend copy in signal-accuracy.tsx.
     equity = 1.0
     for w in windows:
         equity *= (1 + w["avg_return_pct"] / 100)
         w["equity"] = round(equity, 4)
 
-    # Sharpe (annualised from per-window returns)
+    # "Sharpe"/"drawdown" here are computed the same way, over the SAME cross-sectional mean
+    # series — same caveat applies; they measure the smoothness/dispersion of average window
+    # returns, not the risk-adjusted return of a tradeable strategy.
     rets = np.array([w["avg_return_pct"] for w in windows])
     periods_per_year = 252 / test_days
     sharpe = float(rets.mean() / rets.std() * math.sqrt(periods_per_year)) if rets.std() > 0 else 0.0
 
-    # Max drawdown
     eq_arr = np.array([w["equity"] for w in windows])
     peak = np.maximum.accumulate(eq_arr)
     max_dd = float(abs(((eq_arr - peak) / peak).min())) if len(eq_arr) > 1 else 0.0
@@ -1317,6 +1337,18 @@ def walkforward_backtest(
         "overall_accuracy": round(overall_correct / overall_n * 100, 1) if overall_n else None,
         "avg_return_pct": round(float(rets.mean()), 2),
         "total_return_pct": total_return_pct,
+        # AUD261-WALKFORWARD-COMPOUNDS-CROSSSECTIONAL: explicit, structured disclosure (not
+        # just a comment) so any consumer — this repo's own frontend or a future one — has a
+        # machine-readable signal that sharpe/total_return_pct/max_drawdown are cross-sectional
+        # summary statistics, not an executable-strategy equity curve.
+        "cross_sectional_caveat": (
+            "sharpe, total_return_pct, and max_drawdown are computed by compounding each "
+            "window's MEAN return across all concurrent BUY signals in that window, not a "
+            "single sequential position's return. Cross-sectional averaging suppresses "
+            "variance relative to any real tradeable path, which overstates Sharpe and "
+            "understates drawdown — these are summary statistics of signal quality over time, "
+            "not a claim about executable strategy performance."
+        ),
         "sharpe": round(sharpe, 2),
         "max_drawdown": round(max_dd * 100, 2),
         "benchmark": benchmark,
@@ -1330,7 +1362,7 @@ def _wf_empty(train_days, test_days, lookback_days, hold_days):
         "windows": [], "total_windows": 0, "profitable_windows": 0,
         "signal_count": 0, "overall_accuracy": None, "avg_return_pct": None,
         "total_return_pct": None, "sharpe": None, "max_drawdown": None,
-        "benchmark": None,
+        "benchmark": None, "cross_sectional_caveat": None,
     }
 
 

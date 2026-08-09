@@ -109,6 +109,11 @@ def _extract_tune_strategy(fake_redis, tune_history_calls, style_profiles=None, 
         "_MIN_PROMOTION_EV_LIFT_PCT": _margin_namespace["_MIN_PROMOTION_EV_LIFT_PCT"],
         "_MIN_PROMOTION_LIFT_SD_RATIO": _margin_namespace["_MIN_PROMOTION_LIFT_SD_RATIO"],
         "__import__": __import__,
+        # AUD263-TUNED-PARAMS-SILENTLY-REVERT-ON-TTL: real tune_strategy() calls _mark_tuned()
+        # right after each real setex() write, via a separate signals_shared._get_redis() call
+        # (not the injected fake_redis above) — no-op stub since this test file asserts on
+        # fake_redis.writes for the real value writes, not on the staleness marker.
+        "_mark_tuned": lambda *a, **kw: None,
     }
     # `from ..generators.signals import _STYLE_PROFILES` inside the function body needs a real
     # importable module — register a fake one under that dotted path.

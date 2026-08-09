@@ -19,7 +19,8 @@ from db import Price, Signal, SignalHorizon, SignalOutcome, SignalType, Stock, T
 
 from .signals_shared import (
     _CONF_CAL_CACHE_KEY, _CONF_CAL_MIN_COUNT, _OUTCOME_HOLD_DAYS,
-    _get_confidence_calibration, _get_redis, _record_tune_history, _redis_get_float, log,
+    _get_confidence_calibration, _get_redis, _mark_tuned, _record_tune_history, _redis_get_float,
+    _tuning_staleness, log,
 )
 
 router = APIRouter(prefix="/signals", tags=["signals"])
@@ -753,6 +754,7 @@ def calibrate_ta_weights(
         _get_redis().setex("stockai:ta_weights", 90 * 86400, json.dumps(candidate_weights))
     except Exception:
         pass
+    _mark_tuned("stockai:ta_weights")
     # T232-SIG6: the persistence writes above only affect the NEXT process restart unless the
     # in-process globals are also refreshed here — this used to be the entire bug (calibration
     # reported success but the running process kept scoring signals against the old weights
@@ -996,6 +998,7 @@ def calibrate_conviction_weights(
         _get_redis().setex("stockai:conviction_weights", 90 * 86400, json.dumps(payload))
     except Exception:
         pass
+    _mark_tuned("stockai:conviction_weights")
 
     _record_tune_history(
         session, _run_id, "conviction_weights", "edge_pct_vector", "ALL", "ALL",
@@ -1433,6 +1436,7 @@ def outcomes_calibrate_apply(
         # Write to Redis — signal generator reads this at decision time (fused-probability scale)
         redis_key = f"stockai:signal_thresholds:{h}"
         redis_client.setex(redis_key, _REDIS_TTL, str(round(best_t, 4)))
+        _mark_tuned(redis_key)
         # AUD263-WATCHDOG-MASKS-VALIDATED-THRESHOLD: a fresh, validated recalibration must not
         # be silently shadowed by a stale watchdog emergency nudge that predates it.
         _clear_watchdog_override(h)
@@ -1610,7 +1614,9 @@ def outcomes_calibrate_apply(
             )
             continue
 
-        redis_client.setex(f"stockai:signal_thresholds:SELL:{h}", _REDIS_TTL, str(round(s_best_t, 4)))
+        _sell_redis_key = f"stockai:signal_thresholds:SELL:{h}"
+        redis_client.setex(_sell_redis_key, _REDIS_TTL, str(round(s_best_t, 4)))
+        _mark_tuned(_sell_redis_key)
         _record_tune_history(
             session, _run_id, "signal_threshold", "sell_threshold", h, "ALL",
             old_value={"sell_threshold": _CURRENT_SELL}, new_value={"sell_threshold": s_best_t},
@@ -1797,7 +1803,9 @@ def tune_sell_pillars(
             )
             continue
 
-        redis_client.setex(f"stockai:style_tune:{h}:min_pillars_for_sell", _REDIS_TTL, str(best_p))
+        _pillars_redis_key = f"stockai:style_tune:{h}:min_pillars_for_sell"
+        redis_client.setex(_pillars_redis_key, _REDIS_TTL, str(best_p))
+        _mark_tuned(_pillars_redis_key)
         _record_tune_history(
             session, _run_id, "signal_gate", "min_pillars_for_sell", h, "ALL",
             old_value={"min_pillars_for_sell": current_pillars}, new_value={"min_pillars_for_sell": best_p},
@@ -1940,7 +1948,9 @@ def tune_style_profiles(
                 val_result and baseline_result and len(val_sub) >= min_samples and val_result[0] > baseline_result[0]
             )
             if _ml_promoted:
-                redis_client.setex(f"stockai:style_tune:{style}:ml_weight_cap", _REDIS_TTL, str(round(best_ml_cap, 2)))
+                _ml_cap_redis_key = f"stockai:style_tune:{style}:ml_weight_cap"
+                redis_client.setex(_ml_cap_redis_key, _REDIS_TTL, str(round(best_ml_cap, 2)))
+                _mark_tuned(_ml_cap_redis_key)
                 applied.append({"style": style, "param": "ml_weight_cap", "value": best_ml_cap,
                                 "train_ev_pct": round(best_ml_ev, 2), "validation_ev_pct": round(val_result[0], 2),
                                 "validation_baseline_ev_pct": round(baseline_result[0], 2)})
@@ -1998,7 +2008,9 @@ def tune_style_profiles(
                     val_above_acc = sum(1 for o in val_above if o.is_correct) / len(val_above)
                     _adx_promoted = val_below_acc < val_above_acc
                     if _adx_promoted:
-                        redis_client.setex(f"stockai:style_tune:{style}:adx_min", _REDIS_TTL, str(best_adx))
+                        _adx_redis_key = f"stockai:style_tune:{style}:adx_min"
+                        redis_client.setex(_adx_redis_key, _REDIS_TTL, str(best_adx))
+                        _mark_tuned(_adx_redis_key)
                         applied.append({"style": style, "param": "adx_min", "value": best_adx,
                                         "validation_below_acc": round(val_below_acc, 3),
                                         "validation_above_acc": round(val_above_acc, 3)})
@@ -2050,7 +2062,9 @@ def tune_style_profiles(
                         _bc_promoted = val_lb_acc < val_hb_acc
                         if _bc_promoted:
                             new_bc = 0.88  # tighter than default 0.90
-                            redis_client.setex(f"stockai:style_tune:{style}:breadth_compression", _REDIS_TTL, str(new_bc))
+                            _bc_redis_key = f"stockai:style_tune:{style}:breadth_compression"
+                            redis_client.setex(_bc_redis_key, _REDIS_TTL, str(new_bc))
+                            _mark_tuned(_bc_redis_key)
                             applied.append({"style": style, "param": "breadth_compression", "value": new_bc,
                                             "train_low_acc": round(lb_acc, 3), "train_high_acc": round(hb_acc, 3),
                                             "validation_low_acc": round(val_lb_acc, 3), "validation_high_acc": round(val_hb_acc, 3)})
@@ -2079,7 +2093,9 @@ def tune_style_profiles(
                 elif lb_acc > hb_acc - 0.02:
                     # Breadth not predictive on train — restore default without needing validation
                     new_bc = 0.95
-                    redis_client.setex(f"stockai:style_tune:{style}:breadth_compression", _REDIS_TTL, str(new_bc))
+                    _bc_redis_key = f"stockai:style_tune:{style}:breadth_compression"
+                    redis_client.setex(_bc_redis_key, _REDIS_TTL, str(new_bc))
+                    _mark_tuned(_bc_redis_key)
                     applied.append({"style": style, "param": "breadth_compression", "value": new_bc,
                                     "note": "low-breadth underperformance not significant on train slice"})
                     _record_tune_history(
@@ -2389,8 +2405,12 @@ def tune_strategy(
         # a flat value (read side via _get_style_tuned_param) — exact same keys/semantics the
         # single-parameter mechanisms already write, so _decide_style()/signal generation code
         # needs zero changes to pick this up.
-        redis_client.setex(f"stockai:signal_thresholds:{h}", _REDIS_TTL, str(round(best_buy, 4)))
-        redis_client.setex(f"stockai:style_tune:{h}:ml_weight_cap", _REDIS_TTL, str(round(best_cap, 2)))
+        _buy_thresh_redis_key = f"stockai:signal_thresholds:{h}"
+        _ml_cap_redis_key = f"stockai:style_tune:{h}:ml_weight_cap"
+        redis_client.setex(_buy_thresh_redis_key, _REDIS_TTL, str(round(best_buy, 4)))
+        redis_client.setex(_ml_cap_redis_key, _REDIS_TTL, str(round(best_cap, 2)))
+        _mark_tuned(_buy_thresh_redis_key)
+        _mark_tuned(_ml_cap_redis_key)
         # AUD263-WATCHDOG-MASKS-VALIDATED-THRESHOLD: same reasoning as outcomes_calibrate_apply's
         # own call — a fresh, validated recalibration must not stay shadowed by a stale watchdog
         # emergency nudge that predates it.
@@ -2725,11 +2745,27 @@ def tune_status(
                 "tighten_count": tighten_count,
                 "current_threshold": watchdog_threshold,
             },
+            # AUD263-TUNED-PARAMS-SILENTLY-REVERT-ON-TTL: each of these 4 per-style tuned
+            # values sits behind a 30-day-TTL Redis key — on expiry the read side above
+            # silently falls back to the hardcoded default, indistinguishable from "never
+            # tuned" without this. reverted=True means this parameter WAS validated/promoted
+            # at some point but its value has since expired back to the hardcoded default.
+            "staleness": {
+                "calibrated_threshold": _tuning_staleness(f"stockai:signal_thresholds:{style}"),
+                "ml_weight_cap": _tuning_staleness(f"stockai:style_tune:{style}:ml_weight_cap"),
+                "adx_min": _tuning_staleness(f"stockai:style_tune:{style}:adx_min"),
+                "breadth_compression": _tuning_staleness(f"stockai:style_tune:{style}:breadth_compression"),
+            },
         }
 
     return {
         "as_of": date.today().isoformat(),
         "styles": styles_out,
+        # Global (not per-style) tuned mechanisms — same silent-reversion risk, 90-day TTL.
+        "global_staleness": {
+            "ta_weights": _tuning_staleness("stockai:ta_weights"),
+            "conviction_weights": _tuning_staleness("stockai:conviction_weights"),
+        },
     }
 
 

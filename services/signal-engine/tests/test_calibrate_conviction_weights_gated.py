@@ -52,6 +52,10 @@ def _extract_calibrate_conviction_weights_core():
         "Path": pathlib.Path,
         "date": date,
         "uuid": __import__("uuid"),
+        # AUD263-TUNED-PARAMS-SILENTLY-REVERT-ON-TTL: real function calls _mark_tuned() right
+        # after its real Redis setex() write, via the injected _get_redis param above — this
+        # test doesn't assert on staleness-marker behavior, so a no-op stub is sufficient.
+        "_mark_tuned": lambda *a, **kw: None,
     }
     exec(func_source, namespace)  # noqa: S102 — isolated eval of real source
     return namespace["_core"]

@@ -385,21 +385,35 @@ function WalkForwardSection() {
       {/* Stat cards */}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 24 }}>
         {wfStatCard('Out-of-Sample Accuracy', data.overall_accuracy != null ? `${data.overall_accuracy.toFixed(1)}%` : '—', accColor)}
-        {wfStatCard('Sharpe Ratio', data.sharpe != null ? data.sharpe.toFixed(2) : '—', sharpeColor)}
-        {wfStatCard('Total Return', data.total_return_pct != null ? `${data.total_return_pct > 0 ? '+' : ''}${data.total_return_pct.toFixed(1)}%` : '—', retColor)}
-        {wfStatCard('Max Drawdown', data.max_drawdown != null ? `${data.max_drawdown.toFixed(1)}%` : '—', data.max_drawdown != null && data.max_drawdown > 10 ? '#f87171' : '#94a3b8')}
+        {wfStatCard('Cross-Sectional Sharpe', data.sharpe != null ? data.sharpe.toFixed(2) : '—', sharpeColor)}
+        {wfStatCard('Cross-Sectional Return', data.total_return_pct != null ? `${data.total_return_pct > 0 ? '+' : ''}${data.total_return_pct.toFixed(1)}%` : '—', retColor)}
+        {wfStatCard('Cross-Sectional Drawdown', data.max_drawdown != null ? `${data.max_drawdown.toFixed(1)}%` : '—', data.max_drawdown != null && data.max_drawdown > 10 ? '#f87171' : '#94a3b8')}
         {wfStatCard('Profitable Windows', `${data.profitable_windows} / ${data.total_windows}`, data.profitable_windows > data.total_windows / 2 ? '#4ade80' : '#f87171')}
         {data.benchmark && wfStatCard(`vs ${data.benchmark.symbol}`, `${data.benchmark.total_return_pct > 0 ? '+' : ''}${data.benchmark.total_return_pct.toFixed(1)}%`, '#64748b')}
       </div>
 
-      {/* Sharpe interpretation */}
+      {/* AUD261-WALKFORWARD-COMPOUNDS-CROSSSECTIONAL: this used to claim "Sharpe >= 1.0 —
+          signals generating real out-of-sample alpha". That claim is NOT supported by the
+          underlying math: each window's return is the MEAN across many overlapping, concurrent
+          BUY signals — not one sequential position — and compounding that mean window-over-
+          window structurally suppresses variance relative to any real tradeable path, which
+          overstates Sharpe and understates drawdown. Renamed the cards above and rewrote this
+          banner to describe what these numbers actually are (a cross-sectional summary
+          statistic of signal quality over time) rather than assert an executable-strategy claim
+          the math can't back up. */}
+      {data.cross_sectional_caveat && (
+        <div style={{ marginBottom: 20, padding: '10px 14px', borderRadius: 8, border: '1px solid #78350f', background: '#1c1408', fontSize: 12 }}>
+          <span style={{ color: '#fbbf24', fontWeight: 600 }}>⚠ Not an executable-strategy backtest: </span>
+          <span style={{ color: '#94a3b8' }}>{data.cross_sectional_caveat}</span>
+        </div>
+      )}
       {data.sharpe != null && (
         <div style={{ marginBottom: 20, padding: '10px 14px', borderRadius: 8, border: '1px solid #1e293b', background: '#0f172a', fontSize: 12 }}>
-          <span style={{ color: '#64748b' }}>Signal alpha assessment: </span>
+          <span style={{ color: '#64748b' }}>Cross-sectional signal-quality read: </span>
           <span style={{ color: sharpeColor, fontWeight: 600 }}>
-            {data.sharpe >= 1.0 ? 'Sharpe ≥ 1.0 — signals generating real out-of-sample alpha'
-             : data.sharpe >= 0.5 ? 'Sharpe 0.5–1.0 — modest edge, worth monitoring as sample grows'
-             : 'Sharpe < 0.5 — limited out-of-sample edge detected, possible curve-fitting'}
+            {data.sharpe >= 1.0 ? 'Sharpe ≥ 1.0 — consistently positive average returns across windows'
+             : data.sharpe >= 0.5 ? 'Sharpe 0.5–1.0 — modest, somewhat consistent average returns'
+             : 'Sharpe < 0.5 — inconsistent or weak average returns across windows'}
           </span>
         </div>
       )}

@@ -924,6 +924,10 @@ export type WalkForwardReport = {
   overall_accuracy: number | null; avg_return_pct: number | null;
   total_return_pct: number | null; sharpe: number | null; max_drawdown: number | null;
   benchmark: { symbol: string; windows: { end: string; equity: number; cumulative_return_pct: number }[]; total_return_pct: number } | null;
+  // AUD261-WALKFORWARD-COMPOUNDS-CROSSSECTIONAL: sharpe/total_return_pct/max_drawdown compound
+  // each window's CROSS-SECTIONAL MEAN return, not a real sequential per-signal equity path —
+  // this field is the backend's own explicit, structured disclosure of that limitation.
+  cross_sectional_caveat: string | null;
 };
 export type MLWeightValidation = { lookback_days: number; signal_count: number; optimal_weight: number | null; optimal_accuracy: number | null; current_formula_range: [number, number]; curve: MLWeightCurvePoint[] };
 export type OptionsFlowContract = { expiry: string; side: 'call' | 'put'; strike: number; volume: number; oi: number; vol_oi: number; iv: number; itm: boolean; premium: number; is_whale: boolean };

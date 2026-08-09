@@ -499,18 +499,32 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
                                   last_evaluated=_last_eval_utc.isoformat())
             except Exception as _oc_exc:
                 log.warning("outcomes.staleness_check_failed", error=str(_oc_exc))
-            # Stale model guard: if tune_all hasn't run in >21 days, trigger it now.
-            # Normally runs weekly on Sunday; this catches missed weeks (container restarts, errors).
+            # Stale model guard: if tune_all hasn't ACTUALLY FINISHED in >21 days, trigger it
+            # now. Normally runs weekly on Sunday; this catches missed weeks.
+            #
+            # AUD263-TUNEALL-STALE-GUARD-NOT-WEEKLY: this used to read "scheduler:job:
+            # tune_all_sent" — which _record_job_status() only ever writes at DISPATCH time
+            # (the POST succeeded, not that the ~2-4h background run in ml-prediction actually
+            # finished). A container recreate mid-run (documented as routine in this repo)
+            # silently killed tuning while this key still looked fresh — the single-day burst
+            # of all 61 ml_hyperparams TuneHistory rows on 2026-08-02 was the signature of this
+            # guard repeatedly firing to rescue a weekly path that kept failing to complete
+            # undetected. Now reads ml-prediction's own real completion marker
+            # ("stockai:tune_all_completed", written unconditionally at the end of _run_all(),
+            # even on a zero-tuned run) instead.
             try:
-                _tune_status_raw = _get_redis().get("scheduler:job:tune_all_sent")
-                if _tune_status_raw:
-                    _tune_last = json.loads(_tune_status_raw).get("last_run")
-                    if _tune_last:
-                        _days_stale = (datetime.now(timezone.utc) - datetime.fromisoformat(_tune_last)).days
-                        if _days_stale > 21:
-                            log.warning("scheduler.tune_all_stale_retrigger", days_since=_days_stale)
-                            _post(f"{_settings.ml_prediction_url}/ml/tune_all")
-                            _record_job_status("tune_all_sent", "ok", 0.0)
+                _tune_completed_raw = _get_redis().get("stockai:tune_all_completed")
+                _tune_last = json.loads(_tune_completed_raw).get("completed_at") if _tune_completed_raw else None
+                _days_stale = (
+                    (datetime.now(timezone.utc) - datetime.fromisoformat(_tune_last)).days
+                    if _tune_last else None
+                )
+                # None (marker never written at all) counts as stale too — treat "never
+                # observed to complete" the same as "observed complete, but long ago".
+                if _days_stale is None or _days_stale > 21:
+                    log.warning("scheduler.tune_all_stale_retrigger", days_since=_days_stale)
+                    _post(f"{_settings.ml_prediction_url}/ml/tune_all", params={"triggered_by": "stale_guard"})
+                    _record_job_status("tune_all_sent", "ok", 0.0)
             except Exception as _ta_e:
                 log.warning("scheduler.tune_all_age_check_failed", error=str(_ta_e))
     except Exception as _re:
@@ -4776,7 +4790,7 @@ def _weekly_full_refresh() -> None:
     # Runs as a background task in ml-prediction — returns immediately, tunes for ~2–4 h.
     # Best params are saved per-symbol JSON and used by all subsequent daily retrains.
     log.info("scheduler.tune_all_start")
-    _post(f"{_settings.ml_prediction_url}/ml/tune_all")
+    _post(f"{_settings.ml_prediction_url}/ml/tune_all", params={"triggered_by": "weekly"})
     _record_job_status("tune_all_sent", "ok", 0.0)
 
     # SA-5: calibrate TA weights from signal outcome history.

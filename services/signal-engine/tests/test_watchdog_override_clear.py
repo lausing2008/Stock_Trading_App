@@ -107,7 +107,7 @@ def test_tune_strategy_clears_the_watchdog_override_on_a_fresh_write():
     start = _CALIBRATION_SOURCE.index("def tune_strategy(")
     end = _CALIBRATION_SOURCE.index('@router.post("/watchdog")', start)
     body = _CALIBRATION_SOURCE[start:end]
-    write_idx = body.index('redis_client.setex(f"stockai:signal_thresholds:{h}", _REDIS_TTL, str(round(best_buy, 4)))')
+    write_idx = body.index('redis_client.setex(_buy_thresh_redis_key, _REDIS_TTL, str(round(best_buy, 4)))')
     clear_idx = body.index("_clear_watchdog_override(h)")
     history_idx = body.index('_record_tune_history(\n            session, _run_id, "joint_strategy"')
     assert write_idx < clear_idx < history_idx

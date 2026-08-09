@@ -139,3 +139,29 @@ def test_load_best_params_is_actually_imported():
     import_line_end = _TUNER_SOURCE.index("\n", import_line_start)
     import_line = _TUNER_SOURCE[import_line_start:import_line_end]
     assert "_load_best_params" in import_line
+
+
+# ── AUD263-TUNEALL-STALE-GUARD-NOT-WEEKLY ──────────────────────────────────────
+# _record_tune_history() used to hardcode triggered_by="scheduled" on EVERY call, regardless
+# of whether it came from the weekly path or the 21-day stale-guard rescue firing to cover for
+# a weekly run that silently failed to complete — making the two indistinguishable in the
+# TuneHistory audit trail (exactly the ambiguity that made the 2026-08-02 all-61-rows-on-one-
+# day burst hard to diagnose in the first place).
+
+def test_record_tune_history_accepts_a_triggered_by_param_defaulting_to_manual():
+    fn_start = _TUNER_SOURCE.index("def _record_tune_history(")
+    fn_end = _TUNER_SOURCE.index("\ndef _fit_and_predict_holdout(")
+    fn_sig = _TUNER_SOURCE[fn_start:fn_end]
+    assert 'triggered_by: str = "manual"' in fn_sig
+    # No hardcoded literal should remain at the actual TuneHistory(...) write site.
+    assert 'triggered_by="scheduled"' not in fn_sig
+    assert "triggered_by=triggered_by" in fn_sig
+
+
+def test_tune_symbol_accepts_and_forwards_triggered_by():
+    body = _tune_symbol_body()
+    assert 'triggered_by: str = "manual"' in body
+    record_call_start = body.index("_record_tune_history(")
+    record_call_end = body.index(")", body.index("triggered_by=triggered_by", record_call_start))
+    record_call = body[record_call_start:record_call_end]
+    assert "triggered_by=triggered_by" in record_call
