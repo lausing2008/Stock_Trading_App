@@ -6,6 +6,7 @@ re-implementation of proxy.py's own auth logic.
 """
 import asyncio
 import threading
+from unittest.mock import MagicMock, patch
 
 from jose import jwt as _jwt
 
@@ -51,8 +52,65 @@ class TestValidateToken:
 
 
 class TestSymbolCap:
-    def test_max_symbols_per_client_is_a_generous_but_bounded_cap(self):
-        assert 0 < m._MAX_SYMBOLS_PER_CLIENT <= 500
+    def test_max_symbols_per_client_matches_the_connection_wide_alpaca_cap(self):
+        # Regression guard: this must equal market-data's own _MAX_SYMBOLS_PER_CONNECTION (30,
+        # Alpaca's real, live-confirmed free-tier limit) — a single client is capped at the
+        # WHOLE shared connection's budget, not an independent per-client allowance, since one
+        # client requesting more than that would starve every other client's symbols out of
+        # the demand set entirely.
+        assert m._MAX_SYMBOLS_PER_CLIENT == 30
+
+
+class TestRegisterDemand:
+    def test_writes_a_score_for_every_symbol_into_the_shared_demand_key(self):
+        redis_client = MagicMock()
+        m._register_demand(redis_client, ["AAPL", "MSFT"])
+        redis_client.zadd.assert_called_once()
+        key, mapping = redis_client.zadd.call_args[0]
+        assert key == m._DEMAND_KEY
+        assert set(mapping.keys()) == {"AAPL", "MSFT"}
+        # scores are unix timestamps — plausible (recent, positive) rather than a fixed sentinel
+        for score in mapping.values():
+            assert isinstance(score, float) and score > 0
+
+    def test_fails_open_when_redis_raises(self):
+        """A Redis outage here must never crash the relay loop — the client's own symbols just
+        won't be picked up by alpaca_quote_stream.py until the next successful heartbeat."""
+        redis_client = MagicMock()
+        redis_client.zadd.side_effect = ConnectionError("redis down")
+        m._register_demand(redis_client, ["AAPL"])  # must not raise
+
+    def test_writes_nothing_for_an_empty_symbol_list(self):
+        redis_client = MagicMock()
+        m._register_demand(redis_client, [])
+        redis_client.zadd.assert_called_once_with(m._DEMAND_KEY, {})
+
+
+class TestHeartbeatDemandLoop:
+    def test_re_registers_demand_on_a_fixed_interval_until_stopped(self):
+        redis_client = MagicMock()
+        stop = threading.Event()
+        call_count = 0
+
+        async def _fake_sleep(_seconds):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 3:
+                stop.set()
+
+        async def _run():
+            with patch("asyncio.sleep", _fake_sleep):
+                await m._heartbeat_demand_loop(redis_client, ["AAPL"], stop)
+
+        asyncio.run(_run())
+        assert redis_client.zadd.call_count == 3
+
+    def test_stops_immediately_when_the_stop_event_is_already_set(self):
+        redis_client = MagicMock()
+        stop = threading.Event()
+        stop.set()
+        asyncio.run(m._heartbeat_demand_loop(redis_client, ["AAPL"], stop))
+        redis_client.zadd.assert_not_called()
 
 
 class _FakeMessage(dict):

@@ -1,18 +1,13 @@
 """Tests for T230-DATA-STREAMING-QUOTES's alpaca_quote_stream.py.
 
-_quote_channel / _publish_quote / _parse_quote_message have zero DB/sqlalchemy dependency at
-call time, so they're imported and tested directly against the module under conftest.py's
-normal stubbing (websockets is additionally stubbed here since it isn't installed in this local
-dev environment — a real, pinned requirements.txt dependency absent locally, same class of gap
-already documented for jose/redis/requests_oauthlib elsewhere in this repo's history).
-
-_active_us_symbols() does `from sqlalchemy import select` / `from db import SessionLocal, Stock`
-at module level — conftest.py stubs both as MagicMock, so this specific function's real source
-is instead extracted via exec() and run against a real in-memory SQLite session + the real
-shared/db/models.py, matching test_correlation_preentry.py's/test_broker_position_sync.py's
-established technique for exactly this constraint. The module itself is never imported while
-sqlalchemy is stubbed, so the two testing strategies (direct import + source extraction) don't
-conflict with each other.
+Every function here has zero DB/sqlalchemy dependency at call time (the earlier "subscribe to
+every active US stock" design DID need one, via a now-removed _active_us_symbols() — replaced
+by a demand-driven design after discovering, in the first live production deploy, that
+Alpaca's free tier caps a single connection at 30 symbols, far too few for the whole ~120-symbol
+universe; see the module's own docstring for the full incident). websockets is stubbed since it
+isn't installed in this local dev environment (a real, pinned requirements.txt dependency
+absent locally, same class of gap already documented for jose/redis/requests_oauthlib elsewhere
+in this repo's history).
 """
 import json
 import sys
@@ -20,7 +15,7 @@ from unittest.mock import MagicMock
 
 sys.modules.setdefault("websockets", MagicMock())
 
-from src.services import alpaca_quote_stream as m  # noqa: E402 — direct import for the pure fns
+from src.services import alpaca_quote_stream as m  # noqa: E402
 
 
 class TestQuoteChannel:
@@ -93,128 +88,114 @@ class TestParseQuoteMessage:
 
 
 class TestMaxSymbolsCap:
-    def test_max_symbols_per_connection_matches_alpacas_documented_cap(self):
-        # Regression guard: this constant is what caps the subscribe list sent to Alpaca —
-        # a silent change here would either waste headroom or exceed Alpaca's real limit.
-        assert m._MAX_SYMBOLS_PER_CONNECTION == 500
+    def test_max_symbols_per_connection_matches_alpacas_real_confirmed_free_tier_cap(self):
+        # Regression guard against reintroducing the exact incident this module's docstring
+        # documents: an earlier, unverified assumption of 500 here silently produced ZERO
+        # ticks for 20+ minutes in production (Alpaca rejected the subscribe outright with
+        # "symbol limit exceeded"). 30 is the real, live-confirmed free-tier cap.
+        assert m._MAX_SYMBOLS_PER_CONNECTION == 30
 
 
-# ── _active_us_symbols() — extracted from real source, run against a real DB ──────────────
+class TestCurrentDemand:
+    def test_returns_the_most_recently_seen_symbols_first(self):
+        redis_client = MagicMock()
+        redis_client.zrevrangebyscore.return_value = ["NVDA", "AAPL", "MSFT"]
+        result = m._current_demand(redis_client, limit=10)
+        assert result == ["NVDA", "AAPL", "MSFT"]
 
-_STUBBED_MODULES = ("sqlalchemy", "sqlalchemy.orm", "sqlalchemy.dialects", "sqlalchemy.dialects.postgresql", "db")
-_saved_stubs = {_mod: sys.modules.pop(_mod, None) for _mod in _STUBBED_MODULES}
+    def test_queries_the_shared_demand_key_with_the_stale_cutoff_and_limit(self):
+        redis_client = MagicMock()
+        redis_client.zrevrangebyscore.return_value = []
+        m._current_demand(redis_client, limit=7)
+        args, kwargs = redis_client.zrevrangebyscore.call_args
+        assert args[0] == m._DEMAND_KEY
+        assert args[1] == "+inf"
+        # arg[2] is the stale cutoff (a real time.time()-based value) — just confirm it's a
+        # float in the plausible recent past, not a hardcoded/frozen sentinel.
+        assert isinstance(args[2], float)
+        assert kwargs.get("num") == 7 or 7 in args
 
-import importlib.util  # noqa: E402
-import pathlib  # noqa: E402
+    def test_fails_open_to_an_empty_list_on_a_redis_error(self):
+        """A Redis outage here must never crash the connection loop — it just means no NEW
+        subscription changes happen until the next successful poll."""
+        redis_client = MagicMock()
+        redis_client.zrevrangebyscore.side_effect = ConnectionError("redis down")
+        assert m._current_demand(redis_client) == []
 
-import pytest  # noqa: E402
-from sqlalchemy import create_engine, select  # noqa: E402
-from sqlalchemy.orm import Session  # noqa: E402
-
-_models_path = pathlib.Path(__file__).resolve().parents[3] / "shared" / "db" / "models.py"
-_spec = importlib.util.spec_from_file_location("db_models_under_test_quotes", _models_path)
-_models = importlib.util.module_from_spec(_spec)
-sys.modules["db_models_under_test_quotes"] = _models
-_spec.loader.exec_module(_models)
-
-_ENGINE = create_engine("sqlite:///:memory:")
-_models.Base.metadata.create_all(_ENGINE, tables=[_models.Stock.__table__])
-
-for _mod, _stub in _saved_stubs.items():
-    if _stub is not None:
-        sys.modules[_mod] = _stub
-    else:
-        sys.modules.pop(_mod, None)
-
-Stock = _models.Stock
-Market = _models.Market
-Exchange = _models.Exchange
-
-_SOURCE_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "alpaca_quote_stream.py"
-_SOURCE = _SOURCE_PATH.read_text()
-
-
-def _extract_active_us_symbols(session_local):
-    start = _SOURCE.index("def _active_us_symbols(")
-    end = _SOURCE.index("\n\n\ndef _quote_channel(", start)
-    func_source = _SOURCE[start:end]
-    namespace = {"select": select, "Stock": Stock, "SessionLocal": session_local}
-    exec(func_source, namespace)  # noqa: S102 — isolated eval of real source
-    return namespace["_active_us_symbols"]
+    def test_default_limit_matches_the_real_connection_cap(self):
+        redis_client = MagicMock()
+        redis_client.zrevrangebyscore.return_value = []
+        m._current_demand(redis_client)
+        args, kwargs = redis_client.zrevrangebyscore.call_args
+        assert kwargs.get("num", args[-1] if args else None) == m._MAX_SYMBOLS_PER_CONNECTION
 
 
-class _SessionCtx:
-    """Wraps an already-open test session so `with SessionLocal() as session:` (the real
-    calling convention inside _active_us_symbols) works without actually closing the shared
-    session on exit — the test fixture owns closing it, not the function under test."""
+class _FakeWs:
+    def __init__(self):
+        self.sent: list[dict] = []
 
-    def __init__(self, session):
-        self._session = session
-
-    def __enter__(self):
-        return self._session
-
-    def __exit__(self, *exc_info):
-        return False
+    async def send(self, raw: str) -> None:
+        self.sent.append(json.loads(raw))
 
 
-@pytest.fixture
-def db_session():
-    session = Session(_ENGINE)
-    try:
-        yield session
-    finally:
-        session.rollback()
-        session.execute(Stock.__table__.delete())
-        session.commit()
-        session.close()
+class TestApplySubscriptionDelta:
+    async def _apply(self, current, desired):
+        ws = _FakeWs()
+        await m._apply_subscription_delta(ws, set(current), set(desired))
+        return ws.sent
+
+    def test_subscribes_to_newly_added_symbols(self):
+        import asyncio
+
+        sent = asyncio.run(self._apply(set(), {"AAPL", "MSFT"}))
+        assert len(sent) == 1
+        assert sent[0]["action"] == "subscribe"
+        assert sorted(sent[0]["quotes"]) == ["AAPL", "MSFT"]
+        assert sorted(sent[0]["trades"]) == ["AAPL", "MSFT"]
+
+    def test_unsubscribes_from_removed_symbols(self):
+        import asyncio
+
+        sent = asyncio.run(self._apply({"AAPL", "MSFT"}, set()))
+        assert len(sent) == 1
+        assert sent[0]["action"] == "unsubscribe"
+        assert sorted(sent[0]["quotes"]) == ["AAPL", "MSFT"]
+
+    def test_sends_both_when_the_set_partially_changes(self):
+        import asyncio
+
+        sent = asyncio.run(self._apply({"AAPL", "MSFT"}, {"MSFT", "NVDA"}))
+        # unsubscribe (removed) is sent before subscribe (added) — order matters for staying
+        # within the connection-wide symbol budget mid-transition.
+        assert sent[0]["action"] == "unsubscribe"
+        assert sent[0]["quotes"] == ["AAPL"]
+        assert sent[1]["action"] == "subscribe"
+        assert sent[1]["quotes"] == ["NVDA"]
+
+    def test_sends_nothing_when_the_set_is_unchanged(self):
+        import asyncio
+
+        sent = asyncio.run(self._apply({"AAPL"}, {"AAPL"}))
+        assert sent == []
 
 
-def _mk_stock(session, symbol, *, market=Market.US, active=True, delisted=False, id_=None):
-    row = Stock(
-        id=id_,
-        symbol=symbol,
-        name=symbol,
-        market=market,
-        exchange=Exchange.NASDAQ if market == Market.US else Exchange.HKEX,
-        active=active,
-        delisted=delisted,
-    )
-    session.add(row)
-    session.commit()
-    return row
+class TestReadAck:
+    def test_wraps_a_bare_dict_reply_in_a_list(self):
+        import asyncio
 
+        class _FakeWsRecv:
+            async def recv(self):
+                return json.dumps({"T": "success", "msg": "connected"})
 
-class TestActiveUsSymbols:
-    def test_returns_active_non_delisted_us_symbols(self, db_session):
-        fn = _extract_active_us_symbols(lambda: _SessionCtx(db_session))
-        _mk_stock(db_session, "AAPL", id_=1)
-        _mk_stock(db_session, "MSFT", id_=2)
-        assert set(fn()) == {"AAPL", "MSFT"}
+        result = asyncio.run(m._read_ack(_FakeWsRecv(), expected_msg="connected"))
+        assert result == [{"T": "success", "msg": "connected"}]
 
-    def test_excludes_inactive_stocks(self, db_session):
-        fn = _extract_active_us_symbols(lambda: _SessionCtx(db_session))
-        _mk_stock(db_session, "AAPL", id_=1, active=True)
-        _mk_stock(db_session, "DEAD", id_=2, active=False)
-        assert fn() == ["AAPL"]
+    def test_passes_through_a_list_reply_unchanged(self):
+        import asyncio
 
-    def test_excludes_delisted_stocks_even_though_still_marked_active(self, db_session):
-        """BUG-DELISTED-GENERATION-BLIND: Stock.active.is_(True) alone does NOT exclude a
-        confirmed delisting (a delisted stock stays active=True forever) — the query must also
-        filter Stock.delisted.is_(False). This is the exact regression an earlier, incorrect
-        docstring claim ("active already excludes delisted") would have silently reintroduced
-        if the filter itself had been left out."""
-        fn = _extract_active_us_symbols(lambda: _SessionCtx(db_session))
-        _mk_stock(db_session, "AAPL", id_=1, active=True, delisted=False)
-        _mk_stock(db_session, "ZOMBIE", id_=2, active=True, delisted=True)
-        assert fn() == ["AAPL"]
+        class _FakeWsRecv:
+            async def recv(self):
+                return json.dumps([{"T": "success", "msg": "connected"}])
 
-    def test_excludes_hk_stocks(self, db_session):
-        fn = _extract_active_us_symbols(lambda: _SessionCtx(db_session))
-        _mk_stock(db_session, "AAPL", id_=1, market=Market.US)
-        _mk_stock(db_session, "0700.HK", id_=2, market=Market.HK)
-        assert fn() == ["AAPL"]
-
-    def test_returns_empty_list_when_no_stocks_qualify(self, db_session):
-        fn = _extract_active_us_symbols(lambda: _SessionCtx(db_session))
-        assert fn() == []
+        result = asyncio.run(m._read_ack(_FakeWsRecv(), expected_msg="connected"))
+        assert result == [{"T": "success", "msg": "connected"}]

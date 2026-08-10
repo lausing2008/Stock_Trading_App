@@ -19,11 +19,22 @@ implementation.
 Redis's pub/sub SUBSCRIBE + listen() loop is a blocking call — routed through a dedicated
 ThreadPoolExecutor, matching proxy.py's own established fix for exactly this class of problem
 (T247-APIGATEWAY-BLACKLIST-BLOCKING) rather than reintroducing the same bug class here.
+
+Demand registration: Alpaca's free market-data tier caps a single connection at 30 symbols
+(confirmed live — error code 405 "symbol limit exceeded" when this feature's first production
+deploy tried to subscribe to the whole ~120-symbol US universe upfront), so market-data cannot
+statically subscribe to everything — it must track which symbols are ACTUALLY being watched by
+connected browser clients right now and subscribe to only those. Every connected client here
+periodically refreshes its own symbols' scores in a Redis sorted set
+(stockai:quotes:demand, score = last-seen unix timestamp) so alpaca_quote_stream.py can read
+"symbols with a recent heartbeat" without api-gateway needing to explicitly deregister on
+disconnect — a crashed/killed client's entries simply age out and stop being read as demand.
 """
 from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import structlog
@@ -39,7 +50,15 @@ log = structlog.get_logger()
 _settings = get_settings()
 
 _ws_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="quote_ws")
-_MAX_SYMBOLS_PER_CLIENT = 50  # a generous cap — a dashboard/watchlist page, not the whole universe
+# 30, not a generous number — matches Alpaca's real, confirmed-live free-tier per-connection
+# symbol cap exactly (see the module docstring). A single client requesting more than the
+# WHOLE connection's own budget would starve every other connected client's symbols out of
+# alpaca_quote_stream.py's demand set — capped here at the connection-wide limit, not a
+# per-client allowance, since there is only one shared upstream Alpaca connection to divide.
+_MAX_SYMBOLS_PER_CLIENT = 30
+_DEMAND_KEY = "stockai:quotes:demand"
+_DEMAND_REFRESH_INTERVAL = 10  # seconds — how often a connected client re-heartbeats its symbols
+_DEMAND_TTL_SECONDS = 30  # a symbol not re-heartbeated within this window ages out of demand
 
 
 def _validate_token(token: str) -> bool:
@@ -55,6 +74,26 @@ def _validate_token(token: str) -> bool:
         return True
     except JWTError:
         return False
+
+
+def _register_demand(redis_client, symbols: list[str]) -> None:
+    """Refreshes each symbol's last-seen score in the shared demand sorted set. Fails open —
+    a Redis hiccup here must never crash the relay loop; the client's own symbols just won't
+    be picked up by alpaca_quote_stream.py until the NEXT successful heartbeat."""
+    try:
+        now = time.time()
+        redis_client.zadd(_DEMAND_KEY, {sym: now for sym in symbols})
+    except Exception as exc:
+        log.warning("quote_ws.demand_register_failed", error=str(exc))
+
+
+async def _heartbeat_demand_loop(redis_client, symbols: list[str], stop: threading.Event) -> None:
+    """Re-registers this connection's own symbols on a fixed interval for as long as the
+    connection stays open — a symbol only needs to age out of demand once EVERY connected
+    client watching it has disconnected/crashed, not just this one."""
+    while not stop.is_set():
+        _register_demand(redis_client, symbols)
+        await asyncio.sleep(_DEMAND_REFRESH_INTERVAL)
 
 
 def _pubsub_listen_blocking(pubsub, loop: asyncio.AbstractEventLoop, queue: "asyncio.Queue[str]", stop: threading.Event) -> None:
@@ -102,12 +141,14 @@ async def quote_stream_ws(websocket: WebSocket):
         pubsub = redis_client.pubsub()
         channels = [f"stockai:quotes:{sym}" for sym in symbols]
         pubsub.subscribe(*channels)
+        _register_demand(redis_client, symbols)  # immediate first heartbeat, don't wait 10s
     except Exception as exc:
         log.warning("quote_ws.subscribe_failed", error=str(exc))
         await websocket.close(code=1011)  # 1011 = internal error
         return
 
     listener_future = loop.run_in_executor(_ws_executor, _pubsub_listen_blocking, pubsub, loop, queue, stop)
+    heartbeat_task = asyncio.ensure_future(_heartbeat_demand_loop(redis_client, symbols, stop))
 
     try:
         while True:
@@ -132,6 +173,7 @@ async def quote_stream_ws(websocket: WebSocket):
         log.warning("quote_ws.relay_error", error=str(exc))
     finally:
         stop.set()
+        heartbeat_task.cancel()
         try:
             pubsub.unsubscribe(*channels)
         except Exception:

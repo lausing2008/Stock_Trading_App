@@ -13,6 +13,18 @@ are published to Redis pub/sub (channel "stockai:quotes:{SYMBOL}") for api-gatew
 route to relay to subscribed frontend clients — this is a genuinely NEW mechanism for this
 codebase (grepped: zero existing pub/sub usage anywhere before this).
 
+Demand-driven subscription, NOT a static universe subscribe: Alpaca's free market-data tier
+caps a single connection at 30 symbols (confirmed live against this app's own real account —
+error code 405 "symbol limit exceeded" when this feature's first production deploy tried to
+subscribe to the whole ~120-symbol US universe upfront, which silently produced ZERO ticks for
+20+ minutes with no visible symptom until the subscribe reply itself was actually read and
+logged — see the fix commit's own message for the full incident). 30 is far too few to cover
+"every active US stock," so this module instead tracks which symbols connected BROWSER clients
+are actually watching right now (api-gateway's quote_ws.py writes a heartbeat per symbol into
+the shared "stockai:quotes:demand" Redis sorted set, score = last-seen unix timestamp) and
+re-subscribes to just the top _MAX_SYMBOLS_PER_CONNECTION most-recently-seen symbols on a fixed
+poll interval — never the static "every active stock" list this module started with.
+
 US-only (Alpaca has no Hong Kong market data at any tier) — HK symbols keep the existing 60s
 polling via GET /stocks/latest_prices unconditionally; this module never touches that path.
 Fails open at every layer: no credentials configured, an auth failure, a network drop, or the
@@ -23,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import structlog
 import websockets
@@ -30,34 +43,36 @@ import websockets
 from common.ai_keys import get_alpaca_credentials
 from common.redis_client import get_redis
 
-from db import SessionLocal, Stock
-from sqlalchemy import select
-
 log = structlog.get_logger()
 
 _WS_URL = "wss://stream.data.alpaca.markets/v2/iex"
 _RECONNECT_BASE_DELAY = 5
 _RECONNECT_MAX_DELAY = 300
 _CREDENTIAL_RECHECK_INTERVAL = 60  # seconds
-_MAX_SYMBOLS_PER_CONNECTION = 500  # Alpaca's own documented per-connection subscription cap
+# Alpaca's REAL, confirmed-live free-tier per-connection symbol cap — verified directly against
+# this app's own account (error 405 "symbol limit exceeded" at anything above this). NOT the
+# earlier, wrong assumption of 500 that silently produced zero ticks in this feature's first
+# production deploy.
+_MAX_SYMBOLS_PER_CONNECTION = 30
+_DEMAND_KEY = "stockai:quotes:demand"
+_DEMAND_STALE_SECONDS = 30  # matches quote_ws.py's own _DEMAND_TTL_SECONDS
+_DEMAND_POLL_INTERVAL = 10  # seconds — how often to re-check demand and adjust the live subscription
 
 
-def _active_us_symbols() -> list[str]:
-    """Every active, non-delisted US stock — HK is deliberately excluded (Alpaca has no HK
-    coverage at any tier). Stock.active.is_(True) does NOT by itself exclude a confirmed
-    delisting (a delisted stock stays active=True forever — see BUG-DELISTED-GENERATION-BLIND);
-    Stock.delisted.is_(False) is required alongside it, matching every other universe/generation
-    query in this codebase fixed under that same bug class."""
-    with SessionLocal() as session:
-        return list(
-            session.execute(
-                select(Stock.symbol).where(
-                    Stock.active.is_(True),
-                    Stock.delisted.is_(False),
-                    Stock.market == "US",
-                )
-            ).scalars()
-        )
+def _current_demand(redis_client, limit: int = _MAX_SYMBOLS_PER_CONNECTION) -> list[str]:
+    """Reads the top `limit` most-recently-heartbeated symbols from the shared demand set,
+    dropping anything older than _DEMAND_STALE_SECONDS (a symbol every watching client has
+    since disconnected from). Fails open to an empty list — a Redis hiccup here must never
+    crash the connection loop, it just means no NEW subscription changes happen this poll."""
+    try:
+        cutoff = time.time() - _DEMAND_STALE_SECONDS
+        # ZRANGEBYSCORE ... DESC via zrevrangebyscore, capped at `limit`, newest-first so a
+        # symbol right at the edge of the cap is the LEAST recently seen one dropped, not an
+        # arbitrary one.
+        return list(redis_client.zrevrangebyscore(_DEMAND_KEY, "+inf", cutoff, start=0, num=limit))
+    except Exception as exc:
+        log.warning("alpaca_quote_stream.demand_read_failed", error=str(exc))
+        return []
 
 
 def _quote_channel(symbol: str) -> str:
@@ -99,57 +114,73 @@ def _parse_quote_message(msg: dict) -> tuple[str, float, str] | None:
     return None  # control/other message type
 
 
+async def _read_ack(ws, *, expected_msg: str) -> list[dict]:
+    """Reads one control reply and returns it as a list (Alpaca sometimes wraps a single reply
+    in a list, sometimes not) — shared by the connect/auth acks below."""
+    reply = json.loads(await ws.recv())
+    return reply if isinstance(reply, list) else [reply]
+
+
+async def _apply_subscription_delta(ws, current: set[str], desired: set[str]) -> None:
+    """Issues unsubscribe/subscribe messages for exactly the symbols that changed since the
+    last poll — never re-sends the full desired set every time, since that would needlessly
+    re-trigger Alpaca's own subscription bookkeeping for symbols that haven't changed at all."""
+    to_add = sorted(desired - current)
+    to_remove = sorted(current - desired)
+    if to_remove:
+        await ws.send(json.dumps({"action": "unsubscribe", "quotes": to_remove, "trades": to_remove}))
+    if to_add:
+        await ws.send(json.dumps({"action": "subscribe", "quotes": to_add, "trades": to_add}))
+    if to_add or to_remove:
+        log.info("alpaca_quote_stream.demand_changed", added=len(to_add), removed=len(to_remove), total=len(desired))
+
+
 async def _run_once(api_key: str, secret_key: str, stop_event: asyncio.Event) -> None:
     redis_client = get_redis()
-    symbols = _active_us_symbols()[:_MAX_SYMBOLS_PER_CONNECTION]
-    if not symbols:
-        log.info("alpaca_quote_stream.no_symbols")
-        return
 
     async with websockets.connect(_WS_URL, ping_interval=30, ping_timeout=10) as ws:
         # Same pre-auth "connected" ack quirk as alpaca_source.py's own documented finding —
         # Alpaca sends this the moment the socket opens, before any auth message is sent.
-        connect_ack = json.loads(await ws.recv())
-        connect_replies = connect_ack if isinstance(connect_ack, list) else [connect_ack]
+        connect_replies = await _read_ack(ws, expected_msg="connected")
         if not any(r.get("T") == "success" and r.get("msg") == "connected" for r in connect_replies):
             log.warning("alpaca_quote_stream.unexpected_connect_reply", reply=connect_replies)
 
         await ws.send(json.dumps({"action": "auth", "key": api_key, "secret": secret_key}))
-        auth_reply = json.loads(await ws.recv())
-        replies = auth_reply if isinstance(auth_reply, list) else [auth_reply]
-        if not any(r.get("T") == "success" and r.get("msg") == "authenticated" for r in replies):
-            log.error("alpaca_quote_stream.auth_failed", reply=replies)
+        auth_replies = await _read_ack(ws, expected_msg="authenticated")
+        if not any(r.get("T") == "success" and r.get("msg") == "authenticated" for r in auth_replies):
+            log.error("alpaca_quote_stream.auth_failed", reply=auth_replies)
             # Must RAISE — a bare return would look like a clean lifecycle to run_quote_stream's
             # own except block, which only resets backoff on the exception path, matching
             # alpaca_source.py's own documented fix for this exact bug class.
-            raise RuntimeError(f"Alpaca auth failed: {replies}")
+            raise RuntimeError(f"Alpaca auth failed: {auth_replies}")
 
-        await ws.send(json.dumps({"action": "subscribe", "quotes": symbols, "trades": symbols}))
-        # Alpaca replies with a real per-stream subscription confirmation (T="subscription",
-        # listing the quotes/trades it actually accepted) — read and log it explicitly rather
-        # than assuming success from having sent the request. A silently-rejected subscribe
-        # (e.g. an entitlement issue, a malformed symbol) would otherwise look identical to a
-        # healthy connection that simply has nothing to say yet, with no way to tell them apart.
-        sub_reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=10.0))
-        sub_replies = sub_reply if isinstance(sub_reply, list) else [sub_reply]
-        confirmed = next((r for r in sub_replies if r.get("T") == "subscription"), None)
-        if confirmed:
-            log.info(
-                "alpaca_quote_stream.subscribed",
-                requested=len(symbols),
-                confirmed_quotes=len(confirmed.get("quotes", [])),
-                confirmed_trades=len(confirmed.get("trades", [])),
-            )
-        else:
-            log.warning("alpaca_quote_stream.unexpected_subscribe_reply", reply=sub_replies)
+        subscribed: set[str] = set()
+        last_demand_poll = 0.0
 
         while not stop_event.is_set():
+            loop_time = asyncio.get_running_loop().time()
+            if loop_time - last_demand_poll >= _DEMAND_POLL_INTERVAL:
+                last_demand_poll = loop_time
+                desired = set(_current_demand(redis_client))
+                if desired != subscribed:
+                    await _apply_subscription_delta(ws, subscribed, desired)
+                    subscribed = desired
+
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
             except asyncio.TimeoutError:
                 continue
             messages = json.loads(raw)
             for msg in messages if isinstance(messages, list) else [messages]:
+                if msg.get("T") in ("subscription", "error"):
+                    # A real Alpaca subscribe/unsubscribe confirmation or rejection — log it
+                    # explicitly rather than silently discarding it as an "unknown message
+                    # type" in _parse_quote_message, matching this module's own established
+                    # lesson from its first production deploy (a silently-rejected subscribe
+                    # is otherwise indistinguishable from a healthy, quiet connection).
+                    level = "warning" if msg.get("T") == "error" else "info"
+                    getattr(log, level)("alpaca_quote_stream.control_message", msg=msg)
+                    continue
                 parsed = _parse_quote_message(msg)
                 if parsed:
                     symbol, price, ts = parsed
