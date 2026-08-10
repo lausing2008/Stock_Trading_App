@@ -125,7 +125,23 @@ async def _run_once(api_key: str, secret_key: str, stop_event: asyncio.Event) ->
             raise RuntimeError(f"Alpaca auth failed: {replies}")
 
         await ws.send(json.dumps({"action": "subscribe", "quotes": symbols, "trades": symbols}))
-        log.info("alpaca_quote_stream.subscribed", count=len(symbols))
+        # Alpaca replies with a real per-stream subscription confirmation (T="subscription",
+        # listing the quotes/trades it actually accepted) — read and log it explicitly rather
+        # than assuming success from having sent the request. A silently-rejected subscribe
+        # (e.g. an entitlement issue, a malformed symbol) would otherwise look identical to a
+        # healthy connection that simply has nothing to say yet, with no way to tell them apart.
+        sub_reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=10.0))
+        sub_replies = sub_reply if isinstance(sub_reply, list) else [sub_reply]
+        confirmed = next((r for r in sub_replies if r.get("T") == "subscription"), None)
+        if confirmed:
+            log.info(
+                "alpaca_quote_stream.subscribed",
+                requested=len(symbols),
+                confirmed_quotes=len(confirmed.get("quotes", [])),
+                confirmed_trades=len(confirmed.get("trades", [])),
+            )
+        else:
+            log.warning("alpaca_quote_stream.unexpected_subscribe_reply", reply=sub_replies)
 
         while not stop_event.is_set():
             try:
