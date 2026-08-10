@@ -1,4 +1,6 @@
 """Market Data Service — entrypoint."""
+import asyncio
+
 from common.service import create_app
 from db import init_db
 
@@ -18,11 +20,23 @@ from .api.broker import router as broker_router
 from .api.rl import router as rl_router
 from .api.push import router as push_router
 from .services.scheduler import start_scheduler
+from .services.alpaca_quote_stream import run_quote_stream
+
+_quote_stream_stop = asyncio.Event()
 
 
 async def on_startup():
     init_db()
     start_scheduler()
+    # T230-DATA-STREAMING-QUOTES: long-lived real-time quote WebSocket task, started once at
+    # startup on FastAPI's own event loop (this is safe here specifically because on_startup is
+    # itself `async def`, so a real running loop already exists by the time this executes —
+    # unlike start_scheduler()'s BackgroundScheduler, which runs on its own separate thread and
+    # has no event loop of its own). Matches news-intelligence/src/scheduler.py's own
+    # asyncio.create_task(run_alpaca_stream(...)) wiring exactly. Fails open on its own — a
+    # missing/invalid Alpaca credential just means this task idles, never affecting any other
+    # startup step or endpoint.
+    asyncio.create_task(run_quote_stream(_quote_stream_stop))
 
 
 app = create_app(

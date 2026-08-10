@@ -4,6 +4,7 @@ import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { api, type Stock, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type MarketIndex, type MarketBreadth, type SignalChange } from '@/lib/api';
 import { getSignalStyle } from '@/lib/settings';
+import { useLiveQuotes } from '@/lib/useLiveQuotes';
 import AddStockModal from '@/components/AddStockModal';
 
 const SECTOR_COLOR: Record<string, { text: string; bg: string }> = {
@@ -276,11 +277,27 @@ export default function Home() {
     return m;
   }, [rankingsData]);
 
+  // T230-DATA-STREAMING-QUOTES: US symbols currently on this page get a real-time price
+  // overlay via WebSocket; HK symbols and anything with no tick yet keep the 60s-polled base
+  // value untouched — this hook degrades to an empty object with zero visible symptom when
+  // streaming is unavailable (no credentials configured server-side, connection dropped, etc).
+  const usSymbolsOnPage = useMemo(
+    () => (pricesData ?? []).filter(p => !p.symbol.endsWith('.HK')).map(p => p.symbol),
+    [pricesData],
+  );
+  const liveQuotes = useLiveQuotes(usSymbolsOnPage);
+
   const priceMap = useMemo(() => {
     const m: Record<string, LatestPrice> = {};
     for (const p of pricesData ?? []) m[p.symbol] = p;
+    for (const [symbol, tick] of Object.entries(liveQuotes)) {
+      const base = m[symbol];
+      if (!base) continue; // a tick for a symbol not currently on this page — ignore
+      const change_pct = base.prev_close ? ((tick.price - base.prev_close) / base.prev_close) * 100 : base.change_pct;
+      m[symbol] = { ...base, price: tick.price, change_pct };
+    }
     return m;
-  }, [pricesData]);
+  }, [pricesData, liveQuotes]);
 
   const signalMap = useMemo(() => {
     const m: Record<string, SignalSummary> = {};
@@ -420,6 +437,21 @@ export default function Home() {
 
         {/* Action buttons */}
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {/* T230-DATA-STREAMING-QUOTES: only shown once a REAL tick has actually arrived —
+              never claims "live" just because the WebSocket hook is mounted, which could be
+              silently doing nothing (no credentials configured, connection dropped, etc). */}
+          {Object.keys(liveQuotes).length > 0 && (
+            <span
+              title="Real-time US quotes active for symbols on this page"
+              style={{
+                fontSize: '10px', fontWeight: 700, color: '#4ade80',
+                display: 'flex', alignItems: 'center', gap: '4px',
+              }}
+            >
+              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#4ade80', display: 'inline-block' }} />
+              LIVE
+            </span>
+          )}
           {lastRefreshed && (
             <span style={{ fontSize: '11px', color: '#334155' }}>
               {lastRefreshed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
