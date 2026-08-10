@@ -1108,3 +1108,57 @@ def test_equity_floor_skipped_when_initial_capital_is_zero():
     # not raise a ZeroDivisionError.
     result = hr.check_hard_rejects(**_base_kwargs(equity=1_000.0, initial_capital=0.0))
     assert result is None
+
+
+# ── Portfolio heat brake (T221-E, T232-DL-DUALSCORER-DEBT) ────────────────────────────────
+# Too many stops hit recently in THIS portfolio means adverse market conditions —
+# _scan_for_entries pauses ALL new entries portfolio-wide rather than scoring individual
+# candidates. cfg["recent_stop_count"] is only present when the real caller sent a fresh
+# per-portfolio stop count; cfg["heat_brake_max_stops"] defaults to 3 (the real
+# _DEFAULT_CONFIG value).
+
+def test_heat_brake_blocks_at_the_threshold():
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"recent_stop_count": 3}))
+    assert result is not None and "Heat brake" in result
+
+
+def test_heat_brake_blocks_above_the_threshold():
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"recent_stop_count": 5}))
+    assert result is not None and "Heat brake" in result
+
+
+def test_heat_brake_does_not_block_below_the_threshold():
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"recent_stop_count": 2}))
+    assert result is None
+
+
+def test_heat_brake_gate_skipped_when_recent_stop_count_absent():
+    """An older caller not yet sending recent_stop_count must not be blocked — this gate is
+    opt-in via cfg, matching every other optional gate in this file."""
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={}))
+    assert result is None
+
+
+def test_heat_brake_respects_a_custom_max_stops_threshold():
+    """paper_trading_engine.py's real default is 3, but cfg can override it — a count that
+    clears the default must still be blocked under a tightened custom threshold."""
+    result = hr.check_hard_rejects(
+        **_base_kwargs(cfg={"recent_stop_count": 2, "heat_brake_max_stops": 2})
+    )
+    assert result is not None and "Heat brake" in result
+
+
+def test_heat_brake_can_be_disabled_via_config():
+    """heat_brake_max_stops<=0 disables the gate entirely, matching _scan_for_entries' own
+    `if _heat_max > 0:` opt-out — even a very high recent_stop_count must not block."""
+    result = hr.check_hard_rejects(
+        **_base_kwargs(cfg={"recent_stop_count": 99, "heat_brake_max_stops": 0})
+    )
+    assert result is None
+
+
+def test_heat_brake_zero_recent_stops_does_not_block():
+    """A portfolio with zero recent stops (the common, healthy case) must never be blocked —
+    confirms the gate's real comparison, not merely that SOME low value passes."""
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"recent_stop_count": 0}))
+    assert result is None

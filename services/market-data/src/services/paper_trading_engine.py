@@ -3006,6 +3006,7 @@ def _call_decision_engine(
     index_return_pct: float | None = None,
     sig_ref_price: float | None = None,
     short_signal: str | None = None,
+    recent_stop_count: int | None = None,
 ) -> tuple[bool, str, int, str | None] | None:
     """Call Decision Engine and return (should_enter, verdict, score, blocked_reason).
 
@@ -3184,6 +3185,20 @@ def _call_decision_engine(
                     # reused from anywhere in sig.reasons, since no such field exists there.
                     **( {"short_signal": short_signal, "confluence_check_enabled": cfg.get("confluence_check_enabled", True)}
                         if short_signal is not None else {} ),
+                    # T232-DL-DUALSCORER-DEBT / T221-E: portfolio heat brake — too many stops
+                    # hit recently means adverse market conditions, and _scan_for_entries pauses
+                    # ALL new entries portfolio-wide rather than scoring individual candidates.
+                    # This is genuinely portfolio-level state (a count of THIS portfolio's own
+                    # recent stop_hit exits), but the count itself is already computed once per
+                    # scan cycle before the per-candidate loop begins — the same shape as
+                    # recent_win_rate/consec_losses above, not a structural blocker requiring
+                    # cross-portfolio architecture. Threaded through so /decide/{symbol} called
+                    # standalone (e.g. decide.tsx, which never runs _scan_for_entries' own
+                    # pre-filter) can't silently approve an entry into a portfolio the fallback
+                    # engine itself would have paused entirely.
+                    **( {"recent_stop_count": recent_stop_count,
+                         "heat_brake_max_stops": cfg.get("heat_brake_max_stops", _DEFAULT_CONFIG["heat_brake_max_stops"])}
+                        if recent_stop_count is not None else {} ),
                 },
             },
             headers={"Authorization": f"Bearer {_svc_token()}"},
@@ -4052,7 +4067,12 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
 
     # T221-E: Portfolio heat brake — too many stops in recent window = adverse market conditions.
     # Entering more positions into a market that is stopping us out compounds losses.
+    # T232-DL-DUALSCORER-DEBT: _recent_stops is hoisted to a properly-initialized None default
+    # (not left block-scoped inside `if _heat_max > 0:`) so it survives, unconditionally, to the
+    # per-candidate _call_decision_engine() call site below — matching the exact same hoisting
+    # fix already applied to the index-trend gate's _idx_ret for the identical reason.
     _heat_max = cfg.get("heat_brake_max_stops", 3)
+    _recent_stops: int | None = None
     if _heat_max > 0:
         _heat_h = cfg.get("heat_brake_window_hours", 48)
         _heat_cutoff = datetime.now(timezone.utc) - timedelta(hours=_heat_h)
@@ -4686,6 +4706,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             open_sector_counts=_open_sector_counts,   # T186: sector gate
             candidate_sector=stock.sector,             # T186: sector gate
             consec_losses=_consec_losses,              # T187: streak gate
+            recent_stop_count=_recent_stops,            # T232-DL-DUALSCORER-DEBT / T221-E: heat brake
             kscore=kscore_f,                           # AUD232-042: K-Score visibility
             ta_score=ta_score_f,                        # T232-DL-DUALSCORER-DEBT: TA-score gate parity
             # AUD256: regime_state needed so the calibrated regime_min_rr_ratio default

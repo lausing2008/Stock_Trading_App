@@ -368,6 +368,21 @@ def check_hard_rejects(
             f"{style} BUY (T215/T222-B)"
         )
 
+    # T232-DL-DUALSCORER-DEBT / T221-E: Portfolio heat brake, ported from paper_trading_engine.py's
+    # _scan_for_entries(). Too many stops hit recently in THIS portfolio means adverse market
+    # conditions — the fallback pauses ALL new entries portfolio-wide rather than scoring
+    # individual candidates. cfg["recent_stop_count"] is only present when the caller sent a
+    # real portfolio's own recent-stop count (see paper_trading_engine.py's config_overrides);
+    # heat_brake_max_stops <= 0 disables the gate entirely, matching _scan_for_entries' own
+    # `if _heat_max > 0:` opt-out.
+    if cfg.get("recent_stop_count") is not None:
+        _heat_max = cfg.get("heat_brake_max_stops", 3)
+        if _heat_max > 0 and int(cfg["recent_stop_count"]) >= _heat_max:
+            return (
+                f"Heat brake — {int(cfg['recent_stop_count'])} stops hit recently, "
+                f"exceeds {_heat_max} threshold — entries paused until market conditions improve (T221-E)"
+            )
+
     # T171: Premarket gap filter — reject if price has already gapped up significantly
     # from its signal-time close. reasons["last_price"] is the close at signal-compute time.
     _signal_close = _reasons.get("last_price")
