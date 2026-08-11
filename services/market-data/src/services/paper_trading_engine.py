@@ -637,6 +637,32 @@ def _round_step(price: float) -> float:
     return 0.01
 
 
+def _hk_board_lot_size(price: float) -> int:
+    """AUD262-HK-NO-BOARD-LOTS: HKEX equities trade only in fixed board lots (set per-issuer
+    at listing, e.g. 100 shares for Tencent/HSBC, 500-2000 for many mid/small caps, up to
+    10000+ for low-priced penny stocks) — never fractional, and never an arbitrary share count.
+    Real per-symbol lot sizes are NOT available anywhere in this app's data pipeline (checked:
+    absent from yfinance's Ticker.info, absent from the Stock model, no HKEX scrape exists) —
+    fetching them for real would need a new HKEX data-source integration, out of scope here.
+
+    This is therefore a DELIBERATE, DOCUMENTED APPROXIMATION, not the real per-symbol value —
+    a price-tier heuristic mirroring HKEX's own actual practice of assigning smaller lots to
+    higher-priced stocks (so a lot's total cash value stays in a broadly similar range across
+    price tiers), using the same price-tier-bucket shape already established by _round_step()
+    a few lines above for an analogous purpose (tick size). The goal is not to fake precision
+    this app cannot have — it's to stop paper HK entries from sizing to a fractional or
+    arbitrary share count that could NEVER be filled by a real HK order, at any price tier.
+    Treat the resulting quantity as "the right ORDER OF MAGNITUDE of a fillable lot count",
+    not as "this specific symbol's real, confirmed board lot size."
+    """
+    if price >= 100: return 100
+    if price >= 20:  return 200
+    if price >= 5:   return 500
+    if price >= 1:   return 1000
+    if price >= 0.20: return 2000
+    return 5000
+
+
 # Style-specific overrides applied on top of defaults
 _STYLE_OVERRIDES: dict[str, dict] = {
     "SHORT": {
@@ -4867,16 +4893,22 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             consensus_size_mult = 1.07
             notes = notes + [f"Size 1.07× (partial consensus: 1 other style BUY)"]
 
-        # T188: Score-to-size multiplier — high-conviction DE scores get more capital, marginal scores less.
+        # T188: Score-to-size multiplier — high-conviction scores get more capital, marginal scores less.
         # Score just at min threshold (excess=0): 0.75×. Score +2 above (normal): 1.0×. Score +4+: 1.25×.
+        # AUD262-FALLBACK-SIZES-LARGER-THAN-DE: this used to only apply when gate_source=="de"
+        # (score_size_mult pinned to 1.0 on fallback/legacy) — but `score` on the fallback path
+        # is _should_enter()'s own returned score, compared against the SAME min_entry_score
+        # threshold DE uses (confirmed: _record_de_shadow_comparison already passes this exact
+        # same cfg value for both paths), so the input needed was already available on every
+        # path — nothing about this multiplier is actually DE-specific. Pinning it to 1.0 meant
+        # a marginal candidate (exactly at min_entry_score) got FULL size on the fallback path
+        # (1.0x) but REDUCED size under DE (0.75x) — 33% MORE capital on the weakest-conviction
+        # trades specifically during a decision-engine outage, when caution matters most.
         _min_score_cfg = cfg.get("min_entry_score", 4)
-        if gate_source == "de" and de_result is not None:
-            _score_excess = score - _min_score_cfg
-            score_size_mult = round(max(0.75, min(1.25, 0.75 + _score_excess * 0.125)), 3)
-            if score_size_mult != 1.0:
-                notes = notes + [f"Size {score_size_mult:.2f}× (DE score {score}, excess {_score_excess:+d} from min {_min_score_cfg})"]
-        else:
-            score_size_mult = 1.0
+        _score_excess = score - _min_score_cfg
+        score_size_mult = round(max(0.75, min(1.25, 0.75 + _score_excess * 0.125)), 3)
+        if score_size_mult != 1.0:
+            notes = notes + [f"Size {score_size_mult:.2f}× ({gate_source.upper()} score {score}, excess {_score_excess:+d} from min {_min_score_cfg})"]
         _risk_base     = equity * cfg["risk_per_trade_pct"]
         risk_dollar    = _risk_base * earnings_size_mult * regime_size_mult * confidence_size_mult * research_size_mult * consensus_size_mult * score_size_mult
         # T234-PT-SIZING-MULT-STACK: the 6 categories above are independent per-trade signals
@@ -4888,17 +4920,14 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         # at 25% of the unadjusted base so a trade that clears every other gate is never sized
         # down below that — multipliers above this floor are unaffected.
         #
-        # AUD232-011: the worst-case figure differs by gate_source, since score_size_mult is
-        # only derived from _score_excess when gate_source=="de" — on fallback/legacy it's
-        # pinned to 1.0 (see the if/else immediately above). Stating both explicitly so nobody
-        # reasons about the floor's safety margin using the wrong one for a given path:
-        #   gate_source=="de":              earnings 0.50 x regime 0.50 x confidence 0.75
-        #                                   x research 0.6 x score 0.75       = 0.084 (8.4%)
-        #   gate_source=="fallback"/"legacy": earnings 0.50 x regime 0.50 x confidence 0.75
-        #                                   x research 0.6 x score 1.0 (pinned) = 0.1125 (11.25%)
-        # The fallback path's real floor-triggering minimum is 0.1125, not 0.084 — worth knowing
-        # since the fallback is exactly the path active during a Decision Engine outage, when
-        # extra caution matters most.
+        # AUD232-011 (corrected by AUD262-FALLBACK-SIZES-LARGER-THAN-DE): score_size_mult used
+        # to only derive from _score_excess when gate_source=="de" — pinned to 1.0 on
+        # fallback/legacy. That meant the fallback path's real floor-triggering minimum was
+        # 0.1125 (11.25%) vs. DE's 0.084 (8.4%) — a LOOSER effective floor, and correspondingly
+        # MORE capital on marginal-conviction trades, specifically during a Decision Engine
+        # outage, when extra caution matters most. score_size_mult is now derived identically
+        # on every gate_source, so the worst-case figure is the same regardless of path:
+        #   earnings 0.50 x regime 0.50 x confidence 0.75 x research 0.6 x score 0.75 = 0.084 (8.4%)
         risk_dollar    = max(risk_dollar, _risk_base * 0.25)
         shares         = risk_dollar / stop_distance
 
@@ -4914,6 +4943,18 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         # so entry cash delta matches exit cash delta exactly
         shares         = round(shares, 4)
         position_value = round(shares * live_price, 2)
+
+        # AUD262-HK-NO-BOARD-LOTS: HKEX has no fractional/arbitrary-quantity orders — round
+        # down to a whole number of board lots (see _hk_board_lot_size()'s own docstring for
+        # why this is a documented approximation, not this symbol's real, confirmed lot size).
+        # Rounding DOWN (never up) means this can only ever reduce risk relative to the
+        # risk-budget math above, never exceed it. A candidate whose risk budget doesn't cover
+        # even one whole lot rounds to shares=0, which the FIN-07 check just below already
+        # skips via its existing `shares < 0.01` branch — no new skip logic needed.
+        if cfg.get("market") == "HK":
+            _lot = _hk_board_lot_size(live_price)
+            shares         = float((int(shares) // _lot) * _lot)
+            position_value = round(shares * live_price, 2)
 
         # FIN-07: skip near-zero share positions that would pollute the journal.
         # Also serves as an implicit ATR-volatility filter: extreme ATR → wide stop →
@@ -4931,6 +4972,12 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         max_pos = equity * cfg["max_position_pct"] * earnings_size_mult
         if position_value > max_pos:
             shares         = round(max_pos / live_price, 4)
+            # AUD262-HK-NO-BOARD-LOTS: this branch recomputes a fresh, fractional `shares`
+            # from max_pos/live_price — the lot-rounding applied right after PT-C2 above must
+            # be re-applied here too, or a HK trade that hits the max-position cap would exit
+            # this block with a fractional share count again.
+            if cfg.get("market") == "HK":
+                shares = float((int(shares) // _hk_board_lot_size(live_price)) * _hk_board_lot_size(live_price))
             position_value = round(shares * live_price, 2)
 
         # PT-B5: Aggregate open-risk check — sum (price - stop) * shares for all open trades

@@ -2118,6 +2118,22 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         _outcome_price_map[pr.stock_id].append((pr_date, float(pr.close)))
 
     def _lookup_outcome_price(stock_id: int, on_or_after: "date") -> "tuple | None":
+        """Returns the first (date, close) bar on or after `on_or_after`, or None if none
+        exists — INCLUDING when the nearest available bar is too far past `on_or_after` to be
+        a legitimate exit/entry fill (AUD261-CENSORING-NEVER-FIRED).
+
+        bisect_left has no upper bound by itself — a symbol with a long ingestion gap that
+        later RESUMES would otherwise return the first bar after the gap, potentially months
+        later, as if it were a normal, timely price. The caller (evaluate_signal_outcomes'
+        exit-price lookup) would then silently score the outcome against that far-future
+        price as a clean exit, rather than correctly censoring it via the ALREADY-CORRECT
+        grace-window branch a few lines below — that branch only ever triggers on a bare
+        None, so it was never reachable for a "resumed after a gap" symbol specifically
+        because this function was too permissive about what counts as "found."
+        Reuses the SAME _OUTCOME_CENSOR_GRACE_DAYS constant the caller's own grace-window
+        censoring branch already uses, so both halves of "is this price recent enough to
+        trust" agree on the same threshold.
+        """
         bucket = _outcome_price_map.get(stock_id, [])
         if not bucket:
             return None
@@ -2125,7 +2141,10 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         idx = bisect.bisect_left(dates, on_or_after)
         if idx >= len(bucket):
             return None
-        return bucket[idx]
+        found_date, found_close = bucket[idx]
+        if (found_date - on_or_after).days > _OUTCOME_CENSOR_GRACE_DAYS:
+            return None
+        return found_date, found_close
 
     def _window_return(stock_id: int, entry_date: "date", entry_price: float, days: int, signal_direction: str = "BUY"):
         """Return (price, return_pct, is_correct) for a +N-day window, or (None, None, None).
