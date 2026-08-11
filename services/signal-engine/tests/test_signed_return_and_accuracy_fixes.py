@@ -132,6 +132,27 @@ def test_by_symbol_uses_signed_return():
     assert 'sym_groups[sym]["returns"].append(_signed_return(o.pct_return, o.signal_direction))' in body
 
 
+# ── AUD261-BYSYMBOL-MIN-COUNT-2 ─────────────────────────────────────────────────────────────
+
+def test_by_symbol_excluded_n1_count_is_computed_before_the_count_2_filter():
+    """The excluded count must be derived from sym_groups BEFORE the >=2 filter drops anything
+    — computing it from the already-filtered by_symbol list would always be zero, defeating the
+    whole point of the fix."""
+    body = _outcomes_summary_body()
+    excluded_idx = body.index('_by_symbol_excluded_n1 = sum(1 for v in sym_groups.values() if v["count"] < 2)')
+    filter_idx = body.index('if v["count"] >= 2')
+    assert excluded_idx < filter_idx
+
+
+def test_by_symbol_excluded_n1_is_included_in_the_response():
+    body = _outcomes_summary_body()
+    assert '"by_symbol_excluded_n1": _by_symbol_excluded_n1,' in body
+    # must sit alongside by_symbol in the same return dict, not a separate/unreachable branch
+    by_symbol_idx = body.index('"by_symbol": by_symbol,')
+    excluded_field_idx = body.index('"by_symbol_excluded_n1": _by_symbol_excluded_n1,')
+    assert excluded_field_idx > by_symbol_idx
+
+
 # ── signal_accuracy()'s new helpers: _hold_days_summary / _signed_pct_change / _profit_factor ──
 
 def _extract_signal_accuracy_helper(name: str, namespace: dict):

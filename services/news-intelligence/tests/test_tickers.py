@@ -115,6 +115,43 @@ class TestExtractSymbols:
         assert tickers.extract_symbols("The two datasets matched perfectly") == []
         assert tickers.extract_symbols("Match Group reports Q3 subscriber growth") == ["MTCH"]
 
+    # ── AUD264-NEWS-HK-NUMERIC-TICKER-FALSE-POSITIVE ──────────────────────────────────────────
+
+    def test_numeric_ticker_does_not_match_an_unrelated_time_or_date_in_the_headline(self, monkeypatch):
+        """The exact bug this closes: a purely-numeric HK ticker base ("0700") is a genuine
+        standalone token in "Trading opens 0700 GMT" — the pre-existing alphanumeric-boundary
+        check (which only excludes SUBSTRING continuations like "07001") does nothing to
+        prevent this, since "0700" here really is its own word, just an unrelated one."""
+        _fake_universe(monkeypatch, [("0700.HK", "TENCENT HOLDINGS", "HK")])
+        assert tickers.extract_symbols("Trading opens 0700 GMT ahead of the open") == []
+        assert tickers.extract_symbols("Markets close at 1600 with mixed results") == []
+
+    def test_numeric_ticker_still_matches_when_the_hk_suffix_co_occurs(self, monkeypatch):
+        """The real, common HK PR-headline convention this fix must not break: a headline that
+        explicitly writes the .HK suffix alongside the bare numeric base is real context, not
+        an accidental collision."""
+        _fake_universe(monkeypatch, [("0700.HK", "TENCENT HOLDINGS", "HK")])
+        assert tickers.extract_symbols("0700.HK reports record quarterly profit") == ["0700.HK"]
+
+    def test_numeric_ticker_still_matches_when_the_company_name_co_occurs(self, monkeypatch):
+        """A headline naming BOTH the bare numeric ticker and the real company is genuine
+        context, not a coincidental number — must still match."""
+        _fake_universe(monkeypatch, [("0700.HK", "TENCENT HOLDINGS", "HK")])
+        assert tickers.extract_symbols("Tencent Holdings (0700) shares rally on earnings beat") == ["0700.HK"]
+
+    def test_numeric_ticker_alone_with_neither_hk_suffix_nor_company_name_does_not_match(self, monkeypatch):
+        """Direct regression guard for the fix's own gating condition — a bare numeric match
+        with genuinely no corroborating context anywhere in the headline must be rejected,
+        even outside the specific time-of-day example above."""
+        _fake_universe(monkeypatch, [("0700.HK", "TENCENT HOLDINGS", "HK")])
+        assert tickers.extract_symbols("The index rose 0700 points in early trading") == []
+
+    def test_alphabetic_tickers_are_completely_unaffected_by_the_numeric_gate(self, monkeypatch):
+        """Regression guard: the new numeric-only branch must never engage for a normal
+        alphabetic ticker — AAPL still matches on its own, no co-occurring context required."""
+        _fake_universe(monkeypatch, [("AAPL", "APPLE INC", "US")])
+        assert tickers.extract_symbols("AAPL announces new product line") == ["AAPL"]
+
 
 class TestSymbolForCik:
     def test_resolves_real_cik(self, monkeypatch):

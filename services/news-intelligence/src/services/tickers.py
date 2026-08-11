@@ -108,6 +108,18 @@ def extract_symbols(headline: str, max_matches: int = 5) -> list[str]:
     spell out the ticker at all ("Apple announces ..." with no "AAPL" anywhere) — the more
     common real-world case for PR Newswire/GlobeNewswire headlines, which are written for a
     general audience, not a trading terminal.
+
+    AUD264-NEWS-HK-NUMERIC-TICKER-FALSE-POSITIVE: a PURELY NUMERIC base (HK tickers like
+    "0700", after the .HK suffix is stripped for matching) collides with ordinary numeric
+    headline text — times ("0700 GMT"), dates, percentages — in a way alphabetic tickers/names
+    essentially never do; the alphanumeric-boundary check above only excludes SUBSTRING
+    continuations (e.g. "07001"), not a genuinely standalone but unrelated numeric token. Fixed
+    by requiring a numeric-only base to also co-occur with real context in the SAME headline —
+    either the .HK suffix explicitly, or the stock's own company name — before counting a bare
+    numeric match. This mirrors the tracker item's own first candidate approach (require the
+    .HK suffix or company name to co-occur) rather than the $-prefix/context-word alternative,
+    since HK-market PR headlines conventionally include the .HK suffix directly (e.g.
+    "0700.HK reports record profit") far more often than a bare "$0700"-style dollar prefix.
     """
     if not headline:
         return []
@@ -118,8 +130,12 @@ def extract_symbols(headline: str, max_matches: int = 5) -> list[str]:
         base = symbol.split(".")[0]
         matched = False
         if len(base) >= 3 and _symbol_pattern(symbol).search(headline):
-            matched = True
-        elif name_upper and len(name_upper) >= 4 and _name_pattern(name_upper).search(upper):
+            if base.isdigit():
+                if symbol.upper() in upper or (name_upper and name_upper in upper):
+                    matched = True
+            else:
+                matched = True
+        if not matched and name_upper and len(name_upper) >= 4 and _name_pattern(name_upper).search(upper):
             matched = True
         if matched:
             matches.append(symbol)

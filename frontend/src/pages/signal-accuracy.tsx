@@ -1250,7 +1250,12 @@ export default function SignalAccuracyPage() {
               {outcomesData.by_symbol && outcomesData.by_symbol.length > 0 && (
                 <div style={{ marginTop: 16 }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8', marginBottom: 8, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
-                    Per-Symbol Breakdown <span style={{ fontWeight: 400, fontSize: 11, color: '#475569' }}>· ≥2 signals · sorted by avg return</span>
+                    Per-Symbol Breakdown <span style={{ fontWeight: 400, fontSize: 11, color: '#475569' }}>
+                      · ≥2 signals · sorted by avg return
+                      {!!outcomesData.by_symbol_excluded_n1 && (
+                        <> · {outcomesData.by_symbol_excluded_n1} symbol{outcomesData.by_symbol_excluded_n1 === 1 ? '' : 's'} with only 1 signal excluded (not enough samples for a meaningful win rate) — this is why rows below don't sum to the Total above</>
+                      )}
+                    </span>
                   </div>
                   <div style={{ overflowX: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>

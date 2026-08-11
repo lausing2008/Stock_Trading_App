@@ -34,6 +34,24 @@ def get_economic(
     return {"events": events, "fomc_days_away": fomc_days}
 
 
+@router.get("/events/economic/recent")
+def get_economic_recent(
+    days: int = Query(30, ge=1, le=90),
+    market: str = Query("US"),
+    min_importance: str = Query("medium", pattern="^(high|medium)$"),
+    _: str = Depends(get_current_username),
+):
+    """AUD264-ECON-ENDPOINT-FILTERS-HIGH-ONLY: get_recent_economic_events() previously existed
+    with no route exposing it at all (confirmed via grep — zero callers anywhere in this
+    codebase or the frontend) AND a hardcoded high-only importance filter that would have
+    silently hidden 5 of 10 already-synced release types even once wired up. Fixed both
+    together — wiring up a fix for an importance filter nothing could ever call would have
+    been no real improvement on its own."""
+    country = "US" if market.upper() == "US" else "HK"
+    events = economic.get_recent_economic_events(days, country, min_importance)
+    return {"events": events}
+
+
 @router.post("/events/sync/economic")
 async def sync_economic(_: str = Depends(get_current_username)):
     result = await economic.sync_fred()

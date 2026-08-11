@@ -1731,6 +1731,16 @@ def outcomes_summary(
         if o.pct_return is not None:
             sym_groups[sym]["returns"].append(_signed_return(o.pct_return, o.signal_direction))
 
+    # AUD261-BYSYMBOL-MIN-COUNT-2: symbols with only 1 evaluated outcome are excluded here (a
+    # single-sample win_rate is either 0% or 100% and not a meaningful statistic to sort/rank
+    # on) — but "total"/"overall" above are both computed from the FULL outcomes list before
+    # this filter, so the table's own rows never summed to the headline total with no
+    # indication why. Rather than lower the floor (which would put a genuinely single-sample
+    # win_rate on the same table as multi-sample ones with no visual distinction — the same
+    # "don't fabricate confidence from thin data" discipline this codebase applies elsewhere),
+    # the excluded count is now surfaced explicitly so a reconciling reader can see why the
+    # rows don't sum to `total` instead of it looking like an unexplained gap.
+    _by_symbol_excluded_n1 = sum(1 for v in sym_groups.values() if v["count"] < 2)
     by_symbol = sorted(
         [
             {
@@ -1765,6 +1775,7 @@ def outcomes_summary(
         "by_research_alignment": research_summary,
         "by_window": multi_window,
         "by_symbol": by_symbol,
+        "by_symbol_excluded_n1": _by_symbol_excluded_n1,
     }
 
 

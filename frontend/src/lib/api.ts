@@ -900,6 +900,10 @@ export type OutcomesSummary = {
   by_research_alignment?: Record<'aligned' | 'partial' | 'divergent' | 'no_research', ResearchAlignmentBand>;
   by_window?: Record<'5d' | '10d' | '20d', { count: number; win_rate: number; avg_return_pct: number | null } | null>;
   by_symbol?: { symbol: string; count: number; win_rate: number; avg_return_pct: number | null; wins: number; losses: number }[];
+  // AUD261-BYSYMBOL-MIN-COUNT-2: by_symbol excludes symbols with only 1 evaluated outcome (a
+  // single-sample win_rate is either 0% or 100%, not a meaningful statistic) — this count is
+  // why the table's own rows don't sum to `total`.
+  by_symbol_excluded_n1?: number;
 };
 export type OutcomesCalibrationRow = {
   horizon: string;

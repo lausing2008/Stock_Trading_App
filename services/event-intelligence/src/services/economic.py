@@ -284,10 +284,24 @@ def get_upcoming_economic_events(days: int = 14, country: str = "US") -> list[di
         ]
 
 
-def get_recent_economic_events(days: int = 30, country: str = "US") -> list[dict]:
-    """Return recently released economic data."""
+def get_recent_economic_events(
+    days: int = 30, country: str = "US", min_importance: str = "medium"
+) -> list[dict]:
+    """Return recently released economic data.
+
+    AUD264-ECON-ENDPOINT-FILTERS-HIGH-ONLY: previously hardcoded to `importance == "high"`,
+    silently excluding retail_sales/consumer_conf/housing_starts/jobless_claims/gdp — all
+    genuinely tagged "medium" in _FRED_RELEASES/_FRED_SERIES, and all real, already-populated
+    event types since AUD264-RELEASE-POLL-COVERS-4-OF-10 fixed the poll that writes their
+    actual_value. `min_importance` now defaults to "medium" (includes both "high" and
+    "medium" — there is no lower tier in this codebase) so every synced release type is
+    visible by default; a caller that genuinely only wants FOMC/CPI/NFP-grade releases can
+    still pass min_importance="high" explicitly.
+    """
     now = datetime.now(timezone.utc)
     since = now - timedelta(days=days)
+    _importance_tiers = {"high": {"high"}, "medium": {"high", "medium"}}
+    allowed = _importance_tiers.get(min_importance, _importance_tiers["medium"])
     with SessionLocal() as s:
         rows = s.execute(
             select(EconomicEvent)
@@ -295,7 +309,7 @@ def get_recent_economic_events(days: int = 30, country: str = "US") -> list[dict
                 EconomicEvent.country == country,
                 EconomicEvent.event_date >= since,
                 EconomicEvent.event_date <= now,
-                EconomicEvent.importance == "high",
+                EconomicEvent.importance.in_(allowed),
             )
             .order_by(EconomicEvent.event_date.desc())
         ).scalars().all()
