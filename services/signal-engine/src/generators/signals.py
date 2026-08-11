@@ -2312,10 +2312,37 @@ def _apply_style_signal(
     # just gap-downs). A compression (not a hard reject) — a strong independent TA+ML case can
     # still clear the buy_threshold even with mixed news; this only pulls the AMBIGUOUS or
     # already-BUY-leaning candidates back the way sr_flag/rs_flag/sector_headwind already do.
+    #
+    # AUD264-HOTNEWS-FLAG-STALE-NO-CLEAR-PATH:
+    # (1) LONG-horizon signals are now exempt, matching sector_headwind's own established
+    #     convention of excluding styles the gate's own reasoning doesn't apply to (there,
+    #     GROWTH/SHORT are excluded because they aren't sector-trend-sensitive; here, LONG is
+    #     excluded because a 2h-old headline is negligible noise on a multi-month horizon).
+    # (2) The compression now DECAYS with the flag's real age (news-intelligence's storage.py
+    #     now stamps a `ts` field) instead of applying a flat 30% for the full 2h window
+    #     regardless of whether the headline is 2 minutes or 119 minutes old — full 30% in the
+    #     first hour, half that (15%) in the second hour, matching the same 2h TTL window the
+    #     flag itself already expires on. A missing/unparseable ts (an older flag written
+    #     before this fix, still live within its own TTL) falls back to the original flat 30%
+    #     rather than crashing or silently skipping the gate.
     hot_news = base_reasons.get("hot_news")
-    if hot_news and fused > 0.5:
+    _hot_news_age_hours = None
+    if hot_news and hot_news.get("ts"):
+        try:
+            from datetime import datetime as _hn_datetime, timezone as _hn_timezone
+            _hot_ts = _hn_datetime.fromisoformat(hot_news["ts"])
+            if _hot_ts.tzinfo is None:
+                _hot_ts = _hot_ts.replace(tzinfo=_hn_timezone.utc)
+            _hot_news_age_hours = (_hn_datetime.now(_hn_timezone.utc) - _hot_ts).total_seconds() / 3600
+        except Exception:
+            _hot_news_age_hours = None
+    if _hot_news_age_hours is not None and _hot_news_age_hours > 1.0:
+        _hot_news_compress = 0.85  # second hour — half the first-hour compression strength
+    else:
+        _hot_news_compress = 0.70  # first hour, or age unknown (a pre-fix flag) — original strength
+    if hot_news and fused > 0.5 and style_key != "LONG":
         if hot_news.get("sentiment_label") == "negative":
-            fused = 0.5 + (fused - 0.5) * 0.70   # compress 30% — material bad news, BUY direction
+            fused = 0.5 + (fused - 0.5) * _hot_news_compress
             reasons["hot_news_flag"] = "material_negative"
         else:
             reasons["hot_news_flag"] = "material_other"  # positive/neutral material news — logged, not applied

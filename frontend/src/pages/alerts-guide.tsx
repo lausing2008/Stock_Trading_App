@@ -49,7 +49,7 @@ const USER_ALERTS: AlertRow[] = [
     schedule: 'Every ~5 min (market-refresh cycle) + once at startup',
     scope: 'signal-alert',
     cooldown: '2h same-direction cooldown; full BUY↔SELL reversals bypass it',
-    note: 'The "conviction BUY" alert: only fires a BUY when 5 things line up at once — AI signal flips to BUY, confidence ≥60%, bullish analyst consensus, and K-Score/Technical/Momentum confluence ≥75. Exit/bearish transitions (BUY→HOLD/WAIT/SELL) always fire, no gate. Also folds in earnings-proximity reminders (1/2/3/5 days out) as one consolidated table, not a separate email per stock. Includes an overextension check that blocks buying near a recent peak — see the known-limitations callout below.',
+    note: 'The "conviction BUY" alert: only fires a BUY when 5 things line up at once — AI signal flips to BUY, confidence ≥60%, bullish analyst consensus, and K-Score/Technical/Momentum confluence ≥75 — AND a 6th, separate check: decision-engine must independently agree (BUY or HOLD verdict; see the callout below for exactly what this means and why it exists). Exit/bearish transitions (BUY→HOLD/WAIT/SELL) always fire, no gate — the decision-engine check only applies to BUY transitions. Also folds in earnings-proximity reminders (1/2/3/5 days out) as one consolidated table, not a separate email per stock. Includes an overextension check that blocks buying near a recent peak — see the known-limitations callout below.',
   },
   {
     job: 'check_earnings_reactions',
@@ -683,6 +683,47 @@ export default function AlertsGuidePage() {
             handle correction/re-issue headlines from the same wire (a real print sometimes arrives twice,
             once with a typo’d number) without double-firing or picking up the wrong value, which is a
             genuinely fiddly parsing problem worth its own careful pass rather than a rushed regex.
+          </li>
+        </ul>
+      </Callout>
+
+      <Callout tone="info" title="check_signal_alerts: the decision-engine gate — a 6th, separate check on top of the 5-layer conviction gate">
+        <ul style={{ paddingLeft: 18, lineHeight: 1.7 }}>
+          <li>
+            <strong>What it is</strong>: for every BUY transition that already clears the 5-layer
+            conviction gate above, this alert makes one more check — it asks decision-engine (this
+            app&apos;s separate, independent scoring system) for its own verdict on the same symbol
+            and style, and only sends the email if decision-engine&apos;s verdict is <Code>BUY</Code>{' '}
+            or <Code>HOLD</Code>. Decision-engine can only ever return <Code>BUY</Code>,{' '}
+            <Code>HOLD</Code>, <Code>SKIP</Code>, or <Code>BLOCKED</Code> — <Code>SKIP</Code> or{' '}
+            <Code>BLOCKED</Code> both suppress the alert; <Code>HOLD</Code> (a deliberate
+            near-miss verdict, meaning decision-engine&apos;s own score is close but not quite
+            over its own bar) still lets the alert through, on the reasoning that a candidate this
+            close to two independent systems&apos; own thresholds is exactly the kind of
+            marginal-but-real setup worth flagging, not filtering out.
+          </li>
+          <li>
+            <strong>Why it exists</strong>: the AI Signal (this page&apos;s own 5-layer gate) and
+            decision-engine are two genuinely separate scoring systems in this app, each with its
+            own inputs and thresholds — they usually agree, but can disagree on a given symbol at a
+            given moment. This check exists so an alert only fires when BOTH systems are at least
+            broadly pointed the same direction, rather than emailing on a signal one system likes
+            and the other would actively reject.
+          </li>
+          <li>
+            <strong>Fails open</strong>: if decision-engine can&apos;t be reached at all (a timeout,
+            an outage), this check is skipped entirely and the alert fires anyway — an
+            infrastructure problem on decision-engine&apos;s side must never silently cost you a
+            real alert. Only a real, reachable <Code>SKIP</Code>/<Code>BLOCKED</Code> verdict
+            suppresses anything.
+          </li>
+          <li>
+            <strong>Why this is the single biggest reason an inbox looks quiet</strong>: this check
+            is by far the most common reason a symbol that visibly clears every condition on this
+            page still doesn&apos;t get an email — in a real measured 48-hour production window,
+            thousands of candidates passed the 5-layer conviction gate above and the large majority
+            were then rejected here specifically. If you&apos;re wondering why a stock you&apos;re
+            watching hit every criterion above and you never got an alert, this is almost always why.
           </li>
         </ul>
       </Callout>

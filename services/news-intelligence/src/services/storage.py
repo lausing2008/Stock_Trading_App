@@ -34,15 +34,53 @@ _HOT_NEWS_KEY_PREFIX = "stockai:hot_news:"
 
 
 def _mark_hot(symbol: str, headline: str, sentiment_label: str | None) -> None:
+    # AUD264-HOTNEWS-FLAG-STALE-NO-CLEAR-PATH: the payload previously carried no timestamp at
+    # all, so signal-engine's reader could not tell a 2-minute-old headline from a
+    # 119-minute-old one — the compression applied was a flat, binary all-or-nothing for the
+    # full 2h window. Adding `ts` (a real ISO timestamp, not just relying on the Redis key's
+    # own TTL) lets the reader compute real age and decay the compression's strength with it.
     try:
         r = get_redis()
         r.setex(
             f"{_HOT_NEWS_KEY_PREFIX}{symbol.upper()}",
             _HOT_NEWS_TTL_SECONDS,
-            json.dumps({"headline": headline, "sentiment_label": sentiment_label or "neutral"}),
+            json.dumps({
+                "headline": headline,
+                "sentiment_label": sentiment_label or "neutral",
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }),
         )
     except Exception as exc:
         log.warning("news_storage.hot_flag_failed", symbol=symbol, error=str(exc))
+
+
+def _clear_hot(symbol: str) -> None:
+    """AUD264-HOTNEWS-FLAG-STALE-NO-CLEAR-PATH: no delete path existed anywhere — a stale
+    NEGATIVE flag could only ever be overwritten by another MATERIAL follow-up (never cleared
+    by a genuine, non-material correction/retraction), and a positive material follow-up for
+    the same symbol would overwrite it too, but only if is_material was independently true for
+    THAT headline — a positive non-material follow-up ("shares recover after..." style
+    coverage, common and often not itself flagged is_material by the LLM) could never clear a
+    stale negative flag at all. This explicit clear function is called whenever a NEW
+    classified headline for a symbol that currently has a NEGATIVE hot flag is anything other
+    than itself material-and-negative — i.e. any genuine improvement (positive, neutral, or a
+    non-material follow-up) actively clears the stale warning instead of leaving it to silently
+    ride out its full 2h TTL regardless of what's actually happened since.
+    """
+    try:
+        get_redis().delete(f"{_HOT_NEWS_KEY_PREFIX}{symbol.upper()}")
+    except Exception as exc:
+        log.warning("news_storage.hot_flag_clear_failed", symbol=symbol, error=str(exc))
+
+
+def _current_hot_sentiment(symbol: str) -> str | None:
+    try:
+        raw = get_redis().get(f"{_HOT_NEWS_KEY_PREFIX}{symbol.upper()}")
+        if not raw:
+            return None
+        return json.loads(raw).get("sentiment_label")
+    except Exception:
+        return None
 
 
 def persist_news_items(
@@ -137,6 +175,17 @@ def persist_news_items(
                     # this was previously the one place that computed it but never read it back.
                     if sym and cls and cls["is_material"] and cls["category"] != "macro":
                         _mark_hot(sym, headline, cls["sentiment_label"])
+                    # AUD264-HOTNEWS-FLAG-STALE-NO-CLEAR-PATH: any OTHER new, real,
+                    # COMPANY-SPECIFIC classification for this symbol — positive, neutral, or
+                    # simply non-material — is genuine evidence the situation has moved on and
+                    # must be allowed to clear a currently-negative flag, not just silently
+                    # fail to extend it. Still excludes "macro" (matching
+                    # AUD264-NEWS-MACRO-CATEGORY-IGNORED's own established reasoning a few
+                    # lines above): an index-level story is not evidence ABOUT this specific
+                    # company either way, so it must not clear a company-specific flag any
+                    # more than it should be allowed to set one.
+                    elif sym and cls and cls["category"] != "macro" and _current_hot_sentiment(sym) == "negative":
+                        _clear_hot(sym)
         session.commit()
 
     log.info(

@@ -16,6 +16,17 @@ Endpoints:
   PUT  /broker/paper-portfolios/{portfolio_id}/broker  — assign / unassign broker
 
 SECURITY: BrokerConnection.config (credentials) is NEVER included in any response body.
+
+T270-BROKER-ADMIN-GATE: every route here requires get_admin_user, not get_current_user.
+Previously all 12 routes were get_current_user-only — matching the frontend's own UI, which
+already hides broker-linking behind an isAdmin check, but that check was purely cosmetic:
+nothing server-side actually enforced it. This mattered most for
+PUT /paper-portfolios/{id}/broker — PaperPortfolio has no user_id column (portfolios are
+shared/global), so any authenticated non-admin user could call that endpoint directly and
+assign/unassign a broker connection on any shared portfolio, disrupting live trading for
+everyone, with no admin privilege required. _fetch()'s own per-connection
+user_id == current.id check still limits which CONNECTIONS a user can reference (unchanged),
+but that was never the gap — the gap was that non-admins could reach these endpoints at all.
 """
 from __future__ import annotations
 
@@ -27,7 +38,7 @@ from sqlalchemy.orm import Session
 from common.logging import get_logger
 from common.config import get_settings
 from db import BrokerConnection, PaperPortfolio, get_session
-from .auth import get_current_user, User
+from .auth import get_admin_user, User
 
 log = get_logger(__name__)
 router = APIRouter(prefix="/broker", tags=["broker"])
@@ -119,7 +130,7 @@ def _out(conn: BrokerConnection) -> BrokerConnectionOut:
 
 @router.get("/connections", response_model=list[BrokerConnectionOut])
 def list_connections(
-    current: User = Depends(get_current_user),
+    current: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
     rows = session.execute(
@@ -132,7 +143,7 @@ def list_connections(
 @router.post("/connections", response_model=BrokerConnectionOut)
 def create_connection(
     body: CreateBrokerRequest,
-    current: User = Depends(get_current_user),
+    current: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
     if body.broker_type not in _SUPPORTED_TYPES:
@@ -171,7 +182,7 @@ def create_connection(
 def update_connection(
     conn_id: int,
     body: UpdateBrokerRequest,
-    current: User = Depends(get_current_user),
+    current: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
     conn = _fetch(conn_id, current, session)
@@ -187,7 +198,7 @@ def update_connection(
 @router.delete("/connections/{conn_id}", status_code=204)
 def delete_connection(
     conn_id: int,
-    current: User = Depends(get_current_user),
+    current: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
     conn = _fetch(conn_id, current, session)
@@ -205,7 +216,7 @@ def delete_connection(
 @router.post("/connections/{conn_id}/oauth/start")
 def oauth_start(
     conn_id: int,
-    current: User = Depends(get_current_user),
+    current: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
     """Step 1 of E*Trade OAuth: returns the URL the user must visit to authorize."""
@@ -235,7 +246,7 @@ def oauth_start(
 def oauth_complete(
     conn_id: int,
     body: OAuthCompleteRequest,
-    current: User = Depends(get_current_user),
+    current: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
     """Step 2 of E*Trade OAuth: exchange the verifier PIN for access tokens."""
@@ -270,7 +281,7 @@ def oauth_complete(
 @router.post("/connections/{conn_id}/reconnect")
 def reconnect(
     conn_id: int,
-    current: User = Depends(get_current_user),
+    current: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
     """Renew E*Trade access token for today's session (must call once per trading day)."""
@@ -294,7 +305,7 @@ def reconnect(
 @router.get("/connections/{conn_id}/account")
 def get_account_info(
     conn_id: int,
-    current: User = Depends(get_current_user),
+    current: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
     """Return live balance + positions from the real broker (or placeholder for manual)."""
@@ -350,7 +361,7 @@ def get_account_info(
 def get_order_history(
     conn_id: int,
     status: str = "all",
-    current: User = Depends(get_current_user),
+    current: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
     """T257-BROKER-ORDER-HISTORY: real order history from the broker itself (E*Trade's
@@ -407,7 +418,7 @@ def get_order_history(
 def get_broker_quote(
     conn_id: int,
     symbols: str,
-    current: User = Depends(get_current_user),
+    current: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
     """T230-DATA-BROKERQUOTE: real-time quote(s) via the broker's own already-authenticated
@@ -461,7 +472,7 @@ def get_broker_quote(
 @router.get("/paper-portfolios/{portfolio_id}/broker")
 def get_portfolio_broker(
     portfolio_id: int,
-    current: User = Depends(get_current_user),
+    current: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
     port = session.get(PaperPortfolio, portfolio_id)
@@ -479,7 +490,7 @@ def get_portfolio_broker(
 def assign_portfolio_broker(
     portfolio_id: int,
     body: AssignBrokerRequest,
-    current: User = Depends(get_current_user),
+    current: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
     port = session.get(PaperPortfolio, portfolio_id)
