@@ -1692,11 +1692,25 @@ _MACRO_2026: list[dict] = [
 # T249-MARKETMOVER-P0: (event_type in _MACRO_2026's hardcoded "type" field) -> the real
 # {event_type}_release rows economic.py's sync_fred_release_dates() writes. Used to know which
 # hardcoded "type" values now have a live DB equivalent to prefer.
+#
+# AUD264-MACRO-CALENDAR-TYPE-MAP-COVERS-4-OF-10: this used to map only 4 of the 10 real
+# *_release event_types economic.py's own _FRED_RELEASES actually syncs (cpi/nfp/pce/gdp) —
+# the other 6 (ppi/retail_sales/consumer_conf/housing_starts/jobless_claims/fed_funds) were
+# never SELECTed by _macro_events_from_db() at all, so their already-synced, real DB rows
+# were completely invisible to this endpoint — not merely duplicated by the hardcoded
+# _MACRO_2026 fallback (which has no entries for these 6 types either), just missing
+# outright. Extended to all 10, matching economic.py's _FRED_RELEASES exactly.
 _MACRO_TYPE_TO_RELEASE_EVENT_TYPE = {
     "cpi": "cpi_release",
     "nfp": "nfp_release",
     "pce": "pce_release",
     "gdp": "gdp_release",
+    "ppi": "ppi_release",
+    "retail_sales": "retail_sales_release",
+    "consumer_conf": "consumer_conf_release",
+    "housing_starts": "housing_starts_release",
+    "jobless_claims": "jobless_claims_release",
+    "fed_funds": "fed_funds_release",
 }
 
 
@@ -2021,11 +2035,23 @@ def short_squeeze(
     stock_map = {s.symbol: s for s in stocks}
     r = _get_redis()
 
-    # Latest rankings for momentum scores
+    # AUD265-SQUEEZE-MOMENTUM-NULL-ON-STALE-RANKINGS: this used to filter
+    # `Ranking.as_of >= today - timedelta(days=7)` before taking the latest-per-stock row —
+    # a stock whose newest ranking predates that window was excluded from rank_rows entirely,
+    # not merely marked stale, silently nulling momentum_score/k_score for every stock caught
+    # by a lapsed ranking refresh (this repo's own history documents rankings going stale 7+
+    # days at a time). Widened to 90 days (comfortably covers any realistic staleness
+    # incident while still bounding the query against the full, unbounded-growth `rankings`
+    # history table — Ranking has no unique(stock_id, as_of) constraint, so removing the
+    # window filter entirely would pull every row ever written on every request) and now
+    # surfaces how old the newest available ranking actually is via ranking_as_of/
+    # ranking_is_stale instead of silently nulling the row, matching short_interest()'s own
+    # established staleness-surfacing convention a few lines above.
     today = _sdate.today()
+    _ranking_stale_cutoff = today - _stimedelta(days=7)
     rank_rows = session.execute(
         select(Ranking)
-        .where(Ranking.as_of >= today - timedelta(days=7))
+        .where(Ranking.as_of >= today - timedelta(days=90))
         .order_by(Ranking.stock_id, Ranking.as_of.asc())
     ).scalars().all()
     rank_map = {rk.stock_id: rk for rk in rank_rows}  # last write per stock_id = most recent
@@ -2068,6 +2094,13 @@ def short_squeeze(
                 "change_pct": p.get("change_pct") if p else None,
                 "momentum_score": rank.momentum if rank else None,
                 "k_score": rank.score if rank else None,
+                # AUD265-SQUEEZE-MOMENTUM-NULL-ON-STALE-RANKINGS: rank is now the latest
+                # ranking within 90 days regardless of whether it clears the (much tighter)
+                # 7-day freshness bar a normal weekly refresh cadence implies — surface the
+                # real age so a lapsed refresh is visible instead of masquerading as "no
+                # ranking data for this stock" the way a silent null previously did.
+                "ranking_as_of": rank.as_of.isoformat() if rank else None,
+                "ranking_is_stale": (rank is None) or (rank.as_of < _ranking_stale_cutoff),
                 "volume": p.get("volume") if p else None,
                 # AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED: see short_interest()'s own docstring
                 # above for the same reasoning — surfaced here too, not filtered out, since a

@@ -556,9 +556,15 @@ def get_trade_postmortem(
         # breaking schema change.
         entry_slippage_pct = 0.0
 
+    # AUD262-POSTMORTEM-COMPARES-ORIGINAL-STOP: this used to compare against trade.stop_loss
+    # (the IMMUTABLE entry stop) rather than trade.current_stop (the ratcheted stop that
+    # actually triggered) — for any trailing exit, that made the plan-adherence figure
+    # meaningless: e.g. entry $100/stop_loss $88, trail ratchets current_stop to $113, exit at
+    # $113.89 -> the old comparison reported "+29.4% above the stop" (implying a wildly
+    # premature exit) when the trade actually exited within 0.8% of the stop that fired.
     exit_vs_stop_pct = None
-    if trade.exit_price and trade.stop_loss:
-        exit_vs_stop_pct = round((trade.exit_price - trade.stop_loss) / trade.stop_loss * 100, 2)
+    if trade.exit_price and trade.current_stop:
+        exit_vs_stop_pct = round((trade.exit_price - trade.current_stop) / trade.current_stop * 100, 2)
     exit_vs_target_pct = None
     if trade.exit_price and trade.take_profit:
         exit_vs_target_pct = round((trade.exit_price - trade.take_profit) / trade.take_profit * 100, 2)

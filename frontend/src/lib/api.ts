@@ -1154,7 +1154,11 @@ export type EarningsItem = {
 };
 
 export type CalendarEvent = {
-  type: 'earnings' | 'dividend' | 'split' | 'fomc' | 'cpi' | 'nfp' | 'pce' | 'gdp';
+  // AUD264-MACRO-CALENDAR-TYPE-MAP-COVERS-4-OF-10: extended alongside the backend's own
+  // _MACRO_TYPE_TO_RELEASE_EVENT_TYPE map, which now covers all 10 of economic.py's real
+  // _FRED_RELEASES types, not just the original 4 (cpi/nfp/pce/gdp).
+  type: 'earnings' | 'dividend' | 'split' | 'fomc' | 'cpi' | 'nfp' | 'pce' | 'gdp'
+      | 'ppi' | 'retail_sales' | 'consumer_conf' | 'housing_starts' | 'jobless_claims' | 'fed_funds';
   date: string;
   days_to_event: number;
   title: string;
@@ -1200,6 +1204,12 @@ export type SqueezeCandidate = {
   change_pct: number | null;
   momentum_score: number | null;
   k_score: number | null;
+  // AUD265-SQUEEZE-MOMENTUM-NULL-ON-STALE-RANKINGS: the latest ranking within 90 days,
+  // regardless of whether it clears the tighter 7-day freshness bar a normal weekly refresh
+  // implies — null momentum_score/k_score now means "no ranking at all in 90 days", not "the
+  // most recent one is merely a few days old."
+  ranking_as_of: string | null;
+  ranking_is_stale: boolean;
   volume: number | null;
 };
 

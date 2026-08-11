@@ -144,3 +144,60 @@ def test_every_macro_2026_fallback_type_has_a_release_mapping_or_is_fomc():
     types_in_fallback = {ev["type"] for ev in _MACRO_2026}
     unmapped = types_in_fallback - set(_MACRO_TYPE_TO_RELEASE_EVENT_TYPE) - {"fomc"}
     assert not unmapped, f"_MACRO_2026 has types with no DB-release mapping: {unmapped}"
+
+
+# ── AUD264-MACRO-CALENDAR-TYPE-MAP-COVERS-4-OF-10 ────────────────────────────────
+
+def test_the_mapping_covers_all_10_of_economic_pys_real_fred_releases():
+    """The map used to cover only 4 (cpi/nfp/pce/gdp) of the 10 real *_release event_types
+    economic.py's own _FRED_RELEASES actually syncs — the other 6 were never SELECTed by
+    _macro_events_from_db() at all, so their already-synced DB rows were completely invisible
+    to this endpoint. This is the direct regression guard: every one of the 10 real FRED
+    release event_types must now have a reverse mapping back to a short "type" key."""
+    real_release_event_types = {
+        "cpi_release", "ppi_release", "gdp_release", "nfp_release",
+        "retail_sales_release", "consumer_conf_release", "housing_starts_release",
+        "jobless_claims_release", "fed_funds_release", "pce_release",
+    }
+    mapped_release_event_types = set(_MACRO_TYPE_TO_RELEASE_EVENT_TYPE.values())
+    assert real_release_event_types <= mapped_release_event_types
+
+
+def test_a_previously_unmapped_release_type_now_resolves_correctly(monkeypatch):
+    """Direct proof, not just a set-membership check: a real ppi_release DB row — one of the
+    6 types this fix newly covers — must now be SELECTed (via the widened release_event_types
+    list _macro_events_from_db() queries with) and correctly translate back to type='ppi'."""
+    today = date(2026, 7, 15)
+    cutoff = date(2026, 9, 1)
+    row = _fake_row("ppi_release", date(2026, 7, 16), title="PPI Release")
+    session = _session_returning([row], monkeypatch)
+
+    events, covered_type_months = _macro_events_from_db(session, today, cutoff)
+
+    assert covered_type_months == {("ppi", 2026, 7)}
+    assert len(events) == 1
+    assert events[0]["type"] == "ppi"
+    assert events[0]["date"] == "2026-07-16"
+
+
+def test_all_6_newly_mapped_types_individually_round_trip_correctly(monkeypatch):
+    """Every one of the 6 newly-added entries, not just one representative — confirms none of
+    the 6 has a typo'd/mismatched key vs. value that a single-type test could miss."""
+    newly_added = {
+        "ppi": "ppi_release",
+        "retail_sales": "retail_sales_release",
+        "consumer_conf": "consumer_conf_release",
+        "housing_starts": "housing_starts_release",
+        "jobless_claims": "jobless_claims_release",
+        "fed_funds": "fed_funds_release",
+    }
+    for short_type, release_event_type in newly_added.items():
+        today = date(2026, 7, 15)
+        cutoff = date(2026, 9, 1)
+        row = _fake_row(release_event_type, date(2026, 7, 20), title=f"{short_type} test")
+        session = _session_returning([row], monkeypatch)
+
+        events, _ = _macro_events_from_db(session, today, cutoff)
+
+        assert len(events) == 1, f"{release_event_type} produced {len(events)} events, expected 1"
+        assert events[0]["type"] == short_type, f"{release_event_type} mapped to {events[0]['type']!r}, expected {short_type!r}"

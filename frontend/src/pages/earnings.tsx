@@ -4,8 +4,17 @@ import Link from 'next/link';
 import { api, type CalendarEvent, type EarningsAlertSub } from '@/lib/api';
 
 type EventType = 'all' | 'earnings' | 'dividend' | 'macro';
-type MacroSubtype = 'fomc' | 'cpi' | 'nfp' | 'pce' | 'gdp';
-const MACRO_SUBTYPES = new Set<string>(['fomc', 'cpi', 'nfp', 'pce', 'gdp']);
+// AUD264-MACRO-CALENDAR-TYPE-MAP-COVERS-4-OF-10: extended alongside the backend's own
+// _MACRO_TYPE_TO_RELEASE_EVENT_TYPE map (routes.py), which now covers all 10 of economic.py's
+// real _FRED_RELEASES types — these 6 real release types were previously invisible to this
+// endpoint entirely (not merely uncounted here), so this tab's own type set was never
+// exercised against them until now.
+type MacroSubtype = 'fomc' | 'cpi' | 'nfp' | 'pce' | 'gdp'
+  | 'ppi' | 'retail_sales' | 'consumer_conf' | 'housing_starts' | 'jobless_claims' | 'fed_funds';
+const MACRO_SUBTYPES = new Set<string>([
+  'fomc', 'cpi', 'nfp', 'pce', 'gdp',
+  'ppi', 'retail_sales', 'consumer_conf', 'housing_starts', 'jobless_claims', 'fed_funds',
+]);
 
 const EVENT_META: Record<string, { label: string; color: string; bg: string; dot: string }> = {
   earnings: { label: 'Earnings',   color: '#818cf8', bg: 'rgba(129,140,248,0.12)', dot: '#818cf8' },
@@ -15,6 +24,12 @@ const EVENT_META: Record<string, { label: string; color: string; bg: string; dot
   nfp:      { label: 'Jobs (NFP)', color: '#38bdf8', bg: 'rgba(56,189,248,0.12)',  dot: '#38bdf8' },
   pce:      { label: 'PCE',        color: '#a78bfa', bg: 'rgba(167,139,250,0.12)', dot: '#a78bfa' },
   gdp:      { label: 'GDP',        color: '#34d399', bg: 'rgba(52,211,153,0.12)',  dot: '#34d399' },
+  ppi:            { label: 'PPI',            color: '#fb7185', bg: 'rgba(251,113,133,0.12)', dot: '#fb7185' },
+  retail_sales:   { label: 'Retail Sales',   color: '#22d3ee', bg: 'rgba(34,211,238,0.12)',  dot: '#22d3ee' },
+  consumer_conf:  { label: 'Consumer Sent.', color: '#c084fc', bg: 'rgba(192,132,252,0.12)', dot: '#c084fc' },
+  housing_starts: { label: 'Housing Starts', color: '#fbbf24', bg: 'rgba(251,191,36,0.12)',  dot: '#fbbf24' },
+  jobless_claims: { label: 'Jobless Claims', color: '#60a5fa', bg: 'rgba(96,165,250,0.12)',  dot: '#60a5fa' },
+  fed_funds:      { label: 'Fed Funds Rate', color: '#f472b6', bg: 'rgba(244,114,182,0.12)', dot: '#f472b6' },
 };
 
 function urgencyColor(days: number) {

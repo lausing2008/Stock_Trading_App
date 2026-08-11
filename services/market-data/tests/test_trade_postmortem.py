@@ -135,15 +135,20 @@ _next_trade_id = [1]
 def _make_closed_trade(
     session, portfolio_id, stock_id=None, style="SWING",
     entry_price=100.0, exit_price=110.0, stop_loss=95.0, take_profit=120.0,
-    hold_days=15, exit_reason="target_reached", entry_days_ago=20,
+    hold_days=15, exit_reason="target_reached", entry_days_ago=20, current_stop=None,
 ):
+    # AUD262-POSTMORTEM-COMPARES-ORIGINAL-STOP: current_stop defaults to stop_loss (matching
+    # every pre-existing test in this file, none of which needed the two to diverge) — pass a
+    # distinct current_stop explicitly to exercise a real trailing-stop scenario.
+    if current_stop is None:
+        current_stop = stop_loss
     entry_time = datetime.now(timezone.utc) - timedelta(days=entry_days_ago)
     exit_time = entry_time + timedelta(days=hold_days)
     trade = PaperTrade(
         id=_next_trade_id[0], portfolio_id=portfolio_id, symbol="TEST", stock_id=stock_id,
         trading_style=style, entry_date=entry_time.date(), entry_time=entry_time,
         entry_price=entry_price, shares=10.0, stop_loss=stop_loss, take_profit=take_profit,
-        current_stop=stop_loss, stage="closed", hold_days=hold_days,
+        current_stop=current_stop, stage="closed", hold_days=hold_days,
         exit_time=exit_time, exit_price=exit_price, exit_reason=exit_reason,
         pnl=(exit_price - entry_price) * 10.0, pct_return=(exit_price / entry_price - 1) * 100,
     )
@@ -234,6 +239,26 @@ def test_exit_vs_stop_and_target_percentages_are_computed_correctly():
     result = get_trade_postmortem(trade.id, session=session)
     assert result["plan_adherence"]["exit_vs_stop_pct"] == 10.0  # (110-100)/100*100
     assert round(result["plan_adherence"]["exit_vs_target_pct"], 2) == round((110 - 120) / 120 * 100, 2)
+
+
+def test_exit_vs_stop_compares_against_the_trailing_stop_not_the_entry_stop():
+    """The exact regression this fix targets, using the tracker's own numbers: entry $100,
+    stop_loss $88 (immutable entry stop), a trail ratchets current_stop up to $113, exit at
+    $113.89. Comparing against the ORIGINAL stop_loss would report a wildly misleading
+    +29.4% ((113.89-88)/88*100) — implying the exit was premature — when the trade actually
+    exited within 0.8% of the stop that fired."""
+    session = _make_session()
+    portfolio = _make_portfolio(session)
+    trade = _make_closed_trade(
+        session, portfolio.id, entry_price=100.0, exit_price=113.89,
+        stop_loss=88.0, current_stop=113.0, take_profit=None,
+    )
+    result = get_trade_postmortem(trade.id, session=session)
+    assert result["plan_adherence"]["exit_vs_stop_pct"] == round((113.89 - 113.0) / 113.0 * 100, 2)
+    # Sanity check on the OLD, wrong comparison this fix replaces — confirms the two really do
+    # diverge in this fixture, not just that the new value happens to look reasonable.
+    old_wrong_value = round((113.89 - 88.0) / 88.0 * 100, 2)
+    assert result["plan_adherence"]["exit_vs_stop_pct"] != old_wrong_value
 
 
 def test_exit_vs_target_is_none_when_no_take_profit_was_set():
