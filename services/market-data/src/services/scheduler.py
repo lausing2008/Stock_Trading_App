@@ -2734,12 +2734,15 @@ def check_gamma_unwind_alerts() -> None:
                     expiries = t.options
                     if not expiries:
                         continue
-                    near_expiries = [
+                    near_expiries = sorted(
                         e for e in expiries
                         if 0 <= (date.fromisoformat(e) - today).days <= _GAMMA_UNWIND_MAX_DAYS_TO_EXPIRY
-                    ]
+                    )
                     if not near_expiries:
                         continue
+                    # AUD265-GAMMA-ASSUMES-SORTED-EXPIRIES: near_expiries[0] is meant to be "the
+                    # nearest expiry" — sorted() above makes that guarantee structural rather than
+                    # dependent on yfinance's own (undocumented) ordering of t.options.
                     exp = near_expiries[0]
                     chain = t.option_chain(exp)
                     calls = chain.calls.fillna(0)
@@ -2937,6 +2940,16 @@ def check_squeeze_watch_reverts() -> None:
         bearish-puts-watch cache) has dropped back below _GAMMA_UNWIND_MIN_OI_CONCENTRATION, OR
         it's no longer puts-dominant/no longer present in the current scan at all (the setup
         genuinely rolled off), OR price is back above the add-time price.
+
+    AUD265-REVERT-CHECKER-NO-MARKET-HOURS-GATE: this loop runs every 60s around the clock and
+    reads stockai:live_prices, which only refreshes during market hours — outside hours it
+    would evaluate price_recovered against a frozen last-known price. Gated per-watch (not a
+    whole-function skip) since watches can be a mix of US and HK symbols, matching
+    check_volume_anomalies()'s own established per-symbol pattern rather than
+    check_gamma_unwind_alerts()' whole-scan short-circuit. Filed LOW rather than matching
+    BUG-VOLANOM-STALEMARKET's severity because price_recovered compares against a FIXED
+    add-time price, not a rate-of-change — a frozen price cannot manufacture a false crossing,
+    only delay a genuine one until the next market-hours cycle.
     """
     try:
         acquired = _get_redis().set(_SQUEEZE_WATCH_LOCK_KEY, "1", nx=True, ex=_SQUEEZE_WATCH_LOCK_TTL)
@@ -2948,6 +2961,13 @@ def check_squeeze_watch_reverts() -> None:
     try:
         import json as _json
         from db import SqueezeWatch
+        from .paper_trading_engine import _is_market_hours
+
+        _us_market_open = _is_market_hours("US")
+        _hk_market_open = _is_market_hours("HK")
+        if not _us_market_open and not _hk_market_open:
+            _record_job_status("check_squeeze_watch_reverts", "ok", time.monotonic() - _t0)
+            return
 
         with SessionLocal() as session:
             watches = session.execute(
@@ -2984,6 +3004,11 @@ def check_squeeze_watch_reverts() -> None:
             reverted_count = 0
             for w in watches:
                 try:
+                    _is_hk_watch = w.symbol.upper().endswith(".HK")
+                    if _is_hk_watch and not _hk_market_open:
+                        continue
+                    if not _is_hk_watch and not _us_market_open:
+                        continue
                     live = _live_by_symbol.get(w.symbol)
                     current_price = live.get("price") if live else None
                     price_recovered = (

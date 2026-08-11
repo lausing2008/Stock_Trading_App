@@ -201,3 +201,49 @@ def test_job_is_registered_at_one_minute_interval():
     idx = _scheduler_source.index('id="squeeze_watch_revert_check"')
     preceding = _scheduler_source[max(0, idx - 300):idx]
     assert "minutes=1" in preceding
+
+
+# ── AUD265-REVERT-CHECKER-NO-MARKET-HOURS-GATE ──────────────────────────────────────────────
+
+def test_uses_the_same_is_market_hours_helper_as_the_volume_anomaly_scan():
+    """Must reuse _is_market_hours() (already established for check_volume_anomalies()'s own
+    BUG-VOLANOM-STALEMARKET fix) rather than hand-rolling a second market-hours check."""
+    body = _check_squeeze_watch_reverts_body()
+    assert "from .paper_trading_engine import _is_market_hours" in body
+    assert '_is_market_hours("US")' in body
+    assert '_is_market_hours("HK")' in body
+
+
+def test_whole_function_short_circuits_when_both_markets_are_closed():
+    body = _check_squeeze_watch_reverts_body()
+    assert "if not _us_market_open and not _hk_market_open:" in body
+
+
+def test_gate_runs_before_the_session_local_block_not_after():
+    """The whole-function short-circuit must happen before any DB work starts, matching
+    check_volume_anomalies()'s own established ordering — not as an afterthought once watches
+    have already been fetched."""
+    body = _check_squeeze_watch_reverts_body()
+    gate_idx = body.index("if not _us_market_open and not _hk_market_open:")
+    session_idx = body.index("with SessionLocal() as session:")
+    assert gate_idx < session_idx
+
+
+def test_per_watch_gate_skips_hk_symbols_when_hk_is_closed_even_if_us_is_open():
+    """Watches can be a mix of US and HK symbols in the SAME un-reverted set — a whole-function
+    skip alone would be wrong whenever exactly one market is open. Matches
+    check_volume_anomalies()'s own per-symbol .HK-suffix pattern exactly."""
+    body = _check_squeeze_watch_reverts_body()
+    assert '_is_hk_watch = w.symbol.upper().endswith(".HK")' in body
+    assert "if _is_hk_watch and not _hk_market_open:" in body
+    assert "if not _is_hk_watch and not _us_market_open:" in body
+
+
+def test_per_watch_gate_sits_inside_the_for_loop_before_any_price_lookup():
+    """The per-watch skip must run before live_by_symbol.get(w.symbol) is ever consulted — a
+    frozen/absent-for-this-market price must never reach the revert-decision logic at all."""
+    body = _check_squeeze_watch_reverts_body()
+    loop_idx = body.index("for w in watches:")
+    gate_idx = body.index('_is_hk_watch = w.symbol.upper().endswith(".HK")')
+    live_lookup_idx = body.index("live = _live_by_symbol.get(w.symbol)")
+    assert loop_idx < gate_idx < live_lookup_idx

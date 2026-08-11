@@ -68,11 +68,17 @@ def test_breakeven_check_still_runs_before_the_trailing_stop_check():
     assert be_idx < trailing_idx < stophit_idx
 
 
-def test_fill_price_branch_covers_both_stop_hit_and_trailing_stop():
-    """The stop-level fill-price logic (QW-7/RISK-2) must apply to trailing_stop exits too,
-    not just stop_hit — both are triggered by live_price <= stop, just at different
-    stop-vs-entry positions."""
-    assert 'fill_base = min(stop, live_price) if exit_reason in ("stop_hit", "trailing_stop") else live_price' in _engine_source
+def test_fill_price_uses_live_price_directly_for_every_exit_reason():
+    """AUD262-MIN-STOP-FILL-NOOP: the old `min(stop, live_price) if exit_reason in
+    ("stop_hit", "trailing_stop") else live_price` conditional was dead code — stop_hit/
+    breakeven_stop/trailing_stop are ONLY ever reached from the `elif live_price <= stop:`
+    branch, so live_price <= stop always held there and min() always equaled live_price. Fixed
+    by using live_price directly for every label (the real, single behavior the dead
+    conditional already produced), rather than leaving a branch that implies a stop-limit-vs-
+    market-fill distinction the code never actually implemented."""
+    assert 'exit_price = round(live_price * (1 - slippage), 4)' in _engine_source
+    assert "fill_base" not in _engine_source
+    assert 'if exit_reason in ("stop_hit", "trailing_stop")' not in _engine_source
 
 
 def test_heat_brake_query_still_filters_only_stop_hit_not_trailing_stop():

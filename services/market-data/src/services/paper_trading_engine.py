@@ -2637,14 +2637,18 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
 
         if exit_reason:
             # PT-B6: apply exit slippage (sells at a slightly lower price than quoted)
-            # RISK-2: stop-hit exits fill at stop level (not gap price) — simulates stop-limit semantics
+            # AUD262-MIN-STOP-FILL-NOOP: stop_hit/breakeven_stop/trailing_stop are ONLY ever
+            # reached from the `elif live_price <= stop:` branch above (see the exit-reason
+            # decision block preceding this one) — so at this point live_price <= stop always
+            # holds, and min(stop, live_price) always equals live_price. The comments this
+            # replaced (RISK-2/QW-7) described a stop-limit-vs-market-fill distinction — filling
+            # at the stop LEVEL on a clean breach vs. at the (worse) live/market price on a
+            # gap-through — that the code never actually implemented; every stop-breach exit
+            # fills at live_price regardless of label. Fixed by using live_price directly for
+            # every exit_reason, matching what the code already did, rather than leaving a
+            # conditional that describes logic that doesn't run.
             slippage = cfg.get("entry_slippage_pct", 0.001)
-            # QW-7: use min(stop, live_price) so gap-downs fill at market price, not stop price.
-            # AUD262-EXITREASON-CONFLATION-ROOT: trailing_stop gets the same stop-level fill
-            # semantics as stop_hit — both are triggered by live_price <= stop, just at
-            # different stop-vs-entry positions.
-            fill_base = min(stop, live_price) if exit_reason in ("stop_hit", "trailing_stop") else live_price
-            exit_price = round(fill_base * (1 - slippage), 4)
+            exit_price = round(live_price * (1 - slippage), 4)
             exit_commission = round(cfg.get("commission_per_share", 0.0) * trade.shares, 4)
             exit_value = round(exit_price * trade.shares, 2)
             pnl_dollar = round((exit_price - entry) * trade.shares, 2)

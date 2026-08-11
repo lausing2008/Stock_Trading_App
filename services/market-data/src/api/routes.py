@@ -2487,7 +2487,9 @@ def get_options_flow(symbol: str):
         import pandas as pd
 
         t = yf.Ticker(sym)
-        expiries = t.options
+        # AUD265-GAMMA-ASSUMES-SORTED-EXPIRIES: sorted() makes "nearest 4 expiries" structural
+        # rather than dependent on yfinance's own (undocumented) ordering of t.options.
+        expiries = sorted(t.options)
         if not expiries:
             result = {"symbol": sym, "available": False, "reason": "no_options_listed"}
             return result
@@ -2623,7 +2625,10 @@ def get_options_chain(symbol: str, expiry: str | None = None):
     sym = symbol.upper()
     try:
         t = yf.Ticker(sym)
-        expiries = t.options
+        # AUD265-GAMMA-ASSUMES-SORTED-EXPIRIES: sorted() makes "the nearest expiry" default
+        # structural rather than dependent on yfinance's own (undocumented) ordering of
+        # t.options.
+        expiries = sorted(t.options)
         if not expiries:
             return {"symbol": sym, "available": False, "reason": "no_options_listed"}
 

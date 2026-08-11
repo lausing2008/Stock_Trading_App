@@ -125,3 +125,28 @@ def test_volume_and_oi_are_plain_ints_not_floats():
     assert isinstance(row["volume"], int)
     assert row["oi"] == 500
     assert isinstance(row["oi"], int)
+
+
+# ── AUD265-GAMMA-ASSUMES-SORTED-EXPIRIES ────────────────────────────────────────────────────
+
+def test_get_options_chain_sorts_expiries_before_defaulting_to_the_nearest_one():
+    """get_options_chain()'s `expiry` param defaults to expiries[0] when omitted — that must be
+    the CHRONOLOGICALLY nearest expiry, not whatever yfinance's t.options happened to return
+    first (an undocumented implementation detail, not a contract)."""
+    start = _ROUTES_SOURCE.index("def get_options_chain(")
+    end = _ROUTES_SOURCE.index("\n@router.get", start + 1)
+    body = _ROUTES_SOURCE[start:end]
+    assert "expiries = sorted(t.options)" in body
+    # The default-to-first-expiry logic must still be present (this is a sort-before-index
+    # fix, not a removal of the "default to nearest" behavior).
+    assert "expiries[0]" in body
+
+
+def test_get_options_flow_sorts_expiries_before_taking_the_nearest_four():
+    """Same fix in the sibling GET /{symbol}/options-flow endpoint — expiries[:4] must be the
+    4 chronologically nearest, matching compute_options_flow()'s own identical fix."""
+    start = _ROUTES_SOURCE.index("def get_options_flow(")
+    end = _ROUTES_SOURCE.index("\n@router.get", start + 1)
+    body = _ROUTES_SOURCE[start:end]
+    assert "expiries = sorted(t.options)" in body
+    assert "expiries[:4]" in body

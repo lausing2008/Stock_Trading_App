@@ -170,3 +170,27 @@ def test_a_single_expiry_fetch_failure_does_not_abort_the_whole_computation():
     assert result is not None
     assert result.call_volume == 500
     assert result.put_volume == 100
+
+
+# ── AUD265-GAMMA-ASSUMES-SORTED-EXPIRIES ────────────────────────────────────────────────────
+
+def test_out_of_order_expiries_still_aggregate_the_nearest_4_not_whatever_order_yfinance_returned():
+    """t.options ordering is an undocumented yfinance implementation detail — if it were ever
+    NOT chronologically ascending, expiries[:4] on an unsorted list would silently aggregate
+    the wrong 4 dates (e.g. skip the true nearest expiry and include a far one instead). Feeds
+    5 expiries in a deliberately shuffled, non-ascending order; only the 4 CHRONOLOGICALLY
+    nearest should ever be fetched — the 5th (chronologically farthest) must never be touched."""
+    ticker = MagicMock()
+    # Deliberately out of order: nearest (08-01) is neither first nor last in this list.
+    ticker.options = ["2026-09-01", "2026-08-08", "2026-08-01", "2026-08-22", "2026-08-15"]
+    fetched_expiries = []
+
+    def _side_effect(exp):
+        fetched_expiries.append(exp)
+        return _make_chain([_row(100, 100, 1.0)], [_row(100, 100, 1.0)])
+
+    ticker.option_chain.side_effect = _side_effect
+    with patch("yfinance.Ticker", return_value=ticker):
+        compute_options_flow("XYZ")
+    assert sorted(fetched_expiries) == ["2026-08-01", "2026-08-08", "2026-08-15", "2026-08-22"]
+    assert "2026-09-01" not in fetched_expiries

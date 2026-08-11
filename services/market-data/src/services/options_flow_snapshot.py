@@ -62,7 +62,9 @@ def compute_options_flow(symbol: str) -> OptionsFlowResult | None:
         import yfinance as yf
 
         t = yf.Ticker(symbol)
-        expiries = t.options
+        # AUD265-GAMMA-ASSUMES-SORTED-EXPIRIES: sorted() makes "nearest 4 expiries" structural
+        # rather than dependent on yfinance's own (undocumented) ordering of t.options.
+        expiries = sorted(t.options)
         if not expiries:
             return None
 

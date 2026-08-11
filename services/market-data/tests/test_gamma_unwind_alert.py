@@ -152,3 +152,15 @@ def test_job_is_registered_at_a_multi_hour_interval_not_every_minute():
     preceding = _scheduler_source[max(0, idx - 300):idx]
     assert "hours=" in preceding
     assert "minutes=1" not in preceding
+
+
+# ── AUD265-GAMMA-ASSUMES-SORTED-EXPIRIES ────────────────────────────────────────────────────
+
+def test_near_expiries_is_explicitly_sorted_not_left_in_yfinance_order():
+    """near_expiries[0] is meant to be the NEAREST expiry — sorted() makes that guarantee
+    structural rather than dependent on yfinance's own (undocumented) ordering of t.options."""
+    body = _check_gamma_unwind_alerts_body()
+    assert "near_expiries = sorted(" in body
+    # The indexing itself must still be present (this is a sort-before-index fix, not a
+    # removal of the "take the first one" behavior).
+    assert "exp = near_expiries[0]" in body
