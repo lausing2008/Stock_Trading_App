@@ -373,7 +373,17 @@ def rolling_accuracy(
 
     Returns a time-series of {date, accuracy_30d, signal_count} for each day in
     the lookback period where at least `window` evaluated BUY signals exist.
-    Also returns a drift_warning flag if the latest window accuracy < 55%.
+
+    AUD261-DRIFT-ALARM-ALWAYS-RED: drift_warning used to fire on a fixed absolute latest_accuracy
+    < 55% threshold — but this system's real BUY win rate operates at ~34-41% (T232's own
+    established EV-hurdle-adjusted "win" definition is intentionally strict), so that threshold
+    was permanently unreachable and displayed a constant false alarm next to metrics that DO
+    clear their own (flattered) thresholds, training users to distrust the one honest indicator
+    on the page. Now relative to this series' OWN trailing baseline (the median of every OTHER
+    point in the series, i.e. everything except the single latest point being evaluated) — the
+    alarm fires only on a REAL additional degradation from where this system has actually been
+    operating, not against a number nobody currently clears. Falls back to the absolute 55%
+    floor only when there's no real baseline yet to compare against (fewer than 2 prior points).
     """
     import bisect
 
@@ -393,7 +403,7 @@ def rolling_accuracy(
     ).all()
 
     if not rows:
-        return {"window": window, "lookback_days": lookback_days, "series": [], "drift_warning": False, "latest_accuracy": None}
+        return {"window": window, "lookback_days": lookback_days, "series": [], "drift_warning": False, "latest_accuracy": None, "baseline_accuracy": None}
 
     stock_ids = list({sig.stock_id for sig, _ in rows})
     # Fetch prices from cutoff through today so we can compute 5-day forward exits.
@@ -444,7 +454,7 @@ def rolling_accuracy(
         evaluated.append((sig_date, correct))
 
     if not evaluated:
-        return {"window": window, "lookback_days": lookback_days, "series": [], "drift_warning": False, "latest_accuracy": None}
+        return {"window": window, "lookback_days": lookback_days, "series": [], "drift_warning": False, "latest_accuracy": None, "baseline_accuracy": None}
 
     # Compute rolling accuracy: for each unique date in the dataset, use the
     # trailing `window` calendar days of evaluated signals ending on that date.
@@ -459,7 +469,27 @@ def rolling_accuracy(
         series.append({"date": end_date.isoformat(), "accuracy": acc, "signal_count": len(window_sigs)})
 
     latest_accuracy = series[-1]["accuracy"] if series else None
-    drift_warning = latest_accuracy is not None and latest_accuracy < 55.0
+
+    # AUD261-DRIFT-ALARM-ALWAYS-RED: compare the latest point against the series' own trailing
+    # baseline (median of every prior point), not a fixed absolute number the system's real
+    # operating range never clears. A real, additional drop of _DRIFT_RELATIVE_DROP_PPT
+    # percentage points below that baseline is what genuinely means "something got worse
+    # recently" — the metric's own accuracy/hurdle math is unchanged, only the alarm threshold.
+    _DRIFT_RELATIVE_DROP_PPT = 10.0
+    _DRIFT_ABSOLUTE_FLOOR = 55.0
+    baseline_accuracy = None
+    if latest_accuracy is not None and len(series) >= 3:
+        prior_accs = sorted(p["accuracy"] for p in series[:-1])
+        n = len(prior_accs)
+        baseline_accuracy = (
+            prior_accs[n // 2] if n % 2 == 1
+            else round((prior_accs[n // 2 - 1] + prior_accs[n // 2]) / 2, 1)
+        )
+        drift_warning = latest_accuracy < baseline_accuracy - _DRIFT_RELATIVE_DROP_PPT
+    else:
+        # Not enough history yet for a real trailing baseline — fall back to the original
+        # absolute floor rather than never warning at all.
+        drift_warning = latest_accuracy is not None and latest_accuracy < _DRIFT_ABSOLUTE_FLOOR
 
     return {
         "window": window,
@@ -467,6 +497,7 @@ def rolling_accuracy(
         "series": series,
         "drift_warning": drift_warning,
         "latest_accuracy": latest_accuracy,
+        "baseline_accuracy": baseline_accuracy,
     }
 
 

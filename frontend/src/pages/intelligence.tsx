@@ -623,8 +623,11 @@ function ValuationTab() {
         </div>
         <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
           <div style={{ color: '#6b7280', fontSize: 12 }}>As of {latest.reading_date}</div>
-          {latest.stale && (
+          {latest.stale && latest.age_days > 45 && (
             <div style={{ color: '#f87171', fontSize: 12, fontWeight: 600, marginTop: 2 }}>⚠ Data may be stale ({latest.age_days}d old)</div>
+          )}
+          {latest.stale && latest.age_days <= 45 && (
+            <div style={{ color: '#f87171', fontSize: 12, fontWeight: 600, marginTop: 2 }}>⚠ Value unchanged for {latest.frozen_value_days}d — source may be frozen</div>
           )}
         </div>
       </div>

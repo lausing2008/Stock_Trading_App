@@ -157,8 +157,25 @@ def _upsert_reading(reading_date: date, cape_value: float) -> None:
         s.commit()
 
 
+_FROZEN_VALUE_STALE_DAYS = 45  # matches the original age_days threshold's own reasoning
+
+
 def get_latest_cape() -> dict | None:
-    """Return the most recent CAPE reading with its warning band, or None if never synced."""
+    """Return the most recent CAPE reading with its warning band, or None if never synced.
+
+    AUD264-CAPE-STALE-FLAG-UNREACHABLE: sync_cape_current()'s reading_date IS genuinely correct
+    for this feed — multpl.com's Atom feed is a real live-updated "current value" reading (its
+    own <content> block says "Current", stamped with a real intraday timestamp), and the value
+    itself really does fluctuate daily with the market (confirmed against real production data:
+    42.39/42.12/42.19/... across consecutive days). So age_days > 45 (a genuinely DEAD feed —
+    the daily sync job stopped running, or multpl stopped responding) can never fire as long as
+    the sync keeps succeeding, which is a real, distinct failure mode from age_days ever firing
+    on a healthy feed — but it leaves a genuinely frozen VALUE (multpl serving the same stale
+    number wrapped in a fresh-looking timestamp/date every day) with no detector at all. Added
+    a second, independent check: how many of the most recent readings share the identical
+    cape_value — a real value frozen for _FROZEN_VALUE_STALE_DAYS running is exactly the
+    "underlying feed died but still 200s" case the original fix intended to catch.
+    """
     with SessionLocal() as s:
         row = s.execute(
             select(CapeReading).order_by(CapeReading.reading_date.desc()).limit(1)
@@ -166,13 +183,29 @@ def get_latest_cape() -> dict | None:
         if row is None:
             return None
         age_days = (date.today() - row.reading_date).days
+
+        recent_rows = s.execute(
+            select(CapeReading)
+            .order_by(CapeReading.reading_date.desc())
+            .limit(_FROZEN_VALUE_STALE_DAYS)
+        ).scalars().all()
+        frozen_value_days = 0
+        for r in recent_rows:
+            if r.cape_value == row.cape_value:
+                frozen_value_days += 1
+            else:
+                break
+        value_frozen = frozen_value_days >= _FROZEN_VALUE_STALE_DAYS
+
         return {
             "reading_date": row.reading_date.isoformat(),
             "cape_value": row.cape_value,
             "band": cape_band(row.cape_value),
             "source": row.source,
             "age_days": age_days,
-            "stale": age_days > 45,  # monthly cadence + buffer; flagged rather than hidden
+            "frozen_value_days": frozen_value_days,
+            # monthly cadence + buffer for a dead feed, OR a value frozen despite fresh rows.
+            "stale": age_days > 45 or value_frozen,
         }
 
 

@@ -738,6 +738,9 @@ class PaperTrade(Base):
     entry_time: Mapped[datetime] = mapped_column(DateTime)
     entry_price: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
     shares: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+    # AUD262-ENTRY-EXIT-COMMISSION-EXCLUDED-FROM-PNL: entry commission was deducted from cash
+    # at open but never stored anywhere on the trade, so pnl couldn't reconcile to it at close.
+    entry_commission: Mapped[float | None] = mapped_column(Float, nullable=True)
     stop_loss: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))    # initial hard stop
     take_profit: Mapped[float | None] = mapped_column(Numeric(20, 6, asdecimal=False), nullable=True)
     current_stop: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))  # trails up

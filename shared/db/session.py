@@ -476,6 +476,14 @@ def _run_migrations() -> None:  # noqa: C901
             END $$;
         """))
 
+        # AUD262-ENTRY-EXIT-COMMISSION-EXCLUDED-FROM-PNL: entry commission was deducted from
+        # cash at open but never stored on the trade, so trade.pnl couldn't reconcile to it at
+        # close. Currently latent (commission_per_share defaults to 0.0) but corrupts every
+        # P&L metric the moment a real commission is configured.
+        conn.execute(text(
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS entry_commission FLOAT"
+        ))
+
 
 def _seed_admin() -> None:
     try:

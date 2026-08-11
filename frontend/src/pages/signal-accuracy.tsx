@@ -72,10 +72,11 @@ import { getSession } from '@/lib/auth';
 
 type RollingPoint = { date: string; accuracy: number; signal_count: number };
 
-function RollingAccuracyChart({ series, driftWarning, latestAccuracy, window: win }: {
+function RollingAccuracyChart({ series, driftWarning, latestAccuracy, baselineAccuracy, window: win }: {
   series: RollingPoint[];
   driftWarning: boolean;
   latestAccuracy: number | null;
+  baselineAccuracy: number | null;
   window: number;
 }) {
   if (series.length < 2) return null;
@@ -90,13 +91,18 @@ function RollingAccuracyChart({ series, driftWarning, latestAccuracy, window: wi
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
         <div>
           <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8' }}>Rolling {win}-day BUY Accuracy</div>
-          <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>Model drift monitor — each point = accuracy over trailing {win} days</div>
+          <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>
+            Relative drift monitor — flags a real drop from this system&apos;s own trailing baseline, not a fixed target
+          </div>
         </div>
         <div style={{ textAlign: 'right' }}>
           {latestAccuracy != null && (
-            <div style={{ fontSize: 14, fontWeight: 700, color: latestAccuracy >= 60 ? '#4ade80' : latestAccuracy >= 50 ? '#facc15' : '#f87171' }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: driftWarning ? '#f87171' : '#818cf8' }}>
               {latestAccuracy.toFixed(1)}% now
             </div>
+          )}
+          {baselineAccuracy != null && (
+            <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>vs. {baselineAccuracy.toFixed(1)}% baseline</div>
           )}
           {driftWarning && (
             <div style={{ fontSize: 10, color: '#f87171', fontWeight: 700, marginTop: 2 }}>⚠ DRIFT DETECTED</div>
@@ -107,18 +113,13 @@ function RollingAccuracyChart({ series, driftWarning, latestAccuracy, window: wi
       {/* Line chart — SVG polyline */}
       <div style={{ position: 'relative', height: h + 20 }}>
         <svg width="100%" height={h} style={{ overflow: 'visible' }}>
-          {/* 50% reference line */}
-          <line
-            x1="0" y1={`${((maxA - 50) / range) * h}`}
-            x2="100%" y2={`${((maxA - 50) / range) * h}`}
-            stroke="#334155" strokeWidth="1" strokeDasharray="4,3"
-          />
-          {/* 55% reference line */}
-          <line
-            x1="0" y1={`${((maxA - 55) / range) * h}`}
-            x2="100%" y2={`${((maxA - 55) / range) * h}`}
-            stroke="#475569" strokeWidth="1" strokeDasharray="2,4"
-          />
+          {baselineAccuracy != null && (
+            <line
+              x1="0" y1={`${((maxA - baselineAccuracy) / range) * h}`}
+              x2="100%" y2={`${((maxA - baselineAccuracy) / range) * h}`}
+              stroke="#475569" strokeWidth="1" strokeDasharray="2,4"
+            />
+          )}
           <polyline
             fill="none"
             stroke={driftWarning ? '#f87171' : '#818cf8'}
@@ -140,7 +141,9 @@ function RollingAccuracyChart({ series, driftWarning, latestAccuracy, window: wi
         </svg>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#334155', marginTop: 2 }}>
           <span>{series[0]?.date}</span>
-          <span style={{ fontSize: 10, color: '#475569' }}>— 50% random  ··· 55% target</span>
+          <span style={{ fontSize: 10, color: '#475569' }}>
+            {baselineAccuracy != null ? `··· ${baselineAccuracy.toFixed(1)}% trailing baseline` : ''}
+          </span>
           <span>{series[series.length - 1]?.date}</span>
         </div>
       </div>
@@ -1839,6 +1842,7 @@ export default function SignalAccuracyPage() {
         series={rollingData.series}
         driftWarning={rollingData.drift_warning}
         latestAccuracy={rollingData.latest_accuracy}
+        baselineAccuracy={rollingData.baseline_accuracy}
         window={rollingData.window}
       />
     </div>

@@ -271,7 +271,7 @@ export const api = {
   suppressedSignals: (style = 'SWING', market?: string) =>
     request<SuppressedSignalRow[]>(`/signals/suppressed?style=${style}${market ? `&market=${market}` : ''}`),
   rollingAccuracy: (window = 30, lookbackDays = 180) =>
-    request<{ window: number; lookback_days: number; series: { date: string; accuracy: number; signal_count: number }[]; drift_warning: boolean; latest_accuracy: number | null }>(`/signals/rolling_accuracy?window=${window}&lookback_days=${lookbackDays}`),
+    request<{ window: number; lookback_days: number; series: { date: string; accuracy: number; signal_count: number }[]; drift_warning: boolean; latest_accuracy: number | null; baseline_accuracy: number | null }>(`/signals/rolling_accuracy?window=${window}&lookback_days=${lookbackDays}`),
   walkForward: (testDays = 30, holdDays = 5, lookbackDays = 365) =>
     request<WalkForwardReport>(`/signals/walkforward?test_days=${testDays}&hold_days=${holdDays}&lookback_days=${lookbackDays}`),
   dataFreshness: () =>
@@ -2143,6 +2143,7 @@ export type CapeLatest = CapeReading & {
   band: string;
   source: string;
   age_days: number;
+  frozen_value_days: number;
   stale: boolean;
 };
 

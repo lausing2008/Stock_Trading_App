@@ -46,9 +46,13 @@ def test_writeback_uses_the_blended_total_pnl_dollar_not_unblended_pnl_dollar():
 
 
 def test_total_pnl_pct_and_total_pnl_dollar_are_computed_before_the_writeback():
-    """The blended values must already exist (via the pre-existing T232-PT6 computation)
-    at the point the writeback runs — this fix reuses them, it does not recompute them."""
-    assert "total_pnl_dollar = round((trade.realized_pnl or 0.0) + pnl_dollar, 2)" in _engine_source
+    """The blended values must already exist (via the pre-existing T232-PT6 computation, now
+    also including AUD262-ENTRY-EXIT-COMMISSION-EXCLUDED-FROM-PNL's commission subtraction) at
+    the point the writeback runs — this fix reuses them, it does not recompute them. The exact
+    formula's own commission terms are covered by test_entry_exit_commission_pnl.py — this test
+    only cares that total_pnl_dollar/total_pnl_pct are assigned (whatever the RHS is) strictly
+    before the writeback block runs."""
+    assert "total_pnl_dollar = round(" in _engine_source
     assert "total_pnl_pct = (total_pnl_dollar / _cost_basis) if _cost_basis else pnl_pct" in _engine_source
     total_pnl_idx = _engine_source.index("total_pnl_pct = (total_pnl_dollar / _cost_basis)")
     writeback_idx = _engine_source.index('# PT-J1: write actual trade result back to signal_outcomes')

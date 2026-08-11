@@ -2617,7 +2617,14 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             # the winner it actually was, not a ~$0/negative loser. pct_return is recomputed
             # against the ORIGINAL cost basis (entry_shares), not just the shares remaining
             # at close, since the partials already returned part of that capital.
-            total_pnl_dollar = round((trade.realized_pnl or 0.0) + pnl_dollar, 2)
+            # AUD262-ENTRY-EXIT-COMMISSION-EXCLUDED-FROM-PNL: entry_commission was a one-time
+            # cost charged on the full original position at entry (not per-tranche, unlike
+            # exit/partial commission above) — subtracted exactly once here, at final close,
+            # regardless of how many scale-outs happened in between. Scale-out partials already
+            # correctly fold their OWN commission into realized_pnl at the time they happen.
+            total_pnl_dollar = round(
+                (trade.realized_pnl or 0.0) + pnl_dollar - exit_commission - (trade.entry_commission or 0.0), 2
+            )
             _cost_basis = entry * (trade.entry_shares or trade.shares)
             total_pnl_pct = (total_pnl_dollar / _cost_basis) if _cost_basis else pnl_pct
             trade.stage               = "closed"
@@ -4983,6 +4990,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             stock_id              = stock.id,        # PT-H2: needed for double-top mid-trade detection
             shares                = shares,
             entry_shares          = shares,          # T232-PT6: snapshot before scale-outs shrink `shares`
+            entry_commission      = commission,      # AUD262: stored so exit-time pnl can reconcile to it
             stop_loss             = stop,
             take_profit           = take_profit,
             current_stop          = stop,
