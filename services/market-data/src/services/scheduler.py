@@ -6999,6 +6999,41 @@ _DQ_CHECKS: list[dict] = [
         "query": "SELECT MAX(reading_date) FROM cape_readings",
         "max_age_hours": 1080, "is_date": True,  # 45 days — matches valuation.py's own staleness flag
     },
+    # AUD266-ALERT-JOBS-LACK-STATUS-CONSEQUENCE-DQ: these 5 entries have no "query" at all —
+    # `source: "job_status"` routes them to the Redis scheduler:job:{job_name} liveness record
+    # (written by _record_job_status(), the same mechanism AUD266-FIVE-ALERT-JOBS-RECORD-NO-
+    # STATUS added to all 5) instead of a SQL query. This gives alert-liveness its own,
+    # SEPARATE detection surface (this framework's own dedicated email-alert path) distinct
+    # from admin-health.tsx's JS rendering of the identical underlying Redis facts — a bug
+    # specific to that page's own computation (or nobody ever opening it) no longer leaves
+    # a silent alert-system outage with zero alerting anywhere. All 5 jobs run on a 1-minute
+    # IntervalTrigger; 1h comfortably absorbs the rare lock-contention skip described in each
+    # function's own docstring while still catching a genuine multi-hour/full outage.
+    {
+        "name": "check_price_alerts", "description": "Price alert checker liveness (per-minute cron)",
+        "job_name": "check_price_alerts", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
+    {
+        "name": "check_signal_alerts", "description": "Signal alert checker liveness (per-minute cron)",
+        "job_name": "check_signal_alerts", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
+    {
+        "name": "check_earnings_reactions", "description": "Earnings-reaction alert checker liveness (per-minute cron)",
+        "job_name": "check_earnings_reactions", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
+    {
+        "name": "check_earnings_impact_alerts", "description": "Earnings-impact (LLM) alert checker liveness (per-minute cron)",
+        "job_name": "check_earnings_impact_alerts", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
+    {
+        "name": "check_macro_reaction_alerts", "description": "Macro-reaction alert checker liveness (per-minute cron)",
+        "job_name": "check_macro_reaction_alerts", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
 ]
 
 
@@ -7023,7 +7058,27 @@ def run_data_quality_checks() -> None:
         with SessionLocal() as session:
             for check in _DQ_CHECKS:
                 try:
-                    result = session.execute(text(check["query"])).scalar()
+                    # AUD266-ALERT-JOBS-LACK-STATUS-CONSEQUENCE-DQ: a "job_status" check has
+                    # no SQL query at all — it reads the job's own scheduler:job:{name}
+                    # Redis liveness record (written by _record_job_status(), the same
+                    # mechanism AUD266-FIVE-ALERT-JOBS-RECORD-NO-STATUS added to these 5 alert
+                    # functions) instead of querying a DB table. This is a genuinely SECOND
+                    # code path watching the SAME underlying fact admin-health.tsx's own
+                    # missingJobKeys/errorCount computation already watches — a bug specific
+                    # to that frontend JS logic (or to admin-health.tsx never being opened by
+                    # anyone) no longer leaves alert-liveness with zero alerting surface,
+                    # since this DQ check has its own independent email-alert path
+                    # (run_data_quality_checks()'s own `failing` -> send_data_quality_alert_
+                    # email flow) entirely separate from the health page's rendering.
+                    if check.get("source") == "job_status":
+                        _raw_status = redis_client.get(f"scheduler:job:{check['job_name']}")
+                        if _raw_status is None:
+                            result = None
+                        else:
+                            _status_payload = json.loads(_raw_status)
+                            result = datetime.fromisoformat(_status_payload["last_run"])
+                    else:
+                        result = session.execute(text(check["query"])).scalar()
                     # T242-DQ1: market-tagged checks (e.g. signals_us/signals_hk) are staleness
                     # windows sized for intraday gaps (30h) — a market closed for the weekend
                     # or a holiday goes 60+ hours without a fresh row through no fault of the

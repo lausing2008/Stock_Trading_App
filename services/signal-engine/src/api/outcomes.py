@@ -1769,6 +1769,12 @@ def outcomes_summary(
 
 
 _DECAY_DAYS = [1, 2, 3, 5, 7, 10, 15, 20, 30]
+# AUD261-ALPHADECAY-CHERRYPICKS-MAX: a candidate hold day needs at least this many resolved
+# outcomes to be trusted as "optimal" — matching information_coefficient()'s own per-month
+# floor of 5 a few lines below, not the much stricter 50-sample walk-forward floor
+# (_RETRO_MIN_SAMPLES) used for promoting a live threshold change, since this endpoint is a
+# read-only diagnostic curve, not a promotion gate.
+_ALPHA_DECAY_MIN_N = 5
 
 
 @router.get("/alpha_decay")
@@ -1854,8 +1860,14 @@ def alpha_decay(
     for d in _DECAY_DAYS:
         rets = sorted(day_returns[d])
         n = len(rets)
+        # AUD261-ALPHADECAY-CHERRYPICKS-MAX: a day with fewer than _ALPHA_DECAY_MIN_N
+        # resolved outcomes is not a trustworthy candidate for "optimal" — same min-sample
+        # discipline every calibration sweep in this codebase already enforces (e.g.
+        # information_coefficient()'s own `if len(pairs) < 5: continue` a few lines below).
+        # Its avg_return_pct/p25/p75 are still reported (so the curve itself stays complete
+        # for charting), just excluded from the `best` selection below via a new `eligible` flag.
         if n == 0:
-            curve.append({"day": d, "avg_return_pct": None, "p25": None, "p75": None, "n": 0})
+            curve.append({"day": d, "avg_return_pct": None, "p25": None, "p75": None, "n": 0, "eligible": False})
             continue
         avg = sum(rets) / n
         curve.append({
@@ -1864,17 +1876,22 @@ def alpha_decay(
             "p25": round(rets[max(0, int(n * 0.25) - 1)], 2),
             "p75": round(rets[min(n - 1, int(n * 0.75))], 2),
             "n": n,
+            "eligible": n >= _ALPHA_DECAY_MIN_N,
         })
 
-    best = max((c for c in curve if c["avg_return_pct"] is not None),
-               key=lambda c: c["avg_return_pct"], default=None)
+    best = max((c for c in curve if c["eligible"]), key=lambda c: c["avg_return_pct"], default=None)
+    # A "best" that is still negative means NO hold period in the curve was profitable — the
+    # least-negative day is not an optimum, it is the least-bad loser. Report that explicitly
+    # rather than letting optimal_hold_days/optimal_return_pct imply a real, profitable peak.
+    no_profitable_hold = best is not None and best["avg_return_pct"] <= 0
 
     return {
         "horizon": horizon.upper(),
         "signal_count": len(outcomes),
         "lookback_days": lookback_days,
-        "optimal_hold_days": best["day"] if best else None,
-        "optimal_return_pct": best["avg_return_pct"] if best else None,
+        "optimal_hold_days": None if no_profitable_hold else (best["day"] if best else None),
+        "optimal_return_pct": None if no_profitable_hold else (best["avg_return_pct"] if best else None),
+        "no_profitable_hold_period_found": no_profitable_hold,
         "curve": curve,
     }
 
@@ -1958,7 +1975,15 @@ def information_coefficient(
         "ic_std": round(ic_std, 4),
         "ic_ir": ic_ir,
         "total_periods": len(series),
-        "quality": "excellent" if ic_mean > 0.05 else "good" if ic_mean > 0.02 else "poor",
+        # AUD261-IC-QUALITY-NO-NEGATIVE-TIER: a negative IC means ranking by fused_prob
+        # produces WORSE returns than a random ranking would — an inverted, actively
+        # anti-predictive signal. That is a qualitatively different, more actionable finding
+        # than a merely weak positive IC, and must not render under the same "poor" label a
+        # near-zero-but-positive IC gets.
+        "quality": ("excellent" if ic_mean > 0.05 else
+                    "good" if ic_mean > 0.02 else
+                    "poor" if ic_mean >= 0 else
+                    "inverted"),
     }
 
 
