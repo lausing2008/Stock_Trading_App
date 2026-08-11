@@ -119,3 +119,54 @@ def test_aget_regime_and_get_regime_share_the_same_cache():
 
     assert regime.get_regime("US")["state"] == "choppy"
     assert asyncio.run(regime.aget_regime("US"))["state"] == "choppy"
+
+
+# ── AUD264-REGIME-FAILURE-DEFAULTS-DISAGREE ────────────────────────────────────────────────
+# _NEUTRAL used to be the MOST PERMISSIVE regime state ("neutral" — full size, no gate),
+# returned exactly when this service has lost visibility into market conditions (no cache and
+# the fetch to market-data itself failed). market-data's own get_last_regime()/
+# get_last_hk_regime() default to "choppy" (conservative) on the same failure mode — matched
+# here instead of disagreeing with the source of truth.
+
+def test_get_cached_defaults_to_choppy_not_neutral_when_no_cache_and_fetch_fails(monkeypatch):
+    _reset_caches()
+    monkeypatch.setattr(
+        regime, "_fetch_from_market_data",
+        lambda market: (_ for _ in ()).throw(RuntimeError("market-data unreachable")),
+    )
+    result = regime._get_cached("US")
+    assert result["state"] == "choppy"
+    assert result["state"] != "neutral"
+
+
+def test_get_cached_falls_back_to_the_stale_cache_before_the_conservative_default(monkeypatch):
+    """A stale-but-real prior reading is still preferred over the conservative default — the
+    conservative default is the last resort, only when there is truly nothing to fall back on."""
+    _reset_caches()
+    regime._US_CACHE = {"state": "bull", "vix": 14.0}
+    regime._US_TS = 0.0  # stale (TTL expired), but still a real prior reading
+    monkeypatch.setattr(
+        regime, "_fetch_from_market_data",
+        lambda market: (_ for _ in ()).throw(RuntimeError("market-data unreachable")),
+    )
+    result = regime._get_cached("US")
+    assert result["state"] == "bull"
+
+
+def test_get_cached_still_returns_a_real_fresh_fetch_when_the_fetch_succeeds(monkeypatch):
+    """Regression guard: the fix only changes the FAILURE path — a successful fetch must
+    return its own real result unchanged."""
+    _reset_caches()
+    monkeypatch.setattr(regime, "_fetch_from_market_data", lambda market: {"state": "risk_off", "vix": 32.0})
+    result = regime._get_cached("US")
+    assert result["state"] == "risk_off"
+
+
+def test_get_cached_defaults_to_choppy_for_hk_too(monkeypatch):
+    _reset_caches()
+    monkeypatch.setattr(
+        regime, "_fetch_from_market_data",
+        lambda market: (_ for _ in ()).throw(RuntimeError("market-data unreachable")),
+    )
+    result = regime._get_cached("HK")
+    assert result["state"] == "choppy"

@@ -42,7 +42,11 @@ _US_TS: float = 0.0
 _HK_CACHE: dict = {}
 _HK_TS: float = 0.0
 
-_NEUTRAL = {"state": "neutral", "vix": None, "notes": ["regime unavailable"]}
+# AUD264-REGIME-FAILURE-DEFAULTS-DISAGREE: "neutral" was the MOST PERMISSIVE fallback (full
+# size, no gate) — exactly when this service has lost visibility into market conditions.
+# market-data's own get_last_regime()/get_last_hk_regime() default to "choppy" (conservative)
+# on the same failure mode — matched here instead of disagreeing with the source of truth.
+_NEUTRAL = {"state": "choppy", "vix": None, "notes": ["regime unavailable — defaulting to conservative choppy state"]}
 
 
 def get_regime(market: str = "US") -> dict:

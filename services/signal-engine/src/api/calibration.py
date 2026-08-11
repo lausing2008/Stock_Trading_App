@@ -1854,6 +1854,14 @@ def tune_style_profiles(
     Run weekly (Sunday) alongside TA and conviction weight calibration.
     """
     import statistics as _stats
+    from ..generators.signals import _STYLE_PROFILES
+
+    # AUD263-STYLEPROFILES-SUPERSET-BASELINE: the baseline must be the CURRENT LIVE cap's own
+    # filtered subset (tune_strategy's own established pattern, :2328), not every validation
+    # row unfiltered — see the fix below for the full reasoning.
+    CURRENT_ML_CAP: dict[str, float] = {
+        h: _STYLE_PROFILES[h]["ml_weight_cap"] for h in ("SHORT", "SWING", "LONG", "GROWTH")
+    }
 
     cutoff = date.today() - timedelta(days=days)
     outcomes = session.execute(
@@ -1941,7 +1949,16 @@ def tune_style_profiles(
 
         if best_ml_cap is not None:
             val_sub = [o for o, r in val_sr if r.get("ml_weight", 0) <= best_ml_cap + 0.05]
-            baseline_sub = [o for o, r in val_sr]  # uncapped baseline: every validation outcome
+            # AUD263-STYLEPROFILES-SUPERSET-BASELINE: the baseline used to be EVERY validation
+            # outcome, unfiltered — a strict SUPERSET of val_sub (which is always a subset of
+            # the same rows, filtered tighter). "Does removing some rows raise the mean" is
+            # close to a coin flip whenever the excluded high-ml_weight rows happen to have
+            # below-average returns in that window, so the candidate beat its own superset by
+            # chance on a regular basis, with no real edge required. Now filtered by the
+            # CURRENT LIVE cap instead (tune_strategy's own already-correct pattern, :2328) —
+            # a real, comparably-sized subset the candidate must genuinely beat, not something
+            # it structurally contains.
+            baseline_sub = [o for o, r in val_sr if r.get("ml_weight", 0) <= CURRENT_ML_CAP[style] + 0.05]
             val_result = _ev_at(val_sub)
             baseline_result = _ev_at(baseline_sub)
             _ml_promoted = bool(
@@ -1960,7 +1977,7 @@ def tune_style_profiles(
                                 "train_best_cap": best_ml_cap})
             _record_tune_history(
                 session, _run_id, "gate_threshold", "ml_weight_cap", style, "ALL",
-                old_value={}, new_value={"ml_weight_cap": best_ml_cap},
+                old_value={"ml_weight_cap": CURRENT_ML_CAP[style]}, new_value={"ml_weight_cap": best_ml_cap},
                 train_window=_train_window, validation_window=_val_window,
                 train_ev_pct=round(best_ml_ev, 2), validation_ev_pct=round(val_result[0], 2) if val_result else None,
                 baseline_validation_ev_pct=round(baseline_result[0], 2) if baseline_result else None,

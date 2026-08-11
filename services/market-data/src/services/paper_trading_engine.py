@@ -998,6 +998,13 @@ def get_last_regime() -> dict:
 
     If the cache is empty (e.g. after a container restart before any paper trading step),
     performs a fresh fetch so callers like the morning digest always get real data.
+
+    AUD264-REGIME-FAILURE-DEFAULTS-DISAGREE: the lazy-fetch failure path used to return a bare
+    {} — every consumer resolves an empty/missing "state" key via .get("state", "neutral"),
+    the MOST PERMISSIVE regime (full size, no gate). A failure here means this service has lost
+    visibility into market conditions, which should loosen nothing — matches _fetch_market_regime's
+    own internal policy of defaulting to "choppy" (conservative) on an ambiguous/failed
+    classification, not "neutral".
     """
     if _regime_cache:
         return dict(_regime_cache)
@@ -1005,7 +1012,7 @@ def get_last_regime() -> dict:
     try:
         return _fetch_market_regime(_DEFAULT_CONFIG)
     except Exception:
-        return {}
+        return {"state": "choppy", "notes": ["regime fetch failed — defaulting to conservative choppy state"]}
 
 
 def _fetch_market_regime(cfg: dict) -> dict:
@@ -1520,13 +1527,18 @@ def get_last_hk_regime() -> dict:
     Mirrors get_last_regime() for the US side. T232-DL-REGIME5X: exposed via
     GET /stocks/regime?market=HK so decision-engine and signal-engine can call this single
     implementation over HTTP instead of maintaining their own independent classifiers.
+
+    AUD264-REGIME-FAILURE-DEFAULTS-DISAGREE: mirrors get_last_regime()'s own fix — a bare {}
+    resolves to the most permissive "neutral" state via every consumer's own .get("state",
+    "neutral") fallback, exactly when this service has lost visibility into HK market
+    conditions. Defaults to conservative "choppy" instead, matching the US side.
     """
     if _hk_regime_cache:
         return dict(_hk_regime_cache)
     try:
         return _fetch_hk_market_regime(_DEFAULT_CONFIG)
     except Exception:
-        return {}
+        return {"state": "choppy", "notes": ["regime fetch failed — defaulting to conservative choppy state"]}
 
 
 # ── Live price fetch ──────────────────────────────────────────────────────────

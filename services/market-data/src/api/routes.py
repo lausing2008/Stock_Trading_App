@@ -2011,7 +2011,13 @@ def short_squeeze(
     # not a DB row — ISO-format string comparison is lexicographically equivalent to date
     # comparison for same-length YYYY-MM-DD strings.
     _stale_cutoff_str = (_sdate.today() - _stimedelta(days=30)).isoformat()
-    stocks = session.execute(select(Stock).where(Stock.active.is_(True))).scalars().all()
+    # AUD265-SQUEEZE-SCREENER-NO-DELISTED-FILTER: an 11th instance of BUG-DELISTED-GENERATION-
+    # BLIND — Stock.active.is_(True) alone does NOT exclude a confirmed delisting (a delisted
+    # stock stays active=True forever), and this screener sorts by short_percent_of_float
+    # descending, so a delisted heavily-shorted name stays pinned at the TOP indefinitely.
+    stocks = session.execute(
+        select(Stock).where(Stock.active.is_(True), Stock.delisted.is_(False))
+    ).scalars().all()
     stock_map = {s.symbol: s for s in stocks}
     r = _get_redis()
 
