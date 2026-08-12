@@ -83,7 +83,7 @@ function FactorsGrid({ factors }: { factors: DecisionFactors }) {
   return (
     <div>
       <div style={{ fontSize: 12, fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Factors</div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+      <div className="decide-factors-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
         {rows.map(([label, val]) => (
           <div key={label} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 10px', background: '#0f172a', borderRadius: 5 }}>
             <span style={{ fontSize: 12, color: '#64748b' }}>{label}</span>
@@ -125,7 +125,7 @@ function PositionCard({ pos }: { pos: PositionPlan }) {
       <div style={{ fontSize: 11, color: '#f97316', marginBottom: 10 }}>
         Illustrative preview only — the paper trading engine sizes real entries independently and may size this trade differently or not take it at all.
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+      <div className="decide-position-plan-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
         {[
           ['Shares', pos.shares],
           ['Size %', `${(pos.size_pct * 100).toFixed(1)}%`],
@@ -311,7 +311,7 @@ export default function DecidePage() {
               </div>
 
               {/* Two-column layout: breakdown + factors */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+              <div className="decide-breakdown-factors-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                 <div style={{ padding: 16, background: '#0f172a', borderRadius: 10, border: '1px solid #1e293b' }}>
                   <BreakdownTable items={result.score_breakdown} />
                 </div>

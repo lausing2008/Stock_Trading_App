@@ -87,7 +87,7 @@ function RegimeCard({ market, data, loading }: { market: string; data: RegimeSta
 
       {market === 'US' && data && (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 12 }}>
+          <div className="regime-stat-pill-grid-3" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 12 }}>
             <StatPill label="VIX" value={fmt(data.vix, 2)} color={
               data.vix && data.vix >= 30 ? '#ef4444' : data.vix && data.vix >= 25 ? '#f97316' : '#22c55e'
             } />
@@ -101,7 +101,7 @@ function RegimeCard({ market, data, loading }: { market: string; data: RegimeSta
             } />
             <StatPill label="QQQ" value={fmt(data.qqq_price, 2, '$')} />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 12 }}>
+          <div className="regime-stat-pill-grid-3" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 12 }}>
             <StatPill label="SPY EMA20" value={fmt(data.spy_ema20, 2, '$')} color={
               data.spy_price && data.spy_ema20 ? (data.spy_price > data.spy_ema20 ? '#22c55e' : '#ef4444') : '#94a3b8'
             } />
@@ -112,7 +112,7 @@ function RegimeCard({ market, data, loading }: { market: string; data: RegimeSta
               data.spy_price && data.spy_ema200 ? (data.spy_price > data.spy_ema200 ? '#22c55e' : '#ef4444') : '#94a3b8'
             } />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 12 }}>
+          <div className="regime-stat-pill-grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 12 }}>
             <StatPill label="VIX Term Inverted" value={data.vix_term_inverted ? 'YES (stress signal)' : 'No'} color={data.vix_term_inverted ? '#ef4444' : '#22c55e'} />
             <StatPill label="Breadth (IWM+MDY)" value={data.breadth_weak ? 'Weak — both below 200EMA' : `Size mult ${data.breadth_size_mult.toFixed(2)}×`} color={data.breadth_weak ? '#ef4444' : '#22c55e'} />
           </div>
@@ -120,7 +120,7 @@ function RegimeCard({ market, data, loading }: { market: string; data: RegimeSta
       )}
 
       {market === 'HK' && data && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6, marginBottom: 12 }}>
+        <div className="regime-hk-stat-pill-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6, marginBottom: 12 }}>
           <StatPill label="HSI" value={fmt(data.hsi_price, 0)} />
           <StatPill label="HSI SMA50" value={fmt(data.hsi_ema50, 0)} color={
             data.hsi_price && data.hsi_ema50 ? (data.hsi_price > data.hsi_ema50 ? '#22c55e' : '#ef4444') : '#94a3b8'
@@ -189,25 +189,27 @@ export default function RegimePage() {
           {/* Regime reference table */}
           <div style={{ marginTop: 24, padding: 20, background: '#0f172a', borderRadius: 12, border: '1px solid #1e293b' }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>Regime Reference</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '100px 80px 120px 1fr', gap: '8px 16px', fontSize: 12 }}>
-              <span style={{ color: '#475569', fontWeight: 600 }}>Regime</span>
-              <span style={{ color: '#475569', fontWeight: 600 }}>Min Score</span>
-              <span style={{ color: '#475569', fontWeight: 600 }}>Kelly Mult</span>
-              <span style={{ color: '#475569', fontWeight: 600 }}>Decision</span>
-              {[
-                ['bull',     '3',   '1.00×', 'Full entries allowed'],
-                ['neutral',  '3',   '1.00×', 'Standard entries'],
-                ['choppy',   '4',   '0.75×', 'Raised threshold — only high-conviction entries'],
-                ['risk_off', '5',   '0.50×', 'Very high bar — most candidates skipped'],
-                ['bear',     '∞',   '0.00×', 'All new entries blocked'],
-              ].map(([regime, ms, km, desc]) => (
-                <>
-                  <span key={`r${regime}`} style={{ color: REGIME_COLOR[regime], fontWeight: 700 }}>{REGIME_LABEL[regime]}</span>
-                  <span key={`ms${regime}`} style={{ color: '#e2e8f0' }}>{ms}</span>
-                  <span key={`km${regime}`} style={{ color: regime === 'bear' ? '#ef4444' : '#94a3b8' }}>{km}</span>
-                  <span key={`d${regime}`} style={{ color: '#64748b' }}>{desc}</span>
-                </>
-              ))}
+            <div className="regime-reference-table-scroll">
+              <div style={{ display: 'grid', gridTemplateColumns: '100px 80px 120px 1fr', gap: '8px 16px', fontSize: 12 }}>
+                <span style={{ color: '#475569', fontWeight: 600 }}>Regime</span>
+                <span style={{ color: '#475569', fontWeight: 600 }}>Min Score</span>
+                <span style={{ color: '#475569', fontWeight: 600 }}>Kelly Mult</span>
+                <span style={{ color: '#475569', fontWeight: 600 }}>Decision</span>
+                {[
+                  ['bull',     '3',   '1.00×', 'Full entries allowed'],
+                  ['neutral',  '3',   '1.00×', 'Standard entries'],
+                  ['choppy',   '4',   '0.75×', 'Raised threshold — only high-conviction entries'],
+                  ['risk_off', '5',   '0.50×', 'Very high bar — most candidates skipped'],
+                  ['bear',     '∞',   '0.00×', 'All new entries blocked'],
+                ].map(([regime, ms, km, desc]) => (
+                  <>
+                    <span key={`r${regime}`} style={{ color: REGIME_COLOR[regime], fontWeight: 700 }}>{REGIME_LABEL[regime]}</span>
+                    <span key={`ms${regime}`} style={{ color: '#e2e8f0' }}>{ms}</span>
+                    <span key={`km${regime}`} style={{ color: regime === 'bear' ? '#ef4444' : '#94a3b8' }}>{km}</span>
+                    <span key={`d${regime}`} style={{ color: '#64748b' }}>{desc}</span>
+                  </>
+                ))}
+              </div>
             </div>
           </div>
 

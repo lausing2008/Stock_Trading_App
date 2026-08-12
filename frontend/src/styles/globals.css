@@ -182,6 +182,40 @@ a { color: inherit; text-decoration: none; }
   }
 }
 
+/* T230-UX-MOBILE-RESPONSIVE (decide.tsx pass): the score-Factors 2-column list, the 4-up
+   Position Plan stat row, and the score-breakdown + factors 2-column row all squeeze on
+   mobile the same way every prior form/panel fix in this series did. */
+.decide-factors-grid { grid-template-columns: 1fr 1fr; }
+.decide-position-plan-grid { grid-template-columns: repeat(4, 1fr); }
+.decide-breakdown-factors-grid { grid-template-columns: 1fr 1fr; }
+@media (max-width: 767px) {
+  .decide-factors-grid,
+  .decide-position-plan-grid,
+  .decide-breakdown-factors-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* T230-UX-MOBILE-RESPONSIVE (regime.tsx pass): the US stat-pill rows (2 identical
+   repeat(3,1fr) rows + 1 1fr-1fr stress-signal row) and the HK stat-pill row (1fr 1fr 1fr)
+   all squeeze on mobile the same way every prior stat-pill/panel fix in this series did.
+   The regime reference table (5 data rows, 4 fixed-width columns) is a genuine data table,
+   not a panel — collapsing it to 1fr would destroy column alignment, so it gets the
+   established .{page}-table-scroll horizontal-scroll treatment instead, matching
+   .positions-table-scroll/.alerts-table-scroll/.journal-table-scroll exactly. */
+.regime-stat-pill-grid-3 { grid-template-columns: repeat(3, 1fr); }
+.regime-stat-pill-grid-2 { grid-template-columns: 1fr 1fr; }
+.regime-hk-stat-pill-grid { grid-template-columns: 1fr 1fr 1fr; }
+@media (max-width: 767px) {
+  .regime-stat-pill-grid-3,
+  .regime-stat-pill-grid-2,
+  .regime-hk-stat-pill-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+.regime-reference-table-scroll { overflow-x: auto; }
+.regime-reference-table-scroll > * { min-width: 460px; }
+
 .fixed { position: fixed; }
 .absolute { position: absolute; }
 .relative { position: relative; }
