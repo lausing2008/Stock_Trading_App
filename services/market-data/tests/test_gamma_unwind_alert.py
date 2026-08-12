@@ -165,6 +165,47 @@ def test_requires_concentration_threshold_on_either_side():
     assert 'dominant_side = "puts"' in body
 
 
+# ── AUD265-GAMMA-OI-THRESHOLD-ASYMMETRIC ────────────────────────────────────────────────────
+# Live-calibrated 2026-08-13 against this job's own exact methodology (5% near-money strike
+# band, nearest expiry <=5 days) across the real bounded symbol set: n=30, call_share median
+# (p50) = 0.676, p80 = 0.854 — the old shared 55% threshold cleared on 70% of scanned symbols
+# from the calls side (barely selective) vs. only 20% from the puts side (genuinely selective).
+# Calls now requires 0.85 (the measured ~80th percentile); puts is unchanged at 0.55.
+
+def test_calls_branch_uses_the_raised_085_threshold_not_the_puts_055_threshold():
+    """The calls-dominant comparison must reference the NEW, higher constant — not the
+    original 0.55 constant the puts branch still correctly uses."""
+    body = _check_gamma_unwind_alerts_body()
+    calls_line_idx = body.index('dominant_side = "calls"')
+    calls_line_start = body.rindex("if call_share", 0, calls_line_idx)
+    calls_condition = body[calls_line_start:calls_line_idx]
+    assert "_GAMMA_UNWIND_MIN_CALLS_CONCENTRATION" in calls_condition
+    assert "_GAMMA_UNWIND_MIN_OI_CONCENTRATION" not in calls_condition
+
+
+def test_puts_branch_still_uses_the_original_055_threshold():
+    """Regression guard — the puts side was already genuinely selective and must NOT have
+    been touched by this fix."""
+    body = _check_gamma_unwind_alerts_body()
+    puts_line_idx = body.index('dominant_side = "puts"')
+    puts_line_start = body.rindex("elif (1 - call_share)", 0, puts_line_idx)
+    puts_condition = body[puts_line_start:puts_line_idx]
+    assert "_GAMMA_UNWIND_MIN_OI_CONCENTRATION" in puts_condition
+    assert "_GAMMA_UNWIND_MIN_CALLS_CONCENTRATION" not in puts_condition
+
+
+def test_calls_threshold_constant_is_set_to_the_measured_085_not_the_old_055():
+    start = _scheduler_source.index("_GAMMA_UNWIND_MIN_CALLS_CONCENTRATION = ")
+    line_end = _scheduler_source.index("\n", start)
+    assert "0.85" in _scheduler_source[start:line_end]
+
+
+def test_puts_threshold_constant_is_unchanged_at_055():
+    start = _scheduler_source.index("_GAMMA_UNWIND_MIN_OI_CONCENTRATION = ")
+    line_end = _scheduler_source.index("\n", start)
+    assert "0.55" in _scheduler_source[start:line_end]
+
+
 def test_has_a_per_symbol_rate_limit_sleep():
     body = _check_gamma_unwind_alerts_body()
     assert "time.sleep(" in body

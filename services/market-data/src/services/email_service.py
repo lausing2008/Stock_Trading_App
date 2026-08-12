@@ -1217,15 +1217,31 @@ def send_volume_anomaly_email(to: str, alerts: list[dict]) -> bool:
     return send_email(to, subject, body_html, body_text)
 
 
+# T270-SQUEEZE-DAYSTOCOVER-ALERT: display-only label matching scheduler.py's own
+# _SQUEEZE_CRITICAL_DAYS_TO_COVER=2.0 constant (this file has no import path to that module,
+# so the value is restated here for the email copy — the actual gating decision is made once,
+# upstream in scheduler.py, before a candidate ever reaches this function).
+_SQUEEZE_CRITICAL_DAYS_TO_COVER_LABEL = "2.0"
+
+
 def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
     """One email per recipient listing every symbol that NEWLY crossed into "shorts likely
     getting squeezed RIGHT NOW" territory this cycle: short_percent_of_float >= 15 AND the
     stock is already up >=3% intraday. Each dict: {symbol, short_percent_of_float, change_pct,
-    price, game_plan (optional)}. Explicitly framed as a BUY-direction signal — the thesis is
-    that heavily-shorted sellers are being forced to cover into a rise already in progress,
-    adding buying pressure on top of whatever started the move. Reports the MEASURED setup,
-    never a claim that the squeeze will keep going — that depends on the move continuing,
-    which this cannot predict.
+    price, short_ratio (optional), days_to_cover_critical (optional), game_plan (optional)}.
+    Explicitly framed as a BUY-direction signal — the thesis is that heavily-shorted sellers
+    are being forced to cover into a rise already in progress, adding buying pressure on top
+    of whatever started the move. Reports the MEASURED setup, never a claim that the squeeze
+    will keep going — that depends on the move continuing, which this cannot predict.
+
+    T270-SQUEEZE-DAYSTOCOVER-ALERT: days_to_cover_critical (short_ratio <= 2.0, the ~25th
+    percentile of real candidates that already clear the float-short bar — see the constant's
+    own comment in scheduler.py) is an ESCALATION on top of the existing thesis, not a second,
+    separate signal — a critical candidate means shorts don't just have a lot of stock
+    borrowed, they can't quietly unwind that position over a handful of normal trading days
+    even if they wanted to, which is the concrete mechanism behind "shorts may be forced to
+    cover." The subject line and each critical row are visually distinguished; the underlying
+    thesis and disclaimer are unchanged.
 
     game_plan (when present, from scheduler.py's _squeeze_game_plan()) reuses the SAME
     entry/stop/target math the real paper-trading engine computes for every actual trade —
@@ -1235,7 +1251,14 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
     that section for that stock rather than showing a placeholder.
     """
     n = len(candidates)
-    subject = f"🚀 Short Squeeze Alert (BUY signal) — {n} stock{'s' if n != 1 else ''} shorts may be covering"
+    n_critical = sum(1 for c in candidates if c.get("days_to_cover_critical"))
+    if n_critical:
+        subject = (
+            f"🚨 Short Squeeze Alert (BUY signal) — {n_critical} CRITICAL, {n} total "
+            f"stock{'s' if n != 1 else ''} shorts may be covering"
+        )
+    else:
+        subject = f"🚀 Short Squeeze Alert (BUY signal) — {n} stock{'s' if n != 1 else ''} shorts may be covering"
 
     rows_html = ""
     rows_text = ""
@@ -1251,6 +1274,13 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
         si_str = f" (as of {si_date})" if si_date else ""
         chg_str = f"+{chg:.2f}%" if chg is not None else "—"
         price_str = f"${price:.2f}" if price else "—"
+        short_ratio = c.get("short_ratio")
+        is_critical = bool(c.get("days_to_cover_critical"))
+        dtc_str = ""
+        if short_ratio is not None:
+            dtc_str = f' · <strong style="color:{"#dc2626" if is_critical else "#64748b"}">{short_ratio:.1f}d to cover</strong>'
+            if is_critical:
+                dtc_str += " 🚨"
         plan = c.get("game_plan")
         plan_html = ""
         plan_text = ""
@@ -1265,26 +1295,37 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
                 f"    Game plan (SWING): entry ~${plan['entry1']:.2f}, "
                 f"stop ${plan['stop']:.2f}, target ${plan['take_profit']:.2f}\n"
             )
+        row_border = "border:1px solid rgba(220,38,38,0.3);border-radius:8px;padding:10px 12px;margin-bottom:6px" if is_critical else "padding:10px 0;border-bottom:1px solid #f1f5f9"
         rows_html += (
-            f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
+            f'<div style="{row_border}">'
             f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
             f'<strong style="font-size:14px">{sym}</strong>'
             f'<span style="font-size:13px;color:#22c55e;font-weight:700">{chg_str}</span>'
             f'</div>'
-            f'<div style="font-size:12px;color:#64748b;margin-top:2px">{price_str} · <strong style="color:#ef4444">{spf:.1f}%</strong> of float short{si_str}</div>'
+            f'<div style="font-size:12px;color:#64748b;margin-top:2px">{price_str} · <strong style="color:#ef4444">{spf:.1f}%</strong> of float short{si_str}{dtc_str}</div>'
             f'{plan_html}'
             f'</div>'
         )
-        rows_text += f"  {sym}: {price_str}, {chg_str} today, {spf:.1f}% of float short{si_str}\n" + plan_text
+        dtc_text = f", {short_ratio:.1f}d to cover" + (" [CRITICAL]" if is_critical else "") if short_ratio is not None else ""
+        rows_text += f"  {sym}: {price_str}, {chg_str} today, {spf:.1f}% of float short{si_str}{dtc_text}\n" + plan_text
 
+    critical_note = (
+        f'<p style="font-size:12px;color:#dc2626;font-weight:600;margin-top:-4px">'
+        f'🚨 {n_critical} of these would take {_SQUEEZE_CRITICAL_DAYS_TO_COVER_LABEL} or fewer days of average volume just to close out their short position — a critically thin exit.'
+        f'</p>' if n_critical else ""
+    )
     body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
   <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
     <h2 style="margin-top:0;color:#ef4444">🚀 Short Squeeze Alert — BUY-direction signal</h2>
     <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} heavily-shorted stock{'s' if n != 1 else ''} just started moving up hard, right now.</p>
+    {critical_note}
     <div style="margin-top:12px">{rows_html}</div>
     <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
       Thesis: high short interest + a real rally already in progress means shorts may be
-      forced to cover, adding buying pressure on top of the move. This reports a MEASURED
+      forced to cover, adding buying pressure on top of the move. "Days to cover" (short_ratio
+      = shares short ÷ average daily volume) measures how many days of NORMAL trading it would
+      take shorts to fully exit — a low reading means they cannot quietly unwind even if they
+      wanted to, sharpening (not replacing) the same squeeze thesis. This reports a MEASURED
       setup, not a prediction the move continues — a squeeze can reverse just as fast as it
       started. Game plan (where shown) is the same illustrative SWING-style entry/stop/target
       math the paper-trading engine uses — a reference point, not a guaranteed fill. Not

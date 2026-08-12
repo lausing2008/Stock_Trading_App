@@ -119,7 +119,7 @@ const USER_ALERTS: AlertRow[] = [
     schedule: 'Every 4 hours',
     scope: 'price-alert',
     cooldown: 'Once per (symbol, expiry) — a later, different expiry can re-alert',
-    note: 'Options-expiry squeeze — a DIRECTIONAL WATCH, not a BUY/SELL call. Fires when a stock has a large block of options open interest concentrated near the current price (calls OR puts, ≥55% one-sided) close to expiry (0–5 days out, widened from 0–3 on 2026-08-04 to also feed the bearish-puts-watch section on the Short Squeeze page): when the market makers who sold those options unwind their hedge near expiry, that unwind can move the stock sharply either way. Genuinely can’t predict the direction from this data alone — see the known-limitations callout below.',
+    note: 'Options-expiry squeeze — a DIRECTIONAL WATCH, not a BUY/SELL call. Fires when a stock has a large block of options open interest concentrated near the current price close to expiry (0–5 days out, widened from 0–3 on 2026-08-04 to also feed the bearish-puts-watch section on the Short Squeeze page) — puts-dominant at ≥55%, calls-dominant at ≥85% (raised from a shared 55% on 2026-08-13: equity options structurally skew toward calls, so 55% was below the real median call share and fired on ordinary stocks; puts-dominant genuinely is a deviation from that baseline, so it stayed at 55%): when the market makers who sold those options unwind their hedge near expiry, that unwind can move the stock sharply either way. Genuinely can’t predict the direction from this data alone — see the known-limitations callout below.',
   },
   {
     job: 'squeeze_watch_revert_check',
@@ -398,7 +398,7 @@ export default function AlertsGuidePage() {
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', color: '#e2e8f0' }}>
             <strong>GME</strong>
-            <span style={{ color: '#22c55e', fontWeight: 700 }}>72% calls</span>
+            <span style={{ color: '#22c55e', fontWeight: 700 }}>88% calls</span>
           </div>
           <div style={{ color: '#64748b', marginTop: 2 }}>
             $145.20 · 1,250 contracts near the money · expires in 2d (2026-08-06)
@@ -407,7 +407,7 @@ export default function AlertsGuidePage() {
 
         <SubSection title="What each field on the row means">
           <ul style={{ paddingLeft: 18, margin: '4px 0 0', lineHeight: 1.7 }}>
-            <li><strong>72% calls</strong> (or puts) — of all the near-the-money option <em>open interest</em> (contracts still outstanding, not yet closed out), 72% sits on the call side. The alert only fires when one side holds <strong>≥55%</strong> — anything more balanced isn&rsquo;t a clean enough signal to report.</li>
+            <li><strong>88% calls</strong> (or puts) — of all the near-the-money option <em>open interest</em> (contracts still outstanding, not yet closed out), 88% sits on the call side. The two sides use DIFFERENT bars, on purpose: puts-dominant fires at <strong>≥55%</strong>, calls-dominant needs <strong>≥85%</strong> — equity options structurally skew toward calls (retail + covered-call flow), so a lower bar there would fire on ordinary, unremarkable stocks; puts-dominant genuinely is a deviation from that baseline, so it keeps the lower, more sensitive bar.</li>
             <li><strong>1,250 contracts near the money</strong> — total call+put open interest at strikes within <strong>5%</strong> of the current price ($145.20 here → roughly the $138–$152 strike band). Each contract controls 100 shares, so this is a real, sizeable block — the alert also has a floor (≥500 total contracts) so a thin, illiquid chain never triggers it.</li>
             <li><strong>expires in 2d (2026-08-06)</strong> — how close that block is to its own expiration. The alert only looks at expiries <strong>0–5 days out</strong>, since OI concentration and expiry proximity are what make this a live risk, not something that matters weeks in advance. (Widened from 0–3 to 0–5 on 2026-08-04 — the puts-dominant, 3–5-day slice of this same scan also feeds the &ldquo;Bearish Puts Watch&rdquo; section on the <a href="/short-squeeze" style={{ color: '#38bdf8', textDecoration: 'none' }}>Short Squeeze page</a>, see below.)</li>
           </ul>

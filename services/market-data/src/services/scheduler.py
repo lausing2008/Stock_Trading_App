@@ -2435,6 +2435,18 @@ _SQUEEZE_LOCK_KEY = "stockai:lock:check_short_squeeze_alerts"
 _SQUEEZE_LOCK_TTL = 55  # seconds — runs every 60s, same pattern as check_volume_anomalies
 _SQUEEZE_MIN_SHORT_FLOAT = 15.0  # % of float — matches short-squeeze.tsx's "Prime Candidate" bar exactly
 _SQUEEZE_MIN_INTRADAY_MOVE_PCT = 3.0  # a real move already in progress, not just "green today"
+# T270-SQUEEZE-DAYSTOCOVER-ALERT: days-to-cover (short_ratio = shares_short / avg_daily_volume)
+# answers "can shorts get out quietly" — a real, already-computed metric this alert never read
+# before, despite it already being in the same stockai:fundamentals:v2:{sym} cache blob this
+# job already fetches. Live-calibrated 2026-08-13 against real candidates that already clear
+# _SQUEEZE_MIN_SHORT_FLOAT (n=73 distinct readings, real production data): p10=1.13, p25=1.92,
+# p50=4.65 days. A flat <=1.0 threshold (this item's own original design note) would sit BELOW
+# p10 and rarely fire; 2.0 lands just above p25 — selective (roughly the most acute quarter of
+# real candidates), not so tight it's nearly always empty. This is an ESCALATION tier on the
+# EXISTING alert (Candidate A from the original design), not a new standalone alert type —
+# reuses the same job, staleness check, and game-plan logic entirely; a candidate that also
+# clears this bar gets flagged "critical" in the email, nothing else about the scan changes.
+_SQUEEZE_CRITICAL_DAYS_TO_COVER = 2.0
 
 
 def _squeeze_game_plan(session, symbol: str, price: float) -> dict | None:
@@ -2593,6 +2605,13 @@ def check_short_squeeze_alerts() -> None:
                     _si_date = data.get("short_interest_date")
                     if _si_date is None or _si_date < _squeeze_stale_cutoff_str:
                         continue
+                    # T270-SQUEEZE-DAYSTOCOVER-ALERT: same staleness discipline as
+                    # short_percent_of_float above — short_ratio comes from the SAME
+                    # fundamentals blob, computed as of the same short_interest_date, so a
+                    # candidate that already passed the staleness gate above needs no second
+                    # check here. None when yfinance simply never reported a value for this
+                    # symbol (not every candidate has one) — genuinely absent, not "critical".
+                    _short_ratio = data.get("short_ratio")
                 except Exception:
                     continue
                 candidates[sym] = {
@@ -2601,6 +2620,10 @@ def check_short_squeeze_alerts() -> None:
                     "short_interest_date": _si_date,
                     "change_pct": round(change_pct, 2),
                     "price": price,
+                    "short_ratio": _short_ratio,
+                    "days_to_cover_critical": (
+                        _short_ratio is not None and _short_ratio <= _SQUEEZE_CRITICAL_DAYS_TO_COVER
+                    ),
                 }
             if not candidates:
                 if _fundamentals_cache_misses > 0:
@@ -2679,7 +2702,21 @@ _GAMMA_UNWIND_LOCK_TTL = 3600  # generous — a few-times-a-day job, only needs 
 # fetch) avoids doubling the yfinance rate-limit exposure this job already has to be careful
 # about — one fetch per symbol, filtered two different ways downstream.
 _GAMMA_UNWIND_MAX_DAYS_TO_EXPIRY = 5  # "imminent" — today through 5 calendar days out
-_GAMMA_UNWIND_MIN_OI_CONCENTRATION = 0.55  # one side must hold >=55% of near-the-money OI
+_GAMMA_UNWIND_MIN_OI_CONCENTRATION = 0.55  # PUTS side only — see AUD265-GAMMA-OI-THRESHOLD-
+# ASYMMETRIC below for why this stays the puts floor but is no longer also used for calls.
+# AUD265-GAMMA-OI-THRESHOLD-ASYMMETRIC: equity options carry a well-known structural call
+# skew (retail + covered-call flow), so a single 55% threshold applied to BOTH sides made the
+# calls branch far less selective than the puts branch — 55% sits BELOW the real median, not
+# above it. Live-calibrated against this job's own EXACT methodology (5% near-money strike
+# band, nearest expiry <=5 days) across the real bounded symbol set on 2026-08-13: n=30,
+# call_share median (p50) = 0.676, p80 = 0.854 — 70% of scanned symbols already cleared the
+# old 55% "calls dominant" bar, vs. only 20% clearing the mirror 55% "puts dominant" bar. Set
+# to 0.85, the measured ~80th percentile, keeping the puts side unchanged (it was already
+# genuinely selective at 55%, since puts-dominant near-money OI IS a real deviation from the
+# structural baseline). Re-verify against a fresh live pull if the app's own bounded symbol
+# set composition changes materially — this was calibrated on 30 real, live-fetched samples,
+# not a synthetic assumption.
+_GAMMA_UNWIND_MIN_CALLS_CONCENTRATION = 0.85
 _GAMMA_UNWIND_STRIKE_BAND_PCT = 0.05  # "near the money" = within 5% of current price
 _GAMMA_UNWIND_MIN_TOTAL_OI = 500  # floor so a thin/illiquid chain doesn't produce a false signal
 
@@ -2781,7 +2818,7 @@ def check_gamma_unwind_alerts() -> None:
                     if total_oi < _GAMMA_UNWIND_MIN_TOTAL_OI:
                         continue
                     call_share = call_oi / total_oi
-                    if call_share >= _GAMMA_UNWIND_MIN_OI_CONCENTRATION:
+                    if call_share >= _GAMMA_UNWIND_MIN_CALLS_CONCENTRATION:
                         dominant_side = "calls"
                     elif (1 - call_share) >= _GAMMA_UNWIND_MIN_OI_CONCENTRATION:
                         dominant_side = "puts"

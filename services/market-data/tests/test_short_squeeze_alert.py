@@ -230,3 +230,124 @@ def test_zero_candidates_path_also_reports_the_miss_count_when_nonzero():
     next_return_idx = body.index("return", early_return_idx)
     early_return_block = body[early_return_idx:next_return_idx]
     assert "fundamentals_cache_misses" in early_return_block
+
+
+# ── T270-SQUEEZE-DAYSTOCOVER-ALERT ───────────────────────────────────────────────────────────
+# Live-calibrated 2026-08-13 against real production candidates that already clear
+# _SQUEEZE_MIN_SHORT_FLOAT (n=73 distinct readings): p10=1.13, p25=1.92, p50=4.65 days-to-cover.
+# 2.0 lands just above p25 — selective (roughly the most acute quarter), not so tight it's
+# nearly always empty (the design note's own original <=1.0 idea would sit below p10).
+
+def test_short_ratio_is_read_from_the_same_fundamentals_blob():
+    body = _check_short_squeeze_alerts_body()
+    assert 'data.get("short_ratio")' in body
+
+
+def test_short_ratio_read_happens_after_the_staleness_gate_reuses_it_not_a_second_check():
+    """short_ratio comes from the SAME fundamentals blob, as of the SAME short_interest_date
+    already staleness-checked for short_percent_of_float — this must not re-derive or
+    re-validate a second staleness cutoff for the exact same underlying data."""
+    body = _check_short_squeeze_alerts_body()
+    staleness_idx = body.index("_si_date is None or _si_date < _squeeze_stale_cutoff_str")
+    short_ratio_idx = body.index('data.get("short_ratio")')
+    assert staleness_idx < short_ratio_idx
+
+
+def test_days_to_cover_critical_flag_uses_the_le_2_point_0_threshold():
+    body = _check_short_squeeze_alerts_body()
+    assert "_SQUEEZE_CRITICAL_DAYS_TO_COVER" in body
+    assert "_short_ratio <= _SQUEEZE_CRITICAL_DAYS_TO_COVER" in body
+
+
+def test_critical_days_to_cover_constant_is_2_point_0():
+    start = _scheduler_source.index("_SQUEEZE_CRITICAL_DAYS_TO_COVER = ")
+    line_end = _scheduler_source.index("\n", start)
+    assert "2.0" in _scheduler_source[start:line_end]
+
+
+def test_missing_short_ratio_is_none_not_falsely_critical():
+    """A symbol yfinance never reported short_ratio for must be genuinely absent (None), never
+    silently treated as critical just because a None comparison happened to be falsy — the
+    `is not None` guard is the load-bearing part of this check."""
+    body = _check_short_squeeze_alerts_body()
+    assert "_short_ratio is not None and _short_ratio <= _SQUEEZE_CRITICAL_DAYS_TO_COVER" in body
+
+
+def test_short_ratio_and_critical_flag_are_threaded_into_the_candidate_dict():
+    body = _check_short_squeeze_alerts_body()
+    assert '"short_ratio": _short_ratio' in body
+    assert '"days_to_cover_critical":' in body
+
+
+# ── send_short_squeeze_email() days-to-cover rendering — pure composition, tested directly ──
+
+def test_critical_days_to_cover_escalates_the_subject_line():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_short_squeeze_email("user@example.com", [
+            {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10,
+             "short_ratio": 1.2, "days_to_cover_critical": True},
+        ])
+    assert "CRITICAL" in calls[0]["subject"]
+
+
+def test_non_critical_days_to_cover_does_not_escalate_the_subject_line():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_short_squeeze_email("user@example.com", [
+            {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10,
+             "short_ratio": 5.5, "days_to_cover_critical": False},
+        ])
+    assert "CRITICAL" not in calls[0]["subject"]
+
+
+def test_days_to_cover_value_rendered_in_html_and_text():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_short_squeeze_email("user@example.com", [
+            {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10,
+             "short_ratio": 1.2, "days_to_cover_critical": True},
+        ])
+    html, text = calls[0]["html"], calls[0]["text"]
+    assert "1.2d to cover" in html
+    assert "1.2d to cover" in text
+
+
+def test_missing_short_ratio_degrades_gracefully_not_crash_and_omits_dtc_text():
+    """An older candidate dict, or a symbol with no short_ratio at all, must not crash or
+    render a placeholder days-to-cover figure. The disclaimer paragraph legitimately explains
+    what "days to cover" means regardless of whether any candidate has one — checking against
+    the specific PER-ROW rendering (an "Nd to cover" figure, N being a real number) rather than
+    the bare substring "d to cover", which the disclaimer's own explanatory prose contains."""
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        result = send_short_squeeze_email("user@example.com", [
+            {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10},
+        ])
+    assert result is True
+    import re
+    assert re.search(r"\d(\.\d)?d to cover", calls[0]["html"]) is None
+
+
+def test_critical_row_gets_visually_distinguished_border_non_critical_does_not():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_short_squeeze_email("user@example.com", [
+            {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10,
+             "short_ratio": 1.2, "days_to_cover_critical": True},
+            {"symbol": "AMC", "short_percent_of_float": 18.0, "change_pct": 5.1, "price": 4.50,
+             "short_ratio": 5.5, "days_to_cover_critical": False},
+        ])
+    html = calls[0]["html"]
+    assert "rgba(220,38,38,0.3)" in html  # the critical row's border color appears at least once
+    assert calls[0]["subject"].count("CRITICAL") == 1  # only escalated once, not per-critical-row
+
+
+def test_critical_summary_note_only_appears_when_at_least_one_candidate_is_critical():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_short_squeeze_email("user@example.com", [
+            {"symbol": "AMC", "short_percent_of_float": 18.0, "change_pct": 5.1, "price": 4.50,
+             "short_ratio": 5.5, "days_to_cover_critical": False},
+        ])
+    assert "critically thin exit" not in calls[0]["html"]
