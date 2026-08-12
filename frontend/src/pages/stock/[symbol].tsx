@@ -37,6 +37,7 @@ import SignalCard from '@/components/SignalCard';
 import PositionSizer from '@/components/PositionSizer';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
+import OptionsChainChart from '@/components/OptionsChainChart';
 import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult, type OutcomesSummary, type QuarterlyRow } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { nearestActionableFvg, nearestPivotToFvg, classifyFvgVolumeContext } from '@/lib/fvgTradePlan';
@@ -4167,6 +4168,17 @@ Return ONLY valid JSON — no markdown, no prose:
                         {exp}
                       </button>
                     ))}
+                  </div>
+                  {/* T270-STOCKDETAIL-CALLPUT-CHART: OI-by-strike bar chart — calls (green)
+                      above zero, puts (red) below zero, sitting alongside (not replacing)
+                      the detailed strike-matrix table below for anyone who wants exact
+                      numbers per contract. */}
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>
+                      Open Interest by Strike — <span style={{ color: '#4ade80' }}>■ Calls</span>{' '}
+                      <span style={{ color: '#f87171' }}>■ Puts</span>
+                    </div>
+                    <OptionsChainChart calls={optionsChain.calls ?? []} puts={optionsChain.puts ?? []} />
                   </div>
                   <div style={{ overflowX: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
