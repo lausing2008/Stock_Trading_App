@@ -121,3 +121,49 @@ def test_no_remaining_unsafe_dumps_of_reasons_anywhere_in_routes():
     in this file would silently reintroduce this exact bug class."""
     assert "json.dumps(ai.reasons)" not in _ROUTES_SOURCE
     assert "json.dumps(sig.reasons)" not in _ROUTES_SOURCE
+
+
+# ── BUG-REASONSJSON-NAN, response-serialization half ────────────────────────────────────────
+# A separate, previously-undiscovered half of the same bug: even after the DB-write path
+# above was fixed, GET /signals/{symbol}?live=true&persist=true still 500'd with a real
+# ValueError("Out of range float values are not JSON compliant: nan") — Starlette's default
+# JSONResponse serializer is STRICTER than json.dumps()'s own default (which merely emits a
+# non-standard NaN token; Starlette explicitly rejects it outright). signal_for()'s two
+# response constructions (the ?style=X single-signal branch and the all-styles branch) both
+# spread asdict(ai) directly into the outgoing dict with no sanitization — the DB-write fix's
+# _json_safe() call was applied to a SEPARATE json.dumps() call for the SQL parameter, never
+# to the dict actually returned to the HTTP caller.
+
+def test_single_style_response_construction_wraps_the_whole_dict_in_json_safe():
+    """The ?style=X branch — return {"symbol": ..., "source": "live", **asdict(ai)}."""
+    start = _ROUTES_SOURCE.index("def signal_for(")
+    body = _ROUTES_SOURCE[start:]
+    assert 'return _json_safe({"symbol": symbol, "source": "live", **asdict(ai)})' in body
+
+
+def test_all_styles_response_construction_wraps_the_whole_dict_in_json_safe():
+    """The no-?style branch — returns every horizon's signal in one response."""
+    start = _ROUTES_SOURCE.index("def signal_for(")
+    body = _ROUTES_SOURCE[start:]
+    assert 'return _json_safe({' in body
+    assert '"signals": {k: asdict(v) for k, v in all_sig.items()},' in body
+
+
+def test_json_safe_applied_to_the_exact_asdict_plus_spread_shape_produces_valid_json():
+    """Integration-style check: build a dict with the EXACT shape signal_for()'s fixed
+    single-style branch constructs (a plain dict standing in for asdict(ai), since
+    generators.signals can't be imported directly in this test environment — see the module
+    docstring), run it through the real _json_safe(), and confirm the composed result is
+    genuinely valid, standard JSON with the NaN replaced — not just that _json_safe() works
+    on a reasons dict in isolation."""
+    fake_ai_asdict = {
+        "signal": "HOLD", "horizon": "SHORT", "confidence": 8.1, "bullish_probability": 0.5405,
+        "reasons": {"macd_hist": float("nan"), "composite_score": 12.6, "sector_momentum": -1},
+    }
+    composed = _json_safe({"symbol": "6951.HK", "source": "live", **fake_ai_asdict})
+    s = json.dumps(composed)
+    assert "NaN" not in s
+    reparsed = json.loads(s)
+    assert reparsed["reasons"]["macd_hist"] is None
+    assert reparsed["reasons"]["composite_score"] == 12.6
+    assert reparsed["symbol"] == "6951.HK"

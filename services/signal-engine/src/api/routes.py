@@ -1220,13 +1220,20 @@ def signal_for(
                 ai.reasons["calibrated_win_rate"] = _cwr[0]
                 ai.reasons["calibrated_win_rate_count"] = _cwr[1]
 
+    # BUG-REASONSJSON-NAN (response-serialization half): a NaN/Inf float in ai.reasons (e.g.
+    # macd_hist on a thin-history stock) survives all the way to this live-computed response —
+    # unlike the DB-write path above, nothing here sanitizes it, and Starlette's default
+    # JSONResponse uses strict json.dumps() that raises ValueError("Out of range float values
+    # are not JSON compliant: nan"), 500ing the whole request. _json_safe() must NOT mutate
+    # ai.reasons in place (other code below this point, and the DB-persisted copy already
+    # written above, must keep the raw value) — apply it only to the OUTGOING dict.
     if style:
         style_key = style.upper()
         ai = all_sig.get(style_key) or all_sig["SWING"]
-        return {"symbol": symbol, "source": "live", **asdict(ai)}
+        return _json_safe({"symbol": symbol, "source": "live", **asdict(ai)})
 
-    return {
+    return _json_safe({
         "symbol": symbol,
         "source": "live",
         "signals": {k: asdict(v) for k, v in all_sig.items()},
-    }
+    })
