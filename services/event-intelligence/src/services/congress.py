@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 from datetime import date, timedelta
 
@@ -279,6 +280,87 @@ def get_recent_congress_trades(
         return [_trade_to_dict(t) for t in rows]
 
 
+_CONGRESS_SCORE_HALF_LIFE_DAYS = 30.0  # a trade's weight halves every 30 days — no hard cliff
+_CONGRESS_SCORE_DOLLAR_REF = 15000.0   # log-scale reference — the median real disclosure band
+                                        # ($1,001-$15,000) maps to weight ~1.0; a $250K+ trade
+                                        # (a real but much rarer band) maps to ~2-3x, not
+                                        # thousands of x, since disclosure bands span
+                                        # $1,001-$25M+ and a raw linear dollar weight would let
+                                        # one filing swamp the whole score.
+
+
+def _congress_score_from_trades(trades: list[dict], today: date | None = None) -> float:
+    """-100 to 100 congress activity score (negative = net selling pressure), pure function
+    of already-fetched trade dicts — split out from compute_congress_score() so the scoring
+    math is directly testable without a DB round-trip.
+
+    AUD264-CATALYST-NO-TIME-DECAY: the original scoring had 3 real gaps, all fixed here
+    together (fixing recency decay alone would still leave trade-count-only weighting able to
+    saturate the score identically for one filer's split position as for many independent
+    filers'):
+    1. NO recency decay — an 89-day-old purchase scored identically to yesterday's, inside a
+       flat window that then fell off a cliff to 0 on day 91 (the window itself, still passed
+       in via get_congress_for_symbol(stock_id, days), is now just the outer bound past which
+       a trade's decayed weight would be negligible anyway — the decay itself is the real
+       fix, not a wider or narrower window).
+    2. Scored by raw TRADE COUNT, not dollar amount — a $1,001 purchase and a $25M purchase
+       both counted as a flat +12, and the "clustered buying" bonus counted trades, not
+       distinct filers, so one politician splitting a single position across 9 same-day
+       filings saturated the score identically to 9 independent politicians actually agreeing.
+    3. amount_min/amount_max were parsed and stored but never read in scoring (only in the
+       leaderboard) — real information about position size was being computed and discarded.
+
+    Each trade's contribution = direction_sign * dollar_weight * recency_weight, where
+    dollar_weight = max(0.5, log10(amount_mid / _CONGRESS_SCORE_DOLLAR_REF) + 1) — floored at
+    0.5 (not 0) so a trade with no amount data at all, or a genuinely tiny disclosed amount,
+    still counts as real activity rather than vanishing entirely; log-scaled so the $1K-$25M+
+    real range (confirmed in production) doesn't let one large filing swamp the score. The
+    clustering bonus now counts DISTINCT POLITICIANS who purchased, not raw purchase-trade
+    count, directly closing the one-filer-many-filings saturation gap.
+    """
+    if not trades:
+        return 0.0
+    today = today or date.today()
+
+    score = 0.0
+    buying_politicians: set[str] = set()
+    for t in trades:
+        trade_date_str = t.get("trade_date")
+        if not trade_date_str:
+            continue
+        try:
+            trade_date = date.fromisoformat(trade_date_str)
+        except ValueError:
+            continue
+        age_days = max(0, (today - trade_date).days)
+        recency_weight = 0.5 ** (age_days / _CONGRESS_SCORE_HALF_LIFE_DAYS)
+
+        amount_min, amount_max = t.get("amount_min"), t.get("amount_max")
+        amount_mid = ((amount_min or 0) + (amount_max or 0)) / 2
+        if amount_mid > 0:
+            dollar_weight = max(0.5, math.log10(amount_mid / _CONGRESS_SCORE_DOLLAR_REF) + 1)
+        else:
+            dollar_weight = 0.5  # no disclosed amount — still real activity, floor weight only
+
+        if t["transaction_type"] == "purchase":
+            score += 12 * dollar_weight * recency_weight
+            politician = t.get("politician_name")
+            if politician:
+                buying_politicians.add(politician)
+        elif t["transaction_type"] == "sale":
+            score -= 5 * dollar_weight * recency_weight
+
+    # Bonus for clustered buying — DISTINCT politicians, not raw purchase-trade count, so one
+    # filer splitting a position across many filings can't saturate this the way many
+    # independent filers agreeing legitimately should.
+    if len(buying_politicians) > 5:
+        score += 20
+    elif len(buying_politicians) > 2:
+        score += 10
+
+    return min(100.0, max(-100.0, score))
+
+
 def compute_congress_score(stock_id: int, days: int = 90) -> float:
     """-100 to 100 congress activity score (negative = net selling pressure).
 
@@ -287,26 +369,12 @@ def compute_congress_score(stock_id: int, days: int = 90) -> float:
     so a sell-heavy trade history legitimately produces a negative value.
     catalyst.py already correctly documents and relies on this real range
     (see its T237-EI1 comment); this docstring was simply out of date.
+
+    See _congress_score_from_trades() for the actual scoring math (recency decay,
+    dollar-weighting, distinct-filer clustering bonus — AUD264-CATALYST-NO-TIME-DECAY).
     """
     trades = get_congress_for_symbol(stock_id, days)
-    if not trades:
-        return 0.0
-
-    score = 0.0
-    for t in trades:
-        if t["transaction_type"] == "purchase":
-            score += 12
-        elif t["transaction_type"] == "sale":
-            score -= 5
-
-    # Bonus for clustered buying
-    purchases = sum(1 for t in trades if t["transaction_type"] == "purchase")
-    if purchases > 5:
-        score += 20
-    elif purchases > 2:
-        score += 10
-
-    return min(100.0, max(-100.0, score))
+    return _congress_score_from_trades(trades)
 
 
 def days_since_last_congress_buy(stock_id: int) -> int | None:

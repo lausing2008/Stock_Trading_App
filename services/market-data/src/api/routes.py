@@ -1575,6 +1575,24 @@ def sector_rotation():
     return payload
 
 
+# AUD265-SQUEEZE-CACHE-MISS-SILENT-SKIP: `if not cached: continue` treats a stockai:
+# fundamentals:v2:{symbol} cache miss identically to "this symbol just doesn't qualify" — a
+# real distinction gets erased, since a symbol whose 24h TTL lapsed without a page-view
+# repopulating it before this endpoint/job next runs silently drops out with no signal
+# anywhere. Every site sharing this cache-key pattern (earnings_calendar, stocks_events,
+# analyst_ratings here, plus check_short_squeeze_alerts in scheduler.py) now reports its own
+# miss count via this one shared helper instead of a bare `continue` — cheap, and gives
+# operators something to actually check ("is this endpoint silently missing data right now")
+# instead of only being able to infer it after the fact from a user complaint.
+def _log_fundamentals_cache_misses(endpoint: str, miss_count: int, total: int) -> None:
+    if miss_count > 0:
+        log.info(
+            "fundamentals_cache.misses",
+            endpoint=endpoint, misses=miss_count, total=total,
+            note="symbols silently excluded — cache miss is not the same as does-not-qualify",
+        )
+
+
 # ── Earnings Calendar ─────────────────────────────────────────────────────────
 
 @router.get("/earnings_calendar")
@@ -1586,11 +1604,13 @@ def earnings_calendar(days_ahead: int = Query(45, ge=1, le=180), session: Sessio
     today = _date.today()
     cutoff = today + timedelta(days=days_ahead)
     results = []
+    _misses = 0
     for stock in stocks:
         cache_key = f"stockai:fundamentals:v2:{stock.symbol}"
         try:
             cached = r.get(cache_key)
             if not cached:
+                _misses += 1
                 continue
             data = json.loads(cached)
             ned = data.get("next_earnings_date")
@@ -1614,6 +1634,7 @@ def earnings_calendar(days_ahead: int = Query(45, ge=1, le=180), session: Sessio
                 })
         except Exception:
             continue
+    _log_fundamentals_cache_misses("earnings_calendar", _misses, len(stocks))
     results.sort(key=lambda x: x["days_to_earnings"])
     return results
 
@@ -1828,12 +1849,14 @@ def events_calendar(
     r = _get_redis()
     stocks = session.execute(select(Stock).where(Stock.active.is_(True))).scalars().all()
 
+    _stock_events_misses = 0
     for stock in stocks:
         mkt = stock.market.value if hasattr(stock.market, "value") else str(stock.market)
         cache_key = f"stockai:fundamentals:v2:{stock.symbol}"
         try:
             cached = r.get(cache_key)
             if not cached:
+                _stock_events_misses += 1
                 continue
             data = json.loads(cached)
 
@@ -1888,6 +1911,7 @@ def events_calendar(
         except Exception:
             continue
 
+    _log_fundamentals_cache_misses("events_calendar_stock_events", _stock_events_misses, len(stocks))
     events.sort(key=lambda x: (x["days_to_event"], x["type"]))
     return events
 
@@ -1903,11 +1927,13 @@ def analyst_ratings(days: int = Query(30, ge=1, le=180), session: Session = Depe
     r = _get_redis()
     cutoff = (_adate.today() - timedelta(days=days)).isoformat()
     results = []
+    _misses = 0
     for symbol, stock in stock_map.items():
         cache_key = f"stockai:fundamentals:v2:{symbol}"
         try:
             cached = r.get(cache_key)
             if not cached:
+                _misses += 1
                 continue
             data = json.loads(cached)
             for action in data.get("analyst_actions", []):
@@ -1927,6 +1953,7 @@ def analyst_ratings(days: int = Query(30, ge=1, le=180), session: Session = Depe
                     })
         except Exception:
             continue
+    _log_fundamentals_cache_misses("analyst_ratings", _misses, len(stock_map))
     results.sort(key=lambda x: x["date"], reverse=True)
     return results
 
@@ -2068,11 +2095,13 @@ def short_squeeze(
         pass
 
     results = []
+    _misses = 0
     for symbol, stock in stock_map.items():
         cache_key = f"stockai:fundamentals:v2:{symbol}"
         try:
             cached = r.get(cache_key)
             if not cached:
+                _misses += 1
                 continue
             data = json.loads(cached)
             spf = data.get("short_percent_of_float")
@@ -2113,6 +2142,7 @@ def short_squeeze(
             })
         except Exception:
             continue
+    _log_fundamentals_cache_misses("short_squeeze", _misses, len(stock_map))
     results.sort(key=lambda x: x["short_percent_of_float"], reverse=True)
     return results
 

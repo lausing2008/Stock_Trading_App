@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import TimeSeriesSplit, cross_val_score
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 _CAL_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "calibration.py"
@@ -85,6 +86,7 @@ def _extract_calibrate_ta_weights_core():
     namespace = {
         "np": np,
         "LogisticRegression": LogisticRegression,
+        "Pipeline": Pipeline,
         "StandardScaler": StandardScaler,
         "TimeSeriesSplit": TimeSeriesSplit,
         "cross_val_score": cross_val_score,
@@ -278,3 +280,69 @@ def test_old_value_in_tune_history_reflects_the_actual_current_live_weights_not_
     custom_live = {**_TA_WEIGHTS_DEFAULT, "rsi_sweet_spot": 42.0}
     _, recorded, _ = _run_core(rows, custom_live)
     assert recorded["old_value"]["ta_weights"]["rsi_sweet_spot"] == 42.0
+
+
+# ── AUD263-TAWEIGHTS-CV-SCALER-LEAK ─────────────────────────────────────────────────────────
+
+def test_cv_scaler_is_fit_per_fold_not_once_on_the_full_train_slice():
+    """The exact regression this fix closes: the pre-fix code called
+    scaler.fit_transform(X) ONCE on the full train slice, then ran TimeSeriesSplit CV on that
+    already-scaled matrix — every fold's own validation rows had already contributed to the
+    scaler that then scored them. Verified directly against source, since the leak is a
+    structural property of WHICH object cross_val_score receives (a bare classifier scored
+    against pre-scaled data vs. a Pipeline that re-fits scaling per fold), not something a
+    single numeric run can prove on its own without an enormous, flaky sample size."""
+    assert "cross_val_score(pipeline, X, y, cv=TimeSeriesSplit(n_splits=5), scoring=\"accuracy\")" in _CAL_SOURCE
+    # The leaking form must be gone, not just supplemented alongside a correct one.
+    assert "cross_val_score(clf, X_scaled, y, cv=TimeSeriesSplit(n_splits=5), scoring=\"accuracy\")" not in _CAL_SOURCE
+
+
+def test_the_pipeline_passed_to_cross_val_score_wraps_a_fresh_standardscaler_and_the_same_classifier():
+    assert 'Pipeline([("scaler", StandardScaler()), ("clf", LogisticRegression(max_iter=500, C=1.0, random_state=42))])' in _CAL_SOURCE
+
+
+def test_cv_score_is_computed_on_the_unscaled_x_not_a_pre_scaled_matrix():
+    """cross_val_score must receive the raw X (each fold's Pipeline does its own scaling
+    internally) — passing an already-scaled matrix alongside the Pipeline would silently
+    double-scale (Pipeline scales again) rather than closing the leak."""
+    cv_call_idx = _CAL_SOURCE.index('cross_val_score(pipeline, X, y, cv=TimeSeriesSplit')
+    # X must be assigned from X_train BEFORE this call and never reassigned to a scaled
+    # version before it — confirm the scaler.fit_transform(X) line comes AFTER, not before.
+    scale_idx = _CAL_SOURCE.index("scaler = StandardScaler()")
+    assert cv_call_idx < scale_idx
+
+
+def test_final_production_fit_still_scales_the_full_train_slice_once():
+    """The fix must NOT touch the real production fit (clf.fit(X_scaled, y), which becomes
+    candidate_weights) — that fit correctly scales the full train set once, since it will be
+    applied to genuinely new future data afterward; only the CV *diagnostic* needed the
+    per-fold refit. Confirms this line still exists exactly as before the fix."""
+    assert "X_scaled = scaler.fit_transform(X)" in _CAL_SOURCE
+    assert "clf.fit(X_scaled, y)" in _CAL_SOURCE
+
+
+def test_promotion_decision_is_unaffected_by_the_cv_pipeline_fix():
+    """The tracker's own impact note: this leak could never affect promotion, since X_val is
+    scored by _weighted_score_accuracy_and_ev() (a plain weighted-sum, no StandardScaler
+    involved at all) — re-run the existing beats-baseline scenario and confirm it still
+    promotes correctly after the fix, proving the CV-only change didn't regress the real
+    validation path."""
+    rows = _make_rows(100)
+    result, recorded, applied = _run_core(rows, _TA_WEIGHTS_DEFAULT)
+    assert result.get("applied") is True
+    assert recorded.get("promoted") is True
+
+
+def test_train_cv_accuracy_is_still_returned_as_a_plain_float_in_both_response_branches():
+    """The fix changes HOW train_cv_accuracy is computed, not its presence/shape in the
+    response — confirm both the promoted and rejected response branches still report it."""
+    rows_promote = _make_rows(100)
+    result_promote, _, _ = _run_core(rows_promote, _TA_WEIGHTS_DEFAULT)
+    assert isinstance(result_promote["train_cv_accuracy"], float)
+
+    rows_reject = _make_rows(60)
+    oracle_weights = {f: 0.0 for f in _TA_FEATURES}
+    oracle_weights["bullish_trend"] = 100.0
+    oracle_weights["obv_trend_bullish"] = 100.0
+    result_reject, _, _ = _run_core(rows_reject, oracle_weights)
+    assert isinstance(result_reject["train_cv_accuracy"], float)

@@ -559,6 +559,7 @@ def calibrate_ta_weights(
     try:
         import numpy as np
         from sklearn.linear_model import LogisticRegression
+        from sklearn.pipeline import Pipeline
         from sklearn.preprocessing import StandardScaler
     except ImportError:
         raise HTTPException(status_code=500, detail="scikit-learn not installed in signal-engine")
@@ -658,15 +659,29 @@ def calibrate_ta_weights(
 
     X = np.array(X_train)
     y = np.array(y_train)
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    clf = LogisticRegression(max_iter=500, C=1.0, random_state=42)
+
+    # AUD263-TAWEIGHTS-CV-SCALER-LEAK: scaler.fit_transform(X) was previously called ONCE on
+    # the full train slice before cross_val_score ran TimeSeriesSplit CV on the already-scaled
+    # matrix — every fold's validation rows had already contributed their mean/variance to the
+    # scaler that scored them, optimistically biasing the reported train_cv_accuracy. Wrapping
+    # scaler+classifier in a Pipeline makes cross_val_score refit the scaler on ONLY each
+    # fold's own train rows, so no fold's validation rows ever leak into its own scaling.
+    # Cannot affect promotion (X_val is scored separately below via
+    # _weighted_score_accuracy_and_ev(), never through this scaler/pipeline at all) — this
+    # only corrects the diagnostic number reported back to the caller.
+    pipeline = Pipeline([("scaler", StandardScaler()), ("clf", LogisticRegression(max_iter=500, C=1.0, random_state=42))])
 
     from sklearn.model_selection import TimeSeriesSplit, cross_val_score
-    cv_scores = cross_val_score(clf, X_scaled, y, cv=TimeSeriesSplit(n_splits=5), scoring="accuracy")
+    cv_scores = cross_val_score(pipeline, X, y, cv=TimeSeriesSplit(n_splits=5), scoring="accuracy")
     train_cv_accuracy = float(np.mean(cv_scores))
 
     # Fit on the TRAIN slice only — the validation slice below is held out from this fit.
+    # This final production fit still scales the FULL train set once (the normal, correct
+    # thing to do for a model that will be applied to genuinely new data afterward) — only the
+    # CV *diagnostic* above needed the per-fold refit; this fit was never the leaking step.
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    clf = LogisticRegression(max_iter=500, C=1.0, random_state=42)
     clf.fit(X_scaled, y)
     coefs = clf.coef_[0]
 

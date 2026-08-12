@@ -191,3 +191,42 @@ def test_short_interest_date_is_threaded_into_the_candidate_dict():
     above) would never actually have anything to show."""
     body = _check_short_squeeze_alerts_body()
     assert '"short_interest_date": _si_date' in body
+
+
+# ── AUD265-SQUEEZE-CACHE-MISS-SILENT-SKIP ───────────────────────────────────────────────────
+
+def test_fundamentals_cache_misses_are_counted_not_silently_dropped():
+    """`if not cached: continue` previously treated a fundamentals-cache miss identically to
+    "this symbol doesn't qualify" with no signal anywhere. Confirm the miss is now counted."""
+    body = _check_short_squeeze_alerts_body()
+    assert "_fundamentals_cache_misses += 1" in body
+
+
+def test_cache_miss_counter_is_incremented_before_its_own_continue():
+    body = _check_short_squeeze_alerts_body()
+    incr_idx = body.index("_fundamentals_cache_misses += 1")
+    continue_idx = body.index("continue", incr_idx)
+    between = body[incr_idx + len("_fundamentals_cache_misses += 1"):continue_idx].strip()
+    assert between == ""
+
+
+def test_cache_miss_count_reaches_the_done_log_line():
+    """The count must actually surface somewhere observable, not just be computed and
+    discarded — confirm it's included in this job's own established short_squeeze_alert.done
+    summary log line."""
+    body = _check_short_squeeze_alerts_body()
+    done_log_idx = body.index('log.info("short_squeeze_alert.done"')
+    # There may be two such log lines (the early zero-candidates return, and the main one) —
+    # both must include the miss count, not just one.
+    assert body.count("fundamentals_cache_misses=_fundamentals_cache_misses") >= 2
+
+
+def test_zero_candidates_path_also_reports_the_miss_count_when_nonzero():
+    """The `if not candidates: return` early-exit must not silently swallow a real miss count
+    that was already accumulated before it — a cycle with a fundamentals-cache outage but zero
+    otherwise-qualifying candidates must still be observable."""
+    body = _check_short_squeeze_alerts_body()
+    early_return_idx = body.index("if not candidates:")
+    next_return_idx = body.index("return", early_return_idx)
+    early_return_block = body[early_return_idx:next_return_idx]
+    assert "fundamentals_cache_misses" in early_return_block

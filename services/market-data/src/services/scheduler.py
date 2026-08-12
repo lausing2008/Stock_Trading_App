@@ -2534,6 +2534,13 @@ def check_short_squeeze_alerts() -> None:
                 return
 
             candidates: dict[str, dict] = {}
+            # AUD265-SQUEEZE-CACHE-MISS-SILENT-SKIP: `if not cached: continue` treated a
+            # stockai:fundamentals:v2:{sym} cache miss identically to "this candidate doesn't
+            # qualify" — a real distinction gets erased, since a symbol whose 24h TTL lapsed
+            # without a page-view repopulating it before this job's next run silently drops
+            # out with no signal anywhere. Counted here and folded into this function's own
+            # existing short_squeeze_alert.done summary log line below.
+            _fundamentals_cache_misses = 0
             for row in _live_raw:
                 sym = row.get("symbol")
                 price = row.get("price")
@@ -2551,6 +2558,7 @@ def check_short_squeeze_alerts() -> None:
                 try:
                     cached = _rc.get(f"stockai:fundamentals:v2:{sym}")
                     if not cached:
+                        _fundamentals_cache_misses += 1
                         continue
                     data = _json.loads(cached)
                     spf = data.get("short_percent_of_float")
@@ -2581,6 +2589,9 @@ def check_short_squeeze_alerts() -> None:
                     "price": price,
                 }
             if not candidates:
+                if _fundamentals_cache_misses > 0:
+                    log.info("short_squeeze_alert.done", candidates=0, sent=0, recipients=len(recipients),
+                             fundamentals_cache_misses=_fundamentals_cache_misses)
                 _record_job_status("check_short_squeeze_alerts", "ok", time.monotonic() - _t0)
                 return
 
@@ -2633,7 +2644,8 @@ def check_short_squeeze_alerts() -> None:
                     pass
 
             _record_job_status("check_short_squeeze_alerts", "ok", time.monotonic() - _t0)
-            log.info("short_squeeze_alert.done", candidates=len(candidates), sent=sent, recipients=len(recipients))
+            log.info("short_squeeze_alert.done", candidates=len(candidates), sent=sent, recipients=len(recipients),
+                     fundamentals_cache_misses=_fundamentals_cache_misses)
     except Exception as exc:
         log.error("short_squeeze_alert.failed", error=str(exc), exc_info=True)
         _record_job_status("check_short_squeeze_alerts", "error", time.monotonic() - _t0, str(exc))
