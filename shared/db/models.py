@@ -1355,6 +1355,13 @@ class OptionsFlowSnapshot(Base):
     stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
     as_of: Mapped[date] = mapped_column(Date, index=True)
     cp_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # AUD265-CPRATIO-CENSORED-BREAKS-RANKING: cp_ratio above is capped at 10.0 (see
+    # options_flow_snapshot.py's compute_options_flow()) — every symbol whose real call/put
+    # ratio exceeds 10.0 collapses to the identical stored value, so ranking by cp_ratio can't
+    # tell a 10x-lopsided flow from a 500x one. cp_ratio_uncapped preserves the real, unclamped
+    # ratio for ranking/display; cp_ratio (capped) stays the sentiment-classification input,
+    # since the sentiment ladder's own tier boundaries were chosen against the capped scale.
+    cp_ratio_uncapped: Mapped[float | None] = mapped_column(Float, nullable=True)
     call_volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
     put_volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
     call_premium: Mapped[float | None] = mapped_column(Float, nullable=True)

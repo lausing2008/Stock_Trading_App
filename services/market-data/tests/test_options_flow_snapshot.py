@@ -94,6 +94,56 @@ def test_cp_ratio_is_capped_at_10():
     assert result.cp_ratio == 10.0
 
 
+# ── AUD265-CPRATIO-CENSORED-BREAKS-RANKING ──────────────────────────────────────────────────
+
+def test_cp_ratio_uncapped_preserves_the_real_ratio_past_the_display_cap():
+    """The whole point of this field: a symbol whose real call/put ratio is far past 10.0
+    must NOT collapse to the same stored value as one whose real ratio is only slightly past
+    10.0 — cp_ratio_uncapped must carry the real, unclamped number through to persistence."""
+    ticker = _make_ticker(["2026-08-15"], {
+        "2026-08-15": ([_row(5000, 6000, 1.0)], [_row(1, 5, 0.5)]),
+    })
+    with patch("yfinance.Ticker", return_value=ticker):
+        result = compute_options_flow("XYZ")
+    assert result is not None
+    assert result.cp_ratio == 10.0  # display/sentiment scale — correctly capped
+    assert result.cp_ratio_uncapped == 5000.0  # ranking/history scale — the real ratio
+
+
+def test_cp_ratio_uncapped_matches_capped_when_the_real_ratio_is_already_under_10():
+    """Below the cap, both fields must agree exactly — the cap only ever changes the DISPLAY
+    value once the real ratio actually exceeds 10.0."""
+    ticker = _make_ticker(["2026-08-15"], {
+        "2026-08-15": ([_row(500, 600, 2.0)], [_row(100, 150, 1.0)]),
+    })
+    with patch("yfinance.Ticker", return_value=ticker):
+        result = compute_options_flow("XYZ")
+    assert result is not None
+    assert result.cp_ratio == result.cp_ratio_uncapped == 5.0
+
+
+def test_sentiment_classification_still_uses_the_capped_scale_not_the_uncapped_one():
+    """Two symbols with wildly different uncapped ratios (5000 vs 50) must still classify to
+    the SAME sentiment tier, since both clear the 10.0 cap identically — sentiment must never
+    start reading the uncapped field, or a future change to it could silently shift tier
+    boundaries the sentiment ladder was never calibrated against."""
+    ticker_a = _make_ticker(["2026-08-15"], {
+        "2026-08-15": ([_row(5000, 6000, 1.0)], [_row(100, 150, 0.5)]),  # cp_ratio_uncapped=50.0
+    })
+    ticker_b = _make_ticker(["2026-08-15"], {
+        "2026-08-15": ([_row(5000, 6000, 1.0)], [_row(500, 600, 1.0)]),  # cp_ratio_uncapped=10.0
+    })
+    with patch("yfinance.Ticker", return_value=ticker_a):
+        result_a = compute_options_flow("XYZ")
+    with patch("yfinance.Ticker", return_value=ticker_b):
+        result_b = compute_options_flow("XYZ")
+    assert result_a is not None and result_b is not None
+    assert result_a.cp_ratio_uncapped == 50.0
+    assert result_b.cp_ratio_uncapped == 10.0
+    assert result_a.cp_ratio == result_b.cp_ratio == 10.0
+    assert result_a.sentiment == result_b.sentiment == "strongly_bullish"
+
+
 def test_near_zero_put_volume_does_not_falsely_declare_bullish():
     """A near-zero put volume usually means illiquid options, not extreme bullishness —
     sufficient_put_vol (>=100) must gate the bullish/bearish tiers, matching get_options_flow()'s

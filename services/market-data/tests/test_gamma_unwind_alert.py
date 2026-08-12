@@ -58,6 +58,43 @@ def test_expires_today_renders_distinct_urgency_text():
     assert "expires in 0d" not in html  # must use the distinct today-specific phrasing
 
 
+# ── AUD265-ZERO-DTE-OI-IS-STALE-BY-CONSTRUCTION ─────────────────────────────────────────────
+
+def test_zero_dte_row_qualifies_the_oi_figure_as_stale_relative_to_todays_session():
+    """Open interest is exchange-published once per day, as of the PRIOR close — on the day a
+    contract actually expires, the reported OI figure is already a full trading session stale
+    relative to the unwind the alert is about. The 0-DTE row specifically must carry an
+    explicit "as of yesterday's close" qualifier so a reader doesn't mistake it for a live
+    intraday number."""
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_gamma_unwind_email("user@example.com", [
+            {"symbol": "TSLA", "expiry": "2026-08-05", "days_to_expiry": 0,
+             "dominant_side": "puts", "concentration_pct": 60.0,
+             "total_oi_near_money": 10000, "price": 250.0},
+        ])
+    html, text = calls[0]["html"], calls[0]["text"]
+    assert "as of yesterday" in html.lower()
+    assert "as of yesterday" in text.lower()
+
+
+def test_non_zero_dte_row_does_not_carry_the_stale_oi_qualifier():
+    """The qualifier must be scoped to the dte=0 row only — a 1-5 day-to-expiry row's OI figure
+    genuinely is current as of the most recent close, so tacking the same caveat onto every row
+    would misleadingly suggest every row's data is equally stale."""
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_gamma_unwind_email("user@example.com", [
+            {"symbol": "XYZ", "expiry": "2026-08-08", "days_to_expiry": 3,
+             "dominant_side": "calls", "concentration_pct": 70.0,
+             "total_oi_near_money": 5000, "price": 42.0},
+        ])
+    html, text = calls[0]["html"], calls[0]["text"]
+    assert "as of yesterday" not in html.lower()
+    assert "as of yesterday" not in text.lower()
+    assert "expires in 3d" in html
+
+
 def test_subject_and_body_never_claim_a_firm_direction():
     """This is the one property that MUST hold — unlike the short-squeeze alert's explicit
     BUY-signal framing, this alert must never assert a specific direction, since the app has

@@ -1327,7 +1327,16 @@ def send_gamma_unwind_email(to: str, candidates: list[dict]) -> bool:
         side_color = "#22c55e" if side == "calls" else "#ef4444"
         conc = c["concentration_pct"]
         dte = c["days_to_expiry"]
-        dte_str = "expires TODAY" if dte == 0 else f"expires in {dte}d"
+        # AUD265-ZERO-DTE-OI-IS-STALE-BY-CONSTRUCTION: open interest is exchange-published once
+        # per day, as of the PRIOR session's close — genuinely current for a 1-5 day-to-expiry
+        # row, but for a dte=0 (expires TODAY) row the OI figure is already up to a full trading
+        # session stale relative to whatever has happened intraday today, right when it matters
+        # most (the day the position actually unwinds). Qualify only the 0-DTE row, since it's
+        # the one case where "as of when" materially changes what the number means.
+        if dte == 0:
+            dte_str = "expires TODAY (OI as of yesterday's close)"
+        else:
+            dte_str = f"expires in {dte}d"
         oi = c["total_oi_near_money"]
         price_str = f"${c['price']:.2f}" if c.get("price") else "—"
         rows_html += (

@@ -450,13 +450,17 @@ export default function AlertsGuidePage() {
         </SubSection>
 
         <Callout tone="example" title="Worked example 1 — calls-heavy, near expiry">
-          <div style={{ fontFamily: 'monospace', marginBottom: 6 }}>NVDA: $128.40 · 3,400 contracts near the money · expires TODAY (2026-08-04) · 81% calls</div>
+          <div style={{ fontFamily: 'monospace', marginBottom: 6 }}>NVDA: $128.40 · 3,400 contracts near the money · expires TODAY (OI as of yesterday&rsquo;s close) (2026-08-04) · 81% calls</div>
           Read: 81% of a large (3,400-contract) near-the-money block expires <em>today</em> — the
           most time-pressured version of this signal, since dealers have to finish hedging before
-          the close. What to do: don&rsquo;t assume upside — check the AI Signal/Confluence Score
-          for a real directional lean first, then watch for unusually large intraday swings in
-          either direction into the close specifically. This is exactly the kind of day where price
-          can whipsaw more than the chart alone would suggest.
+          the close. The &ldquo;OI as of yesterday&rsquo;s close&rdquo; qualifier is a real,
+          deliberate caveat, not filler text: exchanges publish open interest once per day, so on
+          the expiry day itself that contract count is already a full trading session stale —
+          it doesn&rsquo;t yet reflect anything that unwound earlier today. What to do: don&rsquo;t
+          assume upside — check the AI Signal/Confluence Score for a real directional lean first,
+          then watch for unusually large intraday swings in either direction into the close
+          specifically. This is exactly the kind of day where price can whipsaw more than the
+          chart alone would suggest.
         </Callout>
 
         <Callout tone="example" title="Worked example 2 — puts-heavy, a few days out">

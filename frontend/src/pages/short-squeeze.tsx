@@ -168,7 +168,12 @@ function BearishPutsWatchSection({
                 {c.price != null ? `$${c.price.toFixed(2)}` : '—'} · {c.total_oi_near_money.toLocaleString()} contracts near the money
               </div>
               <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '10px' }}>
-                {c.days_to_expiry === 0 ? 'expires TODAY' : `expires in ${c.days_to_expiry}d`} ({c.expiry})
+                {/* AUD265-ZERO-DTE-OI-IS-STALE-BY-CONSTRUCTION: OI is exchange-published as of
+                    the prior close — genuinely current for a 1-5 day-to-expiry row, but on the
+                    expiry day itself the figure predates the whole trading session it's meant
+                    to describe. Qualified only on that one row, matching the gamma-unwind
+                    email's own equivalent fix. */}
+                {c.days_to_expiry === 0 ? "expires TODAY (OI as of yesterday's close)" : `expires in ${c.days_to_expiry}d`} ({c.expiry})
                 {c.ai_signal && <> · AI Signal: <span style={{ color: '#94a3b8' }}>{c.ai_signal}</span></>}
                 {c.rsi != null && <> · RSI {c.rsi}</>}
               </div>

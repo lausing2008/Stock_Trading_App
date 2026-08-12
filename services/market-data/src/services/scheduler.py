@@ -1891,15 +1891,25 @@ def _fetch_recent_options_flow(session: Session) -> list[dict]:
     """T257-OVERNIGHT-FLOW-BRIEF Phase 2: yesterday's late-day options flow for the pre-market
     brief — reads only already-persisted OptionsFlowSnapshot rows (no live yfinance call here),
     matching this file's own established discipline of never hammering yfinance from a report
-    path. Ranked by |cp_ratio - 1| descending (the most directionally lopsided flow first, not
-    just the highest raw ratio, so a bearish reading with a low cp_ratio still surfaces).
+    path. Ranked by |cp_ratio_uncapped - 1| descending (the most directionally lopsided flow
+    first, not just the highest raw ratio, so a bearish reading with a low ratio still
+    surfaces).
+
+    AUD265-CPRATIO-CENSORED-BREAKS-RANKING: the DISPLAYED cp_ratio is deliberately capped at
+    10.0 (options_flow_snapshot.py's own sentiment-classification scale) — but ranking by that
+    capped value collapsed every symbol whose real call/put ratio exceeds 10.0 to the identical
+    sort key, so a 10x-lopsided flow and a 500x-lopsided flow were indistinguishable. Ranks by
+    cp_ratio_uncapped (falling back to the capped cp_ratio for any pre-fix row that predates the
+    new column) while still returning the capped cp_ratio for display, since the sentiment label
+    next to it was classified against the capped scale.
     """
     latest_as_of = session.execute(select(func.max(OptionsFlowSnapshot.as_of))).scalar_one_or_none()
     if latest_as_of is None:
         return []
     rows = session.execute(
         select(
-            Stock.symbol, OptionsFlowSnapshot.cp_ratio, OptionsFlowSnapshot.sentiment,
+            Stock.symbol, OptionsFlowSnapshot.cp_ratio, OptionsFlowSnapshot.cp_ratio_uncapped,
+            OptionsFlowSnapshot.sentiment,
             OptionsFlowSnapshot.call_premium, OptionsFlowSnapshot.put_premium,
             OptionsFlowSnapshot.whale_count, OptionsFlowSnapshot.top_whale_premium,
         )
@@ -1910,15 +1920,19 @@ def _fetch_recent_options_flow(session: Session) -> list[dict]:
         {
             "symbol": symbol,
             "cp_ratio": round(float(cp_ratio), 2) if cp_ratio is not None else None,
+            "cp_ratio_uncapped": (
+                round(float(cp_ratio_uncapped), 2) if cp_ratio_uncapped is not None
+                else (round(float(cp_ratio), 2) if cp_ratio is not None else None)
+            ),
             "sentiment": sentiment,
             "call_premium": round(float(call_premium), 2) if call_premium is not None else None,
             "put_premium": round(float(put_premium), 2) if put_premium is not None else None,
             "whale_count": whale_count or 0,
             "top_whale_premium": round(float(top_whale_premium), 2) if top_whale_premium else 0,
         }
-        for symbol, cp_ratio, sentiment, call_premium, put_premium, whale_count, top_whale_premium in rows
+        for symbol, cp_ratio, cp_ratio_uncapped, sentiment, call_premium, put_premium, whale_count, top_whale_premium in rows
     ]
-    results.sort(key=lambda r: abs((r["cp_ratio"] or 1.0) - 1.0), reverse=True)
+    results.sort(key=lambda r: abs((r["cp_ratio_uncapped"] or 1.0) - 1.0), reverse=True)
     return results[:10]
 
 

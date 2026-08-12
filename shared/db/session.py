@@ -484,6 +484,13 @@ def _run_migrations() -> None:  # noqa: C901
             "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS entry_commission FLOAT"
         ))
 
+        # AUD265-CPRATIO-CENSORED-BREAKS-RANKING: cp_ratio was persisted pre-capped at 10.0 —
+        # every symbol whose real call/put ratio exceeded 10.0 collapsed to the same stored
+        # value, corrupting the pre-market brief's |cp_ratio - 1| ranking, not just its display.
+        conn.execute(text(
+            "ALTER TABLE options_flow_snapshots ADD COLUMN IF NOT EXISTS cp_ratio_uncapped FLOAT"
+        ))
+
 
 def _seed_admin() -> None:
     try:

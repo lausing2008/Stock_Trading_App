@@ -197,3 +197,42 @@ def test_fetch_recent_options_flow_reads_only_persisted_rows_no_live_yfinance_ca
     body = _SCHEDULER_SOURCE[start:end]
     assert "import yfinance" not in body
     assert "OptionsFlowSnapshot" in body
+
+
+# ── AUD265-CPRATIO-CENSORED-BREAKS-RANKING ──────────────────────────────────────────────────
+
+def test_fetch_recent_options_flow_ranks_by_the_uncapped_ratio_not_the_censored_one():
+    """The displayed cp_ratio is capped at 10.0 (options_flow_snapshot.py's own sentiment
+    scale) — every symbol whose real ratio exceeds 10.0 collapses to the identical stored
+    value there, so ranking by THAT field can't distinguish a 10x-lopsided flow from a
+    500x-lopsided one. The sort key must use cp_ratio_uncapped, not cp_ratio."""
+    start = _SCHEDULER_SOURCE.index("def _fetch_recent_options_flow(")
+    end = _SCHEDULER_SOURCE.index("\ndef ", start + 1)
+    body = _SCHEDULER_SOURCE[start:end]
+    sort_idx = body.index("results.sort(")
+    sort_line_end = body.index("\n", sort_idx)
+    sort_line = body[sort_idx:sort_line_end]
+    assert "cp_ratio_uncapped" in sort_line
+    assert '"cp_ratio"] or' not in sort_line  # must not still rank by the plain capped field
+
+
+def test_fetch_recent_options_flow_selects_cp_ratio_uncapped_from_the_db():
+    """The fix is a no-op unless the query actually SELECTs the new column — a sort key
+    referencing a field the query never fetched would just always fall back to None."""
+    start = _SCHEDULER_SOURCE.index("def _fetch_recent_options_flow(")
+    end = _SCHEDULER_SOURCE.index("\ndef ", start + 1)
+    body = _SCHEDULER_SOURCE[start:end]
+    select_idx = body.index("select(")
+    select_end = body.index(")\n        .join(", select_idx)
+    select_block = body[select_idx:select_end]
+    assert "OptionsFlowSnapshot.cp_ratio_uncapped" in select_block
+
+
+def test_fetch_recent_options_flow_still_returns_the_capped_ratio_for_display():
+    """The fix must not REPLACE the displayed cp_ratio with the uncapped one — the sentiment
+    label sitting next to it in the email was classified against the CAPPED scale, so
+    displaying the uncapped number there would read as internally inconsistent."""
+    start = _SCHEDULER_SOURCE.index("def _fetch_recent_options_flow(")
+    end = _SCHEDULER_SOURCE.index("\ndef ", start + 1)
+    body = _SCHEDULER_SOURCE[start:end]
+    assert '"cp_ratio": round(float(cp_ratio), 2)' in body

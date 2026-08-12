@@ -38,6 +38,7 @@ log = structlog.get_logger()
 @dataclass
 class OptionsFlowResult:
     cp_ratio: float
+    cp_ratio_uncapped: float
     call_volume: int
     put_volume: int
     call_premium: float
@@ -104,7 +105,13 @@ def compute_options_flow(symbol: str) -> OptionsFlowResult | None:
         if total_call_vol == 0 and total_put_vol == 0:
             return None
 
-        cp_ratio = round(min(total_call_vol / max(total_put_vol, 1), 10.0), 2)
+        # AUD265-CPRATIO-CENSORED-BREAKS-RANKING: cp_ratio is capped at 10.0 for sentiment
+        # classification (the ladder's own tier boundaries were chosen against this capped
+        # scale) — but the real, uncapped ratio is preserved separately so ranking/display can
+        # still distinguish a 10x-lopsided flow from a 500x one; both would otherwise collapse
+        # to the identical stored value.
+        cp_ratio_uncapped = round(total_call_vol / max(total_put_vol, 1), 2)
+        cp_ratio = min(cp_ratio_uncapped, 10.0)
         sufficient_put_vol = total_put_vol >= 100
 
         if cp_ratio >= 2.0 and sufficient_put_vol:
@@ -120,6 +127,7 @@ def compute_options_flow(symbol: str) -> OptionsFlowResult | None:
 
         return OptionsFlowResult(
             cp_ratio=cp_ratio,
+            cp_ratio_uncapped=cp_ratio_uncapped,
             call_volume=total_call_vol,
             put_volume=total_put_vol,
             call_premium=round(total_call_premium, 2),
@@ -146,6 +154,7 @@ def upsert_options_flow_snapshot(
         stock_id=stock_id,
         as_of=as_of,
         cp_ratio=result.cp_ratio,
+        cp_ratio_uncapped=result.cp_ratio_uncapped,
         call_volume=result.call_volume,
         put_volume=result.put_volume,
         call_premium=result.call_premium,

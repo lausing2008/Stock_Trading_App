@@ -1729,13 +1729,13 @@ def tune_sell_pillars(
         _train_window = (train_bucket[0].signal_date, train_bucket[-1].signal_date)
         _val_window = (val_bucket[0].signal_date, val_bucket[-1].signal_date)
 
-        def _stats_at(min_pillars: int, samples: list) -> dict | None:
+        def _stats_at(min_pillars: int, samples: list, _min_n: int = min_samples) -> dict | None:
             # A candidate gate blocks (compresses) any SELL with FEWER than min_pillars active
             # bearish pillars — the "would this SELL have fired" set is the ones that pass, i.e.
             # bearish_pillars_active >= min_pillars. min_pillars=0 means every SELL passes (the
             # current live behavior — no gate at all), the true baseline to beat.
             sub = [o for o in samples if o.bearish_pillars_active >= min_pillars]
-            if len(sub) < min_samples:
+            if len(sub) < _min_n:
                 return None
             wins = sum(1 for o in sub if o.is_correct)
             # T232-OC4 / the SELL threshold sweep's own established convention (above): a SELL
@@ -1746,11 +1746,25 @@ def tune_sell_pillars(
             ev = avg_ret * 100
             return {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
 
+        # AUD263-SELLPILLAR-GATE-UNMEASURABLE-AND-UNSCHEDULED: a candidate p_i that only barely
+        # clears min_samples on the (larger) TRAIN slice can easily fall BELOW min_samples on
+        # the (smaller, ~30%) VALIDATION slice purely from the split ratio — nothing here forced
+        # a candidate's train-slice subset to actually be large enough to survive the shrink.
+        # Live-verified against production: min_pillars=4's train subset (72-86 rows across all
+        # 4 horizons) always looked best by EV on the train slice (a classic small-sample
+        # overfit — the narrowest, most cherry-picked subset), then correctly failed
+        # candidate_unmeasurable_on_validation every single time once its ~30-46-row validation
+        # subset fell under the 50-sample floor. _train_min_n scales min_samples by the actual
+        # train/validation ratio (not a fixed constant), so a candidate is only ever considered
+        # on the train slice if a PROPORTIONAL subset would still be expected to clear
+        # min_samples after the same split ratio shrinks it on validation.
+        _train_min_n = int(min_samples * (len(train_bucket) / max(1, len(val_bucket))))
+
         current_pillars = 0  # no gate — the real current live behavior for SELL
         best_ev = -999.0
         best_p: int | None = None
         for p_i in (1, 2, 3, 4):
-            st = _stats_at(p_i, train_bucket)
+            st = _stats_at(p_i, train_bucket, _train_min_n)
             if st is not None and st["ev_pct"] > best_ev:
                 best_ev = st["ev_pct"]
                 best_p = p_i
