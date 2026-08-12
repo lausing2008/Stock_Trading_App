@@ -84,7 +84,7 @@ function Badge({ text, color, bg }: { text: string; color: string; bg: string })
   );
 }
 
-function EquityCurve({ points, spyReturn }: { points: EquityPoint[]; spyReturn: number | null }) {
+function EquityCurve({ points, spyReturn, riskPerTradePct }: { points: EquityPoint[]; spyReturn: number | null; riskPerTradePct: number }) {
   if (points.length < 2) return null;
   const W = 760, H = 160, PAD = { t: 12, r: 12, b: 28, l: 52 };
   const iW = W - PAD.l - PAD.r;
@@ -128,7 +128,10 @@ function EquityCurve({ points, spyReturn }: { points: EquityPoint[]; spyReturn: 
 
   return (
     <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '12px 16px', marginBottom: 24 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b', marginBottom: 10 }}>Equity Curve</div>
+      <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>Equity Curve</div>
+      <div style={{ fontSize: 10, color: '#475569', marginBottom: 10 }}>
+        Assumes {riskPerTradePct}% of equity risked per trade (≈{Math.round(100 / riskPerTradePct)} concurrent positions), not one all-in bet per trade — closed trades often overlap in time.
+      </div>
       <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ overflow: 'visible' }}>
         <g transform={`translate(${PAD.l},${PAD.t})`}>
           {/* Y-axis labels */}
@@ -355,7 +358,7 @@ export default function TradePerformancePage() {
             <StatCard label="Profit Factor" value={data.profit_factor != null ? data.profit_factor.toFixed(2) : '—'}
               sub="winners ÷ losers" color={pfColor} />
             <StatCard label="Total Return"  value={pct(data.total_return)}
-              sub="compounded equity"
+              sub={`compounded, ${data.risk_per_trade_pct ?? 10}% risked/trade`}
               color={data.total_return != null && data.total_return >= 0 ? '#4ade80' : '#f87171'} />
             <StatCard label="vs SPY"
               value={data.total_return != null && data.spy_return != null
@@ -394,7 +397,7 @@ export default function TradePerformancePage() {
 
           {/* Equity curve */}
           {data.equity_curve && data.equity_curve.length >= 2 && (
-            <EquityCurve points={data.equity_curve} spyReturn={data.spy_return} />
+            <EquityCurve points={data.equity_curve} spyReturn={data.spy_return} riskPerTradePct={data.risk_per_trade_pct ?? 10} />
           )}
         </>
       )}
