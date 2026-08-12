@@ -383,6 +383,20 @@ def check_hard_rejects(
                 f"exceeds {_heat_max} threshold — entries paused until market conditions improve (T221-E)"
             )
 
+    # T232-DL-DUALSCORER-DEBT / T221-B: Market cluster cap, ported from paper_trading_engine.py's
+    # _scan_for_entries(). HK stocks are highly correlated — a market-wide down day stops out
+    # all positions in that market simultaneously — so the fallback blocks ALL new entries once
+    # a portfolio is at its per-market position cap, rather than scoring individual candidates.
+    # cfg["market_open_count"] is only present when the caller sent a real portfolio's own
+    # per-market open-position count (see paper_trading_engine.py's config_overrides).
+    if cfg.get("market_open_count") is not None:
+        _max_mkt = cfg.get("max_market_positions", 4)
+        if int(cfg["market_open_count"]) >= _max_mkt:
+            return (
+                f"Market cluster cap — {int(cfg['market_open_count'])} open positions in this "
+                f"market, at the {_max_mkt} limit — no new entries until a position closes (T221-B)"
+            )
+
     # T171: Premarket gap filter — reject if price has already gapped up significantly
     # from its signal-time close. reasons["last_price"] is the close at signal-compute time.
     _signal_close = _reasons.get("last_price")

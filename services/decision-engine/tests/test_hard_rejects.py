@@ -1162,3 +1162,48 @@ def test_heat_brake_zero_recent_stops_does_not_block():
     confirms the gate's real comparison, not merely that SOME low value passes."""
     result = hr.check_hard_rejects(**_base_kwargs(cfg={"recent_stop_count": 0}))
     assert result is None
+
+
+# ── Market cluster cap (T221-B, T232-DL-DUALSCORER-DEBT) ──────────────────────────────────
+# HK stocks are highly correlated — a market-wide down day stops out all positions in that
+# market simultaneously — so _scan_for_entries blocks ALL new entries once a portfolio is at
+# its per-market position cap, rather than scoring individual candidates. cfg["market_open_count"]
+# is only present when the real caller sent a fresh per-market open-position count;
+# cfg["max_market_positions"] defaults to 4 (the real _DEFAULT_CONFIG value).
+
+def test_market_cluster_cap_blocks_at_the_threshold():
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"market_open_count": 4}))
+    assert result is not None and "Market cluster cap" in result
+
+
+def test_market_cluster_cap_blocks_above_the_threshold():
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"market_open_count": 6}))
+    assert result is not None and "Market cluster cap" in result
+
+
+def test_market_cluster_cap_does_not_block_below_the_threshold():
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"market_open_count": 3}))
+    assert result is None
+
+
+def test_market_cluster_cap_gate_skipped_when_market_open_count_absent():
+    """An older caller not yet sending market_open_count must not be blocked — this gate is
+    opt-in via cfg, matching every other optional gate in this file."""
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={}))
+    assert result is None
+
+
+def test_market_cluster_cap_respects_a_custom_max_positions_threshold():
+    """paper_trading_engine.py's real default is 4, but cfg can override it — a count that
+    clears the default must still be blocked under a tightened custom threshold."""
+    result = hr.check_hard_rejects(
+        **_base_kwargs(cfg={"market_open_count": 2, "max_market_positions": 2})
+    )
+    assert result is not None and "Market cluster cap" in result
+
+
+def test_market_cluster_cap_zero_open_count_does_not_block():
+    """A market with zero open positions (the common, healthy case) must never be blocked —
+    confirms the gate's real comparison, not merely that SOME low value passes."""
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={"market_open_count": 0}))
+    assert result is None

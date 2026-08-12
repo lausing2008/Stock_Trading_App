@@ -3099,6 +3099,7 @@ def _call_decision_engine(
     sig_ref_price: float | None = None,
     short_signal: str | None = None,
     recent_stop_count: int | None = None,
+    market_open_count: int | None = None,
 ) -> tuple[bool, str, int, str | None] | None:
     """Call Decision Engine and return (should_enter, verdict, score, blocked_reason).
 
@@ -3291,6 +3292,20 @@ def _call_decision_engine(
                     **( {"recent_stop_count": recent_stop_count,
                          "heat_brake_max_stops": cfg.get("heat_brake_max_stops", _DEFAULT_CONFIG["heat_brake_max_stops"])}
                         if recent_stop_count is not None else {} ),
+                    # T232-DL-DUALSCORER-DEBT / T221-B: market cluster cap — _scan_for_entries'
+                    # own portfolio-wide, per-market position count (HK stocks are highly
+                    # correlated; a market-wide down day stops out all positions simultaneously),
+                    # blocking ALL new entries once at the cap rather than scoring individual
+                    # candidates. Same shape as recent_stop_count/recent_win_rate/consec_losses
+                    # above — a single-portfolio count computed once per scan cycle before the
+                    # candidate loop begins, not cross-portfolio state DE structurally can't
+                    # replicate. DE had no equivalent at all, so /decide/{symbol} called
+                    # standalone (e.g. decide.tsx, which never runs _scan_for_entries' own
+                    # pre-filter) could silently approve an entry into a market the fallback
+                    # engine itself would have refused to add to.
+                    **( {"market_open_count": market_open_count,
+                         "max_market_positions": cfg.get("max_market_positions", _DEFAULT_CONFIG["max_market_positions"])}
+                        if market_open_count is not None else {} ),
                 },
             },
             headers={"Authorization": f"Bearer {_svc_token()}"},
@@ -4799,6 +4814,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             candidate_sector=stock.sector,             # T186: sector gate
             consec_losses=_consec_losses,              # T187: streak gate
             recent_stop_count=_recent_stops,            # T232-DL-DUALSCORER-DEBT / T221-E: heat brake
+            market_open_count=_mkt_open_count,          # T232-DL-DUALSCORER-DEBT / T221-B: market cluster cap
             kscore=kscore_f,                           # AUD232-042: K-Score visibility
             ta_score=ta_score_f,                        # T232-DL-DUALSCORER-DEBT: TA-score gate parity
             # AUD256: regime_state needed so the calibrated regime_min_rr_ratio default
