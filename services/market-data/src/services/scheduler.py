@@ -129,6 +129,40 @@ def _get_redis() -> redis_lib.Redis:
     return _get_pool_redis()
 
 
+# T270-DBSYNC-PROD-TO-LOCAL-WEEKLY / BUG-LOCALDEV-ALERTS-UNGATED: settings.env already existed
+# (shared/common/config.py, defaults "development") but was never consulted anywhere in this
+# file — every alert/digest job registered and ran unconditionally regardless of environment.
+# This is a present-tense risk, not a hypothetical: local dev's own .env already has real SMTP
+# credentials configured, so restoring a real prod DB dump locally (the exact workflow a
+# prod->local sync tool would enable) would email real users within minutes, with nothing in
+# the code stopping it. Confirmed live: production's own .env genuinely sets ENV=production;
+# local dev has no ENV override at all, so it correctly resolves to the "development" default.
+#
+# _REDIS_ALERTS_FORCE_ENABLED is an OPTIONAL escape hatch for the rare case a developer
+# genuinely needs to test real alert delivery against local data (matching the established
+# stockai:admin:feature:<name> pattern used by auto_research_enabled/theme_forecast_email_
+# enabled elsewhere in this codebase) — default unset/"0", so this NEVER silently re-enables
+# alerting; it must be explicitly turned on by an admin who understands what they're doing.
+_REDIS_ALERTS_FORCE_ENABLED = "stockai:admin:feature:alerts_force_enabled_non_prod"
+
+
+def _is_alerting_enabled() -> bool:
+    """The single gate every alert/digest job registration AND every inline alert call in
+    this file must check before doing real, user-visible work (sending an email/push/webhook).
+    True in production always. Outside production, true ONLY if an admin has explicitly set
+    the force-enable Redis flag — never on by accident, never via a config file someone forgot
+    they'd set. Fails CLOSED (returns False) on any Redis error, matching this repo's own
+    "when in doubt about a safety gate, do the safer thing" convention — a Redis outage must
+    never be the reason real users start getting emailed from a dev's laptop.
+    """
+    if _settings.env == "production":
+        return True
+    try:
+        return _get_redis().get(_REDIS_ALERTS_FORCE_ENABLED) == "1"
+    except Exception:
+        return False
+
+
 def _record_job_status(job_name: str, status: str, duration_s: float, error: str | None = None) -> None:
     """Write job completion status to Redis for the admin health monitor (TTL 14 days)."""
     try:
@@ -143,6 +177,38 @@ def _record_job_status(job_name: str, status: str, duration_s: float, error: str
                 "error": error,
             }),
         )
+    except Exception:
+        pass
+
+
+# AUD266-TWO-GATES-CONTRADICTORY-BARS: check_signal_alerts() stacks two independently-tuned
+# gates in series — the 5-layer conviction gate (_is_conviction_buy, logged as
+# "signal_alert.conviction_met") and the decision-engine verdict gate (logged as
+# "signal_alert.de_gate_passed"/"signal_alert.skipped_de_gate") — with nothing asserting their
+# intersection stays non-empty. Production showed a real 2,300:1 skip ratio (4,824 candidates
+# cleared conviction in 48h, only 27 actually fired) with zero alarm anywhere, because neither
+# gate's own pass/fail count was ever persisted anywhere outside a structlog line. These two
+# rolling 48h counters are the fix's data layer — _CONVICTION_MET_COUNTER_KEY increments every
+# time the conviction gate passes a BUY candidate, _ALERT_FIRED_COUNTER_KEY increments every
+# time an email actually sends. _dq_check_conviction_fired_ratio() below reads both and flags
+# a collapsed ratio the same way every other _DQ_CHECKS entry flags a staleness problem.
+_CONVICTION_MET_COUNTER_KEY = "stockai:metric:conviction_met_count_48h"
+_ALERT_FIRED_COUNTER_KEY = "stockai:metric:alert_fired_count_48h"
+_ROLLING_COUNTER_TTL_S = 48 * 3600
+
+
+def _incr_rolling_counter(key: str) -> None:
+    """INCR a counter with a 48h rolling TTL, set only once (checking TTL==-1, i.e. "no expiry
+    set yet") so a steady stream of increments doesn't keep resetting the window forever — the
+    same "expire only on first write" idiom this repo already uses for other rolling windows,
+    just applied to a plain counter instead of a JSON blob. Best-effort: a Redis hiccup here
+    must never block the real alert-sending code path it's instrumenting.
+    """
+    try:
+        r = _get_redis()
+        r.incr(key)
+        if r.ttl(key) == -1:
+            r.expire(key, _ROLLING_COUNTER_TTL_S)
     except Exception:
         pass
 
@@ -3878,6 +3944,7 @@ def check_signal_alerts() -> None:
                             "signal_alert.conviction_met", symbol=alert.symbol,
                             tier=conviction_tier, passed=passed, regime=sig_regime,
                         )
+                        _incr_rolling_counter(_CONVICTION_MET_COUNTER_KEY)
                     else:
                         # Non-BUY bullish improvement (e.g. WAIT→HOLD) — lighter gate:
                         # analyst bullish + regime-aware minimum confidence (SA-12)
@@ -3994,6 +4061,12 @@ def check_signal_alerts() -> None:
                     fired += 1
                     _alert_fail_counts.pop(alert.id, None)  # reset failure counter
                     log.info("signal_alert.fired", symbol=alert.symbol, prev=prev, current=current, style=style)
+                    # AUD266-TWO-GATES-CONTRADICTORY-BARS: only count BUY sends against the
+                    # conviction-met counter above — exit/bearish transitions bypass the
+                    # conviction gate entirely (see this function's own docstring), so counting
+                    # them here would understate the real conviction-met -> fired collapse.
+                    if current == "BUY":
+                        _incr_rolling_counter(_ALERT_FIRED_COUNTER_KEY)
                     _store_conviction(alert.symbol, style, True, conviction_passed or [], [], current,
                                       sent_at=now_utc.isoformat(), conviction_tier=conviction_tier or "full")
                     # T230-ALERTING-SLACK-DISCORD-FIX: also deliver via webhook if user has one
@@ -5404,10 +5477,14 @@ def _snapshot_fundamentals() -> None:
         # depends on (analyst-recommendation revision history) is guaranteed fresh — same
         # "avoid a stale/race-prone re-read from a differently-timed job" reasoning as
         # check_sector_rotation_alerts()'s own inline call from _compute_sector_rotation().
-        try:
-            check_earnings_beat_screener_alerts()
-        except Exception as exc:
-            log.error("earnings_beat_screener.failed", error=str(exc), exc_info=True)
+        # BUG-LOCALDEV-ALERTS-UNGATED: this sends real emails, so it's gated the same way the
+        # rest of the alert-emitting jobs are — the snapshot computation ABOVE this still runs
+        # unconditionally, since it's harmless data work useful for local dev testing too.
+        if _is_alerting_enabled():
+            try:
+                check_earnings_beat_screener_alerts()
+            except Exception as exc:
+                log.error("earnings_beat_screener.failed", error=str(exc), exc_info=True)
     except Exception as exc:
         elapsed = time.monotonic() - _t0
         _record_job_status("fundamentals_snapshot", "error", elapsed, str(exc))
@@ -5805,10 +5882,14 @@ def _compute_sector_rotation() -> None:
         # right after `rotation` is built, rather than as a separate scheduled job — this
         # guarantees it always reads the SAME fresh rotation dict this run just computed,
         # never a stale/race-prone re-read of the Redis cache from a differently-timed job.
-        try:
-            check_sector_rotation_alerts(rotation)
-        except Exception as exc:
-            log.error("sector_rotation_alert.failed", error=str(exc), exc_info=True)
+        # BUG-LOCALDEV-ALERTS-UNGATED: this sends real emails, so it's gated the same way the
+        # rest of the alert-emitting jobs are — the rotation computation ABOVE this still runs
+        # unconditionally, since it's harmless data work useful for local dev testing too.
+        if _is_alerting_enabled():
+            try:
+                check_sector_rotation_alerts(rotation)
+            except Exception as exc:
+                log.error("sector_rotation_alert.failed", error=str(exc), exc_info=True)
     except Exception as exc:
         elapsed = time.monotonic() - _t0
         _record_job_status("sector_rotation", "error", elapsed, str(exc))
@@ -7279,6 +7360,32 @@ _DQ_CHECKS: list[dict] = [
         "job_name": "check_macro_reaction_alerts", "source": "job_status",
         "max_age_hours": 1, "is_date": False,
     },
+    # AUD266-TWO-GATES-CONTRADICTORY-BARS: `source: "ratio"` is a genuinely different check
+    # shape from every entry above — those all ask "is this data/job fresh enough," this one
+    # asks "did enough conviction-gated candidates actually turn into a real alert." Reuses
+    # the same declarative-list + dq_check:{name} Redis key + failing-list + email-on-failure
+    # machinery below rather than a separate framework, but is dispatched by its own branch in
+    # run_data_quality_checks() since there's no "age" concept to compute here.
+    #
+    # min_count=20 is the floor BELOW which the ratio is not evaluated at all (an early-window
+    # sample of 3 conviction-met candidates producing 0 fires is not yet a meaningful signal —
+    # see the real production incident this item's own tracker note cites: 4,824 candidates in
+    # 48h, so 20 is a small fraction of a normal day's real volume, not a number picked to avoid
+    # ever firing). min_ratio=0.001 (0.1%) is set well below what a healthy, intentionally-
+    # selective pair of gates should produce — the real incident's own ratio was 27/4824 ≈
+    # 0.56%, itself already a legitimately low but non-zero rate; this floor is deliberately
+    # set to catch the "collapsed to near-zero" failure mode (a future threshold change that
+    # makes the intersection of the two gates EMPTY or near-empty), not to second-guess how
+    # selective the gates are allowed to be by design.
+    {
+        "name": "conviction_fired_ratio",
+        "description": "Conviction-gate-to-alert-fired ratio — catches a future gate mistuning that silently zeroes the alert stream (AUD266)",
+        "source": "ratio",
+        "numerator_key": _ALERT_FIRED_COUNTER_KEY,
+        "denominator_key": _CONVICTION_MET_COUNTER_KEY,
+        "min_denominator": 20,
+        "min_ratio": 0.001,
+    },
 ]
 
 
@@ -7303,6 +7410,42 @@ def run_data_quality_checks() -> None:
         with SessionLocal() as session:
             for check in _DQ_CHECKS:
                 try:
+                    # AUD266-TWO-GATES-CONTRADICTORY-BARS: "ratio" checks have no age/staleness
+                    # concept at all — handled entirely separately, before the age-based logic
+                    # below, and always `continue`s so it never falls through into that logic.
+                    if check.get("source") == "ratio":
+                        num = redis_client.get(check["numerator_key"])
+                        den = redis_client.get(check["denominator_key"])
+                        num_v = int(num) if num is not None else 0
+                        den_v = int(den) if den is not None else 0
+                        # Below the minimum sample floor, the ratio isn't a meaningful signal
+                        # yet (e.g. early in a fresh 48h window) — report ok rather than a
+                        # false positive on too little data, matching the market-closed skip
+                        # branches' own "report ok, not a real failure" convention below.
+                        if den_v < check["min_denominator"]:
+                            ratio_ok = True
+                            ratio_val = None
+                        else:
+                            ratio_val = num_v / den_v
+                            ratio_ok = ratio_val >= check["min_ratio"]
+                        redis_client.setex(
+                            f"dq_check:{check['name']}", 86400 * 7,
+                            json.dumps({
+                                "name": check["name"], "description": check["description"],
+                                "ok": ratio_ok, "numerator": num_v, "denominator": den_v,
+                                "ratio": round(ratio_val, 5) if ratio_val is not None else None,
+                                "min_ratio": check["min_ratio"],
+                                "checked_at": datetime.now(timezone.utc).isoformat(),
+                            }),
+                        )
+                        if not ratio_ok:
+                            failing.append({
+                                "name": check["name"], "description": check["description"],
+                                "age_hours": None, "max_age_hours": None,
+                                "detail": f"{num_v}/{den_v} ({ratio_val:.4%}) fired vs. conviction-met, below the {check['min_ratio']:.2%} floor",
+                            })
+                        continue
+
                     # AUD266-ALERT-JOBS-LACK-STATUS-CONSEQUENCE-DQ: a "job_status" check has
                     # no SQL query at all — it reads the job's own scheduler:job:{name}
                     # Redis liveness record (written by _record_job_status(), the same
@@ -7716,11 +7859,14 @@ def start_scheduler() -> None:
     # ── Broker auth check — 08:30 ET (1h before NYSE open) ──────────────────
     # Tests all active broker connections. Emails a re-auth link if tokens expired.
     # E*Trade OAuth tokens expire at midnight ET every day.
-    _scheduler.add_job(
-        _check_broker_auth,
-        CronTrigger(hour=8, minute=30, day_of_week="mon-fri", timezone="America/New_York"),
-        id="broker_auth_check", replace_existing=True, **_JOB_DEFAULTS,
-    )
+    # BUG-LOCALDEV-ALERTS-UNGATED: sends a real re-auth email — gated like every other
+    # alert-emitting job below, so restoring a prod DB dump locally can't email real users.
+    if _is_alerting_enabled():
+        _scheduler.add_job(
+            _check_broker_auth,
+            CronTrigger(hour=8, minute=30, day_of_week="mon-fri", timezone="America/New_York"),
+            id="broker_auth_check", replace_existing=True, **_JOB_DEFAULTS,
+        )
 
     # ── T257-ETRADE-PROD-SYSTEMATIC: intraday token keepalive — every ~90 min ──────
     # during market hours. Proactively renews E*Trade tokens so 2h intraday
@@ -7736,53 +7882,58 @@ def start_scheduler() -> None:
             id=f"broker_token_renewal_{_hour}{_minute:02d}", replace_existing=True, **_JOB_DEFAULTS,
         )
 
-    # ── Morning digests — one email per market, 40 min before that market opens ─────
-    # US 08:50 ET (open 09:30 ET); HK 08:50 HKT (open 09:30 HKT). Each covers only its
-    # own market's opportunities/positions — see send_morning_digest's market scoping.
-    _scheduler.add_job(
-        lambda: send_morning_digest(["US"]),
-        CronTrigger(hour=8, minute=50, day_of_week="mon-fri", timezone="America/New_York"),
-        id="morning_digest_us", replace_existing=True, **_JOB_DEFAULTS,
-    )
-    _scheduler.add_job(
-        lambda: send_morning_digest(["HK"]),
-        CronTrigger(hour=8, minute=50, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
-        id="morning_digest_hk", replace_existing=True, **_JOB_DEFAULTS,
-    )
+    # BUG-LOCALDEV-ALERTS-UNGATED: every job registered in this block sends a real email to
+    # real users — gated behind _is_alerting_enabled() (true in production always; outside
+    # production only if an admin has explicitly set the force-enable flag). See that
+    # function's own docstring for the full rationale (T270-DBSYNC-PROD-TO-LOCAL-WEEKLY).
+    if _is_alerting_enabled():
+        # ── Morning digests — one email per market, 40 min before that market opens ─────
+        # US 08:50 ET (open 09:30 ET); HK 08:50 HKT (open 09:30 HKT). Each covers only its
+        # own market's opportunities/positions — see send_morning_digest's market scoping.
+        _scheduler.add_job(
+            lambda: send_morning_digest(["US"]),
+            CronTrigger(hour=8, minute=50, day_of_week="mon-fri", timezone="America/New_York"),
+            id="morning_digest_us", replace_existing=True, **_JOB_DEFAULTS,
+        )
+        _scheduler.add_job(
+            lambda: send_morning_digest(["HK"]),
+            CronTrigger(hour=8, minute=50, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+            id="morning_digest_hk", replace_existing=True, **_JOB_DEFAULTS,
+        )
 
-    # ── T249-MARKETMOVER-P3: pre-market brief — 8:00 local, ahead of the morning digest's
-    # 8:50 so the macro/earnings catalyst context arrives before the opportunities digest.
-    _scheduler.add_job(
-        lambda: send_premarket_brief(["US"]),
-        CronTrigger(hour=8, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
-        id="premarket_brief_us", replace_existing=True, **_JOB_DEFAULTS,
-    )
-    _scheduler.add_job(
-        lambda: send_premarket_brief(["HK"]),
-        CronTrigger(hour=8, minute=0, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
-        id="premarket_brief_hk", replace_existing=True, **_JOB_DEFAULTS,
-    )
+        # ── T249-MARKETMOVER-P3: pre-market brief — 8:00 local, ahead of the morning digest's
+        # 8:50 so the macro/earnings catalyst context arrives before the opportunities digest.
+        _scheduler.add_job(
+            lambda: send_premarket_brief(["US"]),
+            CronTrigger(hour=8, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
+            id="premarket_brief_us", replace_existing=True, **_JOB_DEFAULTS,
+        )
+        _scheduler.add_job(
+            lambda: send_premarket_brief(["HK"]),
+            CronTrigger(hour=8, minute=0, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+            id="premarket_brief_hk", replace_existing=True, **_JOB_DEFAULTS,
+        )
 
-    # ── Post-open digests — 30 min after open, then hourly for 4 more checks ───
-    # T241-DIGEST5X: US/HK both open 09:30 local → checks fire at 10:00 (30min), 11:00
-    # (1hr30min), 12:00 (2hr30min), 13:00 (3hr30min), 14:00 (4hr30min), all local to the
-    # respective market's timezone. Only sent when something changed (regime shift, signal
-    # flip, new BUY/SELL, big move, volume surge) — see send_post_open_digest's has_content
-    # check. window names must match _WINDOW_LABELS in email_service.py.
-    _POST_OPEN_WINDOWS = [
-        ("30min", 10, 0),
-        ("1hr30min", 11, 0),
-        ("2hr30min", 12, 0),
-        ("3hr30min", 13, 0),
-        ("4hr30min", 14, 0),
-    ]
-    for _market, _tz in (("US", "America/New_York"), ("HK", "Asia/Hong_Kong")):
-        for _window, _hour, _minute in _POST_OPEN_WINDOWS:
-            _scheduler.add_job(
-                lambda m=_market, w=_window: send_post_open_digest(m, w),
-                CronTrigger(hour=_hour, minute=_minute, day_of_week="mon-fri", timezone=_tz),
-                id=f"post_open_digest_{_market.lower()}_{_window}", replace_existing=True, **_JOB_DEFAULTS,
-            )
+        # ── Post-open digests — 30 min after open, then hourly for 4 more checks ───
+        # T241-DIGEST5X: US/HK both open 09:30 local → checks fire at 10:00 (30min), 11:00
+        # (1hr30min), 12:00 (2hr30min), 13:00 (3hr30min), 14:00 (4hr30min), all local to the
+        # respective market's timezone. Only sent when something changed (regime shift, signal
+        # flip, new BUY/SELL, big move, volume surge) — see send_post_open_digest's has_content
+        # check. window names must match _WINDOW_LABELS in email_service.py.
+        _POST_OPEN_WINDOWS = [
+            ("30min", 10, 0),
+            ("1hr30min", 11, 0),
+            ("2hr30min", 12, 0),
+            ("3hr30min", 13, 0),
+            ("4hr30min", 14, 0),
+        ]
+        for _market, _tz in (("US", "America/New_York"), ("HK", "Asia/Hong_Kong")):
+            for _window, _hour, _minute in _POST_OPEN_WINDOWS:
+                _scheduler.add_job(
+                    lambda m=_market, w=_window: send_post_open_digest(m, w),
+                    CronTrigger(hour=_hour, minute=_minute, day_of_week="mon-fri", timezone=_tz),
+                    id=f"post_open_digest_{_market.lower()}_{_window}", replace_existing=True, **_JOB_DEFAULTS,
+                )
 
     # ── Data quality checks — every 2 hours, all days ────────────────────────
     # Checks actual data freshness (not job-run status — see run_data_quality_checks'
@@ -7796,11 +7947,13 @@ def start_scheduler() -> None:
     )
 
     # ── Paper portfolio after-market digest — 17:00 ET (1h after US close) ──
-    _scheduler.add_job(
-        send_paper_portfolio_digest,
-        CronTrigger(hour=17, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
-        id="paper_portfolio_digest", replace_existing=True, **_JOB_DEFAULTS,
-    )
+    # BUG-LOCALDEV-ALERTS-UNGATED: sends a real email — gated, see _is_alerting_enabled().
+    if _is_alerting_enabled():
+        _scheduler.add_job(
+            send_paper_portfolio_digest,
+            CronTrigger(hour=17, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
+            id="paper_portfolio_digest", replace_existing=True, **_JOB_DEFAULTS,
+        )
 
     # ── T252-VALUE-AREA-BREAKDOWN-ALERT: daily POC/VAH/VAL computation — 18:00 ET ──
     # After US close (17:00 ET digest above) and before the next day's open; HK's own bars
@@ -7812,142 +7965,146 @@ def start_scheduler() -> None:
         id="value_area_levels_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
 
-    # ── Price alert checker — every minute ──────────────────────────────────
-    _scheduler.add_job(
-        check_price_alerts,
-        "interval",
-        minutes=1,
-        id="price_alert_check",
-        replace_existing=True,
-        max_instances=1, coalesce=True,
-    )
+    # BUG-LOCALDEV-ALERTS-UNGATED: every 1-minute-interval checker below sends real alert
+    # emails when it fires — gated behind _is_alerting_enabled() as a block (they're all
+    # alert-emitting, no data-only jobs interleaved in this contiguous stretch).
+    if _is_alerting_enabled():
+        # ── Price alert checker — every minute ──────────────────────────────────
+        _scheduler.add_job(
+            check_price_alerts,
+            "interval",
+            minutes=1,
+            id="price_alert_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
 
-    # ── T257-VOLUME-ANOMALY-ALERT: universe-wide abnormal-volume scan — every minute ──
-    # Reads only the existing stockai:live_prices/stockai:avg_volume Redis caches (no
-    # yfinance/DB calls in the loop) — see check_volume_anomalies()'s own docstring.
-    _scheduler.add_job(
-        check_volume_anomalies,
-        "interval",
-        minutes=1,
-        id="volume_anomaly_check",
-        replace_existing=True,
-        max_instances=1, coalesce=True,
-    )
+        # ── T257-VOLUME-ANOMALY-ALERT: universe-wide abnormal-volume scan — every minute ──
+        # Reads only the existing stockai:live_prices/stockai:avg_volume Redis caches (no
+        # yfinance/DB calls in the loop) — see check_volume_anomalies()'s own docstring.
+        _scheduler.add_job(
+            check_volume_anomalies,
+            "interval",
+            minutes=1,
+            id="volume_anomaly_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
 
-    # ── Options-expiry gamma-unwind alert — a few times a day ───────────────
-    # OI concentration/expiry-proximity data doesn't change minute-to-minute — see
-    # check_gamma_unwind_alerts()'s own docstring for the full mechanism + honest limitations.
-    _scheduler.add_job(
-        check_gamma_unwind_alerts,
-        "interval",
-        hours=4,
-        id="gamma_unwind_alert_check",
-        replace_existing=True,
-        max_instances=1, coalesce=True,
-    )
+        # ── Options-expiry gamma-unwind alert — a few times a day ───────────────
+        # OI concentration/expiry-proximity data doesn't change minute-to-minute — see
+        # check_gamma_unwind_alerts()'s own docstring for the full mechanism + honest limitations.
+        _scheduler.add_job(
+            check_gamma_unwind_alerts,
+            "interval",
+            hours=4,
+            id="gamma_unwind_alert_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
 
-    # ── Short-squeeze prime-candidate alert — every minute ──────────────────
-    # Fires only on a state transition (not-a-candidate -> candidate) — see
-    # check_short_squeeze_alerts()'s own docstring. 1-minute cadence, matching every other
-    # fast intraday alert in this file, since a real squeeze can move fast.
-    _scheduler.add_job(
-        check_short_squeeze_alerts,
-        "interval",
-        minutes=1,
-        id="short_squeeze_alert_check",
-        replace_existing=True,
-        max_instances=1, coalesce=True,
-    )
+        # ── Short-squeeze prime-candidate alert — every minute ──────────────────
+        # Fires only on a state transition (not-a-candidate -> candidate) — see
+        # check_short_squeeze_alerts()'s own docstring. 1-minute cadence, matching every other
+        # fast intraday alert in this file, since a real squeeze can move fast.
+        _scheduler.add_job(
+            check_short_squeeze_alerts,
+            "interval",
+            minutes=1,
+            id="short_squeeze_alert_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
 
-    # ── T260-BEARISH-PUTS-WATCHLIST: squeeze-watch revert checker — every minute ────────────
-    # Reads only already-cached state (live prices, fundamentals, the bearish-puts-watch cache)
-    # — see check_squeeze_watch_reverts()'s own docstring for the full revert conditions.
-    _scheduler.add_job(
-        check_squeeze_watch_reverts,
-        "interval",
-        minutes=1,
-        id="squeeze_watch_revert_check",
-        replace_existing=True,
-        max_instances=1, coalesce=True,
-    )
+        # ── T260-BEARISH-PUTS-WATCHLIST: squeeze-watch revert checker — every minute ────────────
+        # Reads only already-cached state (live prices, fundamentals, the bearish-puts-watch cache)
+        # — see check_squeeze_watch_reverts()'s own docstring for the full revert conditions.
+        _scheduler.add_job(
+            check_squeeze_watch_reverts,
+            "interval",
+            minutes=1,
+            id="squeeze_watch_revert_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
 
-    # ── T252-VALUE-AREA-BREAKDOWN-ALERT: value-area breakdown/breakout checker — every minute ──
-    # Reads only stockai:live_prices + the daily-persisted VolumeAreaLevel table (no yfinance
-    # call in the loop) — see check_value_area_breakdown()'s own docstring.
-    _scheduler.add_job(
-        check_value_area_breakdown,
-        "interval",
-        minutes=1,
-        id="value_area_breakdown_check",
-        replace_existing=True,
-        max_instances=1, coalesce=True,
-    )
+        # ── T252-VALUE-AREA-BREAKDOWN-ALERT: value-area breakdown/breakout checker — every minute ──
+        # Reads only stockai:live_prices + the daily-persisted VolumeAreaLevel table (no yfinance
+        # call in the loop) — see check_value_area_breakdown()'s own docstring.
+        _scheduler.add_job(
+            check_value_area_breakdown,
+            "interval",
+            minutes=1,
+            id="value_area_breakdown_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
 
-    # ── T257-TOP3-CONVICTION-ALERT: measured-win-rate-gated top-3 scan — every minute ──
-    # Cheap (a handful of bulk HTTP calls, no per-symbol requests); only emails when the
-    # qualifying set actually changes — see check_top3_conviction()'s own docstring.
-    _scheduler.add_job(
-        check_top3_conviction,
-        "interval",
-        minutes=1,
-        id="top3_conviction_check",
-        replace_existing=True,
-        max_instances=1, coalesce=True,
-    )
+        # ── T257-TOP3-CONVICTION-ALERT: measured-win-rate-gated top-3 scan — every minute ──
+        # Cheap (a handful of bulk HTTP calls, no per-symbol requests); only emails when the
+        # qualifying set actually changes — see check_top3_conviction()'s own docstring.
+        _scheduler.add_job(
+            check_top3_conviction,
+            "interval",
+            minutes=1,
+            id="top3_conviction_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
 
-    # ── Earnings post-release fast-reaction checker — every minute ──────────
-    # T249-MARKETMOVER-P1: same cadence as check_price_alerts so a same-day EPS print is
-    # caught quickly rather than waiting for the next 5x/day check_signal_alerts() cycle.
-    _scheduler.add_job(
-        check_earnings_reactions,
-        "interval",
-        minutes=1,
-        id="earnings_reaction_check",
-        replace_existing=True,
-        max_instances=1, coalesce=True,
-    )
+        # ── Earnings post-release fast-reaction checker — every minute ──────────
+        # T249-MARKETMOVER-P1: same cadence as check_price_alerts so a same-day EPS print is
+        # caught quickly rather than waiting for the next 5x/day check_signal_alerts() cycle.
+        _scheduler.add_job(
+            check_earnings_reactions,
+            "interval",
+            minutes=1,
+            id="earnings_reaction_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
 
-    # ── Macro fast-reaction alert delivery — every minute ────────────────────
-    # T249-MARKETMOVER-P2: event-intelligence's macro_reaction.py generates the reaction;
-    # this job just polls for generated-but-unsent rows and emails them. Same cadence as the
-    # other fast-reaction checkers above.
-    _scheduler.add_job(
-        check_macro_reaction_alerts,
-        "interval",
-        minutes=1,
-        id="macro_reaction_alert_check",
-        replace_existing=True,
-        max_instances=1, coalesce=True,
-    )
+        # ── Macro fast-reaction alert delivery — every minute ────────────────────
+        # T249-MARKETMOVER-P2: event-intelligence's macro_reaction.py generates the reaction;
+        # this job just polls for generated-but-unsent rows and emails them. Same cadence as the
+        # other fast-reaction checkers above.
+        _scheduler.add_job(
+            check_macro_reaction_alerts,
+            "interval",
+            minutes=1,
+            id="macro_reaction_alert_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
 
-    # ── Earnings LLM impact alert delivery — every minute ────────────────────
-    # T249-EARNINGS-LLM-IMPACT: event-intelligence's earnings.py generates the impact read;
-    # this job just polls for generated-but-unsent rows and emails them. Same cadence as the
-    # other fast-reaction checkers above. Gated behind earnings_llm_impact_enabled internally
-    # (default OFF) — the job itself is always registered, cheap no-op check first.
-    _scheduler.add_job(
-        check_earnings_impact_alerts,
-        "interval",
-        minutes=1,
-        id="earnings_impact_alert_check",
-        replace_existing=True,
-        max_instances=1, coalesce=True,
-    )
+        # ── Earnings LLM impact alert delivery — every minute ────────────────────
+        # T249-EARNINGS-LLM-IMPACT: event-intelligence's earnings.py generates the impact read;
+        # this job just polls for generated-but-unsent rows and emails them. Same cadence as the
+        # other fast-reaction checkers above. Gated behind earnings_llm_impact_enabled internally
+        # (default OFF) — the job itself is always registered, cheap no-op check first.
+        _scheduler.add_job(
+            check_earnings_impact_alerts,
+            "interval",
+            minutes=1,
+            id="earnings_impact_alert_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
 
-    # ── Early earnings news alert — every minute ─────────────────────────────
-    # User-requested follow-up (2026-08-06): yfinance's own earnings_history/earnings_dates
-    # can lag the real announcement by hours, so this checks news-intelligence's real-time
-    # feed (PR Newswire/Business Wire/SEC EDGAR/Alpaca, already classifying category=="earnings")
-    # for a same-day heads-up ahead of the full check_earnings_reactions() alert above, which
-    # still owns the actual EPS-actual/estimate/surprise result once yfinance catches up.
-    _scheduler.add_job(
-        check_early_earnings_news_alerts,
-        "interval",
-        minutes=1,
-        id="early_earnings_news_alert_check",
-        replace_existing=True,
-        max_instances=1, coalesce=True,
-    )
+        # ── Early earnings news alert — every minute ─────────────────────────────
+        # User-requested follow-up (2026-08-06): yfinance's own earnings_history/earnings_dates
+        # can lag the real announcement by hours, so this checks news-intelligence's real-time
+        # feed (PR Newswire/Business Wire/SEC EDGAR/Alpaca, already classifying category=="earnings")
+        # for a same-day heads-up ahead of the full check_earnings_reactions() alert above, which
+        # still owns the actual EPS-actual/estimate/surprise result once yfinance catches up.
+        _scheduler.add_job(
+            check_early_earnings_news_alerts,
+            "interval",
+            minutes=1,
+            id="early_earnings_news_alert_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
 
     # ── Live price cache refresh — every minute during market hours ──────────
     # Lightweight: one yf.download() bulk call → Redis write. No DB writes,
@@ -8163,24 +8320,31 @@ def start_scheduler() -> None:
     # scheduled after so this reads that week's freshest Ranking/Signal rows). Gated behind
     # theme_forecast_email_enabled (default OFF) — see send_weekly_theme_forecast()'s own
     # docstring for the full opt-in/audience/honesty-framing rationale.
-    _scheduler.add_job(
-        send_weekly_theme_forecast,
-        CronTrigger(day_of_week="sun", hour=17, minute=30, timezone="America/New_York"),
-        id="theme_forecast_weekly", replace_existing=True, **_JOB_DEFAULTS,
-    )
+    # BUG-LOCALDEV-ALERTS-UNGATED: also gated behind _is_alerting_enabled() — this sends real
+    # emails once theme_forecast_email_enabled is on, same as every other alert job here.
+    if _is_alerting_enabled():
+        _scheduler.add_job(
+            send_weekly_theme_forecast,
+            CronTrigger(day_of_week="sun", hour=17, minute=30, timezone="America/New_York"),
+            id="theme_forecast_weekly", replace_existing=True, **_JOB_DEFAULTS,
+        )
 
     # ── One-shot startup run to restore conviction/Redis data after restarts ─
     # check_signal_alerts() is normally called by _run_market_refresh() (5×/day).
     # Running it once at startup (60s delay) repopulates Redis without adding a
     # permanent 1-minute schedule that could race with the full market refresh.
-    _scheduler.add_job(
-        check_signal_alerts,
-        "date",
-        run_date=datetime.now(timezone.utc) + timedelta(seconds=60),
-        id="signal_alert_startup",
-        replace_existing=True,
-        max_instances=1,
-    )
+    # BUG-LOCALDEV-ALERTS-UNGATED: this is exactly the mechanism that would email real users
+    # within a minute of a locally-restored prod DB stack booting up, before anyone even
+    # notices — gated like every other alert-emitting job above.
+    if _is_alerting_enabled():
+        _scheduler.add_job(
+            check_signal_alerts,
+            "date",
+            run_date=datetime.now(timezone.utc) + timedelta(seconds=60),
+            id="signal_alert_startup",
+            replace_existing=True,
+            max_instances=1,
+        )
 
     # WF-2: ensure the default GROWTH paper portfolio exists on startup.
     # Runs regardless of enable_paper_trading so the UI works in local dev.

@@ -2396,7 +2396,14 @@ def send_data_quality_alert_email(to: str, failing_checks: list) -> bool:
     """Alert email for data-quality staleness checks that have failed.
 
     failing_checks: [{"name": str, "description": str, "last_updated": str|None,
-                       "age_hours": float|None, "max_age_hours": float}]
+                       "age_hours": float|None, "max_age_hours": float|None,
+                       "detail": str (optional)}]
+
+    AUD266-TWO-GATES-CONTRADICTORY-BARS: max_age_hours is None for "ratio"-sourced checks
+    (run_data_quality_checks()'s conviction_fired_ratio entry) — those have no age/staleness
+    concept at all, only a numerator/denominator ratio, carried in the optional `detail`
+    string instead. Both age_str and the max-age column must degrade gracefully to that
+    detail string rather than crashing on `None:.0f` formatting.
     """
     from datetime import date as _date
     date_str = _date.today().strftime("%b %d, %Y")
@@ -2404,16 +2411,23 @@ def send_data_quality_alert_email(to: str, failing_checks: list) -> bool:
     rows_html = ""
     rows_text = ""
     for c in failing_checks:
-        age_str = f"{c['age_hours']:.1f}h ago" if c.get("age_hours") is not None else "never"
+        detail = c.get("detail")
+        age_str = (
+            detail if detail is not None
+            else f"{c['age_hours']:.1f}h ago" if c.get("age_hours") is not None
+            else "never"
+        )
+        max_age_str = f"max {c['max_age_hours']:.0f}h" if c.get("max_age_hours") is not None else "—"
+        max_age_text = f"(max allowed: {c['max_age_hours']:.0f}h)" if c.get("max_age_hours") is not None else ""
         rows_html += (
             f'<tr style="border-bottom:1px solid #f1f5f9">'
             f'<td style="padding:8px 10px;font-weight:700;font-size:13px">{c["name"]}</td>'
             f'<td style="padding:8px 10px;font-size:12px;color:#64748b">{c["description"]}</td>'
             f'<td style="padding:8px 10px;font-size:13px;font-weight:700;color:#ef4444">{age_str}</td>'
-            f'<td style="padding:8px 10px;font-size:12px;color:#94a3b8">max {c["max_age_hours"]:.0f}h</td>'
+            f'<td style="padding:8px 10px;font-size:12px;color:#94a3b8">{max_age_str}</td>'
             f'</tr>'
         )
-        rows_text += f"  {c['name']:30}  last updated: {age_str}  (max allowed: {c['max_age_hours']:.0f}h)\n"
+        rows_text += f"  {c['name']:30}  {age_str}  {max_age_text}\n"
 
     subject = f"⚠ Data Quality Alert: {len(failing_checks)} check(s) failing — {date_str}"
     body_text = (
