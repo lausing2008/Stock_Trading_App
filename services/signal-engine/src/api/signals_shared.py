@@ -15,6 +15,7 @@ already wrong before this split; the split itself only moved code, it did not ch
 """
 from datetime import date, timedelta
 import json
+import math
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -42,6 +43,28 @@ def _cache_set(key: str, value, ttl: int = 3600) -> None:
         _get_redis().setex(key, ttl, json.dumps(value))
     except Exception:
         pass
+
+def _json_safe(value):
+    """Recursively replace non-finite floats (nan/inf/-inf) with None.
+
+    json.dumps() happily serializes float('nan')/float('inf') into the bare tokens
+    NaN/Infinity/-Infinity by default (allow_nan=True) — these are NOT valid JSON.
+    Postgres's `CAST(:x AS jsonb)` is strict and rejects them with a real
+    psycopg2.errors.InvalidTextRepresentation, aborting the whole INSERT for that row.
+    A thin-history stock's MACD histogram (macd_hist, below the 26-bar slow-EMA warmup
+    window) is a real, already-known source of this — every SCORING consumer already
+    treats a NaN comparison as False via Python's own semantics (see signals.py's own
+    comment on this), but persisting the raw value into `reasons` was never safe. Applied
+    at the JSON-serialization boundary (not by special-casing macd_hist) so any OTHER
+    field that could carry a stray NaN/Inf in the future is covered too.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    return value
 
 def _redis_get_float(key: str) -> float | None:
     try:

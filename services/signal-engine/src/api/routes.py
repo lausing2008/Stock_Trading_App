@@ -20,7 +20,7 @@ from db import Price, Signal, SignalHorizon, Stock, TimeFrame, get_session
 from ..generators import generate_signal, generate_all_signals
 from .signals_shared import (
     _calibrated_win_rate, _compute_stability, _get_confidence_calibration,
-    _get_redis, _service_token, _settings, _stored_signal_for_style, log,
+    _get_redis, _json_safe, _service_token, _settings, _stored_signal_for_style, log,
 )
 
 router = APIRouter(prefix="/signals", tags=["signals"])
@@ -434,7 +434,13 @@ def _bulk_persist(symbols: list[str]) -> None:
                             hor=ai.horizon,
                             conf=ai.confidence,
                             bp=ai.bullish_probability,
-                            rsns=json.dumps(ai.reasons),
+                            # BUG-REASONSJSON-NAN: a NaN/Inf float anywhere in reasons (e.g.
+                            # macd_hist on a thin-history stock) makes json.dumps() emit the
+                            # bare, non-standard NaN/Infinity token — postgres's jsonb cast
+                            # rejects that with a real InvalidTextRepresentation, aborting the
+                            # whole upsert for this row. _json_safe() replaces any such value
+                            # with None before serialization.
+                            rsns=json.dumps(_json_safe(ai.reasons)),
                             src="signal-engine",
                         ),
                     )
@@ -1176,7 +1182,11 @@ def signal_for(
                     hor=ai.horizon,
                     conf=ai.confidence,
                     bp=ai.bullish_probability,
-                    rsns=json.dumps(ai.reasons),
+                    # BUG-REASONSJSON-NAN: see the identical fix + comment in _bulk_persist()
+                    # above — a stray NaN/Inf float in reasons (e.g. macd_hist on a
+                    # thin-history stock) makes json.dumps() emit a non-standard token
+                    # postgres's jsonb cast rejects, aborting the whole upsert for this row.
+                    rsns=json.dumps(_json_safe(ai.reasons)),
                     src="signal-engine",
                 ),
             )
