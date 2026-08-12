@@ -5877,12 +5877,27 @@ def check_sector_rotation_alerts(rotation: dict[str, dict]) -> None:
 
 
 def _purge_old_data() -> None:
-    """Delete rows older than 90 days from intraday price bars and signal outcomes.
+    """Delete rows older than 90 days from intraday price bars and signal outcomes, plus
+    signals rows older than 365 days.
 
     5-minute intraday bars (prices WHERE timeframe='M5') grow ~3.5M rows/year.
     After 90 days they have no analytical value — all signals use daily bars.
     signal_outcomes older than 1 year are also pruned; the rolling 90-day window
     is sufficient for accuracy tracking and factor analysis.
+
+    BUG-SIGNALS-UNBOUNDED-GROWTH: signals is NOT actually fixed-size, despite an earlier
+    memory note claiming "constant size regardless of how long the system runs" — that was
+    true before Tier 71 (2026-06-21) switched the upsert's unique index from a plain
+    (stock_id, horizon) key to a DAY-SCOPED one (uq_signals_stock_horizon_day, on
+    (stock_id, horizon, date_trunc('day', ts))), which deliberately keeps one row per
+    calendar day (feeding signal_history()'s sparkline and the daily chart's own signal-
+    transition markers) — but nothing was ever registered to prune the tail once it's no
+    longer reachable. signal_history() itself caps `days` at le=365, so a row past 365 days
+    can never be read by any real consumer; that's the safe purge boundary, matched exactly
+    here rather than picked independently. Confirmed live before adding this: 30,306 rows /
+    77MB after ~78 days of the day-scoped design, growing linearly (~4 rows/stock/day),
+    with zero rows old enough to purge yet at the time this was added — this closes the gap
+    before it becomes a real problem, not a cleanup of an existing backlog.
     Runs weekly (Sunday pre-full-refresh) to keep the tables lean.
     """
     from sqlalchemy import text as _text
@@ -5894,11 +5909,15 @@ def _purge_old_data() -> None:
             resout = session.execute(
                 _text("DELETE FROM signal_outcomes WHERE ts_evaluated < NOW() - INTERVAL '400 days'")
             )
+            ressig = session.execute(
+                _text("DELETE FROM signals WHERE ts < NOW() - INTERVAL '365 days'")
+            )
             session.commit()
             log.info(
                 "scheduler.purge_done",
                 m5_bars_deleted=res5m.rowcount,
                 signal_outcomes_deleted=resout.rowcount,
+                signals_deleted=ressig.rowcount,
             )
     except Exception as exc:
         log.error("scheduler.purge_failed", error=str(exc), exc_info=True)
