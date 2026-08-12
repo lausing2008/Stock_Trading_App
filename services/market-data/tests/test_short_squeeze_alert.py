@@ -8,6 +8,7 @@ scan logic/job registration is covered by source-text regression checks instead,
 test_scheduler_static_names.py's / test_volume_anomaly_alert.py's established pattern.
 """
 import pathlib
+from datetime import date
 from unittest.mock import patch
 
 from src.services.email_service import send_short_squeeze_email
@@ -108,6 +109,39 @@ def test_missing_short_interest_date_degrades_gracefully_not_crash():
         ])
     assert result is True
     assert "as of" not in calls[0]["html"]
+
+
+def test_short_interest_date_age_in_days_rendered_alongside_bare_date():
+    """A recipient shouldn't have to do the date subtraction themselves — the email should
+    state the age in days directly next to the settlement date."""
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake), \
+         patch("src.services.email_service.date") as fake_date:
+        fake_date.today.return_value = date(2026, 8, 12)
+        fake_date.fromisoformat.side_effect = date.fromisoformat
+        send_short_squeeze_email("user@example.com", [
+            {"symbol": "POET", "short_percent_of_float": 15.8, "change_pct": 3.67, "price": 8.90,
+             "short_interest_date": "2026-07-15"},
+        ])
+    html, text = calls[0]["html"], calls[0]["text"]
+    # 2026-08-12 minus 2026-07-15 = 28 days.
+    assert "2026-07-15, 28d ago" in html
+    assert "2026-07-15, 28d ago" in text
+
+
+def test_malformed_short_interest_date_degrades_to_bare_date_not_crash():
+    """A malformed date string (not a real fromisoformat failure this app would ever produce
+    today, but a defensive guard for a future data-source change) must not crash the send —
+    it should fall back to showing the bare, unparsed string with no age computed."""
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        result = send_short_squeeze_email("user@example.com", [
+            {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10,
+             "short_interest_date": "not-a-real-date"},
+        ])
+    assert result is True
+    assert "as of not-a-real-date)" in calls[0]["html"]
+    assert "d ago" not in calls[0]["html"]
 
 
 # ── check_short_squeeze_alerts() — source-text regression checks ────────────────────────────

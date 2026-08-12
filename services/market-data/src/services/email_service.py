@@ -8,6 +8,7 @@ Configure via .env:
 from __future__ import annotations
 
 import smtplib
+from datetime import date
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -1269,9 +1270,18 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
         price = c.get("price")
         # AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED: surfaces the real settlement date so a
         # recipient can judge for themselves how current the short-interest figure is, rather
-        # than every reading implicitly reading as "measured just now."
+        # than every reading implicitly reading as "measured just now." Also renders the age
+        # in days directly (not just the bare date) so the recipient doesn't have to do the
+        # mental subtraction themselves every time — fails soft to the bare date if the
+        # string is missing/malformed rather than raising.
         si_date = c.get("short_interest_date")
-        si_str = f" (as of {si_date})" if si_date else ""
+        si_str = ""
+        if si_date:
+            try:
+                _si_age_days = (date.today() - date.fromisoformat(si_date)).days
+                si_str = f" (as of {si_date}, {_si_age_days}d ago)"
+            except (ValueError, TypeError):
+                si_str = f" (as of {si_date})"
         chg_str = f"+{chg:.2f}%" if chg is not None else "—"
         price_str = f"${price:.2f}" if price else "—"
         short_ratio = c.get("short_ratio")
