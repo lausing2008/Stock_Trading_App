@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aggregateOiByStrike, maxOiAcrossStrikes, fmtOi, labelStepFor } from './optionsChainChart';
+import { aggregateOiByStrike, maxOiAcrossStrikes, fmtOi, labelStepFor, hasNoRealOi } from './optionsChainChart';
 import type { OptionsChainRow } from './api';
 
 function row(strike: number, oi: number): OptionsChainRow {
@@ -109,5 +109,30 @@ describe('labelStepFor', () => {
 
   it('defaults maxLabels to 14 when not specified', () => {
     expect(labelStepFor(30)).toBe(labelStepFor(30, 14));
+  });
+});
+
+describe('hasNoRealOi', () => {
+  it('is true for an empty points array', () => {
+    expect(hasNoRealOi([])).toBe(true);
+  });
+
+  it('is true when many strikes exist but every single one has oi=0 on both sides (the real MU-expiry bug case)', () => {
+    const points = aggregateOiByStrike(
+      [row(480, 0), row(590, 0), row(600, 0)],
+      [row(480, 0), row(605, 0)],
+    );
+    expect(points.length).toBeGreaterThan(0);
+    expect(hasNoRealOi(points)).toBe(true);
+  });
+
+  it('is false when at least one strike has real call OI', () => {
+    const points = aggregateOiByStrike([row(100, 0), row(110, 50)], [row(100, 0)]);
+    expect(hasNoRealOi(points)).toBe(false);
+  });
+
+  it('is false when at least one strike has real put OI', () => {
+    const points = aggregateOiByStrike([row(100, 0)], [row(100, 0), row(110, 25)]);
+    expect(hasNoRealOi(points)).toBe(false);
   });
 });

@@ -48,3 +48,14 @@ export function fmtOi(v: number): string {
 export function labelStepFor(strikeCount: number, maxLabels = 14): number {
   return Math.max(1, Math.ceil(strikeCount / maxLabels));
 }
+
+/** BUG-OPTIONSCHAINCHART-ALLZEROOI: true when there is nothing meaningful to chart — either
+ * no strikes resolved at all, or (the common real-world case this bug fix addresses) strikes
+ * DID resolve but every single one carries oi=0 on both sides. yfinance frequently reports
+ * this for a same-day/near-term expiry right after listing, before open interest has updated
+ * intraday, even when volume is genuinely nonzero — a real reported case for MU's default
+ * (today's) expiry. Without this check, the chart silently rendered a flat, unexplained grid
+ * instead of a real empty-state message, since points.length alone stayed nonzero. */
+export function hasNoRealOi(points: StrikeOiPoint[]): boolean {
+  return points.length === 0 || points.every(p => p.callOi === 0 && p.putOi === 0);
+}

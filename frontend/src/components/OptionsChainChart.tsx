@@ -17,7 +17,7 @@
 // component follows that same convention instead.
 import { useMemo } from 'react';
 import type { OptionsChainRow } from '@/lib/api';
-import { aggregateOiByStrike, maxOiAcrossStrikes, fmtOi, labelStepFor } from '@/lib/optionsChainChart';
+import { aggregateOiByStrike, maxOiAcrossStrikes, fmtOi, labelStepFor, hasNoRealOi } from '@/lib/optionsChainChart';
 
 interface OptionsChainChartProps {
   calls: OptionsChainRow[];
@@ -40,8 +40,12 @@ export default function OptionsChainChart({ calls, puts, height = 220 }: Options
   const maxOi = useMemo(() => maxOiAcrossStrikes(points), [points]);
   const labelStep = labelStepFor(points.length);
 
-  if (points.length === 0) {
-    return <div style={{ fontSize: 12, color: '#475569' }}>No open interest to chart for this expiry.</div>;
+  if (hasNoRealOi(points)) {
+    return (
+      <div style={{ fontSize: 12, color: '#475569' }}>
+        No open interest reported for this expiry yet — try a later expiry date above.
+      </div>
+    );
   }
 
   const chartW = W - PAD_L - PAD_R;
