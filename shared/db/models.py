@@ -1442,3 +1442,41 @@ class ResearchReportCache(Base):
     max_risk_pct: Mapped[float] = mapped_column(Float)
     report_json: Mapped[dict] = mapped_column(JSON)
     generated_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class ThemeSignalSnapshot(Base):
+    """T270-SECTOR-THEME-FORECAST-EMAIL: weekly persisted "themes with real supporting signals
+    today" read — services/market-data/src/services/theme_signals.py is the single source of
+    truth for the aggregation math and the hand-curated theme->symbol mapping.
+
+    Deliberately NOT a forecast of what a theme will do next — every existing "trend" feature
+    in this app (CAPE bubble warning, options-flow sentiment, sector-rotation trajectory) is
+    already scoped to a measured, backward-looking fact rather than a prediction, and this
+    table follows that same discipline: it stores what was ALREADY TRUE about a theme's real
+    price momentum / K-Score breadth / signal breadth as of as_of, plus an LLM-written prose
+    summary grounded in those numbers (mirroring generate_reaction()'s/generate_earnings_
+    impact()'s exact skeleton in event-intelligence). The LLM is never asked to predict; it is
+    asked to explain already-measured numbers in readable prose.
+
+    There is no existing GICS sub-industry taxonomy in this app fine-grained enough for themes
+    like "GPU" vs "packaging" vs "Space" — Stock.sector is broad ("Semiconductors," "Healthcare"),
+    not narrow enough for what was asked. theme_signals.py's own _THEMES dict is therefore a
+    hand-curated (theme_name -> representative symbols) mapping, not derived from Stock.sector.
+
+    Keyed by (theme, as_of) rather than a stock_id FK, matching SectorRotationSnapshot's exact
+    precedent for the same reason (a theme name is not itself a row in `stocks`).
+    """
+    __tablename__ = "theme_signal_snapshots"
+    __table_args__ = (UniqueConstraint("theme", "as_of", name="uq_theme_signal_snapshot"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    theme: Mapped[str] = mapped_column(String(64), index=True)
+    as_of: Mapped[date] = mapped_column(Date, index=True)
+    avg_return_5d_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_kscore: Mapped[float | None] = mapped_column(Float, nullable=True)
+    buy_signal_count: Mapped[int] = mapped_column(Integer, default=0)
+    sell_signal_count: Mapped[int] = mapped_column(Integer, default=0)
+    symbol_count: Mapped[int] = mapped_column(Integer, default=0)
+    top_symbols_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list[dict] — per-symbol detail behind the aggregate, for the email's own drill-down
+    summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)  # LLM-written prose grounded in the numeric fields above; None if the LLM call failed/was skipped
+    generated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

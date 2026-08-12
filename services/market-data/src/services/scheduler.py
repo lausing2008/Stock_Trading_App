@@ -84,7 +84,7 @@ from sqlalchemy.orm import selectinload, Session
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, EarningsEvent, EconomicEvent, FundamentalsSnapshot, Market, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
+from db import AlertCondition, EarningsEvent, EconomicEvent, FundamentalsSnapshot, Market, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, Stock, ThemeSignalSnapshot, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -5815,6 +5815,144 @@ def _compute_sector_rotation() -> None:
         log.error("scheduler.sector_rotation_failed", error=str(exc))
 
 
+_REDIS_THEME_FORECAST_ENABLED = "stockai:admin:feature:theme_forecast_email_enabled"
+
+
+def send_weekly_theme_forecast() -> None:
+    """T270-SECTOR-THEME-FORECAST-EMAIL: weekly "themes with real supporting signals this
+    week" digest — computes+persists ThemeSignalSnapshot rows AND sends the email in one
+    function (unlike the detect/deliver split used for per-minute-polled alerts like
+    check_macro_reaction_alerts()/check_earnings_impact_alerts() — that split exists so
+    delivery can retry on its own faster cadence independent of detection; a once-a-week job
+    has no such need, so compute-then-send-immediately is the simpler, equally-correct shape).
+
+    Gated behind theme_forecast_email_enabled (default OFF, matching every other opt-in
+    Claude-calling feature added since CLAUDE-API-COST-AUDIT) — checked FIRST, before any DB
+    query, so a disabled flag costs nothing. Recipients are ALL users with an email set
+    (matching send_morning_digest()'s own all-User audience) — this is a market-wide theme
+    digest, not tied to any one symbol subscription, so PriceAlert-subscriber scoping (the
+    audience used by the whole T249 family) would be the wrong fit here.
+
+    See services/market-data/src/services/theme_signals.py's own module docstring for the full
+    honesty-framing rationale: this reports ALREADY-MEASURED momentum/K-Score/signal-breadth
+    per theme, with an LLM writing prose that explains those real numbers — never a prediction
+    of what a theme will do next.
+    """
+    from .theme_signals import THEMES, compute_theme_signal, generate_theme_summary
+    from sqlalchemy.dialects.postgresql import insert as _pg_insert
+
+    _t0 = time.monotonic()
+    try:
+        if _get_redis().get(_REDIS_THEME_FORECAST_ENABLED) != "1":
+            _record_job_status("theme_forecast_weekly", "ok", time.monotonic() - _t0)
+            return
+    except Exception:
+        return
+
+    today = datetime.now(timezone.utc).date()
+    try:
+        with SessionLocal() as session:
+            users = session.execute(
+                select(User).where(User.email.isnot(None), User.email != "")
+            ).scalars().all()
+            if not users:
+                _record_job_status("theme_forecast_weekly", "ok", time.monotonic() - _t0)
+                log.info("theme_forecast.no_recipients")
+                return
+
+            theme_dicts: list[dict] = []
+            for theme, symbols in THEMES.items():
+                try:
+                    result = compute_theme_signal(session, theme, symbols)
+                except Exception as exc:
+                    log.warning("theme_forecast.compute_failed", theme=theme, error=str(exc))
+                    continue
+                if result is None:
+                    continue
+
+                # asyncio.run() is safe here — this function runs synchronously inside
+                # APScheduler's own worker thread, not inside FastAPI's async event loop, so
+                # there is no already-running loop to conflict with (matching how every other
+                # scheduler.py job that calls an async helper, e.g. check_release_day_fast_
+                # poll-style event-intelligence functions, is itself invoked from a sync
+                # context — this app's market-data scheduler is a BackgroundScheduler, not
+                # AsyncIOScheduler, precisely so blocking/sync calls like this are safe here).
+                import asyncio
+                summary_text = None
+                try:
+                    summary_text = asyncio.run(generate_theme_summary(result))
+                except Exception as exc:
+                    log.warning("theme_forecast.summary_failed", theme=theme, error=str(exc))
+
+                stmt = _pg_insert(ThemeSignalSnapshot).values(
+                    theme=theme, as_of=today,
+                    avg_return_5d_pct=result.avg_return_5d_pct,
+                    avg_kscore=result.avg_kscore,
+                    buy_signal_count=result.buy_signal_count,
+                    sell_signal_count=result.sell_signal_count,
+                    symbol_count=result.symbol_count,
+                    top_symbols_json=json.dumps(result.top_symbols),
+                    summary_text=summary_text,
+                )
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["theme", "as_of"],
+                    set_={
+                        "avg_return_5d_pct": stmt.excluded.avg_return_5d_pct,
+                        "avg_kscore": stmt.excluded.avg_kscore,
+                        "buy_signal_count": stmt.excluded.buy_signal_count,
+                        "sell_signal_count": stmt.excluded.sell_signal_count,
+                        "symbol_count": stmt.excluded.symbol_count,
+                        "top_symbols_json": stmt.excluded.top_symbols_json,
+                        "summary_text": stmt.excluded.summary_text,
+                    },
+                )
+                session.execute(stmt)
+                session.commit()
+
+                theme_dicts.append({
+                    "theme": theme,
+                    "avg_return_5d_pct": result.avg_return_5d_pct,
+                    "avg_kscore": result.avg_kscore,
+                    "buy_signal_count": result.buy_signal_count,
+                    "sell_signal_count": result.sell_signal_count,
+                    "symbol_count": result.symbol_count,
+                    "top_symbols": result.top_symbols,
+                    "summary_text": summary_text,
+                })
+
+            if not theme_dicts:
+                _record_job_status("theme_forecast_weekly", "ok", time.monotonic() - _t0)
+                log.info("theme_forecast.no_theme_data")
+                return
+
+            # Most-positive average 5-day return first — None (unmeasurable) sorts last, never
+            # treated as the worst-case 0%.
+            theme_dicts.sort(
+                key=lambda d: d["avg_return_5d_pct"] if d["avg_return_5d_pct"] is not None else float("-inf"),
+                reverse=True,
+            )
+
+            from .email_service import send_theme_forecast_email
+            date_str = today.strftime("%a, %b %-d")
+            sent = 0
+            errors = 0
+            for user in users:
+                try:
+                    if send_theme_forecast_email(user.email, date_str, theme_dicts):
+                        sent += 1
+                    else:
+                        errors += 1
+                except Exception as exc:
+                    errors += 1
+                    log.warning("theme_forecast.recipient_send_error", user=user.username, error=str(exc))
+
+            _record_job_status("theme_forecast_weekly", "ok", time.monotonic() - _t0)
+            log.info("theme_forecast.sent", themes=len(theme_dicts), sent=sent, errors=errors)
+    except Exception as exc:
+        log.error("theme_forecast.failed", error=str(exc), exc_info=True)
+        _record_job_status("theme_forecast_weekly", "error", time.monotonic() - _t0, str(exc))
+
+
 _SECTOR_ROTATION_ALERT_TOP_N = 5  # top-N US stocks by K-Score shown per newly-emerging sector
 
 
@@ -8018,6 +8156,17 @@ def start_scheduler() -> None:
         _run_watchlist_auto_rotation,
         CronTrigger(day_of_week="sun", hour=17, minute=0, timezone="America/New_York"),
         id="watchlist_auto_rotation_weekly", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── T270-SECTOR-THEME-FORECAST-EMAIL: Sunday 17:30 ET (after sector_rotation, the
+    # fundamentals snapshot, and watchlist rotation — no hard dependency on any of them, just
+    # scheduled after so this reads that week's freshest Ranking/Signal rows). Gated behind
+    # theme_forecast_email_enabled (default OFF) — see send_weekly_theme_forecast()'s own
+    # docstring for the full opt-in/audience/honesty-framing rationale.
+    _scheduler.add_job(
+        send_weekly_theme_forecast,
+        CronTrigger(day_of_week="sun", hour=17, minute=30, timezone="America/New_York"),
+        id="theme_forecast_weekly", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── One-shot startup run to restore conviction/Redis data after restarts ─

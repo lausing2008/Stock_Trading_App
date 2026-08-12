@@ -110,6 +110,7 @@ export default function AdminAiFeaturesPage() {
   const [autoResearchEnabled, setAutoResearchEnabled] = useState(false);
   const [macroLlmReactionEnabled, setMacroLlmReactionEnabled] = useState(true);
   const [earningsLlmImpactEnabled, setEarningsLlmImpactEnabled] = useState(false);
+  const [themeForecastEnabled, setThemeForecastEnabled] = useState(false);
   const [globalSaving, setGlobalSaving] = useState<string | null>(null);
 
   useEffect(() => {
@@ -118,6 +119,7 @@ export default function AdminAiFeaturesPage() {
       setAutoResearchEnabled(f.auto_research_enabled);
       setMacroLlmReactionEnabled(f.macro_llm_reaction_enabled);
       setEarningsLlmImpactEnabled(f.earnings_llm_impact_enabled);
+      setThemeForecastEnabled(f.theme_forecast_email_enabled);
     }).catch(() => {});
   }, [authed]);
 
@@ -146,6 +148,16 @@ export default function AdminAiFeaturesPage() {
     try {
       await api.pushConfig({ earnings_llm_impact_enabled: val });
       setEarningsLlmImpactEnabled(val);
+    } catch { /* ignore */ } finally {
+      setGlobalSaving(null);
+    }
+  }
+
+  async function handleToggleThemeForecast(val: boolean) {
+    setGlobalSaving('theme_forecast');
+    try {
+      await api.pushConfig({ theme_forecast_email_enabled: val });
+      setThemeForecastEnabled(val);
     } catch { /* ignore */ } finally {
       setGlobalSaving(null);
     }
@@ -246,6 +258,15 @@ export default function AdminAiFeaturesPage() {
               on={earningsLlmImpactEnabled}
               onChange={handleToggleEarningsLlmImpact}
               disabled={globalSaving === 'earnings_llm_impact'}
+            />
+            <ToggleRow
+              title="Weekly Theme Signals"
+              desc="A weekly digest of hand-curated themes (AI/GPU semiconductors, semiconductor packaging & testing, passive components, gold, space, healthcare, AI infrastructure, clean energy) with their real, already-measured 5-day price return, average K-Score, and current BUY/SELL signal counts, plus an AI-written summary explaining those numbers. Deliberately NOT a forecast of what any theme will do next — the AI is only asked to explain already-measured data, never to predict. Off by default — a brand-new feature."
+              model="Haiku"
+              cadence="Once weekly, Sunday 17:30 ET — one Haiku call per theme"
+              on={themeForecastEnabled}
+              onChange={handleToggleThemeForecast}
+              disabled={globalSaving === 'theme_forecast'}
             />
           </div>
         </div>

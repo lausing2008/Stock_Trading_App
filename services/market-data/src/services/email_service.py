@@ -2445,6 +2445,90 @@ def send_data_quality_alert_email(to: str, failing_checks: list) -> bool:
     return send_email(to, subject, body_html, body_text)
 
 
+def send_theme_forecast_email(to: str, date_str: str, themes: list[dict]) -> bool:
+    """T270-SECTOR-THEME-FORECAST-EMAIL: weekly "themes with real supporting signals this week"
+    digest — see services/market-data/src/services/theme_signals.py's own module docstring for
+    the full honesty-framing rationale (this is NOT a forecast of what a theme will do next; it
+    reports already-measured momentum, K-Score, and BUY/SELL signal breadth, with an LLM
+    explaining those numbers in prose — the LLM is never asked to predict).
+
+    `themes` items are dicts: {"theme": str, "avg_return_5d_pct": float|None,
+    "avg_kscore": float|None, "buy_signal_count": int, "sell_signal_count": int,
+    "symbol_count": int, "top_symbols": list[dict], "summary_text": str|None} — the exact
+    shape compute_theme_signal()'s ThemeSignalResult plus an optional LLM summary produces.
+    Sorted by the caller (most-positive avg_return_5d_pct first) before reaching this builder —
+    this function only renders, it does not rank.
+    """
+    subject = f"📈 Weekly Theme Signals — {date_str}"
+
+    rows_html = ""
+    rows_text = ""
+    for t in themes:
+        ret = t.get("avg_return_5d_pct")
+        ret_color = "#16a34a" if (ret or 0) >= 0 else "#dc2626"
+        ret_str = f"{ret:+.2f}%" if ret is not None else "—"
+        kscore = t.get("avg_kscore")
+        kscore_str = f"{kscore:.0f}" if kscore is not None else "—"
+        buy_n = t.get("buy_signal_count", 0)
+        sell_n = t.get("sell_signal_count", 0)
+        n = t.get("symbol_count", 0)
+        summary = t.get("summary_text")
+        summary_html = (
+            f'<div style="font-size:12px;color:#64748b;margin-top:6px;line-height:1.5">{summary}</div>'
+            if summary else
+            '<div style="font-size:11px;color:#94a3b8;margin-top:6px">No AI summary available this week — numbers above are still real, measured data.</div>'
+        )
+        top_syms = ", ".join(
+            f"{s['symbol']} ({s['return_5d_pct']:+.1f}%)" if s.get("return_5d_pct") is not None else s["symbol"]
+            for s in (t.get("top_symbols") or [])[:3]
+        )
+        rows_html += (
+            f'<div style="padding:12px 0;border-bottom:1px solid #f1f5f9">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
+            f'<strong style="font-size:14px">{t.get("theme","")}</strong>'
+            f'<span style="font-size:13px;color:{ret_color};font-weight:700">{ret_str}</span>'
+            f'</div>'
+            f'<div style="font-size:11px;color:#94a3b8;margin-top:2px">'
+            f'{n} stocks tracked · avg K-Score {kscore_str} · {buy_n} BUY / {sell_n} SELL signal(s)'
+            f'</div>'
+            + (f'<div style="font-size:11px;color:#64748b;margin-top:2px">Top: {top_syms}</div>' if top_syms else "")
+            + summary_html
+            + f'</div>'
+        )
+        rows_text += (
+            f"  {t.get('theme','')}: {ret_str} avg 5d return, avg K-Score {kscore_str}, "
+            f"{buy_n} BUY / {sell_n} SELL signal(s)\n"
+        )
+        if summary:
+            rows_text += f"    {summary}\n"
+
+    body_html = f"""<!DOCTYPE html><html><body style="font-family:sans-serif;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:560px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:16px">
+      <h2 style="margin:0;font-size:18px;color:#0f172a">📈 Weekly Theme Signals</h2>
+      <span style="font-size:13px;color:#94a3b8">{date_str}</span>
+    </div>
+    <div>{rows_html or '<div style="font-size:12px;color:#94a3b8">No theme data available this week.</div>'}</div>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      These are already-measured signals as of this week — 5-day price return, K-Score, and
+      current BUY/SELL signal counts for each theme's hand-picked representative stocks. This is
+      NOT a prediction of what any theme will do next — it reports what has already happened
+      this week, and the AI summary (where shown) only explains these real numbers, never
+      forecasts beyond them. Themes and their representative symbols are hand-curated, not
+      auto-detected. Not financial advice.
+    </p>
+  </div>
+</body></html>"""
+
+    body_text = (
+        f"StockAI Weekly Theme Signals — {date_str}\n\n"
+        + (rows_text or "  No theme data available this week.\n")
+        + "\nAlready-measured signals as of this week, not a prediction of what any theme will do"
+        " next. Themes are hand-curated, not auto-detected. Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_webhook_notification(webhook_url: str, title: str, message: str, color: int = 0x3b82f6) -> bool:
     """Send a Discord/Slack-compatible webhook notification (embed format)."""
     try:
