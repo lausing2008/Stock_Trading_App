@@ -156,6 +156,32 @@ a { color: inherit; text-decoration: none; }
 .journal-table-scroll { overflow-x: auto; }
 .journal-table-scroll > * { min-width: 760px; }
 
+/* T230-UX-MOBILE-RESPONSIVE (portfolio.tsx pass): the optimization-method selector (4 cards
+   in a repeat(2,1fr) grid) and the symbols/lookback/min-K-score config row (1fr auto auto)
+   both squeeze on mobile the same way every prior form-row fix in this series did. */
+.portfolio-method-grid { grid-template-columns: repeat(2, 1fr); }
+.portfolio-config-row-grid { grid-template-columns: 1fr auto auto; }
+@media (max-width: 767px) {
+  .portfolio-method-grid,
+  .portfolio-config-row-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* T230-UX-MOBILE-RESPONSIVE (board.tsx pass): the active-position edit form (Shares/Fill
+   Price/Stop Loss/Take Profit, a 2-column grid of 4 fields) and the risk panel's sector-pie
+   + correlation-heatmap side-by-side row both collapse cleanly under 1fr, same shape as
+   every other 1fr-1fr panel fix in this series. The `repeat(auto-fill, minmax(260px, 1fr))`
+   card grid elsewhere on this page is already self-wrapping and deliberately NOT touched. */
+.board-edit-position-grid { grid-template-columns: 1fr 1fr; }
+.board-risk-panels-grid { grid-template-columns: 1fr 1fr; }
+@media (max-width: 767px) {
+  .board-edit-position-grid,
+  .board-risk-panels-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
 .fixed { position: fixed; }
 .absolute { position: absolute; }
 .relative { position: relative; }

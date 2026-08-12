@@ -521,7 +521,7 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
           {plan.stage === 'active' && editingActive ? (
             <div style={{ padding: '10px 12px', borderRadius: '8px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.2)' }}>
               <div style={{ fontSize: '10px', color: '#64748b', fontWeight: 700, letterSpacing: '0.06em', marginBottom: '8px', textTransform: 'uppercase' }}>Edit Position</div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '8px' }}>
+              <div className="board-edit-position-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '8px' }}>
                 <div>
                   <label style={{ fontSize: '10px', color: '#475569', display: 'block', marginBottom: '3px' }}>Shares</label>
                   <input type="number" step="1" value={editShares} onChange={e => setEditShares(e.target.value)}
@@ -1519,7 +1519,7 @@ export default function BoardPage() {
             </div>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          <div className="board-risk-panels-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             {/* Sector pie */}
             <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid #1e293b', borderRadius: 8, padding: 14 }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 10 }}>Sector Concentration</div>

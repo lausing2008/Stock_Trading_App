@@ -176,7 +176,7 @@ export default function PortfolioPage() {
           {/* Method selector */}
           <div style={{ marginBottom: '18px' }}>
             <label style={lbl}>Optimization Method</label>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
+            <div className="portfolio-method-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
               {METHODS.map(m => (
                 <button
                   key={m.value}
@@ -206,7 +206,7 @@ export default function PortfolioPage() {
           </div>
 
           {/* Symbols + options row */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '12px', alignItems: 'end', marginBottom: '8px' }}>
+          <div className="portfolio-config-row-grid" style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '12px', alignItems: 'end', marginBottom: '8px' }}>
             <div>
               <label style={lbl}>Symbols (comma-separated)</label>
               <input
