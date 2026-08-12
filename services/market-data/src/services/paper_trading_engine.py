@@ -125,18 +125,61 @@ def _handle_broker_error_if_token_rejected(session, portfolio: "PaperPortfolio",
         return False
 
 
+# T270-ETRADE-PROD-REAL-MONEY: buying-power headroom kept clear of the real account's own
+# reported buying_power before ANY real order is placed. A pre-flight check that only rejected
+# a position sized EXACTLY at the account's own reported limit would still be fragile against
+# the real fill price moving between this check and the broker actually executing the market
+# order — a flat safety margin (not just "== buying_power") keeps real headroom against that
+# gap, and against the account balance itself being marginally stale.
+_BROKER_BUYING_POWER_SAFETY_MARGIN = 0.95  # only use up to 95% of reported buying power
+
+
 def _place_broker_entry(session, trade: "PaperTrade", portfolio: "PaperPortfolio") -> None:
     """Submit a market BUY to the linked broker (US only — HK skipped).
 
     On success: stores broker_order_id. If filled immediately (sandbox), updates
     entry_price with the actual fill and adjusts portfolio cash for the delta.
     Falls back silently to the simulated entry on any error.
+
+    T270-ETRADE-PROD-REAL-MONEY: order size is computed entirely from the SIMULATED
+    PaperPortfolio ledger, upstream of this function — nothing before this point ever checks
+    the REAL linked account's actual buying power, so a simulated ledger sized larger than the
+    real account (e.g. after a manual withdrawal, or a real position already open from outside
+    this app) would size a real order the account can't actually support, relying entirely on
+    the broker's own margin rejection as the only backstop. This pre-flight check fetches the
+    real account's buying_power and skips placing the REAL order (falling back to the
+    simulated-only fill, exactly like every other failure path in this function — the
+    simulated trade itself, already added to the session by the caller, is untouched) if the
+    position's real dollar value would exceed a safety-margined fraction of it. Fails OPEN
+    toward placing the order on any error fetching the account itself (e.g. a transient
+    network blip) — the broker's own margin rejection remains the backstop in that specific
+    case, matching this function's pre-existing fail-open posture for every other broker call.
     """
     if trade.symbol.upper().endswith(".HK"):
         return
     broker = _get_portfolio_broker(session, portfolio)
     if broker is None:
         return
+    try:
+        order_value = float(trade.entry_price) * int(trade.shares)
+        account = broker.get_account()
+        max_order_value = account.buying_power * _BROKER_BUYING_POWER_SAFETY_MARGIN
+        if order_value > max_order_value:
+            log.warning(
+                "broker.entry_skipped_insufficient_buying_power",
+                symbol=trade.symbol, order_value=round(order_value, 2),
+                buying_power=round(account.buying_power, 2),
+                max_order_value=round(max_order_value, 2),
+            )
+            trade.broker_error = (
+                f"Skipped real order: ${order_value:,.2f} exceeds "
+                f"{_BROKER_BUYING_POWER_SAFETY_MARGIN:.0%} of real account buying power "
+                f"(${account.buying_power:,.2f})"
+            )[:512]
+            return
+    except Exception as _bp_exc:
+        log.warning("broker.buying_power_check_failed", symbol=trade.symbol, error=str(_bp_exc))
+        # fail open — the broker's own margin rejection is the backstop for this specific case
     try:
         from src.services.broker.interface import OrderSide, OrderType
         order = broker.place_order(

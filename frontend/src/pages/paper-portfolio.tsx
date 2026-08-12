@@ -751,6 +751,80 @@ function CompareEquityChart({ data }: { data: PaperCompareData[] }) {
   return <div ref={ref} style={{ width: '100%' }} />;
 }
 
+// ── Real-money confirmation dialog ──────────────────────────────────────────────
+// T270-ETRADE-PROD-REAL-MONEY (gate 2): linking a REAL (broker_type === 'etrade', not
+// 'etrade_sandbox') connection was previously a single unconfirmed dropdown selection with
+// no visual distinction from picking the sandbox — the action that turns on real order
+// routing looked identical to a no-consequence choice. This dialog is shown ONLY when the
+// picked connection is broker_type === 'etrade' (never for sandbox or Fidelity manual) and
+// requires typing the literal word CONFIRM before the Link button becomes clickable — a
+// deliberately higher bar than a plain Yes/No click, since this action starts placing real
+// orders with real money on every future paper-trading engine cycle.
+function RealMoneyConfirmDialog({
+  brokerName, onConfirm, onCancel,
+}: { brokerName: string; onConfirm: () => void; onCancel: () => void }) {
+  const [typed, setTyped] = useState('');
+  const confirmed = typed.trim().toUpperCase() === 'CONFIRM';
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 1100,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }} onClick={onCancel}>
+      <div style={{
+        background: '#1e293b', borderRadius: 12, padding: 28, width: 420,
+        border: '2px solid rgba(239,68,68,0.5)', boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+          <span style={{ fontSize: 22 }}>🚨</span>
+          <div style={{ fontSize: 17, fontWeight: 700, color: '#f87171' }}>Real Money — E*Trade LIVE</div>
+        </div>
+        <div style={{ fontSize: 13, color: '#e2e8f0', lineHeight: 1.6, marginBottom: 14 }}>
+          You are about to link <strong>{brokerName}</strong> — a LIVE E*Trade account, not the
+          sandbox. Once linked, this portfolio's paper-trading engine will submit{' '}
+          <strong style={{ color: '#f87171' }}>real, live market orders with real money</strong>{' '}
+          in parallel with the simulated ledger, on every future BUY/SELL signal for this
+          portfolio (US symbols only).
+        </div>
+        <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.6, marginBottom: 16, padding: '10px 12px', background: 'rgba(239,68,68,0.06)', borderRadius: 6, border: '1px solid rgba(239,68,68,0.15)' }}>
+          Order size is computed from this app's simulated portfolio ledger, then checked
+          against your real E*Trade account's actual buying power before each order is placed
+          — a real order is skipped (falling back to simulation only) if it would exceed 95%
+          of your reported buying power. This does not eliminate real trading risk.
+        </div>
+        <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>
+          Type <strong style={{ color: '#f87171', letterSpacing: '0.05em' }}>CONFIRM</strong> to proceed:
+        </div>
+        <input
+          value={typed}
+          onChange={e => setTyped(e.target.value)}
+          placeholder="Type CONFIRM"
+          autoFocus
+          style={{
+            width: '100%', background: '#0f172a', border: '1px solid #334155', borderRadius: 6,
+            color: '#f1f5f9', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box', marginBottom: 18,
+          }}
+        />
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button onClick={onCancel} style={{ background: '#0f172a', color: '#94a3b8', border: '1px solid #334155', borderRadius: 6, padding: '7px 16px', cursor: 'pointer' }}>
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={!confirmed}
+            style={{
+              background: confirmed ? '#dc2626' : '#334155', color: '#fff', border: 'none', borderRadius: 6,
+              padding: '7px 16px', cursor: confirmed ? 'pointer' : 'not-allowed', fontWeight: 600,
+              opacity: confirmed ? 1 : 0.6,
+            }}
+          >
+            Link Real Account
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Create portfolio modal ─────────────────────────────────────────────────────
 
 function CreatePortfolioModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
@@ -762,6 +836,10 @@ function CreatePortfolioModal({ onClose, onCreated }: { onClose: () => void; onC
   const [brokers, setBrokers] = useState<import('@/lib/api').BrokerConnection[]>([]);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
+  // T270-ETRADE-PROD-REAL-MONEY (gate 2): pending selection awaiting real-money confirmation —
+  // the <select> itself is NOT committed to brokerId until the user confirms, so the browser's
+  // own dropdown state and this component's actual "will route real orders" state can't drift.
+  const [pendingRealBroker, setPendingRealBroker] = useState<import('@/lib/api').BrokerConnection | null>(null);
 
   // Load authorized US broker connections for linking
   useEffect(() => {
@@ -842,11 +920,32 @@ function CreatePortfolioModal({ onClose, onCreated }: { onClose: () => void; onC
                 Broker Account <span style={{ color: '#475569' }}>(optional — routes real orders)</span>
               </div>
               {usBrokers.length > 0 ? (
-                <select value={brokerId} onChange={e => setBrokerId(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+                <select
+                  value={brokerId}
+                  onChange={e => {
+                    const picked = usBrokers.find(b => String(b.id) === e.target.value);
+                    // T270-ETRADE-PROD-REAL-MONEY (gate 2): a REAL (non-sandbox) connection
+                    // requires typed confirmation before it's actually committed — the
+                    // dropdown's own value is left unchanged until then, so cancelling the
+                    // dialog leaves the visible selection exactly as it was.
+                    if (picked && picked.broker_type === 'etrade') {
+                      setPendingRealBroker(picked);
+                      return;
+                    }
+                    setBrokerId(e.target.value);
+                  }}
+                  style={{
+                    ...inputStyle, cursor: 'pointer',
+                    ...(usBrokers.find(b => String(b.id) === brokerId)?.broker_type === 'etrade'
+                      ? { border: '1px solid rgba(239,68,68,0.5)', background: 'rgba(239,68,68,0.06)' }
+                      : {}),
+                  }}
+                >
                   <option value="">No broker — simulation only</option>
                   {usBrokers.map(b => (
                     <option key={b.id} value={b.id}>
-                      {b.name} ({b.broker_type === 'etrade_sandbox' ? 'E*Trade Sandbox' : 'E*Trade Live'})
+                      {b.broker_type === 'etrade_sandbox' ? '🧪' : b.broker_type === 'etrade' ? '🚨' : ''}{' '}
+                      {b.name} ({b.broker_type === 'etrade_sandbox' ? 'E*Trade Sandbox' : b.broker_type === 'etrade' ? 'E*Trade LIVE — real money' : b.broker_type})
                     </option>
                   ))}
                 </select>
@@ -857,13 +956,27 @@ function CreatePortfolioModal({ onClose, onCreated }: { onClose: () => void; onC
                 </div>
               )}
               {brokerId && (
-                <div style={{ fontSize: 11, color: '#22c55e', marginTop: 5 }}>
-                  Real orders will be submitted to E*Trade on each engine cycle.
+                <div style={{
+                  fontSize: 11, marginTop: 5,
+                  color: usBrokers.find(b => String(b.id) === brokerId)?.broker_type === 'etrade' ? '#f87171' : '#22c55e',
+                  fontWeight: usBrokers.find(b => String(b.id) === brokerId)?.broker_type === 'etrade' ? 700 : 400,
+                }}>
+                  {usBrokers.find(b => String(b.id) === brokerId)?.broker_type === 'etrade'
+                    ? '🚨 REAL orders with REAL money will be submitted to E*Trade on each engine cycle.'
+                    : 'Simulated orders will be submitted to E*Trade Sandbox on each engine cycle.'}
                 </div>
               )}
             </div>
           )}
         </div>
+
+        {pendingRealBroker && (
+          <RealMoneyConfirmDialog
+            brokerName={pendingRealBroker.name}
+            onConfirm={() => { setBrokerId(String(pendingRealBroker.id)); setPendingRealBroker(null); }}
+            onCancel={() => setPendingRealBroker(null)}
+          />
+        )}
 
         {err && <div style={{ color: '#f87171', fontSize: 12, marginTop: 10 }}>{err}</div>}
 
@@ -1486,6 +1599,11 @@ export default function PaperPortfolioPage() {
   const [expandedPositionId, setExpandedPositionId] = useState<number | null>(null);
   // Broker assignment per portfolio
   const [portfolioBroker, setPortfolioBroker] = useState<{ broker_connection_id: number | null; broker: import('@/lib/api').BrokerConnection | null } | null>(null);
+  // T270-ETRADE-PROD-REAL-MONEY (gate 2): same pending-confirmation pattern as
+  // CreatePortfolioModal above — a REAL (non-sandbox) broker pick here is held pending until
+  // the user types CONFIRM in RealMoneyConfirmDialog before api.brokerAssignPortfolio() is
+  // ever actually called.
+  const [pendingRealBrokerAssign, setPendingRealBrokerAssign] = useState<import('@/lib/api').BrokerConnection | null>(null);
   const [brokerConnections, setBrokerConnections] = useState<import('@/lib/api').BrokerConnection[]>([]);
   // ETrade re-auth flow state
   const [reAuthUrl, setReAuthUrl] = useState<string | null>(null);
@@ -1654,9 +1772,17 @@ export default function PaperPortfolioPage() {
             <span style={{ fontSize: 11, color: '#64748b', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Broker:</span>
             {portfolioBroker?.broker ? (
               <>
-                <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 5, background: 'rgba(34,211,238,0.1)', border: '1px solid rgba(34,211,238,0.25)', color: '#22d3ee' }}>
-                  {portfolioBroker.broker.broker_type === 'etrade' ? 'E*Trade Live' :
-                   portfolioBroker.broker.broker_type === 'etrade_sandbox' ? 'E*Trade Sandbox' : 'Fidelity Manual'}
+                {/* T270-ETRADE-PROD-REAL-MONEY (gate 2): a LIVE (real-money) link must look
+                    visually distinct from sandbox/manual at a glance, not share the same
+                    cyan "informational" styling regardless of real-world consequence. */}
+                <span style={{
+                  fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 5,
+                  ...(portfolioBroker.broker.broker_type === 'etrade'
+                    ? { background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)', color: '#f87171' }
+                    : { background: 'rgba(34,211,238,0.1)', border: '1px solid rgba(34,211,238,0.25)', color: '#22d3ee' }),
+                }}>
+                  {portfolioBroker.broker.broker_type === 'etrade' ? '🚨 E*Trade LIVE — real money' :
+                   portfolioBroker.broker.broker_type === 'etrade_sandbox' ? '🧪 E*Trade Sandbox' : 'Fidelity Manual'}
                   {' — '}{portfolioBroker.broker.name}
                   {portfolioBroker.broker.is_authorized
                     ? <span style={{ marginLeft: 6, color: '#4ade80' }}>✓ authorized</span>
@@ -1722,9 +1848,20 @@ export default function PaperPortfolioPage() {
                 <span style={{ fontSize: 11, color: '#475569' }}>Paper only (simulation)</span>
                 {brokerConnections.length > 0 && (
                   <select
-                    defaultValue=""
+                    value=""
                     onChange={e => {
                       const id = parseInt(e.target.value);
+                      if (isNaN(id)) return;
+                      const picked = brokerConnections.find(b => b.id === id);
+                      // T270-ETRADE-PROD-REAL-MONEY (gate 2): a REAL (non-sandbox) connection
+                      // requires typed confirmation BEFORE api.brokerAssignPortfolio() is ever
+                      // called — unlike the create-portfolio form's dropdown, this one calls
+                      // the assignment API directly on change, so the confirm-first gate has
+                      // to intercept here rather than at a later "submit" step.
+                      if (picked && picked.broker_type === 'etrade') {
+                        setPendingRealBrokerAssign(picked);
+                        return;
+                      }
                       if (!isNaN(id) && selectedPortfolioId) {
                         api.brokerAssignPortfolio(selectedPortfolioId, id).then(() =>
                           api.brokerGetPortfolioBroker(selectedPortfolioId).then(setPortfolioBroker)
@@ -1735,7 +1872,10 @@ export default function PaperPortfolioPage() {
                   >
                     <option value="">Link a broker…</option>
                     {brokerConnections.map(b => (
-                      <option key={b.id} value={b.id}>{b.name} ({b.broker_type})</option>
+                      <option key={b.id} value={b.id}>
+                        {b.broker_type === 'etrade_sandbox' ? '🧪' : b.broker_type === 'etrade' ? '🚨' : ''}{' '}
+                        {b.name} ({b.broker_type === 'etrade_sandbox' ? 'E*Trade Sandbox' : b.broker_type === 'etrade' ? 'E*Trade LIVE — real money' : b.broker_type})
+                      </option>
                     ))}
                   </select>
                 )}
@@ -1745,6 +1885,22 @@ export default function PaperPortfolioPage() {
               </>
             )}
           </div>
+        )}
+
+        {pendingRealBrokerAssign && (
+          <RealMoneyConfirmDialog
+            brokerName={pendingRealBrokerAssign.name}
+            onConfirm={() => {
+              const id = pendingRealBrokerAssign.id;
+              setPendingRealBrokerAssign(null);
+              if (selectedPortfolioId) {
+                api.brokerAssignPortfolio(selectedPortfolioId, id).then(() =>
+                  api.brokerGetPortfolioBroker(selectedPortfolioId).then(setPortfolioBroker)
+                );
+              }
+            }}
+            onCancel={() => setPendingRealBrokerAssign(null)}
+          />
         )}
 
         {/* Portfolio selector — always visible */}
