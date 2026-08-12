@@ -216,6 +216,36 @@ a { color: inherit; text-decoration: none; }
 .regime-reference-table-scroll { overflow-x: auto; }
 .regime-reference-table-scroll > * { min-width: 460px; }
 
+/* T230-UX-MOBILE-RESPONSIVE (insider.tsx / congress.tsx / sector-rotation.tsx /
+   intelligence.tsx / forecast.tsx / settings.tsx pass): the last set of rigid grids named
+   in this series' own deferred list. insider.tsx's featured-trader-card row and its trade
+   table's 8-fixed-column rows (header + one per trade) get the same treatment as every
+   prior page's data table — the header/row grids keep their fixed column widths (they must
+   stay aligned with each other) while the whole table scrolls horizontally instead of
+   collapsing, matching .positions-table-scroll/.alerts-table-scroll/.journal-table-scroll/
+   .regime-reference-table-scroll exactly. Every other grid here is a straightforward panel
+   collapse, same shape as every prior pass. settings.tsx's grid2 is a single shared style
+   object reused at 8 call sites (Claude/DeepSeek config, various 2-up form rows) — one
+   class covers all 8 since they're all the identical 1fr-1fr shape. */
+.insider-featured-grid { grid-template-columns: repeat(3, 1fr); }
+.congress-screeners-grid { grid-template-columns: 1fr 1fr; }
+.sector-rotation-summary-grid { grid-template-columns: 1fr 1fr; }
+.intelligence-topbuys-grid { grid-template-columns: 1fr 1fr 1fr; }
+.forecast-price-levels-grid { grid-template-columns: repeat(3, 1fr); }
+.settings-grid2 { grid-template-columns: 1fr 1fr; }
+@media (max-width: 767px) {
+  .insider-featured-grid,
+  .congress-screeners-grid,
+  .sector-rotation-summary-grid,
+  .intelligence-topbuys-grid,
+  .forecast-price-levels-grid,
+  .settings-grid2 {
+    grid-template-columns: 1fr !important;
+  }
+}
+.insider-table-scroll { overflow-x: auto; }
+.insider-table-scroll > * { min-width: 720px; }
+
 .fixed { position: fixed; }
 .absolute { position: absolute; }
 .relative { position: relative; }

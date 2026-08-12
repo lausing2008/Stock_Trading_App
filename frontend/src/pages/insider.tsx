@@ -218,7 +218,7 @@ export default function InsiderPage() {
       {!isLoading && (
         <>
           {/* ── Featured trader cards ─────────────────────────────────── */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '12px' }}>
+          <div className="insider-featured-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '12px' }}>
             {FEATURED.map(f => {
               const stats = featuredStats[f.key] ?? { total: 0, buys: 0, recentBuys: 0, topTicker: null };
               return (
@@ -401,6 +401,7 @@ export default function InsiderPage() {
           </div>
 
           {/* ── Trade table ──────────────────────────────────────────────── */}
+          <div className="insider-table-scroll">
           <div style={{ borderRadius: '10px', border: '1px solid #1e293b', overflow: 'hidden' }}>
             <div style={{
               display: 'grid',
@@ -456,6 +457,7 @@ export default function InsiderPage() {
                 </div>
               );
             })}
+          </div>
           </div>
         </>
       )}

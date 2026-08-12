@@ -590,7 +590,7 @@ export default function ForecastPage() {
                   </div>
 
                   {/* 3-column price levels */}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '1px', margin: '0 16px 12px', borderRadius: '8px', overflow: 'hidden', border: '1px solid #1e293b' }}>
+                  <div className="forecast-price-levels-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '1px', margin: '0 16px 12px', borderRadius: '8px', overflow: 'hidden', border: '1px solid #1e293b' }}>
                     {[
                       { label: 'Entry Zone', value: `${currencyPrefix}${pick.entry_low.toFixed(2)}–${pick.entry_high.toFixed(2)}`, color: '#818cf8', bg: 'rgba(99,102,241,0.08)' },
                       { label: 'Stop Loss',  value: `${currencyPrefix}${pick.stop_loss.toFixed(2)}`,   color: '#f87171', bg: 'rgba(239,68,68,0.07)'   },

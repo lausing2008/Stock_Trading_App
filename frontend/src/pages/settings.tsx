@@ -958,7 +958,7 @@ export default function SettingsPage() {
         {/* Claude config */}
         {s.aiProvider === 'claude' && (
           <div style={{ padding: '16px 20px', borderBottom: '1px solid #1e293b' }}>
-            <div style={grid2}>
+            <div className="settings-grid2" style={grid2}>
               <div>
                 <label style={lbl}>Claude API Key</label>
                 <KeyInput
@@ -986,7 +986,7 @@ export default function SettingsPage() {
         {/* DeepSeek config */}
         {s.aiProvider === 'deepseek' && (
           <div style={{ padding: '16px 20px', borderBottom: '1px solid #1e293b' }}>
-            <div style={grid2}>
+            <div className="settings-grid2" style={grid2}>
               <div>
                 <label style={lbl}>DeepSeek API Key</label>
                 <KeyInput
@@ -1104,7 +1104,7 @@ export default function SettingsPage() {
               sources. Optional — those 3 sources keep working with no key set here; Alpaca adds
               the fastest, most precisely ticker-tagged one of the four.
             </div>
-            <div style={grid2}>
+            <div className="settings-grid2" style={grid2}>
               <div>
                 <label style={lbl}>Alpaca API Key ID</label>
                 <KeyInput
@@ -1170,7 +1170,7 @@ export default function SettingsPage() {
       <div style={section('#4f46e5')}>
         <div style={sectionBar('linear-gradient(90deg,#10b981,#34d399,#10b981)')} />
         <div style={sectionHead}>Data & Refresh</div>
-        <div style={grid2}>
+        <div className="settings-grid2" style={grid2}>
           <div>
             <label style={lbl}>Price Refresh Interval</label>
             <select value={s.priceRefreshInterval} onChange={e => update('priceRefreshInterval', Number(e.target.value))} style={inp}>
@@ -1192,7 +1192,7 @@ export default function SettingsPage() {
             <div style={hint}>Discard articles older than this from the yfinance feed.</div>
           </div>
         </div>
-        <div style={{ ...grid2, paddingTop: 0 }}>
+        <div className="settings-grid2" style={{ ...grid2, paddingTop: 0 }}>
           <div>
             <label style={lbl}>Default Chart Limit</label>
             <select value={s.defaultChartLimit} onChange={e => update('defaultChartLimit', Number(e.target.value))} style={inp}>
@@ -1211,7 +1211,7 @@ export default function SettingsPage() {
       <div style={section('#0ea5e9')}>
         <div style={sectionBar('linear-gradient(90deg,#0ea5e9,#38bdf8,#0ea5e9)')} />
         <div style={sectionHead}>Notifications</div>
-        <div style={grid2}>
+        <div className="settings-grid2" style={grid2}>
           <div>
             <label style={lbl}>Notification Sound</label>
             <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
@@ -1289,7 +1289,7 @@ export default function SettingsPage() {
       <div style={section('#10b981')}>
         <div style={sectionBar('linear-gradient(90deg,#f59e0b,#fbbf24,#f59e0b)')} />
         <div style={sectionHead}>ML & Analysis</div>
-        <div style={grid2}>
+        <div className="settings-grid2" style={grid2}>
           <div>
             <label style={lbl}>Default ML Model</label>
             <select value={s.defaultMlModel} onChange={e => update('defaultMlModel', e.target.value)} style={inp}>
@@ -1381,7 +1381,7 @@ export default function SettingsPage() {
         </form>
 
         <form onSubmit={handleChangePassword} style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          <div style={grid2}>
+          <div className="settings-grid2" style={grid2}>
             <div>
               <label style={lbl}>Current Password</label>
               <input type="password" value={cpOld} onChange={e => setCpOld(e.target.value)} required placeholder="Current password" style={inp} />

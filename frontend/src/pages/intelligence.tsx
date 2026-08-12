@@ -208,7 +208,7 @@ function OverviewTab() {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 24 }}>
+      <div className="intelligence-topbuys-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 24 }}>
         {/* Top insider buys */}
         <div>
           <h3 style={{ color: '#d1d5db', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>TOP INSIDER BUYS</h3>

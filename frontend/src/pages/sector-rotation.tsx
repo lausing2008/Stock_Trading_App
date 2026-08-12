@@ -198,7 +198,7 @@ export default function SectorRotationPage() {
       {!loading && !error && sectors.length > 0 && (
         <>
           {/* Summary strip */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
+          <div className="sector-rotation-summary-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
 
             <div style={{ background: '#0d1829', border: '1px solid rgba(74,222,128,0.2)', borderRadius: '12px', padding: '16px 20px' }}>
               <div style={{ fontSize: '11px', fontWeight: 700, color: '#4ade80', textTransform: 'uppercase', marginBottom: '10px' }}>Leading Sectors</div>
