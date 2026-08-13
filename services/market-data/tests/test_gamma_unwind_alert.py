@@ -153,9 +153,22 @@ def test_filters_to_expiries_within_the_max_days_window():
     assert "_GAMMA_UNWIND_MAX_DAYS_TO_EXPIRY" in body
 
 
-def test_requires_minimum_total_oi_floor_to_avoid_thin_chain_false_signal():
+def test_requires_minimum_notional_floor_to_avoid_thin_chain_false_signal():
     body = _check_gamma_unwind_alerts_body()
-    assert "_GAMMA_UNWIND_MIN_TOTAL_OI" in body
+    assert "_GAMMA_UNWIND_MIN_NOTIONAL_USD" in body
+
+
+def test_notional_floor_scales_with_price_not_a_flat_contract_count():
+    """AUD265-GAMMA-MIN-OI-FLOOR-TOO-LOW: a flat contract-count floor treats a $5 stock and a
+    $500 stock identically at the same OI count, even though the real notional (and therefore
+    dealer hedge-unwind exposure) differs by 100x. The floor comparison must multiply total_oi
+    by price (and the 100-shares-per-contract multiplier), not compare total_oi alone against a
+    bare number."""
+    body = _check_gamma_unwind_alerts_body()
+    assert "notional_usd = total_oi * 100 * price" in body
+    assert "notional_usd < _GAMMA_UNWIND_MIN_NOTIONAL_USD" in body
+    # guard against a stale bare contract-count comparison sneaking back in alongside this
+    assert "total_oi < _GAMMA_UNWIND_MIN_NOTIONAL_USD" not in body
 
 
 def test_requires_concentration_threshold_on_either_side():

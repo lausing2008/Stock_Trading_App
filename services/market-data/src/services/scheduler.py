@@ -2791,7 +2791,13 @@ _GAMMA_UNWIND_MIN_OI_CONCENTRATION = 0.55  # PUTS side only — see AUD265-GAMMA
 # not a synthetic assumption.
 _GAMMA_UNWIND_MIN_CALLS_CONCENTRATION = 0.85
 _GAMMA_UNWIND_STRIKE_BAND_PCT = 0.05  # "near the money" = within 5% of current price
-_GAMMA_UNWIND_MIN_TOTAL_OI = 500  # floor so a thin/illiquid chain doesn't produce a false signal
+# AUD265-GAMMA-MIN-OI-FLOOR-TOO-LOW: a flat 500-contract floor doesn't scale with price — for
+# a $500 stock that's ~$25M notional (a real, material dealer-hedge exposure), but for a $5
+# stock it's only ~$250k, trivially small relative to this job's own bounded universe of large
+# liquid names (PriceAlert symbols + top-20-by-K-Score). Each equity option contract controls
+# 100 shares, so total_oi * 100 * price approximates the notional stock exposure market makers
+# would need to hedge/unwind — a genuinely price-scaled floor instead of a flat contract count.
+_GAMMA_UNWIND_MIN_NOTIONAL_USD = 5_000_000  # floor so a thin/illiquid OR low-notional chain doesn't produce a false signal
 
 
 def check_gamma_unwind_alerts() -> None:
@@ -2888,7 +2894,8 @@ def check_gamma_unwind_alerts() -> None:
                     call_oi = int(calls[(calls["strike"] >= lo) & (calls["strike"] <= hi)]["openInterest"].sum())
                     put_oi = int(puts[(puts["strike"] >= lo) & (puts["strike"] <= hi)]["openInterest"].sum())
                     total_oi = call_oi + put_oi
-                    if total_oi < _GAMMA_UNWIND_MIN_TOTAL_OI:
+                    notional_usd = total_oi * 100 * price
+                    if notional_usd < _GAMMA_UNWIND_MIN_NOTIONAL_USD:
                         continue
                     call_share = call_oi / total_oi
                     if call_share >= _GAMMA_UNWIND_MIN_CALLS_CONCENTRATION:
