@@ -76,8 +76,10 @@ async def job_sync_cape():
 
 
 async def job_check_release_day_fast_poll():
-    # T249-MARKETMOVER-P2: 8:30-10:00 ET covers every BLS/BEA release time (all release-day
-    # data is published at 8:30 ET) with margin for FRED's own 15-60min typical ingestion lag.
+    # T249-MARKETMOVER-P2: 8:30am-1:00pm ET covers every BLS/BEA release time (all release-day
+    # data is published at 8:30 ET), widened from the original 8:30-10:00 window
+    # (BUG-CPIPOLL-WINDOWTOOSHORT) after a real CPI release still hadn't posted to FRED by
+    # 9:58am ET on 2026-08-12 — the original 15-60min margin assumption was not always enough.
     await _run("check_release_day_fast_poll", macro_reaction.check_release_day_fast_poll())
 
 
@@ -163,9 +165,18 @@ async def start_scheduler():
     # dates first and return immediately if nothing is due). America/New_York handles DST
     # correctly without manual UTC-offset math, matching send_paper_portfolio_digest's pattern
     # in market-data's scheduler.py.
+    #
+    # BUG-CPIPOLL-WINDOWTOOSHORT (2026-08-12): the window was originally 8:30-9:59am ET, sized
+    # around BLS's typical same-second 8:30am release time — but on 2026-08-12, FRED's own
+    # realtime_start for that day's real CPI release was AFTER 9:58am ET (the poll's last check
+    # that morning still found nothing), so the release sat undetected for the rest of the day
+    # until manually backfilled. Widened through 12:59pm ET — still a cheap no-op on non-release
+    # days (the due_today DB query gates every FRED call), so the added cost is a few more FRED
+    # calls, only on the handful of real release days/month, only for as long as a release
+    # genuinely remains undetected that morning.
     _scheduler.add_job(
         job_check_release_day_fast_poll,
-        CronTrigger(minute="*/2", hour="8-9", day_of_week="mon-fri", timezone="America/New_York"),
+        CronTrigger(minute="*/2", hour="8-12", day_of_week="mon-fri", timezone="America/New_York"),
         id="check_release_day_fast_poll",
     )
     _scheduler.add_job(

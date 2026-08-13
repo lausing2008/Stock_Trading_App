@@ -136,14 +136,22 @@ def test_both_poll_jobs_are_registered_in_start_scheduler():
     assert 'id="check_fomc_statement_poll"' in _scheduler_source
 
 
-def test_release_day_poll_is_armed_only_during_the_830_to_1000_et_window():
+def test_release_day_poll_is_armed_only_during_the_830am_to_1259pm_et_window():
     """Guards against a future edit accidentally widening this to run all day — the whole
-    point of 'release-day-armed' is that it's a no-op outside the real BLS/BEA release
-    window, not just logically gated inside the function but ALSO cron-scheduled tightly."""
+    point of 'release-day-armed' is that it's a no-op outside a real BLS/BEA release morning,
+    not just logically gated inside the function but ALSO cron-scheduled to a bounded window.
+
+    BUG-CPIPOLL-WINDOWTOOSHORT (2026-08-12): the ORIGINAL window here was hour="8-9"
+    (8:30-9:59am ET) — a real July 2026 CPI release still hadn't posted to FRED by the
+    window's own 9:58am ET last check that day, leaving the release undetected until a manual
+    backfill. Widened to hour="8-12" (through 12:59pm ET) for real headroom against a slow
+    FRED mirror — still bounded (not "all day"), and still a cheap no-op on non-release days
+    per the poll's own due_today DB gate."""
     start = _scheduler_source.index('id="check_release_day_fast_poll"')
     window = _scheduler_source[start - 300:start]
-    assert 'hour="8-9"' in window
+    assert 'hour="8-12"' in window
     assert "America/New_York" in window
+    assert 'day_of_week="mon-fri"' in window
 
 
 # ── T258-MACRO-SECTOR-IMPACT: _clean_sector_list() ─────────────────────────────
