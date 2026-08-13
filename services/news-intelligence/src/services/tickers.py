@@ -131,7 +131,7 @@ def extract_symbols(headline: str, max_matches: int = 5) -> list[str]:
         matched = False
         if len(base) >= 3 and _symbol_pattern(symbol).search(headline):
             if base.isdigit():
-                if symbol.upper() in upper or (name_upper and name_upper in upper):
+                if symbol.upper() in upper or (name_upper and _name_pattern(name_upper).search(upper)):
                     matched = True
             else:
                 matched = True

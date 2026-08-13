@@ -107,3 +107,34 @@ def test_buying_power_check_runs_before_the_order_placement_try_block():
 def test_docstring_explains_the_fix_and_the_fail_open_rationale():
     assert "T270-ETRADE-PROD-REAL-MONEY" in _BODY
     assert "buying power" in _BODY.lower()
+
+
+# ── Found via code review (2026-08-13): the buying-power fetch's except block never checked
+# for a token-rejection error, unlike every other broker call site in this same function
+# (order placement, order-status polling). An expired E*Trade token hitting THIS specific call
+# would be silently swallowed as a generic warning and fall through to attempt a real order
+# placement on a connection already known to be dead, instead of being marked unauthorized +
+# the user notified immediately (T257-ETRADE-PROD-SYSTEMATIC's own stated purpose).
+
+def test_buying_power_fetch_error_checks_for_token_rejection():
+    """The buying-power fetch's except block must call _handle_broker_error_if_token_rejected
+    — the same helper every other broker call site in this function already uses — before
+    falling through to its own generic fail-open warning."""
+    except_body_start = _BODY.index("except Exception as _bp_exc:")
+    except_body_end = _BODY.index("\n    try:", except_body_start)
+    except_body = _BODY[except_body_start:except_body_end]
+    assert "_handle_broker_error_if_token_rejected(session, portfolio, _bp_exc)" in except_body
+
+
+def test_buying_power_fetch_error_still_fails_open_on_a_non_token_error():
+    """A genuine token rejection must not change the overall fail-open contract for this
+    check — the function must still fall through to attempt a real order placement on ANY
+    exception here (transient network blip or a genuine token rejection alike), since the
+    token-rejection handling only marks the connection unauthorized/notifies the user; it does
+    not (and must not) itself block this specific order attempt, matching the pre-existing
+    fail-open posture confirmed by test_buying_power_check_fails_open_on_a_fetch_error_not_
+    open_on_a_real_shortfall above."""
+    except_body_start = _BODY.index("except Exception as _bp_exc:")
+    except_body_end = _BODY.index("\n    try:", except_body_start)
+    except_body = _BODY[except_body_start:except_body_end]
+    assert "return" not in except_body

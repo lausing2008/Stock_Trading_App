@@ -36,6 +36,10 @@ export default function EtradeTransactionsPage() {
   useEffect(() => {
     const session = getSession();
     if (!session) { router.replace('/login'); return; }
+    // broker.py's routes are admin-only (T270-ETRADE-PROD-REAL-MONEY) — this whole page exists
+    // solely to call api.brokerList()/api.brokerOrderHistory(), both of which now 403 for a
+    // non-admin session; redirect rather than render a page that can never show real data.
+    if (session.role !== 'admin') { router.replace('/'); return; }
     setAuthed(true);
   }, [router]);
 

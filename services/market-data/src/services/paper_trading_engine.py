@@ -178,8 +178,12 @@ def _place_broker_entry(session, trade: "PaperTrade", portfolio: "PaperPortfolio
             )[:512]
             return
     except Exception as _bp_exc:
-        log.warning("broker.buying_power_check_failed", symbol=trade.symbol, error=str(_bp_exc))
-        # fail open — the broker's own margin rejection is the backstop for this specific case
+        if not _handle_broker_error_if_token_rejected(session, portfolio, _bp_exc):
+            log.warning("broker.buying_power_check_failed", symbol=trade.symbol, error=str(_bp_exc))
+        # fail open — the broker's own margin rejection is the backstop for this specific case.
+        # A genuine token rejection is now marked unauthorized + the user notified immediately
+        # (matching every other broker call site in this function) rather than silently falling
+        # through to attempt a real order placement on a connection already known to be dead.
     try:
         from src.services.broker.interface import OrderSide, OrderType
         order = broker.place_order(

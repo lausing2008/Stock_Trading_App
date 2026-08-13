@@ -603,11 +603,18 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
         log.warning("scheduler.auto_research_failed", market=market, error=str(_are))
 
     # Stage 3: Alerts — always runs regardless of ingest or signal failures
-    try:
-        check_signal_alerts()
-        check_technical_alerts()
-    except Exception as _ae:
-        log.error("scheduler.alerts_failed", error=str(_ae), exc_info=True)
+    # BUG-LOCALDEV-ALERTS-UNGATED (follow-up): this inline call was missed by the original
+    # fix, which gated every add_job() registration in start_scheduler() plus the one-shot
+    # startup call — but _refresh_market() itself is invoked from several such registrations
+    # every 5 minutes throughout the trading day, and its own check_signal_alerts()/
+    # check_technical_alerts() calls send real emails with no gate of their own. A locally-
+    # restored prod DB dump would email real users within one scheduled refresh cycle.
+    if _is_alerting_enabled():
+        try:
+            check_signal_alerts()
+            check_technical_alerts()
+        except Exception as _ae:
+            log.error("scheduler.alerts_failed", error=str(_ae), exc_info=True)
 
     # Stage 4: Paper trading — runs for both US and HK markets
     if market in ("US", "HK") and _settings.enable_paper_trading:
@@ -6015,17 +6022,38 @@ def send_weekly_theme_forecast() -> None:
 
             from .email_service import send_theme_forecast_email
             date_str = today.strftime("%a, %b %-d")
+            # Found via code review (2026-08-13): this loop already had per-recipient error
+            # isolation (its own try/except around each send) but was missing the OTHER half
+            # of the established AUD256 pattern already used by send_morning_digest()/
+            # send_premarket_brief() in this same file — a per-(user, date) Redis dedup key set
+            # only after a successful send. Without it, a restart within this job's own
+            # misfire_grace_time=60 window (registered with the same **_JOB_DEFAULTS as every
+            # sibling digest job) could re-send this week's theme forecast to every user a
+            # second time.
+            _rc = _get_redis()
             sent = 0
             errors = 0
             for user in users:
+                redis_key = f"stockai:theme_forecast:{user.id}:{today.isoformat()}"
                 try:
-                    if send_theme_forecast_email(user.email, date_str, theme_dicts):
-                        sent += 1
-                    else:
-                        errors += 1
+                    if _rc and _rc.exists(redis_key):
+                        continue
+                except Exception:
+                    pass
+                try:
+                    ok = send_theme_forecast_email(user.email, date_str, theme_dicts)
                 except Exception as exc:
+                    ok = False
                     errors += 1
                     log.warning("theme_forecast.recipient_send_error", user=user.username, error=str(exc))
+                if ok:
+                    sent += 1
+                    try:
+                        _rc and _rc.setex(redis_key, 20 * 3600, "1")  # 20h TTL — one digest/user/day
+                    except Exception:
+                        pass
+                else:
+                    errors += 1
 
             _record_job_status("theme_forecast_weekly", "ok", time.monotonic() - _t0)
             log.info("theme_forecast.sent", themes=len(theme_dicts), sent=sent, errors=errors)

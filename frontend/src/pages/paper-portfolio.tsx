@@ -1635,17 +1635,21 @@ export default function PaperPortfolioPage() {
     }
   }, [portfolioList, selectedPortfolioId]);
 
-  // Load broker connections list once
+  // Load broker connections list once. broker.py's routes are admin-only
+  // (T270-ETRADE-PROD-REAL-MONEY) — skip the call entirely for a non-admin session rather
+  // than making a call guaranteed to 403 (both consumers of this state, EngineControls'
+  // broker-assign UI and the connection dropdown, are already isAdmin-gated at render time,
+  // but the fetch itself was still unconditionally firing for every authenticated user).
   useEffect(() => {
-    if (!authed) return;
+    if (!authed || !isAdmin) return;
     api.brokerList().then(setBrokerConnections).catch(() => {});
-  }, [authed]);
+  }, [authed, isAdmin]);
 
   // Load broker assignment whenever selected portfolio changes
   useEffect(() => {
-    if (!selectedPortfolioId) { setPortfolioBroker(null); return; }
+    if (!selectedPortfolioId || !isAdmin) { setPortfolioBroker(null); return; }
     api.brokerGetPortfolioBroker(selectedPortfolioId).then(setPortfolioBroker).catch(() => {});
-  }, [selectedPortfolioId]);
+  }, [selectedPortfolioId, isAdmin]);
 
   const { data: compareData } = useSWR(
     authed && (portfolioList?.length ?? 0) > 1 ? 'paper-compare' : null,

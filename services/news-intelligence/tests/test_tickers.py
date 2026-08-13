@@ -152,6 +152,24 @@ class TestExtractSymbols:
         _fake_universe(monkeypatch, [("AAPL", "APPLE INC", "US")])
         assert tickers.extract_symbols("AAPL announces new product line") == ["AAPL"]
 
+    def test_numeric_ticker_company_name_cooccurrence_check_is_boundary_aware_not_bare_substring(self, monkeypatch):
+        """Found via code review (2026-08-13): the numeric-ticker co-occurrence check used a
+        bare `name_upper in upper` substring test instead of the same _name_pattern() boundary
+        regex used for the standalone name-match branch a few lines below — reintroducing the
+        exact unbounded-substring bug class AUD264-NEWS-COMPANY-NAME-UNBOUNDED-SUBSTRING already
+        fixed elsewhere in this same function. A short company name like "GOLD" is a substring
+        of an unrelated word ("GOLDMAN") in a headline that has nothing to do with this stock —
+        the co-occurrence check must not treat that as real corroborating context."""
+        _fake_universe(monkeypatch, [("1818.HK", "GOLD", "HK")])
+        assert tickers.extract_symbols("Markets closed 1818 as Goldman warns of slowdown") == []
+
+    def test_numeric_ticker_company_name_cooccurrence_still_matches_a_real_standalone_mention(self, monkeypatch):
+        """The fix must not be so strict it breaks the legitimate co-occurrence case — a real,
+        standalone mention of the company name alongside the bare numeric ticker is still
+        genuine context."""
+        _fake_universe(monkeypatch, [("1818.HK", "GOLD", "HK")])
+        assert tickers.extract_symbols("Gold miner 1818 reports record output") == ["1818.HK"]
+
 
 class TestSymbolForCik:
     def test_resolves_real_cik(self, monkeypatch):

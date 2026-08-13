@@ -245,9 +245,11 @@ export default function SettingsPage() {
   const [brokerOrders, setBrokerOrders] = useState<Record<number, BrokerOrderHistoryItem[] | 'unsupported' | null>>({});
 
   useEffect(() => {
-    if (!session) return;
+    // broker.py's routes are admin-only (T270-ETRADE-PROD-REAL-MONEY) — skip the call
+    // entirely for a non-admin session rather than making a call guaranteed to 403.
+    if (!session || session.role !== 'admin') return;
     api.brokerList().then(setBrokers).catch(() => {});
-  }, []);
+  }, [session]);
 
   async function handleCreateBroker(e: React.FormEvent) {
     e.preventDefault();
@@ -1415,8 +1417,11 @@ export default function SettingsPage() {
         </form>
       </div>
 
-      {/* ── Broker Accounts (only when feature enabled) ───────────── */}
-      {brokerEnabled && <div style={section('#22d3ee')}>
+      {/* ── Broker Accounts (only when feature enabled AND admin — T270-ETRADE-PROD-REAL-MONEY
+           switched every broker.py route from get_current_user to get_admin_user; this UI
+           section previously only checked brokerEnabled, so a non-admin user with the feature
+           flag on saw a fully-rendered section where every action 403'd) ───────────── */}
+      {brokerEnabled && isAdmin && <div style={section('#22d3ee')}>
         <div style={sectionBar('linear-gradient(90deg,#22d3ee,#67e8f9,#22d3ee)')} />
         <div style={sectionHead}>Broker Accounts</div>
 

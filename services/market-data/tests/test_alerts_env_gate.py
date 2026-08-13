@@ -245,3 +245,23 @@ def test_earnings_beat_screener_alert_inline_call_is_gated():
     idx = _scheduler_source.index("check_earnings_beat_screener_alerts()")
     preceding = _scheduler_source[max(0, idx - 300):idx]
     assert "_is_alerting_enabled()" in preceding
+
+
+def test_refresh_market_stage3_alert_calls_are_gated():
+    """Found via code review (2026-08-13): _refresh_market()'s Stage 3 calls
+    check_signal_alerts()/check_technical_alerts() directly — the AST-based job-registration
+    test above only inspects direct _scheduler.add_job() calls in start_scheduler(), so it
+    cannot see that a non-alert-classified job (us_open_burst, us_intra, etc.) internally calls
+    a function that itself performs unguarded alert-sending. _refresh_market() is invoked by 8
+    of the highest-frequency cron jobs (open/intra/close-burst/post-close, US+HK), so this call
+    site being missed by the original fix meant a locally-restored prod DB dump would still
+    email real users on the very next scheduled refresh — the exact incident the whole fix was
+    built to prevent."""
+    body = _func_body("_refresh_market")
+    # Anchor on the real call sites specifically, not the function's own docstring/comments,
+    # which mention "check_signal_alerts()" in prose before the real call is ever reached —
+    # the exact docstring-vs-real-code trap this repo's test-writing history has hit before.
+    check_signal_idx = body.index("        check_signal_alerts()")
+    check_tech_idx = body.index("        check_technical_alerts()")
+    gate_idx = body.rindex("if _is_alerting_enabled():", 0, check_signal_idx)
+    assert gate_idx < check_signal_idx < check_tech_idx
