@@ -192,18 +192,20 @@ export default function TradePerformancePage() {
   const [useMaxHold, setUseMaxHold]       = useState(true);
   const [maxHoldDays, setMaxHoldDays]     = useState<number>(25);
   const [minConfidence, setMinConfidence] = useState(0);
+  const [riskPerTradePct, setRiskPerTradePct] = useState(10);
   const [filterSymbol, setFilterSymbol]   = useState('');
   const [statusFilter, setStatusFilter]   = useState<'ALL' | 'closed' | 'open'>('ALL');
   const [outcomeFilter, setOutcomeFilter] = useState<'ALL' | 'WIN' | 'LOSS'>('ALL');
   const [sortBy, setSortBy]               = useState<'date' | 'return' | 'hold'>('date');
 
   const { data, isLoading, error } = useSWR(
-    authed ? ['trade-performance', lookback, horizon, marketFilter, waitExits, useMaxHold, maxHoldDays, minConfidence] : null,
+    authed ? ['trade-performance', lookback, horizon, marketFilter, waitExits, useMaxHold, maxHoldDays, minConfidence, riskPerTradePct] : null,
     () => api.tradePerformance(lookback, undefined, horizon, {
       market: marketFilter !== 'ALL' ? marketFilter : undefined,
       waitExits,
       maxHoldDays: useMaxHold ? maxHoldDays : undefined,
       minConfidence: minConfidence > 0 ? minConfidence : undefined,
+      riskPerTradePct,
     }),
     { revalidateOnFocus: false },
   );
@@ -324,6 +326,18 @@ export default function TradePerformancePage() {
           <option value={70}>Min conf: 70%</option>
         </select>
 
+        <select
+          value={riskPerTradePct}
+          onChange={e => setRiskPerTradePct(Number(e.target.value))}
+          title="Equity-curve position sizing: % of equity risked per trade. Trades are independent and often overlap in time, so 100% ('all-in, one trade at a time') exaggerates both gains and losses — a realistic value assumes several concurrent positions."
+          style={{ padding: '4px 8px', borderRadius: 6, border: `1px solid ${riskPerTradePct !== 10 ? '#c084fc' : '#1e293b'}`, background: '#0f172a', color: riskPerTradePct !== 10 ? '#c084fc' : '#64748b', fontSize: 12 }}>
+          <option value={5}>Sizing: 5%/trade (~20 concurrent)</option>
+          <option value={10}>Sizing: 10%/trade (~10 concurrent)</option>
+          <option value={20}>Sizing: 20%/trade (~5 concurrent)</option>
+          <option value={33}>Sizing: 33%/trade (~3 concurrent)</option>
+          <option value={100}>Sizing: 100%/trade (all-in, worst case)</option>
+        </select>
+
         <input
           value={filterSymbol} onChange={e => setFilterSymbol(e.target.value)}
           placeholder="Filter symbol…"
@@ -364,7 +378,9 @@ export default function TradePerformancePage() {
               value={data.total_return != null && data.spy_return != null
                 ? pct(data.total_return - data.spy_return)
                 : '—'}
-              sub={data.spy_return != null ? `SPY: ${pct(data.spy_return)}` : 'no SPY data'}
+              sub={data.spy_return != null
+                ? `SPY (100% equity): ${pct(data.spy_return)}, this: ${data.risk_per_trade_pct ?? 10}%/trade`
+                : 'no SPY data'}
               color={data.total_return != null && data.spy_return != null
                 ? data.total_return >= data.spy_return ? '#4ade80' : '#f87171'
                 : undefined} />

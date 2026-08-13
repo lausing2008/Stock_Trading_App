@@ -261,13 +261,14 @@ export const api = {
       `/signals/calibrate_ml_weight?lookback_days=${lookbackDays}`,
       { method: 'POST' }
     ),
-  tradePerformance: (lookbackDays = 180, symbol?: string, horizon = 'SWING', opts?: { waitExits?: boolean; maxHoldDays?: number; minConfidence?: number; market?: string }) => {
+  tradePerformance: (lookbackDays = 180, symbol?: string, horizon = 'SWING', opts?: { waitExits?: boolean; maxHoldDays?: number; minConfidence?: number; market?: string; riskPerTradePct?: number }) => {
     const params = new URLSearchParams({ lookback_days: String(lookbackDays), horizon });
     if (symbol) params.set('symbol', symbol);
     if (opts?.market) params.set('market', opts.market);
     if (opts?.waitExits) params.set('wait_exits', 'true');
     if (opts?.maxHoldDays != null) params.set('max_hold_days', String(opts.maxHoldDays));
     if (opts?.minConfidence != null && opts.minConfidence > 0) params.set('min_confidence', String(opts.minConfidence));
+    if (opts?.riskPerTradePct != null) params.set('risk_per_trade_pct', String(opts.riskPerTradePct));
     return request<TradePerformanceReport>(`/signals/trade_performance?${params}`);
   },
   suppressedSignals: (style = 'SWING', market?: string) =>
