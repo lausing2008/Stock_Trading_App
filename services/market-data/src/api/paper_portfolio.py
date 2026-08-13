@@ -384,6 +384,7 @@ def get_positions(
             "entry_reasons": t.entry_reasons or {},
             "current_signal": current_signals.get(t.symbol),
             "broker_status": _broker_status(t, p),
+            "broker_error": t.broker_error,
         }
         for t in trades
     ]
@@ -506,6 +507,7 @@ def get_trades(
                 "confidence_at_entry": t.confidence_at_entry,
                 "kscore_at_entry": t.kscore_at_entry,
                 "broker_status": _broker_status(t, p),
+                "broker_error": t.broker_error,
             }
             for t in trades
         ],

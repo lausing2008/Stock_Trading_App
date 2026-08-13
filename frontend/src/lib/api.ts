@@ -1694,6 +1694,9 @@ export type PaperPosition = {
   // 'not_attempted' | 'failed' | 'synced' when it does — see _broker_status() in
   // paper_portfolio.py for the exact classification rules.
   broker_status: 'not_attempted' | 'failed' | 'synced' | null;
+  // The raw broker-side error message when broker_status === 'failed' (e.g. a real E*Trade
+  // API rejection reason) — null otherwise. Never present without broker_status === 'failed'.
+  broker_error: string | null;
 };
 
 export type PaperTrade = {
@@ -1717,6 +1720,7 @@ export type PaperTrade = {
   confidence_at_entry: number | null;
   kscore_at_entry: number | null;
   broker_status: 'not_attempted' | 'failed' | 'synced' | null;
+  broker_error: string | null;
 };
 
 export type PaperTradesResponse = {

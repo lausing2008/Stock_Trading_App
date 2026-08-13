@@ -101,15 +101,21 @@ const BROKER_STATUS_COLOR: Record<string, string> = {
 };
 const BROKER_STATUS_TITLE: Record<string, string> = {
   synced: 'A real order was placed at the linked broker for this trade.',
-  failed: 'This portfolio is broker-linked, but placing the real order failed (see the E*Trade Transactions dashboard or server logs for the reason) — the trade is simulated-only.',
+  failed: 'This portfolio is broker-linked, but placing the real order failed — the trade is simulated-only. (Note: a failed order never reaches E*Trade, so it will never appear on the E*Trade Transactions dashboard — the specific reason should be shown in this badge\'s own tooltip instead.)',
   not_attempted: 'This portfolio is broker-linked, but no real order was ever attempted for this trade (e.g. it predates the link).',
 };
 
-function BrokerStatusBadge({ status }: { status: 'not_attempted' | 'failed' | 'synced' | null }) {
+function BrokerStatusBadge({ status, error }: { status: 'not_attempted' | 'failed' | 'synced' | null; error?: string | null }) {
   if (!status) return null;  // portfolio has no broker link at all — nothing to show
+  // Prefer the real, specific broker-side error message over the generic static title when
+  // one is available — the generic "failed" title used to tell the user to check the E*Trade
+  // Transactions dashboard for the reason, but a failed order never gets a broker_order_id,
+  // so it can never appear there; the real reason (e.g. a specific E*Trade API rejection) was
+  // always already stored server-side, just never sent to the frontend until this fix.
+  const title = status === 'failed' && error ? `Real order failed: ${error}` : BROKER_STATUS_TITLE[status];
   return (
     <span
-      title={BROKER_STATUS_TITLE[status]}
+      title={title}
       style={{
         marginLeft: 6, fontSize: 10, fontWeight: 600, color: BROKER_STATUS_COLOR[status],
         background: BROKER_STATUS_COLOR[status] + '18', border: `1px solid ${BROKER_STATUS_COLOR[status]}44`,
@@ -2229,7 +2235,7 @@ export default function PaperPortfolioPage() {
                         <Link href={`/stock/${p.symbol}`} style={{ color: '#60a5fa', fontWeight: 600, textDecoration: 'none' }}
                               onClick={e => e.stopPropagation()}>{p.symbol}</Link>
                         <span style={{ marginLeft: 6, fontSize: 10, color: '#475569' }}>{isExpanded ? '▲' : '▼'}</span>
-                        <BrokerStatusBadge status={p.broker_status} />
+                        <BrokerStatusBadge status={p.broker_status} error={p.broker_error} />
                       </td>
                       <td style={{ padding: '9px 10px' }}>${p.entry_price.toFixed(2)}</td>
                       <td style={{ padding: '9px 10px' }}>{p.current_price != null ? `$${p.current_price.toFixed(2)}` : '—'}</td>
@@ -2737,7 +2743,7 @@ export default function PaperPortfolioPage() {
                         >
                           <td style={{ padding: '9px 10px' }}>
                             <Link href={`/stock/${t.symbol}`} onClick={e => e.stopPropagation()} style={{ color: '#60a5fa', fontWeight: 600, textDecoration: 'none' }}>{t.symbol}</Link>
-                            <BrokerStatusBadge status={t.broker_status} />
+                            <BrokerStatusBadge status={t.broker_status} error={t.broker_error} />
                           </td>
                           <td style={{ padding: '9px 10px', color: '#94a3b8', fontSize: 11 }}>{t.trading_style ?? '—'}</td>
                           <td style={{ padding: '9px 10px', color: '#64748b' }}>{fmtDate(t.entry_date)}</td>

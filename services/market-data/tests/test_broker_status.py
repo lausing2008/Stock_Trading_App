@@ -79,3 +79,32 @@ class TestBrokerStatus:
         t = _trade(broker_error="timeout", broker_order_id="479")
         p = _portfolio(broker_connection_id=1)
         assert _broker_status(t, p) == "failed"
+
+
+# ── Real-message threading: the raw broker_error text must reach both API responses ─────────
+#
+# _broker_status() alone only derives an enum ("failed"/"synced"/"not_attempted"). Before this
+# fix, the real error message text (e.g. a specific E*Trade rejection reason) was NEVER sent to
+# the frontend at all — only used server-side to derive the enum. This meant a user who saw the
+# "Broker ✗" badge and hovered for the reason got a generic static tooltip that actively told
+# them to check the E*Trade Transactions dashboard for the reason — which can never show it,
+# since a failed order never gets a broker_order_id and therefore never reaches E*Trade's own
+# order history at all. Both get_positions()/get_trades() must include the raw broker_error
+# string alongside broker_status so the real reason can actually be surfaced.
+
+def _route_handler_source(func_name: str) -> str:
+    start = _source.index(f"def {func_name}(")
+    end = _source.index("\n\n\n", start)
+    return _source[start:end]
+
+
+class TestBrokerErrorThreadedIntoApiResponses:
+    def test_get_positions_includes_raw_broker_error_alongside_broker_status(self):
+        body = _route_handler_source("get_positions")
+        assert '"broker_status": _broker_status(t, p)' in body
+        assert '"broker_error": t.broker_error' in body
+
+    def test_get_trades_includes_raw_broker_error_alongside_broker_status(self):
+        body = _route_handler_source("get_trades")
+        assert '"broker_status": _broker_status(t, p)' in body
+        assert '"broker_error": t.broker_error' in body
