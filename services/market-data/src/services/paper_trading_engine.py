@@ -3353,7 +3353,13 @@ def _record_de_shadow_comparison(
     Fail-silent — shadow logging must never affect the real entry decision or block trading.
     """
     import json as _json
-    de_agrees = paper_enter == (de_verdict in ("BUY", "SCALE"))
+    # AUD266-STYLE-DEAD-STRING: decision-engine's real verdict vocabulary is exactly
+    # BUY/HOLD/SKIP/BLOCKED (confirmed via grep — "SCALE" never appears anywhere in
+    # services/decision-engine/src/) — the same dead-string pattern already found and fixed
+    # once this session in the alert-fired gate (AUD266-TWO-GATES-CONTRADICTORY-BARS). Harmless
+    # here (an OR-branch that's always False changes nothing), but left correct rather than
+    # left stale, matching that same fix's own reasoning.
+    de_agrees = paper_enter == (de_verdict == "BUY")
     payload = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "symbol": symbol,
