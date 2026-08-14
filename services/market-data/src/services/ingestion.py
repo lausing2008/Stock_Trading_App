@@ -291,6 +291,30 @@ def ingest_symbol(
             for r in df.itertuples(index=False)
         ]
 
+        # BUG-INGEST-CARDINALITYVIOLATION: `ON CONFLICT DO UPDATE` cannot resolve two rows in
+        # the SAME insert statement mapping to the same conflict target (stock_id, ts,
+        # timeframe) — Postgres raises psycopg2.errors.CardinalityViolation, aborting the whole
+        # batch. Confirmed live in production (repeated real GDX 1d-bar ingestions, 20 identical
+        # rows for the same calendar date in one batch) even though every deliberate,
+        # deterministic reproduction attempt against the real yfinance API for the exact same
+        # symbol/window/timeframe came back clean — this points at a rare, non-deterministic
+        # duplication somewhere upstream (yfinance/curl_cffi under this app's real concurrent
+        # ThreadPoolExecutor load) rather than a bug in this app's own request construction. The
+        # root cause may be outside this app's control, but the batch-level defense is not: no
+        # single ingest call has any legitimate reason to write the SAME (stock_id, ts,
+        # timeframe) key twice, so deduplicate immediately before the conflict target ever
+        # matters. Keeps the LAST occurrence per key (dict insertion order) — if the same bar
+        # genuinely appears twice with a revised price (e.g. a late correction), the later value
+        # is the more current one to keep, matching how a legitimate re-ingest of the same date
+        # is expected to behave (the newer fetch's value should win).
+        _dedup: dict[tuple, dict] = {}
+        for row in rows:
+            _dedup[(row["stock_id"], row["ts"], row["timeframe"])] = row
+        if len(_dedup) < len(rows):
+            log.warning("ingest.duplicate_rows_deduped", symbol=symbol, timeframe=timeframe,
+                        before=len(rows), after=len(_dedup))
+        rows = list(_dedup.values())
+
         stmt = pg_insert(Price).values(rows)
         stmt = stmt.on_conflict_do_update(
             index_elements=["stock_id", "ts", "timeframe"],
