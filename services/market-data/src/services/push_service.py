@@ -14,12 +14,44 @@ no-op — this lets development/staging environments run without ever configurin
 """
 from __future__ import annotations
 
+import base64
 import json
 
 from common.config import get_settings
 from common.logging import get_logger
 
 log = get_logger(__name__)
+
+
+def _normalize_vapid_private_key(raw: str) -> str:
+    """BUG-VAPID-PEM-NEVER-WORKED: pywebpush's Vapid.from_string() (the only path
+    send_push_to_user() ever calls) strips real newlines and base64-decodes what's left — it
+    can NEVER accept a full PEM string, because the "-----BEGIN/END PRIVATE KEY-----" markers
+    and the dashes/spaces inside them are not valid base64 characters at all, regardless of
+    whether the key's own newlines are real or (as found live in production, 2026-08-14) a
+    literal backslash-n text corruption from an env-var round-trip. Every push send this app
+    has ever attempted has failed on every single subscription, for every user, since the
+    feature shipped — verified directly against production: the real error was
+    'binascii.Error: Invalid base64-encoded string...' raised INSIDE py_vapid's own
+    Vapid.from_string(), before any HTTP request was even attempted, so this was never
+    reachable via the WebPushException/status-code handling in send_push_to_user() below.
+
+    This normalizes settings.vapid_private_key into the raw base64url-encoded 32-byte EC
+    private key pywebpush actually expects, regardless of how it's stored: a bare raw/DER
+    base64 blob is passed through unchanged (matches Vapid.from_string()'s own two supported
+    shapes); a full PEM string (real OR literal-backslash-n newlines) is parsed via
+    `cryptography` and re-encoded as raw base64url. Raises on a key that's neither — fails
+    loudly here rather than deferring to the exact same opaque binascii error this bug was
+    found from, now with a clear message pointing at the real cause.
+    """
+    text = raw.replace("\\n", "\n").strip()
+    if "BEGIN" not in text:
+        return text  # already a bare raw/DER base64 blob — pywebpush handles this directly
+    from cryptography.hazmat.primitives import serialization
+    key = serialization.load_pem_private_key(text.encode(), password=None)
+    private_value = key.private_numbers().private_value  # type: ignore[union-attr]
+    raw_bytes = private_value.to_bytes(32, "big")
+    return base64.urlsafe_b64encode(raw_bytes).rstrip(b"=").decode()
 
 
 def send_push_to_user(user, title: str, body: str, url: str = "/", tag: str | None = None) -> int:
@@ -46,6 +78,15 @@ def send_push_to_user(user, title: str, body: str, url: str = "/", tag: str | No
         log.warning("push.pywebpush_not_installed")
         return 0
 
+    try:
+        vapid_key = _normalize_vapid_private_key(settings.vapid_private_key)
+    except Exception as exc:
+        # Fails ALL sends the same way every time (a config-wide key, not per-user/per-
+        # subscription), so log once at ERROR here and bail out entirely rather than letting
+        # every subscription in the loop below hit the identical parse failure individually.
+        log.error("push.vapid_key_malformed", error=str(exc))
+        return 0
+
     from db import SessionLocal, PushSubscription
 
     payload = json.dumps({"title": title, "body": body, "url": url, "tag": tag})
@@ -60,7 +101,7 @@ def send_push_to_user(user, title: str, body: str, url: str = "/", tag: str | No
                     "keys": {"p256dh": sub.p256dh_key, "auth": sub.auth_key},
                 },
                 data=payload,
-                vapid_private_key=settings.vapid_private_key,
+                vapid_private_key=vapid_key,
                 vapid_claims={"sub": settings.vapid_subject},
                 timeout=10,
             )
