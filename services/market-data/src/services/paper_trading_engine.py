@@ -133,6 +133,29 @@ def _handle_broker_error_if_token_rejected(session, portfolio: "PaperPortfolio",
 # gap, and against the account balance itself being marginally stale.
 _BROKER_BUYING_POWER_SAFETY_MARGIN = 0.95  # only use up to 95% of reported buying power
 
+# AUD265-BROKERERROR-RAWEXCEPTION-EXPOSURE: PaperTrade.broker_error is now surfaced through
+# GET .../positions and .../trades (get_current_user-only, not admin-gated) and rendered
+# directly in a browser tooltip. Every broker-library exception embeds the raw HTTP response
+# body verbatim (e.g. EtradeBroker raises RuntimeError(f"... {resp.status_code} {resp.text}")),
+# so any future response shape from any linked broker's API that happens to echo back
+# credential/token-looking content would otherwise reach any authenticated app user's screen
+# unfiltered. This is defense-in-depth, not evidence of an actual observed leak — every real
+# E*Trade error text captured in this app's own history has been a clean {"Error":{"code":...,
+# "message":...}} body with no account-identifying content — but a broker exception's exact
+# text is not something this code controls, so any raw exception text written to
+# trade.broker_error must go through this first.
+import re as _re
+_BROKER_ERROR_REDACT_PATTERNS = [
+    _re.compile(r'\b[A-Za-z0-9_\-]{24,}\b'),  # long opaque tokens (bearer/session/API keys)
+]
+
+
+def _sanitize_broker_error(raw: str) -> str:
+    text = raw
+    for pattern in _BROKER_ERROR_REDACT_PATTERNS:
+        text = pattern.sub("[redacted]", text)
+    return text[:512]
+
 
 def _place_broker_entry(session, trade: "PaperTrade", portfolio: "PaperPortfolio") -> None:
     """Submit a market BUY to the linked broker (US only — HK skipped).
@@ -212,7 +235,7 @@ def _place_broker_entry(session, trade: "PaperTrade", portfolio: "PaperPortfolio
     except Exception as exc:
         if not _handle_broker_error_if_token_rejected(session, portfolio, exc):
             log.warning("broker.entry_order_failed", symbol=trade.symbol, error=str(exc))
-            trade.broker_error = str(exc)[:512]
+            trade.broker_error = _sanitize_broker_error(str(exc))
 
 
 def _place_broker_exit(session, trade: "PaperTrade", portfolio: "PaperPortfolio") -> None:
@@ -268,11 +291,16 @@ def _place_broker_exit(session, trade: "PaperTrade", portfolio: "PaperPortfolio"
             # with stale/wrong P&L while the real money moved correctly at the broker.
             log.error("broker.exit_fill_reconciliation_failed", symbol=trade.symbol,
                       order_id=order.order_id, error=str(exc))
-            trade.broker_error = f"exit fill reconciliation failed: {exc}"[:512]
+            # AUD265-RECONCILE-MISLABEL: self-describing prefix — the order genuinely succeeded
+            # (see above), so this must never read as "the order failed" to any UI consumer.
+            trade.broker_error = _sanitize_broker_error(
+                f"Order placed successfully at the broker, but our own post-fill bookkeeping "
+                f"failed to reconcile: {exc}"
+            )
     except Exception as exc:
         if not _handle_broker_error_if_token_rejected(session, portfolio, exc):
             log.warning("broker.exit_order_failed", symbol=trade.symbol, error=str(exc))
-            trade.broker_error = str(exc)[:512]
+            trade.broker_error = _sanitize_broker_error(str(exc))
 
 
 def poll_broker_order_fills(session=None) -> None:

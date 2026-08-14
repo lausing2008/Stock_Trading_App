@@ -107,12 +107,20 @@ const BROKER_STATUS_TITLE: Record<string, string> = {
 
 function BrokerStatusBadge({ status, error }: { status: 'not_attempted' | 'failed' | 'synced' | null; error?: string | null }) {
   if (!status) return null;  // portfolio has no broker link at all — nothing to show
-  // Prefer the real, specific broker-side error message over the generic static title when
-  // one is available — the generic "failed" title used to tell the user to check the E*Trade
-  // Transactions dashboard for the reason, but a failed order never gets a broker_order_id,
-  // so it can never appear there; the real reason (e.g. a specific E*Trade API rejection) was
+  // Prefer the real, specific broker-side message over the generic static title when one is
+  // available — the generic "failed" title used to tell the user to check the E*Trade
+  // Transactions dashboard for the reason, but a failed order never gets a broker_order_id, so
+  // it can never appear there; the real reason (e.g. a specific E*Trade API rejection) was
   // always already stored server-side, just never sent to the frontend until this fix.
-  const title = status === 'failed' && error ? `Real order failed: ${error}` : BROKER_STATUS_TITLE[status];
+  //
+  // AUD265-RECONCILE-MISLABEL: rendered VERBATIM, with no "Real order failed:" prefix added
+  // here — broker_error is set on a "synced" (order genuinely placed) trade too, for a
+  // post-fill bookkeeping reconciliation failure (see paper_trading_engine.py's
+  // _place_broker_exit()). Editorializing on top of that text with a hardcoded "failed" claim
+  // would misrepresent a successful real order as a failed one; the backend's own message is
+  // already self-describing for either case, so the frontend must not assert anything beyond
+  // what it says.
+  const title = error || BROKER_STATUS_TITLE[status];
   return (
     <span
       title={title}
