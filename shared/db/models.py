@@ -1542,4 +1542,3 @@ class SqueezeAlertOutcome(Base):
     return_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_correct_20d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # last time the evaluator touched this row
-    generated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
