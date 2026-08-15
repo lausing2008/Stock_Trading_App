@@ -1225,6 +1225,26 @@ def send_volume_anomaly_email(to: str, alerts: list[dict]) -> bool:
 _SQUEEZE_CRITICAL_DAYS_TO_COVER_LABEL = "2.0"
 
 
+def _regime_warning_lines(regime: str | None) -> tuple[str, str]:
+    """T264-SQUEEZEFAMILY-REGIME-FLAG (2026-08-15): shared across all 3 squeeze-family emails
+    (send_short_squeeze_email/send_gamma_unwind_email/send_prebreakout_email) — a SOFT,
+    informational-only line, never a reason an alert was suppressed (that decision is never
+    made; every candidate that clears its own rule gate still fires regardless of regime — see
+    each check_*_alerts() function's own docstring in scheduler.py for why). Returns ("", "")
+    for a bull (or missing/unknown) regime — the common case — so callers can always splice
+    this in unconditionally without an extra if-check of their own."""
+    if not regime or regime == "bull":
+        return "", ""
+    html = (
+        f'<p style="font-size:11px;color:#b45309;background:#fffbeb;border-radius:6px;'
+        f'padding:8px 10px;margin:10px 0 0 0">⚠ Market regime: <strong>{regime}</strong> — '
+        f'broader market conditions are weak right now. This alert still fired on its own '
+        f'merits; use extra caution.</p>'
+    )
+    text = f"\n⚠ Market regime: {regime} — broader market conditions are weak right now. This alert still fired on its own merits; use extra caution.\n"
+    return html, text
+
+
 def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
     """One email per recipient listing every symbol that NEWLY crossed into "shorts likely
     getting squeezed RIGHT NOW" territory this cycle: short_percent_of_float >= 15 AND the
@@ -1305,6 +1325,22 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
                 f"    Game plan (SWING): entry ~${plan['entry1']:.2f}, "
                 f"stop ${plan['stop']:.2f}, target ${plan['take_profit']:.2f}\n"
             )
+        # T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE (extended 2026-08-15): same measured-
+        # win-rate rendering as send_prebreakout_email()'s own cal_str/cal_text.
+        cal_win_rate = c.get("calibrated_win_rate")
+        cal_count = c.get("calibrated_win_rate_count")
+        cal_html = ""
+        cal_text = ""
+        if cal_win_rate is not None and cal_count is not None:
+            cal_html = (
+                f'<div style="font-size:11px;color:#475569;margin-top:4px">'
+                f'Measured historical win rate: {cal_win_rate * 100:.0f}% <span style="color:#94a3b8">(n={cal_count})</span></div>'
+            )
+            cal_text = f"    Measured historical win rate: {cal_win_rate * 100:.0f}% (n={cal_count})\n"
+        else:
+            cal_html = '<div style="font-size:11px;color:#94a3b8;margin-top:4px">Not enough resolved history yet for a measured win rate</div>'
+            cal_text = "    Not enough resolved history yet for a measured win rate\n"
+        regime_html, regime_text = _regime_warning_lines(c.get("market_regime"))
         row_border = "border:1px solid rgba(220,38,38,0.3);border-radius:8px;padding:10px 12px;margin-bottom:6px" if is_critical else "padding:10px 0;border-bottom:1px solid #f1f5f9"
         rows_html += (
             f'<div style="{row_border}">'
@@ -1313,11 +1349,11 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
             f'<span style="font-size:13px;color:#22c55e;font-weight:700">{chg_str}</span>'
             f'</div>'
             f'<div style="font-size:12px;color:#64748b;margin-top:2px">{price_str} · <strong style="color:#ef4444">{spf:.1f}%</strong> of float short{si_str}{dtc_str}</div>'
-            f'{plan_html}'
+            f'{plan_html}{cal_html}{regime_html}'
             f'</div>'
         )
         dtc_text = f", {short_ratio:.1f}d to cover" + (" [CRITICAL]" if is_critical else "") if short_ratio is not None else ""
-        rows_text += f"  {sym}: {price_str}, {chg_str} today, {spf:.1f}% of float short{si_str}{dtc_text}\n" + plan_text
+        rows_text += f"  {sym}: {price_str}, {chg_str} today, {spf:.1f}% of float short{si_str}{dtc_text}\n" + plan_text + cal_text + regime_text
 
     critical_note = (
         f'<p style="font-size:12px;color:#dc2626;font-weight:600;margin-top:-4px">'
@@ -1357,7 +1393,8 @@ def send_gamma_unwind_email(to: str, candidates: list[dict]) -> bool:
     """Options-expiry gamma-unwind alert — the SECOND squeeze mechanism (see check_gamma_
     unwind_alerts()'s own docstring for the full explanation vs. the classic short-squeeze
     alert above). Each dict: {symbol, expiry, days_to_expiry, dominant_side ("calls"/"puts"),
-    concentration_pct, total_oi_near_money, price}.
+    concentration_pct, total_oi_near_money, price, calibrated_win_rate/_count (optional, see
+    _build_squeeze_family_calibration()'s own docstring in scheduler.py)}.
 
     Deliberately framed as a DIRECTIONAL WATCH, not a firm BUY/SELL call — unlike the classic
     short-squeeze alert (which has a clean long-only thesis), which way a gamma unwind actually
@@ -1365,7 +1402,11 @@ def send_gamma_unwind_email(to: str, candidates: list[dict]) -> bool:
     which this app does not compute. A calls-dominant near-the-money block near expiry has
     historically been associated with EITHER a sharp upside continuation (dealers short gamma,
     forced to chase) OR a "max pain" pin/reversal toward the heaviest strike — reported as
-    "watch closely," never asserted as one specific direction.
+    "watch closely," never asserted as one specific direction. The calibrated_win_rate field
+    (2026-08-15) measures "did THIS side (calls or puts) go on to a real 10d win" per its own
+    resolved SqueezeAlertOutcome rows — it does not resolve the directional-uncertainty caveat
+    above, it just tells you how this specific side has performed historically once enough
+    resolved outcomes exist.
     """
     n = len(candidates)
     subject = f"⚡ Options Expiry Watch — {n} stock{'s' if n != 1 else ''} with concentrated OI near expiry"
@@ -1390,6 +1431,21 @@ def send_gamma_unwind_email(to: str, candidates: list[dict]) -> bool:
             dte_str = f"expires in {dte}d"
         oi = c["total_oi_near_money"]
         price_str = f"${c['price']:.2f}" if c.get("price") else "—"
+        cal_win_rate = c.get("calibrated_win_rate")
+        cal_count = c.get("calibrated_win_rate_count")
+        cal_html = ""
+        cal_text = ""
+        if cal_win_rate is not None and cal_count is not None:
+            cal_html = (
+                f'<div style="font-size:11px;color:#475569;margin-top:4px">'
+                f'Measured historical win rate ({side}-dominant): {cal_win_rate * 100:.0f}% '
+                f'<span style="color:#94a3b8">(n={cal_count})</span></div>'
+            )
+            cal_text = f"    Measured historical win rate ({side}-dominant): {cal_win_rate * 100:.0f}% (n={cal_count})\n"
+        else:
+            cal_html = '<div style="font-size:11px;color:#94a3b8;margin-top:4px">Not enough resolved history yet for a measured win rate</div>'
+            cal_text = "    Not enough resolved history yet for a measured win rate\n"
+        regime_html, regime_text = _regime_warning_lines(c.get("market_regime"))
         rows_html += (
             f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
             f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
@@ -1397,9 +1453,10 @@ def send_gamma_unwind_email(to: str, candidates: list[dict]) -> bool:
             f'<span style="font-size:13px;color:{side_color};font-weight:700">{conc:.0f}% {side}</span>'
             f'</div>'
             f'<div style="font-size:12px;color:#64748b;margin-top:2px">{price_str} · {oi:,} contracts near the money · {dte_str} ({c["expiry"]})</div>'
+            f'{cal_html}{regime_html}'
             f'</div>'
         )
-        rows_text += f"  {sym}: {price_str}, {conc:.0f}% {side}-dominant, {oi:,} near-money OI, {dte_str} ({c['expiry']})\n"
+        rows_text += f"  {sym}: {price_str}, {conc:.0f}% {side}-dominant, {oi:,} near-money OI, {dte_str} ({c['expiry']})\n" + cal_text + regime_text
 
     body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
   <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
@@ -1472,6 +1529,18 @@ def send_prebreakout_email(to: str, candidates: list[dict]) -> bool:
         if bb_pctile is not None and atr_pctile is not None:
             compress_str = f"BB width {bb_pctile * 100:.0f}th pctile, ATR {atr_pctile * 100:.0f}th pctile (6mo)"
         vol_str = " · volume drying up" if vol_dried else ""
+        # AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED (extended to this alert 2026-08-15): same
+        # age-rendering as send_short_squeeze_email()'s own si_str — a recipient shouldn't have
+        # to guess how current the short-interest figure is.
+        si_date = c.get("short_interest_date")
+        si_str = ""
+        if si_date:
+            try:
+                _si_age_days = (date.today() - date.fromisoformat(si_date)).days
+                si_str = f" (as of {si_date}, {_si_age_days}d ago)"
+            except (ValueError, TypeError):
+                si_str = f" (as of {si_date})"
+
         cp_ratio = c.get("options_cp_ratio")
         options_str = ""
         options_text = ""
@@ -1505,17 +1574,18 @@ def send_prebreakout_email(to: str, candidates: list[dict]) -> bool:
             cal_str = '<div style="font-size:11px;color:#94a3b8;margin-top:4px">Not enough resolved history yet for a measured win rate</div>'
             cal_text = "    Not enough resolved history yet for a measured win rate\n"
 
+        regime_html, regime_text = _regime_warning_lines(c.get("market_regime"))
         rows_html += (
             f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
             f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
             f'<strong style="font-size:14px">{sym}</strong>'
             f'<span style="font-size:12px;color:#64748b">{price_str}</span>'
             f'</div>'
-            f'<div style="font-size:12px;color:#64748b;margin-top:2px"><strong style="color:#ef4444">{spf:.1f}%</strong> of float short · {compress_str}{vol_str}</div>'
-            f'{options_str}{ml_str}{cal_str}'
+            f'<div style="font-size:12px;color:#64748b;margin-top:2px"><strong style="color:#ef4444">{spf:.1f}%</strong> of float short{si_str} · {compress_str}{vol_str}</div>'
+            f'{options_str}{ml_str}{cal_str}{regime_html}'
             f'</div>'
         )
-        rows_text += f"  {sym}: {price_str}, {spf:.1f}% of float short, {compress_str}{vol_str}\n" + options_text + ml_text + cal_text
+        rows_text += f"  {sym}: {price_str}, {spf:.1f}% of float short{si_str}, {compress_str}{vol_str}\n" + options_text + ml_text + cal_text + regime_text
 
     body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
   <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">

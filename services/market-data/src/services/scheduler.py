@@ -2664,6 +2664,22 @@ def check_short_squeeze_alerts() -> None:
             _record_job_status("check_short_squeeze_alerts", "ok", time.monotonic() - _t0)
             return
 
+        # T264-SQUEEZEFAMILY-REGIME-FLAG (2026-08-15): a SOFT, informational flag only — never
+        # suppresses an alert. A squeeze/coiling setup doesn't stop being real just because the
+        # broader market is weak, and dip-buying opportunities can be genuine in a risk-off
+        # tape too; hiding the alert risks silently withholding exactly the one a user would
+        # most want to see. Fetched once per cycle (not per-candidate), fails open to "neutral"
+        # on any lookup error — a regime-lookup failure must never abort the whole alert cycle.
+        try:
+            _sq_us_regime = (get_last_regime() or {}).get("state", "neutral")
+        except Exception:
+            _sq_us_regime = "neutral"
+        try:
+            from .paper_trading_engine import get_last_hk_regime as _get_last_hk_regime
+            _sq_hk_regime = (_get_last_hk_regime() or {}).get("state", "neutral")
+        except Exception:
+            _sq_hk_regime = "neutral"
+
         with SessionLocal() as session:
             alerts = session.execute(
                 select(PriceAlert).where(PriceAlert.triggered.is_(False))
@@ -2675,6 +2691,11 @@ def check_short_squeeze_alerts() -> None:
             if not recipients:
                 _record_job_status("check_short_squeeze_alerts", "ok", time.monotonic() - _t0)
                 return
+
+            # T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE (extended 2026-08-15): built once per
+            # cycle, before the candidate loop — same reasoning as check_prebreakout_alerts()'s
+            # own cal_buckets, avoids a re-query per candidate.
+            _sq_cal_buckets = _build_squeeze_family_calibration(session, "short_squeeze")
 
             candidates: dict[str, dict] = {}
             # AUD265-SQUEEZE-CACHE-MISS-SILENT-SKIP: `if not cached: continue` treated a
@@ -2731,9 +2752,13 @@ def check_short_squeeze_alerts() -> None:
                     _short_ratio = data.get("short_ratio")
                 except Exception:
                     continue
+                _spf_pct = round(spf * 100, 2)
+                _sq_win_rate, _sq_win_count = _squeeze_family_calibration_for_alert_type(
+                    _sq_cal_buckets, "short_squeeze", _spf_pct,
+                )
                 candidates[sym] = {
                     "symbol": sym,
-                    "short_percent_of_float": round(spf * 100, 2),
+                    "short_percent_of_float": _spf_pct,
                     "short_interest_date": _si_date,
                     "change_pct": round(change_pct, 2),
                     "price": price,
@@ -2741,6 +2766,9 @@ def check_short_squeeze_alerts() -> None:
                     "days_to_cover_critical": (
                         _short_ratio is not None and _short_ratio <= _SQUEEZE_CRITICAL_DAYS_TO_COVER
                     ),
+                    "calibrated_win_rate": _sq_win_rate,
+                    "calibrated_win_rate_count": _sq_win_count,
+                    "market_regime": _sq_hk_regime if _is_hk_sym else _sq_us_regime,
                 }
             if not candidates:
                 if _fundamentals_cache_misses > 0:
@@ -2828,23 +2856,41 @@ def check_short_squeeze_alerts() -> None:
 _PREBREAKOUT_LOCK_KEY = "stockai:lock:check_prebreakout_alerts"
 _PREBREAKOUT_LOCK_TTL = 3600  # a few-times-a-day job (compression state doesn't change minute-to-minute)
 _PREBREAKOUT_MIN_DAILY_BARS = 146  # matches price_compression.py's own _MIN_HISTORY_BARS floor
-_PREBREAKOUT_CAL_MIN_COUNT = 30  # matches signal-engine's own _CONF_CAL_MIN_COUNT floor exactly
+_SQUEEZE_FAMILY_CAL_MIN_COUNT = 30  # matches signal-engine's own _CONF_CAL_MIN_COUNT floor exactly
+
+# T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE (extended 2026-08-15 to short_squeeze/gamma_unwind_*):
+# one band scheme per alert type, keyed by that alert's own qualifying_metric — the metric this
+# alert's own rule gate already filters on (short_percent_of_float for short_squeeze/pre-
+# breakout, both on a 0-100 scale with a 15% floor; concentration_pct for gamma_unwind_calls/
+# puts, also 0-100 scale but with a 55% floor — see _GAMMA_UNWIND_MIN_OI_CONCENTRATION). There's
+# no live model score to bucket by for any of these 3 alerts (each rule gate is binary: passed
+# or it didn't fire at all), so this is the one real, repeatable dimension each alert has.
 _PREBREAKOUT_CAL_BANDS: list[tuple[float, float, str]] = [
     (15.0, 20.0, "15-20"), (20.0, 30.0, "20-30"), (30.0, 100.01, "30+"),
-]  # bucketed on short_percent_of_float — the one real, repeatable dimension this alert has;
-# unlike check_top3_conviction's confidence bands, there's no live model score to bucket by
-# for the RULE gate itself (it's binary: passed or it didn't fire at all)
+]
+_GAMMA_UNWIND_CAL_BANDS: list[tuple[float, float, str]] = [
+    (55.0, 65.0, "55-65"), (65.0, 80.0, "65-80"), (80.0, 100.01, "80+"),
+]
+_SQUEEZE_FAMILY_CAL_BANDS: dict[str, list[tuple[float, float, str]]] = {
+    "short_squeeze": _PREBREAKOUT_CAL_BANDS,  # same metric/scale/floor as the pre-breakout alert
+    "gamma_unwind_calls": _GAMMA_UNWIND_CAL_BANDS,
+    "gamma_unwind_puts": _GAMMA_UNWIND_CAL_BANDS,
+}
 
 
 def _build_prebreakout_calibration(session) -> dict:
-    """T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE: a MEASURED historical win rate for this
-    alert's own resolved outcomes, bucketed by short-interest band — the direct sibling of
-    signal-engine's _build_confidence_calibration() (see that function's own docstring for
-    the full reasoning this mirrors): real fraction of past rule-gate-passing fires in the
-    same band that went on to a qualifying 10d win, with a real n= count, never a fabricated
-    rate below _PREBREAKOUT_CAL_MIN_COUNT. Computed fresh at call time (no Redis cache) since
-    this job runs only a few times a day — nowhere near the request volume that would justify
-    signal-engine's own 1h TTL for the same pattern.
+    """T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE: a MEASURED historical win rate for the
+    Pre-Breakout alert's own resolved outcomes, bucketed by short-interest band — the direct
+    sibling of signal-engine's _build_confidence_calibration() (see that function's own
+    docstring for the full reasoning this mirrors): real fraction of past rule-gate-passing
+    fires in the same band that went on to a qualifying 10d win, with a real n= count, never a
+    fabricated rate below _SQUEEZE_FAMILY_CAL_MIN_COUNT. Computed fresh at call time (no Redis
+    cache) since this job runs only a few times a day — nowhere near the request volume that
+    would justify signal-engine's own 1h TTL for the same pattern.
+
+    Kept as its own function (rather than folded into _build_squeeze_family_calibration()
+    below) because PreBreakoutAlertOutcome is a SEPARATE table from SqueezeAlertOutcome — see
+    that table's own docstring for why (a genuinely different moment in a squeeze's lifecycle).
     """
     rows = session.execute(
         select(PreBreakoutAlertOutcome.short_percent_of_float, PreBreakoutAlertOutcome.is_correct_10d)
@@ -2853,7 +2899,7 @@ def _build_prebreakout_calibration(session) -> dict:
     buckets: dict[str, dict] = {}
     for lo, hi, band in _PREBREAKOUT_CAL_BANDS:
         outcomes = [is_correct for spf, is_correct in rows if spf is not None and lo <= spf < hi]
-        if len(outcomes) >= _PREBREAKOUT_CAL_MIN_COUNT:
+        if len(outcomes) >= _SQUEEZE_FAMILY_CAL_MIN_COUNT:
             buckets[band] = {"win_rate": round(sum(outcomes) / len(outcomes), 3), "count": len(outcomes)}
     return buckets
 
@@ -2861,15 +2907,65 @@ def _build_prebreakout_calibration(session) -> dict:
 def _prebreakout_calibration_for_band(buckets: dict, short_percent_of_float: float) -> tuple[float | None, int | None]:
     """Looks up the (win_rate, count) for a candidate's own short-interest reading against
     buckets already built by _build_prebreakout_calibration() — (None, None) when the band
-    exists but never cleared _PREBREAKOUT_CAL_MIN_COUNT, exactly matching signal-engine's own
-    "missing key means no calibration available" convention (never a fabricated 0.0)."""
-    for lo, hi, band in _PREBREAKOUT_CAL_BANDS:
-        if lo <= short_percent_of_float < hi:
+    exists but never cleared _SQUEEZE_FAMILY_CAL_MIN_COUNT, exactly matching signal-engine's
+    own "missing key means no calibration available" convention (never a fabricated 0.0)."""
+    return _squeeze_family_calibration_for_band(buckets, _PREBREAKOUT_CAL_BANDS, short_percent_of_float)
+
+
+def _build_squeeze_family_calibration(session, alert_type: str) -> dict:
+    """T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE (2026-08-15): the SqueezeAlertOutcome-backed
+    sibling of _build_prebreakout_calibration() — covers short_squeeze and gamma_unwind_calls/
+    puts, using each alert's own qualifying_metric column (short_percent_of_float for
+    short_squeeze, OI concentration_pct for gamma_unwind_*, both already stored on a 0-100
+    scale) and its own band scheme from _SQUEEZE_FAMILY_CAL_BANDS. Same >=30-resolved-outcomes
+    floor, same "missing bucket means no calibration available" convention — never a fabricated
+    rate. Scoped to is_correct_10d (matching _build_prebreakout_calibration()'s own choice of
+    window) rather than 5d/20d, since 10d is this app's own established middle-ground horizon
+    for this alert family.
+    """
+    bands = _SQUEEZE_FAMILY_CAL_BANDS.get(alert_type)
+    if bands is None:
+        return {}
+    rows = session.execute(
+        select(SqueezeAlertOutcome.qualifying_metric, SqueezeAlertOutcome.is_correct_10d)
+        .where(SqueezeAlertOutcome.alert_type == alert_type, SqueezeAlertOutcome.is_correct_10d.is_not(None))
+    ).all()
+    buckets: dict[str, dict] = {}
+    for lo, hi, band in bands:
+        outcomes = [is_correct for metric, is_correct in rows if metric is not None and lo <= metric < hi]
+        if len(outcomes) >= _SQUEEZE_FAMILY_CAL_MIN_COUNT:
+            buckets[band] = {"win_rate": round(sum(outcomes) / len(outcomes), 3), "count": len(outcomes)}
+    return buckets
+
+
+def _squeeze_family_calibration_for_band(
+    buckets: dict, bands: list[tuple[float, float, str]], metric: float,
+) -> tuple[float | None, int | None]:
+    """Shared band-lookup logic for both _prebreakout_calibration_for_band() and the
+    short_squeeze/gamma_unwind_* calibration lookups — (None, None) whenever the metric falls
+    outside every defined band, or the matching band exists but never cleared the sample floor
+    (i.e. was never written into `buckets` by either build function above)."""
+    for lo, hi, band in bands:
+        if lo <= metric < hi:
             entry = buckets.get(band)
             if entry:
                 return entry["win_rate"], entry["count"]
             return None, None
     return None, None
+
+
+def _squeeze_family_calibration_for_alert_type(
+    buckets: dict, alert_type: str, metric: float | None,
+) -> tuple[float | None, int | None]:
+    """Thin wrapper around _squeeze_family_calibration_for_band() that resolves the right band
+    scheme for a given alert_type and fails open to (None, None) on a missing/unknown metric —
+    matching every other optional-signal lookup in this alert family."""
+    if metric is None:
+        return None, None
+    bands = _SQUEEZE_FAMILY_CAL_BANDS.get(alert_type)
+    if bands is None:
+        return None, None
+    return _squeeze_family_calibration_for_band(buckets, bands, metric)
 
 
 def _fetch_ml_price_direction(symbol: str) -> tuple[float | None, str | None]:
@@ -2968,6 +3064,7 @@ def check_prebreakout_alerts() -> None:
     try:
         import json as _json
         import pandas as _pd
+        from datetime import date as _pb_date, timedelta as _pb_timedelta
         from .paper_trading_engine import _is_market_hours
         from .price_compression import detect_price_compression
 
@@ -2975,6 +3072,22 @@ def check_prebreakout_alerts() -> None:
         if not _us_market_open:
             _record_job_status("check_prebreakout_alerts", "ok", time.monotonic() - _t0)
             return
+
+        # AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED (extended to this alert 2026-08-15): this
+        # alert asserts a squeeze-precondition thesis in an unsolicited email with no human
+        # review before send — same reasoning check_short_squeeze_alerts() already applies to
+        # the identical short_percent_of_float field, and the same 30-day cutoff, so a stale
+        # reading (real short interest already collapsed, yfinance hasn't caught up yet)
+        # rejects the candidate outright rather than merely being displayed for a human to judge.
+        _pb_stale_cutoff_str = (_pb_date.today() - _pb_timedelta(days=30)).isoformat()
+
+        # T264-SQUEEZEFAMILY-REGIME-FLAG (2026-08-15): US-only alert (see
+        # _bounded_options_flow_symbols()'s own docstring) — soft flag only, same reasoning as
+        # check_short_squeeze_alerts() above.
+        try:
+            _pb_us_regime = (get_last_regime() or {}).get("state", "neutral")
+        except Exception:
+            _pb_us_regime = "neutral"
 
         with SessionLocal() as session:
             alerts = session.execute(
@@ -3015,6 +3128,9 @@ def check_prebreakout_alerts() -> None:
                     spf = data.get("short_percent_of_float")
                     if spf is None or spf * 100 < _SQUEEZE_MIN_SHORT_FLOAT:
                         continue
+                    _si_date = data.get("short_interest_date")
+                    if _si_date is None or _si_date < _pb_stale_cutoff_str:
+                        continue
 
                     price_rows = session.execute(
                         select(Price.close, Price.high, Price.low, Price.volume)
@@ -3046,6 +3162,8 @@ def check_prebreakout_alerts() -> None:
                         "symbol": symbol,
                         "stock_id": stock_id,
                         "short_percent_of_float": spf_pct,
+                        "short_interest_date": _si_date,
+                        "market_regime": _pb_us_regime,
                         "bb_width_pctile": compression["bb_width_pctile"],
                         "atr_pctile": compression["atr_pctile"],
                         "volume_dried_up": compression["volume_dried_up"],
@@ -3235,6 +3353,14 @@ def check_gamma_unwind_alerts() -> None:
         import json as _json
         import yfinance as _yf
 
+        # T264-SQUEEZEFAMILY-REGIME-FLAG (2026-08-15): US-only alert (see
+        # _bounded_options_flow_symbols()'s own docstring), so only the US regime is needed —
+        # same soft-flag-never-suppresses reasoning as check_short_squeeze_alerts() above.
+        try:
+            _gamma_us_regime = (get_last_regime() or {}).get("state", "neutral")
+        except Exception:
+            _gamma_us_regime = "neutral"
+
         with SessionLocal() as session:
             alerts = session.execute(
                 select(PriceAlert).where(PriceAlert.triggered.is_(False))
@@ -3257,6 +3383,16 @@ def check_gamma_unwind_alerts() -> None:
                 _live_raw = {row["symbol"]: row for row in _json.loads(_rc.get("stockai:live_prices") or "[]")}
             except Exception:
                 _live_raw = {}
+
+            # T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE (extended 2026-08-15): built once per
+            # cycle, before the per-symbol loop — both sides share the same _GAMMA_UNWIND_
+            # CAL_BANDS scheme (see _SQUEEZE_FAMILY_CAL_BANDS), but are two independently-
+            # resolved-outcome buckets since gamma_unwind_calls/puts are never pooled anywhere
+            # else in this alert family either.
+            _gamma_cal_buckets = {
+                "gamma_unwind_calls": _build_squeeze_family_calibration(session, "gamma_unwind_calls"),
+                "gamma_unwind_puts": _build_squeeze_family_calibration(session, "gamma_unwind_puts"),
+            }
 
             today = date.today()
             candidates: dict[str, dict] = {}
@@ -3299,14 +3435,22 @@ def check_gamma_unwind_alerts() -> None:
                     else:
                         continue  # no real concentration either way — not a clean signal
 
+                    _concentration_pct = round(max(call_share, 1 - call_share) * 100, 1)
+                    _gamma_alert_type = "gamma_unwind_calls" if dominant_side == "calls" else "gamma_unwind_puts"
+                    _gamma_win_rate, _gamma_win_count = _squeeze_family_calibration_for_alert_type(
+                        _gamma_cal_buckets[_gamma_alert_type], _gamma_alert_type, _concentration_pct,
+                    )
                     candidates[symbol] = {
                         "symbol": symbol,
                         "expiry": exp,
                         "days_to_expiry": (date.fromisoformat(exp) - today).days,
                         "dominant_side": dominant_side,
-                        "concentration_pct": round(max(call_share, 1 - call_share) * 100, 1),
+                        "concentration_pct": _concentration_pct,
                         "total_oi_near_money": total_oi,
                         "price": price,
+                        "calibrated_win_rate": _gamma_win_rate,
+                        "calibrated_win_rate_count": _gamma_win_count,
+                        "market_regime": _gamma_us_regime,
                     }
                 except Exception as exc:
                     log.warning("gamma_unwind.symbol_error", symbol=symbol, error=str(exc))

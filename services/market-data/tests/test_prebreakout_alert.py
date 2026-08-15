@@ -35,20 +35,30 @@ _spec.loader.exec_module(_models)
 _ENGINE = create_engine("sqlite:///:memory:")
 _models.Base.metadata.create_all(
     _ENGINE,
-    tables=[_models.Stock.__table__, _models.Price.__table__, _models.PreBreakoutAlertOutcome.__table__],
+    tables=[
+        _models.Stock.__table__, _models.Price.__table__, _models.PreBreakoutAlertOutcome.__table__,
+        _models.SqueezeAlertOutcome.__table__,
+    ],
 )
 
-# PreBreakoutAlertOutcome.id (like SqueezeAlertOutcome.id elsewhere in this app) is a
-# BigInteger primary key, which doesn't get SQLite's implicit INTEGER PRIMARY KEY
-# autoincrement (a real Postgres sequence handles this in production). The real code under
-# test constructs a row with no id at all, exactly as it does in production where Postgres
-# fills it in — a before_insert listener scoped to ONLY this test engine assigns one
-# automatically, so the function's real, unmodified source can be exercised as-is.
+# PreBreakoutAlertOutcome.id/SqueezeAlertOutcome.id are BigInteger primary keys, which don't
+# get SQLite's implicit INTEGER PRIMARY KEY autoincrement (a real Postgres sequence handles
+# this in production). The real code under test constructs a row with no id at all, exactly as
+# it does in production where Postgres fills it in — a before_insert listener scoped to ONLY
+# this test engine assigns one automatically, so the function's real, unmodified source can be
+# exercised as-is.
 _autoincrement_counter = [0]
 
 
 @event.listens_for(_models.PreBreakoutAlertOutcome, "before_insert")
 def _assign_test_id(mapper, connection, target):
+    if target.id is None:
+        _autoincrement_counter[0] += 1
+        target.id = _autoincrement_counter[0]
+
+
+@event.listens_for(_models.SqueezeAlertOutcome, "before_insert")
+def _assign_test_id_squeeze(mapper, connection, target):
     if target.id is None:
         _autoincrement_counter[0] += 1
         target.id = _autoincrement_counter[0]
@@ -62,6 +72,7 @@ for _mod, _stub in _saved_stubs.items():
 Stock = _models.Stock
 Price = _models.Price
 PreBreakoutAlertOutcome = _models.PreBreakoutAlertOutcome
+SqueezeAlertOutcome = _models.SqueezeAlertOutcome
 Market = _models.Market
 TimeFrame = _models.TimeFrame
 
@@ -78,7 +89,7 @@ def _new_id() -> int:
 
 def _make_session():
     session = Session(_ENGINE)
-    for table in (PreBreakoutAlertOutcome.__table__, Price.__table__, Stock.__table__):
+    for table in (PreBreakoutAlertOutcome.__table__, SqueezeAlertOutcome.__table__, Price.__table__, Stock.__table__):
         session.execute(table.delete())
     session.commit()
     return session
@@ -110,16 +121,24 @@ def _extract_record_prebreakout_alert_outcome():
 
 
 def _extract_prebreakout_calibration_functions():
-    """T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE: extracts _build_prebreakout_calibration() and
-    _prebreakout_calibration_for_band() together (both live contiguously, sharing
-    _PREBREAKOUT_CAL_MIN_COUNT/_PREBREAKOUT_CAL_BANDS) — real select()/PreBreakoutAlertOutcome
-    injected so the DB-facing half runs against the real in-memory SQLite session."""
-    start = _SCHEDULER_SOURCE.index("_PREBREAKOUT_CAL_MIN_COUNT = ")
+    """T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE (extended 2026-08-15 to short_squeeze/
+    gamma_unwind_*): extracts the whole contiguous calibration block — band constants,
+    _build_prebreakout_calibration(), _prebreakout_calibration_for_band(),
+    _build_squeeze_family_calibration(), _squeeze_family_calibration_for_band(),
+    _squeeze_family_calibration_for_alert_type() — as one unit, since
+    _prebreakout_calibration_for_band() now delegates to _squeeze_family_calibration_for_band()
+    and would raise a real NameError if extracted alone. Real select()/PreBreakoutAlertOutcome/
+    SqueezeAlertOutcome injected so the DB-facing halves run against the real in-memory SQLite
+    session."""
+    start = _SCHEDULER_SOURCE.index("_SQUEEZE_FAMILY_CAL_MIN_COUNT = ")
     end = _SCHEDULER_SOURCE.index("\n\ndef _fetch_ml_price_direction(", start)
     body = _SCHEDULER_SOURCE[start:end]
-    namespace = {"select": select, "PreBreakoutAlertOutcome": PreBreakoutAlertOutcome}
+    namespace = {"select": select, "PreBreakoutAlertOutcome": PreBreakoutAlertOutcome, "SqueezeAlertOutcome": SqueezeAlertOutcome}
     exec(body, namespace)  # noqa: S102 — isolated eval of real source
-    return namespace["_build_prebreakout_calibration"], namespace["_prebreakout_calibration_for_band"]
+    return (
+        namespace["_build_prebreakout_calibration"], namespace["_prebreakout_calibration_for_band"],
+        namespace["_build_squeeze_family_calibration"], namespace["_squeeze_family_calibration_for_alert_type"],
+    )
 
 
 class _CtxSession:
@@ -277,7 +296,7 @@ def test_calibration_reports_a_real_bucket_once_it_clears_the_sample_floor():
         _make_resolved_outcome(session, st.id, "AAPL", 17.0, i < 18, i)
     session.commit()
 
-    build, lookup = _extract_prebreakout_calibration_functions()
+    build, lookup, _, _ = _extract_prebreakout_calibration_functions()
     buckets = build(session)
 
     assert buckets["15-20"] == {"win_rate": 0.6, "count": 30}
@@ -294,7 +313,7 @@ def test_calibration_omits_a_bucket_below_the_sample_floor():
         _make_resolved_outcome(session, st.id, "AAPL", 17.0, True, i)
     session.commit()
 
-    build, lookup = _extract_prebreakout_calibration_functions()
+    build, lookup, _, _ = _extract_prebreakout_calibration_functions()
     buckets = build(session)
 
     assert "15-20" not in buckets
@@ -314,7 +333,7 @@ def test_calibration_buckets_are_independent_per_band():
         _make_resolved_outcome(session, st.id, "AAPL", 35.0, False, 100 + i)
     session.commit()
 
-    build, lookup = _extract_prebreakout_calibration_functions()
+    build, lookup, _, _ = _extract_prebreakout_calibration_functions()
     buckets = build(session)
 
     assert buckets["15-20"]["count"] == 30
@@ -340,7 +359,7 @@ def test_calibration_ignores_unresolved_outcomes():
         ))
     session.commit()
 
-    build, _ = _extract_prebreakout_calibration_functions()
+    build, _, _, _ = _extract_prebreakout_calibration_functions()
     buckets = build(session)
 
     assert buckets["15-20"] == {"win_rate": 1.0, "count": 30}
@@ -349,8 +368,108 @@ def test_calibration_ignores_unresolved_outcomes():
 def test_calibration_lookup_returns_none_outside_every_band():
     """short_percent_of_float below the alert's own 15% floor should never happen in
     production, but the lookup function itself must degrade safely rather than raise."""
-    build, lookup = _extract_prebreakout_calibration_functions()
+    build, lookup, _, _ = _extract_prebreakout_calibration_functions()
     win_rate, count = lookup({}, 5.0)
+    assert win_rate is None
+    assert count is None
+
+
+# ── _build_squeeze_family_calibration() / _squeeze_family_calibration_for_alert_type() ──────
+# T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE (extended 2026-08-15 to short_squeeze/gamma_unwind_*)
+
+def _make_resolved_squeeze_outcome(session, stock_id, alert_type, symbol, metric, is_correct, i):
+    """A minimal already-resolved SqueezeAlertOutcome row — only qualifying_metric/
+    is_correct_10d/alert_type matter for these tests, matching _make_resolved_outcome()'s own
+    convention for the pre-breakout table."""
+    session.add(SqueezeAlertOutcome(
+        id=_new_id(), alert_type=alert_type, stock_id=stock_id, symbol=symbol,
+        fired_date=date(2026, 1, 1) + timedelta(days=i), alert_price=100.0,
+        qualifying_metric=metric, is_correct_10d=is_correct,
+    ))
+
+
+def test_squeeze_family_calibration_reports_a_real_bucket_for_short_squeeze():
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    for i in range(30):
+        _make_resolved_squeeze_outcome(session, st.id, "short_squeeze", "AAPL", 17.0, i < 21, i)
+    session.commit()
+
+    _, _, build, lookup = _extract_prebreakout_calibration_functions()
+    buckets = build(session, "short_squeeze")
+
+    assert buckets["15-20"] == {"win_rate": 0.7, "count": 30}
+    win_rate, count = lookup(buckets, "short_squeeze", 17.0)
+    assert win_rate == 0.7
+    assert count == 30
+
+
+def test_squeeze_family_calibration_reports_a_real_bucket_for_gamma_unwind_puts():
+    """gamma_unwind_puts uses a DIFFERENT band scheme (55-65/65-80/80+, matching the alert's
+    own 55% OI-concentration floor) than short_squeeze's 15-20/20-30/30+ — this test would
+    silently pass with the wrong bands if the two schemes were ever accidentally swapped,
+    since 17.0 (a valid short_squeeze metric) would fall outside every gamma band entirely and
+    correctly return (None, None) either way; using 62.0 (only valid under the gamma scheme)
+    is what actually distinguishes a correct band lookup from a coincidentally-correct one."""
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    for i in range(30):
+        _make_resolved_squeeze_outcome(session, st.id, "gamma_unwind_puts", "AAPL", 62.0, i < 15, i)
+    session.commit()
+
+    _, _, build, lookup = _extract_prebreakout_calibration_functions()
+    buckets = build(session, "gamma_unwind_puts")
+
+    assert buckets["55-65"] == {"win_rate": 0.5, "count": 30}
+    win_rate, count = lookup(buckets, "gamma_unwind_puts", 62.0)
+    assert win_rate == 0.5
+    assert count == 30
+
+
+def test_squeeze_family_calibration_gamma_unwind_calls_and_puts_never_pool():
+    """A resolved gamma_unwind_calls row must never contribute to a gamma_unwind_puts bucket
+    or vice versa — the two are scored on opposite theses and pooling them would silently
+    cancel real signal (the same class of bug BUG233-RETROEV-SIGNMIX already fixed once
+    elsewhere in this app for a different SELL-mixing case)."""
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    for i in range(30):
+        _make_resolved_squeeze_outcome(session, st.id, "gamma_unwind_calls", "AAPL", 62.0, True, i)
+    for i in range(10):
+        _make_resolved_squeeze_outcome(session, st.id, "gamma_unwind_puts", "AAPL", 62.0, False, 100 + i)
+    session.commit()
+
+    _, _, build, lookup = _extract_prebreakout_calibration_functions()
+    calls_buckets = build(session, "gamma_unwind_calls")
+    puts_buckets = build(session, "gamma_unwind_puts")
+
+    assert calls_buckets["55-65"] == {"win_rate": 1.0, "count": 30}
+    # puts only has 10 resolved rows — below the 30-sample floor, and NOT inflated by the 30
+    # calls rows at the identical metric value.
+    assert "55-65" not in puts_buckets
+    win_rate, count = lookup(puts_buckets, "gamma_unwind_puts", 62.0)
+    assert win_rate is None
+    assert count is None
+
+
+def test_squeeze_family_calibration_unknown_alert_type_returns_empty_buckets():
+    """_SQUEEZE_FAMILY_CAL_BANDS only defines short_squeeze/gamma_unwind_calls/gamma_unwind_
+    puts — an unrecognized alert_type must fail open to an empty bucket dict rather than
+    raising, matching every other optional-signal lookup in this alert family."""
+    session = _make_session()
+    _, _, build, lookup = _extract_prebreakout_calibration_functions()
+
+    assert build(session, "not_a_real_alert_type") == {}
+    win_rate, count = lookup({}, "not_a_real_alert_type", 62.0)
+    assert win_rate is None
+    assert count is None
+
+
+def test_squeeze_family_calibration_for_alert_type_fails_open_on_none_metric():
+    """A candidate with no resolvable qualifying_metric (e.g. a genuinely missing
+    short_percent_of_float) must degrade to (None, None), never raise on a None comparison."""
+    _, _, _, lookup = _extract_prebreakout_calibration_functions()
+    win_rate, count = lookup({"15-20": {"win_rate": 0.6, "count": 30}}, "short_squeeze", None)
     assert win_rate is None
     assert count is None
 
