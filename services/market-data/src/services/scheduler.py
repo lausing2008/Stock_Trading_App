@@ -85,7 +85,7 @@ from sqlalchemy.orm import selectinload, Session
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, EarningsEvent, EconomicEvent, FundamentalsSnapshot, Market, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
+from db import AlertCondition, EarningsEvent, EconomicEvent, FundamentalsSnapshot, Market, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -2825,6 +2825,221 @@ def check_short_squeeze_alerts() -> None:
             pass
 
 
+_PREBREAKOUT_LOCK_KEY = "stockai:lock:check_prebreakout_alerts"
+_PREBREAKOUT_LOCK_TTL = 3600  # a few-times-a-day job (compression state doesn't change minute-to-minute)
+_PREBREAKOUT_MIN_DAILY_BARS = 146  # matches price_compression.py's own _MIN_HISTORY_BARS floor
+
+
+def check_prebreakout_alerts() -> None:
+    """T264-SHORTSQUEEZE-PREBREAKOUT: "coiling, high-short-interest, about to break out" alert
+    — direct user request: "predict the short sell not able to recover and send me the alert
+    BEFORE it starts to breakout... using daily volume and trading data along with the option
+    call and sell data expiry."
+
+    Mechanistically the PRE-MOVE counterpart to check_short_squeeze_alerts() above — that
+    function fires once a real intraday move is ALREADY in progress; this one fires while the
+    stock is still compressing, using price_compression.py's own detect_price_compression()
+    (an independent port of technical-analysis's identical function — see that module's own
+    docstring for why two copies exist) against the SAME stockai:fundamentals:v2:{sym} cache
+    and _SQUEEZE_MIN_SHORT_FLOAT threshold check_short_squeeze_alerts() already uses.
+
+    HONEST SCOPE, decided before writing this: a real historical backtest
+    (backtest/prebreakout_dataset.py) found only ~68 qualifying candidate days across this
+    app's whole universe over 3 years — far too few to train and validate a real model without
+    overfitting noise (this repo's own gate_harness.py promotion-margin discipline exists
+    specifically to guard against exactly this). This alert is therefore RULE-BASED ONLY for
+    now (coiling + short-interest floor) — see PreBreakoutAlertOutcome.model_confidence, always
+    None today. Options call/put positioning (from the ~2-week-deep OptionsFlowSnapshot table)
+    is folded in as a REPORTED context field only, never a gating condition — too little
+    history exists to validate it as anything more than a minor tilt yet.
+
+    Runs a few times a day (compression state built from daily bars doesn't change minute-to-
+    minute, unlike check_short_squeeze_alerts()'s own 1-minute intraday-move cadence) over the
+    same bounded PriceAlert-subscribed + top-K-by-K-Score US symbol set
+    _bounded_options_flow_symbols() already establishes for the EOD options-flow job — daily-
+    bar compression math is much cheaper than that job's own live options-chain fetch, but
+    reusing the same bounded set keeps this consistent with every other "which symbols get a
+    less-common alert" decision in this file, and lets the options-flow modifier below reuse
+    data this job's own recipients already implicitly opted into having computed.
+    """
+    try:
+        acquired = _get_redis().set(_PREBREAKOUT_LOCK_KEY, "1", nx=True, ex=_PREBREAKOUT_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    _t0 = time.monotonic()
+    try:
+        import json as _json
+        import pandas as _pd
+        from .paper_trading_engine import _is_market_hours
+        from .price_compression import detect_price_compression
+
+        _us_market_open = _is_market_hours("US")
+        if not _us_market_open:
+            _record_job_status("check_prebreakout_alerts", "ok", time.monotonic() - _t0)
+            return
+
+        with SessionLocal() as session:
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            if not alerts:
+                _record_job_status("check_prebreakout_alerts", "ok", time.monotonic() - _t0)
+                return
+            recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            if not recipients:
+                _record_job_status("check_prebreakout_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            symbols = _bounded_options_flow_symbols(session)
+            if not symbols:
+                _record_job_status("check_prebreakout_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            _rc = _get_redis()
+            latest_options_as_of = session.execute(select(func.max(OptionsFlowSnapshot.as_of))).scalar_one_or_none()
+            options_by_stock: dict[int, float] = {}
+            if latest_options_as_of is not None:
+                for stock_id, cp_ratio in session.execute(
+                    select(OptionsFlowSnapshot.stock_id, OptionsFlowSnapshot.cp_ratio)
+                    .where(OptionsFlowSnapshot.as_of == latest_options_as_of, OptionsFlowSnapshot.cp_ratio.is_not(None))
+                ).all():
+                    options_by_stock[stock_id] = cp_ratio
+
+            candidates: dict[str, dict] = {}
+            for stock_id, symbol in symbols:
+                try:
+                    cached = _rc.get(f"stockai:fundamentals:v2:{symbol}")
+                    if not cached:
+                        continue
+                    data = _json.loads(cached)
+                    spf = data.get("short_percent_of_float")
+                    if spf is None or spf * 100 < _SQUEEZE_MIN_SHORT_FLOAT:
+                        continue
+
+                    price_rows = session.execute(
+                        select(Price.close, Price.high, Price.low, Price.volume)
+                        .where(Price.stock_id == stock_id, Price.timeframe == TimeFrame.D1)
+                        .order_by(Price.ts.desc())
+                        .limit(_PREBREAKOUT_MIN_DAILY_BARS)
+                    ).all()
+                    if len(price_rows) < _PREBREAKOUT_MIN_DAILY_BARS:
+                        continue
+                    price_rows = list(reversed(price_rows))  # back to ascending order
+                    bars = _pd.DataFrame(price_rows, columns=["close", "high", "low", "volume"]).astype(float)
+                    compression = detect_price_compression(bars["close"], bars["high"], bars["low"], bars["volume"])
+                    if not compression["is_compressed"]:
+                        continue
+
+                    live = None
+                    try:
+                        _live_raw = _json.loads(_rc.get("stockai:live_prices") or "[]")
+                        live = next((row for row in _live_raw if row.get("symbol") == symbol), None)
+                    except Exception:
+                        pass
+                    price = live.get("price") if live else float(bars["close"].iloc[-1])
+
+                    candidates[symbol] = {
+                        "symbol": symbol,
+                        "stock_id": stock_id,
+                        "short_percent_of_float": round(spf * 100, 2),
+                        "bb_width_pctile": compression["bb_width_pctile"],
+                        "atr_pctile": compression["atr_pctile"],
+                        "volume_dried_up": compression["volume_dried_up"],
+                        "price": price,
+                        "options_cp_ratio": options_by_stock.get(stock_id),
+                    }
+                except Exception as exc:
+                    log.warning("prebreakout_alert.symbol_error", symbol=symbol, error=str(exc))
+                    continue
+
+            # T264-SHORTSQUEEZE-PREBREAKOUT: recorded ONCE per (symbol, day) globally, before the
+            # per-recipient send loop — matches _record_squeeze_alert_outcome()'s own established
+            # discipline (see that function's docstring) exactly, for the identical reason: this
+            # is a global "did this symbol first qualify today" fact, independent of recipient
+            # count, not a per-user newly_qualifying computation.
+            for sym, cand in candidates.items():
+                _record_prebreakout_alert_outcome(
+                    session, cand["stock_id"], sym, cand["price"], cand["short_percent_of_float"],
+                    cand["bb_width_pctile"], cand["atr_pctile"], cand["volume_dried_up"], cand["options_cp_ratio"],
+                )
+
+            if not candidates:
+                _record_job_status("check_prebreakout_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            from .email_service import send_prebreakout_email
+            sent = 0
+            for uid, user in recipients.items():
+                state_key = f"stockai:prebreakout_active:{uid}"
+                try:
+                    prev_active = set(_rc.smembers(state_key) or set())
+                except Exception:
+                    prev_active = set()
+                current_active = set(candidates.keys())
+                newly_qualifying = sorted(current_active - prev_active)
+                send_ok = True
+                if newly_qualifying:
+                    payload = [candidates[sym] for sym in newly_qualifying]
+                    try:
+                        send_ok = send_prebreakout_email(user.email, payload)
+                    except Exception as _send_exc:
+                        send_ok = False
+                        log.warning("prebreakout_alert.recipient_send_error", user=uid, error=str(_send_exc))
+                    if send_ok:
+                        sent += 1
+                resync_set = current_active if send_ok else (current_active - set(newly_qualifying))
+                try:
+                    _rc.delete(state_key)
+                    if resync_set:
+                        _rc.sadd(state_key, *resync_set)
+                    _rc.expire(state_key, 20 * 3600)
+                except Exception:
+                    pass
+
+            _record_job_status("check_prebreakout_alerts", "ok", time.monotonic() - _t0)
+            log.info("prebreakout_alert.done", candidates=len(candidates), sent=sent, recipients=len(recipients))
+    except Exception as exc:
+        log.error("prebreakout_alert.failed", error=str(exc), exc_info=True)
+        _record_job_status("check_prebreakout_alerts", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        try:
+            _get_redis().delete(_PREBREAKOUT_LOCK_KEY)
+        except Exception:
+            pass
+
+
+def _record_prebreakout_alert_outcome(
+    session, stock_id: int, symbol: str, price: float, short_percent_of_float: float,
+    bb_width_pctile: float | None, atr_pctile: float | None, volume_dried_up: bool | None,
+    options_cp_ratio: float | None,
+) -> None:
+    """Mirrors _record_squeeze_alert_outcome()'s own existence-check-before-insert discipline
+    exactly (see that function's docstring for the full reasoning) — a re-fire the same day is
+    a safe no-op, never a duplicate row or an overwritten alert_price."""
+    try:
+        today = date.today()
+        existing = session.execute(
+            select(PreBreakoutAlertOutcome).where(
+                PreBreakoutAlertOutcome.stock_id == stock_id,
+                PreBreakoutAlertOutcome.fired_date == today,
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return
+        session.add(PreBreakoutAlertOutcome(
+            stock_id=stock_id, symbol=symbol, fired_date=today, alert_price=float(price),
+            rule_gate_passed=True, short_percent_of_float=short_percent_of_float,
+            bb_width_pctile=bb_width_pctile, atr_pctile=atr_pctile, volume_dried_up=volume_dried_up,
+            options_modifier_applied=options_cp_ratio is not None, options_cp_ratio=options_cp_ratio,
+        ))
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        log.warning("prebreakout_alert_outcome.record_failed", symbol=symbol, error=str(exc))
+
+
 _GAMMA_UNWIND_LOCK_KEY = "stockai:lock:check_gamma_unwind_alerts"
 _GAMMA_UNWIND_LOCK_TTL = 3600  # generous — a few-times-a-day job, only needs to prevent true overlap
 # BEARISH-PUTS-WATCH (2026-08-04): widened from 0-3 to 0-5 days — the puts-dominant side of
@@ -3424,6 +3639,104 @@ def evaluate_squeeze_alert_outcomes() -> None:
     finally:
         try:
             _get_redis().delete(_SQUEEZE_OUTCOME_EVAL_LOCK_KEY)
+        except Exception:
+            pass
+
+
+_PREBREAKOUT_OUTCOME_EVAL_LOCK_KEY = "stockai:lock:evaluate_prebreakout_alert_outcomes"
+_PREBREAKOUT_OUTCOME_EVAL_LOCK_TTL = 3600
+
+
+def evaluate_prebreakout_alert_outcomes() -> None:
+    """T264-SHORTSQUEEZE-PREBREAKOUT: fills entry_price + 5d/10d/20d forward returns for every
+    PreBreakoutAlertOutcome row whose windows haven't closed yet — the sibling evaluator to
+    evaluate_squeeze_alert_outcomes() above, reusing the SAME _squeeze_outcome_lookup_price()
+    helper and _SQUEEZE_OUTCOME_WINDOWS/_SQUEEZE_OUTCOME_WIN_HURDLE_PCT constants (a genuine
+    shared implementation here, not an independent port — both tables score forward returns
+    with the identical T+1-entry / bisect-nearest-bar-with-grace-window logic, so reusing the
+    real function directly is correct, unlike price_compression.py's own deliberate
+    cross-service duplication for a different reason).
+
+    Always BUY-thesis scoring (win = price rose) — unlike SqueezeAlertOutcome's own
+    gamma_unwind_puts row, this alert has no bearish-thesis variant; "shorts forced to cover"
+    only ever predicts a move UP.
+    """
+    try:
+        acquired = _get_redis().set(_PREBREAKOUT_OUTCOME_EVAL_LOCK_KEY, "1", nx=True, ex=_PREBREAKOUT_OUTCOME_EVAL_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    _t0 = time.monotonic()
+    try:
+        today = date.today()
+        with SessionLocal() as session:
+            pending = session.execute(
+                select(PreBreakoutAlertOutcome).where(
+                    (PreBreakoutAlertOutcome.entry_price.is_(None))
+                    | (PreBreakoutAlertOutcome.return_20d.is_(None))
+                )
+            ).scalars().all()
+            if not pending:
+                _record_job_status("evaluate_prebreakout_alert_outcomes", "ok", time.monotonic() - _t0)
+                return
+
+            stock_ids = {row.stock_id for row in pending}
+            min_fired = min(row.fired_date for row in pending)
+            bulk_prices = session.execute(
+                select(Price.stock_id, Price.ts, Price.close).where(
+                    Price.stock_id.in_(stock_ids),
+                    Price.timeframe == TimeFrame.D1,
+                    Price.ts >= datetime.combine(min_fired, datetime.min.time()),
+                )
+                .order_by(Price.stock_id, Price.ts)
+            ).all()
+            price_map: dict[int, list[tuple]] = {}
+            for stock_id, ts, close in bulk_prices:
+                pr_date = ts.date() if hasattr(ts, "date") else ts
+                price_map.setdefault(stock_id, []).append((pr_date, float(close)))
+
+            evaluated = 0
+            for row in pending:
+                try:
+                    bucket = price_map.get(row.stock_id, [])
+                    if row.entry_price is None:
+                        entry_result = _squeeze_outcome_lookup_price(bucket, row.fired_date + timedelta(days=1))
+                        if entry_result is None:
+                            continue
+                        row.entry_date, row.entry_price = entry_result
+
+                    for window in _SQUEEZE_OUTCOME_WINDOWS:
+                        price_field, ret_field, correct_field = f"price_{window}d", f"return_{window}d", f"is_correct_{window}d"
+                        if getattr(row, price_field) is not None:
+                            continue
+                        target = row.entry_date + timedelta(days=window)
+                        if target > today:
+                            continue
+                        result = _squeeze_outcome_lookup_price(bucket, target)
+                        if result is None:
+                            continue
+                        _, price = result
+                        ret = (price - row.entry_price) / row.entry_price
+                        is_correct = ret > _SQUEEZE_OUTCOME_WIN_HURDLE_PCT
+                        setattr(row, price_field, price)
+                        setattr(row, ret_field, ret)
+                        setattr(row, correct_field, is_correct)
+                    row.evaluated_at = datetime.now(timezone.utc)
+                    evaluated += 1
+                except Exception as exc:
+                    log.warning("prebreakout_alert_outcome.eval_row_failed", symbol=row.symbol, error=str(exc))
+                    continue
+
+            session.commit()
+            _record_job_status("evaluate_prebreakout_alert_outcomes", "ok", time.monotonic() - _t0)
+            log.info("prebreakout_alert_outcome.eval_done", pending=len(pending), evaluated=evaluated)
+    except Exception as exc:
+        log.error("prebreakout_alert_outcome.eval_failed", error=str(exc), exc_info=True)
+        _record_job_status("evaluate_prebreakout_alert_outcomes", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        try:
+            _get_redis().delete(_PREBREAKOUT_OUTCOME_EVAL_LOCK_KEY)
         except Exception:
             pass
 
@@ -8210,6 +8523,16 @@ def start_scheduler() -> None:
         id="squeeze_alert_outcome_eval_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
 
+    # ── T264-SHORTSQUEEZE-PREBREAKOUT: pre-breakout alert outcome evaluator — 18:20 ET ──
+    # Pure data computation, no email sent — not gated behind _is_alerting_enabled(). Runs
+    # right after its sibling squeeze evaluator above (same reasoning: after the day's own D1
+    # bars have settled).
+    _scheduler.add_job(
+        evaluate_prebreakout_alert_outcomes,
+        CronTrigger(hour=18, minute=20, timezone="America/New_York"),
+        id="prebreakout_alert_outcome_eval_daily", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
     # BUG-LOCALDEV-ALERTS-UNGATED: every 1-minute-interval checker below sends real alert
     # emails when it fires — gated behind _is_alerting_enabled() as a block (they're all
     # alert-emitting, no data-only jobs interleaved in this contiguous stretch).
@@ -8244,6 +8567,19 @@ def start_scheduler() -> None:
             "interval",
             hours=4,
             id="gamma_unwind_alert_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
+
+        # ── T264-SHORTSQUEEZE-PREBREAKOUT: coiling pre-breakout alert — a few times a day ──────
+        # Compression state (Bollinger Band width / ATR percentile over a 126-day lookback)
+        # doesn't change minute-to-minute — see check_prebreakout_alerts()'s own docstring for
+        # the full mechanism, honest RULE-BASED-ONLY scope, and why no trained model backs it yet.
+        _scheduler.add_job(
+            check_prebreakout_alerts,
+            "interval",
+            hours=4,
+            id="prebreakout_alert_check",
             replace_existing=True,
             max_instances=1, coalesce=True,
         )

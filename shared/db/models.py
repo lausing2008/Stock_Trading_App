@@ -1542,3 +1542,69 @@ class SqueezeAlertOutcome(Base):
     return_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_correct_20d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # last time the evaluator touched this row
+
+
+class PreBreakoutAlertOutcome(Base):
+    """T264-SHORTSQUEEZE-PREBREAKOUT: forward-return tracking for the NEW "coiling, high-
+    short-interest stock about to break out" alert — direct user follow-up request: "predict
+    the short sell not able to recover and send me the alert BEFORE it starts to breakout...
+    using daily volume and trading data along with the option call and sell data expiry."
+
+    Deliberately a SEPARATE table from SqueezeAlertOutcome (T264-SQUEEZEALERT-PERFORMANCE),
+    not a reuse of it — that table measures "did the ALREADY-FIRING squeeze/gamma alert make
+    money," a fundamentally different moment than this one (BEFORE the move has started at
+    all, while the stock is still compressing). Mixing the two would conflate "did a breakout
+    already in progress continue" with "did we correctly predict a breakout was coming" —
+    genuinely different questions with different false-positive/false-negative tradeoffs.
+
+    One row per (stock_id, fired_date) — same first-fire-of-the-day semantics as
+    SqueezeAlertOutcome. rule_gate_passed records whether the RULE-BASED half (coiling +
+    short-interest floor) fired on its own — this can be True even when the model wasn't
+    trained/available yet (e.g. a symbol with insufficient price history for the ML model),
+    so the two verdicts are tracked independently rather than collapsed into one boolean.
+    model_confidence is the trained model's own P(sustained breakout within N days) — None
+    when no model was available for this symbol at fire time (a real, honest state, not an
+    error). model_version lets a later retrain's outcomes be distinguished from an earlier
+    one's when reviewing historical accuracy — see docs/DESIGN convention elsewhere in this
+    app for per-model-version outcome tracking (TuneHistory's own promoted/rejected pattern).
+    options_modifier_applied records whether the (currently thin, ~2-week-history) options
+    call/put positioning data was actually available and used to adjust confidence for this
+    fire — explicitly tracked rather than silently assumed, since most fires won't have it.
+
+    Forward-return columns mirror SqueezeAlertOutcome's/SignalOutcome's own established
+    5d/10d/20d convention exactly, scored BUY-direction (win = price rose — the correct
+    direction for "shorts forced to cover" thesis, unlike SqueezeAlertOutcome's own
+    gamma_unwind_puts row, which is deliberately the opposite).
+    """
+    __tablename__ = "prebreakout_alert_outcomes"
+    __table_args__ = (
+        UniqueConstraint("stock_id", "fired_date", name="uq_prebreakout_alert_outcome_stock_date"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    fired_date: Mapped[date] = mapped_column(Date, index=True)
+    fired_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    alert_price: Mapped[float] = mapped_column(Float)  # live price at the moment this alert first fired
+    rule_gate_passed: Mapped[bool] = mapped_column(Boolean)  # coiling + short-interest floor, independent of the model
+    short_percent_of_float: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bb_width_pctile: Mapped[float | None] = mapped_column(Float, nullable=True)
+    atr_pctile: Mapped[float | None] = mapped_column(Float, nullable=True)
+    volume_dried_up: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    model_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)  # 0-1, None if no model available for this symbol
+    model_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    options_modifier_applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    options_cp_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)  # snapshot of the options signal, if used
+    entry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_5d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_10d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_10d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_10d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_20d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

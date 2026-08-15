@@ -1423,6 +1423,89 @@ def send_gamma_unwind_email(to: str, candidates: list[dict]) -> bool:
     return send_email(to, subject, body_html, body_text)
 
 
+def send_prebreakout_email(to: str, candidates: list[dict]) -> bool:
+    """T264-SHORTSQUEEZE-PREBREAKOUT: "coiling" alert — the pre-move counterpart to
+    send_short_squeeze_email() above, direct user request: "predict the short sell not able to
+    recover and send me the alert BEFORE it starts to breakout." Whereas the classic short-
+    squeeze alert fires once a real move is ALREADY in progress, this fires while the stock is
+    still compressing — high short interest + Bollinger Band width and ATR both near a 6-month
+    low, a real precondition for a squeeze, with no breakout confirmed yet.
+
+    Each dict: {symbol, short_percent_of_float, bb_width_pctile, atr_pctile, volume_dried_up,
+    price, options_cp_ratio (optional, only when the ~2-week-deep OptionsFlowSnapshot table
+    has a recent reading for this symbol)}.
+
+    HONESTY, stated explicitly per this app's own standing discipline: there is currently no
+    trained model behind this alert (see PreBreakoutAlertOutcome.model_confidence, always None
+    today) — real historical backtesting found only ~68 qualifying historical days across this
+    app's whole universe, far too few to fit and validate a real model without overfitting
+    noise. This alert is RULE-BASED ONLY for now: it reports a measured precondition (coiling +
+    high short interest), never a probability or a timeline for when/whether a breakout
+    actually happens. A trained confidence score will be added once enough resolved outcomes
+    (this alert's own PreBreakoutAlertOutcome history, plus organic FundamentalsSnapshot
+    accumulation) exist to validate one honestly.
+    """
+    n = len(candidates)
+    subject = f"⏳ Pre-Breakout Watch — {n} stock{'s' if n != 1 else ''} coiling with high short interest"
+
+    rows_html = ""
+    rows_text = ""
+    for c in candidates:
+        sym = c["symbol"]
+        spf = c["short_percent_of_float"]
+        price = c.get("price")
+        price_str = f"${price:.2f}" if price else "—"
+        bb_pctile = c.get("bb_width_pctile")
+        atr_pctile = c.get("atr_pctile")
+        vol_dried = c.get("volume_dried_up")
+        compress_str = ""
+        if bb_pctile is not None and atr_pctile is not None:
+            compress_str = f"BB width {bb_pctile * 100:.0f}th pctile, ATR {atr_pctile * 100:.0f}th pctile (6mo)"
+        vol_str = " · volume drying up" if vol_dried else ""
+        cp_ratio = c.get("options_cp_ratio")
+        options_str = ""
+        options_text = ""
+        if cp_ratio is not None:
+            lean = "call-heavy" if cp_ratio > 1.2 else ("put-heavy" if cp_ratio < 1 / 1.2 else "balanced")
+            options_str = f'<div style="font-size:11px;color:#475569;margin-top:4px">Options flow: {lean} (cp_ratio {cp_ratio:.2f})</div>'
+            options_text = f"    Options flow: {lean} (cp_ratio {cp_ratio:.2f})\n"
+        rows_html += (
+            f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
+            f'<strong style="font-size:14px">{sym}</strong>'
+            f'<span style="font-size:12px;color:#64748b">{price_str}</span>'
+            f'</div>'
+            f'<div style="font-size:12px;color:#64748b;margin-top:2px"><strong style="color:#ef4444">{spf:.1f}%</strong> of float short · {compress_str}{vol_str}</div>'
+            f'{options_str}'
+            f'</div>'
+        )
+        rows_text += f"  {sym}: {price_str}, {spf:.1f}% of float short, {compress_str}{vol_str}\n" + options_text
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:#f59e0b">⏳ Pre-Breakout Watch</h2>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} heavily-shorted stock{'s' if n != 1 else ''} {'is' if n == 1 else 'are'} compressing (coiling) — no breakout confirmed yet.</p>
+    <div style="margin-top:12px">{rows_html}</div>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      Thesis: high short interest + price/volatility compressing toward a 6-month low is the
+      real precondition a short squeeze needs to build — this reports the SETUP, not a
+      prediction of if or when it resolves into a move. RULE-BASED ONLY: no trained model
+      backs this alert yet (too little historical data exists to validate one honestly — see
+      the Squeeze Alert Performance admin page). Options flow (where shown) is a real reading
+      from a still-thin (~2-week) data history — treat as a minor tilt, not a signal on its
+      own. Not financial advice.
+    </p>
+  </div>
+</body></html>"""
+    body_text = (
+        f"Pre-Breakout Watch — {n} stock{'s' if n != 1 else ''} coiling with high short interest\n\n"
+        + rows_text
+        + "\nRULE-BASED ONLY (no trained model yet — see Squeeze Alert Performance admin page). "
+        + "Reports a measured setup, not a prediction of if/when it resolves. Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_squeeze_watch_revert_email(
     to: str, symbol: str, watch_type: str, reason: str,
     current_price: float | None, current_metric: float | None,

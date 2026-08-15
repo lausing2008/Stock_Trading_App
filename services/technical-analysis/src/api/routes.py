@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from db import Price, Stock, TimeFrame, get_session
 
 from ..indicators import bollinger_bands, cog, ema, fibonacci_retracement, macd, rsi, sma, supertrend
-from ..indicators.trendlines import assess_breakout_quality, detect_accumulation_distribution, detect_fair_value_gaps, detect_sr_context, detect_support_resistance, detect_trendlines
+from ..indicators.trendlines import assess_breakout_quality, detect_accumulation_distribution, detect_fair_value_gaps, detect_price_compression, detect_sr_context, detect_support_resistance, detect_trendlines
 from ..patterns import detect_patterns
 
 router = APIRouter(prefix="/ta", tags=["technical-analysis"])
@@ -214,4 +214,5 @@ def get_levels(
         "sr_context": sr_context,
         "accumulation_distribution": detect_accumulation_distribution(df),
         "breakout_quality": breakout_quality,
+        "price_compression": detect_price_compression(df),
     }

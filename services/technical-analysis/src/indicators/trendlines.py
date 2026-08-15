@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from .core import atr as _core_atr, bollinger_bands as _core_bollinger_bands
+
 
 @dataclass
 class Level:
@@ -492,4 +494,80 @@ def assess_breakout_quality(df: pd.DataFrame, level: float, direction: str = "up
         "close": round(float(close.iloc[breakout_idx]), 2),
         "breakout_rvol": round(breakout_rvol, 2) if breakout_rvol is not None else None,
         "volume_confirmed": volume_confirmed,
+    }
+
+
+_COMPRESSION_LOOKBACK_DAYS = 126  # ~6 real trading months, matching the user's own "6-month low" framing
+_COMPRESSION_PERCENTILE = 0.20    # bb_width/ATR must sit in the LOWEST 20% of the lookback to count as "coiling"
+_COMPRESSION_VOLUME_WINDOW = 20
+
+
+def detect_price_compression(df: pd.DataFrame) -> dict:
+    """T264-SHORTSQUEEZE-PREBREAKOUT: "coiling" detector — a stock whose recent volatility
+    (Bollinger Band width AND Average True Range, both normalized by price) has compressed to
+    near a 6-month low, the real, measurable precondition for a squeeze/breakout that this app
+    had NO existing detector for (confirmed via a direct codebase search before writing this —
+    every other use of "compress"/"compression" in signal-engine is a SIGNAL-DAMPENING
+    mechanism, not a price-pattern detector). A stock building coiled energy (thin range, low
+    realized volatility) is a structurally different, EARLIER state than an already-breaking-out
+    stock — the entire point of a "before it starts to breakout" alert.
+
+    Deliberately requires BOTH bb_width AND atr to independently sit in the bottom
+    _COMPRESSION_PERCENTILE of their own trailing _COMPRESSION_LOOKBACK_DAYS distribution —
+    matching detect_accumulation_distribution()'s own "two independent signals must agree"
+    discipline (a single compressed reading could just be one indicator's own noise; two
+    genuinely different volatility measures agreeing is real evidence). bb_width and atr are
+    both normalized (bb_width as %, atr as % of price) so this comparison is meaningful across
+    stocks of very different price levels.
+
+    A third, optional signal — volume dry-up (current _COMPRESSION_VOLUME_WINDOW-bar average
+    volume below its own trailing lookback median) — is reported but NOT required for
+    `is_compressed`, since a coiling stock can compress on either shrinking OR flat volume; a
+    genuine volume dry-up is reported separately as `volume_dried_up` for a caller (or a future
+    model feature) to weight independently rather than being baked into a single boolean.
+    """
+    min_bars = _COMPRESSION_LOOKBACK_DAYS + 20  # +20 for bollinger_bands'/atr's own warmup
+    if len(df) < min_bars:
+        return {
+            "is_compressed": False, "bb_width_pctile": None, "atr_pctile": None,
+            "volume_dried_up": None, "bb_width": None, "atr_pct": None,
+        }
+
+    close = df["close"].astype(float)
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    volume = df["volume"].astype(float)
+
+    bb = _core_bollinger_bands(close)
+    bb_width = ((bb["bb_upper"] - bb["bb_lower"]) / bb["bb_mid"]).replace([np.inf, -np.inf], np.nan)
+    atr_series = _core_atr(high, low, close)
+    atr_pct = (atr_series / close).replace([np.inf, -np.inf], np.nan)
+
+    lookback_bb = bb_width.iloc[-_COMPRESSION_LOOKBACK_DAYS:].dropna()
+    lookback_atr = atr_pct.iloc[-_COMPRESSION_LOOKBACK_DAYS:].dropna()
+    current_bb = bb_width.iloc[-1]
+    current_atr = atr_pct.iloc[-1]
+    if len(lookback_bb) < 30 or len(lookback_atr) < 30 or pd.isna(current_bb) or pd.isna(current_atr):
+        return {
+            "is_compressed": False, "bb_width_pctile": None, "atr_pctile": None,
+            "volume_dried_up": None, "bb_width": None, "atr_pct": None,
+        }
+
+    bb_pctile = float((lookback_bb < current_bb).mean())
+    atr_pctile = float((lookback_atr < current_atr).mean())
+    is_compressed = bb_pctile <= _COMPRESSION_PERCENTILE and atr_pctile <= _COMPRESSION_PERCENTILE
+
+    recent_avg_vol = float(volume.iloc[-_COMPRESSION_VOLUME_WINDOW:].mean())
+    lookback_vol_median = float(volume.iloc[-_COMPRESSION_LOOKBACK_DAYS:].median())
+    volume_dried_up = (
+        bool(recent_avg_vol < lookback_vol_median) if lookback_vol_median > 0 else None
+    )
+
+    return {
+        "is_compressed": is_compressed,
+        "bb_width_pctile": round(bb_pctile, 3),
+        "atr_pctile": round(atr_pctile, 3),
+        "volume_dried_up": volume_dried_up,
+        "bb_width": round(float(current_bb), 4),
+        "atr_pct": round(float(current_atr), 4),
     }
