@@ -12,7 +12,8 @@ from common.config import get_settings
 from common.logging import get_logger
 from db import (
     Exchange, Market, SessionLocal, Stock, Signal, SignalOutcome, SignalHorizon,
-    SqueezeAlertOutcome, Watchlist, WatchlistItem, Ranking, init_db, get_session,
+    FundamentalsSnapshot, Price, SqueezeAlertOutcome, TimeFrame, Watchlist, WatchlistItem,
+    Ranking, init_db, get_session,
 )
 
 from ..adapters.registry import set_runtime_key
@@ -659,6 +660,151 @@ def squeeze_alert_performance(
         "days_back": days_back,
         "by_alert_type": by_alert_type,
         "recent_alerts": recent_alerts,
+    }
+
+
+@router.get("/squeeze-alert-backtest")
+def squeeze_alert_backtest(
+    weeks_back: int = Query(52, ge=1, le=260, description="How many weekly fundamentals snapshots to scan back"),
+    min_samples: int = Query(15, ge=1, le=200, description="Minimum resolved samples before reporting a real win rate"),
+    _: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+):
+    """T264-SQUEEZEALERT-PERFORMANCE (backtest follow-up): a RETROACTIVE approximation of the
+    short_squeeze alert's own filter, run against already-stored historical data — direct
+    follow-up to a user asking for backtesting/walk-forward on the squeeze/gamma-unwind alerts.
+
+    HONEST SCOPE, decided before writing this endpoint, not discovered after: this is the ONLY
+    one of the two squeeze alert types that CAN be backtested at all. check_gamma_unwind_alerts()
+    depends on a LIVE options-chain fetch (yfinance has no historical open-interest API, and
+    this app stores none either) — there is no historical OI data to replay it against, so no
+    endpoint for it exists here. Building one would mean fabricating historical OI data, which
+    this app's own standing discipline explicitly refuses to do (see the CAPE/congress-data
+    "verify against real data, never guess" precedent elsewhere in this codebase).
+
+    Even for short_squeeze, this is a PROXY, not a live replay — the real alert reads
+    stockai:live_prices (a 1-day Redis cache with no history) for an intraday move; this
+    approximates "a real move already in progress" with the closest honest historical signal
+    that actually exists: a full trading day's own return clearing the SAME +3.0% threshold
+    (see fix note in the tracker for why a same-day return, not an approximated intraday one,
+    is the correct conservative substitute rather than something that would quietly inflate
+    results). short_percent_of_float comes from FundamentalsSnapshot, populated weekly — so a
+    candidate week is "qualifying" for every trading day between one Sunday snapshot and the
+    next, using that snapshot's own short-interest reading (point-in-time correct — never a
+    later snapshot's value leaking backward).
+
+    Scores forward returns using the EXACT same _squeeze_outcome_lookup_price() helper and
+    _SQUEEZE_OUTCOME_WIN_HURDLE_PCT/_SQUEEZE_OUTCOME_WINDOWS constants the live evaluator uses
+    (services/market-data/src/services/scheduler.py) — imported lazily, matching this file's
+    own established convention for scheduler.py cross-imports (see _service_token/
+    send_morning_digest/broker.py's _is_token_rejected_error above), so this can never silently
+    drift into a second, differently-tuned scoring implementation.
+    """
+    from datetime import date, timedelta
+    from ..services.scheduler import (
+        _squeeze_outcome_lookup_price, _SQUEEZE_OUTCOME_WIN_HURDLE_PCT, _SQUEEZE_OUTCOME_WINDOWS,
+        _SQUEEZE_MIN_SHORT_FLOAT, _SQUEEZE_MIN_INTRADAY_MOVE_PCT,
+    )
+
+    cutoff = date.today() - timedelta(weeks=weeks_back)
+    snapshots = session.execute(
+        select(FundamentalsSnapshot.symbol, FundamentalsSnapshot.snapshot_date, FundamentalsSnapshot.short_percent_of_float)
+        .where(
+            FundamentalsSnapshot.snapshot_date >= cutoff,
+            FundamentalsSnapshot.short_percent_of_float.is_not(None),
+            FundamentalsSnapshot.short_percent_of_float * 100 >= _SQUEEZE_MIN_SHORT_FLOAT,
+        )
+        .order_by(FundamentalsSnapshot.symbol, FundamentalsSnapshot.snapshot_date)
+    ).all()
+    if not snapshots:
+        return {
+            "weeks_back": weeks_back, "min_samples": min_samples,
+            "n_snapshots_qualifying": 0, "n_candidate_days": 0,
+            "window_10d": None, "window_5d": None, "window_20d": None,
+            "note": "No FundamentalsSnapshot rows cleared the short-interest floor in this window.",
+        }
+
+    symbols = sorted({s for s, _, _ in snapshots})
+    stock_rows = session.execute(select(Stock.id, Stock.symbol).where(Stock.symbol.in_(symbols))).all()
+    stock_id_by_symbol = {sym: sid for sid, sym in stock_rows}
+
+    bulk_prices = session.execute(
+        select(Price.stock_id, Price.ts, Price.close).where(
+            Price.stock_id.in_(stock_id_by_symbol.values()),
+            Price.timeframe == TimeFrame.D1,
+        ).order_by(Price.stock_id, Price.ts)
+    ).all()
+    price_map: dict[int, list[tuple]] = {}
+    for stock_id, ts, close in bulk_prices:
+        d = ts.date() if hasattr(ts, "date") else ts
+        price_map.setdefault(stock_id, []).append((d, float(close)))
+
+    # Each snapshot's short-interest reading qualifies the stock for every trading day between
+    # THIS Sunday and the NEXT snapshot (point-in-time — never lets a later reading leak backward
+    # onto an earlier week).
+    by_symbol: dict[str, list[tuple]] = {}
+    for sym, snap_date, spf in snapshots:
+        by_symbol.setdefault(sym, []).append((snap_date, spf))
+
+    candidate_days: list[tuple[int, str, date, float]] = []  # (stock_id, symbol, day, entry_close)
+    for sym, snaps in by_symbol.items():
+        stock_id = stock_id_by_symbol.get(sym)
+        if stock_id is None:
+            continue
+        bucket = price_map.get(stock_id, [])
+        if not bucket:
+            continue
+        for i, (snap_date, _spf) in enumerate(snaps):
+            window_end = snaps[i + 1][0] if i + 1 < len(snaps) else snap_date + timedelta(days=7)
+            prev_close = None
+            for d, close in bucket:
+                if d < snap_date or d >= window_end:
+                    if d < snap_date:
+                        prev_close = close
+                    continue
+                if prev_close is None or prev_close <= 0:
+                    prev_close = close
+                    continue
+                day_ret = (close - prev_close) / prev_close * 100
+                if day_ret >= _SQUEEZE_MIN_INTRADAY_MOVE_PCT:
+                    candidate_days.append((stock_id, sym, d, close))
+                prev_close = close
+
+    def _window_summary(window: int) -> dict | None:
+        rets = []
+        for stock_id, _sym, day, entry_close in candidate_days:
+            bucket = price_map.get(stock_id, [])
+            target = day + timedelta(days=window)
+            if target > date.today():
+                continue
+            result = _squeeze_outcome_lookup_price(bucket, target)
+            if result is None:
+                continue
+            _, price = result
+            rets.append((price - entry_close) / entry_close)
+        if len(rets) < min_samples:
+            return {"n": len(rets), "win_rate": None, "avg_return_pct": None,
+                    "note": f"Below the {min_samples}-sample floor — not enough resolved candidates to report a reliable win rate yet."}
+        wins = sum(1 for r in rets if r > _SQUEEZE_OUTCOME_WIN_HURDLE_PCT)
+        return {
+            "n": len(rets), "win_rate": round(wins / len(rets), 3),
+            "avg_return_pct": round(sum(rets) / len(rets) * 100, 2),
+        }
+
+    windows = {f"window_{w}d": _window_summary(w) for w in _SQUEEZE_OUTCOME_WINDOWS}
+
+    return {
+        "weeks_back": weeks_back,
+        "min_samples": min_samples,
+        "n_snapshots_qualifying": len(snapshots),
+        "n_candidate_days": len(candidate_days),
+        **windows,
+        "note": (
+            "Retroactive PROXY for the short_squeeze alert's filter — uses weekly short-interest "
+            "snapshots + daily-bar moves, not the live 1-minute intraday scan. gamma_unwind is not "
+            "backtestable at all: yfinance has no historical options open-interest API and this app "
+            "stores none, so there is no historical data to replay it against."
+        ),
     }
 
 

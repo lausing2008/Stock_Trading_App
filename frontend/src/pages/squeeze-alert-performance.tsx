@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
-import { api, type SqueezeAlertTypeSummary, type SqueezeAlertWindowStat } from '@/lib/api';
+import { api, type SqueezeAlertTypeSummary, type SqueezeAlertWindowStat, type SqueezeAlertBacktestWindow } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 // T264-SQUEEZEALERT-PERFORMANCE — direct user request: "design a page under Admin to measure
@@ -63,6 +63,77 @@ function TypeCard({ row }: { row: SqueezeAlertTypeSummary }) {
         <span>5d: {row.window_5d ? `${fmtPct(row.window_5d.avg_return_pct)} (${row.window_5d.n})` : '—'}</span>
         <span>20d: {row.window_20d ? `${fmtPct(row.window_20d.avg_return_pct)} (${row.window_20d.n})` : '—'}</span>
       </div>
+    </div>
+  );
+}
+
+function BacktestWindowCell({ label, w }: { label: string; w: SqueezeAlertBacktestWindow }) {
+  if (w == null || w.win_rate == null) {
+    return (
+      <div style={{ padding: '12px 14px', borderRadius: '8px', background: '#0d1424', border: '1px solid #1e293b' }}>
+        <div style={{ fontSize: '10px', color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>{label}</div>
+        <div style={{ fontSize: '12px', color: '#475569' }}>{w?.note ?? 'No resolved candidates yet.'}</div>
+      </div>
+    );
+  }
+  const col = winRateColor(w.win_rate);
+  return (
+    <div style={{ padding: '12px 14px', borderRadius: '8px', background: '#0d1424', border: '1px solid #1e293b' }}>
+      <div style={{ fontSize: '10px', color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>{label}</div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+        <span style={{ fontSize: '16px', fontWeight: 800, color: col }}>{(w.win_rate * 100).toFixed(0)}%</span>
+        <span style={{ fontSize: '13px', fontWeight: 700, color: w.avg_return_pct != null && w.avg_return_pct >= 0 ? '#22c55e' : '#ef4444' }}>
+          {fmtPct(w.avg_return_pct)}
+        </span>
+      </div>
+      <div style={{ fontSize: '11px', color: '#64748b', marginTop: 2 }}>n={w.n}</div>
+    </div>
+  );
+}
+
+function BacktestSection() {
+  const [weeksBack, setWeeksBack] = useState(52);
+  const { data, isLoading, error } = useSWR(
+    ['squeeze-alert-backtest', weeksBack],
+    () => api.getSqueezeAlertBacktest({ weeks_back: weeksBack, min_samples: 15 }),
+    { revalidateOnFocus: false }
+  );
+
+  return (
+    <div style={{ marginTop: '28px', paddingTop: '20px', borderTop: '1px solid #1e293b' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px', flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>
+          RETROACTIVE BACKTEST — SHORT SQUEEZE ONLY
+        </div>
+        <select
+          value={weeksBack}
+          onChange={e => setWeeksBack(Number(e.target.value))}
+          style={{ padding: '4px 8px', borderRadius: '6px', fontSize: '11px', background: '#0d1424', border: '1px solid #1e293b', color: '#94a3b8' }}
+        >
+          {[26, 52, 104, 260].map(w => <option key={w} value={w}>{w} weeks back</option>)}
+        </select>
+      </div>
+      <p style={{ fontSize: '11px', color: '#334155', marginBottom: '14px', maxWidth: 700 }}>
+        Runs the SAME short-interest floor and intraday-move threshold the live alert uses
+        against already-stored weekly fundamentals snapshots and daily price bars — a proxy for
+        &quot;if this scan had run over the past N weeks,&quot; not a replay of the live minute-
+        by-minute scan. Gamma Unwind can&apos;t be backtested at all — yfinance has no historical
+        options open-interest data, and this app stores none either.
+      </p>
+      {isLoading && <div style={{ fontSize: '12px', color: '#475569' }}>Loading…</div>}
+      {error && <div style={{ fontSize: '12px', color: '#f87171' }}>Failed to load the backtest.</div>}
+      {data && (
+        <>
+          <div style={{ fontSize: '11px', color: '#64748b', marginBottom: 10 }}>
+            {data.n_snapshots_qualifying} qualifying weekly snapshot{data.n_snapshots_qualifying === 1 ? '' : 's'}, {data.n_candidate_days} candidate day{data.n_candidate_days === 1 ? '' : 's'} found
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+            <BacktestWindowCell label="5d" w={data.window_5d} />
+            <BacktestWindowCell label="10d" w={data.window_10d} />
+            <BacktestWindowCell label="20d" w={data.window_20d} />
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -182,6 +253,8 @@ export default function SqueezeAlertPerformancePage() {
           </div>
         </>
       )}
+
+      <BacktestSection />
     </div>
   );
 }

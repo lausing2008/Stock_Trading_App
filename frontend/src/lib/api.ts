@@ -232,6 +232,15 @@ export const api = {
     return request<SqueezeAlertPerformanceResponse>(`/admin/squeeze-alert-performance${qs ? `?${qs}` : ''}`);
   },
 
+  // T264-SQUEEZEALERT-PERFORMANCE backtest follow-up — short_squeeze only, retroactive proxy
+  getSqueezeAlertBacktest: (params?: { weeks_back?: number; min_samples?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.weeks_back != null) p.set('weeks_back', String(params.weeks_back));
+    if (params?.min_samples != null) p.set('min_samples', String(params.min_samples));
+    const qs = p.toString();
+    return request<SqueezeAlertBacktestResponse>(`/admin/squeeze-alert-backtest${qs ? `?${qs}` : ''}`);
+  },
+
   // WATCHLIST-AUTO-ROTATION history/revert
   getWatchlistRotationHistory: (params?: { watchlist_id?: number; style?: string; limit?: number }) => {
     const p = new URLSearchParams();
@@ -1546,6 +1555,25 @@ export type SqueezeAlertPerformanceResponse = {
   days_back: number;
   by_alert_type: SqueezeAlertTypeSummary[];
   recent_alerts: SqueezeAlertOutcomeRow[];
+};
+
+// T264-SQUEEZEALERT-PERFORMANCE backtest follow-up
+export type SqueezeAlertBacktestWindow = {
+  n: number;
+  win_rate: number | null;
+  avg_return_pct: number | null;
+  note?: string;
+} | null;
+
+export type SqueezeAlertBacktestResponse = {
+  weeks_back: number;
+  min_samples: number;
+  n_snapshots_qualifying: number;
+  n_candidate_days: number;
+  window_5d: SqueezeAlertBacktestWindow;
+  window_10d: SqueezeAlertBacktestWindow;
+  window_20d: SqueezeAlertBacktestWindow;
+  note: string;
 };
 
 // WATCHLIST-AUTO-ROTATION

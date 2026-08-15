@@ -36,7 +36,10 @@ _spec.loader.exec_module(_models)
 _ENGINE = create_engine("sqlite:///:memory:")
 _models.Base.metadata.create_all(
     _ENGINE,
-    tables=[_models.Stock.__table__, _models.Price.__table__, _models.SqueezeAlertOutcome.__table__],
+    tables=[
+        _models.Stock.__table__, _models.Price.__table__, _models.SqueezeAlertOutcome.__table__,
+        _models.FundamentalsSnapshot.__table__,
+    ],
 )
 
 # SqueezeAlertOutcome.id (like Price.id/SignalOutcome.id elsewhere in this app) is a
@@ -67,6 +70,7 @@ for _mod, _stub in _saved_stubs.items():
 Stock = _models.Stock
 Price = _models.Price
 SqueezeAlertOutcome = _models.SqueezeAlertOutcome
+FundamentalsSnapshot = _models.FundamentalsSnapshot
 Market = _models.Market
 TimeFrame = _models.TimeFrame
 
@@ -88,7 +92,7 @@ def _new_id() -> int:
 
 def _make_session():
     session = Session(_ENGINE)
-    for table in (SqueezeAlertOutcome.__table__, Price.__table__, Stock.__table__):
+    for table in (SqueezeAlertOutcome.__table__, Price.__table__, FundamentalsSnapshot.__table__, Stock.__table__):
         session.execute(table.delete())
     session.commit()
     return session
@@ -99,6 +103,13 @@ def _make_stock(session, symbol="AAPL"):
     session.add(st)
     session.commit()
     return st
+
+
+def _make_snapshot(session, symbol: str, snapshot_date: date, short_pct_of_float: float):
+    """short_percent_of_float is stored as a FRACTION (e.g. 0.20 for 20%), matching
+    check_short_squeeze_alerts()'s own `spf * 100 < _SQUEEZE_MIN_SHORT_FLOAT` comparison."""
+    session.add(FundamentalsSnapshot(id=_new_id(), symbol=symbol, snapshot_date=snapshot_date, short_percent_of_float=short_pct_of_float))
+    session.commit()
 
 
 def _make_price(session, stock_id, ts_date: date, close: float):
@@ -153,6 +164,54 @@ class _CtxSession:
     def __exit__(self, *exc):
         self._s.close()
         return False
+
+
+def _extract_squeeze_alert_backtest():
+    """squeeze_alert_backtest() (admin.py) does `from ..services.scheduler import
+    _squeeze_outcome_lookup_price, _SQUEEZE_OUTCOME_WIN_HURDLE_PCT, _SQUEEZE_OUTCOME_WINDOWS,
+    _SQUEEZE_MIN_SHORT_FLOAT, _SQUEEZE_MIN_INTRADAY_MOVE_PCT` at call time — rather than
+    stubbing those 5 names with test-chosen values (which would defeat the whole point of the
+    endpoint's own claim that it can never silently drift from the live alert's real scoring/
+    thresholds), this extracts the REAL scheduler.py source for all 5 first and feeds them into
+    the namespace, so a future threshold change in scheduler.py is automatically reflected here
+    too — exactly like production's own lazy import would pick it up.
+    """
+    _, _lookup = _extract_evaluate_squeeze_alert_outcomes()
+    const_start = _SCHEDULER_SOURCE.index("_SQUEEZE_MIN_SHORT_FLOAT = ")
+    const_end = _SCHEDULER_SOURCE.index("\n", _SCHEDULER_SOURCE.index("_SQUEEZE_MIN_INTRADAY_MOVE_PCT = ", const_start))
+    const_body = _SCHEDULER_SOURCE[const_start:const_end]
+    const_namespace: dict = {}
+    exec(const_body, const_namespace)  # noqa: S102 — isolated eval of real source
+    win_hurdle_start = _SCHEDULER_SOURCE.index("_SQUEEZE_OUTCOME_WIN_HURDLE_PCT = ")
+    win_hurdle_end = _SCHEDULER_SOURCE.index("\n", win_hurdle_start)
+    windows_start = _SCHEDULER_SOURCE.index("_SQUEEZE_OUTCOME_WINDOWS = ")
+    windows_end = _SCHEDULER_SOURCE.index("\n", windows_start)
+    exec(_SCHEDULER_SOURCE[win_hurdle_start:win_hurdle_end], const_namespace)  # noqa: S102
+    exec(_SCHEDULER_SOURCE[windows_start:windows_end], const_namespace)  # noqa: S102
+
+    func_start = _ADMIN_SOURCE.index("def squeeze_alert_backtest(")
+    end = _ADMIN_SOURCE.index("\n\n\n@router.get(\"/watchlist-rotation-history\")", func_start)
+    # Skip the real function's own `from datetime import ...` / `from ..services.scheduler
+    # import ...` local imports — this test injects the SAME real values via the namespace
+    # instead (see the docstring above), so re-running those actual import statements here
+    # would raise a real ImportError (no package context in an exec()'d string).
+    signature_end = _ADMIN_SOURCE.index("):\n", func_start) + len("):\n")
+    body_start = _ADMIN_SOURCE.index("\n    cutoff = date.today()", func_start)
+    body = _ADMIN_SOURCE[func_start:signature_end] + _ADMIN_SOURCE[body_start:end]
+    namespace = {
+        "__name__": __name__,
+        "select": select, "date": date, "timedelta": timedelta,
+        "FundamentalsSnapshot": FundamentalsSnapshot, "Stock": Stock, "Price": Price, "TimeFrame": TimeFrame,
+        "Query": lambda default, **kw: default, "Depends": lambda *a, **kw: None,
+        "get_admin_user": None, "get_session": None, "User": object, "Session": Session,
+        "_squeeze_outcome_lookup_price": _lookup,
+        "_SQUEEZE_OUTCOME_WIN_HURDLE_PCT": const_namespace["_SQUEEZE_OUTCOME_WIN_HURDLE_PCT"],
+        "_SQUEEZE_OUTCOME_WINDOWS": const_namespace["_SQUEEZE_OUTCOME_WINDOWS"],
+        "_SQUEEZE_MIN_SHORT_FLOAT": const_namespace["_SQUEEZE_MIN_SHORT_FLOAT"],
+        "_SQUEEZE_MIN_INTRADAY_MOVE_PCT": const_namespace["_SQUEEZE_MIN_INTRADAY_MOVE_PCT"],
+    }
+    exec(body, namespace)  # noqa: S102 — isolated eval of real source
+    return namespace["squeeze_alert_backtest"]
 
 
 # ── _record_squeeze_alert_outcome() ──────────────────────────────────────────────────────────
@@ -447,3 +506,202 @@ def test_squeeze_alert_performance_gamma_unwind_puts_is_never_merged_with_calls(
     end = _ADMIN_SOURCE.index("\n\n    by_window = ", start)
     body = _ADMIN_SOURCE[start:end]
     assert "group_by(SqueezeAlertOutcome.alert_type)" in body
+
+
+# ── admin.py squeeze_alert_backtest() — real behavioral tests ────────────────────────────────
+
+def _make_daily_bars(session, stock_id, prices: dict):
+    """prices: {date: close}. Realistic, tightly-spaced (weekday-only) bars are required here —
+    a sparse fixture (bars several calendar days apart) would make the candidate-detection
+    loop's day-over-day comparison span more than one real trading day, producing a spurious
+    extra "move" purely from the gap. This was a real trap hit while writing this test file:
+    an early attempt used bars 5 calendar days apart and found 2 candidate days instead of the
+    intended 1 — traced and confirmed to be a fixture-spacing artifact, not a real bug in the
+    endpoint, by re-running with realistic daily spacing and getting the correct single match."""
+    for d, close in sorted(prices.items()):
+        _make_price(session, stock_id, d, close)
+
+
+def test_backtest_endpoint_is_admin_gated():
+    idx = _ADMIN_SOURCE.index("def squeeze_alert_backtest(")
+    signature_end = _ADMIN_SOURCE.index("):\n", idx)
+    signature = _ADMIN_SOURCE[idx:signature_end]
+    assert "get_admin_user" in signature
+
+
+def test_backtest_finds_the_one_real_qualifying_day_not_every_day_in_the_window():
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    _make_snapshot(session, "AAPL", date(2026, 1, 4), 0.20)  # 20% short of float, clears 15%
+    _make_daily_bars(session, st.id, {
+        date(2026, 1, 4): 100.0, date(2026, 1, 5): 105.0,  # +5% -> the one real candidate day
+        date(2026, 1, 6): 103.0, date(2026, 1, 7): 102.0, date(2026, 1, 8): 101.0,
+    })
+    backtest = _extract_squeeze_alert_backtest()
+
+    result = backtest(weeks_back=520, min_samples=1, _=None, session=session)
+
+    assert result["n_snapshots_qualifying"] == 1
+    assert result["n_candidate_days"] == 1
+
+
+def test_backtest_excludes_snapshots_below_the_short_interest_floor():
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    _make_snapshot(session, "AAPL", date(2026, 1, 4), 0.05)  # only 5% — below the 15% floor
+    _make_daily_bars(session, st.id, {date(2026, 1, 4): 100.0, date(2026, 1, 5): 110.0})
+    backtest = _extract_squeeze_alert_backtest()
+
+    result = backtest(weeks_back=520, min_samples=1, _=None, session=session)
+
+    assert result["n_snapshots_qualifying"] == 0
+    assert result["n_candidate_days"] == 0
+
+
+def test_backtest_excludes_a_day_whose_move_is_below_the_intraday_threshold():
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    _make_snapshot(session, "AAPL", date(2026, 1, 4), 0.20)
+    _make_daily_bars(session, st.id, {
+        date(2026, 1, 4): 100.0, date(2026, 1, 5): 101.0,  # +1% — below the 3.0% threshold
+    })
+    backtest = _extract_squeeze_alert_backtest()
+
+    result = backtest(weeks_back=520, min_samples=1, _=None, session=session)
+
+    assert result["n_candidate_days"] == 0
+
+
+def test_backtest_reports_a_real_win_rate_and_avg_return_once_forward_windows_resolve():
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    _make_snapshot(session, "AAPL", date(2026, 1, 4), 0.20)
+    _make_daily_bars(session, st.id, {
+        date(2026, 1, 4): 100.0, date(2026, 1, 5): 105.0,
+    })
+    _make_price(session, st.id, date(2026, 1, 10), 110.0)  # 5d forward, +4.76% from entry (105)
+    backtest = _extract_squeeze_alert_backtest()
+
+    result = backtest(weeks_back=520, min_samples=1, _=None, session=session)
+
+    assert result["window_5d"]["n"] == 1
+    assert result["window_5d"]["win_rate"] == 1.0
+    assert result["window_5d"]["avg_return_pct"] > 0
+
+
+def test_backtest_reports_below_sample_floor_note_instead_of_a_fabricated_win_rate():
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    _make_snapshot(session, "AAPL", date(2026, 1, 4), 0.20)
+    _make_daily_bars(session, st.id, {date(2026, 1, 4): 100.0, date(2026, 1, 5): 105.0})
+    _make_price(session, st.id, date(2026, 1, 10), 110.0)
+    backtest = _extract_squeeze_alert_backtest()
+
+    result = backtest(weeks_back=520, min_samples=50, _=None, session=session)  # unreachable floor
+
+    assert result["window_5d"]["win_rate"] is None
+    assert "Below the 50-sample floor" in result["window_5d"]["note"]
+
+
+def test_backtest_excludes_a_below_floor_week_even_when_a_later_week_qualifies():
+    """A real move the week BEFORE a symbol's short interest ever cleared the floor must not
+    be silently counted as a qualifying candidate, even though a LATER snapshot for the same
+    symbol does qualify."""
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    _make_snapshot(session, "AAPL", date(2026, 1, 4), 0.05)   # below floor
+    _make_snapshot(session, "AAPL", date(2026, 1, 11), 0.20)  # clears floor, a week later
+    _make_daily_bars(session, st.id, {
+        date(2026, 1, 4): 100.0, date(2026, 1, 5): 106.0,   # +6% but BEFORE the qualifying snapshot
+        date(2026, 1, 11): 100.0, date(2026, 1, 12): 106.0,  # +6% AFTER the qualifying snapshot
+    })
+    backtest = _extract_squeeze_alert_backtest()
+
+    result = backtest(weeks_back=520, min_samples=1, _=None, session=session)
+
+    assert result["n_candidate_days"] == 1  # only the Jan 12 move, not Jan 5
+
+
+def test_backtest_a_later_qualifying_snapshots_window_does_not_extend_backward_past_an_earlier_one():
+    """The genuine point-in-time-boundary property: TWO CONSECUTIVE qualifying snapshots for
+    the same symbol, each with its own real move in its OWN week. Each week's move must be
+    counted exactly once, attributed to the snapshot whose window it actually falls in — not
+    double-counted, and not silently dropped by one window's boundary swallowing the other's."""
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    _make_snapshot(session, "AAPL", date(2026, 1, 4), 0.20)   # qualifies
+    _make_snapshot(session, "AAPL", date(2026, 1, 11), 0.25)  # also qualifies, a week later
+    _make_daily_bars(session, st.id, {
+        date(2026, 1, 4): 100.0, date(2026, 1, 5): 106.0,    # +6% in week 1
+        date(2026, 1, 6): 105.0, date(2026, 1, 7): 104.0, date(2026, 1, 8): 103.0,
+        date(2026, 1, 11): 100.0, date(2026, 1, 12): 108.0,  # +8% in week 2
+    })
+    backtest = _extract_squeeze_alert_backtest()
+
+    result = backtest(weeks_back=520, min_samples=1, _=None, session=session)
+
+    assert result["n_candidate_days"] == 2  # both real moves counted, exactly once each
+
+
+def test_backtest_reports_gamma_unwind_is_not_backtestable():
+    idx = _ADMIN_SOURCE.index("def squeeze_alert_backtest(")
+    end = _ADMIN_SOURCE.index("\n\n\n@router.get(\"/watchlist-rotation-history\")", idx)
+    body = _ADMIN_SOURCE[idx:end]
+    assert "gamma_unwind is not" in body or "gamma_unwind_calls" not in body
+    assert "no historical open-interest API" in body or "no historical options open-interest API" in body
+
+
+def test_backtest_imports_the_real_shared_scheduler_constants_not_a_hand_copied_duplicate():
+    """A future threshold change in scheduler.py's _SQUEEZE_MIN_SHORT_FLOAT/
+    _SQUEEZE_MIN_INTRADAY_MOVE_PCT/_squeeze_outcome_lookup_price/_SQUEEZE_OUTCOME_WIN_HURDLE_PCT/
+    _SQUEEZE_OUTCOME_WINDOWS must automatically change what this backtest considers a
+    qualifying candidate and how it scores forward returns — checked here at the SOURCE level
+    (the endpoint's own real import statement), not just behaviorally, since a behavioral test
+    alone couldn't distinguish "imports the real shared constant" from "coincidentally hardcoded
+    the same value this session" for a constant that isn't itself exercised by any single
+    concrete input value in the tests above."""
+    start = _ADMIN_SOURCE.index("def squeeze_alert_backtest(")
+    end = _ADMIN_SOURCE.index("\n\n    cutoff = date.today()", start)
+    body = _ADMIN_SOURCE[start:end]
+    assert "from ..services.scheduler import" in body
+    for name in (
+        "_squeeze_outcome_lookup_price", "_SQUEEZE_OUTCOME_WIN_HURDLE_PCT", "_SQUEEZE_OUTCOME_WINDOWS",
+        "_SQUEEZE_MIN_SHORT_FLOAT", "_SQUEEZE_MIN_INTRADAY_MOVE_PCT",
+    ):
+        assert name in body
+
+
+def _real_squeeze_min_short_float() -> float:
+    """Extracts the REAL, current _SQUEEZE_MIN_SHORT_FLOAT value from scheduler.py's own
+    source text (scheduler.py can't be imported directly in this test environment) — so a
+    future threshold change is picked up automatically rather than the test silently comparing
+    against a stale, hand-copied literal."""
+    start = _SCHEDULER_SOURCE.index("_SQUEEZE_MIN_SHORT_FLOAT = ")
+    end = _SCHEDULER_SOURCE.index("\n", start)
+    namespace: dict = {}
+    exec(_SCHEDULER_SOURCE[start:end], namespace)  # noqa: S102 — isolated eval of real source
+    return namespace["_SQUEEZE_MIN_SHORT_FLOAT"]
+
+
+def test_backtest_matches_the_live_alert_threshold_exactly_not_a_stricter_or_looser_copy():
+    """Behavioral companion to the source-level import check above — confirms a stock at
+    EXACTLY the real live 15% floor qualifies, and one just below it does not, using whatever
+    the REAL _SQUEEZE_MIN_SHORT_FLOAT value in scheduler.py currently is (not a hardcoded 15.0
+    literal in this test, so a future threshold change is still caught by this test rather than
+    silently passing against a stale expectation)."""
+    _SQUEEZE_MIN_SHORT_FLOAT = _real_squeeze_min_short_float()
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    _make_snapshot(session, "AAPL", date(2026, 1, 4), _SQUEEZE_MIN_SHORT_FLOAT / 100)  # exactly at the floor
+    _make_daily_bars(session, st.id, {date(2026, 1, 4): 100.0, date(2026, 1, 5): 110.0})
+    backtest = _extract_squeeze_alert_backtest()
+
+    result = backtest(weeks_back=520, min_samples=1, _=None, session=session)
+    assert result["n_snapshots_qualifying"] == 1
+
+    session2 = _make_session()
+    st2 = _make_stock(session2, "TSLA")
+    _make_snapshot(session2, "TSLA", date(2026, 1, 4), (_SQUEEZE_MIN_SHORT_FLOAT - 0.5) / 100)  # just below
+    _make_daily_bars(session2, st2.id, {date(2026, 1, 4): 100.0, date(2026, 1, 5): 110.0})
+    result2 = backtest(weeks_back=520, min_samples=1, _=None, session=session2)
+    assert result2["n_snapshots_qualifying"] == 0
