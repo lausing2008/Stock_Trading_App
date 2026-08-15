@@ -1571,6 +1571,35 @@ class PreBreakoutAlertOutcome(Base):
     call/put positioning data was actually available and used to adjust confidence for this
     fire — explicitly tracked rather than silently assumed, since most fires won't have it.
 
+    T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE (2026-08-15): a squeeze-BREAKOUT-specific
+    classifier (the model_confidence/model_version columns above) remains deliberately
+    untrained — re-investigated and confirmed the constraint is unchanged: only ~68
+    historical candidate days / 17 positive labels exist (FundamentalsSnapshot only started
+    2026-07-05), which fails this app's own gate_harness.py promotion-margin discipline
+    (MIN_SAMPLES_PER_SPLIT=15 per class per split, plus an EV-lift/SD-ratio margin) by a wide
+    margin, and won't clear it for well over a year at the current weekly-snapshot pace.
+    Rather than leave "model prediction with confidence" entirely unaddressed, two honestly-
+    scoped signals were added instead of a fabricated one:
+
+    ml_price_direction_confidence / ml_price_direction_model_version — reuses ml-prediction's
+    EXISTING, already-trained, already-promoted per-symbol SWING-style direction model (the
+    same one behind POST /ml/predict, used live elsewhere in this app) as a genuinely
+    independent second read. This is deliberately NOT named model_confidence/model_version —
+    it answers "what does the app's general price-direction model think," never "will this
+    specific squeeze setup break out," and mislabeling it would repeat exactly the kind of
+    false-precision mistake _MIN_PROMOTION_LIFT_SD_RATIO exists to prevent elsewhere in this
+    app. None when no trained artifact exists for that symbol/style (a routine, expected 404,
+    not an error) — never fabricated.
+
+    calibrated_win_rate / calibrated_win_rate_count — a MEASURED historical win rate for
+    prebreakout-alert outcomes, bucketed the same way signal-engine's own
+    _build_confidence_calibration()/check_top3_conviction() already do it: a real fraction of
+    past rule-gate-passing fires (in the same short-interest-floor band) that actually went on
+    to a qualifying breakout, with a real n= sample count, and None below a 30-sample floor
+    rather than a fabricated rate. This is what most directly answers "how confident should I
+    be," using the one dimension this alert already has enough real resolved-outcome data to
+    measure honestly, rather than pretending a classifier exists.
+
     Forward-return columns mirror SqueezeAlertOutcome's/SignalOutcome's own established
     5d/10d/20d convention exactly, scored BUY-direction (win = price rose — the correct
     direction for "shorts forced to cover" thesis, unlike SqueezeAlertOutcome's own
@@ -1596,6 +1625,10 @@ class PreBreakoutAlertOutcome(Base):
     model_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     options_modifier_applied: Mapped[bool] = mapped_column(Boolean, default=False)
     options_cp_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)  # snapshot of the options signal, if used
+    ml_price_direction_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ml_price_direction_model_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    calibrated_win_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    calibrated_win_rate_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     entry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     price_5d: Mapped[float | None] = mapped_column(Float, nullable=True)

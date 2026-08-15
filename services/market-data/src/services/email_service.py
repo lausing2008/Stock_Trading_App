@@ -1433,17 +1433,27 @@ def send_prebreakout_email(to: str, candidates: list[dict]) -> bool:
 
     Each dict: {symbol, short_percent_of_float, bb_width_pctile, atr_pctile, volume_dried_up,
     price, options_cp_ratio (optional, only when the ~2-week-deep OptionsFlowSnapshot table
-    has a recent reading for this symbol)}.
+    has a recent reading for this symbol), ml_price_direction_confidence/_model_version
+    (optional), calibrated_win_rate/_count (optional) — see check_prebreakout_alerts()'s own
+    docstring for exactly what each new field measures.
 
     HONESTY, stated explicitly per this app's own standing discipline: there is currently no
-    trained model behind this alert (see PreBreakoutAlertOutcome.model_confidence, always None
-    today) — real historical backtesting found only ~68 qualifying historical days across this
-    app's whole universe, far too few to fit and validate a real model without overfitting
-    noise. This alert is RULE-BASED ONLY for now: it reports a measured precondition (coiling +
-    high short interest), never a probability or a timeline for when/whether a breakout
-    actually happens. A trained confidence score will be added once enough resolved outcomes
-    (this alert's own PreBreakoutAlertOutcome history, plus organic FundamentalsSnapshot
-    accumulation) exist to validate one honestly.
+    trained SQUEEZE-BREAKOUT-specific model behind this alert (see
+    PreBreakoutAlertOutcome.model_confidence, always None today) — real historical backtesting
+    found only ~68 qualifying historical days across this app's whole universe, far too few to
+    fit and validate a real model without overfitting noise, and won't clear that bar for well
+    over a year at the current weekly-snapshot pace. The rule gate reports a measured
+    precondition (coiling + high short interest), never a probability or a timeline for
+    when/whether a breakout actually happens.
+
+    T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE (2026-08-15) added two honestly-scoped SECOND
+    signals shown alongside the rule gate — both clearly labeled for what they actually are,
+    not conflated with a squeeze-specific prediction: ml_price_direction_confidence reuses
+    this app's EXISTING, already-trained general per-symbol price-direction model (a genuinely
+    independent read, not fit on this alert's own thin dataset at all); calibrated_win_rate is
+    a MEASURED historical win rate from this alert's own resolved outcomes, bucketed by
+    short-interest band, shown with its real sample count and only once that count clears 30 —
+    below that, the email says so explicitly rather than showing a number.
     """
     n = len(candidates)
     subject = f"⏳ Pre-Breakout Watch — {n} stock{'s' if n != 1 else ''} coiling with high short interest"
@@ -1469,6 +1479,32 @@ def send_prebreakout_email(to: str, candidates: list[dict]) -> bool:
             lean = "call-heavy" if cp_ratio > 1.2 else ("put-heavy" if cp_ratio < 1 / 1.2 else "balanced")
             options_str = f'<div style="font-size:11px;color:#475569;margin-top:4px">Options flow: {lean} (cp_ratio {cp_ratio:.2f})</div>'
             options_text = f"    Options flow: {lean} (cp_ratio {cp_ratio:.2f})\n"
+
+        ml_conf = c.get("ml_price_direction_confidence")
+        ml_str = ""
+        ml_text = ""
+        if ml_conf is not None:
+            ml_str = (
+                f'<div style="font-size:11px;color:#475569;margin-top:4px">'
+                f'General ML price-direction read: {ml_conf:.0f} confidence '
+                f'<span style="color:#94a3b8">(this app\'s existing model — NOT squeeze-specific)</span></div>'
+            )
+            ml_text = f"    General ML price-direction read: {ml_conf:.0f} confidence (existing model, NOT squeeze-specific)\n"
+
+        cal_win_rate = c.get("calibrated_win_rate")
+        cal_count = c.get("calibrated_win_rate_count")
+        cal_str = ""
+        cal_text = ""
+        if cal_win_rate is not None and cal_count is not None:
+            cal_str = (
+                f'<div style="font-size:11px;color:#475569;margin-top:4px">'
+                f'Measured historical win rate: {cal_win_rate * 100:.0f}% <span style="color:#94a3b8">(n={cal_count})</span></div>'
+            )
+            cal_text = f"    Measured historical win rate: {cal_win_rate * 100:.0f}% (n={cal_count})\n"
+        else:
+            cal_str = '<div style="font-size:11px;color:#94a3b8;margin-top:4px">Not enough resolved history yet for a measured win rate</div>'
+            cal_text = "    Not enough resolved history yet for a measured win rate\n"
+
         rows_html += (
             f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
             f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
@@ -1476,10 +1512,10 @@ def send_prebreakout_email(to: str, candidates: list[dict]) -> bool:
             f'<span style="font-size:12px;color:#64748b">{price_str}</span>'
             f'</div>'
             f'<div style="font-size:12px;color:#64748b;margin-top:2px"><strong style="color:#ef4444">{spf:.1f}%</strong> of float short · {compress_str}{vol_str}</div>'
-            f'{options_str}'
+            f'{options_str}{ml_str}{cal_str}'
             f'</div>'
         )
-        rows_text += f"  {sym}: {price_str}, {spf:.1f}% of float short, {compress_str}{vol_str}\n" + options_text
+        rows_text += f"  {sym}: {price_str}, {spf:.1f}% of float short, {compress_str}{vol_str}\n" + options_text + ml_text + cal_text
 
     body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
   <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">

@@ -491,6 +491,23 @@ def _run_migrations() -> None:  # noqa: C901
             "ALTER TABLE options_flow_snapshots ADD COLUMN IF NOT EXISTS cp_ratio_uncapped FLOAT"
         ))
 
+        # T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE: two honestly-scoped confidence signals
+        # added alongside the still-untrained model_confidence/model_version columns — see
+        # PreBreakoutAlertOutcome's own docstring for why a real squeeze-breakout classifier
+        # remains deferred (thin data) and why these two exist instead.
+        conn.execute(text(
+            "ALTER TABLE prebreakout_alert_outcomes ADD COLUMN IF NOT EXISTS ml_price_direction_confidence FLOAT"
+        ))
+        conn.execute(text(
+            "ALTER TABLE prebreakout_alert_outcomes ADD COLUMN IF NOT EXISTS ml_price_direction_model_version VARCHAR(64)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE prebreakout_alert_outcomes ADD COLUMN IF NOT EXISTS calibrated_win_rate FLOAT"
+        ))
+        conn.execute(text(
+            "ALTER TABLE prebreakout_alert_outcomes ADD COLUMN IF NOT EXISTS calibrated_win_rate_count INTEGER"
+        ))
+
 
 def _seed_admin() -> None:
     try:

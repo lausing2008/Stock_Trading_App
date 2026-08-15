@@ -2828,6 +2828,88 @@ def check_short_squeeze_alerts() -> None:
 _PREBREAKOUT_LOCK_KEY = "stockai:lock:check_prebreakout_alerts"
 _PREBREAKOUT_LOCK_TTL = 3600  # a few-times-a-day job (compression state doesn't change minute-to-minute)
 _PREBREAKOUT_MIN_DAILY_BARS = 146  # matches price_compression.py's own _MIN_HISTORY_BARS floor
+_PREBREAKOUT_CAL_MIN_COUNT = 30  # matches signal-engine's own _CONF_CAL_MIN_COUNT floor exactly
+_PREBREAKOUT_CAL_BANDS: list[tuple[float, float, str]] = [
+    (15.0, 20.0, "15-20"), (20.0, 30.0, "20-30"), (30.0, 100.01, "30+"),
+]  # bucketed on short_percent_of_float — the one real, repeatable dimension this alert has;
+# unlike check_top3_conviction's confidence bands, there's no live model score to bucket by
+# for the RULE gate itself (it's binary: passed or it didn't fire at all)
+
+
+def _build_prebreakout_calibration(session) -> dict:
+    """T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE: a MEASURED historical win rate for this
+    alert's own resolved outcomes, bucketed by short-interest band — the direct sibling of
+    signal-engine's _build_confidence_calibration() (see that function's own docstring for
+    the full reasoning this mirrors): real fraction of past rule-gate-passing fires in the
+    same band that went on to a qualifying 10d win, with a real n= count, never a fabricated
+    rate below _PREBREAKOUT_CAL_MIN_COUNT. Computed fresh at call time (no Redis cache) since
+    this job runs only a few times a day — nowhere near the request volume that would justify
+    signal-engine's own 1h TTL for the same pattern.
+    """
+    rows = session.execute(
+        select(PreBreakoutAlertOutcome.short_percent_of_float, PreBreakoutAlertOutcome.is_correct_10d)
+        .where(PreBreakoutAlertOutcome.is_correct_10d.is_not(None))
+    ).all()
+    buckets: dict[str, dict] = {}
+    for lo, hi, band in _PREBREAKOUT_CAL_BANDS:
+        outcomes = [is_correct for spf, is_correct in rows if spf is not None and lo <= spf < hi]
+        if len(outcomes) >= _PREBREAKOUT_CAL_MIN_COUNT:
+            buckets[band] = {"win_rate": round(sum(outcomes) / len(outcomes), 3), "count": len(outcomes)}
+    return buckets
+
+
+def _prebreakout_calibration_for_band(buckets: dict, short_percent_of_float: float) -> tuple[float | None, int | None]:
+    """Looks up the (win_rate, count) for a candidate's own short-interest reading against
+    buckets already built by _build_prebreakout_calibration() — (None, None) when the band
+    exists but never cleared _PREBREAKOUT_CAL_MIN_COUNT, exactly matching signal-engine's own
+    "missing key means no calibration available" convention (never a fabricated 0.0)."""
+    for lo, hi, band in _PREBREAKOUT_CAL_BANDS:
+        if lo <= short_percent_of_float < hi:
+            entry = buckets.get(band)
+            if entry:
+                return entry["win_rate"], entry["count"]
+            return None, None
+    return None, None
+
+
+def _fetch_ml_price_direction(symbol: str) -> tuple[float | None, str | None]:
+    """T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE: reuses ml-prediction's EXISTING, already-
+    trained, already-promoted per-symbol SWING-style direction model (the same one behind
+    POST /ml/predict, used live elsewhere in this app) as a genuinely independent second read
+    alongside the rule gate — deliberately NOT a squeeze-specific model (see
+    PreBreakoutAlertOutcome's own docstring for why one can't be honestly trained yet).
+
+    Mirrors signal-engine's own _fetch_ml_data() calling convention exactly (see
+    generators/signals.py): short synchronous httpx.Client(timeout=10), a 404 (no trained
+    artifact for this symbol/style yet) is treated as routine and fails open to (None, None)
+    without logging a warning, any OTHER non-200/exception logs at warning and also fails
+    open. Never fabricates a confidence value.
+    """
+    try:
+        with httpx.Client(timeout=10) as c:
+            r = c.post(
+                f"{_settings.ml_prediction_url}/ml/predict",
+                json={"symbol": symbol, "model": "xgboost", "style": "SWING"},
+                headers={"Authorization": f"Bearer {_service_token()}"},
+            )
+            if r.status_code == 404:
+                return None, None
+            if r.status_code != 200:
+                log.warning("prebreakout_alert.ml_fetch_unexpected_status", symbol=symbol, status=r.status_code)
+                return None, None
+            data = r.json()
+            if data.get("oos_suppressed"):
+                # A genuinely-trained-but-suppressed model — report as unavailable rather
+                # than the misleadingly-neutral 0.5/0.0 the endpoint itself substitutes.
+                return None, None
+            confidence = data.get("confidence")
+            if confidence is None:
+                return None, None
+            model_version = data.get("trained_at") or "unknown"
+            return float(confidence), str(model_version)[:64]
+    except Exception as exc:
+        log.warning("prebreakout_alert.ml_fetch_failed", symbol=symbol, error=str(exc))
+        return None, None
 
 
 def check_prebreakout_alerts() -> None:
@@ -2847,11 +2929,25 @@ def check_prebreakout_alerts() -> None:
     (backtest/prebreakout_dataset.py) found only ~68 qualifying candidate days across this
     app's whole universe over 3 years — far too few to train and validate a real model without
     overfitting noise (this repo's own gate_harness.py promotion-margin discipline exists
-    specifically to guard against exactly this). This alert is therefore RULE-BASED ONLY for
-    now (coiling + short-interest floor) — see PreBreakoutAlertOutcome.model_confidence, always
-    None today. Options call/put positioning (from the ~2-week-deep OptionsFlowSnapshot table)
-    is folded in as a REPORTED context field only, never a gating condition — too little
-    history exists to validate it as anything more than a minor tilt yet.
+    specifically to guard against exactly this). The RULE GATE itself is therefore unchanged
+    (coiling + short-interest floor) — PreBreakoutAlertOutcome.model_confidence/model_version
+    (a real squeeze-BREAKOUT-specific classifier) stay None today, and will for well over a
+    year at the current weekly-FundamentalsSnapshot accumulation pace.
+
+    T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE (2026-08-15) added two honestly-scoped signals
+    alongside the rule gate, rather than leaving "model prediction with confidence" entirely
+    unaddressed: _fetch_ml_price_direction() reuses the app's EXISTING, already-trained,
+    already-promoted per-symbol direction model as a genuinely independent second read
+    (ml_price_direction_confidence/_model_version — explicitly NOT named model_confidence,
+    since it answers "what does the general price-direction model think," never "will THIS
+    squeeze setup break out"); _build_prebreakout_calibration() reports a MEASURED historical
+    win rate bucketed by short-interest band from this alert's own resolved outcomes
+    (calibrated_win_rate/_count), mirroring signal-engine's _build_confidence_calibration()/
+    check_top3_conviction() pattern exactly — None below a 30-sample floor, never fabricated.
+
+    Options call/put positioning (from the ~2-week-deep OptionsFlowSnapshot table) is folded
+    in as a REPORTED context field only, never a gating condition — too little history exists
+    to validate it as anything more than a minor tilt yet.
 
     Runs a few times a day (compression state built from daily bars doesn't change minute-to-
     minute, unlike check_short_squeeze_alerts()'s own 1-minute intraday-move cadence) over the
@@ -2907,6 +3003,8 @@ def check_prebreakout_alerts() -> None:
                 ).all():
                     options_by_stock[stock_id] = cp_ratio
 
+            cal_buckets = _build_prebreakout_calibration(session)
+
             candidates: dict[str, dict] = {}
             for stock_id, symbol in symbols:
                 try:
@@ -2940,15 +3038,23 @@ def check_prebreakout_alerts() -> None:
                         pass
                     price = live.get("price") if live else float(bars["close"].iloc[-1])
 
+                    spf_pct = round(spf * 100, 2)
+                    ml_confidence, ml_model_version = _fetch_ml_price_direction(symbol)
+                    cal_win_rate, cal_count = _prebreakout_calibration_for_band(cal_buckets, spf_pct)
+
                     candidates[symbol] = {
                         "symbol": symbol,
                         "stock_id": stock_id,
-                        "short_percent_of_float": round(spf * 100, 2),
+                        "short_percent_of_float": spf_pct,
                         "bb_width_pctile": compression["bb_width_pctile"],
                         "atr_pctile": compression["atr_pctile"],
                         "volume_dried_up": compression["volume_dried_up"],
                         "price": price,
                         "options_cp_ratio": options_by_stock.get(stock_id),
+                        "ml_price_direction_confidence": ml_confidence,
+                        "ml_price_direction_model_version": ml_model_version,
+                        "calibrated_win_rate": cal_win_rate,
+                        "calibrated_win_rate_count": cal_count,
                     }
                 except Exception as exc:
                     log.warning("prebreakout_alert.symbol_error", symbol=symbol, error=str(exc))
@@ -2963,6 +3069,8 @@ def check_prebreakout_alerts() -> None:
                 _record_prebreakout_alert_outcome(
                     session, cand["stock_id"], sym, cand["price"], cand["short_percent_of_float"],
                     cand["bb_width_pctile"], cand["atr_pctile"], cand["volume_dried_up"], cand["options_cp_ratio"],
+                    cand["ml_price_direction_confidence"], cand["ml_price_direction_model_version"],
+                    cand["calibrated_win_rate"], cand["calibrated_win_rate_count"],
                 )
 
             if not candidates:
@@ -3014,10 +3122,19 @@ def _record_prebreakout_alert_outcome(
     session, stock_id: int, symbol: str, price: float, short_percent_of_float: float,
     bb_width_pctile: float | None, atr_pctile: float | None, volume_dried_up: bool | None,
     options_cp_ratio: float | None,
+    ml_price_direction_confidence: float | None = None, ml_price_direction_model_version: str | None = None,
+    calibrated_win_rate: float | None = None, calibrated_win_rate_count: int | None = None,
 ) -> None:
     """Mirrors _record_squeeze_alert_outcome()'s own existence-check-before-insert discipline
     exactly (see that function's docstring for the full reasoning) — a re-fire the same day is
-    a safe no-op, never a duplicate row or an overwritten alert_price."""
+    a safe no-op, never a duplicate row or an overwritten alert_price.
+
+    ml_price_direction_confidence/_model_version and calibrated_win_rate/_count (both new
+    parameters, both default None to keep this function's signature backward-compatible with
+    any other caller) are the two T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE signals — see
+    check_prebreakout_alerts()'s own docstring for what each measures and why neither is named
+    model_confidence/model_version (those stay reserved for a real squeeze-trained classifier,
+    which this app's own data doesn't yet support)."""
     try:
         today = date.today()
         existing = session.execute(
@@ -3033,6 +3150,9 @@ def _record_prebreakout_alert_outcome(
             rule_gate_passed=True, short_percent_of_float=short_percent_of_float,
             bb_width_pctile=bb_width_pctile, atr_pctile=atr_pctile, volume_dried_up=volume_dried_up,
             options_modifier_applied=options_cp_ratio is not None, options_cp_ratio=options_cp_ratio,
+            ml_price_direction_confidence=ml_price_direction_confidence,
+            ml_price_direction_model_version=ml_price_direction_model_version,
+            calibrated_win_rate=calibrated_win_rate, calibrated_win_rate_count=calibrated_win_rate_count,
         ))
         session.commit()
     except Exception as exc:

@@ -109,6 +109,19 @@ def _extract_record_prebreakout_alert_outcome():
     return namespace["_record_prebreakout_alert_outcome"], fake_log
 
 
+def _extract_prebreakout_calibration_functions():
+    """T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE: extracts _build_prebreakout_calibration() and
+    _prebreakout_calibration_for_band() together (both live contiguously, sharing
+    _PREBREAKOUT_CAL_MIN_COUNT/_PREBREAKOUT_CAL_BANDS) — real select()/PreBreakoutAlertOutcome
+    injected so the DB-facing half runs against the real in-memory SQLite session."""
+    start = _SCHEDULER_SOURCE.index("_PREBREAKOUT_CAL_MIN_COUNT = ")
+    end = _SCHEDULER_SOURCE.index("\n\ndef _fetch_ml_price_direction(", start)
+    body = _SCHEDULER_SOURCE[start:end]
+    namespace = {"select": select, "PreBreakoutAlertOutcome": PreBreakoutAlertOutcome}
+    exec(body, namespace)  # noqa: S102 — isolated eval of real source
+    return namespace["_build_prebreakout_calibration"], namespace["_prebreakout_calibration_for_band"]
+
+
 class _CtxSession:
     def __enter__(self):
         self._s = Session(_ENGINE)
@@ -189,6 +202,28 @@ def test_record_creates_a_new_row_on_first_fire():
     assert rows[0].options_modifier_applied is True
     assert rows[0].options_cp_ratio == 1.3
     assert rows[0].fired_date == date.today()
+    # T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE: the two new signal fields default to None
+    # when not passed — this call site (matching every pre-existing caller in this file)
+    # never supplies them, so a real regression here would silently break every OTHER
+    # test in this file too, not just this one.
+    assert rows[0].ml_price_direction_confidence is None
+    assert rows[0].ml_price_direction_model_version is None
+    assert rows[0].calibrated_win_rate is None
+    assert rows[0].calibrated_win_rate_count is None
+
+
+def test_record_persists_the_new_confidence_signals_when_given():
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    record, _ = _extract_record_prebreakout_alert_outcome()
+
+    record(session, st.id, "AAPL", 150.0, 22.5, 0.1, 0.15, True, 1.3, 61.5, "2026-08-01T00:00:00", 0.42, 37)
+
+    row = session.execute(select(PreBreakoutAlertOutcome)).scalar_one()
+    assert row.ml_price_direction_confidence == 61.5
+    assert row.ml_price_direction_model_version == "2026-08-01T00:00:00"
+    assert row.calibrated_win_rate == 0.42
+    assert row.calibrated_win_rate_count == 37
 
 
 def test_record_options_modifier_applied_is_false_when_no_cp_ratio_given():
@@ -218,6 +253,106 @@ def test_record_is_a_noop_on_a_second_call_same_day():
     assert len(rows) == 1
     assert rows[0].alert_price == 150.0
     fake_log.warning.assert_not_called()
+
+
+# ── _build_prebreakout_calibration() / _prebreakout_calibration_for_band() ──────────────────
+
+def _make_resolved_outcome(session, stock_id, symbol, spf, is_correct, i):
+    """A minimal already-resolved PreBreakoutAlertOutcome row — only the two columns
+    _build_prebreakout_calibration() actually reads (short_percent_of_float, is_correct_10d)
+    matter for these tests; fired_date is varied per row only so the unique constraint on
+    (stock_id, fired_date) never collides across the many rows a single test builds."""
+    session.add(PreBreakoutAlertOutcome(
+        id=_new_id(), stock_id=stock_id, symbol=symbol,
+        fired_date=date(2026, 1, 1) + timedelta(days=i), alert_price=100.0,
+        rule_gate_passed=True, short_percent_of_float=spf, is_correct_10d=is_correct,
+    ))
+
+
+def test_calibration_reports_a_real_bucket_once_it_clears_the_sample_floor():
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    # 30 rows in the 15-20 band, exactly at the floor: 18 wins / 12 losses -> 0.6 win rate.
+    for i in range(30):
+        _make_resolved_outcome(session, st.id, "AAPL", 17.0, i < 18, i)
+    session.commit()
+
+    build, lookup = _extract_prebreakout_calibration_functions()
+    buckets = build(session)
+
+    assert buckets["15-20"] == {"win_rate": 0.6, "count": 30}
+    win_rate, count = lookup(buckets, 17.0)
+    assert win_rate == 0.6
+    assert count == 30
+
+
+def test_calibration_omits_a_bucket_below_the_sample_floor():
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    # 29 rows — one short of _PREBREAKOUT_CAL_MIN_COUNT (30).
+    for i in range(29):
+        _make_resolved_outcome(session, st.id, "AAPL", 17.0, True, i)
+    session.commit()
+
+    build, lookup = _extract_prebreakout_calibration_functions()
+    buckets = build(session)
+
+    assert "15-20" not in buckets
+    win_rate, count = lookup(buckets, 17.0)
+    assert win_rate is None
+    assert count is None
+
+
+def test_calibration_buckets_are_independent_per_band():
+    """A well-populated 15-20 band must never leak its win rate into a thin 30+ band lookup —
+    each band's own sample count is what gates it, not the total row count across all bands."""
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    for i in range(30):
+        _make_resolved_outcome(session, st.id, "AAPL", 17.0, True, i)
+    for i in range(5):
+        _make_resolved_outcome(session, st.id, "AAPL", 35.0, False, 100 + i)
+    session.commit()
+
+    build, lookup = _extract_prebreakout_calibration_functions()
+    buckets = build(session)
+
+    assert buckets["15-20"]["count"] == 30
+    assert "30+" not in buckets
+    win_rate, count = lookup(buckets, 35.0)
+    assert win_rate is None
+    assert count is None
+
+
+def test_calibration_ignores_unresolved_outcomes():
+    """A row with is_correct_10d still NULL (not yet evaluated) must never count toward
+    either the sample floor or the win rate — only genuinely resolved outcomes qualify."""
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    for i in range(30):
+        _make_resolved_outcome(session, st.id, "AAPL", 17.0, True, i)
+    # 10 more UNRESOLVED rows in the same band — must not inflate the count or dilute win_rate.
+    for i in range(10):
+        session.add(PreBreakoutAlertOutcome(
+            id=_new_id(), stock_id=st.id, symbol="AAPL",
+            fired_date=date(2026, 3, 1) + timedelta(days=i), alert_price=100.0,
+            rule_gate_passed=True, short_percent_of_float=17.0, is_correct_10d=None,
+        ))
+    session.commit()
+
+    build, _ = _extract_prebreakout_calibration_functions()
+    buckets = build(session)
+
+    assert buckets["15-20"] == {"win_rate": 1.0, "count": 30}
+
+
+def test_calibration_lookup_returns_none_outside_every_band():
+    """short_percent_of_float below the alert's own 15% floor should never happen in
+    production, but the lookup function itself must degrade safely rather than raise."""
+    build, lookup = _extract_prebreakout_calibration_functions()
+    win_rate, count = lookup({}, 5.0)
+    assert win_rate is None
+    assert count is None
 
 
 # ── evaluate_prebreakout_alert_outcomes() ────────────────────────────────────────────────────
