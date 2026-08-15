@@ -492,14 +492,41 @@ function PortfolioCard({
         <span style={{ fontSize: 10, color: stateColor, fontWeight: 600 }}>● {state}</span>
       </div>
       {portfolio.entry_gate_block && (
-        <div title={portfolio.entry_gate_block.reason} style={{
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+          <div title={portfolio.entry_gate_block.reason} style={{
+            padding: '3px 7px', borderRadius: 5,
+            background: 'rgba(251,146,60,0.1)', border: '1px solid rgba(251,146,60,0.3)',
+            fontSize: 10, fontWeight: 600, color: '#fb923c',
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+            cursor: 'help', flex: '1 1 auto', minWidth: 0,
+          }}>
+            ⊘ {GATE_LABELS[portfolio.entry_gate_block.gate] ?? portfolio.entry_gate_block.gate}
+          </div>
+          {/* T264-ENTRYGATESOVERRIDE: quick link to the override controls in the Config Panel
+              below, so a user hitting a blocked gate doesn't have to know it's hiding down
+              there — selects this portfolio (matching the card's own onClick) then scrolls. */}
+          <button
+            title="Override this and other market-condition gates temporarily — see Entry Gates Override in Config below"
+            onClick={e => {
+              e.stopPropagation();
+              onSelect();
+              setTimeout(() => document.getElementById('config')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+            }}
+            style={{
+              flex: '0 0 auto', padding: '3px 7px', borderRadius: 5,
+              background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.4)',
+              fontSize: 10, fontWeight: 700, color: '#fbbf24', cursor: 'pointer',
+            }}
+          >Override</button>
+        </div>
+      )}
+      {portfolio.entry_gates_override_active && (
+        <div style={{
           marginBottom: 6, padding: '3px 7px', borderRadius: 5,
-          background: 'rgba(251,146,60,0.1)', border: '1px solid rgba(251,146,60,0.3)',
-          fontSize: 10, fontWeight: 600, color: '#fb923c',
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-          cursor: 'help',
+          background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.35)',
+          fontSize: 10, fontWeight: 600, color: '#fbbf24',
         }}>
-          ⊘ {GATE_LABELS[portfolio.entry_gate_block.gate] ?? portfolio.entry_gate_block.gate}
+          ⚠ Gates overridden{portfolio.entry_gates_override_until ? ` until ${new Date(portfolio.entry_gates_override_until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
         </div>
       )}
       {/* T232-WHYNOTRADE: no portfolio-level gate fired, but every candidate individually
@@ -1160,9 +1187,15 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
   const [msg, setMsg] = useState('');
   const [overrideMsg, setOverrideMsg] = useState('');
   const [overrideBusy, setOverrideBusy] = useState(false);
+  const [gatesOverrideMsg, setGatesOverrideMsg] = useState('');
+  const [gatesOverrideBusy, setGatesOverrideBusy] = useState(false);
 
   const overrideUntil = config.regime_risk_off_override_until ? new Date(config.regime_risk_off_override_until) : null;
   const overrideActive = !!overrideUntil && overrideUntil.getTime() > Date.now();
+
+  // T264-ENTRYGATESOVERRIDE
+  const gatesOverrideUntil = config.entry_gates_override_until ? new Date(config.entry_gates_override_until) : null;
+  const gatesOverrideActive = !!gatesOverrideUntil && gatesOverrideUntil.getTime() > Date.now();
 
   async function setRiskOffOverride(hours: number) {
     setOverrideBusy(true); setOverrideMsg('');
@@ -1182,6 +1215,26 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
       onSave();
     } catch { setOverrideMsg('Failed to clear override'); }
     finally { setOverrideBusy(false); }
+  }
+
+  async function setGatesOverride(hours: number) {
+    setGatesOverrideBusy(true); setGatesOverrideMsg('');
+    try {
+      await api.paperSetEntryGatesOverride(hours, portfolioId);
+      setGatesOverrideMsg(`Override active for ${hours}h`);
+      onSave();
+    } catch { setGatesOverrideMsg('Failed to set override'); }
+    finally { setGatesOverrideBusy(false); }
+  }
+
+  async function clearGatesOverride() {
+    setGatesOverrideBusy(true); setGatesOverrideMsg('');
+    try {
+      await api.paperClearEntryGatesOverride(portfolioId);
+      setGatesOverrideMsg('Override cleared');
+      onSave();
+    } catch { setGatesOverrideMsg('Failed to clear override'); }
+    finally { setGatesOverrideBusy(false); }
   }
 
   function field(key: keyof PaperPortfolioConfig, label: string, step = 0.01, placeholder?: string, min?: number) {
@@ -1341,6 +1394,43 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
           </div>
         )}
         {overrideMsg && <span style={{ color: overrideMsg.startsWith('Failed') ? '#ef4444' : '#22c55e', fontSize: 12, marginLeft: 10 }}>{overrideMsg}</span>}
+      </div>
+
+      {section('Entry Gates Override — "I think the market is fine"')}
+      <div style={{ marginTop: 10 }}>
+        <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>
+          Temporarily bypasses drawdown, daily/weekly loss, weekly gain lock, consecutive-loss,
+          bear-regime (fallback path only), and sustained-regime-stress blocks — for when you
+          believe conditions have genuinely changed and don&apos;t want to wait for the automated
+          gates to agree. Self-expires, no need to remember to turn it back off. Does NOT touch
+          max positions, the equity floor, or the live-price safety check — those stay in force
+          regardless. Note: decision-engine&apos;s own bear-regime block has no override hook on
+          its side, so a hard bear-regime block from the live scorer can still occur even with
+          this active — everything else listed above is fully covered.
+        </div>
+        {gatesOverrideActive ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, background: '#422006', border: '1px solid #f59e0b', borderRadius: 6, padding: '8px 12px' }}>
+            <span style={{ color: '#fbbf24', fontSize: 13, fontWeight: 600 }}>
+              ⚠ Override active until {gatesOverrideUntil!.toLocaleString()}
+            </span>
+            <button
+              onClick={clearGatesOverride} disabled={gatesOverrideBusy}
+              style={{ background: 'transparent', color: '#f87171', border: '1px solid #f87171', borderRadius: 5, padding: '4px 10px', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
+            >Cancel Override</button>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <button
+              onClick={() => setGatesOverride(4)} disabled={gatesOverrideBusy}
+              style={{ background: '#1e293b', color: '#fbbf24', border: '1px solid #f59e0b', borderRadius: 6, padding: '7px 14px', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}
+            >Allow trading for 4 hours</button>
+            <button
+              onClick={() => setGatesOverride(24)} disabled={gatesOverrideBusy}
+              style={{ background: '#1e293b', color: '#fbbf24', border: '1px solid #f59e0b', borderRadius: 6, padding: '7px 14px', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}
+            >Allow trading for 1 day</button>
+          </div>
+        )}
+        {gatesOverrideMsg && <span style={{ color: gatesOverrideMsg.startsWith('Failed') ? '#ef4444' : '#22c55e', fontSize: 12, marginLeft: 10 }}>{gatesOverrideMsg}</span>}
       </div>
 
       <div style={{ display: 'flex', gap: 10, marginTop: 16, alignItems: 'center' }}>

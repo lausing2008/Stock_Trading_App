@@ -645,6 +645,31 @@ def _regime_risk_off_override_active(cfg: dict) -> bool:
         return False
 
 
+def _entry_gates_override_active(cfg: dict) -> bool:
+    """T264-ENTRYGATESOVERRIDE: generalizes T232-HKOVERRIDE's proven time-boxed-override
+    pattern from risk_off-only to every "market condition / recent performance" gate a user
+    might reasonably want to temporarily bypass because they judge the market to actually be
+    fine right now — drawdown, daily_loss, weekly_loss, weekly_gain_lock, consecutive_losses,
+    regime_bear, regime_suspension.
+
+    Deliberately does NOT cover max_positions, the equity-floor circuit breaker, or the
+    live-price-sparsity safety check — those aren't "is the market good" judgment calls, they're
+    hard capital-preservation/data-integrity limits nobody should be able to wave away from a UI
+    button. A separate, distinct config key from regime_risk_off_override_until (that one still
+    works standalone, unaffected by this one) — set via POST
+    /paper-portfolio/entry-gates-override?hours=N, expires on its own with no cron job needed,
+    exactly like the risk-off override this generalizes.
+    """
+    until_str = cfg.get("entry_gates_override_until")
+    if not until_str:
+        return False
+    try:
+        until = datetime.fromisoformat(until_str)
+        return datetime.utcnow() < until
+    except (ValueError, TypeError):
+        return False
+
+
 # Mirrors scheduler._STYLE_PARAMS — inlined here to avoid circular import.
 # AUD-DUPLOGIC: atr_stop_mult added here as the single source of truth for the ATR-based
 # stop-override multiplier — decision-engine's aggregator.py::_default_game_plan() had its own
@@ -3737,6 +3762,11 @@ def _slipped_position_value(shares: float, live_price: float, entry_slippage_pct
 def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str, float], live_regime: dict | None = None) -> None:
     """Find fresh BUY signals and evaluate them for entry."""
     cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(portfolio.config.get("trading_style", "GROWTH"), {}), **portfolio.config}
+    # T264-ENTRYGATESOVERRIDE: computed once, reused at every "market condition / recent
+    # performance" gate below (drawdown, daily_loss, weekly_loss, weekly_gain_lock,
+    # consecutive_losses, regime_bear, regime_suspension) — never at max_positions/equity-floor/
+    # live-price-sparsity, which stay hard regardless of this flag.
+    _gates_override = _entry_gates_override_active(cfg)
     # Apply HK-specific circuit breaker overrides when not explicitly set in the portfolio config.
     if cfg.get("market") == "HK":
         for _k, _v in _HK_MARKET_OVERRIDES.items():
@@ -3852,7 +3882,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
 
     # ── Drawdown circuit breaker ─────────────────────────────────────────────────
     max_dd_cfg = cfg.get("max_portfolio_drawdown_pct", 0.20)
-    if max_dd_cfg and max_dd_cfg > 0:
+    if max_dd_cfg and max_dd_cfg > 0 and not _gates_override:
         historical_peak = session.execute(
             select(func.max(PaperEquityCurve.equity))
             .where(PaperEquityCurve.portfolio_id == portfolio.id)
@@ -3895,7 +3925,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         # blocking all new entries via DE (the authoritative gate when decision_engine_mode="primary")
         # after essentially any trivial loss.
         _daily_pnl_pct = round(daily_net_pnl / equity, 4)
-        if daily_net_pnl < 0 and abs(daily_net_pnl) / equity > max_daily_loss:
+        if daily_net_pnl < 0 and abs(daily_net_pnl) / equity > max_daily_loss and not _gates_override:
             log.warning("paper.daily_loss_limit",
                         portfolio=portfolio.name,
                         daily_net_pnl=round(daily_net_pnl, 2),
@@ -3925,7 +3955,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 PaperTrade.exit_time >= week_start,
             )
         ).scalar() or 0.0
-        if max_weekly_loss and weekly_net_pnl < 0 and abs(weekly_net_pnl) / equity > max_weekly_loss:
+        if max_weekly_loss and weekly_net_pnl < 0 and abs(weekly_net_pnl) / equity > max_weekly_loss and not _gates_override:
             log.warning("paper.weekly_loss_limit",
                         portfolio=portfolio.name,
                         weekly_net_pnl=round(weekly_net_pnl, 2),
@@ -3937,7 +3967,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             return
         # T191: Weekly gain lock — don't give back a good week by overtrading.
         # Once weekly realized PnL crosses the gain lock threshold, no new entries until next week.
-        if max_weekly_gain and weekly_net_pnl > 0 and weekly_net_pnl / equity > max_weekly_gain:
+        if max_weekly_gain and weekly_net_pnl > 0 and weekly_net_pnl / equity > max_weekly_gain and not _gates_override:
             log.info("paper.weekly_gain_lock",
                      portfolio=portfolio.name,
                      weekly_pnl_pct=round(weekly_net_pnl / equity * 100, 1),
@@ -3950,7 +3980,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     # ── Consecutive-loss circuit breaker ─────────────────────────────────────────
     # Uses precomputed _consec_losses (avoids a second DB query here).
     max_consec_losses = cfg.get("max_consecutive_losses", 3)
-    if max_consec_losses and max_consec_losses > 0 and _consec_losses >= max_consec_losses:
+    if max_consec_losses and max_consec_losses > 0 and _consec_losses >= max_consec_losses and not _gates_override:
         if open_count > 0:
             # Open trades exist — wait for one to close positive before entering again.
             log.warning("paper.consecutive_loss_limit",
@@ -4044,7 +4074,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         else:
             _vix_val = live_regime.get("vix")
             _vix_str = f"{_vix_val:.1f}" if _vix_val is not None else "N/A"
-        if regime_state == "bear":
+        if regime_state == "bear" and not _gates_override:
             log.info("paper.regime_gate_bear",
                      portfolio=portfolio.name,
                      vix=live_regime.get("vix"),
@@ -4060,8 +4090,11 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         # T232-HKOVERRIDE: a deliberate, time-boxed override (set via POST
         # /paper-portfolio/risk-off-override?hours=N) can temporarily disable this gate —
         # self-expiring, checked here on every evaluation rather than needing a cron job
-        # to turn it back off.
-        if regime_state == "risk_off" and cfg.get("regime_risk_off_gate", True) and not _regime_risk_off_override_active(cfg):
+        # to turn it back off. T264-ENTRYGATESOVERRIDE's general override (entry-gates-override)
+        # ALSO clears this gate, in addition to the risk-off-specific one above — either
+        # mechanism is sufficient on its own.
+        if (regime_state == "risk_off" and cfg.get("regime_risk_off_gate", True)
+                and not _regime_risk_off_override_active(cfg) and not _gates_override):
             log.info("paper.regime_gate_risk_off",
                      portfolio=portfolio.name,
                      vix=live_regime.get("vix"),
@@ -4089,7 +4122,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 _all_days = sorted(_t210_redis.hgetall(_regime_key).items(), reverse=True)
                 _bad_states = {"risk_off", "bear"}
                 _recent_bad = [s for _, s in _all_days[:_regime_suspend_days] if s in _bad_states]
-                if len(_recent_bad) >= _regime_suspend_days:
+                if len(_recent_bad) >= _regime_suspend_days and not _gates_override:
                     log.warning("paper.regime_suspension_triggered",
                                 portfolio=portfolio.name,
                                 days=_regime_suspend_days,
@@ -4846,11 +4879,17 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             open_count=open_count,
             cfg=cfg,
             initial_capital=portfolio.initial_capital,  # T232-DL-DUALSCORER-DEBT: T201 gate parity
-            daily_pnl_pct=_daily_pnl_pct,
+            # T264-ENTRYGATESOVERRIDE: while the override is active, report these two as
+            # "no problem" to decision-engine directly rather than threading the flag through
+            # _call_decision_engine()'s own signature — DE independently re-implements both the
+            # daily-loss and consecutive-loss hard rejects (hard_rejects.py), so the fallback
+            # gate's own override below is not enough on its own when decision_engine_mode is
+            # "primary" (the live default) — DE would still see the REAL numbers and block.
+            daily_pnl_pct=(0.0 if _gates_override else _daily_pnl_pct),
             recent_win_rate=_recent_wr,
             open_sector_counts=_open_sector_counts,   # T186: sector gate
             candidate_sector=stock.sector,             # T186: sector gate
-            consec_losses=_consec_losses,              # T187: streak gate
+            consec_losses=(0 if _gates_override else _consec_losses),  # T187: streak gate
             recent_stop_count=_recent_stops,            # T232-DL-DUALSCORER-DEBT / T221-E: heat brake
             market_open_count=_mkt_open_count,          # T232-DL-DUALSCORER-DEBT / T221-B: market cluster cap
             kscore=kscore_f,                           # AUD232-042: K-Score visibility

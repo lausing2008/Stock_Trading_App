@@ -523,6 +523,16 @@ export const api = {
     const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
     return request<{ ok: boolean }>(`/paper-portfolio/risk-off-override${q}`, { method: 'DELETE' });
   },
+  // T264-ENTRYGATESOVERRIDE
+  paperSetEntryGatesOverride: (hours: number, portfolioId?: number | null) => {
+    const q = new URLSearchParams({ hours: String(hours) });
+    if (portfolioId) q.set('portfolio_id', String(portfolioId));
+    return request<{ ok: boolean; override_until: string }>(`/paper-portfolio/entry-gates-override?${q}`, { method: 'POST' });
+  },
+  paperClearEntryGatesOverride: (portfolioId?: number | null) => {
+    const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
+    return request<{ ok: boolean }>(`/paper-portfolio/entry-gates-override${q}`, { method: 'DELETE' });
+  },
   paperSetCapital: (body: { initial_capital?: number; current_cash?: number }, portfolioId?: number | null) => {
     const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
     return request<{ ok: boolean; initial_capital: number; current_cash: number }>(`/paper-portfolio/capital${q}`, { method: 'POST', body: JSON.stringify(body) });
@@ -1540,6 +1550,9 @@ export type PaperPortfolioListItem = {
     top_reasons: { reason: string; label: string; count: number }[];
     ts: string;
   } | null;
+  // T264-ENTRYGATESOVERRIDE
+  entry_gates_override_active: boolean;
+  entry_gates_override_until: string | null;
 };
 
 export type PaperTradeParamResult = {
@@ -1607,6 +1620,8 @@ export type PaperPortfolioConfig = {
   // Regime gate
   regime_risk_off_gate?: boolean;
   regime_risk_off_override_until?: string | null;
+  // T264-ENTRYGATESOVERRIDE
+  entry_gates_override_until?: string | null;
   // T203-LLMWIRE: LLM reasoning layer (decision-engine's llm_scorer.py) — opt-in per portfolio.
   // Requires a Claude/DeepSeek key configured (personal or shared server key, see Settings).
   llm_scoring_enabled?: boolean;

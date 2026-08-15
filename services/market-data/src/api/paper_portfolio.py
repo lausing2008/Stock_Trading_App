@@ -954,6 +954,63 @@ def clear_risk_off_override(
     return {"ok": True}
 
 
+# ── Admin: time-boxed override for ALL "market condition / recent performance" gates ────────
+
+@router.post("/entry-gates-override")
+def set_entry_gates_override(
+    hours: float = Query(..., gt=0, le=24, description="Override duration in hours (max 24)"),
+    portfolio_id: int | None = Query(None),
+    _: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Temporarily bypass the market-condition/recent-performance entry gates for this
+    portfolio: drawdown, daily_loss, weekly_loss, weekly_gain_lock, consecutive_losses,
+    regime_bear (fallback-gate path only — see caveat below), regime_suspension. Also
+    suppresses decision-engine's own independent daily-loss and consecutive-loss hard rejects
+    for the duration (DE is sent daily_pnl_pct=0/consec_losses=0 while active, since those are
+    genuinely different request fields, not something a single config flag on DE's own side
+    could gate).
+
+    T264-ENTRYGATESOVERRIDE: generalizes T232-HKOVERRIDE's proven risk-off-only override to
+    every gate a user might reasonably want to bypass because they judge the market to
+    actually be fine right now — a deliberate, self-expiring override (matching the existing
+    risk-off override's own contract exactly), NOT a permanent config flip and NOT a way to
+    disable the gates' underlying config values. Does NOT touch max_positions, the equity-floor
+    circuit breaker, or the live-price-sparsity safety check — those are hard capital-
+    preservation/data-integrity limits, not market-condition judgment calls, and stay in force
+    regardless of this override.
+
+    CAVEAT — decision-engine's own regime_state=="bear" hard reject has NO config-gated escape
+    hatch on the decision-engine side at all (unlike risk_off, which DE explicitly checks
+    behind regime_risk_off_gate). Since decision_engine_mode="primary" is the live default for
+    every real portfolio, this override does NOT bypass a bear-regime block while DE is the
+    live scorer — only the fallback gate (_should_enter(), used when DE is unreachable) respects
+    it for regime_bear. Every other listed gate is fully covered on both paths.
+    """
+    p = _get_portfolio(session, portfolio_id)
+    until = (datetime.utcnow() + timedelta(hours=hours)).isoformat()
+    p.config = {**p.config, "entry_gates_override_until": until}
+    session.commit()
+    log.warning("paper.entry_gates_override_set", portfolio=p.name, hours=hours, until=until)
+    return {"ok": True, "override_until": until}
+
+
+@router.delete("/entry-gates-override")
+def clear_entry_gates_override(
+    portfolio_id: int | None = Query(None),
+    _: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Cancel an active entry-gates override before it expires."""
+    p = _get_portfolio(session, portfolio_id)
+    cfg = dict(p.config)
+    cfg.pop("entry_gates_override_until", None)
+    p.config = cfg
+    session.commit()
+    log.info("paper.entry_gates_override_cleared", portfolio=p.name)
+    return {"ok": True}
+
+
 # ── Admin: reset ──────────────────────────────────────────────────────────────
 
 @router.post("/reset")
@@ -1193,6 +1250,7 @@ def list_portfolios(
     session: Session = Depends(get_session),
 ) -> list[dict]:
     """Lightweight list of all portfolios (active and inactive) with summary stats."""
+    from ..services.paper_trading_engine import _entry_gates_override_active
     portfolios = session.execute(
         select(PaperPortfolio).order_by(PaperPortfolio.id)
     ).scalars().all()
@@ -1263,6 +1321,10 @@ def list_portfolios(
             "created_at": p.created_at.isoformat() if p.created_at else None,
             "entry_gate_block": _gate_blocks.get(p.id),  # {gate, reason, ts} or None
             "no_entry_summary": _no_entry_summaries.get(p.id),  # {candidates_seen, top_reasons, ts} or None
+            # T264-ENTRYGATESOVERRIDE: surfaced so the UI can show "Override active until HH:MM"
+            # instead of the user having to guess whether their own POST actually took effect.
+            "entry_gates_override_active": _entry_gates_override_active(p.config),
+            "entry_gates_override_until": p.config.get("entry_gates_override_until"),
         })
 
     return result
