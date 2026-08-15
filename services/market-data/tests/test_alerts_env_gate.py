@@ -188,7 +188,7 @@ _NON_ALERT_JOB_IDS = {
     "hk_open_burst", "hk_intra", "hk_close_burst", "hk_post_close", "weekly_full_refresh",
     "us_premarket_5m_early", "us_premarket_5m_9am", "us_5m_intraday", "hk_5m_intraday",
     "(f-string prefix='broker_token_renewal_')",
-    "data_quality_checks", "value_area_levels_daily",
+    "data_quality_checks", "value_area_levels_daily", "squeeze_alert_outcome_eval_daily",
     "live_price_cache_refresh", "avg_volume_cache_refresh", "avg_volume_startup_check",
     "signal_watchdog_daily", "db_purge_weekly", "meta_model_monthly_retrain",
     "backfill_realized_ev_monthly", "position_scaling_gate_weekly_retrain",

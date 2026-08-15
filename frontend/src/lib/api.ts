@@ -223,6 +223,15 @@ export const api = {
     return request<WatchlistPerformanceResponse>(`/admin/watchlist-performance?${p.toString()}`);
   },
 
+  // T264-SQUEEZEALERT-PERFORMANCE
+  getSqueezeAlertPerformance: (params?: { days_back?: number; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.days_back != null) p.set('days_back', String(params.days_back));
+    if (params?.limit != null) p.set('limit', String(params.limit));
+    const qs = p.toString();
+    return request<SqueezeAlertPerformanceResponse>(`/admin/squeeze-alert-performance${qs ? `?${qs}` : ''}`);
+  },
+
   // WATCHLIST-AUTO-ROTATION history/revert
   getWatchlistRotationHistory: (params?: { watchlist_id?: number; style?: string; limit?: number }) => {
     const p = new URLSearchParams();
@@ -1500,6 +1509,43 @@ export type WatchlistPerformanceResponse = {
   max_sector_pct: number;
   watchlist_perf: WatchlistPerfStock[];
   candidates: WatchlistPerfCandidate[];
+};
+
+// T264-SQUEEZEALERT-PERFORMANCE
+export type SqueezeAlertWindowStat = {
+  n: number;
+  wins: number;
+  win_rate: number | null;
+  avg_return_pct: number | null;
+} | null;
+
+export type SqueezeAlertTypeSummary = {
+  alert_type: 'short_squeeze' | 'gamma_unwind_calls' | 'gamma_unwind_puts';
+  label: string;
+  fired_count: number;
+  window_10d: SqueezeAlertWindowStat;
+  window_5d: SqueezeAlertWindowStat;
+  window_20d: SqueezeAlertWindowStat;
+};
+
+export type SqueezeAlertOutcomeRow = {
+  alert_type: string;
+  symbol: string;
+  fired_date: string;
+  alert_price: number;
+  qualifying_metric: number | null;
+  entry_date: string | null;
+  entry_price: number | null;
+  return_5d: number | null;
+  return_10d: number | null;
+  return_20d: number | null;
+  is_correct_10d: boolean | null;
+};
+
+export type SqueezeAlertPerformanceResponse = {
+  days_back: number;
+  by_alert_type: SqueezeAlertTypeSummary[];
+  recent_alerts: SqueezeAlertOutcomeRow[];
 };
 
 // WATCHLIST-AUTO-ROTATION

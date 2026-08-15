@@ -53,6 +53,7 @@ from .models import (
     OptionsFlowSnapshot,
     FundamentalsSnapshot,
     ThemeSignalSnapshot,
+    SqueezeAlertOutcome,
 )
 from .session import SessionLocal, engine, get_session, init_db
 
@@ -111,6 +112,7 @@ __all__ = [
     "OptionsFlowSnapshot",
     "FundamentalsSnapshot",
     "ThemeSignalSnapshot",
+    "SqueezeAlertOutcome",
     "SessionLocal",
     "engine",
     "get_session",

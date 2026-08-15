@@ -1479,4 +1479,67 @@ class ThemeSignalSnapshot(Base):
     symbol_count: Mapped[int] = mapped_column(Integer, default=0)
     top_symbols_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list[dict] — per-symbol detail behind the aggregate, for the email's own drill-down
     summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)  # LLM-written prose grounded in the numeric fields above; None if the LLM call failed/was skipped
+
+
+class SqueezeAlertOutcome(Base):
+    """T264-SQUEEZEALERT-PERFORMANCE: forward-return tracking for check_short_squeeze_alerts()
+    and check_gamma_unwind_alerts() — direct user request: "measure the option sell and short
+    squeeze performance and win rates if I buy from the signal, the first email alert."
+
+    Before this table, NEITHER alert-emitting function persisted anything about a fire beyond
+    a short-TTL Redis dedup key (see AUD266-DEDUP-KEY-SET-BEFORE-SEND / the gamma job's
+    stockai:gamma_unwind_sent:{uid} set) — the moment a candidate stopped qualifying, all
+    record of it having fired at all was gone. There was no way to answer "did this alert type
+    actually make money" without a new, durable per-fire snapshot.
+
+    One row per (alert_type, symbol, fired_date) — deliberately keyed on the FIRST time a
+    symbol transitions into "newly qualifying" for a given day (matching each alert function's
+    own existing newly_qualifying/dedup-transition logic exactly, so this table's "first email
+    alert" moment is provably the SAME moment the user actually received an email, not a
+    separately-computed approximation of it), not re-written on every subsequent cycle the
+    symbol stays a candidate. alert_price at fire time is the "if I bought right when the
+    email arrived" entry price the user explicitly asked to measure against.
+
+    direction distinguishes the two mechanistically-different alert types this table covers:
+    "short_squeeze" (check_short_squeeze_alerts, always BUY-thesis) and "gamma_unwind_calls" /
+    "gamma_unwind_puts" (check_gamma_unwind_alerts, split by dominant_side — puts-dominant is
+    the closest existing concept in this app to "option sell" the user's request named, per
+    check_gamma_unwind_alerts()'s own docstring framing it as a directional options-positioning
+    read rather than a stock-borrowing short). Forward returns for the calls/puts split are
+    scored the SAME way SignalOutcome scores SELL rows elsewhere in this app (win = price fell
+    for the puts-dominant/bearish read) — see is_correct_Nd below.
+
+    Forward-return columns mirror SignalOutcome's own established 5d/10d/20d convention exactly
+    (same column names, same nullable-until-window-closes semantics) rather than inventing a
+    new vocabulary, filled by a dedicated evaluator job using the same T+1-entry / bisect-
+    nearest-bar-with-a-grace-window discipline already proven there.
+    """
+    __tablename__ = "squeeze_alert_outcomes"
+    __table_args__ = (
+        UniqueConstraint("alert_type", "stock_id", "fired_date", name="uq_squeeze_alert_outcome_type_stock_date"),
+        Index("ix_squeeze_alert_outcomes_type_date", "alert_type", "fired_date"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    alert_type: Mapped[str] = mapped_column(String(24), index=True)  # short_squeeze | gamma_unwind_calls | gamma_unwind_puts
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    fired_date: Mapped[date] = mapped_column(Date, index=True)
+    fired_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    alert_price: Mapped[float] = mapped_column(Float)  # the live price captured at the moment this alert first fired
+    # Snapshot of the metric that qualified the candidate, for later human review — short %
+    # of float for short_squeeze, OI concentration_pct for gamma_unwind_*.
+    qualifying_metric: Mapped[float | None] = mapped_column(Float, nullable=True)
+    entry_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # T+1 trading day close used as the actual entry fill
+    entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_5d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_10d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_10d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_10d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_20d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # last time the evaluator touched this row
     generated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

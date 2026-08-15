@@ -67,6 +67,7 @@ yfinance rate-limit notes
 """
 from __future__ import annotations
 
+import bisect
 import httpx
 import json
 import redis as redis_lib
@@ -84,7 +85,7 @@ from sqlalchemy.orm import selectinload, Session
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, EarningsEvent, EconomicEvent, FundamentalsSnapshot, Market, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, Stock, ThemeSignalSnapshot, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
+from db import AlertCondition, EarningsEvent, EconomicEvent, FundamentalsSnapshot, Market, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -2558,6 +2559,49 @@ def _squeeze_game_plan(session, symbol: str, price: float) -> dict | None:
         return None
 
 
+def _record_squeeze_alert_outcome(
+    session, alert_type: str, symbol: str, price: float, qualifying_metric: float | None,
+) -> None:
+    """T264-SQUEEZEALERT-PERFORMANCE: persists a durable snapshot the moment an alert first
+    fires for a symbol on a given calendar day — the exact "if I bought right when the email
+    arrived" moment the user asked to measure. Called ONLY from each alert function's own
+    already-existing newly_qualifying/dedup-transition branch (never from a re-fire of an
+    already-qualifying symbol), so fired_date is provably the real first-alert day.
+
+    Deliberately fail-open (a persistence hiccup here must never block the actual email send,
+    which is this function's caller's real job) — matches every other best-effort write in
+    this file (e.g. _bearish_puts_watch_candidates' own cache write).
+
+    Uses INSERT ... ON CONFLICT DO NOTHING semantics via a plain existence check first, not a
+    raw upsert, since a genuine (alert_type, stock_id, fired_date) collision here should never
+    happen given the caller's own newly_qualifying gating — if it somehow does (e.g. a retried
+    request), silently skipping is strictly safer than overwriting a real alert_price with a
+    later, no-longer-representative one.
+    """
+    try:
+        stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
+        if stock is None:
+            return
+        today = date.today()
+        existing = session.execute(
+            select(SqueezeAlertOutcome).where(
+                SqueezeAlertOutcome.alert_type == alert_type,
+                SqueezeAlertOutcome.stock_id == stock.id,
+                SqueezeAlertOutcome.fired_date == today,
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return
+        session.add(SqueezeAlertOutcome(
+            alert_type=alert_type, stock_id=stock.id, symbol=symbol, fired_date=today,
+            alert_price=float(price), qualifying_metric=qualifying_metric,
+        ))
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        log.warning("squeeze_alert_outcome.record_failed", alert_type=alert_type, symbol=symbol, error=str(exc))
+
+
 def check_short_squeeze_alerts() -> None:
     """Classic short-squeeze alert: high short-interest-of-float AND a real upward price move
     already happening RIGHT NOW, intraday. Framed explicitly as a BUY-direction signal — the
@@ -2712,6 +2756,21 @@ def check_short_squeeze_alerts() -> None:
                 plan = _squeeze_game_plan(session, sym, float(cand["price"]))
                 if plan is not None:
                     cand["game_plan"] = plan
+
+            # T264-SQUEEZEALERT-PERFORMANCE: recorded ONCE per (symbol, day) globally — the
+            # per-user newly_qualifying/state_key logic a few lines below is per-RECIPIENT (so
+            # a stock could look "newly qualifying" to user B even though it already fired for
+            # user A minutes ago); this is a global, symbol-level "first time this stock
+            # qualified today" fact independent of recipient count. _record_squeeze_alert_
+            # outcome's own existence check (per alert_type/stock/date) makes every OTHER cycle
+            # this cycle onward a safe no-op, so calling this once per candidate per cycle
+            # (rather than gating on any one user's own newly_qualifying set) is correct and
+            # avoids coupling this table's semantics to whichever recipient happens to iterate
+            # first in the loop below.
+            for sym, cand in candidates.items():
+                _record_squeeze_alert_outcome(
+                    session, "short_squeeze", sym, float(cand["price"]), cand.get("short_percent_of_float"),
+                )
 
             from .email_service import send_short_squeeze_email
             sent = 0
@@ -2939,6 +2998,18 @@ def check_gamma_unwind_alerts() -> None:
             if not candidates:
                 _record_job_status("check_gamma_unwind_alerts", "ok", time.monotonic() - _t0)
                 return
+
+            # T264-SQUEEZEALERT-PERFORMANCE: split by dominant_side, matching the user's own
+            # framing of the puts-dominant read as the closest equivalent to "option sell" this
+            # app has (see check_gamma_unwind_alerts' own docstring: puts-dominant OI is a
+            # bearish-leaning options-positioning signal, direction-agnostic in the alert
+            # itself but genuinely lopsided per-candidate). Same once-per-(symbol,day)-globally
+            # recording discipline as check_short_squeeze_alerts — see the comment there.
+            for sym, cand in candidates.items():
+                _alert_type = "gamma_unwind_calls" if cand["dominant_side"] == "calls" else "gamma_unwind_puts"
+                _record_squeeze_alert_outcome(
+                    session, _alert_type, sym, float(cand["price"]), cand.get("concentration_pct"),
+                )
 
             from .email_service import send_gamma_unwind_email
             sent = 0
@@ -3224,6 +3295,135 @@ def check_squeeze_watch_reverts() -> None:
     finally:
         try:
             _get_redis().delete(_SQUEEZE_WATCH_LOCK_KEY)
+        except Exception:
+            pass
+
+
+_SQUEEZE_OUTCOME_EVAL_LOCK_KEY = "stockai:lock:evaluate_squeeze_alert_outcomes"
+_SQUEEZE_OUTCOME_EVAL_LOCK_TTL = 3600  # generous — daily job, only needs to prevent true overlap
+_SQUEEZE_OUTCOME_CENSOR_GRACE_DAYS = 10  # matches signal-engine's own _OUTCOME_CENSOR_GRACE_DAYS
+_SQUEEZE_OUTCOME_WIN_HURDLE_PCT = 0.005  # matches signal-engine's own _OUTCOME_WIN_HURDLE_PCT
+_SQUEEZE_OUTCOME_WINDOWS = (5, 10, 20)  # calendar days after entry — matches SignalOutcome's own 5d/10d/20d
+
+
+def _squeeze_outcome_lookup_price(bucket: list[tuple], on_or_after: date) -> tuple[date, float] | None:
+    """First (date, close) bar on/after `on_or_after`, or None — including when the nearest
+    bar is too far past `on_or_after` to be a legitimate fill (a long ingestion gap that later
+    resumes must never be silently treated as a normal, timely price). `bucket` is a
+    (date, close) list already sorted ascending by date. Mirrors signal-engine's own
+    _lookup_outcome_price()'s exact reasoning and grace-window discipline
+    (AUD261-CENSORING-NEVER-FIRED), applied here to this table's own evaluator.
+    """
+    if not bucket:
+        return None
+    dates = [b[0] for b in bucket]
+    idx = bisect.bisect_left(dates, on_or_after)
+    if idx >= len(bucket):
+        return None
+    found_date, found_close = bucket[idx]
+    if (found_date - on_or_after).days > _SQUEEZE_OUTCOME_CENSOR_GRACE_DAYS:
+        return None
+    return found_date, found_close
+
+
+def evaluate_squeeze_alert_outcomes() -> None:
+    """T264-SQUEEZEALERT-PERFORMANCE: fills entry_price + 5d/10d/20d forward returns for every
+    SqueezeAlertOutcome row whose windows haven't closed yet — the counterpart write-job to
+    _record_squeeze_alert_outcome() (which only ever captures the fire-moment snapshot).
+
+    Same T+1-entry discipline as signal-engine's own evaluate_signal_outcomes() (first close
+    STRICTLY AFTER fired_date, avoiding same-day look-ahead bias — the alert email is sent
+    intraday, so a realistic fill is the NEXT trading day, not the fired-date's own close).
+
+    Direction convention for is_correct_Nd, matching SignalOutcome's own established BUY/SELL
+    scoring exactly: short_squeeze and gamma_unwind_calls are BUY-thesis (win = price rose past
+    the cost hurdle); gamma_unwind_puts is the bearish/"sell" thesis (win = price fell past the
+    negative hurdle) — see the model's own docstring for why puts-dominant OI is this app's
+    closest existing concept to "option sell" performance.
+
+    Runs once daily, post-close (see the scheduler registration below) — forward returns don't
+    need to be evaluated more often than once a trading day closes.
+    """
+    try:
+        acquired = _get_redis().set(_SQUEEZE_OUTCOME_EVAL_LOCK_KEY, "1", nx=True, ex=_SQUEEZE_OUTCOME_EVAL_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    _t0 = time.monotonic()
+    try:
+        today = date.today()
+        with SessionLocal() as session:
+            pending = session.execute(
+                select(SqueezeAlertOutcome).where(
+                    (SqueezeAlertOutcome.entry_price.is_(None))
+                    | (SqueezeAlertOutcome.return_20d.is_(None))
+                )
+            ).scalars().all()
+            if not pending:
+                _record_job_status("evaluate_squeeze_alert_outcomes", "ok", time.monotonic() - _t0)
+                return
+
+            stock_ids = {row.stock_id for row in pending}
+            min_fired = min(row.fired_date for row in pending)
+            bulk_prices = session.execute(
+                select(Price.stock_id, Price.ts, Price.close).where(
+                    Price.stock_id.in_(stock_ids),
+                    Price.timeframe == TimeFrame.D1,
+                    Price.ts >= datetime.combine(min_fired, datetime.min.time()),
+                )
+                .order_by(Price.stock_id, Price.ts)
+            ).all()
+            price_map: dict[int, list[tuple]] = {}
+            for stock_id, ts, close in bulk_prices:
+                pr_date = ts.date() if hasattr(ts, "date") else ts
+                price_map.setdefault(stock_id, []).append((pr_date, float(close)))
+
+            evaluated = 0
+            for row in pending:
+                try:
+                    bucket = price_map.get(row.stock_id, [])
+                    if row.entry_price is None:
+                        entry_result = _squeeze_outcome_lookup_price(bucket, row.fired_date + timedelta(days=1))
+                        if entry_result is None:
+                            continue
+                        row.entry_date, row.entry_price = entry_result
+
+                    is_bearish_thesis = row.alert_type == "gamma_unwind_puts"
+                    for window in _SQUEEZE_OUTCOME_WINDOWS:
+                        price_field, ret_field, correct_field = f"price_{window}d", f"return_{window}d", f"is_correct_{window}d"
+                        if getattr(row, price_field) is not None:
+                            continue  # already filled — never re-evaluate a closed window
+                        target = row.entry_date + timedelta(days=window)
+                        if target > today:
+                            continue  # window hasn't closed yet
+                        result = _squeeze_outcome_lookup_price(bucket, target)
+                        if result is None:
+                            continue
+                        _, price = result
+                        ret = (price - row.entry_price) / row.entry_price
+                        is_correct = (
+                            ret < -_SQUEEZE_OUTCOME_WIN_HURDLE_PCT if is_bearish_thesis
+                            else ret > _SQUEEZE_OUTCOME_WIN_HURDLE_PCT
+                        )
+                        setattr(row, price_field, price)
+                        setattr(row, ret_field, ret)
+                        setattr(row, correct_field, is_correct)
+                    row.evaluated_at = datetime.now(timezone.utc)
+                    evaluated += 1
+                except Exception as exc:
+                    log.warning("squeeze_alert_outcome.eval_row_failed", symbol=row.symbol, error=str(exc))
+                    continue
+
+            session.commit()
+            _record_job_status("evaluate_squeeze_alert_outcomes", "ok", time.monotonic() - _t0)
+            log.info("squeeze_alert_outcome.eval_done", pending=len(pending), evaluated=evaluated)
+    except Exception as exc:
+        log.error("squeeze_alert_outcome.eval_failed", error=str(exc), exc_info=True)
+        _record_job_status("evaluate_squeeze_alert_outcomes", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        try:
+            _get_redis().delete(_SQUEEZE_OUTCOME_EVAL_LOCK_KEY)
         except Exception:
             pass
 
@@ -7998,6 +8198,16 @@ def start_scheduler() -> None:
         compute_value_area_levels_daily,
         CronTrigger(hour=18, minute=0, timezone="America/New_York"),
         id="value_area_levels_daily", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── T264-SQUEEZEALERT-PERFORMANCE: squeeze/gamma-unwind alert outcome evaluator — 18:15 ET ──
+    # Pure data computation, no email sent — not gated behind _is_alerting_enabled(), matching
+    # compute_value_area_levels_daily's own precedent above. Runs after that job (and after the
+    # day's own D1 bars have settled) so entry_price/forward-return lookups have fresh data.
+    _scheduler.add_job(
+        evaluate_squeeze_alert_outcomes,
+        CronTrigger(hour=18, minute=15, timezone="America/New_York"),
+        id="squeeze_alert_outcome_eval_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # BUG-LOCALDEV-ALERTS-UNGATED: every 1-minute-interval checker below sends real alert

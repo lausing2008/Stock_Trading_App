@@ -12,7 +12,7 @@ from common.config import get_settings
 from common.logging import get_logger
 from db import (
     Exchange, Market, SessionLocal, Stock, Signal, SignalOutcome, SignalHorizon,
-    Watchlist, WatchlistItem, Ranking, init_db, get_session,
+    SqueezeAlertOutcome, Watchlist, WatchlistItem, Ranking, init_db, get_session,
 )
 
 from ..adapters.registry import set_runtime_key
@@ -545,6 +545,120 @@ def watchlist_performance(
         "max_sector_pct": _DEFAULT_CONFIG.get("max_sector_pct"),
         "watchlist_perf": watchlist_perf,
         "candidates": candidates,
+    }
+
+
+_SQUEEZE_ALERT_TYPE_LABELS = {
+    "short_squeeze": "Short Squeeze (BUY)",
+    "gamma_unwind_calls": "Gamma Unwind — Calls Dominant",
+    "gamma_unwind_puts": "Gamma Unwind — Puts Dominant (\"Option Sell\")",
+}
+
+
+@router.get("/squeeze-alert-performance")
+def squeeze_alert_performance(
+    days_back: int = Query(180, ge=1, le=730),
+    limit: int = Query(50, ge=1, le=500, description="How many most-recent rows to return in recent_alerts"),
+    _: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+):
+    """T264-SQUEEZEALERT-PERFORMANCE: win rate + avg return by alert type, measuring "if I
+    bought at the moment the first email alert fired" — direct user request. Admin-only.
+
+    Same win-rate/avg-return aggregation shape as watchlist_performance() above
+    (func.count/func.sum(case)/func.avg grouped by dimension), applied here to
+    SqueezeAlertOutcome grouped by alert_type instead of by symbol. is_correct_10d is the
+    PRIMARY win-rate metric (10 calendar days — a deliberate middle ground between the
+    short-squeeze/gamma-unwind theses' typical few-day-to-few-week resolution horizon and
+    SignalOutcome's own established 5d/10d/20d window set); 5d/20d are reported alongside for
+    context, not as the headline number.
+
+    gamma_unwind_puts is reported as its own row, not merged with gamma_unwind_calls — the two
+    are OPPOSITE theses (bearish vs. bullish options positioning), so pooling them the way
+    _retro_ev_for()'s own BUG233-RETROEV-SIGNMIX bug fix had to specifically guard against
+    would silently cancel real signal in either direction. See SqueezeAlertOutcome's own
+    docstring for why gamma_unwind_puts is this app's closest existing concept to "option
+    sell" performance.
+    """
+    from datetime import date, timedelta
+
+    cutoff = date.today() - timedelta(days=days_back)
+
+    def _summary_for_window(window: int) -> dict[str, dict]:
+        price_col = getattr(SqueezeAlertOutcome, f"return_{window}d")
+        correct_col = getattr(SqueezeAlertOutcome, f"is_correct_{window}d")
+        rows = session.execute(
+            select(
+                SqueezeAlertOutcome.alert_type,
+                func.count().label("n"),
+                func.sum(case((correct_col.is_(True), 1), else_=0)).label("wins"),
+                func.avg(price_col).label("avg_return"),
+            )
+            .where(
+                SqueezeAlertOutcome.fired_date >= cutoff,
+                correct_col.is_not(None),
+            )
+            .group_by(SqueezeAlertOutcome.alert_type)
+        ).all()
+        return {
+            row.alert_type: {
+                "n": row.n, "wins": row.wins,
+                "win_rate": round(row.wins / row.n, 3) if row.n else None,
+                "avg_return_pct": round(row.avg_return * 100, 2) if row.avg_return is not None else None,
+            }
+            for row in rows
+        }
+
+    by_window = {w: _summary_for_window(w) for w in (5, 10, 20)}
+
+    # Total fired count per type (regardless of whether any window has resolved yet) — lets
+    # the page show "N alerts fired, M outcomes resolved" rather than silently hiding a type
+    # that has fired recently but hasn't had time to reach even its first resolvable window.
+    fired_counts = dict(session.execute(
+        select(SqueezeAlertOutcome.alert_type, func.count())
+        .where(SqueezeAlertOutcome.fired_date >= cutoff)
+        .group_by(SqueezeAlertOutcome.alert_type)
+    ).all())
+
+    by_alert_type = []
+    for alert_type in ("short_squeeze", "gamma_unwind_calls", "gamma_unwind_puts"):
+        by_alert_type.append({
+            "alert_type": alert_type,
+            "label": _SQUEEZE_ALERT_TYPE_LABELS[alert_type],
+            "fired_count": fired_counts.get(alert_type, 0),
+            "window_10d": by_window[10].get(alert_type),
+            "window_5d": by_window[5].get(alert_type),
+            "window_20d": by_window[20].get(alert_type),
+        })
+
+    recent_rows = session.execute(
+        select(SqueezeAlertOutcome, Stock.symbol)
+        .join(Stock, SqueezeAlertOutcome.stock_id == Stock.id)
+        .where(SqueezeAlertOutcome.fired_date >= cutoff)
+        .order_by(desc(SqueezeAlertOutcome.fired_date), desc(SqueezeAlertOutcome.fired_at))
+        .limit(limit)
+    ).all()
+    recent_alerts = [
+        {
+            "alert_type": row.alert_type,
+            "symbol": symbol,
+            "fired_date": row.fired_date.isoformat(),
+            "alert_price": row.alert_price,
+            "qualifying_metric": row.qualifying_metric,
+            "entry_date": row.entry_date.isoformat() if row.entry_date else None,
+            "entry_price": row.entry_price,
+            "return_5d": round(row.return_5d * 100, 2) if row.return_5d is not None else None,
+            "return_10d": round(row.return_10d * 100, 2) if row.return_10d is not None else None,
+            "return_20d": round(row.return_20d * 100, 2) if row.return_20d is not None else None,
+            "is_correct_10d": row.is_correct_10d,
+        }
+        for row, symbol in recent_rows
+    ]
+
+    return {
+        "days_back": days_back,
+        "by_alert_type": by_alert_type,
+        "recent_alerts": recent_alerts,
     }
 
 
