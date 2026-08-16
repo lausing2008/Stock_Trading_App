@@ -858,6 +858,120 @@ def test_sector_position_count_below_cap_does_not_block():
     assert result is None
 
 
+# ── Sector dollar-exposure cap (T232-DL-DUALSCORER-DEBT) ──────────────────────
+# The gap this closes: only the COUNT-based sector cap above existed before — the real
+# engine's DOLLAR-exposure cap (max_sector_pct) had no equivalent at all, since it needs live
+# per-position values the caller previously never sent. Now sent as open_sector_value (a real,
+# already-known aggregate) + max_position_pct (the candidate's own worst-case ceiling, since
+# its exact size isn't known yet at the point DE is called).
+
+def test_sector_dollar_exposure_cap_blocks_when_projected_exposure_exceeds_the_limit():
+    # open_sector_value=20_000 + equity(10_000)*max_position_pct(0.10)=1_000 -> 21_000/10_000
+    # = 210% ... use realistic numbers: equity=100_000, open_sector_value=24_000,
+    # max_position_pct=0.10 -> projected = (24_000 + 10_000) / 100_000 = 0.34 > max_sector_pct=0.25
+    result = hr.check_hard_rejects(**_base_kwargs(
+        equity=100_000.0,
+        cfg={
+            "candidate_sector": "Technology", "open_sector_value": 24_000.0,
+            "max_sector_pct": 0.25, "max_position_pct": 0.10,
+        },
+    ))
+    assert result is not None and "Technology" in result and "exposure" in result.lower()
+
+
+def test_sector_dollar_exposure_cap_does_not_block_when_projected_exposure_is_within_the_limit():
+    # (20_000 + 10_000) / 100_000 = 0.30 -> still under a generous 0.40 cap.
+    result = hr.check_hard_rejects(**_base_kwargs(
+        equity=100_000.0,
+        cfg={
+            "candidate_sector": "Technology", "open_sector_value": 20_000.0,
+            "max_sector_pct": 0.40, "max_position_pct": 0.10,
+        },
+    ))
+    assert result is None
+
+
+def test_sector_dollar_exposure_cap_is_skipped_when_no_candidate_sector_is_given():
+    """An unclassified candidate (candidate_sector is None/empty) must not spuriously trigger
+    this gate — matches the count-based sector gate's own `if candidate_sector and ...` guard."""
+    result = hr.check_hard_rejects(**_base_kwargs(
+        equity=100_000.0,
+        cfg={"candidate_sector": None, "open_sector_value": 99_000.0, "max_sector_pct": 0.01},
+    ))
+    assert result is None
+
+
+def test_sector_dollar_exposure_cap_is_skipped_when_open_sector_value_is_absent():
+    """A caller that never sends open_sector_value (an older caller, or a standalone /decide
+    call with no portfolio context) must fail open — this gate is a no-op without it."""
+    result = hr.check_hard_rejects(**_base_kwargs(
+        equity=100_000.0,
+        cfg={"candidate_sector": "Technology", "max_sector_pct": 0.01},
+    ))
+    assert result is None
+
+
+def test_sector_dollar_exposure_cap_fails_open_when_equity_is_none():
+    """Matches the equity-floor gate's own fail-open convention for missing equity."""
+    result = hr.check_hard_rejects(**_base_kwargs(
+        equity=None,
+        cfg={"candidate_sector": "Technology", "open_sector_value": 999_999.0, "max_sector_pct": 0.01},
+    ))
+    assert result is None
+
+
+# ── Open-risk cap (T232-DL-DUALSCORER-DEBT) ───────────────────────────────────
+# The gap this closes: this gate had NO presence in decision-engine at all before — a
+# real capital-risk protection (aggregate open risk across the whole book) that was silently
+# bypassed on the live production path whenever decision-engine is reachable (the default).
+
+def test_open_risk_cap_blocks_when_projected_risk_exceeds_the_limit():
+    # (8_000 + 100_000*0.02=2_000) / 100_000 = 0.10 > max_open_risk_pct=0.08
+    result = hr.check_hard_rejects(**_base_kwargs(
+        equity=100_000.0,
+        cfg={"open_risk_total": 8_000.0, "max_open_risk_pct": 0.08, "max_loss_per_trade_pct": 0.02},
+    ))
+    assert result is not None and "risk" in result.lower()
+
+
+def test_open_risk_cap_does_not_block_when_projected_risk_is_within_the_limit():
+    # (5_000 + 2_000) / 100_000 = 0.07 -> under the default 0.12 cap.
+    result = hr.check_hard_rejects(**_base_kwargs(
+        equity=100_000.0,
+        cfg={"open_risk_total": 5_000.0, "max_loss_per_trade_pct": 0.02},
+    ))
+    assert result is None
+
+
+def test_open_risk_cap_is_skipped_when_open_risk_total_is_absent():
+    result = hr.check_hard_rejects(**_base_kwargs(
+        equity=100_000.0,
+        cfg={"max_open_risk_pct": 0.001},
+    ))
+    assert result is None
+
+
+def test_open_risk_cap_fails_open_when_equity_is_none():
+    result = hr.check_hard_rejects(**_base_kwargs(
+        equity=None,
+        cfg={"open_risk_total": 999_999.0, "max_open_risk_pct": 0.001},
+    ))
+    assert result is None
+
+
+def test_open_risk_cap_uses_the_real_default_thresholds_when_not_overridden():
+    """Matches _DEFAULT_CONFIG's own max_open_risk_pct=0.12/max_loss_per_trade_pct=0.02 exactly
+    — a caller that sends open_risk_total but omits the two threshold keys must still gate
+    against the SAME real defaults the fallback engine itself uses, not an arbitrarily
+    different one."""
+    # (10_500 + 100_000*0.02=2_000) / 100_000 = 0.125 > the real default 0.12.
+    result = hr.check_hard_rejects(**_base_kwargs(
+        equity=100_000.0,
+        cfg={"open_risk_total": 10_500.0},
+    ))
+    assert result is not None and "risk" in result.lower()
+
+
 # ── Extended-move guard ────────────────────────────────────────────────────────
 # NOTE: like the gap filter above, this gate runs after R:R (and after the gap filter, which
 # also needs last_price omitted here so it doesn't fire first) — stop_price/take_profit move

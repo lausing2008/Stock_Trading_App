@@ -461,14 +461,25 @@ def calibrate_ml_weight(
         }
 
     candidate_acc, candidate_fired, candidate_avg_ret = _accuracy_and_return(val_obs, optimal_weight)
-    baseline_acc, baseline_fired, baseline_avg_ret = _accuracy_and_return(val_obs, 0.5)
+
+    # AUD283-MLWEIGHT-RATCHET: the candidate must beat the ACTUAL LIVE cap (prev_cap), not a
+    # hardcoded neutral 0.5 — comparing against a fixed 0.5 meant a candidate could beat "a
+    # coin-flip blend" while being genuinely WORSE than the cap already in production, and
+    # still get promoted, silently walking this parameter in a bad direction with no
+    # requirement to ever beat where it actually already is. prev_cap is None only on a truly
+    # fresh deploy with no override ever persisted yet — in that one case there is nothing real
+    # to beat, so this falls back to the neutral 0.5 baseline and records that explicitly,
+    # matching the same "no_baseline_params:first_tune_for_symbol" auto-promote convention
+    # ml-prediction's own ev_gate.py already established for the identical situation.
+    baseline_weight = prev_cap if prev_cap is not None else 0.5
+    baseline_acc, baseline_fired, baseline_avg_ret = _accuracy_and_return(val_obs, baseline_weight)
 
     candidate_ev = (candidate_avg_ret or 0.0)
     baseline_ev = (baseline_avg_ret or 0.0)
     validated = (
         candidate_fired >= MIN_VAL_SAMPLES
         and candidate_acc is not None
-        and candidate_ev > baseline_ev
+        and (prev_cap is None or candidate_ev > baseline_ev)
     )
 
     if not validated:
@@ -483,7 +494,7 @@ def calibrate_ml_weight(
         )
         return {
             "applied": False,
-            "reason": "candidate weight did not beat the 0.5 baseline on the validation slice",
+            "reason": f"candidate weight did not beat the live cap ({baseline_weight}) on the validation slice",
             "optimal_weight": optimal_weight,
             "candidate_validation_ev_pct": round(candidate_ev, 2) if candidate_fired else None,
             "baseline_validation_ev_pct": round(baseline_ev, 2) if baseline_fired else None,
@@ -501,7 +512,8 @@ def calibrate_ml_weight(
         train_window=(_train_start, _train_end), validation_window=(_val_start, _val_end),
         train_ev_pct=None, validation_ev_pct=round(candidate_ev, 2),
         baseline_validation_ev_pct=round(baseline_ev, 2), validation_n=candidate_fired,
-        promoted=True, gate_failures=[],
+        promoted=True,
+        gate_failures=["no_baseline_cap:first_tune"] if prev_cap is None else [],
     )
 
     return {

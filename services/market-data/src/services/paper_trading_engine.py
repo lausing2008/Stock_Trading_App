@@ -3157,6 +3157,8 @@ def _call_decision_engine(
     short_signal: str | None = None,
     recent_stop_count: int | None = None,
     market_open_count: int | None = None,
+    open_sector_value: float | None = None,
+    open_risk_total: float | None = None,
 ) -> tuple[bool, str, int, str | None] | None:
     """Call Decision Engine and return (should_enter, verdict, score, blocked_reason).
 
@@ -3210,6 +3212,19 @@ def _call_decision_engine(
                     **( {"recent_win_rate": recent_win_rate} if recent_win_rate is not None else {} ),
                     **( {"open_sector_counts": open_sector_counts, "candidate_sector": candidate_sector}
                         if open_sector_counts is not None else {} ),
+                    # T232-DL-DUALSCORER-DEBT: sector_cap (dollar-exposure, not the count-based
+                    # cap above) and open_risk_cap gate parity. Both real, already-known
+                    # portfolio-wide aggregates from the ALREADY-prefetched open book — the
+                    # candidate's OWN not-yet-computed contribution (stop_distance/shares aren't
+                    # sized until AFTER this call in the real function) is approximated on the
+                    # DE side using max_position_pct/max_loss_per_trade_pct (both already sent
+                    # above) as the same worst-case ceilings the real sizing logic itself caps
+                    # against — never an under-estimate, so this can only be as-or-more
+                    # conservative than the real fallback gate, never less.
+                    **( {"open_sector_value": open_sector_value, "max_sector_pct": cfg.get("max_sector_pct", 0.25)}
+                        if open_sector_value is not None else {} ),
+                    **( {"open_risk_total": open_risk_total, "max_open_risk_pct": cfg.get("max_open_risk_pct", 0.12)}
+                        if open_risk_total is not None else {} ),
                     **( {"consec_losses": consec_losses} if consec_losses > 0 else {} ),
                     # AUD232-042: DE previously had zero K-Score/ranking-engine reference
                     # anywhere in its scoring — a LONG-horizon stock with kscore=25 (below the
@@ -4329,6 +4344,25 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         (st.sector or "unclassified") for _, st in _prefetched_open
     ))
 
+    # T232-DL-DUALSCORER-DEBT: sector_cap/open_risk_cap gate parity — both real, portfolio-
+    # wide aggregates over the ALREADY-prefetched open book (no per-candidate DB query),
+    # threaded through to decision-engine so it can reconstruct the SAME two hard rejects
+    # _scan_for_entries' own fallback path applies below (this exact function, ~line 5140-5150).
+    # Deliberately uses live_prices (not each trade's stale entry_price) to match
+    # _best_price()'s own established convention — the fallback gate's own sector-value sum
+    # already does this identically.
+    _open_sector_values: dict[str, float] = {}
+    for _t, _st in _prefetched_open:
+        _sec_key = _st.sector or "unclassified"
+        _open_sector_values[_sec_key] = _open_sector_values.get(_sec_key, 0.0) + _best_price(_t, live_prices) * _t.shares
+    # open_risk: sum of (price - stop) * shares across every open trade, portfolio-wide —
+    # exactly mirrors the fallback gate's own open_risk sum (line ~5127-5130), computed once
+    # here rather than once per candidate since it doesn't depend on the candidate at all.
+    _open_risk_total = sum(
+        abs(live_prices.get(_t.symbol, _t.entry_price) - _t.current_stop) * _t.shares
+        for _t, _ in _prefetched_open
+    )
+
     # T258-PORTFOLIO-CORRELATION-PREENTRY: bulk-fetch daily closes for the open book ONCE per
     # scan cycle (not once per candidate) — each candidate's own correlation check below reuses
     # this same cache, only adding its own single stock_id's closes on top.
@@ -4902,6 +4936,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             index_return_pct=_idx_ret,                  # T232-DL-DUALSCORER-DEBT: T221 gate parity
             sig_ref_price=_sig_ref_prices.get(stock.id), # T232-DL-DUALSCORER-DEBT: T196 gate parity
             short_signal=_short_signals.get(stock.id),  # T232-DL-DUALSCORER-DEBT: T215/T222-B gate parity
+            open_sector_value=_open_sector_values.get(stock.sector or "unclassified", 0.0),  # T232-DL-DUALSCORER-DEBT: sector_cap (dollar) gate parity
+            open_risk_total=_open_risk_total,           # T232-DL-DUALSCORER-DEBT: open_risk_cap gate parity
         )
         _max_corr = _max_correlation_with_open_positions(
             session, stock.id, _open_stock_ids, _open_closes_cache,

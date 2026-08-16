@@ -2561,6 +2561,14 @@ def gate_backtest(
     Replays _is_conviction_buy with pre-T234 and post-T234 parameters to measure how many
     more signals fired and whether the newly-unblocked signals actually performed well.
 
+    AUD283-GATEBACKTEST-LOOKAHEAD: entry price is T+1 (signal_date + 1 trading day), not the
+    signal's own same-day close — matches every other outcome-evaluation function in this
+    codebase (see entry_price = _nearest_price(row.stock_id, signal_date + timedelta(days=1))
+    elsewhere in this file). Fixed 2026-08-16; this endpoint has no live caller/promote step
+    (confirmed via repo-wide grep — a pure read-only research tool), so the fix carried zero
+    production risk, but the reported win-rate/return numbers were previously silently
+    overstated by the exact same bias SE-F2 already fixed everywhere else.
+
     Gate changes evaluated (all already live in production):
       1. MACD condition: pre-T234 = (hist > 0 AND rising) OR crossover
                          post-T234 = hist > 0 OR rising OR crossover
@@ -2717,10 +2725,18 @@ def gate_backtest(
     for row in rows:
         r = row.reasons or {}
         sig_date = row.ts.date() if hasattr(row.ts, "date") else row.ts
-        exit_date = sig_date + timedelta(days=hold_days)
+        # AUD283-GATEBACKTEST-LOOKAHEAD: entry must be T+1 (signal_date + 1), never the
+        # same-day close — the exact SE-F2 look-ahead bias already fixed everywhere else in
+        # this codebase (see this file's own entry_price = _nearest_price(row.stock_id,
+        # signal_date + timedelta(days=1)) convention at lines 1104/1161/2295). A live trader
+        # acting on a signal generated during/after today's close can only enter the NEXT
+        # trading day — scoring against today's own close would silently overstate every
+        # reported win rate/return in this retrospective.
+        entry_date = sig_date + timedelta(days=1)
+        exit_date = entry_date + timedelta(days=hold_days)
         horizon = row.horizon.value if hasattr(row.horizon, "value") else str(row.horizon)
 
-        entry = _price_at(row.stock_id, sig_date)
+        entry = _price_at(row.stock_id, entry_date)
         exit_ = _price_at(row.stock_id, exit_date)
         ret = ((exit_ - entry) / entry) if (entry and exit_ and entry > 0) else None
 

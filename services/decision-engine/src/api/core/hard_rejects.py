@@ -451,6 +451,38 @@ def check_hard_rejects(
                 f"{sector_count}/{max_sector_positions} open positions"
             )
 
+    # T232-DL-DUALSCORER-DEBT: the dollar-exposure sector cap and open-risk cap this comment
+    # block used to flag as unreachable ("needs live per-position prices this endpoint never
+    # receives") — closed by having the caller (paper_trading_engine._call_decision_engine)
+    # pre-compute both real portfolio-wide aggregates from its own already-prefetched open
+    # book and send them here directly, with the candidate's own not-yet-sized contribution
+    # approximated using max_position_pct/max_loss_per_trade_pct (both already sent above) as
+    # the same worst-case ceilings the real sizing logic itself caps against — this can only be
+    # as-or-more conservative than the real fallback gate _scan_for_entries applies later in
+    # the same cycle, never less, so a candidate this rejects would also have been rejected (or
+    # sized smaller) by the real engine, never the reverse.
+    open_sector_value = cfg.get("open_sector_value")
+    if candidate_sector and open_sector_value is not None and equity and equity > 0:
+        max_sector_pct = float(cfg.get("max_sector_pct", 0.25))
+        max_position_pct = float(cfg.get("max_position_pct", 0.10))
+        projected_sector_pct = (float(open_sector_value) + equity * max_position_pct) / equity
+        if projected_sector_pct > max_sector_pct:
+            return (
+                f"Sector exposure cap reached: {candidate_sector} would reach "
+                f"~{projected_sector_pct * 100:.1f}%/{max_sector_pct * 100:.0f}% of equity"
+            )
+
+    open_risk_total = cfg.get("open_risk_total")
+    if open_risk_total is not None and equity and equity > 0:
+        max_open_risk_pct = float(cfg.get("max_open_risk_pct", 0.12))
+        max_loss_per_trade_pct = float(cfg.get("max_loss_per_trade_pct", 0.02))
+        projected_open_risk_pct = (float(open_risk_total) + equity * max_loss_per_trade_pct) / equity
+        if projected_open_risk_pct > max_open_risk_pct:
+            return (
+                f"Open-risk cap reached: portfolio would reach "
+                f"~{projected_open_risk_pct * 100:.1f}%/{max_open_risk_pct * 100:.0f}% aggregate risk"
+            )
+
     # T185: Time-of-day gate — human traders avoid the first 30 min (price discovery, wide spreads)
     # and last 15 min (closing auction games) of the market session.
     try:
