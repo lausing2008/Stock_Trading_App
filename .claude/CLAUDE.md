@@ -11666,3 +11666,389 @@ It covers grounding-before-dispatch, the required subagent prompt shape, indepen
 of claims before recording them, the tracker-entry format (including the TS2590 union-type
 compiler limit hit on a large ITEMS array), and CLAUDE.md documentation conventions. Distinct
 from `docs/AUDIT_FINDINGS_TEMPLATE.md`, which is a lighter checklist for reviewing a recent diff.
+
+---
+
+## Feature Reference: T232-DL-DUALSCORER-DEBT (cont'd) + AUD283 — 3 More Verified "Next
+## Improvements" Fixes (2026-08-15)
+
+**Trigger**: a plain "next improvements" request — surveyed `improvements.tsx` for genuine,
+still-open candidates via a research agent, then personally re-verified the top candidates
+directly against current code AND live production before proposing anything to the user. Two
+candidates the agent's first pass flagged turned out to be false leads on closer inspection: a
+claimed morning-digest error-isolation gap was already fixed, and a feared "the EC2 image is
+stale" concern was unfounded (SA-33/`tune_sell_pillars`/`calibration.py` all confirmed present
+and current on the live container). User authorized all 3 real, verified candidates as a batch
+("fix them all with your best").
+
+### 1. AUD283-GATEBACKTEST-LOOKAHEAD — `gate_backtest()`'s same-day-close look-ahead bias
+
+**Symptom**: none live — confirmed via repo-wide grep that `gate_backtest()` (signal-engine,
+`services/signal-engine/src/api/outcomes.py`) has zero live callers, a pure read-only research
+endpoint per its own docstring. Found by inspection, not a bug report.
+
+**Root cause**: the per-signal loop computed `entry = _price_at(row.stock_id, sig_date)` — the
+signal's own calendar date — instead of T+1. This is the exact SE-F2 same-day-close look-ahead
+bias already fixed everywhere else in this codebase (a live trader acting on a signal generated
+during/after today's close can only enter the NEXT trading day). Every OTHER entry-price lookup
+in this same file already used `signal_date + timedelta(days=1)` for exactly this reason — this
+one function never received the same treatment.
+
+**Fix applied**: `entry_date = sig_date + timedelta(days=1)`; `exit_date = entry_date +
+timedelta(days=hold_days)` — matching this file's own established convention used elsewhere in
+the same file. `_price_at()`'s own forward-only (`d >= target`) nearest-future-price semantics
+are unchanged.
+
+**Tests**: `services/signal-engine/tests/test_gate_backtest_lookahead.py` (4 cases) — the date
+logic and `_price_at()` lookup are extracted via source-text and exercised against a real,
+hand-built price series (not a hand-copied reimplementation), since `gate_backtest()` itself is
+250+ lines of DB query construction not easily isolated as a whole. Adversarially verified 2
+sabotage/revert cycles: reverting `entry_date` to the bare `sig_date` (caught by the dedicated
+date-logic test), and removing `_price_at()`'s forward-only guard (`d >= target`) — a dedicated
+behavioral test with a real 2-price fixture (a gap day between them) caught this via a wrong-
+price assertion (100.0 instead of the correct forward-nearest 105.0), confirming the test
+exercises real semantic drift, not just literal source text.
+
+### 2. AUD283-MLWEIGHT-RATCHET — `calibrate_ml_weight()` validated against a hardcoded 0.5, not the real live cap
+
+**Symptom**: none live — found by inspection while reviewing signal-engine's calibration
+mechanisms for validation-gate consistency with their siblings.
+
+**Root cause**: `calibrate_ml_weight()` (`services/signal-engine/src/api/calibration.py`)
+already fetched `prev_cap` (the real, currently-live `ml_weight_global_cap`) at the top of the
+function — but used it ONLY for `TuneHistory.old_value` bookkeeping. The actual validation gate
+compared the candidate weight's held-out-slice EV against a fixed `0.0` (an implicit "beat a
+coin flip" bar), with zero reference to `prev_cap`. A candidate genuinely WORSE than the live
+cap, but better than a neutral blend, could still walk this parameter in a bad direction with no
+requirement to ever beat where it actually already is — silently repeatable every time this
+mechanism runs (this app's ML-fusion-weight tuning has no fixed schedule, so this could recur
+indefinitely without detection).
+
+**Fix applied**: `baseline_weight = prev_cap if prev_cap is not None else 0.5` (neutral fallback
+ONLY on a true first-ever tune, when there's no real cap to beat). Both the candidate weight AND
+`baseline_weight` are scored on the SAME held-out validation slice via `_accuracy_and_return()`.
+`validated` now requires `candidate_ev > baseline_ev` — strict, an exact tie is correctly
+rejected — whenever `prev_cap` exists; the `prev_cap is None` case auto-promotes against the
+neutral baseline and records an explicit `"no_baseline_cap:first_tune"` gate-failure marker
+(matching ml-prediction's own `ev_gate.py` `"no_baseline_params:first_tune_for_symbol"`
+convention for the identical situation) rather than silently passing with no annotation.
+
+**Tests**: `services/signal-engine/tests/test_calibrate_ml_weight_ratchet.py` (6 cases) — the
+function's computational core is extracted via source-text `exec()` with every side-effecting
+dependency (`set_ml_weight_global_cap`, `_record_tune_history`, `log`) injected as a fake, run
+against real synthetic `Signal`/`Price` rows spanning a real chronological 70/30 train/
+validation split.
+
+**A real chronological-split discovery made during test-writing**: the function's own 70/30
+split is computed over ALL observations pooled together (calibration + validation rows combined
+BEFORE splitting), not independently per slice — "50 calibration rows + 20 validation rows"
+does NOT reliably produce exactly 20 validation rows in the final split; spillover across the
+70% boundary can shift the count in either direction. Several test assertions were loosened from
+exact hand-computed literals to real inequality checks once this was confirmed, rather than
+chasing an exact percentage the real split math doesn't actually guarantee.
+
+**A self-caught "still passes after sabotage" trap, per this repo's own testing discipline**:
+adversarial sabotage cycle 2 (removing the `prev_cap is None or` bypass from the `validated`
+condition) initially produced a FALSE "still passes" result on the auto-promote test — the
+original fixture's candidate EV happened to coincidentally still beat the neutral-0.5 fallback's
+own EV even under the stricter, un-bypassed comparison. Recognized this as the exact red-flag
+pattern this repo's discipline explicitly calls out (investigate, don't shrug), and re-engineered
+the fixture so the neutral-0.5 fallback deliberately realizes a BETTER return (+10%) than the
+candidate's own optimal weight (+9.76%) — re-run against the sabotage then correctly failed,
+proving the bypass itself (not a coincidental win) drives promotion in that case. Both sabotages
+reverted and confirmed byte-identical via md5 before moving on.
+
+### 3. AUD283-DUALSCORER-SECTORCAP-OPENRISK — sector-exposure cap + open-risk cap ported into decision-engine
+
+**Symptom**: none live directly, but this closes a real gap in the T232-DL-DUALSCORER-DEBT
+series — `decision_engine_mode` defaults to `"primary"` in production, meaning any gate NOT
+ported to decision-engine is silently bypassed on the live trading path whenever decision-engine
+is reachable (the normal case). decision-engine's own `hard_rejects.py` already carried an
+explicit comment naming this exact gap as unclosed before this fix.
+
+**Root cause**: `_scan_for_entries()`'s own fallback gate (`paper_trading_engine.py`) already
+enforces both the real dollar-exposure sector cap (`max_sector_pct` against a symbol's existing
+open-position dollar exposure) and the aggregate open-risk cap (`(price-stop)*shares` summed
+across every open trade, vs `max_open_risk_pct`) — but decision-engine had no equivalent of
+either. The blocker was structural, not an oversight: decision-engine has no live per-position
+price/stop data of its own, and the candidate's OWN not-yet-sized contribution (stop_distance/
+shares) isn't computed until AFTER the decision-engine call in the real function — so a naive
+port would need either a risky reorder of a large, delicate function, or sending the whole
+open-position list across the service boundary.
+
+**Fix applied — the "worst-case upper-bound approximation" pattern**: both real, portfolio-wide
+aggregates (`_open_sector_values` keyed by sector, `_open_risk_total`) are computed ONCE per scan
+cycle from the ALREADY-prefetched open book (no new per-candidate DB query, matching the
+fallback gate's own established AUD19-PERF2 no-N+1-query discipline) and threaded through
+`_call_decision_engine()`'s `config_overrides` as `open_sector_value`/`open_risk_total`. The
+candidate's own not-yet-sized contribution is approximated on the decision-engine side using
+`max_position_pct`/`max_loss_per_trade_pct` (both already sent) — the SAME worst-case ceilings
+the real sizing logic itself caps against (confirmed at `paper_trading_engine.py`'s own PA-C1
+max-dollar-loss-per-trade cap) — so the approximation can only ever be as-or-more conservative
+than the real fallback gate, never less permissive. `hard_rejects.py` gained two new gates
+reading these fields directly, both fail-open when `equity` or the aggregate itself is absent.
+
+**Tests**: 10 new cases in `services/decision-engine/tests/test_hard_rejects.py` (220 total, up
+from 210) covering both gates' block/pass/skip/fail-open behavior and the real default
+thresholds (`max_sector_pct=0.25`, `max_open_risk_pct=0.12`). New
+`services/market-data/tests/test_sector_open_risk_cap_config_wiring.py` (8 cases, source-text
+extraction — `paper_trading_engine.py` can't be imported directly in this test environment)
+confirms both new `config_overrides` keys, their conditional-inclusion guards, the function
+signature, that the real call site passes THIS candidate's own sector (not a different one) and
+the portfolio-wide open-risk total, and that both aggregates are built once per cycle from the
+prefetched open book rather than re-derived per candidate or via a new DB query.
+
+**Adversarially verified 5 sabotage/revert cycles across both files, all caught**: (1)
+`hard_rejects.py` — disabling the sector-cap comparison (`if False:`) — caught by exactly 1 of
+10 new tests; (2) `hard_rejects.py` — disabling the open-risk-cap gate entirely — caught by
+exactly 2 of 10 new tests; (3) `paper_trading_engine.py` — removing both new `config_overrides`
+entries — caught by 3 of 8 wiring tests (the signature/call-site/build-once tests correctly
+stayed green, since they don't depend on this dict); (4) `paper_trading_engine.py` — swapping the
+call site's per-candidate sector lookup for a sum across ALL sectors — caught by 2 of 8 wiring
+tests; (5) `paper_trading_engine.py` — reintroducing a per-cycle DB query in place of the
+prefetched-open-book derivation — caught by the dedicated no-new-query test. All 5 sabotages
+reverted and confirmed byte-identical via md5 before moving on.
+
+**Verification**: full 1,429-test market-data suite and 220-test decision-engine suite green;
+pyflakes clean on all touched files (confirmed via `git stash` that every pre-existing warning
+predates this change — line numbers only shifted from the new code added earlier in the same
+files). Committed `75c362b`, deployed to EC2 (all 4 touched containers restarted clean, `/decide`
+functionally exercised against a real symbol post-deploy, `_scan_for_entries()` directly invoked
+against real production data with a rollback — zero writes, confirming the new computation runs
+cleanly end-to-end).
+
+**Tracker**: `improvements.tsx` Tier 284 / ids `AUD283-GATEBACKTEST-LOOKAHEAD`,
+`AUD283-MLWEIGHT-RATCHET`, `AUD283-DUALSCORER-SECTORCAP-OPENRISK`.
+
+---
+
+## Recurring Doc Review: 2 Stale Audit/Roadmap Documents — One Held Up, One Didn't (2026-08-16)
+
+**Trigger**: user asked to review `docs/AUDIT_SHORT_SQUEEZE_2026-07-25.md` and
+`docs/STRATEGIC_IMPROVEMENT_ROADMAP_2026-07-25.md` (both 3 weeks old at review time) for
+trustworthiness before implementing anything — explicit instruction that the roadmap doc "is
+only for reference and supplement, not a force to do."
+
+**Method**: 2 parallel research agents, each independently verifying one document's claims
+against the actual CURRENT codebase (never trusting the doc's own line numbers or "✅ Verified"
+annotations at face value) — matching this repo's own standing discipline that a stale tracker/
+audit entry can be wrong in EITHER direction (claiming something broken that's fixed, or
+claiming something fine that's broken).
+
+### `AUDIT_SHORT_SQUEEZE_2026-07-25.md` — held up completely
+
+All 6 issues (fundamentals cache-miss counter unmetriced, 30-day stale-short-interest cutoff too
+generous, 0-DTE OI staleness only inline text, `check_squeeze_watch_reverts()` had no cache-miss
+counter at all, the backtest endpoint couldn't distinguish two different zero-candidate
+diagnostic states) and both cheap performance suggestions (MGET pre-warming, calibration bucket
+caching) were confirmed STILL genuinely open against current code — zero overlap with anything
+shipped in the 3 weeks since (T264-SQUEEZEALERT-PERFORMANCE/PREBREAKOUT/RECOMMENDATIONS-BATCH,
+all shipped 2026-08-14/15, only extended existing mechanisms to more alert types, never touched
+any of these 6 issues). Appendix A's own line-number citations had drifted moderately (one
+function moved ~97 lines from new code inserted ahead of it) but every substantive claim held.
+**All 6 issues + both performance items were implemented and deployed same-day** — see the
+"Feature Reference: AUD-SQUEEZE250725-BATCH" section immediately below for the full writeup.
+
+### `STRATEGIC_IMPROVEMENT_ROADMAP_2026-07-25.md` — did NOT hold up, correctly set aside
+
+**Foundational problem**: the roadmap's headline "measured performance" numbers (SWING BUY win
+rate ~27.5%, SELL ~61.7%) traced to a single stale code comment in `signals.py` (dated
+2026-06-18, the "SA-31" comment), not a live query — and this session's own Tier 261 audit
+(2026-08-05, 11 days AFTER this roadmap's own date) found the app's actual accuracy-reporting
+layer was systematically biased in the loss-hiding direction, then pulled REAL production ground
+truth showing **SWING BUY at 37.9%** — 10+ points higher than what the roadmap was optimizing
+against.
+
+**At least 4 of its 8 core proposals already existed**, built either before or shortly after the
+roadmap's own date, none cited: QW-2 (Entry Timing Score) — a more surgical version already
+shipped as `T232-SIG-ENTRYTIMING` TWO DAYS BEFORE the roadmap's own date, then had a real math
+bug fixed in it two days after (`BUG-SA33-UNREACHABLETHRESHOLD`); QW-3 (Sector Momentum Filter)
+— already live (`SA-16`, `signals.py:2251-2265`); QW-4 (Volume Confirmation) — already live
+(`SA-32` VOLUME pillar); MT-4 (Options Flow Integration) — already feeding main signal fusion
+directly, not squeeze-alerts-only as the roadmap claimed. The roadmap is also self-contradicting
+internally: Part 1.2's own feature table lists per-symbol rolling accuracy as an EXISTING ML
+feature, while Part 2.3 lists "no per-symbol model performance tracking" as a gap.
+
+**Most importantly**: MT-1 and MT-2 propose calibrating NEW mechanisms against
+`SignalOutcome`/`gate_harness` data that Tiers 262-263 (same 2026-08-05 series) proved is
+actively corrupted — unblended scale-out writeback recording winners as losses, and a weekly
+weight-mutation job (`calibrate_conviction_weights`) with zero validation gate. Building on top
+of that foundation before fixing it would repeat exactly the mistake the audit series exists to
+prevent.
+
+**Disposition**: kept as a reference document, per the user's own framing — nothing from it was
+implemented. If BUY-signal-quality work is revisited, the correct starting point is the verified
+`by_direction` numbers and the already-fixed `SignalOutcome` writeback, not this document's
+specific numbers or mechanisms.
+
+---
+
+## Feature Reference: AUD-SQUEEZE250725-BATCH — 6 Squeeze-Audit Issues + 2 Performance Items (2026-08-16)
+
+**Closes all 6 real issues and both cheap performance suggestions** confirmed still open by the
+doc review above. All 7 fixes landed in one batch across `services/market-data/src/services/
+scheduler.py`, `email_service.py`, and `src/api/admin.py`.
+
+### Issues 1 & 5 — fundamentals-cache-miss counters were log-only, not admin-visible
+
+**Symptom**: none live — an observability gap, not a functional bug, per the audit's own framing.
+`check_short_squeeze_alerts()` already counted `_fundamentals_cache_misses` (a symbol whose
+`stockai:fundamentals:v2:{symbol}` cache entry expired between page-views) and logged it, but
+never exposed it anywhere admin-visible — a sustained spike (Redis degradation, the
+fundamentals-refresh job falling behind) was only visible by reading logs. `check_squeeze_watch_
+reverts()` had NO equivalent counter at all.
+
+**Fix applied**: two new rolling-48h Redis counters (`_SQUEEZE_FUND_CACHE_MISS_COUNTER_KEY`,
+`_SQUEEZE_WATCH_FUND_CACHE_MISS_COUNTER_KEY`), reusing the EXISTING `_incr_rolling_counter()`
+mechanism already proven for AUD266's conviction/fired-ratio pair — no new infrastructure
+invented. Surfaced via a new `"gauge"` `_DQ_CHECKS` source type (a genuinely different check
+shape from the existing `"job_status"`/`"ratio"` types — purely informational, always
+`ok: True`, NEVER appended to the `failing` list, since a nonzero miss count is expected
+background noise, not a functional failure) — auto-visible on the admin health page via the
+EXISTING generic `/dq-status` endpoint (which just reads every `dq_check:*` Redis key) with zero
+new frontend code needed.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-redis-1 redis-cli get 'dq_check:squeeze_fund_cache_misses_48h'
+docker exec stockai-redis-1 redis-cli get 'dq_check:squeeze_watch_fund_cache_misses_48h'
+# Both should show {"ok": true, "count_48h": N, ...} — ok is ALWAYS true by design, only
+# count_48h should ever be watched for a sustained spike.
+```
+
+### Issue 2 — 30-day short-interest staleness cutoff had no intermediate warning
+
+**Root cause**: exchange short interest settles ~2x/month with a 1-2 week reporting lag, so a
+30-day-old reading can legitimately be up to ~6 weeks stale — but a reading 2 days old and one
+28 days old rendered IDENTICALLY in the alert email (just the bare age in days). The audit
+offered two options: tighten the hard reject to 21 days, or add staleness tiers. A hard tighten
+would silently drop currently-firing candidates 21-30 days old with no visibility into what
+changed — chose the tier approach instead.
+
+**Fix applied**: new shared `_short_interest_age_str()` helper (`email_service.py`) — replaces
+TWO independently-duplicated copies of the same age-string logic (`send_short_squeeze_email()`
+and `send_prebreakout_email()`) with one implementation. Renders "moderately stale" for 16-21
+days, "very stale" for 22+ days, no tier below 15 days. The 30-day HARD reject in both
+`check_short_squeeze_alerts()`/`check_prebreakout_alerts()` is UNCHANGED — this is a rendering
+addition, not a gating change.
+
+### Issue 4 — 0-DTE gamma-unwind staleness note was inline text only
+
+**Root cause**: open interest is exchange-published once per day, as of the PRIOR session's
+close — for a `days_to_expiry=0` row (expires TODAY), the OI figure is up to a full trading
+session stale right when it matters most. The email already said so in prose
+("expires TODAY (OI as of yesterday's close)") but as plain inline text, easy to miss scanning
+quickly, unlike the existing `days_to_cover_critical` red-border visual treatment.
+
+**Fix applied**: 0-DTE rows now get an amber row border (`rgba(217,119,6,0.35)`) plus a `⚠️`
+marker appended to the existing text — matching the established `is_critical`/`row_border`
+pattern from `send_short_squeeze_email()`, just amber (a staleness NOTE) rather than red (a risk
+escalation).
+
+### Issue 6 — backtest endpoint couldn't distinguish two different zero-candidate states
+
+**Root cause**: `squeeze_alert_backtest()` (`admin.py`) returns both `n_snapshots_qualifying` and
+`n_candidate_days`, but when both were 0 there was no way to tell "no stock ever cleared the
+short-float floor" from "stocks cleared the floor but never had a qualifying intraday move" —
+two genuinely different diagnostic signals for someone debugging why the backtest returned
+nothing.
+
+**Fix applied**: a new `reason` field — `"no_qualifying_snapshots"` for the first zero-case
+(the early-return branch), `"no_qualifying_moves"` for the second (`candidate_days` empty after
+real snapshots existed), `None` in the normal case. Live-verified against real production data:
+`GET /admin/squeeze-alert-backtest?weeks_back=52` correctly returned `reason: None` with
+`n_snapshots_qualifying: 93, n_candidate_days: 131` (real, non-zero data).
+
+### Perf 4.1 — N individual Redis GETs collapsed to one MGET
+
+**Root cause**: `check_short_squeeze_alerts()`'s candidate-building loop did one `_rc.get(f"stockai:
+fundamentals:v2:{sym}")` per symbol inside the loop — for a typical N-symbol `stockai:live_prices`
+list, N round-trips where 1 would do.
+
+**Fix applied**: a new price-only pre-pass over `_live_raw` collects symbols that already clear
+the cheap filters (presence, market-hours, intraday-move threshold) into
+`_pricefilter_qualifying`, then ONE `_rc.mget()` call pre-warms every qualifying symbol's
+fundamentals blob into `_fund_by_symbol` before the main loop runs — the main loop's own filter
+conditions are BYTE-IDENTICAL duplicates of the pre-pass's (guarded by a dedicated test
+confirming both copies reference the same `_SQUEEZE_MIN_INTRADAY_MOVE_PCT` constant, not two
+literals that could silently drift apart), and now reads from the pre-warmed dict instead of a
+fresh GET. Fails open to an empty dict on any MGET error.
+
+### Perf 4.3 — calibration buckets re-queried the DB every 1-minute cycle
+
+**Root cause**: `_build_squeeze_family_calibration()`/`_build_prebreakout_calibration()` ran a
+fresh DB query every time `check_short_squeeze_alerts()`/`check_gamma_unwind_alerts()`/
+`check_prebreakout_alerts()` fired — but the underlying outcomes only actually resolve once
+daily (`evaluate_squeeze_alert_outcomes()`/`evaluate_prebreakout_alert_outcomes()`), so a
+1-minute-interval job was re-running the identical query ~1,440 times a day for no new data.
+
+**Fix applied**: new `_cached_calibration_buckets(cache_key, builder)` wrapper — a 5-minute
+Redis cache (fail-open to a fresh DB call on ANY Redis error, so a cache outage never makes
+calibration silently unavailable), wrapping all 4 real calibration-builder call sites
+(`short_squeeze`, `gamma_unwind_calls`, `gamma_unwind_puts`, `prebreakout`), each with its OWN
+distinct Redis cache key (`stockai:cal:squeeze_family:{alert_type}` / `stockai:cal:prebreakout`)
+— sharing one key across any two would silently serve one alert type's calibration data to a
+different alert type.
+
+**Live-verified end-to-end against real production data** (not just tests): directly invoked
+`_cached_calibration_buckets()` twice in a row inside the running container — the first call
+computed fresh, the second call's builder was replaced with one that raises if ever called, and
+it correctly did NOT raise, proving the cache hit served from Redis without invoking the
+builder. Confirmed the real Redis key (`stockai:cal:squeeze_family:short_squeeze`) was written
+with a real ~300s TTL.
+
+### Tests, adversarial verification, and a real collateral-regression lesson
+
+New `services/market-data/tests/test_squeeze_audit_20260725_fixes.py` (32 cases) covers all 7
+fixes directly where possible (`_short_interest_age_str()` and `send_gamma_unwind_email()` are
+both directly importable — tested with real behavioral assertions, not just source-text checks)
+and via source-text extraction where `scheduler.py` functions can't be imported in this test
+environment.
+
+**A genuine collateral-regression lesson, not a shortcut taken**: refactoring 3 duplicated call
+sites (the shared staleness helper, the MGET restructuring, the calibration cache wrapper) broke
+5 PRE-EXISTING tests across 3 other test files whose literal source-text assertions no longer
+matched the legitimately-refactored code shape (`test_squeeze_family_recommendations_wiring.py`
+x3, `test_prebreakout_confidence_wiring.py` x1, `test_short_squeeze_alert.py` x1) — all 5 were
+updated to assert against the NEW correct code shape (helper delegation, cache-wrapper presence,
+build-before-loop ordering) rather than the old literal strings, each confirmed to still test
+the same underlying invariant the original author intended, not just patched to pass.
+
+**Adversarially verified 4 sabotage/revert cycles, all caught**: (1) collapsing the
+moderately-stale tier boundary in `_short_interest_age_str()` — caught by exactly the 2
+dedicated boundary tests; (2) making the `"gauge"` DQ-check dispatch branch report a real
+pass/fail instead of always `ok: True` — caught by the dedicated dispatch test; (3) making
+`squeeze_alert_backtest()`'s `reason` always `None` regardless of `candidate_days` — caught by 2
+of 3 dedicated reason tests (the third, testing the OTHER zero-case, correctly stayed green
+since it's a different code path); (4) diverging the MGET pre-warm pass's intraday-move
+threshold from the main loop's own copy — caught by a dedicated duplicated-filter-consistency
+test added SPECIFICALLY because the two-pass restructuring introduces exactly this drift risk
+(not an afterthought — written because the refactor itself created a new class of possible bug).
+All 4 sabotages reverted and confirmed byte-identical via md5 before moving on.
+
+**Verification**: full 1,461-test market-data suite green (up from 1,429); pyflakes clean on all
+3 touched files (confirmed via `git stash` that every pre-existing warning predates this
+change). Committed `278e836`, deployed to EC2 (`market-data` restarted clean, `run_data_quality_
+checks()` directly invoked post-deploy confirming both new gauge entries populate real Redis
+keys, `check_short_squeeze_alerts()` directly invoked with no exception, the calibration cache
+wrapper live-verified end-to-end as described above, the backtest endpoint live-verified against
+real production data). Frontend rebuilt and redeployed for the tracker update, confirmed live at
+`lausing.com/improvements`.
+
+**Tracker**: `improvements.tsx` Tier 285 / id `AUD-SQUEEZE250725-BATCH`.
+
+**What to check if any of these 7 look wrong**:
+```bash
+# Confirm all 7 fixes are present in the live container:
+docker exec stockai-market-data-1 grep -n 'def _short_interest_age_str\|rgba(217,119,6,0.35)\|no_qualifying_snapshots\|no_qualifying_moves\|_SQUEEZE_FUND_CACHE_MISS_COUNTER_KEY\|_SQUEEZE_WATCH_FUND_CACHE_MISS_COUNTER_KEY\|_rc.mget(_fund_mget_keys)\|def _cached_calibration_buckets' /app/src/services/email_service.py /app/src/services/scheduler.py /app/src/api/admin.py
+
+# Check current cache-miss counts:
+docker exec stockai-redis-1 redis-cli get 'dq_check:squeeze_fund_cache_misses_48h'
+docker exec stockai-redis-1 redis-cli get 'dq_check:squeeze_watch_fund_cache_misses_48h'
+
+# Check calibration cache TTLs (should all be <=300s, never missing during active market hours):
+docker exec stockai-redis-1 redis-cli ttl 'stockai:cal:squeeze_family:short_squeeze'
+docker exec stockai-redis-1 redis-cli ttl 'stockai:cal:squeeze_family:gamma_unwind_calls'
+docker exec stockai-redis-1 redis-cli ttl 'stockai:cal:squeeze_family:gamma_unwind_puts'
+docker exec stockai-redis-1 redis-cli ttl 'stockai:cal:prebreakout'
+```
