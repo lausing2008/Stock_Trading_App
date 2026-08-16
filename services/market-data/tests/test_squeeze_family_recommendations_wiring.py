@@ -53,19 +53,26 @@ def test_prebreakout_candidate_dict_carries_short_interest_date():
 
 def test_send_prebreakout_email_renders_short_interest_age():
     """Mirrors send_short_squeeze_email()'s own si_str age-rendering exactly — a recipient
-    shouldn't see one alert type disclose staleness and the other stay silent about it."""
+    shouldn't see one alert type disclose staleness and the other stay silent about it.
+    AUD-SQUEEZE250725-ISSUE2 extracted this into a shared _short_interest_age_str() helper —
+    both call sites must delegate to it rather than re-inlining the age math."""
     start = _email_source.index("def send_prebreakout_email(")
     end = _email_source.index("\n\ndef send_squeeze_watch_revert_email(", start)
     body = _email_source[start:end]
     assert 'si_date = c.get("short_interest_date")' in body
-    assert "_si_age_days = (date.today() - date.fromisoformat(si_date)).days" in body
+    assert "si_str = _short_interest_age_str(si_date)" in body
 
 
 # ── 2. Calibration wiring in check_short_squeeze_alerts() / check_gamma_unwind_alerts() ─────
 
 def test_short_squeeze_calibration_buckets_are_built_once_before_the_candidate_loop():
+    """AUD-SQUEEZE250725-PERF4.3 wrapped the raw builder call in _cached_calibration_buckets()
+    (a 5-min Redis cache) — the underlying _build_squeeze_family_calibration("short_squeeze")
+    call must still happen, just inside a lambda passed to the cache wrapper, and still before
+    the candidate loop."""
     body = _function_body("check_short_squeeze_alerts", "\n\ndef check_prebreakout_alerts(")
-    cal_build_idx = body.index('_sq_cal_buckets = _build_squeeze_family_calibration(session, "short_squeeze")')
+    cal_build_idx = body.index("_sq_cal_buckets = _cached_calibration_buckets(")
+    assert '_build_squeeze_family_calibration(session, "short_squeeze")' in body
     candidates_dict_idx = body.index("candidates: dict[str, dict] = {}")
     assert cal_build_idx < candidates_dict_idx
 
@@ -79,10 +86,14 @@ def test_short_squeeze_candidate_dict_carries_calibration_fields():
 def test_gamma_unwind_calibration_is_built_for_both_calls_and_puts_independently():
     """Both sides must be built as two SEPARATE calls (never sharing one pooled bucket dict) —
     the exact same never-pool-calls-with-puts discipline check_gamma_unwind_alerts() itself
-    already applies when splitting SqueezeAlertOutcome rows by dominant_side."""
+    already applies when splitting SqueezeAlertOutcome rows by dominant_side. Each side is now
+    wrapped in its own _cached_calibration_buckets() call (AUD-SQUEEZE250725-PERF4.3) with its
+    own distinct Redis cache key, still delegating to two separate builder calls underneath."""
     body = _function_body("check_gamma_unwind_alerts", "\n\ndef check_squeeze_watch_reverts(")
-    assert '"gamma_unwind_calls": _build_squeeze_family_calibration(session, "gamma_unwind_calls")' in body
-    assert '"gamma_unwind_puts": _build_squeeze_family_calibration(session, "gamma_unwind_puts")' in body
+    assert '"stockai:cal:squeeze_family:gamma_unwind_calls"' in body
+    assert '"stockai:cal:squeeze_family:gamma_unwind_puts"' in body
+    assert '_build_squeeze_family_calibration(session, "gamma_unwind_calls")' in body
+    assert '_build_squeeze_family_calibration(session, "gamma_unwind_puts")' in body
 
 
 def test_gamma_unwind_candidate_dict_carries_calibration_fields():

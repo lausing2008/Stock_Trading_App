@@ -1245,6 +1245,32 @@ def _regime_warning_lines(regime: str | None) -> tuple[str, str]:
     return html, text
 
 
+def _short_interest_age_str(short_interest_date: str | None) -> str:
+    """Renders the short-interest reading's own age, with a staleness-tier callout past 15
+    days — AUD-SQUEEZE250725-ISSUE2: the audit recommended EITHER tightening the hard reject
+    from 30 to 21 days, OR adding a staleness tier surfaced in the email. A hard tighten would
+    silently drop candidates 21-30 days old that currently fire, a real behavior change with no
+    visibility into what changed; a visual tier lets the recipient judge for themselves (the
+    same "surface, don't silently reject" pattern already used for 0-DTE gamma-unwind rows and
+    the browsable screener's own is_stale flag) while keeping the existing 30-day hard reject
+    as the outer floor. Shared by send_short_squeeze_email() and send_prebreakout_email(), which
+    previously duplicated this exact age-string logic with no tier at all.
+
+    Bands: <=15d "fresh" (no callout), 15-21d "moderately stale", 21-30d "very stale" — matching
+    the audit's own suggested band boundaries.
+    """
+    if not short_interest_date:
+        return ""
+    try:
+        age_days = (date.today() - date.fromisoformat(short_interest_date)).days
+    except (ValueError, TypeError):
+        return f" (as of {short_interest_date})"
+    if age_days <= 15:
+        return f" (as of {short_interest_date}, {age_days}d ago)"
+    tier = "very stale" if age_days > 21 else "moderately stale"
+    return f" (as of {short_interest_date}, {age_days}d ago — {tier})"
+
+
 def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
     """One email per recipient listing every symbol that NEWLY crossed into "shorts likely
     getting squeezed RIGHT NOW" territory this cycle: short_percent_of_float >= 15 AND the
@@ -1290,18 +1316,10 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
         price = c.get("price")
         # AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED: surfaces the real settlement date so a
         # recipient can judge for themselves how current the short-interest figure is, rather
-        # than every reading implicitly reading as "measured just now." Also renders the age
-        # in days directly (not just the bare date) so the recipient doesn't have to do the
-        # mental subtraction themselves every time — fails soft to the bare date if the
-        # string is missing/malformed rather than raising.
+        # than every reading implicitly reading as "measured just now." AUD-SQUEEZE250725-
+        # ISSUE2 extends this with a moderately/very-stale tier past 15/21 days.
         si_date = c.get("short_interest_date")
-        si_str = ""
-        if si_date:
-            try:
-                _si_age_days = (date.today() - date.fromisoformat(si_date)).days
-                si_str = f" (as of {si_date}, {_si_age_days}d ago)"
-            except (ValueError, TypeError):
-                si_str = f" (as of {si_date})"
+        si_str = _short_interest_age_str(si_date)
         chg_str = f"+{chg:.2f}%" if chg is not None else "—"
         price_str = f"${price:.2f}" if price else "—"
         short_ratio = c.get("short_ratio")
@@ -1425,8 +1443,15 @@ def send_gamma_unwind_email(to: str, candidates: list[dict]) -> bool:
         # session stale relative to whatever has happened intraday today, right when it matters
         # most (the day the position actually unwinds). Qualify only the 0-DTE row, since it's
         # the one case where "as of when" materially changes what the number means.
-        if dte == 0:
-            dte_str = "expires TODAY (OI as of yesterday's close)"
+        #
+        # AUD-SQUEEZE250725-ISSUE4: previously this qualifier was inline text only, easy for a
+        # user scanning quickly to miss — now also drives an amber row border/badge, matching
+        # send_short_squeeze_email()'s own is_critical/row_border pattern for days_to_cover
+        # (amber rather than that pattern's red, since this is a staleness NOTE, not a risk
+        # escalation like critical days-to-cover).
+        is_zero_dte = dte == 0
+        if is_zero_dte:
+            dte_str = "expires TODAY (OI as of yesterday's close) ⚠️"
         else:
             dte_str = f"expires in {dte}d"
         oi = c["total_oi_near_money"]
@@ -1446,8 +1471,12 @@ def send_gamma_unwind_email(to: str, candidates: list[dict]) -> bool:
             cal_html = '<div style="font-size:11px;color:#94a3b8;margin-top:4px">Not enough resolved history yet for a measured win rate</div>'
             cal_text = "    Not enough resolved history yet for a measured win rate\n"
         regime_html, regime_text = _regime_warning_lines(c.get("market_regime"))
+        row_border = (
+            "border:1px solid rgba(217,119,6,0.35);border-radius:8px;padding:10px 12px;margin-bottom:6px"
+            if is_zero_dte else "padding:10px 0;border-bottom:1px solid #f1f5f9"
+        )
         rows_html += (
-            f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
+            f'<div style="{row_border}">'
             f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
             f'<strong style="font-size:14px">{sym}</strong>'
             f'<span style="font-size:13px;color:{side_color};font-weight:700">{conc:.0f}% {side}</span>'
@@ -1530,16 +1559,10 @@ def send_prebreakout_email(to: str, candidates: list[dict]) -> bool:
             compress_str = f"BB width {bb_pctile * 100:.0f}th pctile, ATR {atr_pctile * 100:.0f}th pctile (6mo)"
         vol_str = " · volume drying up" if vol_dried else ""
         # AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED (extended to this alert 2026-08-15): same
-        # age-rendering as send_short_squeeze_email()'s own si_str — a recipient shouldn't have
-        # to guess how current the short-interest figure is.
+        # shared age/staleness-tier rendering as send_short_squeeze_email() — a recipient
+        # shouldn't have to guess how current the short-interest figure is.
         si_date = c.get("short_interest_date")
-        si_str = ""
-        if si_date:
-            try:
-                _si_age_days = (date.today() - date.fromisoformat(si_date)).days
-                si_str = f" (as of {si_date}, {_si_age_days}d ago)"
-            except (ValueError, TypeError):
-                si_str = f" (as of {si_date})"
+        si_str = _short_interest_age_str(si_date)
 
         cp_ratio = c.get("options_cp_ratio")
         options_str = ""

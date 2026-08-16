@@ -237,11 +237,21 @@ def test_fundamentals_cache_misses_are_counted_not_silently_dropped():
 
 
 def test_cache_miss_counter_is_incremented_before_its_own_continue():
+    """AUD-SQUEEZE250725-ISSUE1 added a second, rolling-48h counter increment right after the
+    per-cycle counter — the ONLY thing allowed to sit between the two increments and the
+    `continue` is that new call (plus its own explanatory comment), never any unrelated logic
+    that would make the miss path do real work before skipping the candidate."""
     body = _check_short_squeeze_alerts_body()
     incr_idx = body.index("_fundamentals_cache_misses += 1")
     continue_idx = body.index("continue", incr_idx)
-    between = body[incr_idx + len("_fundamentals_cache_misses += 1"):continue_idx].strip()
-    assert between == ""
+    between = body[incr_idx + len("_fundamentals_cache_misses += 1"):continue_idx]
+    # Strip the one allowed addition (comment lines + the rolling-counter call) before asserting
+    # nothing else remains.
+    stripped_lines = [
+        line.strip() for line in between.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert stripped_lines == ["_incr_rolling_counter(_SQUEEZE_FUND_CACHE_MISS_COUNTER_KEY)"]
 
 
 def test_cache_miss_count_reaches_the_done_log_line():

@@ -21,8 +21,13 @@ def _function_body(name: str, end_marker: str) -> str:
 
 
 def test_calibration_buckets_are_built_once_per_cycle_before_the_candidate_loop():
+    """AUD-SQUEEZE250725-PERF4.3 wrapped the raw builder call in _cached_calibration_buckets()
+    (a 5-min Redis cache, matching short_squeeze/gamma_unwind's own new caching) — the
+    underlying _build_prebreakout_calibration(session) call must still happen (now inside a
+    lambda passed to the cache wrapper), and still before the candidate loop."""
     body = _function_body("check_prebreakout_alerts", "\n\ndef _record_prebreakout_alert_outcome(")
-    cal_build_idx = body.index("cal_buckets = _build_prebreakout_calibration(session)")
+    cal_build_idx = body.index("cal_buckets = _cached_calibration_buckets(")
+    assert "_build_prebreakout_calibration(session)" in body
     candidates_dict_idx = body.index("candidates: dict[str, dict] = {}")
     assert cal_build_idx < candidates_dict_idx, (
         "cal_buckets must be built ONCE, before the per-symbol candidate loop starts — "

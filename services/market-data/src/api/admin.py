@@ -721,6 +721,11 @@ def squeeze_alert_backtest(
             "weeks_back": weeks_back, "min_samples": min_samples,
             "n_snapshots_qualifying": 0, "n_candidate_days": 0,
             "window_10d": None, "window_5d": None, "window_20d": None,
+            # AUD-SQUEEZE250725-ISSUE6: distinguishes "no stock ever cleared the short-float
+            # floor" from "stocks cleared the floor but never had a qualifying intraday move" —
+            # two genuinely different diagnostic signals the audit found the response couldn't
+            # tell apart when both n_snapshots_qualifying and n_candidate_days were 0.
+            "reason": "no_qualifying_snapshots",
             "note": "No FundamentalsSnapshot rows cleared the short-interest floor in this window.",
         }
 
@@ -793,12 +798,19 @@ def squeeze_alert_backtest(
 
     windows = {f"window_{w}d": _window_summary(w) for w in _SQUEEZE_OUTCOME_WINDOWS}
 
+    # AUD-SQUEEZE250725-ISSUE6: the OTHER zero-case — real snapshots cleared the short-float
+    # floor, but none of them ever had a qualifying same-day intraday move, so no candidate day
+    # exists at all (as opposed to candidate days existing but none resolved yet, which the
+    # per-window "below sample floor" note already covers on its own).
+    reason = "no_qualifying_moves" if not candidate_days else None
+
     return {
         "weeks_back": weeks_back,
         "min_samples": min_samples,
         "n_snapshots_qualifying": len(snapshots),
         "n_candidate_days": len(candidate_days),
         **windows,
+        "reason": reason,
         "note": (
             "Retroactive PROXY for the short_squeeze alert's filter — uses weekly short-interest "
             "snapshots + daily-bar moves, not the live 1-minute intraday scan. gamma_unwind is not "

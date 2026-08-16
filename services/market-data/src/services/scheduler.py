@@ -197,6 +197,18 @@ _CONVICTION_MET_COUNTER_KEY = "stockai:metric:conviction_met_count_48h"
 _ALERT_FIRED_COUNTER_KEY = "stockai:metric:alert_fired_count_48h"
 _ROLLING_COUNTER_TTL_S = 48 * 3600
 
+# AUD-SQUEEZE250725-ISSUE1/5: check_short_squeeze_alerts()/check_squeeze_watch_reverts() both
+# silently skip a candidate/watch whenever its stockai:fundamentals:v2:{symbol} cache entry has
+# expired (24h TTL) between page-views — a real, expected occurrence, not itself a bug, but one
+# with zero visibility outside a per-cycle structlog line before this. A sustained spike (e.g.
+# Redis degradation, or the fundamentals-refresh job falling behind) would previously only be
+# visible by reading logs. Reuses the SAME rolling-48h-counter mechanism (_incr_rolling_counter)
+# already proven for the conviction/fired pair above, surfaced via a new "gauge" _DQ_CHECKS
+# source type (informational only — always ok=True, never triggers the failing-list/email path,
+# since a nonzero miss count is expected background noise, not itself a functional failure).
+_SQUEEZE_FUND_CACHE_MISS_COUNTER_KEY = "stockai:metric:squeeze_fund_cache_miss_count_48h"
+_SQUEEZE_WATCH_FUND_CACHE_MISS_COUNTER_KEY = "stockai:metric:squeeze_watch_fund_cache_miss_count_48h"
+
 
 def _incr_rolling_counter(key: str) -> None:
     """INCR a counter with a 48h rolling TTL, set only once (checking TTL==-1, i.e. "no expiry
@@ -2694,10 +2706,46 @@ def check_short_squeeze_alerts() -> None:
 
             # T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE (extended 2026-08-15): built once per
             # cycle, before the candidate loop — same reasoning as check_prebreakout_alerts()'s
-            # own cal_buckets, avoids a re-query per candidate.
-            _sq_cal_buckets = _build_squeeze_family_calibration(session, "short_squeeze")
+            # own cal_buckets, avoids a re-query per candidate. AUD-SQUEEZE250725-PERF4.3:
+            # Redis-cached 5 minutes — this job runs every 1 minute but the buckets only
+            # actually change once daily.
+            _sq_cal_buckets = _cached_calibration_buckets(
+                "stockai:cal:squeeze_family:short_squeeze",
+                lambda: _build_squeeze_family_calibration(session, "short_squeeze"),
+            )
 
             candidates: dict[str, dict] = {}
+            # AUD-SQUEEZE250725-PERF4.1: pre-warm every price-qualifying symbol's fundamentals
+            # blob in ONE Redis round-trip (MGET) instead of one GET per symbol inside the loop
+            # below — for a typical N-symbol stockai:live_prices list this cuts N round-trips to
+            # 1. Only fetches for symbols that ALREADY cleared the cheap price-only filters
+            # (presence + market-hours + intraday-move threshold), so this never wastes an MGET
+            # slot on a symbol that would've been skipped before ever touching fundamentals
+            # anyway — same net filtering as the single-pass version, just reordered into two
+            # cheap passes over _live_raw instead of one pass with N individual GETs.
+            _pricefilter_qualifying: list[str] = []
+            for row in _live_raw:
+                sym = row.get("symbol")
+                price = row.get("price")
+                prev_close = row.get("prev_close")
+                if not sym or not price or not prev_close:
+                    continue
+                _is_hk_sym = sym.upper().endswith(".HK")
+                if _is_hk_sym and not _hk_market_open:
+                    continue
+                if not _is_hk_sym and not _us_market_open:
+                    continue
+                change_pct = (float(price) - float(prev_close)) / float(prev_close) * 100
+                if change_pct < _SQUEEZE_MIN_INTRADAY_MOVE_PCT:
+                    continue
+                _pricefilter_qualifying.append(sym)
+            try:
+                _fund_mget_keys = [f"stockai:fundamentals:v2:{s}" for s in _pricefilter_qualifying]
+                _fund_mget_vals = _rc.mget(_fund_mget_keys) if _fund_mget_keys else []
+                _fund_by_symbol = dict(zip(_pricefilter_qualifying, _fund_mget_vals))
+            except Exception:
+                _fund_by_symbol = {}
+
             # AUD265-SQUEEZE-CACHE-MISS-SILENT-SKIP: `if not cached: continue` treated a
             # stockai:fundamentals:v2:{sym} cache miss identically to "this candidate doesn't
             # qualify" — a real distinction gets erased, since a symbol whose 24h TTL lapsed
@@ -2720,9 +2768,12 @@ def check_short_squeeze_alerts() -> None:
                 if change_pct < _SQUEEZE_MIN_INTRADAY_MOVE_PCT:
                     continue
                 try:
-                    cached = _rc.get(f"stockai:fundamentals:v2:{sym}")
+                    cached = _fund_by_symbol.get(sym)
                     if not cached:
                         _fundamentals_cache_misses += 1
+                        # AUD-SQUEEZE250725-ISSUE1: surface the per-cycle count into a rolling
+                        # 48h metric so a sustained spike is admin-visible, not just log-visible.
+                        _incr_rolling_counter(_SQUEEZE_FUND_CACHE_MISS_COUNTER_KEY)
                         continue
                     data = _json.loads(cached)
                     spf = data.get("short_percent_of_float")
@@ -2876,6 +2927,37 @@ _SQUEEZE_FAMILY_CAL_BANDS: dict[str, list[tuple[float, float, str]]] = {
     "gamma_unwind_calls": _GAMMA_UNWIND_CAL_BANDS,
     "gamma_unwind_puts": _GAMMA_UNWIND_CAL_BANDS,
 }
+
+
+_SQUEEZE_CAL_CACHE_TTL_S = 300  # AUD-SQUEEZE250725-PERF4.3: 5 minutes
+
+
+def _cached_calibration_buckets(cache_key: str, builder) -> dict:
+    """AUD-SQUEEZE250725-PERF4.3: calibration buckets only change once daily (when
+    evaluate_squeeze_alert_outcomes()/evaluate_prebreakout_alert_outcomes() next resolve new
+    outcomes), but check_short_squeeze_alerts()/check_gamma_unwind_alerts() re-run this same
+    DB query every 1-minute cycle regardless — a 5-minute Redis cache eliminates ~99% of those
+    redundant queries with a bounded staleness window nowhere near long enough to matter for
+    data that only actually changes once a day. `builder` is a zero-arg callable (a closure
+    over `session`/`alert_type` at each call site) so this wrapper stays agnostic to which of
+    the two real builder functions (_build_prebreakout_calibration/_build_squeeze_family_
+    calibration) it's caching — it only ever serializes/deserializes their shared dict[str,
+    dict] shape. Fails open to a fresh DB call on any Redis error (a cache outage must never
+    make calibration silently unavailable), and a corrupt/unparseable cached value is treated
+    identically to a cache miss rather than raising.
+    """
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+    buckets = builder()
+    try:
+        _get_redis().setex(cache_key, _SQUEEZE_CAL_CACHE_TTL_S, json.dumps(buckets))
+    except Exception:
+        pass
+    return buckets
 
 
 def _build_prebreakout_calibration(session) -> dict:
@@ -3116,7 +3198,13 @@ def check_prebreakout_alerts() -> None:
                 ).all():
                     options_by_stock[stock_id] = cp_ratio
 
-            cal_buckets = _build_prebreakout_calibration(session)
+            # AUD-SQUEEZE250725-PERF4.3: same 5-min Redis cache as short_squeeze/gamma_unwind's
+            # own calibration buckets, for consistency across the family (this job's own
+            # 1-hour lock TTL already means the perf gain here is smaller, but there's no
+            # reason for one alert type in the family to skip the same cheap win).
+            cal_buckets = _cached_calibration_buckets(
+                "stockai:cal:prebreakout", lambda: _build_prebreakout_calibration(session),
+            )
 
             candidates: dict[str, dict] = {}
             for stock_id, symbol in symbols:
@@ -3388,10 +3476,17 @@ def check_gamma_unwind_alerts() -> None:
             # cycle, before the per-symbol loop — both sides share the same _GAMMA_UNWIND_
             # CAL_BANDS scheme (see _SQUEEZE_FAMILY_CAL_BANDS), but are two independently-
             # resolved-outcome buckets since gamma_unwind_calls/puts are never pooled anywhere
-            # else in this alert family either.
+            # else in this alert family either. AUD-SQUEEZE250725-PERF4.3: each side Redis-
+            # cached 5 minutes separately, matching short_squeeze's own caching above.
             _gamma_cal_buckets = {
-                "gamma_unwind_calls": _build_squeeze_family_calibration(session, "gamma_unwind_calls"),
-                "gamma_unwind_puts": _build_squeeze_family_calibration(session, "gamma_unwind_puts"),
+                "gamma_unwind_calls": _cached_calibration_buckets(
+                    "stockai:cal:squeeze_family:gamma_unwind_calls",
+                    lambda: _build_squeeze_family_calibration(session, "gamma_unwind_calls"),
+                ),
+                "gamma_unwind_puts": _cached_calibration_buckets(
+                    "stockai:cal:squeeze_family:gamma_unwind_puts",
+                    lambda: _build_squeeze_family_calibration(session, "gamma_unwind_puts"),
+                ),
             }
 
             today = date.today()
@@ -3719,6 +3814,12 @@ def check_squeeze_watch_reverts() -> None:
                                 if spf is not None:
                                     current_metric = round(spf * 100, 2)
                                     metric_faded = current_metric < _SQUEEZE_MIN_SHORT_FLOAT
+                            else:
+                                # AUD-SQUEEZE250725-ISSUE5: unlike check_short_squeeze_alerts(),
+                                # this loop previously had no equivalent cache-miss visibility at
+                                # all — a miss here silently skips the revert check for that watch
+                                # with no signal anywhere. Same rolling-48h counter mechanism.
+                                _incr_rolling_counter(_SQUEEZE_WATCH_FUND_CACHE_MISS_COUNTER_KEY)
                         except Exception:
                             pass
                     else:  # bearish_puts
@@ -8198,6 +8299,25 @@ _DQ_CHECKS: list[dict] = [
         "min_denominator": 20,
         "min_ratio": 0.001,
     },
+    # AUD-SQUEEZE250725-ISSUE1/5: "gauge" is a genuinely different check shape from both
+    # "job_status" (age of a liveness record) and "ratio" (two counters compared) above —
+    # this one just surfaces a rolling count for admin visibility, with no pass/fail concept
+    # at all (a nonzero fundamentals-cache-miss count is expected background noise from normal
+    # 24h TTL expiry between page-views, not itself a functional failure). Always reports
+    # ok=True so it never enters the failing-list/email-alert path — purely observability,
+    # closing the exact "only visible in logs" gap both audit issues described.
+    {
+        "name": "squeeze_fund_cache_misses_48h",
+        "description": "short_squeeze alert: stockai:fundamentals:v2:* cache misses in the last 48h (AUD-SQUEEZE250725-ISSUE1)",
+        "source": "gauge",
+        "counter_key": _SQUEEZE_FUND_CACHE_MISS_COUNTER_KEY,
+    },
+    {
+        "name": "squeeze_watch_fund_cache_misses_48h",
+        "description": "squeeze-watch revert checker: stockai:fundamentals:v2:* cache misses in the last 48h (AUD-SQUEEZE250725-ISSUE5)",
+        "source": "gauge",
+        "counter_key": _SQUEEZE_WATCH_FUND_CACHE_MISS_COUNTER_KEY,
+    },
 ]
 
 
@@ -8256,6 +8376,23 @@ def run_data_quality_checks() -> None:
                                 "age_hours": None, "max_age_hours": None,
                                 "detail": f"{num_v}/{den_v} ({ratio_val:.4%}) fired vs. conviction-met, below the {check['min_ratio']:.2%} floor",
                             })
+                        continue
+
+                    # AUD-SQUEEZE250725-ISSUE1/5: "gauge" checks report a rolling counter's raw
+                    # value with NO pass/fail concept — always ok=True, never appended to
+                    # `failing`. Purely observability (admin-visible instead of log-only), per
+                    # both audit issues' own framing ("observability gap, not a functional bug").
+                    if check.get("source") == "gauge":
+                        _count_raw = redis_client.get(check["counter_key"])
+                        _count_v = int(_count_raw) if _count_raw is not None else 0
+                        redis_client.setex(
+                            f"dq_check:{check['name']}", 86400 * 7,
+                            json.dumps({
+                                "name": check["name"], "description": check["description"],
+                                "ok": True, "count_48h": _count_v,
+                                "checked_at": datetime.now(timezone.utc).isoformat(),
+                            }),
+                        )
                         continue
 
                     # AUD266-ALERT-JOBS-LACK-STATUS-CONSEQUENCE-DQ: a "job_status" check has
