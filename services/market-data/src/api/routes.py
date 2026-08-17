@@ -158,12 +158,33 @@ def _fetch_live_one(symbol: str, currency: str) -> dict | None:
         return None
 
 
+_LIVE_BULK_FALLBACK_MAX = 20  # BUG-YFCALLVOL2: see _fetch_live_bulk()'s own docstring
+
+
 def _fetch_live_bulk(stocks: list) -> list[dict]:
     """Fetch prices for all symbols in one yf.download() call — avoids per-symbol rate limits.
 
     yf.download() uses Yahoo's batch chart endpoint which is far more lenient than
     calling fast_info/Ticker 68 times in parallel. Falls back to _fetch_live_one
-    for any symbols missing from the download result.
+    for any symbols missing from the download result — but ONLY when the miss count is small
+    (a handful of thinly-traded/delisted stragglers Yahoo's batch endpoint occasionally omits
+    even under normal conditions).
+
+    BUG-YFCALLVOL2 (2026-08-17): during a real Yahoo-side rate-limit event, the bulk call
+    itself gets throttled and can miss MOST or ALL of the universe (confirmed live: repeated
+    live_prices.bulk_fallback count=165 events, i.e. every single tracked symbol, recurring
+    every ~1-2 minutes) — the SAME condition that caused the bulk miss also guarantees the
+    per-symbol fallback loop below gets rate-limited too, except now it's ~150+ individual
+    HTTP requests (up to 2 each: fast_info + a history() fallback inside _fetch_live_one)
+    fired every single minute with zero backoff, actively amplifying the same throttle this
+    function exists to avoid — the exact BUG-YFCALLVOL amplification pattern already fixed
+    once in paper_trading_engine.py's _fetch_live_prices(), recurring here in a second,
+    never-touched call site. Capping the fallback at a small threshold preserves the real,
+    intended behavior (fill in the rare straggler) while refusing to pile more individual
+    requests onto an endpoint that has already shown signs of being globally throttled this
+    cycle — the cache just serves fewer symbols that minute instead, correctly recovering on
+    its own once Yahoo's throttle window passes, rather than being kept alive by this app's
+    own retry storm.
     """
     if not stocks:
         return []
@@ -238,9 +259,17 @@ def _fetch_live_bulk(stocks: list) -> list[dict]:
         except Exception:
             pass
 
-    # Fill in any symbols the bulk download missed using individual fetches
+    # Fill in any symbols the bulk download missed using individual fetches — BUT only when
+    # the miss count is small (see BUG-YFCALLVOL2 above). A large miss count means the bulk
+    # call itself is being rate-limited, and firing 100+ individual fallback requests would
+    # only make that worse; skip the fallback entirely and let the cache carry fewer symbols
+    # this cycle rather than amplify an active throttle.
     missed = [s for s in stocks if s.symbol not in fetched]
-    if missed:
+    if missed and len(missed) > _LIVE_BULK_FALLBACK_MAX:
+        log.warning("live_prices.bulk_fallback_skipped_too_many_misses",
+                    count=len(missed), threshold=_LIVE_BULK_FALLBACK_MAX,
+                    note="likely a Yahoo-side rate-limit event — skipping individual fallback to avoid amplifying it")
+    elif missed:
         log.info("live_prices.bulk_fallback", count=len(missed))
         with ThreadPoolExecutor(max_workers=4) as pool:
             futs = {pool.submit(_fetch_live_one, s.symbol, s.currency): s.symbol for s in missed}
