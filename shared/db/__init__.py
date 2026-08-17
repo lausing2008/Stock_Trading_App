@@ -55,6 +55,7 @@ from .models import (
     ThemeSignalSnapshot,
     SqueezeAlertOutcome,
     PreBreakoutAlertOutcome,
+    StockGoal,
 )
 from .session import SessionLocal, engine, get_session, init_db
 
@@ -115,6 +116,7 @@ __all__ = [
     "ThemeSignalSnapshot",
     "SqueezeAlertOutcome",
     "PreBreakoutAlertOutcome",
+    "StockGoal",
     "SessionLocal",
     "engine",
     "get_session",

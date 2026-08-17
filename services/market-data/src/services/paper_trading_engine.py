@@ -3672,6 +3672,28 @@ def _clear_gate_block(portfolio_id: int) -> None:
         pass
 
 
+def _compute_portfolio_drawdown(session, portfolio_id: int, equity: float) -> float | None:
+    """T286-DRAWDOWN-ALERT: single source of truth for current portfolio drawdown-from-peak,
+    factored out of _scan_for_entries()'s own circuit-breaker block so the new user-facing
+    drawdown alert (check_portfolio_drawdown_alerts() in scheduler.py) reads the EXACT same
+    number the silent gate-block badge already shows, rather than a second, independently
+    re-derived computation that could drift from it.
+
+    Returns None only if there's no equity-curve history at all yet (peak_equity <= 0) — the
+    circuit breaker's own pre-existing guard for this case, unchanged.
+    """
+    historical_peak = session.execute(
+        select(func.max(PaperEquityCurve.equity))
+        .where(PaperEquityCurve.portfolio_id == portfolio_id)
+    ).scalar() or 0.0
+    # PA-D2: include current intraday equity in peak so intraday drops are caught
+    # even if today's EOD snapshot hasn't been written yet
+    peak_equity = max(historical_peak, equity)
+    if not peak_equity or peak_equity <= 0:
+        return None
+    return (peak_equity - equity) / peak_equity
+
+
 def _write_gate_block(portfolio_id: int, gate: str, reason: str) -> None:
     """Record the most recent portfolio-level gate that blocked new entries.
 
@@ -3898,24 +3920,16 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     # ── Drawdown circuit breaker ─────────────────────────────────────────────────
     max_dd_cfg = cfg.get("max_portfolio_drawdown_pct", 0.20)
     if max_dd_cfg and max_dd_cfg > 0 and not _gates_override:
-        historical_peak = session.execute(
-            select(func.max(PaperEquityCurve.equity))
-            .where(PaperEquityCurve.portfolio_id == portfolio.id)
-        ).scalar() or 0.0
-        # PA-D2: include current intraday equity in peak so intraday drops are caught
-        # even if today's EOD snapshot hasn't been written yet
-        peak_equity = max(historical_peak, equity)
-        if peak_equity and peak_equity > 0:
-            current_dd = (peak_equity - equity) / peak_equity
-            if current_dd > max_dd_cfg:
-                log.warning("paper.drawdown_circuit_breaker",
-                            portfolio=portfolio.name,
-                            current_dd_pct=round(current_dd * 100, 1),
-                            limit_pct=round(max_dd_cfg * 100, 1),
-                            note="new entries suspended until equity recovers")
-                _write_gate_block(portfolio.id, "drawdown",
-                                  f"Portfolio drawdown {current_dd*100:.1f}% exceeds {max_dd_cfg*100:.0f}% limit — no new entries until equity recovers")
-                return
+        current_dd = _compute_portfolio_drawdown(session, portfolio.id, equity)
+        if current_dd is not None and current_dd > max_dd_cfg:
+            log.warning("paper.drawdown_circuit_breaker",
+                        portfolio=portfolio.name,
+                        current_dd_pct=round(current_dd * 100, 1),
+                        limit_pct=round(max_dd_cfg * 100, 1),
+                        note="new entries suspended until equity recovers")
+            _write_gate_block(portfolio.id, "drawdown",
+                              f"Portfolio drawdown {current_dd*100:.1f}% exceeds {max_dd_cfg*100:.0f}% limit — no new entries until equity recovers")
+            return
 
     # ── Daily realized-loss circuit breaker (net P&L — winners offset losers) ──────
     _daily_pnl_pct = 0.0  # captured for DE call below
@@ -4492,7 +4506,22 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             _skip_tally["global_symbol_cap"] = _skip_tally.get("global_symbol_cap", 0) + 1
             continue
         if stock.symbol in open_symbols:
-            # Scale-in: add to profitable position on fresh high-conviction signal
+            # Scale-in: add to profitable position on fresh high-conviction signal.
+            #
+            # T286-PYRAMID-TIERS: extended from a single fixed add into a real 2-level pyramid,
+            # mirroring the scale-OUT side's own established two-level structure exactly
+            # (partial_tp_pct/partial_tp2_pct + PARTIAL1_TAKEN/PARTIAL2_TAKEN note markers,
+            # ~2850 lines above) — this is the scale-IN counterpart that was previously capped
+            # at one add with no way to configure a second, further-out tier. Level 1 keeps its
+            # original trigger/size defaults UNCHANGED (5% gain, 25% add) for full backward
+            # compatibility with every existing open trade's own "SCALE_IN" marker; Level 2 is
+            # a NEW, separate, higher gain trigger (default +10%) adding a smaller tranche
+            # (default 15%, since more capital is already committed by the time Level 2 fires)
+            # — gated on Level 1 having already happened, exactly matching the scale-out side's
+            # own p1_done-before-p2 ordering. Both levels independently re-check the SAME
+            # fresh-high-conviction-signal requirement (confidence >= 60) rather than only
+            # gating on price — an add should represent renewed conviction, not just "price
+            # went up," matching the ORIGINAL single-tier design's own reasoning exactly.
             if cfg.get("scale_in_enabled", True):
                 _si_live = live_prices.get(stock.symbol)
                 if _si_live:
@@ -4506,10 +4535,23 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                     if _si_trade:
                         _si_pnl_pct = (_si_live - _si_trade.entry_price) / _si_trade.entry_price
                         _si_notes_list = _si_trade.entry_decision_notes or []
-                        _si_already = any("SCALE_IN" in str(n) for n in _si_notes_list)
+                        _si_l1_done = "SCALE_IN" in _si_notes_list
+                        _si_l2_done = "SCALE_IN2" in _si_notes_list
                         _si_conf = float(sig.confidence or 0.0)
-                        if not _si_already and _si_pnl_pct >= 0.05 and _si_conf >= 60.0:
-                            _si_add_value = _si_live * _si_trade.shares * 0.25
+                        _si_trigger1 = float(cfg.get("scale_in_trigger_pct", 0.05))
+                        _si_size1 = float(cfg.get("scale_in_size_pct", 0.25))
+                        _si_trigger2 = float(cfg.get("scale_in_trigger2_pct", 0.10))
+                        _si_size2 = float(cfg.get("scale_in_size2_pct", 0.15))
+
+                        _si_fire_level: int | None = None
+                        _si_size_pct: float | None = None
+                        if not _si_l1_done and _si_pnl_pct >= _si_trigger1 and _si_conf >= 60.0:
+                            _si_fire_level, _si_size_pct = 1, _si_size1
+                        elif _si_l1_done and not _si_l2_done and _si_trigger2 and _si_pnl_pct >= _si_trigger2 and _si_conf >= 60.0:
+                            _si_fire_level, _si_size_pct = 2, _si_size2
+
+                        if _si_fire_level is not None and _si_size_pct:
+                            _si_add_value = _si_live * _si_trade.shares * _si_size_pct
                             if portfolio.current_cash >= _si_add_value * 1.1:
                                 _si_slippage = cfg.get("entry_slippage_pct", 0.001)
                                 _si_add_shares = round(_si_add_value / (_si_live * (1 + _si_slippage)), 4)
@@ -4524,7 +4566,9 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                                 # the numerator) while cost_basis used the frozen original
                                 # entry_shares (understating the denominator) — both biased
                                 # total_pnl_pct upward on every trade that scaled in, corrupting
-                                # the SignalOutcome calibration writeback downstream.
+                                # the SignalOutcome calibration writeback downstream. Applies
+                                # identically at both levels — the blend math itself doesn't
+                                # change, only WHEN it fires and how much it adds.
                                 _si_old_shares = _si_trade.shares
                                 _si_fill_price = round(_si_live * (1 + _si_slippage), 4)
                                 _si_new_shares = round(_si_old_shares + _si_add_shares, 4)
@@ -4543,7 +4587,9 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                                 # confidence/kscore share-weighted (same accounting pattern already
                                 # used for entry_price above) and refresh regime to the current state
                                 # at scale-in time, so a position that's mostly a fresh high-conviction
-                                # add reads as one downstream, not as its original entry.
+                                # add reads as one downstream, not as its original entry. Applies at
+                                # BOTH levels identically — a Level 2 add re-blends against whatever
+                                # Level 1 already blended in, not against the original entry alone.
                                 _si_old_conf = _si_trade.confidence_at_entry or 0.0
                                 _si_old_kscore = _si_trade.kscore_at_entry or 0.0
                                 _si_new_kscore = float(ranking.score) if ranking and ranking.score is not None else _si_old_kscore
@@ -4556,14 +4602,15 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                                 if live_regime and live_regime.get("state"):
                                     _si_trade.market_regime_at_entry = live_regime["state"]
                                 _si_new_notes = list(_si_notes_list)
-                                _si_new_notes.append("SCALE_IN")
+                                _si_marker = "SCALE_IN" if _si_fire_level == 1 else "SCALE_IN2"
+                                _si_new_notes.append(_si_marker)
                                 _si_new_notes.append(
-                                    f"Scale-in: +{_si_add_shares:.4f}sh @ ${_si_live:.2f} "
+                                    f"Scale-in L{_si_fire_level}: +{_si_add_shares:.4f}sh @ ${_si_live:.2f} "
                                     f"(+{_si_pnl_pct*100:.1f}%, conf {_si_conf:.0f}%)"
                                 )
                                 _si_trade.entry_decision_notes = _si_new_notes
                                 log.info("paper.scale_in",
-                                         symbol=stock.symbol, added_shares=_si_add_shares,
+                                         symbol=stock.symbol, level=_si_fire_level, added_shares=_si_add_shares,
                                          live_price=_si_live, pnl_pct=round(_si_pnl_pct * 100, 1),
                                          confidence=_si_conf)
 

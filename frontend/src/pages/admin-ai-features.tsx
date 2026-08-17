@@ -111,6 +111,7 @@ export default function AdminAiFeaturesPage() {
   const [macroLlmReactionEnabled, setMacroLlmReactionEnabled] = useState(true);
   const [earningsLlmImpactEnabled, setEarningsLlmImpactEnabled] = useState(false);
   const [themeForecastEnabled, setThemeForecastEnabled] = useState(false);
+  const [tradeCoachEnabled, setTradeCoachEnabled] = useState(false);
   const [globalSaving, setGlobalSaving] = useState<string | null>(null);
 
   useEffect(() => {
@@ -120,6 +121,7 @@ export default function AdminAiFeaturesPage() {
       setMacroLlmReactionEnabled(f.macro_llm_reaction_enabled);
       setEarningsLlmImpactEnabled(f.earnings_llm_impact_enabled);
       setThemeForecastEnabled(f.theme_forecast_email_enabled);
+      setTradeCoachEnabled(f.trade_coach_email_enabled);
     }).catch(() => {});
   }, [authed]);
 
@@ -158,6 +160,16 @@ export default function AdminAiFeaturesPage() {
     try {
       await api.pushConfig({ theme_forecast_email_enabled: val });
       setThemeForecastEnabled(val);
+    } catch { /* ignore */ } finally {
+      setGlobalSaving(null);
+    }
+  }
+
+  async function handleToggleTradeCoach(val: boolean) {
+    setGlobalSaving('trade_coach');
+    try {
+      await api.pushConfig({ trade_coach_email_enabled: val });
+      setTradeCoachEnabled(val);
     } catch { /* ignore */ } finally {
       setGlobalSaving(null);
     }
@@ -267,6 +279,15 @@ export default function AdminAiFeaturesPage() {
               on={themeForecastEnabled}
               onChange={handleToggleThemeForecast}
               disabled={globalSaving === 'theme_forecast'}
+            />
+            <ToggleRow
+              title="Weekly Trade Pattern Review"
+              desc="A weekly digest aggregating this account's own closed paper trades over the last 90 days: win rate and average return by exit reason, how far below its own peak price winning trades typically exit (a real, measurable 'giving back gains' read), and average hold days vs. each style's own expected window — plus an AI-written summary explaining those numbers. Deliberately does NOT give advice or predict future performance — it only describes already-measured patterns in how this account has traded. Off by default — a brand-new feature."
+              model="Haiku"
+              cadence="Once weekly, Sunday 17:45 ET — one Haiku call, skipped entirely if fewer than 10 closed trades exist in the window"
+              on={tradeCoachEnabled}
+              onChange={handleToggleTradeCoach}
+              disabled={globalSaving === 'trade_coach'}
             />
           </div>
         </div>

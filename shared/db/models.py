@@ -103,6 +103,7 @@ class User(Base):
     squeeze_watches: Mapped[list["SqueezeWatch"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     earnings_alert_subscriptions: Mapped[list["EarningsAlertSubscription"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     push_subscriptions: Mapped[list["PushSubscription"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    stock_goals: Mapped[list["StockGoal"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class Stock(Base):
@@ -450,6 +451,47 @@ class EarningsAlertSubscription(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "symbol", name="uq_earnings_alert_sub_user_symbol"),
     )
+
+
+class StockGoal(Base):
+    """T286-STOCK-GOALS: a user-defined price/share/date target for a symbol, with progress
+    tracked against the real, already-fetched current price — genuinely new, confirmed via a
+    direct code search to have zero existing equivalent anywhere in this app (unlike most of
+    docs/FEATURE_ROADMAP_PYRAMID_GOALS_2026-08-16.md's other proposals, which turned out to
+    already exist under different names — see that tracker item's own verification note).
+
+    Deliberately simple relative to the roadmap doc's own proposed schema — no goal_type enum,
+    no separate accumulation/income categories. A goal is just "I want this symbol to reach
+    (some combination of) a price / a share count / a date," and progress is computed FRESH on
+    read from whichever targets are actually set, never stored/staled. This mirrors this app's
+    own established "don't persist a value that can be cheaply recomputed from live data"
+    discipline (e.g. SqueezeAlertOutcome's own forward-return evaluator recomputes rather than
+    trusting a stored intermediate).
+
+    Exactly one of target_price / target_shares may be meaningfully "the" goal a user is
+    tracking at a time in the UI (the progress bar needs one dominant metric to show), but both
+    columns are independent and nullable — a user can set either, both, or neither (a bare
+    target_date with no numeric target is a valid "just remind me to check in on this date"
+    goal). notes is a free-text field for a plain-language description ("build a full position
+    for the dividend").
+    """
+    __tablename__ = "stock_goals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(256))  # e.g. "Build 100-share position for dividend income"
+    target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_shares: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    start_price: Mapped[float] = mapped_column(Float)  # price at goal-creation time, for progress math
+    start_shares: Mapped[float] = mapped_column(Float, default=0.0)  # shares already held at goal-creation time
+    notes: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="active")  # active | achieved | cancelled
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    achieved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    user: Mapped["User"] = relationship(back_populates="stock_goals")
 
 
 class PushSubscription(Base):

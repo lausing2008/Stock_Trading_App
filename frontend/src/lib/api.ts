@@ -191,13 +191,14 @@ export const api = {
     macro_llm_reaction_enabled?: boolean;
     earnings_llm_impact_enabled?: boolean;
     theme_forecast_email_enabled?: boolean;
+    trade_coach_email_enabled?: boolean;
     unshare_claude_key?: boolean; unshare_deepseek_key?: boolean;
     alpaca_api_key?: string; alpaca_secret_key?: string; unshare_alpaca_key?: boolean;
   }) => request<{ status: string }>(`/admin/config`, { method: 'POST', body: JSON.stringify(keys) }),
   getFeatureFlags: () => request<{
     broker_enabled: boolean; auto_research_enabled: boolean;
     macro_llm_reaction_enabled: boolean; earnings_llm_impact_enabled: boolean;
-    theme_forecast_email_enabled: boolean;
+    theme_forecast_email_enabled: boolean; trade_coach_email_enabled: boolean;
   }>(`/admin/feature-flags/public`),
 
   getAdminSignalLog: (params?: {
@@ -440,6 +441,15 @@ export const api = {
     request<EarningsAlertSub>('/stocks/earnings-alert-subscriptions', { method: 'POST', body: JSON.stringify({ symbol }) }),
   removeEarningsAlertSubscription: (symbol: string) =>
     request(`/stocks/earnings-alert-subscriptions/${symbol}`, { method: 'DELETE' }),
+
+  // Stock Goals (T286-STOCK-GOALS) — user-defined price/share/date targets per symbol
+  listStockGoals: (symbol?: string) =>
+    request<StockGoalItem[]>(`/stocks/goals${symbol ? `?symbol=${symbol}` : ''}`),
+  createStockGoal: (req: StockGoalCreateRequest) =>
+    request<StockGoalItem>('/stocks/goals', { method: 'POST', body: JSON.stringify(req) }),
+  updateStockGoal: (id: number, req: Partial<StockGoalCreateRequest> & { status?: string }) =>
+    request<StockGoalItem>(`/stocks/goals/${id}`, { method: 'PUT', body: JSON.stringify(req) }),
+  deleteStockGoal: (id: number) => request(`/stocks/goals/${id}`, { method: 'DELETE' }),
 
   // Short interest dashboard
   shortInterest: () => request<ShortInterestRow[]>('/stocks/short-interest'),
@@ -1289,6 +1299,34 @@ export type EarningsAlertSub = {
   id: number;
   symbol: string;
   created_at: string;
+};
+
+export type StockGoalItem = {
+  id: number;
+  symbol: string;
+  title: string;
+  target_price: number | null;
+  target_shares: number | null;
+  target_date: string | null;
+  start_price: number;
+  start_shares: number;
+  notes: string | null;
+  status: 'active' | 'achieved' | 'cancelled';
+  created_at: string;
+  achieved_at: string | null;
+  current_price: number | null;
+  price_progress_pct: number | null;
+  days_remaining: number | null;
+};
+
+export type StockGoalCreateRequest = {
+  symbol: string;
+  title: string;
+  target_price?: number | null;
+  target_shares?: number | null;
+  target_date?: string | null;
+  start_shares?: number;
+  notes?: string | null;
 };
 
 export type MarketScreenerRow = {

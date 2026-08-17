@@ -1256,6 +1256,75 @@ def _run_paper_trading_step(label: str = "refresh") -> None:
                 pass
 
 
+_PLAYBOOK_ACTION_LABEL = {
+    "WATCH": "Watch (no open position)",
+    "HOLD": "Hold",
+    "ADD": "Consider adding",
+    "REDUCE": "Consider reducing",
+    "EXIT": "Consider exiting",
+}
+
+
+def _build_earnings_playbook(
+    strength_score: float | None, surprise_pct: float | None,
+    has_open_position: bool, position_unrealized_pct: float | None,
+) -> dict:
+    """T286-EARNINGS-PLAYBOOK: mechanical (no LLM) hold/reduce/exit/add action-tier layer on
+    top of the ALREADY-REAL earnings_strength_score (0-100, event-intelligence's own
+    _compute_strength()) and surprise_pct — never a fresh, second interpretation of the beat/
+    miss, just a structured decision mapped onto data that already exists. Deliberately
+    mechanical, matching T258-TRADE-POSTMORTEM's own established "mechanical fields are what
+    this repo's calibration-loop discipline says to trust first" precedent, rather than a
+    second Claude call layered on top of check_earnings_impact_alerts()'s own LLM prose.
+
+    No open position -> WATCH (nothing to act on). With a position, the action tier is driven
+    by strength_score alone (thresholds below); ADD is additionally gated on the position
+    already being in the green — a strong beat while the position is still red is read as "the
+    market hasn't confirmed the thesis yet," not a reason to add into an unconfirmed move.
+
+    Deliberately does NOT compute an "expected move %" — no real options-implied-volatility or
+    historical post-earnings-move data source exists anywhere in this app (EarningsEvent's own
+    post_earnings_return_1d/5d columns are defined but never populated by any sync job), and
+    fabricating a number here would be exactly the kind of unvalidated claim this repo's own
+    honesty discipline (CAPE, options-flow sentiment, every T249 alert) explicitly warns
+    against layering onto a real hold/reduce/exit DECISION.
+    """
+    if not has_open_position:
+        return {
+            "action": "WATCH",
+            "action_label": _PLAYBOOK_ACTION_LABEL["WATCH"],
+            "rationale": "No open position in this symbol — informational only.",
+        }
+
+    score = strength_score if strength_score is not None else 50.0
+    in_the_green = bool(position_unrealized_pct is not None and position_unrealized_pct > 0)
+
+    if score >= 70:
+        if in_the_green:
+            action = "ADD"
+            rationale = (
+                f"Strong beat (strength {score:.0f}/100) and position already confirming the "
+                f"thesis (+{position_unrealized_pct:.1f}%)."
+            )
+        else:
+            action = "HOLD"
+            rationale = (
+                f"Strong beat (strength {score:.0f}/100), but the market hasn't confirmed the "
+                f"thesis in price yet — hold rather than add into an unconfirmed move."
+            )
+    elif score >= 40:
+        action = "HOLD"
+        rationale = f"In-line print (strength {score:.0f}/100) — no strong signal either way."
+    elif score >= 20:
+        action = "REDUCE"
+        rationale = f"Weak print (strength {score:.0f}/100) — consider trimming exposure."
+    else:
+        action = "EXIT"
+        rationale = f"Severe miss (strength {score:.0f}/100) — consider exiting the position."
+
+    return {"action": action, "action_label": _PLAYBOOK_ACTION_LABEL[action], "rationale": rationale}
+
+
 def _earnings_reaction_body(sym: str, eps_actual: float, eps_estimate: float | None,
                              surprise_pct: float | None, strength_score: float | None) -> str:
     """T249-MARKETMOVER-P1: post-release fast-reaction alert body — fires once eps_actual
@@ -1556,10 +1625,37 @@ def check_earnings_impact_alerts() -> None:
             # via a Redis dedup key, matching check_earnings_reactions()'s established pattern.
             _rc = _get_redis()
             from .email_service import send_email
+
+            # T286-EARNINGS-PLAYBOOK: one bulk query for every recipient's OWN open positions
+            # in the pending symbols — never a per-recipient query inside the loop below. A
+            # position is genuinely per-user (PaperTrade has no user_id of its own, but every
+            # portfolio's trades are still real, individually-held positions), so the playbook
+            # section is built per-recipient, not shared across the whole event like body_text.
+            _pending_symbols = {sym for _ev, sym in pending}
+            _open_by_symbol: dict[str, PaperTrade] = {
+                t.symbol: t
+                for t in session.execute(
+                    select(PaperTrade).where(
+                        PaperTrade.symbol.in_(_pending_symbols), PaperTrade.stage == "open",
+                    )
+                ).scalars().all()
+            }
+
             for ev, sym in pending:
                 verb = "beat" if (ev.surprise_pct or 0) > 0 else "missed" if (ev.surprise_pct or 0) < 0 else "met"
                 subject = f"📊 {sym} earnings impact — {verb} estimates"
-                body_text = ev.impact_text
+                open_trade = _open_by_symbol.get(sym)
+                has_position = open_trade is not None
+                position_pct = None
+                if open_trade is not None and open_trade.current_price and open_trade.entry_price:
+                    position_pct = (float(open_trade.current_price) / float(open_trade.entry_price) - 1) * 100
+                playbook = _build_earnings_playbook(
+                    ev.earnings_strength_score, ev.surprise_pct, has_position, position_pct,
+                )
+                playbook_html = (
+                    f'<p><strong>Action: {playbook["action_label"]}</strong><br>{playbook["rationale"]}</p>'
+                )
+                playbook_text = f'\n\nAction: {playbook["action_label"]}\n{playbook["rationale"]}\n'
                 all_recipients_notified = True
                 any_sent = False
                 for uid, syms in user_symbols.items():
@@ -1574,13 +1670,16 @@ def check_earnings_impact_alerts() -> None:
                             continue
                     except Exception:
                         pass
-                    if send_email(u_obj.email, subject, f"<p>{body_text}</p>", body_text):
+                    body_html = f"<p>{ev.impact_text}</p>{playbook_html}"
+                    body_text = f"{ev.impact_text}{playbook_text}"
+                    if send_email(u_obj.email, subject, body_html, body_text):
                         any_sent = True
                         try:
                             _rc and _rc.setex(redis_key, 30 * 86400, "1")  # 30-day TTL — one alert per user per event
                         except Exception:
                             pass
-                        log.info("signal_alert.earnings_impact_sent", symbol=sym, user=u_obj.username)
+                        log.info("signal_alert.earnings_impact_sent", symbol=sym, user=u_obj.username,
+                                  playbook_action=playbook["action"])
                     else:
                         all_recipients_notified = False
                 if any_sent and all_recipients_notified:
@@ -6497,6 +6596,122 @@ def check_earnings_beat_screener_alerts() -> None:
         log.error("earnings_beat_screener.symbol_error", error=str(exc), exc_info=True)
 
 
+def check_portfolio_drawdown_alerts() -> None:
+    """T286-DRAWDOWN-ALERT: real, user-facing notification for a portfolio-level drawdown
+    breach — not just the existing silent _write_gate_block() UI badge
+    (paper_trading_engine.py's own "Drawdown circuit breaker" block), which already computes
+    this exact condition but only ever surfaces it passively on the /paper-portfolio list page.
+
+    Reuses _compute_portfolio_drawdown() (paper_trading_engine.py) directly — the SAME
+    peak-vs-current-equity computation the circuit breaker itself uses to decide whether to
+    block new entries — rather than a second, independently re-derived drawdown calculation
+    that could silently drift from it.
+
+    PaperPortfolio has NO user_id column (paper portfolios are app-wide, not per-user —
+    confirmed by reading the model directly) — delivered to the same PriceAlert-subscribed
+    audience every other market-wide/portfolio-wide alert in this file uses, matching
+    check_earnings_beat_screener_alerts()'s own established audience convention immediately
+    above.
+
+    State-transition dedup, not a permanent one-shot: a drawdown is a persisted STATE (can
+    stay breached for days, or breach/recover/re-breach), so this fires once when a portfolio
+    FIRST crosses its own max_portfolio_drawdown_pct threshold, then stays silent while still
+    breached, and is free to fire again on a genuine later re-breach after recovering —
+    mirroring check_squeeze_watch_reverts()'s own state-based (not permanent) dedup reasoning
+    rather than check_earnings_beat_screener_alerts()'s simpler one-shot-per-discrete-event key.
+    """
+    from .paper_trading_engine import _compute_portfolio_drawdown
+    _t0 = time.monotonic()
+    try:
+        with SessionLocal() as session:
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            if not recipients:
+                _record_job_status("portfolio_drawdown_alert_check", "ok", time.monotonic() - _t0)
+                return
+
+            portfolios = session.execute(
+                select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True))
+            ).scalars().all()
+            if not portfolios:
+                _record_job_status("portfolio_drawdown_alert_check", "ok", time.monotonic() - _t0)
+                return
+
+            _rc = _get_redis()
+            breached: list[dict] = []
+            for p in portfolios:
+                cfg = p.config or {}
+                max_dd_cfg = cfg.get("max_portfolio_drawdown_pct", 0.20)
+                if not max_dd_cfg or max_dd_cfg <= 0:
+                    continue
+
+                open_trades = session.execute(
+                    select(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
+                ).scalars().all()
+                positions_value = sum(
+                    float(t.current_price or t.entry_price) * float(t.shares)
+                    for t in open_trades if t.shares and t.shares > 0
+                )
+                equity = float(p.current_cash) + positions_value
+
+                current_dd = _compute_portfolio_drawdown(session, p.id, equity)
+                state_key = f"stockai:drawdown_alert_active:{p.id}"
+                if current_dd is None or current_dd <= max_dd_cfg:
+                    # Recovered (or never breached) — clear any active-breach state so a future
+                    # re-breach is treated as genuinely new, not suppressed by a stale key.
+                    try:
+                        _rc.delete(state_key)
+                    except Exception:
+                        pass
+                    continue
+
+                # Still breached — only a NEW breach (no active-state key yet) should notify.
+                try:
+                    already_active = bool(_rc.exists(state_key))
+                except Exception:
+                    already_active = False
+                if already_active:
+                    continue
+
+                breached.append({
+                    "portfolio_id": p.id,
+                    "portfolio_name": p.name or f"Portfolio #{p.id}",
+                    "current_dd_pct": round(current_dd * 100, 1),
+                    "limit_pct": round(max_dd_cfg * 100, 1),
+                    "equity": round(equity, 2),
+                })
+                try:
+                    _rc.setex(state_key, 30 * 86400, "1")
+                except Exception:
+                    pass
+
+            if not breached:
+                _record_job_status("portfolio_drawdown_alert_check", "ok", time.monotonic() - _t0)
+                return
+
+            from .email_service import send_portfolio_drawdown_alert_email
+            sent = 0
+            for uid, user in recipients.items():
+                # AUD266-PER-RECIPIENT-ISOLATION: an uncaught exception from inside
+                # send_portfolio_drawdown_alert_email() must not abort the remaining recipient
+                # loop — matching check_earnings_beat_screener_alerts()'s own established
+                # per-recipient try/except isolation.
+                try:
+                    ok = send_portfolio_drawdown_alert_email(user.email, breached)
+                except Exception as _send_exc:
+                    ok = False
+                    log.warning("portfolio_drawdown_alert.recipient_send_error", user=uid, error=str(_send_exc))
+                if ok:
+                    sent += 1
+            log.info("portfolio_drawdown_alert.done", breached=len(breached), sent=sent, recipients=len(recipients))
+            _record_job_status("portfolio_drawdown_alert_check", "ok", time.monotonic() - _t0)
+    except Exception as exc:
+        _record_job_status("portfolio_drawdown_alert_check", "error", time.monotonic() - _t0, str(exc))
+        log.error("portfolio_drawdown_alert.failed", error=str(exc), exc_info=True)
+
+
 def _run_watchlist_auto_rotation() -> None:
     """WATCHLIST-AUTO-ROTATION: weekly per-watchlist rotation — drop stocks with a reliably
     poor trailing win rate, add top-K-Score candidates not already on that watchlist.
@@ -6945,6 +7160,112 @@ def send_weekly_theme_forecast() -> None:
     except Exception as exc:
         log.error("theme_forecast.failed", error=str(exc), exc_info=True)
         _record_job_status("theme_forecast_weekly", "error", time.monotonic() - _t0, str(exc))
+
+
+_REDIS_TRADE_COACH_ENABLED = "stockai:admin:feature:trade_coach_email_enabled"
+
+
+def send_weekly_trade_coach() -> None:
+    """T286-TRADE-PATTERN-COACH: weekly cross-trade behavioral-pattern digest — computes a
+    90-day rolling aggregate over ALL closed PaperTrade rows (across every portfolio) and
+    sends it in one function, matching send_weekly_theme_forecast()'s own compute-then-send
+    shape exactly (a once-a-week job has no need for the detect/deliver split used by
+    per-minute-polled alerts).
+
+    Gated behind trade_coach_email_enabled (default OFF, matching every other opt-in
+    Claude-calling feature added since CLAUDE-API-COST-AUDIT) — checked FIRST, before any DB
+    query, so a disabled flag costs nothing. Recipients are ALL users with an email set
+    (matching send_weekly_theme_forecast()'s own all-User audience) — this is a single
+    account-wide aggregate across every portfolio, not tied to any one symbol subscription, so
+    PriceAlert-subscriber scoping would be the wrong fit here.
+
+    See services/market-data/src/services/trade_coach.py's own module docstring for the full
+    honesty-framing rationale: this reports ALREADY-MEASURED behavioral patterns (giveback vs.
+    peak price on winning trades, hold-days vs. each style's own expected window, win rate by
+    exit reason), with an LLM writing prose that explains those real numbers — it never tells
+    the user what to do differently.
+    """
+    from dataclasses import asdict
+    from .trade_coach import compute_trade_patterns, generate_trade_coach_summary
+
+    _t0 = time.monotonic()
+    try:
+        if _get_redis().get(_REDIS_TRADE_COACH_ENABLED) != "1":
+            _record_job_status("trade_coach_weekly", "ok", time.monotonic() - _t0)
+            return
+    except Exception:
+        return
+
+    today = datetime.now(timezone.utc).date()
+    try:
+        with SessionLocal() as session:
+            users = session.execute(
+                select(User).where(User.email.isnot(None), User.email != "")
+            ).scalars().all()
+            if not users:
+                _record_job_status("trade_coach_weekly", "ok", time.monotonic() - _t0)
+                log.info("trade_coach.no_recipients")
+                return
+
+            try:
+                result = compute_trade_patterns(session)
+            except Exception as exc:
+                log.error("trade_coach.compute_failed", error=str(exc), exc_info=True)
+                _record_job_status("trade_coach_weekly", "error", time.monotonic() - _t0, str(exc))
+                return
+            if result is None:
+                _record_job_status("trade_coach_weekly", "ok", time.monotonic() - _t0)
+                log.info("trade_coach.insufficient_trades")
+                return
+
+            # asyncio.run() is safe here — same reasoning as send_weekly_theme_forecast()'s own
+            # identical call: this runs synchronously inside APScheduler's worker thread (a
+            # BackgroundScheduler, not AsyncIOScheduler), never inside FastAPI's event loop.
+            import asyncio
+            summary_text = None
+            try:
+                summary_text = asyncio.run(generate_trade_coach_summary(result))
+            except Exception as exc:
+                log.warning("trade_coach.summary_failed", error=str(exc))
+
+            result_dict = asdict(result)
+            result_dict["summary_text"] = summary_text
+
+            from .email_service import send_trade_coach_email
+            date_str = today.strftime("%a, %b %-d")
+            _rc = _get_redis()
+            sent = 0
+            errors = 0
+            for user in users:
+                # Per-(user, date) dedup — matches send_weekly_theme_forecast()'s own AUD256
+                # pattern, guarding against a restart within this job's misfire_grace_time
+                # window re-sending the same week's review a second time.
+                redis_key = f"stockai:trade_coach:{user.id}:{today.isoformat()}"
+                try:
+                    if _rc and _rc.exists(redis_key):
+                        continue
+                except Exception:
+                    pass
+                try:
+                    ok = send_trade_coach_email(user.email, date_str, result_dict)
+                except Exception as exc:
+                    ok = False
+                    errors += 1
+                    log.warning("trade_coach.recipient_send_error", user=user.username, error=str(exc))
+                if ok:
+                    sent += 1
+                    try:
+                        _rc and _rc.setex(redis_key, 20 * 3600, "1")  # 20h TTL — one digest/user/day
+                    except Exception:
+                        pass
+                else:
+                    errors += 1
+
+            _record_job_status("trade_coach_weekly", "ok", time.monotonic() - _t0)
+            log.info("trade_coach.sent", n_trades=result.n_trades, sent=sent, errors=errors)
+    except Exception as exc:
+        log.error("trade_coach.failed", error=str(exc), exc_info=True)
+        _record_job_status("trade_coach_weekly", "error", time.monotonic() - _t0, str(exc))
 
 
 _SECTOR_ROTATION_ALERT_TOP_N = 5  # top-N US stocks by K-Score shown per newly-emerging sector
@@ -9022,6 +9343,20 @@ def start_scheduler() -> None:
             max_instances=1, coalesce=True,
         )
 
+        # ── T286-DRAWDOWN-ALERT: portfolio drawdown breach checker — every minute ────────
+        # Reads only already-computed equity/PaperEquityCurve peak state (no yfinance call in
+        # the loop) — see check_portfolio_drawdown_alerts()'s own docstring for the
+        # state-transition dedup that keeps this from re-firing every minute of a sustained
+        # drawdown.
+        _scheduler.add_job(
+            check_portfolio_drawdown_alerts,
+            "interval",
+            minutes=1,
+            id="portfolio_drawdown_alert_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
+
         # ── T257-TOP3-CONVICTION-ALERT: measured-win-rate-gated top-3 scan — every minute ──
         # Cheap (a handful of bulk HTTP calls, no per-symbol requests); only emails when the
         # qualifying set actually changes — see check_top3_conviction()'s own docstring.
@@ -9309,6 +9644,18 @@ def start_scheduler() -> None:
             send_weekly_theme_forecast,
             CronTrigger(day_of_week="sun", hour=17, minute=30, timezone="America/New_York"),
             id="theme_forecast_weekly", replace_existing=True, **_JOB_DEFAULTS,
+        )
+
+    # ── T286-TRADE-PATTERN-COACH: Sunday 17:45 ET (after the theme forecast above — no hard
+    # dependency, just scheduled after so this reads that week's freshest closed-trade data
+    # without racing an in-progress theme computation). Gated behind trade_coach_email_enabled
+    # (default OFF) — see send_weekly_trade_coach()'s own docstring for the full opt-in/
+    # audience/honesty-framing rationale.
+    if _is_alerting_enabled():
+        _scheduler.add_job(
+            send_weekly_trade_coach,
+            CronTrigger(day_of_week="sun", hour=17, minute=45, timezone="America/New_York"),
+            id="trade_coach_weekly", replace_existing=True, **_JOB_DEFAULTS,
         )
 
     # ── One-shot startup run to restore conviction/Redis data after restarts ─

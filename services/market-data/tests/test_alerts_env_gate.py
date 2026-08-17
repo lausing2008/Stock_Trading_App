@@ -175,12 +175,14 @@ _ALERT_JOB_IDS = {
     "short_squeeze_alert_check",
     "squeeze_watch_revert_check",
     "value_area_breakdown_check",
+    "portfolio_drawdown_alert_check",
     "top3_conviction_check",
     "earnings_reaction_check",
     "macro_reaction_alert_check",
     "earnings_impact_alert_check",
     "early_earnings_news_alert_check",
     "theme_forecast_weekly",
+    "trade_coach_weekly",
     "signal_alert_startup",
 }
 

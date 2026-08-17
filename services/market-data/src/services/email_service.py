@@ -1795,6 +1795,63 @@ def send_earnings_beat_screener_email(to: str, candidates: list[dict]) -> bool:
     return send_email(to, subject, body_html, body_text)
 
 
+def send_portfolio_drawdown_alert_email(to: str, breaches: list[dict]) -> bool:
+    """T286-DRAWDOWN-ALERT: real, user-facing notification that a paper portfolio has crossed
+    its own configured max_portfolio_drawdown_pct limit — the SAME condition the existing
+    silent _write_gate_block()/UI gate-block badge already computes, just surfaced actively
+    instead of only passively on the /paper-portfolio list page. Each dict: {portfolio_id,
+    portfolio_name, current_dd_pct, limit_pct, equity}.
+
+    Fires once per NEW breach (state-transition dedup in check_portfolio_drawdown_alerts()),
+    not on every 1-minute check while still breached — this is a "this just started" alert,
+    not a recurring nag.
+    """
+    n = len(breaches)
+    subject = f"⚠️ Drawdown Limit Hit — {n} Portfolio{'s' if n != 1 else ''} Paused"
+
+    rows_html = ""
+    rows_text = ""
+    for b in breaches:
+        name = b["portfolio_name"]
+        dd_pct = b["current_dd_pct"]
+        limit_pct = b["limit_pct"]
+        equity = b["equity"]
+        rows_html += (
+            f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
+            f'<strong style="font-size:14px">{name}</strong>'
+            f'<span style="font-size:12px;color:#ef4444;font-weight:700">-{dd_pct:.1f}% drawdown</span>'
+            f'</div>'
+            f'<div style="font-size:12px;color:#64748b;margin-top:2px">Limit: {limit_pct:.0f}% · Current equity: ${equity:,.2f}</div>'
+            f'</div>'
+        )
+        rows_text += f"  {name}: -{dd_pct:.1f}% drawdown (limit {limit_pct:.0f}%), equity ${equity:,.2f}\n"
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:520px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:#ef4444">⚠️ Drawdown Limit Hit</h2>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">
+      {n} portfolio{'s have' if n != 1 else ' has'} dropped below its own configured
+      max-drawdown limit. New entries are automatically paused for {'each' if n != 1 else 'this'}
+      portfolio until equity recovers — no action is required to stop trading, this already
+      happened.
+    </p>
+    <div style="margin-top:12px">{rows_html}</div>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      This is the same drawdown-from-peak-equity check that already blocks new entries
+      silently — this email exists only to make sure you actually see it happened, not to
+      change anything about how the portfolio behaves. Not financial advice.
+    </p>
+  </div>
+</body></html>"""
+    body_text = (
+        f"Drawdown Limit Hit — {n} Portfolio{'s' if n != 1 else ''} Paused\n\n"
+        + rows_text
+        + "\nNew entries are already paused for the listed portfolio(s) until equity recovers. Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_top3_conviction_email(to: str, picks: list[dict]) -> bool:
     """T257-TOP3-CONVICTION-ALERT: up to 3 picks, each gated on a MEASURED historical win
     rate (not raw model confidence) — the email's whole point is to make that accuracy claim
@@ -2761,6 +2818,92 @@ def send_theme_forecast_email(to: str, date_str: str, themes: list[dict]) -> boo
         + (rows_text or "  No theme data available this week.\n")
         + "\nAlready-measured signals as of this week, not a prediction of what any theme will do"
         " next. Themes are hand-curated, not auto-detected. Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
+def send_trade_coach_email(to: str, date_str: str, result: dict) -> bool:
+    """T286-TRADE-PATTERN-COACH: weekly cross-trade behavioral-pattern digest — see
+    services/market-data/src/services/trade_coach.py's own module docstring for the full
+    honesty-framing rationale (this reports MEASURED patterns across the account's own closed
+    trades, e.g. giveback vs. peak price on winners, hold-days vs. each style's expected window
+    — it never tells the user what to do differently).
+
+    `result` is the exact dict shape TradePatternResult produces (dataclasses.asdict), plus an
+    optional "summary_text" key for the LLM prose (None if unavailable). This function only
+    renders — sorting/ranking happens upstream if needed (here, there's nothing to rank, since
+    this is a single account-wide aggregate, not a per-item list).
+    """
+    subject = f"🧭 Weekly Trade Pattern Review — {date_str}"
+
+    n_trades = result.get("n_trades", 0)
+    window_days = result.get("window_days", 90)
+    win_rate = result.get("win_rate")
+    win_rate_str = f"{win_rate*100:.0f}%" if win_rate is not None else "—"
+    avg_return = result.get("avg_return_pct")
+    avg_return_str = f"{avg_return:+.2f}%" if avg_return is not None else "—"
+    giveback = result.get("avg_giveback_pct_on_winners")
+    giveback_str = f"{giveback:.1f}%" if giveback is not None else "—"
+    hold_delta = result.get("avg_hold_days_vs_expected")
+    hold_delta_str = (
+        f"{hold_delta:+.1f} days vs. expected" if hold_delta is not None else "—"
+    )
+    summary = result.get("summary_text")
+
+    reason_rows_html = ""
+    reason_rows_text = ""
+    for r in (result.get("by_exit_reason") or []):
+        wr = r.get("win_rate")
+        wr_str = f"{wr*100:.0f}%" if wr is not None else "—"
+        ret = r.get("avg_return_pct")
+        ret_str = f"{ret:+.2f}%" if ret is not None else "—"
+        pnl = r.get("total_pnl", 0.0)
+        pnl_color = "#16a34a" if pnl >= 0 else "#dc2626"
+        reason_rows_html += (
+            f'<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f8fafc;font-size:12px">'
+            f'<span>{r.get("exit_reason","")} <span style="color:#94a3b8">({r.get("count",0)})</span></span>'
+            f'<span>win {wr_str} · avg {ret_str} · <span style="color:{pnl_color};font-weight:700">${pnl:,.2f}</span></span>'
+            f'</div>'
+        )
+        reason_rows_text += f"  {r.get('exit_reason','')} ({r.get('count',0)}): win rate {wr_str}, avg return {ret_str}, total pnl ${pnl:,.2f}\n"
+
+    summary_html = (
+        f'<div style="font-size:13px;color:#1e293b;margin-top:14px;line-height:1.6;background:#f8fafc;border-radius:8px;padding:12px">{summary}</div>'
+        if summary else
+        '<div style="font-size:11px;color:#94a3b8;margin-top:14px">No AI summary available this week — numbers above are still real, measured data.</div>'
+    )
+
+    body_html = f"""<!DOCTYPE html><html><body style="font-family:sans-serif;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:560px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:16px">
+      <h2 style="margin:0;font-size:18px;color:#0f172a">🧭 Weekly Trade Pattern Review</h2>
+      <span style="font-size:13px;color:#94a3b8">{date_str}</span>
+    </div>
+    <div style="font-size:12px;color:#64748b;margin-bottom:12px">
+      Last {window_days} days · {n_trades} closed trades · win rate {win_rate_str} · avg return {avg_return_str}
+    </div>
+    <div style="display:flex;gap:16px;margin-bottom:12px;font-size:12px;color:#334155">
+      <div>Avg giveback on winners: <strong>{giveback_str}</strong></div>
+      <div>Avg hold vs. expected: <strong>{hold_delta_str}</strong></div>
+    </div>
+    <div>{reason_rows_html or '<div style="font-size:12px;color:#94a3b8">No exit-reason data available.</div>'}</div>
+    {summary_html}
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      These are already-measured statistics over this account's own closed paper trades — not
+      a prediction of future performance, and not prescriptive advice about what to change. The
+      AI summary (where shown) only describes what these real numbers already show. Not
+      financial advice.
+    </p>
+  </div>
+</body></html>"""
+
+    body_text = (
+        f"Weekly Trade Pattern Review — {date_str}\n\n"
+        f"Last {window_days} days · {n_trades} closed trades · win rate {win_rate_str} · avg return {avg_return_str}\n"
+        f"Avg giveback on winners: {giveback_str} · Avg hold vs. expected: {hold_delta_str}\n\n"
+        + (reason_rows_text or "  No exit-reason data available.\n")
+        + (f"\n{summary}\n" if summary else "")
+        + "\nAlready-measured statistics, not a prediction or prescriptive advice. Not financial advice.\n"
     )
     return send_email(to, subject, body_html, body_text)
 

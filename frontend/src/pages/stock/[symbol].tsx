@@ -48,6 +48,7 @@ import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib
 import { activeNewsSources, loadSettings } from '@/lib/settings';
 import { getUsername } from '@/lib/auth';
 import ResearchPage from '@/pages/research/[symbol]';
+import StockGoalsPanel from '@/components/StockGoalsPanel';
 
 function RefreshButton({ onClick, loading }: { onClick: () => void; loading: boolean }) {
   return (
@@ -156,7 +157,7 @@ export default function StockDetail() {
   // Overview/Research top-level tab (this page previously had no tab system at all — the
   // research report was only reachable via a small sidebar card + a separate /research/[symbol]
   // URL; a user asked directly for a real 'Research' tab here).
-  const [pageTab, setPageTab] = useState<'Overview' | 'Research'>('Overview');
+  const [pageTab, setPageTab] = useState<'Overview' | 'Research' | 'Goals'>('Overview');
 
   const [watched, setWatched] = useState(false);
   const [watchMenuOpen, setWatchMenuOpen] = useState(false);
@@ -877,7 +878,7 @@ Return ONLY valid JSON — no markdown, no prose:
           router.query.symbol, the same param this page's own route already has) rather than
           re-implementing report rendering a second time. */}
       <div style={{ display: 'flex', gap: '4px', borderBottom: '1px solid #1e293b', marginBottom: '4px' }}>
-        {(['Overview', 'Research'] as const).map(t => (
+        {(['Overview', 'Research', 'Goals'] as const).map(t => (
           <button
             key={t}
             onClick={() => setPageTab(t)}
@@ -895,6 +896,8 @@ Return ONLY valid JSON — no markdown, no prose:
       </div>
 
       {pageTab === 'Research' && <ResearchPage />}
+
+      {pageTab === 'Goals' && symbol && <StockGoalsPanel symbol={symbol} />}
 
       {pageTab === 'Overview' && (
     <div className="space-y-4">

@@ -41,7 +41,7 @@ import yfinance as yf
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import EarningsAlertSubscription, Fundamental, Price, SqueezeWatch, Stock, TimeFrame, get_session
+from db import EarningsAlertSubscription, Fundamental, Price, SqueezeWatch, Stock, StockGoal, TimeFrame, get_session
 from .auth import get_current_user
 from ..services.ingestion import _classify_session
 
@@ -2374,6 +2374,226 @@ def remove_earnings_alert_subscription(
     if s is None:
         raise HTTPException(status_code=404, detail="Subscription not found")
     session.delete(s)
+    session.commit()
+    return {"status": "removed"}
+
+
+# ── Stock Goals (T286-STOCK-GOALS) ─────────────────────────────────────────────
+# A user-defined price/share/date target per symbol — see StockGoal's own docstring in
+# shared/db/models.py for why this is a genuinely new capability, confirmed via a direct
+# codebase search to have zero existing equivalent (unlike most of the roadmap doc that
+# prompted this feature, whose other proposals turned out to already exist under different
+# names). Progress is computed FRESH on every read from the current live/last-close price,
+# never persisted — matches this app's own "don't store what can be cheaply recomputed"
+# discipline used elsewhere (e.g. SqueezeAlertOutcome's own forward-return evaluator).
+
+class StockGoalCreate(BaseModel):
+    symbol: str
+    title: str
+    target_price: float | None = None
+    target_shares: float | None = None
+    target_date: str | None = None  # YYYY-MM-DD
+    start_shares: float = 0.0
+    notes: str | None = None
+
+
+class StockGoalUpdate(BaseModel):
+    title: str | None = None
+    target_price: float | None = None
+    target_shares: float | None = None
+    target_date: str | None = None
+    notes: str | None = None
+    status: str | None = None  # active | achieved | cancelled
+
+
+class StockGoalOut(BaseModel):
+    id: int
+    symbol: str
+    title: str
+    target_price: float | None = None
+    target_shares: float | None = None
+    target_date: str | None = None
+    start_price: float
+    start_shares: float
+    notes: str | None = None
+    status: str
+    created_at: str
+    achieved_at: str | None = None
+    # Computed, never stored:
+    current_price: float | None = None
+    price_progress_pct: float | None = None  # 0-100+, None if no target_price set
+    days_remaining: int | None = None  # None if no target_date set, negative if past due
+
+
+def _compute_goal_progress(
+    start_price: float, target_price: float | None, target_date_str: str | None,
+    current_price: float | None,
+) -> tuple[float | None, int | None]:
+    """Pure function — price_progress_pct and days_remaining, both independently nullable
+    depending on which targets are actually set. Pulled to module level (not an inline
+    closure) so it's directly unit-testable with plain floats/strings, no DB/HTTP dependency,
+    matching this file's own established _rank_screener_quotes()/_options_chain_rows()
+    convention for "the one real piece of logic in an endpoint worth testing directly."
+
+    price_progress_pct measures how far price has moved from start_price TOWARD target_price,
+    as a percentage of the total distance needed — NOT current_price / target_price (which
+    would misrepresent a goal that started well above zero, e.g. "go from $100 to $110" is a
+    10% move, not the 90.9% a naive current/target ratio would report). Can exceed 100 if
+    price has already moved past the target, and can be negative if price has moved the WRONG
+    way (below start_price for an upward target) — both are real, honest signals, not clamped.
+
+    A degenerate target_price exactly equal to start_price (zero real distance to travel) is
+    reported as None rather than a division-by-zero — there is no meaningful "progress" to
+    measure toward a target that was already met at goal-creation time.
+    """
+    price_progress_pct = None
+    if target_price is not None and current_price is not None and target_price != start_price:
+        price_progress_pct = round(
+            (current_price - start_price) / (target_price - start_price) * 100, 1,
+        )
+
+    days_remaining = None
+    if target_date_str:
+        try:
+            target_d = date.fromisoformat(target_date_str)
+            days_remaining = (target_d - date.today()).days
+        except (ValueError, TypeError):
+            days_remaining = None
+
+    return price_progress_pct, days_remaining
+
+
+def _goal_current_price(session: Session, symbol: str) -> float | None:
+    """Live cache first (stockai:live_prices), falling back to the last DB close — matches
+    this file's own established fail-open-to-DB convention (see latest_prices()'s own
+    cache-then-DB fallback a few hundred lines above)."""
+    try:
+        cached = _get_redis().get(_LIVE_KEY)
+        if cached:
+            for row in json.loads(cached):
+                if row.get("symbol") == symbol:
+                    return row.get("price")
+    except Exception:
+        pass
+    for row in _latest_prices_from_db(session):
+        if row.symbol == symbol:
+            return row.price
+    return None
+
+
+def _stock_goal_out(g: "StockGoal", current_price: float | None) -> StockGoalOut:
+    price_progress_pct, days_remaining = _compute_goal_progress(
+        g.start_price, g.target_price, g.target_date.isoformat() if g.target_date else None,
+        current_price,
+    )
+    return StockGoalOut(
+        id=g.id, symbol=g.symbol, title=g.title,
+        target_price=g.target_price, target_shares=g.target_shares,
+        target_date=g.target_date.isoformat() if g.target_date else None,
+        start_price=g.start_price, start_shares=g.start_shares, notes=g.notes,
+        status=g.status, created_at=g.created_at.isoformat(),
+        achieved_at=g.achieved_at.isoformat() if g.achieved_at else None,
+        current_price=current_price, price_progress_pct=price_progress_pct,
+        days_remaining=days_remaining,
+    )
+
+
+@router.get("/goals", response_model=list[StockGoalOut])
+def list_stock_goals(
+    symbol: str | None = Query(None, description="Filter to one symbol"),
+    session: Session = Depends(get_session),
+    _user=Depends(get_current_user),
+):
+    q = select(StockGoal).where(StockGoal.user_id == _user.id)
+    if symbol:
+        q = q.where(StockGoal.symbol == symbol.upper().strip())
+    rows = session.execute(q.order_by(StockGoal.created_at.desc())).scalars().all()
+    return [_stock_goal_out(g, _goal_current_price(session, g.symbol)) for g in rows]
+
+
+@router.post("/goals", response_model=StockGoalOut)
+def create_stock_goal(
+    req: StockGoalCreate,
+    session: Session = Depends(get_session),
+    _user=Depends(get_current_user),
+):
+    sym = req.symbol.upper().strip()
+    if not sym:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    if not req.title or not req.title.strip():
+        raise HTTPException(status_code=400, detail="title is required")
+    if req.target_price is None and req.target_shares is None and not req.target_date:
+        raise HTTPException(status_code=400, detail="At least one of target_price, target_shares, target_date must be set")
+    target_d = None
+    if req.target_date:
+        try:
+            target_d = date.fromisoformat(req.target_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="target_date must be YYYY-MM-DD")
+
+    start_price = _goal_current_price(session, sym)
+    if start_price is None:
+        raise HTTPException(status_code=422, detail=f"No current price available for {sym} — cannot start a goal without a real reference price")
+
+    g = StockGoal(
+        user_id=_user.id, symbol=sym, title=req.title.strip(),
+        target_price=req.target_price, target_shares=req.target_shares,
+        target_date=target_d, start_price=start_price, start_shares=req.start_shares,
+        notes=req.notes,
+    )
+    session.add(g)
+    session.commit()
+    session.refresh(g)
+    return _stock_goal_out(g, start_price)
+
+
+@router.put("/goals/{goal_id}", response_model=StockGoalOut)
+def update_stock_goal(
+    goal_id: int,
+    req: StockGoalUpdate,
+    session: Session = Depends(get_session),
+    _user=Depends(get_current_user),
+):
+    g = session.execute(
+        select(StockGoal).where(StockGoal.id == goal_id, StockGoal.user_id == _user.id)
+    ).scalar_one_or_none()
+    if g is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    if req.status is not None:
+        if req.status not in ("active", "achieved", "cancelled"):
+            raise HTTPException(status_code=400, detail="status must be active, achieved, or cancelled")
+        g.status = req.status
+        g.achieved_at = datetime.now(timezone.utc) if req.status == "achieved" else None
+    if req.title is not None:
+        g.title = req.title.strip()
+    if req.target_price is not None:
+        g.target_price = req.target_price
+    if req.target_shares is not None:
+        g.target_shares = req.target_shares
+    if req.target_date is not None:
+        try:
+            g.target_date = date.fromisoformat(req.target_date) if req.target_date else None
+        except ValueError:
+            raise HTTPException(status_code=400, detail="target_date must be YYYY-MM-DD")
+    if req.notes is not None:
+        g.notes = req.notes
+    session.commit()
+    session.refresh(g)
+    return _stock_goal_out(g, _goal_current_price(session, g.symbol))
+
+
+@router.delete("/goals/{goal_id}")
+def delete_stock_goal(
+    goal_id: int,
+    session: Session = Depends(get_session),
+    _user=Depends(get_current_user),
+):
+    g = session.execute(
+        select(StockGoal).where(StockGoal.id == goal_id, StockGoal.user_id == _user.id)
+    ).scalar_one_or_none()
+    if g is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    session.delete(g)
     session.commit()
     return {"status": "removed"}
 
