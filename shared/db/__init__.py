@@ -57,6 +57,7 @@ from .models import (
     SqueezeAlertOutcome,
     PreBreakoutAlertOutcome,
     StockGoal,
+    AnalystPriceTarget,
 )
 from .session import SessionLocal, engine, get_session, init_db
 
@@ -119,6 +120,7 @@ __all__ = [
     "SqueezeAlertOutcome",
     "PreBreakoutAlertOutcome",
     "StockGoal",
+    "AnalystPriceTarget",
     "SessionLocal",
     "engine",
     "get_session",
