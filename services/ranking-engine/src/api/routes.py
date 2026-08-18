@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from common.config import get_settings
 from common.jwt_auth import get_current_username
 from common.logging import get_logger
-from db import Fundamental, Price, Ranking, Signal, SignalType, Stock, TimeFrame, get_session
+from db import Fundamental, Price, Ranking, Signal, SignalType, Stock, TimeFrame, TuneHistory, get_session
 
 from ..scoring import compute_kscore
 
@@ -612,6 +612,23 @@ def skipped_stocks():
     }
 
 
+@router.get("/kscore_weights_status")
+def kscore_weights_status():
+    """T288-KSCORE-WEIGHT-SWEEP status: the currently-EFFECTIVE weight set (Redis override if
+    tune_kscore_weights has ever promoted one, else the hardcoded default) alongside the
+    hardcoded default itself, so an admin can see at a glance whether a sweep has ever changed
+    anything. Registered ABOVE /{symbol} below — the exact same reasoning /skipped's own
+    comment documents (a bare GET /{symbol} catch-all registered first would otherwise
+    silently swallow this literal path, the BUG233-ROUTERORDER bug class)."""
+    from ..scoring.kscore import _WEIGHTS as _HARDCODED_WEIGHTS, _load_active_weights
+    effective = _load_active_weights()
+    return {
+        "effective_weights": effective,
+        "hardcoded_default_weights": _HARDCODED_WEIGHTS,
+        "is_tuned": effective != _HARDCODED_WEIGHTS,
+    }
+
+
 @router.get("/{symbol}")
 def rank_symbol(symbol: str, session: Session = Depends(get_session)):
     stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
@@ -836,6 +853,336 @@ def _leaderboard_live(market: str | None, limit: int, session: Session) -> dict:
             log.warning("ranking.leaderboard_live_stock_failed", symbol=s.symbol, error=str(_stock_exc))
     results.sort(key=lambda r: r["score"] or 0, reverse=True)
     return {"as_of": str(date.today()), "rankings": results[:limit]}
+
+
+# ── T288-KSCORE-WEIGHT-SWEEP: walk-forward validated sweep of K-Score's factor weights ──
+# _WEIGHTS (kscore.py) has been a hardcoded, never-empirically-validated guess since this
+# service shipped. Ranking already stores all 6 individual factor scores per (stock_id,
+# as_of) — meaning a sweep can recompute alternative composite scores directly from
+# already-persisted historical data with NO signal regeneration needed, the exact same
+# no-re-simulation advantage signal-engine's tune_strategy() already established for its own
+# (buy_threshold x ml_weight_cap) grid. Mirrors that mechanism's chronological 70/30 split,
+# validation-beats-current-live-baseline gate, and per-attempt TuneHistory recording exactly.
+
+_KSCORE_SWEEP_MIN_ROWS = 200  # rankings rows needed, PER SLICE, before a candidate is trusted
+_KSCORE_SWEEP_FORWARD_BARS = 20  # ~1 trading month — bar-index offset, not calendar days, so
+# weekends/holidays never need special-casing (the same reasoning gate_harness.py's own T196
+# fix documents for why a bar-index lookup is preferred over a calendar-day one).
+_KSCORE_SWEEP_DELTA = 0.05  # how much a single factor's weight is perturbed per candidate
+_KSCORE_SWEEP_TOP_DECILE = 0.10
+
+
+def _record_kscore_tune_history(
+    session: Session,
+    run_id: str,
+    old_value: dict,
+    new_value: dict,
+    train_window: tuple,
+    validation_window: tuple,
+    train_ev_pct: float | None,
+    validation_ev_pct: float | None,
+    baseline_validation_ev_pct: float | None,
+    validation_n: int | None,
+    promoted: bool,
+    gate_failures: list[str],
+) -> None:
+    """Local tune_history writer, matching ml-prediction's tuner.py and signal-engine's
+    signals_shared.py — each service keeps its OWN copy rather than a cross-service import,
+    per this repo's established per-service-duplication convention (docker cp deploys one
+    service's code at a time; a shared import would create a cross-service coupling this
+    app's deployment model doesn't otherwise have)."""
+    session.add(TuneHistory(
+        run_id=run_id, parameter_class="kscore_weights", parameter_name="factor_weights",
+        style="ALL", market="ALL", old_value=old_value, new_value=new_value,
+        train_window_start=train_window[0], train_window_end=train_window[1],
+        validation_window_start=validation_window[0], validation_window_end=validation_window[1],
+        train_ev_pct=train_ev_pct, validation_ev_pct=validation_ev_pct,
+        baseline_validation_ev_pct=baseline_validation_ev_pct, validation_n=validation_n,
+        promoted=promoted, gate_failures=gate_failures, triggered_by="manual",
+    ))
+    session.commit()
+
+
+def _kscore_active_weights_for_row(base_weights: dict, row) -> dict:
+    """Replicates compute_kscore()'s exact active-weight redistribution (T234-RANK-KSCORE-
+    PROXY-MIXING) against an ALREADY-STORED Ranking row's own None-ness of value/growth/
+    rs_score — a candidate weight set must be excluded/renormalized the identical way
+    compute_kscore() itself would have, or a recomputed historical score would silently
+    diverge from what was actually live for that stock on that day."""
+    active = dict(base_weights)
+    if row.value is None:
+        active.pop("value", None)
+    if row.growth is None:
+        active.pop("growth", None)
+    if row.rs_score is None:
+        active.pop("relative_strength", None)
+    return active
+
+
+def _kscore_recompute(base_weights: dict, row) -> float | None:
+    """Recompute a Ranking row's composite score under an alternative weight set, using
+    ONLY the 6 factor values that were already persisted for that row — never a fresh
+    computation, matching this mechanism's own no-regeneration design."""
+    active = _kscore_active_weights_for_row(base_weights, row)
+    w_sum = sum(active.values())
+    if w_sum <= 0:
+        return None
+    values = {
+        "technical": row.technical, "momentum": row.momentum, "volatility": row.volatility,
+        "value": row.value, "growth": row.growth, "relative_strength": row.rs_score,
+    }
+    return sum((w / w_sum) * values[f] for f, w in active.items())
+
+
+def _kscore_candidate_weight_sets(base_weights: dict) -> list[dict]:
+    """Generates one-factor-perturbed-at-a-time candidates rather than a full 6-dimensional
+    grid (combinatorially intractable at any reasonable step size) — a coordinate-ascent-style
+    sweep, matching the same 'search a tractable neighborhood, not the full space' judgment
+    already made for tune_strategy's own 2-parameter (not 6-parameter) grid. For each factor,
+    nudges it up or down by _KSCORE_SWEEP_DELTA and renormalizes every weight (including the
+    perturbed one) so the full set still sums to 1.0 — a candidate is a complete, self-
+    consistent weight set, never a single changed number with the rest left stale."""
+    candidates = []
+    for factor in base_weights:
+        for sign in (1, -1):
+            perturbed = dict(base_weights)
+            perturbed[factor] = max(0.01, perturbed[factor] + sign * _KSCORE_SWEEP_DELTA)
+            total = sum(perturbed.values())
+            candidates.append({k: round(v / total, 4) for k, v in perturbed.items()})
+    return candidates
+
+
+def _kscore_cross_sectional_ev(
+    rows_by_date: dict, weights: dict, forward_return_by_id: dict,
+) -> dict | None:
+    """The EV metric: per as_of date, rank all stocks that day by their (recomputed) composite
+    score, take the top decile, average their forward returns — then average that daily figure
+    across every date in the slice. A cross-sectional ranking metric, not a per-stock
+    buy/no-buy threshold, matching what K-Score is actually used for (ranking stocks against
+    each other on a given day), not a binary entry signal the way buy_threshold is."""
+    daily_evs: list[float] = []
+    n_scored = 0
+    for _as_of, day_rows in rows_by_date.items():
+        scored = []
+        for row in day_rows:
+            fwd = forward_return_by_id.get(row.id)
+            if fwd is None:
+                continue
+            composite = _kscore_recompute(weights, row)
+            if composite is None:
+                continue
+            scored.append((composite, fwd))
+        if len(scored) < 3:  # need at least a few stocks to have a meaningful "top decile" that day
+            continue
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        n_top = max(1, int(len(scored) * _KSCORE_SWEEP_TOP_DECILE))
+        top = scored[:n_top]
+        daily_evs.append(sum(r for _c, r in top) / len(top))
+        n_scored += len(top)
+    if not daily_evs:
+        return None
+    import statistics as _stats
+    return {
+        "n_days": len(daily_evs), "n_scored": n_scored,
+        "ev_pct": round(_stats.mean(daily_evs) * 100, 3),
+    }
+
+
+@router.post("/tune_kscore_weights")
+def tune_kscore_weights(
+    days: int = Query(365, description="Look-back window in calendar days"),
+    _: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
+    """Walk-forward validated sweep of K-Score's 6 factor weights (T288-KSCORE-WEIGHT-SWEEP).
+
+    Re-uses ALREADY-PERSISTED Ranking rows (all 6 individual factor scores, per stock, per
+    day) joined to REAL forward returns computed from Price.close — no signal regeneration.
+    Chronological 70/30 train/validation split. For each of the 12 one-factor-perturbed
+    candidates (see _kscore_candidate_weight_sets), measures the cross-sectional top-decile
+    EV on train; the single best candidate only gets applied if it ALSO beats the CURRENT
+    LIVE weights' own EV on the validation slice the search never saw — matching every other
+    self-tuning mechanism's own beat-the-live-baseline discipline, never a fixed target.
+    """
+    from ..scoring.kscore import _KSCORE_WEIGHTS_REDIS_KEY, _load_active_weights
+
+    current_weights = _load_active_weights()
+    cutoff = date.today() - timedelta(days=days)
+
+    all_rankings = list(session.execute(
+        select(Ranking).where(Ranking.as_of >= cutoff).order_by(Ranking.as_of)
+    ).scalars())
+
+    stock_ids = sorted({r.stock_id for r in all_rankings})
+    if not stock_ids or len(all_rankings) < _KSCORE_SWEEP_MIN_ROWS * 2:
+        return {
+            "applied": False,
+            "reason": f"only {len(all_rankings)} ranking rows in the window (need {_KSCORE_SWEEP_MIN_ROWS * 2} for a valid train/validation split)",
+        }
+
+    # One bulk daily-close fetch per stock (not per ranking row) — a chronological
+    # (date, close) list per stock_id lets forward returns be looked up by BAR-INDEX offset
+    # (_KSCORE_SWEEP_FORWARD_BARS trading days ahead), not a calendar-day computation that
+    # would need its own weekend/holiday handling.
+    price_rows = session.execute(
+        select(Price.stock_id, Price.ts, Price.close)
+        .where(Price.stock_id.in_(stock_ids), Price.timeframe == TimeFrame.D1)
+        .order_by(Price.stock_id, Price.ts)
+    ).all()
+    closes_by_stock: dict[int, list[tuple]] = defaultdict(list)
+    for sid, ts, close in price_rows:
+        closes_by_stock[sid].append((ts.date(), close))
+
+    # Forward return per ranking row: find this row's as_of date in its stock's own
+    # chronological close list via bisect, then look _KSCORE_SWEEP_FORWARD_BARS entries
+    # ahead in that SAME list — a pure bar-index offset, never a calendar-date arithmetic.
+    import bisect
+    forward_return_by_id: dict[int, float] = {}
+    for r in all_rankings:
+        closes = closes_by_stock.get(r.stock_id)
+        if not closes:
+            continue
+        dates = [d for d, _c in closes]
+        idx = bisect.bisect_left(dates, r.as_of)
+        if idx >= len(closes) or closes[idx][0] != r.as_of:
+            continue  # no exact price row for this ranking's own as_of — skip, never guess
+        fwd_idx = idx + _KSCORE_SWEEP_FORWARD_BARS
+        if fwd_idx >= len(closes):
+            continue  # not enough trading days have elapsed yet for this row to be resolvable
+        entry_close = closes[idx][1]
+        exit_close = closes[fwd_idx][1]
+        if entry_close and entry_close > 0:
+            forward_return_by_id[r.id] = (exit_close - entry_close) / entry_close
+
+    resolvable = [r for r in all_rankings if r.id in forward_return_by_id]
+    if len(resolvable) < _KSCORE_SWEEP_MIN_ROWS * 2:
+        return {
+            "applied": False,
+            "reason": f"only {len(resolvable)} ranking rows have a resolvable {_KSCORE_SWEEP_FORWARD_BARS}-bar forward return (need {_KSCORE_SWEEP_MIN_ROWS * 2})",
+        }
+
+    split = max(1, int(len(resolvable) * 0.7))
+    train_rows = resolvable[:split]
+    val_rows = resolvable[split:]
+    if len(train_rows) < _KSCORE_SWEEP_MIN_ROWS or len(val_rows) < _KSCORE_SWEEP_MIN_ROWS:
+        return {
+            "applied": False,
+            "reason": f"train/validation split too lopsided ({len(train_rows)}/{len(val_rows)}, need >= {_KSCORE_SWEEP_MIN_ROWS} each)",
+        }
+
+    train_window = (train_rows[0].as_of, train_rows[-1].as_of)
+    val_window = (val_rows[0].as_of, val_rows[-1].as_of)
+
+    train_by_date: dict = defaultdict(list)
+    for r in train_rows:
+        train_by_date[r.as_of].append(r)
+    val_by_date: dict = defaultdict(list)
+    for r in val_rows:
+        val_by_date[r.as_of].append(r)
+
+    run_id = __import__("uuid").uuid4().hex
+    candidates = _kscore_candidate_weight_sets(current_weights)
+
+    best_ev = -999.0
+    best_weights: dict | None = None
+    for cand in candidates:
+        stats = _kscore_cross_sectional_ev(train_by_date, cand, forward_return_by_id)
+        if stats is not None and stats["ev_pct"] > best_ev:
+            best_ev = stats["ev_pct"]
+            best_weights = cand
+
+    if best_weights is None:
+        _record_kscore_tune_history(
+            session, run_id, old_value=current_weights, new_value={},
+            train_window=train_window, validation_window=val_window,
+            train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+            validation_n=None, promoted=False, gate_failures=["no_candidate_met_train_criteria"],
+        )
+        return {"applied": False, "reason": "no candidate weight set met the train-slice criteria"}
+
+    candidate_stats = _kscore_cross_sectional_ev(val_by_date, best_weights, forward_return_by_id)
+    baseline_stats = _kscore_cross_sectional_ev(val_by_date, current_weights, forward_return_by_id)
+
+    if candidate_stats is None:
+        _record_kscore_tune_history(
+            session, run_id, old_value=current_weights, new_value=best_weights,
+            train_window=train_window, validation_window=val_window,
+            train_ev_pct=best_ev, validation_ev_pct=None, baseline_validation_ev_pct=None,
+            validation_n=None, promoted=False, gate_failures=["candidate_unmeasurable_on_validation"],
+        )
+        return {"applied": False, "reason": "candidate weights unmeasurable on the validation slice"}
+
+    if baseline_stats is None:
+        # T232-OC3 convention (already established in signal-engine's tune_strategy): no
+        # honest baseline measurable on validation means we cannot claim a lift over it — skip
+        # rather than assume baseline EV is 0, which would overstate the lift and apply too
+        # eagerly.
+        _record_kscore_tune_history(
+            session, run_id, old_value=current_weights, new_value=best_weights,
+            train_window=train_window, validation_window=val_window,
+            train_ev_pct=best_ev, validation_ev_pct=candidate_stats["ev_pct"],
+            baseline_validation_ev_pct=None, validation_n=candidate_stats["n_scored"],
+            promoted=False, gate_failures=["baseline_unmeasurable_on_validation"],
+        )
+        return {"applied": False, "reason": "current live weights unmeasurable on the validation slice"}
+
+    ev_lift = round(candidate_stats["ev_pct"] - baseline_stats["ev_pct"], 3)
+    # Unconditional rejection of a non-positive lift — matching every other sweep in this
+    # codebase's own "never promote a candidate that doesn't clear a genuinely positive,
+    # validation-measured improvement" discipline (T232-OC3, tune_strategy, outcomes_
+    # calibrate_apply). No shift-size escape hatch, no multiple-comparisons correction beyond
+    # this floor — the candidate pool here (12 single-factor perturbations) is far smaller
+    # than tune_strategy's own 403-cell grid, so the noise-inflation risk that motivated
+    # gate_harness.py's stricter margin is smaller here, but a bare ev_lift > 0 floor is still
+    # the correct minimum bar, not an assumed-safe shortcut.
+    if ev_lift <= 0:
+        _record_kscore_tune_history(
+            session, run_id, old_value=current_weights, new_value=best_weights,
+            train_window=train_window, validation_window=val_window,
+            train_ev_pct=best_ev, validation_ev_pct=candidate_stats["ev_pct"],
+            baseline_validation_ev_pct=baseline_stats["ev_pct"], validation_n=candidate_stats["n_scored"],
+            promoted=False, gate_failures=[f"ev_lift_not_positive:{ev_lift}"],
+        )
+        return {
+            "applied": False,
+            "reason": f"validation-slice EV lift {ev_lift}pp is not positive",
+            "candidate": best_weights, "current": current_weights,
+        }
+
+    redis_client = None
+    try:
+        from common.redis_client import get_redis
+        import json
+        redis_client = get_redis()
+        redis_client.setex(_KSCORE_WEIGHTS_REDIS_KEY, 30 * 86400, json.dumps(best_weights))
+    except Exception as _redis_exc:
+        log.warning("ranking.kscore_weight_redis_write_failed", error=str(_redis_exc))
+        _record_kscore_tune_history(
+            session, run_id, old_value=current_weights, new_value=best_weights,
+            train_window=train_window, validation_window=val_window,
+            train_ev_pct=best_ev, validation_ev_pct=candidate_stats["ev_pct"],
+            baseline_validation_ev_pct=baseline_stats["ev_pct"], validation_n=candidate_stats["n_scored"],
+            promoted=False, gate_failures=["redis_write_failed"],
+        )
+        return {"applied": False, "reason": "validated but Redis write failed — not applied"}
+
+    _record_kscore_tune_history(
+        session, run_id, old_value=current_weights, new_value=best_weights,
+        train_window=train_window, validation_window=val_window,
+        train_ev_pct=best_ev, validation_ev_pct=candidate_stats["ev_pct"],
+        baseline_validation_ev_pct=baseline_stats["ev_pct"], validation_n=candidate_stats["n_scored"],
+        promoted=True, gate_failures=[],
+    )
+    return {
+        "applied": True,
+        "previous_weights": current_weights,
+        "new_weights": best_weights,
+        "train_ev_pct": best_ev,
+        "validation_ev_pct": candidate_stats["ev_pct"],
+        "validation_baseline_ev_pct": baseline_stats["ev_pct"],
+        "ev_lift_pct": ev_lift,
+        "validation_n_days": candidate_stats["n_days"],
+    }
 
 
 @router.post("/refresh")

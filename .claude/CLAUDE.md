@@ -12727,3 +12727,208 @@ check whether `fundamentals_snapshot` actually has enough real weekly history fo
 yet (`min_periods=2` requires at least 2 real snapshot rows) — a symbol added to this app
 recently may simply not have accumulated enough snapshot history for this feature to ever
 produce a non-NaN value, which is correct, expected behavior, not a bug.
+
+---
+
+## Feature Reference: T288-KSCORE-WEIGHT-SWEEP — Walk-Forward Validated K-Score Factor Weights (2026-08-18)
+
+**Closes the 3rd and final candidate from this session's own "next improvements" survey**
+(Alpaca broker portability and `eps_revision_direction` were the other two, both documented
+above). `_WEIGHTS` (`services/ranking-engine/src/scoring/kscore.py`) — the 6 factor weights
+(technical/momentum/value/growth/volatility/relative_strength) that make up K-Score's
+composite 0-100 score — has been a hardcoded, never-empirically-validated guess since this
+service shipped. This session built a walk-forward sweep that recomputes historical K-Scores
+under alternative weight sets directly from already-persisted data, and only promotes a
+candidate if it beats the current live weights on data the sweep never searched.
+
+**The key insight that makes this buildable with NO signal regeneration**: `Ranking`
+(`shared/db/models.py`) already stores all 6 individual factor scores — `technical`,
+`momentum`, `value`, `growth`, `volatility`, `rs_score` — per `(stock_id, as_of)`, not just the
+final composite `score`. A weight sweep can therefore recompute an ALTERNATIVE composite score
+for every historical ranking row directly from these already-stored factor values — the exact
+same no-re-simulation advantage signal-engine's own `tune_strategy()` already established for
+its `(buy_threshold x ml_weight_cap)` grid (re-filtering already-computed data, not replaying
+history under different rules).
+
+**Read-side: Redis-overridable weights**. `kscore.py` gained `_load_active_weights()` — reads
+a single JSON blob from `stockai:kscore_weights` (all 6 weights TOGETHER, never 6 independent
+keys, since they only mean something as a complete set summing to 1.0 — a partial override,
+e.g. only `"momentum"` changed, would silently corrupt the other 5 factors' effective share),
+falling back to the hardcoded `_WEIGHTS` on any absence/parse/connection failure — the same
+fail-open-to-hardcoded-default convention every other Redis-tuned parameter in this codebase
+already uses (e.g. signal-engine's `_get_style_tuned_param`). `compute_kscore()`'s existing
+active-weight redistribution logic (excluding a factor when its stored value is `None`,
+renormalizing the rest — `T234-RANK-KSCORE-PROXY-MIXING`) is completely unchanged; the override
+only changes WHICH weights apply, never HOW they're combined.
+
+**A real, session-poisoning bug self-caught during test-writing, not shipped**: the first
+version of `compute_kscore()`'s wiring was `_active_weights = _load_active_weights()` (no
+`dict()` copy) — but `_load_active_weights()`'s own fallback paths originally returned the
+module-level `_WEIGHTS` object DIRECTLY, not a copy. `compute_kscore()` then does
+`del _active_weights["value"]` a few lines later to implement the None-exclusion — mutating
+that SAME shared object. The very first call to `compute_kscore()` in a process with
+`value_score=None` would permanently delete `"value"` from the real `_WEIGHTS` dict, silently
+corrupting every subsequent call for the rest of that process's lifetime. Caught when the
+pre-existing `test_kscore.py::test_kscore_in_range` — which never touches Redis mocking at
+all — started raising a real `KeyError: 'value'` when run in the SAME pytest session as this
+feature's new tests, confirmed via `git stash` to NOT happen on the unmodified pre-existing
+code. Fixed at BOTH layers defensively: `_load_active_weights()` now always returns
+`dict(_WEIGHTS)` (a fresh copy) on every fallback path, AND `compute_kscore()` itself wraps the
+call in `dict(...)` too, so a future caller anywhere else in the codebase can't reintroduce this
+exact footgun by skipping one layer's own defense. Two dedicated regression tests
+(`test_the_fallback_path_never_returns_the_module_level_weights_object_itself`,
+`test_deleting_a_key_from_the_returned_weights_does_not_corrupt_the_hardcoded_default`) lock
+this in — both were adversarially verified by reverting either layer's `dict()` wrapper and
+confirming the corruption reproduces (a real `KeyError` from `compute_kscore()`'s own `del`
+line) before restoring the fix.
+
+**The sweep endpoint**: `POST /rankings/tune_kscore_weights` (`services/ranking-engine/src/api/
+routes.py`) —
+1. Fetches every `Ranking` row in the lookback window (`days`, default 365).
+2. Bulk-fetches each involved stock's own chronological `(date, close)` list ONCE (not per
+   ranking row), then computes each row's forward return via a BAR-INDEX offset
+   (`_KSCORE_SWEEP_FORWARD_BARS = 20`, ~1 trading month) into that same list — never a
+   calendar-day computation, matching `gate_harness.py`'s own T196 precedent for exactly why
+   a bar-index lookup avoids weekend/holiday special-casing entirely. A row with no exact
+   price match for its own `as_of`, or not enough elapsed trading days yet, is skipped, never
+   guessed.
+3. Chronological 70/30 train/validation split (never random — avoids look-ahead leakage,
+   matching every other sweep in this codebase).
+4. **Candidate generation**: `_kscore_candidate_weight_sets()` generates 12
+   one-factor-perturbed-at-a-time candidates (`_KSCORE_SWEEP_DELTA = 0.05` up/down per factor,
+   renormalized to sum to 1.0, floored at 0.01 so no weight can go to/below zero) — a
+   coordinate-ascent-style sweep, not a full 6-dimensional grid, which would be combinatorially
+   intractable at any reasonable step size. This mirrors the same "search a tractable
+   neighborhood, not the full space" judgment `tune_strategy` already made for its own
+   2-parameter (not 6-parameter) grid.
+5. **EV metric — cross-sectional, not per-stock**: `_kscore_cross_sectional_ev()` ranks all
+   stocks on a given `as_of` date by their RECOMPUTED composite score under a candidate weight
+   set, takes the top decile, and averages their forward returns — then averages that daily
+   figure across every date in the slice. This is a cross-sectional ranking metric, matching
+   what K-Score is actually used for (ranking stocks against each other on a given day), not a
+   per-stock buy/no-buy threshold the way `buy_threshold` is.
+6. Best train-slice candidate is measured on the VALIDATION slice (data the search never saw)
+   alongside the CURRENT LIVE weights measured on that SAME slice. Only promotes if the
+   candidate's validation EV beats the live baseline's own validation EV — an unconditional
+   `ev_lift <= 0` rejection, matching `T232-OC3`'s own established "never promote a candidate
+   that doesn't clear a genuinely positive, validation-measured improvement" discipline used
+   throughout this codebase. No shift-size escape hatch. The 12-candidate pool here is far
+   smaller than `tune_strategy`'s own 403-cell grid, so the noise-inflation risk that motivated
+   `gate_harness.py`'s stricter `_passes_promotion_margin()` (a min-lift-AND-min-SD-ratio floor)
+   is smaller here — a bare `> 0` floor is judged the correct minimum bar for this pool size,
+   not an assumed-safe shortcut.
+7. On promotion: writes the new weight set to `stockai:kscore_weights` (30-day TTL, matching
+   every other Redis-tuned parameter's own TTL convention) via the shared, pooled
+   `common.redis_client.get_redis()` — ranking-engine's first consumer of that established
+   pooled-connection helper (per the earlier Redis-connection-pooling audit's own convention;
+   every other Redis access in this codebase now goes through it, not a raw
+   `redis.Redis.from_url()`).
+8. **One `TuneHistory` row per attempt (promoted or rejected)** via a new local
+   `_record_kscore_tune_history()` helper — following the SAME per-service-duplication
+   convention already established by `ml-prediction/src/training/tuner.py`'s and
+   `signal-engine/src/api/signals_shared.py`'s own independent local copies (each service keeps
+   its own, rather than a cross-service import — this app's `docker cp`-per-service deployment
+   model doesn't otherwise have cross-service Python imports, and a shared import would create
+   exactly that coupling). `parameter_class="kscore_weights"`, `style="ALL"`, `market="ALL"`
+   (this sweep is deliberately market-agnostic — a future HK-vs-US-specific weight split is a
+   real, separately-scoped possibility, not attempted here).
+
+**A new read-only status endpoint**: `GET /rankings/kscore_weights_status` — the currently
+EFFECTIVE weight set (Redis override if one has ever been promoted, else the hardcoded
+default) alongside the hardcoded default itself, so an admin can see at a glance whether a
+sweep has ever changed anything. **Registered BEFORE `GET /{symbol}`** in the file — the exact
+same `BUG233-ROUTERORDER` bug class already documented elsewhere in this file (a bare
+`GET /{symbol}` catch-all registered first silently swallows any literal-path GET route
+registered after it) — placed right next to the pre-existing `/skipped` route, which already
+carries its own comment about this exact ordering requirement. `POST /tune_kscore_weights`
+needed no such placement care, since there is no POST catch-all in this router.
+
+**Tests**: `services/ranking-engine/tests/test_kscore_weight_override.py` (10 cases) —
+`_load_active_weights()`'s full fallback matrix (no key set, valid override, partial override
+rejected, malformed JSON, Redis connection failure, non-dict JSON), `compute_kscore()`
+genuinely using an override's real values (not just reading it in isolation), the
+None-factor-redistribution logic staying unchanged under an override, and the 2
+mutation-safety regression tests described above. Because `kscore.py` does
+`from common.redis_client import get_redis` INSIDE the function body against a `common`
+package `conftest.py` stubs as a bare `MagicMock()`, `unittest.mock.patch("common.redis_client
+.get_redis", ...)` does NOT work here — the exact documented gotcha from this codebase's own
+Redis-connection-pooling audit (a fresh `import common.redis_client` against a
+`MagicMock`-stubbed parent auto-vivifies a DIFFERENT child mock than whatever was patched).
+Fixed by registering a fake module directly in `sys.modules["common.redis_client"]`, restored
+on context-manager exit — the one thing every `import common.redis_client` statement in the
+same process actually shares.
+
+`services/ranking-engine/tests/test_kscore_weight_sweep.py` (21 cases) — the pure
+candidate-generation/recompute/redistribution/cross-sectional-EV functions
+(`_kscore_active_weights_for_row`, `_kscore_recompute`, `_kscore_candidate_weight_sets`,
+`_kscore_cross_sectional_ev`) are directly, behaviorally tested (no source-text extraction
+needed — they take plain data with zero DB/session dependency, and `routes.py` imports
+cleanly in this test environment per `test_screener_signal_scoping.py`'s own documented
+precedent). Covers: exact hand-computed weighted sums, renormalization when a factor is `None`,
+a degenerate all-excluded-factor case failing safe to `None` (never a `ZeroDivisionError`), all
+12 candidates summing to ~1.0 (tolerance matched to the real 4-decimal rounding precision, not
+an unreachably tight bound), no candidate weight ever going to/below zero, a genuine top-decile
+ranking test (9 mediocre stocks + 1 highest-scoring stock with a distinctly different forward
+return — proves the function ranks by RECOMPUTED score, not insertion order), skipping
+unresolvable rows rather than treating them as a 0% return, and averaging across multiple days
+rather than just the last one. `tune_kscore_weights()`'s own wiring (heavy DB/session
+dependency, disproportionate to a full functional exercise — matching
+`test_rank_symbol_market_scoping.py`'s/`test_screener_signal_scoping.py`'s own established
+proportionate-testing convention for this test suite) is covered via 5 source-text regression
+checks: route registration order, the unconditional non-positive-EV-lift rejection, the
+unmeasurable-baseline-skips-rather-than-assumes-zero convention, one `TuneHistory` row per
+branch including rejections, and the Redis write happening strictly AFTER every validation
+gate (never before).
+
+**Adversarial verification** — 6 sabotage/revert cycles, all caught correctly, each restored
+and confirmed byte-identical via `md5sum` before moving on:
+1. Reverting `compute_kscore()`'s wiring to the pre-fix `_active_weights =
+   _load_active_weights()` (no `dict()` copy) alone — did NOT reproduce the corruption in
+   isolation, since `_load_active_weights()`'s OWN fallback paths already independently return
+   fresh copies (a real defense-in-depth double-fix, not a redundant one).
+2. Reverting BOTH layers together (removing `dict(_WEIGHTS)` from `_load_active_weights()`'s
+   own fallback returns AND `compute_kscore()`'s outer `dict()` wrap) — caught by both
+   dedicated mutation-safety tests plus 3 downstream tests sharing the same test-order-visible
+   global-state corruption, exactly the bug class this fix exists to prevent.
+3. Disabling the `ev_lift <= 0` rejection (`if False:`) — caught by the dedicated rejection
+   test and the Redis-write-ordering test.
+4. Reordering `kscore_weights_status` to AFTER `GET /{symbol}` — caught by the dedicated
+   router-ordering test with a real index-comparison failure.
+5. Removing the `value is None` exclusion from `_kscore_active_weights_for_row()` — caught by
+   2 tests, one via a real `TypeError: unsupported operand type(s) for *: 'float' and
+   'NoneType'` (confirming this crashes, not just mismatches, when the redistribution is
+   skipped).
+6. Reversing the top-decile sort direction (`reverse=False` instead of `reverse=True`) — caught
+   by the dedicated top-decile-ranking test, which correctly detected the WORST stock's return
+   (1.0%) being selected instead of the top-scoring stock's (50%).
+
+Full 61-test ranking-engine suite green modulo the ONE pre-existing, unrelated
+`test_kscore.py::test_kscore_in_range` failure (asserts `0 <= v <= 100` on `c.value`/`c.growth`,
+which are legitimately `None` by design when no real fundamentals are supplied — confirmed via
+`git stash` to fail identically on the unmodified pre-existing code, predating this session).
+`pyflakes` clean on both touched source files (the 2 remaining warnings — `db.SignalType`
+imported but unused, `kscore.py`'s local `tr` variable — both confirmed pre-existing via
+`git stash`, only line numbers shifted).
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the currently-effective weight set (Redis override if any, else the hardcoded default):
+docker exec stockai-ranking-engine-1 curl -s 'http://localhost:8004/rankings/kscore_weights_status' \
+  -H "Authorization: Bearer <token>"
+
+# Run the sweep manually (safe — read-only against Ranking/Price until/unless it promotes):
+docker exec stockai-ranking-engine-1 curl -s -X POST 'http://localhost:8004/rankings/tune_kscore_weights?days=365' \
+  -H "Authorization: Bearer <token>"
+
+# Check tune_history rows this mechanism wrote (promoted or not):
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT ts, old_value, new_value, train_ev_pct, validation_ev_pct, baseline_validation_ev_pct, promoted, gate_failures FROM tune_history WHERE parameter_class='kscore_weights' ORDER BY ts DESC LIMIT 10;"
+
+# Check the raw Redis override directly:
+docker exec stockai-redis-1 redis-cli get stockai:kscore_weights
+```
+If `tune_kscore_weights` always returns `"applied": false, "reason": "only N ranking rows..."`,
+check the real row count first — this sweep needs `_KSCORE_SWEEP_MIN_ROWS * 2 = 400` resolvable
+rows (a real forward return, not just a `Ranking` row existing) before either slice can be
+trusted; a young/thin universe may simply not have accumulated enough history yet, which is
+correct, expected behavior, not a bug.

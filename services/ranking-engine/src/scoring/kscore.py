@@ -37,6 +37,35 @@ _WEIGHTS = {
     "relative_strength": 0.10,
 }
 
+_KSCORE_WEIGHTS_REDIS_KEY = "stockai:kscore_weights"
+
+
+def _load_active_weights() -> dict:
+    """T288-KSCORE-WEIGHT-SWEEP: read a validated weight override written by
+    POST /rankings/tune_kscore_weights, falling back to the hardcoded _WEIGHTS on any
+    absence/parse/connection failure — the exact fail-open-to-hardcoded-default convention
+    every other Redis-tuned parameter in this codebase already uses (e.g. signal-engine's
+    _get_style_tuned_param). The override is a single JSON blob of all 6 weights together
+    (not 6 independent keys) since they only ever mean something as a complete set that sums
+    to 1.0 — a partial override (e.g. only "momentum" changed) would silently corrupt the
+    other 5 factors' effective share of the composite.
+    """
+    # Always returns a FRESH dict, never the module-level _WEIGHTS object itself — a caller
+    # that mutates its own local copy (compute_kscore() does, via del) must never be able to
+    # corrupt the hardcoded default for every subsequent call in the process.
+    try:
+        from common.redis_client import get_redis
+        raw = get_redis().get(_KSCORE_WEIGHTS_REDIS_KEY)
+        if not raw:
+            return dict(_WEIGHTS)
+        import json
+        override = json.loads(raw)
+        if not isinstance(override, dict) or set(override.keys()) != set(_WEIGHTS.keys()):
+            return dict(_WEIGHTS)
+        return {k: float(v) for k, v in override.items()}
+    except Exception:
+        return dict(_WEIGHTS)
+
 
 def _rsi(close: pd.Series, w: int = 14) -> pd.Series:
     """T233-ARCH-INDICATOR-DEDUP: now delegates to the canonical Wilder's RSI in
@@ -187,7 +216,20 @@ def compute_kscore(
     # factor names. Fixed by excluding value/growth from the weighted sum entirely when the
     # real fundamental is unavailable, redistributing their weight to the remaining factors —
     # the same pattern already used just below for a missing rs_score.
-    _active_weights = dict(_WEIGHTS)
+    #
+    # T288-KSCORE-WEIGHT-SWEEP: reads a validated, Redis-overridden weight set if
+    # tune_kscore_weights has ever promoted one, falling back to the hardcoded _WEIGHTS above
+    # otherwise. This is the ONLY thing tune_kscore_weights' promotion path can actually change
+    # — the redistribution logic below (excluding a None factor, renormalizing the rest) stays
+    # byte-identical either way, so a promoted weight set changes WHICH weights apply, never
+    # HOW they're combined.
+    # dict(...) here is load-bearing, not decorative: _load_active_weights() can return the
+    # module-level _WEIGHTS dict directly (its own fallback path), and this function mutates
+    # its local copy via del a few lines below — without the copy, the FIRST call with any
+    # factor missing would permanently delete that key from _WEIGHTS itself, corrupting every
+    # later call in the same process (a real bug caught by test_kscore.py's own pre-existing
+    # test failing when run after this file's Redis-override tests, in the SAME session).
+    _active_weights = dict(_load_active_weights())
     if value_score is None:
         del _active_weights["value"]
     if growth_score is None:
