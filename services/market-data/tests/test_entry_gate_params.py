@@ -91,6 +91,57 @@ class TestMinRrRatioIsCalibrationAware:
             assert resolve_entry_gate_params(style, "US")["min_rr_ratio"] == expected
 
 
+class TestRegimeMinRrRatioIsCalibrationAwareToo:
+    """T234-CONFIG-UNJUSTIFIED-THRESHOLDS item #2: decision-engine's hard_rejects.py had its
+    own disconnected bare 3.0 fallback for the choppy/risk_off R:R floor, with no way to pick
+    up a calibrated value the way min_rr_ratio (the neutral tier) already could. This is the
+    SAME class of gap as the original min_confidence fix — resolve_entry_gate_params() is the
+    one thing threading a real default into decision-engine's standalone /decide callers, and
+    it never surfaced this key at all before now.
+
+    IMPORTANT: no calibration file exists in this local test environment, so
+    _default_min_rr_ratio("choppy") currently degrades to the SAME hardcoded 3.0 literal a
+    naive re-hardcoded sabotage would also produce — asserting equality against that live
+    value alone would NOT distinguish "genuinely calls the function" from "hardcodes 3.0" (a
+    real gap caught via adversarial verification: sabotaging this to a bare `3.0` literal
+    passed every test below except the two that explicitly fake a real calibration override).
+    The tests below monkeypatch the module's own _min_rr_override_cache directly to force a
+    REAL, non-default value through, which only a genuine function call can pick up.
+    """
+
+    def test_regime_min_rr_ratio_is_present_and_matches_default_min_rr_ratio_choppy(self):
+        from src.services.paper_trading_engine import _default_min_rr_ratio
+        expected = _default_min_rr_ratio("choppy")
+        for style in ("SHORT", "SWING", "LONG", "GROWTH"):
+            assert resolve_entry_gate_params(style, "US")["regime_min_rr_ratio"] == expected
+
+    def test_regime_min_rr_ratio_tracks_a_real_calibrated_override_not_a_frozen_literal(self, monkeypatch):
+        """The real regression guard: force a fake, distinctive calibrated value through
+        _min_rr_override_cache and confirm resolve_entry_gate_params() actually reflects it —
+        a hardcoded 3.0 literal could never pass this, only a genuine function call can."""
+        import src.services.paper_trading_engine as pte
+        monkeypatch.setattr(pte, "_min_rr_override_cache", {"regime_min_rr_ratio": 2.73, "min_rr_ratio": 1.91})
+        result = resolve_entry_gate_params("SWING", "US")
+        assert result["regime_min_rr_ratio"] == 2.73
+        assert result["min_rr_ratio"] == 1.91
+
+    def test_regime_min_rr_ratio_and_min_rr_ratio_resolve_independently_not_the_same_value(self, monkeypatch):
+        """Confirms the two keys genuinely route through DIFFERENT regime_state args (neutral
+        vs choppy) — not the same call duplicated under two names, which would make them
+        always equal even when a real calibration file sets them to different values."""
+        import src.services.paper_trading_engine as pte
+        monkeypatch.setattr(pte, "_min_rr_override_cache", {"regime_min_rr_ratio": 3.5, "min_rr_ratio": 1.5})
+        result = resolve_entry_gate_params("SWING", "US")
+        assert result["min_rr_ratio"] == 1.5
+        assert result["regime_min_rr_ratio"] == 3.5
+        assert result["min_rr_ratio"] != result["regime_min_rr_ratio"]
+
+    def test_regime_min_rr_ratio_is_present_for_hk_too(self, monkeypatch):
+        import src.services.paper_trading_engine as pte
+        monkeypatch.setattr(pte, "_min_rr_override_cache", {"regime_min_rr_ratio": 2.73})
+        assert resolve_entry_gate_params("SWING", "HK")["regime_min_rr_ratio"] == 2.73
+
+
 class TestUnknownStyleAndMarketDegradeGracefully:
     def test_unknown_style_falls_back_to_bare_defaults(self):
         """An unrecognized style must not KeyError — _STYLE_OVERRIDES.get(style, {}) degrades

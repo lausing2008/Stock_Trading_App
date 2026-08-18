@@ -855,6 +855,14 @@ def resolve_entry_gate_params(style: str, market: str = "US") -> dict:
                 cfg[_k] = _v
     result = {k: cfg.get(k) for k in _ENTRY_GATE_KEYS if k in cfg}
     result["min_rr_ratio"] = _default_min_rr_ratio("neutral")
+    # T234-CONFIG-UNJUSTIFIED-THRESHOLDS item #2: regime_min_rr_ratio was never included here
+    # at all — decision-engine's hard_rejects.py had its own disconnected bare `3.0` fallback
+    # for the choppy/risk_off-tier R:R floor, with no way to pick up a calibrated value the way
+    # min_rr_ratio (the neutral-regime tier) already does above. _default_min_rr_ratio() itself
+    # already resolves this correctly (see _should_enter()'s own identical read at line ~1906);
+    # the gap was purely that this endpoint — the one thing threading a calibration-aware
+    # default into decision-engine's standalone /decide callers — never surfaced it.
+    result["regime_min_rr_ratio"] = _default_min_rr_ratio("choppy")
     # min_ta_score has no _DEFAULT_CONFIG entry — 0.0 (gate disabled) is the correct default
     # when no style/market override set it, matching every other read site's own fallback.
     result.setdefault("min_ta_score", 0.0)
