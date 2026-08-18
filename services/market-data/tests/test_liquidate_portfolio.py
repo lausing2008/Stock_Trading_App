@@ -77,8 +77,14 @@ def _extract_liquidate_portfolio():
     sig_end = raw.index(") -> dict:\n") + len(") -> dict:\n")
     body = raw[sig_end:]
     func_source = "def liquidate_portfolio(portfolio_id, confirm=False, session=None):\n" + body
+    assert "from ..services.paper_trading_engine import _fetch_live_prices" in func_source, (
+        "the real relative import path changed — this test's own stub-out below needs updating "
+        "to match, or a real ModuleNotFoundError (src.api.services doesn't exist — "
+        "paper_trading_engine.py lives at src/services/, a SIBLING of src/api/, not a child of "
+        "it) would silently regress uncaught, exactly as it did once already in production."
+    )
     func_source = func_source.replace(
-        "from .services.paper_trading_engine import _fetch_live_prices\n\n    ",
+        "from ..services.paper_trading_engine import _fetch_live_prices\n\n    ",
         "",
     )
     namespace = {

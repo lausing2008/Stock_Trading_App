@@ -500,7 +500,7 @@ def liquidate_portfolio(
     Reuses _close_one_paper_trade() per open trade — the SAME close-math manual_exit_trade()
     already uses — rather than a third independent reimplementation.
     """
-    from .services.paper_trading_engine import _fetch_live_prices
+    from ..services.paper_trading_engine import _fetch_live_prices
 
     p = _get_portfolio(session, portfolio_id)
     if not confirm:
