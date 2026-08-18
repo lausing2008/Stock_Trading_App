@@ -1311,6 +1311,47 @@ class FundamentalsSnapshot(Base):
     __table_args__ = (UniqueConstraint("symbol", "snapshot_date", name="uq_fundamentals_snapshot_sym_date"),)
 
 
+# ── wsz-analyst-accuracy-weighting: Per-Firm Historical Price Target Tracking ──
+
+class AnalystPriceTarget(Base):
+    """One row per (symbol, firm, grade_date) analyst price-target action, captured from
+    yfinance's ticker.upgrades_downgrades DataFrame — which already carries currentPriceTarget/
+    priorPriceTarget per firm, per action, but this app's existing analyst_actions ingestion
+    (get_fundamentals() in market-data/src/api/routes.py) discarded both fields, keeping only
+    the qualitative Firm/ToGrade/FromGrade/Action columns.
+
+    Used to compute each firm's own historical accuracy (was current_price_target achieved
+    within outcome_window_days of grade_date, per _check_target_achieved()'s own tolerance) —
+    the raw material an accuracy-weighted consensus needs. History accumulates going forward
+    only; scoring a firm requires enough elapsed time since grade_date for the outcome window
+    to have closed AND real Price rows covering that window, so a fresh table starts with zero
+    scoreable rows and needs real calendar time (not a backfill) before any weighting can occur.
+    """
+    __tablename__ = "analyst_price_targets"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    firm: Mapped[str] = mapped_column(String(128), index=True)
+    grade_date: Mapped[date] = mapped_column(Date, index=True)
+    action: Mapped[str | None] = mapped_column(String(32), nullable=True)          # up|down|main|init|reit
+    to_grade: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    current_price_target: Mapped[float | None] = mapped_column(Float, nullable=True)
+    prior_price_target: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Outcome (filled once outcome_window_days has elapsed since grade_date AND Price rows
+    # covering that window exist — see _evaluate_analyst_target_outcomes() in
+    # services/market-data/src/services/scheduler.py)
+    outcome_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    target_achieved: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    max_price_in_window: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("stock_id", "firm", "grade_date", name="uq_analyst_price_target_stock_firm_date"),
+        Index("ix_analyst_price_target_firm_evaluated", "firm", "outcome_evaluated_at"),
+    )
+
+
 # ── T233-SELFIMPROVE-PHASE3: Tune History ──────────────────────────────────────
 
 class TuneHistory(Base):

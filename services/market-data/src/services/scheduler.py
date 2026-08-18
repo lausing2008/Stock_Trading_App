@@ -85,7 +85,7 @@ from sqlalchemy.orm import selectinload, Session
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, EarningsEvent, EconomicEvent, FundamentalsSnapshot, Market, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
+from db import AlertCondition, AnalystPriceTarget, EarningsEvent, EconomicEvent, FundamentalsSnapshot, Market, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -6483,6 +6483,80 @@ def _snapshot_fundamentals() -> None:
         log.error("scheduler.fundamentals_snapshot_failed", error=str(exc))
 
 
+# ── wsz-analyst-accuracy-weighting: per-firm price-target accuracy scoring ──────────
+_ANALYST_TARGET_OUTCOME_WINDOW_DAYS = 365  # standard "12-month price target" horizon
+_ANALYST_TARGET_TOLERANCE_PCT = 0.10       # "achieved" = came within 10% of the target
+
+
+def _evaluate_analyst_target_outcomes() -> None:
+    """wsz-analyst-accuracy-weighting: scores each firm's historical price-target actions —
+    was current_price_target reached (within _ANALYST_TARGET_TOLERANCE_PCT) at any point
+    within _ANALYST_TARGET_OUTCOME_WINDOW_DAYS of grade_date? This is the raw signal an
+    accuracy-weighted consensus needs; a fresh AnalystPriceTarget row starts unscored and
+    can only be evaluated once BOTH the outcome window has actually elapsed (a target graded
+    last week hasn't had its full year to be reached yet — scoring it now as "missed" would
+    be a real, avoidable false negative) AND real daily Price rows exist covering that window.
+
+    Deliberately does NOT distinguish an upside target (current_price_target > price at
+    grade_date, "achieved" = price rose to meet it) from a downside one (a downgrade's lower
+    target, "achieved" = price fell to meet it) via two different comparisons — both cases are
+    correctly handled by the SAME "did the stock's price come within 10% of the target at any
+    point in the window" check, since "within 10%" is symmetric regardless of which direction
+    the stock needed to move.
+    """
+    _t0 = time.monotonic()
+    try:
+        with SessionLocal() as sess:
+            cutoff_date = date.today() - timedelta(days=_ANALYST_TARGET_OUTCOME_WINDOW_DAYS)
+            pending = sess.execute(
+                select(AnalystPriceTarget)
+                .where(
+                    AnalystPriceTarget.outcome_evaluated_at.is_(None),
+                    AnalystPriceTarget.grade_date <= cutoff_date,
+                )
+                .limit(2000)  # bounded per run — a real backlog drains over several daily cycles, never one unbounded pass
+            ).scalars().all()
+            n_scored = 0
+            n_skipped_no_price_data = 0
+            for row in pending:
+                window_end = row.grade_date + timedelta(days=_ANALYST_TARGET_OUTCOME_WINDOW_DAYS)
+                price_rows = sess.execute(
+                    select(Price.high, Price.low)
+                    .where(
+                        Price.stock_id == row.stock_id,
+                        Price.timeframe == TimeFrame.D1,
+                        Price.ts >= datetime.combine(row.grade_date, datetime.min.time()),
+                        Price.ts <= datetime.combine(window_end, datetime.min.time()),
+                    )
+                ).all()
+                if not price_rows:
+                    n_skipped_no_price_data += 1
+                    continue
+                # A target is "achieved" if EITHER the high came within tolerance of it from
+                # below (an upside target reached) OR the low came within tolerance from above
+                # (a downside target reached) — using both high and low (not just close) means
+                # a genuine intraday/interday touch counts, matching how a real trader would
+                # judge "did the stock get there," not just where it happened to close.
+                max_high = max(float(r.high) for r in price_rows)
+                min_low = min(float(r.low) for r in price_rows)
+                target = row.current_price_target
+                lo = target * (1 - _ANALYST_TARGET_TOLERANCE_PCT)
+                hi = target * (1 + _ANALYST_TARGET_TOLERANCE_PCT)
+                achieved = (max_high >= lo) or (min_low <= hi)
+                row.target_achieved = bool(achieved)
+                row.max_price_in_window = round(max_high, 4)
+                row.outcome_evaluated_at = datetime.now(timezone.utc)
+                n_scored += 1
+            sess.commit()
+        elapsed = time.monotonic() - _t0
+        _record_job_status("analyst_target_outcomes", "ok", elapsed)
+        log.info("scheduler.analyst_target_outcomes_complete", scored=n_scored, skipped_no_price_data=n_skipped_no_price_data)
+    except Exception as exc:
+        elapsed = time.monotonic() - _t0
+        _record_job_status("analyst_target_outcomes", "error", elapsed, str(exc))
+        log.error("scheduler.analyst_target_outcomes_failed", error=str(exc))
+
+
 _EARNINGS_BEAT_SCREENER_LOOKBACK_DAYS = 14  # "recent" earnings beat window
 _EARNINGS_BEAT_SCREENER_MIN_SURPRISE_PCT = 0.0  # a real beat, not just "met"
 _EARNINGS_BEAT_SCREENER_MIN_REC_IMPROVEMENT = 0.15  # matches signals.py's own eps_revision_direction threshold
@@ -9637,6 +9711,15 @@ def start_scheduler() -> None:
         _snapshot_fundamentals,
         CronTrigger(day_of_week="sun", hour=16, minute=30, timezone="America/New_York"),
         id="fundamentals_snapshot_weekly", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── wsz-analyst-accuracy-weighting: daily, off-hours (no ordering dependency on any
+    # other job — only reads AnalystPriceTarget rows already past their own outcome window
+    # and already-ingested Price rows) ─────────────────────────────────────────
+    _scheduler.add_job(
+        _evaluate_analyst_target_outcomes,
+        CronTrigger(hour=6, minute=45, timezone="UTC"),
+        id="analyst_target_outcomes_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── WATCHLIST-AUTO-ROTATION: Sunday 17:00 ET (after fundamentals_snapshot, so its own

@@ -38,7 +38,7 @@ import PositionSizer from '@/components/PositionSizer';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
 import OptionsChainChart from '@/components/OptionsChainChart';
-import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult, type OutcomesSummary, type QuarterlyRow } from '@/lib/api';
+import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult, type OutcomesSummary, type QuarterlyRow, type AnalystConsensus } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { nearestActionableFvg, nearestPivotToFvg, classifyFvgVolumeContext } from '@/lib/fvgTradePlan';
 import { detectSwingPivots } from '@/lib/swingPivots';
@@ -68,6 +68,71 @@ function RefreshButton({ onClick, loading }: { onClick: () => void; loading: boo
       <span style={{ display: 'inline-block', fontSize: '14px', lineHeight: 1, animation: loading ? 'spin 0.8s linear infinite' : 'none' }}>↻</span>
       {loading ? 'Refreshing…' : 'Refresh'}
     </button>
+  );
+}
+
+// wsz-analyst-accuracy-weighting: an accuracy-weighted analyst price-target consensus,
+// alongside the existing raw simple mean shown elsewhere on this page — a firm's current
+// target counts more (or less) toward the consensus based on that SAME firm's own historical
+// track record of hitting its past targets, once enough of them have been scored.
+function AnalystConsensusPanel({ symbol }: { symbol: string }) {
+  const { data, error, isLoading } = useSWR<AnalystConsensus>(
+    `analyst-consensus-${symbol}`,
+    () => api.analystConsensus(symbol),
+    { revalidateOnFocus: false },
+  );
+  if (isLoading || error || !data || data.n_firms === 0) return null;
+
+  const { simple_mean, weighted_mean, firms } = data;
+  const hasScoredFirms = firms.some(f => f.n_scored_targets > 0);
+  const delta = simple_mean != null && weighted_mean != null ? weighted_mean - simple_mean : null;
+
+  return (
+    <div style={{ borderRadius: '10px', border: '1px solid rgba(148,163,184,0.12)', background: 'rgba(255,255,255,0.02)', padding: '14px 16px', marginTop: '12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+        <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+          Accuracy-Weighted Consensus
+        </div>
+        <span style={{ fontSize: '10px', color: '#334155' }}>{firms.length} firms · last 90 days</span>
+      </div>
+      <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', marginBottom: '10px' }}>
+        <div>
+          <div style={{ fontSize: '10px', color: '#475569', marginBottom: '2px' }}>Simple mean</div>
+          <div style={{ fontSize: '16px', fontWeight: 700, color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>
+            {simple_mean != null ? `$${simple_mean.toFixed(2)}` : '—'}
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: '10px', color: '#475569', marginBottom: '2px' }}>Accuracy-weighted mean</div>
+          <div style={{ fontSize: '16px', fontWeight: 800, color: '#818cf8', fontVariantNumeric: 'tabular-nums' }}>
+            {weighted_mean != null ? `$${weighted_mean.toFixed(2)}` : '—'}
+            {delta != null && Math.abs(delta) > 0.01 && (
+              <span style={{ fontSize: '11px', fontWeight: 600, marginLeft: '6px', color: delta > 0 ? '#4ade80' : '#f87171' }}>
+                {delta > 0 ? '+' : ''}{delta.toFixed(2)}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+      {!hasScoredFirms && (
+        <div style={{ fontSize: '11px', color: '#475569', marginBottom: '8px' }}>
+          No firm has enough scored historical targets yet — every firm currently gets equal
+          weight, so the weighted mean matches the simple mean. This improves automatically as
+          more of each firm&apos;s past targets are scored over time.
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+        {firms.slice(0, 6).map((f, i) => (
+          <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '8px', alignItems: 'center', padding: '4px 6px', fontSize: '11px' }}>
+            <span style={{ color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.firm}</span>
+            <span style={{ color: '#cbd5e1', fontVariantNumeric: 'tabular-nums' }}>${f.current_price_target.toFixed(2)}</span>
+            <span style={{ color: f.accuracy_pct != null ? (f.accuracy_pct >= 60 ? '#4ade80' : f.accuracy_pct >= 40 ? '#fbbf24' : '#f87171') : '#334155', fontVariantNumeric: 'tabular-nums', minWidth: '70px', textAlign: 'right' }}>
+              {f.accuracy_pct != null ? `${f.accuracy_pct.toFixed(0)}% (n=${f.n_scored_targets})` : 'no history'}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -3468,6 +3533,8 @@ Return ONLY valid JSON — no markdown, no prose:
                   </div>
                 );
               })()}
+
+              <AnalystConsensusPanel symbol={symbol} />
 
               {/* Row 6 — Insider Activity */}
               {(() => {

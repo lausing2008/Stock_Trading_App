@@ -41,7 +41,7 @@ import yfinance as yf
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import EarningsAlertSubscription, Fundamental, Price, SqueezeWatch, Stock, StockGoal, TimeFrame, get_session
+from db import AnalystPriceTarget, EarningsAlertSubscription, Fundamental, Price, SqueezeWatch, Stock, StockGoal, TimeFrame, get_session
 from .auth import get_current_user
 from ..services.ingestion import _classify_session
 
@@ -1057,12 +1057,26 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
                     action = str(row.get("Action", "")).strip()
                     if not action:
                         continue
+                    # wsz-analyst-accuracy-weighting: yfinance's own upgrades_downgrades frame
+                    # already carries a per-firm currentPriceTarget/priorPriceTarget — this
+                    # app's own analyst_actions capture previously discarded both, keeping
+                    # only the qualitative Firm/ToGrade/FromGrade/Action columns. A yfinance
+                    # value of exactly 0.00 means "no price target on this action" (confirmed
+                    # live — e.g. a plain reiteration action), not a real $0 target — treated
+                    # as None here rather than a literal zero that would corrupt any accuracy
+                    # scoring downstream.
+                    _cpt = row.get("currentPriceTarget")
+                    _ppt = row.get("priorPriceTarget")
+                    current_price_target = float(_cpt) if _cpt not in (None, 0, 0.0) else None
+                    prior_price_target = float(_ppt) if _ppt not in (None, 0, 0.0) else None
                     analyst_actions.append({
                         "date":       (idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)[:10]),
                         "firm":       str(row.get("Firm", "")).strip(),
                         "from_grade": str(row.get("FromGrade", "")).strip(),
                         "to_grade":   str(row.get("ToGrade",   "")).strip(),
                         "action":     action,
+                        "current_price_target": current_price_target,
+                        "prior_price_target": prior_price_target,
                     })
     except Exception:
         pass
@@ -1314,8 +1328,158 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
         log.warning("fundamentals.db_persist_failed", symbol=symbol, error=str(exc))
         db.rollback()
 
+    # wsz-analyst-accuracy-weighting: persist each per-firm price-target action independently
+    # from the Fundamental upsert above (a genuinely separate table/concern) — one row per
+    # (stock_id, firm, grade_date), idempotent via ON CONFLICT DO NOTHING so re-fetching the
+    # same 90-day window on a later day never duplicates an already-captured historical action.
+    try:
+        from sqlalchemy.dialects.postgresql import insert as pg_insert_apt
+        stock_row2 = db.execute(
+            select(Stock).where(Stock.symbol == symbol.upper())
+        ).scalar_one_or_none()
+        if stock_row2 and analyst_actions:
+            for act in analyst_actions:
+                if act.get("current_price_target") is None:
+                    continue
+                stmt2 = pg_insert_apt(AnalystPriceTarget).values(
+                    stock_id=stock_row2.id,
+                    symbol=symbol.upper(),
+                    firm=act["firm"],
+                    grade_date=_date.fromisoformat(act["date"]),
+                    action=act.get("action"),
+                    to_grade=act.get("to_grade"),
+                    current_price_target=act["current_price_target"],
+                    prior_price_target=act.get("prior_price_target"),
+                ).on_conflict_do_nothing(
+                    constraint="uq_analyst_price_target_stock_firm_date",
+                )
+                db.execute(stmt2)
+            db.commit()
+    except Exception as exc:
+        log.warning("analyst_price_target.db_persist_failed", symbol=symbol, error=str(exc))
+        db.rollback()
+
     log.info("fundamentals.ok", symbol=symbol)
     return data
+
+
+# wsz-analyst-accuracy-weighting: minimum SCORED historical targets a firm needs before its
+# accuracy is trusted enough to weight it above/below equal weighting — a firm with only 1-2
+# resolved targets could show 100%/0% accuracy from pure noise, which would then swing the
+# whole consensus disproportionately. Firms below this floor get equal weight (1.0), same as
+# the "no data yet" case — this repo's established convention (kscore's own weight-blending,
+# T234-ML-FUND-BROADCAST-LEAKAGE's PIT joins) is to degrade to a neutral default rather than
+# act on a statistically unreliable value.
+_ANALYST_ACCURACY_MIN_SAMPLES = 5
+_ANALYST_CONSENSUS_LOOKBACK_DAYS = 90  # matches analyst_actions' own existing recency window
+
+
+def _compute_weighted_analyst_consensus(session: Session, symbol: str) -> dict:
+    """wsz-analyst-accuracy-weighting: an accuracy-weighted analyst price-target consensus,
+    alongside the existing simple mean, for the given symbol.
+
+    Firm accuracy is a FIRM-level property (computed across every symbol that firm has ever
+    covered, not just this one) — a firm's own track record predicting AAPL is relevant
+    evidence for how much to trust their MSFT target too, since the underlying skill being
+    measured ("how good is this firm's price-target process") isn't symbol-specific. Weight
+    = accuracy_pct when a firm has >= _ANALYST_ACCURACY_MIN_SAMPLES scored historical targets
+    (any symbol); otherwise 1.0 (equal weight) — see the module-level constant's own comment
+    for why an unreliable few-sample accuracy is never allowed to swing the consensus.
+
+    Returns simple_mean=None / weighted_mean=None (not 0.0) when no firm has a recent target
+    for this symbol at all — an absent consensus is a genuinely different state than "$0",
+    and must never be silently conflated with it downstream.
+    """
+    stock_row = session.execute(select(Stock).where(Stock.symbol == symbol.upper())).scalar_one_or_none()
+    if stock_row is None:
+        return {"simple_mean": None, "weighted_mean": None, "n_firms": 0, "firms": []}
+
+    cutoff = date.today() - timedelta(days=_ANALYST_CONSENSUS_LOOKBACK_DAYS)
+    recent_targets = session.execute(
+        select(AnalystPriceTarget)
+        .where(
+            AnalystPriceTarget.stock_id == stock_row.id,
+            AnalystPriceTarget.grade_date >= cutoff,
+            AnalystPriceTarget.current_price_target.is_not(None),
+        )
+        .order_by(AnalystPriceTarget.grade_date.desc())
+    ).scalars().all()
+    if not recent_targets:
+        return {"simple_mean": None, "weighted_mean": None, "n_firms": 0, "firms": []}
+
+    # Most recent target PER FIRM only — a firm that's re-issued multiple targets in the
+    # window should contribute once with its latest view, not be double-counted.
+    latest_per_firm: dict[str, AnalystPriceTarget] = {}
+    for t in recent_targets:
+        if t.firm not in latest_per_firm:
+            latest_per_firm[t.firm] = t
+
+    firm_names = list(latest_per_firm.keys())
+    accuracy_rows = session.execute(
+        select(
+            AnalystPriceTarget.firm,
+            func.count().label("n"),
+            func.count().filter(AnalystPriceTarget.target_achieved.is_(True)).label("n_achieved"),
+        )
+        .where(
+            AnalystPriceTarget.firm.in_(firm_names),
+            AnalystPriceTarget.outcome_evaluated_at.is_not(None),
+        )
+        .group_by(AnalystPriceTarget.firm)
+    ).all()
+    accuracy_by_firm = {
+        r.firm: (float(r.n_achieved) / float(r.n) if r.n > 0 else None, int(r.n))
+        for r in accuracy_rows
+    }
+
+    targets = [float(t.current_price_target) for t in latest_per_firm.values()]
+    simple_mean = round(sum(targets) / len(targets), 2)
+
+    weighted_sum = 0.0
+    weight_total = 0.0
+    firms_out = []
+    for firm, t in latest_per_firm.items():
+        acc, n_scored = accuracy_by_firm.get(firm, (None, 0))
+        if acc is not None and n_scored >= _ANALYST_ACCURACY_MIN_SAMPLES:
+            weight = acc
+        else:
+            weight = 1.0  # equal weight — insufficient/no track record, never let noise swing the consensus
+        weighted_sum += float(t.current_price_target) * weight
+        weight_total += weight
+        firms_out.append({
+            "firm": firm,
+            "current_price_target": float(t.current_price_target),
+            "grade_date": t.grade_date.isoformat(),
+            "accuracy_pct": round(acc * 100, 1) if acc is not None else None,
+            "n_scored_targets": n_scored,
+            "weight_used": round(weight, 4),
+        })
+
+    weighted_mean = round(weighted_sum / weight_total, 2) if weight_total > 0 else None
+    firms_out.sort(key=lambda f: f["current_price_target"], reverse=True)
+    return {
+        "simple_mean": simple_mean,
+        "weighted_mean": weighted_mean,
+        "n_firms": len(firms_out),
+        "firms": firms_out,
+    }
+
+
+@router.get("/{symbol}/analyst-consensus")
+def analyst_consensus(symbol: str, session: Session = Depends(get_session)):
+    """wsz-analyst-accuracy-weighting: accuracy-weighted analyst price-target consensus.
+
+    Alongside the existing raw simple mean (yfinance's own targetMeanPrice, already surfaced
+    via GET /stocks/{symbol}/fundamentals), this weights each contributing firm's current
+    target by that firm's OWN historical accuracy (once _evaluate_analyst_target_outcomes()
+    has scored enough of their past targets) — an 80%-accuracy firm's target counts more than
+    a 30%-accuracy firm's, rather than every firm counting equally regardless of track record.
+
+    weighted_mean is None (not a fallback to simple_mean) whenever no recent target exists —
+    a caller must handle the absent case explicitly rather than silently substituting a
+    different number for it.
+    """
+    return _compute_weighted_analyst_consensus(session, symbol)
 
 
 _QUARTERLY_TTL = 86_400  # 24 hours

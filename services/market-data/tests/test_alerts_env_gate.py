@@ -193,7 +193,7 @@ _NON_ALERT_JOB_IDS = {
     "us_premarket_5m_early", "us_premarket_5m_9am", "us_5m_intraday", "hk_5m_intraday",
     "(f-string prefix='broker_token_renewal_')",
     "data_quality_checks", "value_area_levels_daily", "squeeze_alert_outcome_eval_daily",
-    "prebreakout_alert_outcome_eval_daily",
+    "prebreakout_alert_outcome_eval_daily", "analyst_target_outcomes_daily",
     "live_price_cache_refresh", "avg_volume_cache_refresh", "avg_volume_startup_check",
     "signal_watchdog_daily", "db_purge_weekly", "meta_model_monthly_retrain",
     "backfill_realized_ev_monthly", "position_scaling_gate_weekly_retrain",

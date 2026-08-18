@@ -425,6 +425,10 @@ export const api = {
   // Analyst ratings feed
   analystRatings: (days = 30) => request<AnalystRating[]>(`/stocks/analyst_ratings?days=${days}`),
 
+  // wsz-analyst-accuracy-weighting: accuracy-weighted consensus (per firm's own historical
+  // track record), alongside the existing simple mean
+  analystConsensus: (symbol: string) => request<AnalystConsensus>(`/stocks/${symbol}/analyst-consensus`),
+
   // Short squeeze scanner
   shortSqueeze: (minShortFloat = 10) => request<SqueezeCandidate[]>(`/stocks/short_squeeze?min_short_float=${minShortFloat}`),
   bearishPutsWatch: () => request<BearishPutsWatchCandidate[]>('/stocks/bearish_puts_watch'),
@@ -1249,6 +1253,23 @@ export type AnalystRating = {
   action: string;
   target_price: number | null;
   recommendation: string | null;
+};
+
+// wsz-analyst-accuracy-weighting
+export type AnalystConsensusFirm = {
+  firm: string;
+  current_price_target: number;
+  grade_date: string;
+  accuracy_pct: number | null;      // null = insufficient/no scored history yet
+  n_scored_targets: number;
+  weight_used: number;
+};
+
+export type AnalystConsensus = {
+  simple_mean: number | null;
+  weighted_mean: number | null;
+  n_firms: number;
+  firms: AnalystConsensusFirm[];
 };
 
 export type SqueezeCandidate = {
