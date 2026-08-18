@@ -7864,6 +7864,49 @@ succeeding — check `docker logs stockai-decision-engine-1 --since 10m | grep
 entry_gate_params_fetch_failed` for a silent fallback-to-hardcoded-literal condition (market-data
 unreachable, DNS issue, etc.).
 
+**Extension 2026-08-18 (T234-CONFIG-UNJUSTIFIED-THRESHOLDS item #2) — `regime_min_rr_ratio`
+was never surfaced by this endpoint at all.** `resolve_entry_gate_params()` already resolved
+`min_rr_ratio` (the neutral-regime R:R floor) via the calibration-aware `_default_min_rr_ratio
+("neutral")` — but decision-engine's `hard_rejects.py` separately reads a SECOND key,
+`regime_min_rr_ratio` (the stricter floor applied in choppy/risk_off regimes, per T190), from
+its own disconnected bare `3.0` fallback with no way to pick up a calibrated value the way
+`min_rr_ratio` already could. `_should_enter()` itself already resolves this correctly via
+`_default_min_rr_ratio("choppy")` — the gap was purely that `resolve_entry_gate_params()` never
+threaded the second key through, so decision-engine's standalone `/decide` callers (anything
+that doesn't go through the real `_scan_for_entries()` scan, e.g. `decide.tsx`) always fell back
+to the disconnected literal regardless of any real calibration.
+
+**Fix**: one new line —
+```python
+result["regime_min_rr_ratio"] = _default_min_rr_ratio("choppy")
+```
+right after the existing `min_rr_ratio` line in `resolve_entry_gate_params()`
+(`paper_trading_engine.py`) — no decision-engine changes needed, since `hard_rejects.py`
+already reads `cfg.get("regime_min_rr_ratio")` and `_decide()` already merges whatever
+`resolve_entry_gate_params()` returns into `cfg` before `check_hard_rejects()` runs.
+
+**A real "still passes after sabotage" gap caught during test-writing**: no calibration file
+exists in this local test environment, so `_default_min_rr_ratio("choppy")` currently degrades
+to the SAME hardcoded `3.0` literal a naive re-hardcode sabotage would also produce — asserting
+plain equality against the live value alone would NOT distinguish "genuinely calls the
+function" from "hardcodes 3.0." Fixed by monkeypatching the module's own `_min_rr_override_cache`
+directly to force a distinctive fake calibrated value (e.g. `2.73`) through, which only a real
+function call can reflect — re-verified the sabotage now correctly fails 3 of 4 dedicated tests.
+
+**Tests**: 4 new cases in `test_entry_gate_params.py`'s `TestRegimeMinRrRatioIsCalibrationAwareToo`
+class — the real-default match, the monkeypatched-override tracking, confirming `min_rr_ratio`/
+`regime_min_rr_ratio` resolve independently (not the same call duplicated under two names —
+would stay always-equal even with a real calibration file setting them differently), and HK
+market coverage. Full 1,713-test market-data suite green at the time.
+
+**Live-verified** (2026-08-18): `GET /stocks/entry-gate-params?style=SWING&market=HK` now
+returns `regime_min_rr_ratio: 3.0` (previously absent from the response entirely).
+
+```bash
+docker exec stockai-market-data-1 grep -n '"regime_min_rr_ratio"' /app/src/services/paper_trading_engine.py
+docker exec stockai-market-data-1 curl -s 'http://localhost:8001/stocks/entry-gate-params?style=SWING&market=HK'
+```
+
 ---
 
 ## Recurring Issue: BUG-SA33-UNREACHABLETHRESHOLD — A Design Doc's Own Fix Was Mathematically Unable to Achieve Its Stated Goal (Fixed 2026-07-27)
@@ -13145,3 +13188,472 @@ If a `buy` conditional order always fails with "No current BUY-eligible signal,"
 correct, expected behavior — check whether the symbol genuinely has a real, current BUY
 signal via `GET /signals/{symbol}?style=SWING&live=false` before assuming the order itself is
 broken; the whole point of this design is that it never fabricates one.
+
+---
+
+## Feature Reference: T232-DL-GATEHARNESS-INPUTGAP — gate_harness.py's Replay Never Populated confidence_delta (Fixed 2026-08-17)
+
+**The gap**: `gate_harness.py`'s own module docstring already discloses a trust-and-verify
+review (2026-08-05) found every replayed `_should_enter()` call fed a systematically
+INCOMPLETE view of what a real, live call receives. `_should_enter()` reads `confidence_delta`
+directly off `signal_data` at the TOP LEVEL (not nested in `reasons`) — but
+`replay_should_enter()`/`replay_extended_gates()` never populated that key at all, so every
+replayed candidate silently scored as if confidence had never changed since the prior signal.
+This isn't cosmetic: every walk-forward promotion decision this harness has EVER produced
+(`min_entry_score`, `min_kscore`, `min_ta_score`, `min_volume_z` sweeps) was tuned against a
+replayed score compressed toward zero relative to a real live call by up to several points, on
+thresholds whose own candidate grids span a similarly narrow range.
+
+**Fix — `confidence_delta` (SA-26), reconstructed point-in-time-safely**: new
+`_historical_confidence_delta(session, stock_id, horizon, signal_date, current_confidence)` —
+mirrors `_scan_for_entries()`'s own live computation (`paper_trading_engine.py` ~line 5197:
+find the most recent PRIOR `Signal` row, `Signal.ts < sig.ts`, same stock+horizon, then
+`round(sig.confidence - prior_conf, 1)`), but with `ts < signal_date` (strict less-than,
+matching the live query's own semantics — the CURRENT day's own row must never be its own
+"prior"). **Verified safe to replay historically BEFORE writing the code**, not assumed:
+confirmed directly against production that `Signal` has a real per-calendar-day row history —
+`SELECT stock_id, horizon, COUNT(DISTINCT DATE(ts)), COUNT(*) FROM signals GROUP BY stock_id,
+horizon` shows `rows == distinct_days` for every `(stock, horizon)` pair, matching the table's
+own `uq_signals_stock_horizon_day` unique index. `Signal.reasons` gets overwritten intraday
+(a known, separately-documented gap elsewhere in this file), but the ROW itself — and its final
+`ts`/`confidence` for that calendar day — persists as one distinct row per day, so "the prior
+day's confidence" is a real, queryable historical fact, not something only ever visible live.
+Both `replay_should_enter()` and `replay_extended_gates()` now call this and thread the real
+value through `signal_data["confidence_delta"]`.
+
+**`live_regime` investigated as a second candidate for the same treatment, found to be a
+genuinely PERMANENT gap, not a fixable oversight**: the canonical regime classifier
+(`_fetch_market_regime()`/`_fetch_hk_market_regime()`, bull/neutral/choppy/risk_off/bear) has
+NO historical persistence anywhere in this codebase — it's Redis-cached, live-only, with no
+time-series table to reconstruct "what was the regime on date X" from. `sig.reasons
+["market_regime"]` LOOKS like a tempting substitute but is NOT the same classifier — it's
+signal-engine's own separate, independently-computed regime value (a different vocabulary:
+bull/high_vol/bear/unknown, per this repo's own Deep Audit #4 finding on this exact
+divergence). Silently reusing it would feed a wrong-vocabulary value into `_should_enter()`'s
+regime-score and pre-regime logic — a worse bug than the gap it would "fix." Left as `None`,
+but now explicitly disclosed in the module's own docstring AND both walk-forward endpoints'
+own `note` field — alongside a NEW disclosure that this whole harness only ever tunes the
+decision-engine-OUTAGE fallback path (`decision_engine_mode="primary"` is the live default),
+not the live primary trading path, which neither the docstring nor either `note` field had
+previously stated.
+
+**Tests**: `services/market-data/tests/test_gate_harness_confidence_delta.py` (new, 12 cases)
+— `_historical_confidence_delta()`'s point-in-time correctness (a Signal row dated AFTER the
+replayed date must never be picked up as "prior"), the strict `<` boundary (same-day rows are
+correctly excluded), a missing prior row degrading to `None` rather than crashing, and both
+`replay_should_enter()`/`replay_extended_gates()` actually threading the reconstructed value
+into `signal_data`. Adversarially verified via 3 sabotage/revert cycles: removing the
+point-in-time date bound, reverting the `confidence_delta` threading in each of the two replay
+functions independently — all caught.
+
+**A real SQLite-vs-Postgres comparison-semantics gap hit and worked around while writing the
+boundary test**: SQLite lexicographically compares a tz-aware DATETIME string against a bare
+DATE string as ALWAYS greater, regardless of `<` vs `<=` — a real quirk of the in-memory test
+harness (not a bug in the real Postgres-backed production behavior), documented directly in
+the test itself rather than silently worked around with no explanation.
+
+Full 1,662-test market-data suite green at the time.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n "_historical_confidence_delta\|confidence_delta.*=" /app/src/backtest/gate_harness.py
+```
+Should show `_historical_confidence_delta()` defined and called from both
+`replay_should_enter()` and `replay_extended_gates()`. If a walk-forward promotion result looks
+suspiciously different from before this fix, that's expected — the replayed score distribution
+genuinely shifted once `confidence_delta` started being populated; re-run the same sweep and
+compare against a fresh baseline rather than assuming a regression.
+
+---
+
+## Feature Reference: TIER82-FMP-ANALYST-ESTIMATES — analyst_pt_upside ML Feature (Built 2026-08-18, No FMP Dependency)
+
+**The original ask, and why it was closed differently than proposed**: this tracker item
+proposed a Financial Modeling Prep (FMP) integration for analyst EPS-estimate revisions and
+price targets — but no `FMP_API_KEY` exists in this environment, and both requested features
+turned out to be derivable from data this app ALREADY had, closing the real gap at $0
+marginal cost rather than waiting on a new vendor integration.
+
+**`eps_revision_direction`** was reintroduced separately under `T237-ML2b` (see that entry) —
+a rolling delta on the already-point-in-time-correct `recommendation_mean` snapshot history,
+thresholded the same way `signals.py`'s own live `T220-F` signal does.
+
+**`analyst_pt_upside` (this session)**: reuses yfinance's own `target_price` field, already
+available on the SAME `upgrades_downgrades`/fundamentals fetch this app already makes for
+every stock — no new external call, no new vendor.
+
+**Implementation**:
+1. `shared/db/models.py` — added `target_price: Mapped[float | None]` to both `Fundamental`
+   AND `FundamentalsSnapshot` (an EXISTING-table column addition — 2 manual `ALTER TABLE`s
+   run against production, per this repo's own `create_all()`-gap invariant; a brand-new
+   table would need none, but these are both existing, already-populated tables).
+2. `services/market-data/src/api/routes.py`'s `get_fundamentals()` — extended the
+   `upgrades_downgrades` DataFrame capture to also read `currentPriceTarget`/
+   `priorPriceTarget`, treating a literal `0.00` as `None` (yfinance's own "no target on this
+   action" sentinel — a real, false-zero risk if left un-guarded). `target_price` added to
+   both the `.values()` insert and the `on_conflict_do_update(set_=...)` update clause of the
+   existing `Fundamental` upsert.
+3. `services/market-data/src/services/scheduler.py`'s `_snapshot_fundamentals()` — the
+   existing weekly job's raw SQL INSERT extended to also carry `target_price` through
+   (both the column list and the `SELECT ... latest.target_price` clause, plus the `latest`
+   subquery's own SELECT).
+4. `services/ml-prediction/src/features/builder.py` — added `"analyst_pt_upside"` to
+   `FUNDAMENTAL_COLUMNS`; new PIT-safe join block using `pd.merge_asof(direction="backward")`
+   against the sorted `fund_snapshots` DataFrame — a training row can only ever see a snapshot
+   at or before its OWN date, never a future one. `analyst_pt_upside = (target_price / close -
+   1) * 100`, computed via a safe-placeholder-divisor pattern (`np.where(_valid, c.values,
+   1.0)` before dividing) to avoid `np.where`'s eager-both-branches-evaluated
+   `RuntimeWarning: divide by zero` even on rows the mask excludes. `NaN` when no snapshot
+   exists yet or `close <= 0`.
+5. `services/ml-prediction/src/training/trainer.py`'s `_load_fund_snapshots()` — extended to
+   SELECT and return `target_price` alongside the fields it already fetched.
+
+**A real test-fixture bug self-caught before shipping**: the first test fixture used a
+perfectly flat `close` series (`flat_close=100.0` for every bar) — this produced ZERO
+surviving rows in `build_features()`'s output regardless of window size, since a flat series
+starves the required technical-indicator computations (RSI/ATR/etc. need real variance to
+produce a non-degenerate value), which in turn starves the row mask entirely. Fixed by
+renaming the fixture parameter to `pinned_end_close` — real random-walk noise throughout, but
+shifted (`close = close - close[-1] + pinned_end_close`) so the FINAL bar lands on a known,
+deterministic value for assertions, while every earlier bar has genuine variance.
+
+**Tests**: `services/ml-prediction/tests/test_analyst_pt_upside.py` (new, 10 cases) — the
+PIT-safe merge_asof join (a training row must never see a LATER snapshot's target price),
+the `0.00`-sentinel-is-None treatment, the safe-divisor pattern's correctness at `close <= 0`,
+and no-snapshot-available degrading to `NaN` rather than a crash.
+
+**A SECOND, closely-related feature also shipped this same session using the same underlying
+yfinance data, distinct from this ML-feature ask** — see the "wsz-analyst-accuracy-weighting"
+section below: a new `AnalystPriceTarget` table tracking each FIRM's own individual calls and
+whether they were later achieved, feeding a per-firm accuracy-WEIGHTED consensus shown on the
+stock detail page. The two features share a data source (yfinance's `upgrades_downgrades`) but
+serve genuinely different purposes — one is an ML training feature, the other a user-facing
+consensus display — and were built as two independent pieces of work, not one shared
+implementation.
+
+**Deployed and live-verified.** Full ml-prediction test suite green at build time.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c "\d fundamentals" | grep target_price
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c "\d fundamentals_snapshot" | grep target_price
+docker exec stockai-ml-prediction-1 grep -n "analyst_pt_upside" /app/src/features/builder.py
+```
+
+---
+
+## Feature Reference: T230-BACKTESTING-MULTISYMBOL — Portfolio-Level Backtest MVP (Built 2026-08-18)
+
+**Deliberately NOT what this tracker item's own `fix` text originally asked for** ("simulate
+`paper_trading_step()` day-by-day using historical signals and prices") — a faithful replay of
+that function needs no-historical-persistence regime detection (a permanent gap
+`gate_harness.py` already discloses — see the section above), decision-engine calls,
+`_scan_for_entries()`'s full candidate loop (staleness/watchlist/cross-portfolio-symbol locks),
+and `_monitor_positions()`'s live day-by-day stop/target/trailing-stop/signal-decay exit logic
+— a genuine "2+ weeks" build per `docs/DESIGN_BACKTEST_HARNESS_PHASE2_2026-07-06.md` §1c,
+which explicitly scopes this out as a still-unbuilt future Phase 2b.
+
+**What shipped instead — an honestly-scoped MVP answering a smaller, real, useful question**:
+"if I ran a shared-capital portfolio across N symbols using this app's own real entry/exit
+ground truth and real position-sizing math, what would the resulting equity curve/Sharpe/
+drawdown/win-rate have looked like?" New `services/market-data/src/backtest/
+portfolio_backtest.py`:
+
+1. **Reuses `gate_harness.py`'s ALREADY-PROVEN point-in-time-safe `SignalOutcome` ground
+   truth** (real `entry_date`/`entry_price`/`exit_date`/`exit_price` per symbol, already
+   computed and persisted by `evaluate_signal_outcomes()` — never a re-simulated exit) instead
+   of replaying `_monitor_positions()`'s own live stop/target logic.
+2. **Day-steps through a MERGED, chronologically-sorted event timeline across all requested
+   symbols** — a shared cash pool, a `max_positions` cap, and a simplified sector-concentration
+   cap all interact exactly as they would across a real multi-symbol book. Exits are processed
+   BEFORE entries on the same calendar day (frees cash/room before that day's entries are
+   sized).
+3. **A genuine SUBSET of the real `risk_per_trade_pct`/`max_position_pct` sizing formula**
+   from `paper_trading_engine.py`'s `_open_paper_trade()` — deliberately omitting the 6
+   independent size multipliers (earnings/regime/confidence/research/consensus/score) the real
+   function applies, since those inputs either don't exist historically (`live_regime`) or
+   would need the full `_should_enter()` replay this module deliberately doesn't attempt.
+
+**Disclosed, not silently glossed over, in the module's own top-of-file docstring**: no
+decision-engine/`_should_enter()` gate replayed at all (every `SignalOutcome` BUY signal in the
+window is treated as "the entry signal fired," with only portfolio-level caps as the admission
+filter); no aggregate open-risk cap, no cross-symbol correlation cap, no drawdown circuit
+breaker (until the same-day extension below), no cooldown/re-entry-lockout logic; no
+commission/slippage; exits use the outcome's own resolved hold-window exit, not a simulated
+stop/trailing-stop/target a live trade might have taken earlier or later.
+
+**New endpoint**: `GET /paper-portfolio/backtest/portfolio` (admin-only), delegating directly
+to `run_portfolio_backtest()`.
+
+**Live-verified against real production data** (2026-08-18): 4 real symbols (AAPL/MSFT/NVDA/
+GOOG), SWING/US, 180-day window — 59 signals seen, 12 entered, `win_rate` 41.67%, Sharpe 1.398,
+`max_drawdown_pct` 2.63%, `final_equity` $102,210.17.
+
+**Tests**: `services/market-data/tests/test_portfolio_backtest.py` (originally 21 cases, later
+extended — see the drawdown-sweep section below) and `test_backtest_portfolio_route.py` (7
+cases, source-text regression checks — `paper_portfolio.py` can't be imported directly in this
+test environment). Covers the sizing subset formula, max-positions/sector-cap blocking, cash
+reuse after an earlier exit, same-day exit-before-entry ordering, win-rate/avg-return
+computation, and symbol-scoping (a signal for a symbol NOT in the requested list must never
+leak in).
+
+**A real hand-calculation mistake self-caught while writing the sizing test**: the first
+version of `test_basic_sizing_uses_risk_per_trade_over_stop_distance` expected `shares=250.0`
+from pure risk/stop-distance math alone, but the REAL function ALSO applies the
+`max_position_pct` cap (0.10 of equity), which clamps the result to `shares=200.0`. Fixed by
+correcting the expected value and adding a sibling test with a smaller `risk_per_trade_pct` to
+isolate the pure formula from the cap.
+
+**A `pct_return`/percentage-vs-fraction unit-mismatch bug self-caught while writing tests**:
+`SignalOutcome.pct_return`/`return_{bucket}` are stored as FRACTIONS (`0.10` = 10%), not
+percentages — initial test fixtures wrongly passed `pct_return=10.0` (meaning 1000%),
+producing wildly wrong `avg_return_pct` assertions. Fixed by converting every fixture value to
+a fraction.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 curl -s 'http://localhost:8001/paper-portfolio/backtest/portfolio?symbols=AAPL,MSFT&style=SWING&market=US&window_days=60' -H "Authorization: Bearer <admin token>"
+```
+
+---
+
+## Feature Reference: T234-CONFIG-UNJUSTIFIED-THRESHOLDS — max_portfolio_drawdown_pct Walk-Forward Sweep (Built 2026-08-18)
+
+**The gap**: `max_portfolio_drawdown_pct` (0.20 — the master portfolio circuit breaker,
+suspending new entries once drawdown-from-peak exceeds this fraction) was flagged in this
+tracker item's own systemic audit as one of the highest-leverage never-empirically-validated
+constants in the codebase. Unlike `gate_harness.py`'s per-signal sweeps (which filter WHICH
+signals get admitted, replayable via a lighter per-signal function), the drawdown breaker only
+gates NEW ENTRIES once the running portfolio is already underwater — testing a candidate value
+means re-running the WHOLE day-stepped simulation with that threshold, since a post-hoc filter
+on an already-finished equity curve can't know what the breaker would ACTUALLY have blocked
+(blocking one entry changes every later day's cash/position state too).
+
+**Fix, extending `portfolio_backtest.py` (above) same-day**:
+
+1. **`run_portfolio_backtest()` now tracks a running peak** (`max(curve peak, current equity)`,
+   updated at the START of each day's processing — mirroring `paper_trading_engine.py`'s real
+   PA-D2 circuit breaker exactly) and gates new entries once `(peak - equity) / peak` exceeds
+   `cfg["max_portfolio_drawdown_pct"]`. A new `n_skipped_drawdown_breaker` counter reports this
+   separately from the pre-existing `n_skipped_no_room` (cash/sector/position-count blocks) —
+   a genuinely different rejection reason worth distinguishing.
+
+2. **New `sweep_max_portfolio_drawdown_pct()`** — walk-forward search over candidate threshold
+   values, using the SAME chronological 70/30 train/validation split and promotion-margin
+   discipline as `gate_harness.py`'s own `walk_forward_extended_gate()`/
+   `walk_forward_min_entry_score()`, reusing its EXACT `_MIN_PROMOTION_EV_LIFT_PCT`/
+   `_MIN_PROMOTION_LIFT_SD_RATIO` constants (not a second, independently-tuned margin).
+   Promotion metric is `total_return_pct` — deliberately NOT `max_drawdown_pct` alone, since a
+   breaker tuned purely to minimize drawdown trivially wins by never entering at all; the
+   whole point of a circuit breaker is a return/risk TRADE-OFF, so the promotion criterion has
+   to weigh the return side, with `max_drawdown_pct` reported alongside for context on what
+   that return was bought/sold for.
+
+3. **A real "still passes after sabotage" gap self-caught during adversarial verification, and
+   closed by a code-quality improvement, not just a test addition**: the promotion arithmetic
+   was initially inlined directly in `sweep_max_portfolio_drawdown_pct()`. Sabotaging the
+   absolute-lift-floor guard (`if lift >= _MIN_PROMOTION_EV_LIFT_PCT:` → always-true) passed
+   EVERY existing test undetected — none of the constructed scenarios happened to isolate a
+   lift that clears the SD-ratio bar but fails the absolute floor specifically. Rather than
+   fight the day-stepped simulator to construct that exact scenario (attempted first, found
+   genuinely difficult — the breaker's binary block/admit nature tends to produce either a
+   large or a zero lift, not a controllably-tiny one), the promotion arithmetic was extracted
+   into its own standalone, directly-testable `_passes_return_promotion_margin(candidate_pct,
+   baseline_pct, combined_trade_returns)` — a pure function taking plain values instead of
+   `BacktestResult` objects. A new direct unit test
+   (`test_a_lift_below_the_absolute_floor_never_promotes_even_with_zero_dispersion`) — a lift
+   just below the floor, with IDENTICAL (zero-dispersion) combined returns, isolating the
+   absolute-floor guard from the SD-ratio guard entirely — immediately caught the same
+   sabotage that every inline test had missed.
+
+**New endpoint**: `GET /paper-portfolio/backtest/drawdown-breaker-sweep` (admin-only, 365-day
+default window — a walk-forward sweep needs enough history for a real 70/30 split on top of
+the outcome-resolution lag, unlike the plain `/backtest/portfolio` route's 180-day default).
+
+**Tests**: 23 new cases total — 15 in `test_portfolio_backtest.py` (the breaker gate itself,
+the sweep function end-to-end, and 5 direct unit tests of `_passes_return_promotion_margin()`
+in isolation) and 8 in a new `test_backtest_drawdown_sweep_route.py`. Adversarially verified 4
+sabotage/revert cycles: disabling the drawdown-gate comparison entirely (caught by 3 tests
+depending on real blocking behavior), disabling the SD-ratio guard (caught at BOTH the direct
+unit-test level and the end-to-end sweep-test level), disabling the absolute-floor guard (the
+gap described above, closed by the extraction), and sabotaging the new route's admin gate
+(caught directly). All reverted and confirmed byte-identical via `md5sum` before moving on.
+
+Full 1,736-test market-data suite green.
+
+**Live-verified against real production data** (2026-08-18): a 90-day sweep with 20 real US
+tech symbols correctly found a genuine train-slice winner (`candidate_value: 0.1`), correctly
+reported `promoted: false` when that candidate's validation-slice result was identical to the
+current live baseline's (neither ever tripped in that low-volatility window — real
+`max_drawdown_pct` of 3.61%, well below either threshold). A wider window's train slice
+correctly returned a clear `skipped_reason` rather than a fabricated result once it extended
+past this app's real earliest `signal_outcomes` row (2026-05-25) — confirmed via a direct DB
+query before trusting the empty result as correct behavior, not a bug.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n "n_skipped_drawdown_breaker\|_passes_return_promotion_margin" /app/src/backtest/portfolio_backtest.py
+docker exec stockai-market-data-1 curl -s 'http://localhost:8001/paper-portfolio/backtest/drawdown-breaker-sweep?symbols=AAPL,MSFT,NVDA,GOOG&style=SWING&market=US&window_days=180' -H "Authorization: Bearer <admin token>"
+```
+
+---
+
+## Feature Reference: T270-DBSYNC-PROD-TO-LOCAL-WEEKLY Layer 2 — scripts/sync_prod_to_local.sh (Built 2026-08-17)
+
+**Closes the last open piece of this tracker item** — Layer 1 (a hard `Settings.env ==
+"production"` gate in `scheduler.py`'s `start_scheduler()`, structurally preventing any
+non-production environment from ever registering/running an alert-emitting job) and Layer 3
+(an admin force-enable escape hatch) already shipped in an earlier session; this is Layer 2,
+the actual prod→local sync tool that makes restoring a real prod dump locally an actual
+routine workflow instead of a hypothetical one.
+
+**Resolves the two open scoping questions the earlier Layer 1 update explicitly left
+unanswered**:
+1. **Manual trigger, not cron'd** — the design doc itself (`docs/DESIGN_SIX_ITEM_BATCH_
+   2026-08-11.md`) found no strong reason to prefer one over the other; a manual command
+   avoids a stale/rotated SSH key silently failing on an unattended schedule with nobody
+   watching. (If a future session wants this on a schedule, wrapping the script in a cron/
+   launchd entry needs no change to the script itself — nothing about it assumes manual
+   invocation.)
+2. **The PII scrub IS included by default** (`SKIP_PII_SCRUB=1` opts out) — per the design
+   doc's own "I'd lean toward doing both since it's nearly free" recommendation. Explicitly
+   defense-in-depth ON TOP OF Layer 1's hard env gate, never a replacement for it — the script's
+   own top comment says so directly.
+
+**What it does** (`scripts/sync_prod_to_local.sh`): SSH-based `pg_dump` (`docker exec` on the
+real EC2 Postgres container, reusing `backup_db.sh`'s own established invocation pattern)
+piped to the local machine, DROP/CREATE the local database (terminating existing connections
+first via `pg_terminate_backend()` so a live local app connection can't block the DROP),
+restore, then scrub:
+- `users`/`price_alerts`/`signal_alerts`/`conditional_orders`/`earnings_alert_subscriptions`'
+  real email columns rewritten to a deterministic, obviously-fake `<prefix><id>+devnull@
+  example.invalid` pattern — deliberately NOT `NULL`, so a dev can still visually tell "this
+  row had a real email once" from "this user never set one," and any code path that wrongly
+  assumes a non-NULL email (rather than actually checking) fails loudly and obviously instead
+  of silently.
+- Beyond this item's own original email-only scope, but genuinely cheap and done in the same
+  pass: `broker_connections.config` (real OAuth consumer keys/tokens as JSON — a materially
+  higher-value target than an email address if a synced-down local machine is ever
+  compromised) is blanked to `{}` and `is_authorized` reset.
+
+**Safety guards**: refuses to run if it detects it's accidentally being invoked ON the EC2
+host itself (checks for the production `docker-compose.yml` path, which would make "local" and
+"prod" the same container — a real restore-onto-itself risk); aborts before touching the local
+DB if the dump is suspiciously small (<1KB); checks the local Postgres container is actually
+running first, with a clear error instead of a cryptic `docker exec` failure.
+
+**The PII-scrub SQL syntax was verified against a real, disposable `postgres:16-alpine`
+Docker container before trusting it** — not assumed correct from memory, matching this repo's
+own standing "verify against real behavior, don't trust a hand-written guess" discipline.
+
+**Local-only dev tool — no EC2/production deploy needed or performed.** Verified via direct
+code read rather than a live run (an actual live run would mean really SSHing into and
+dumping the real production database, a genuine — if reversible — action outside this
+session's own scope of EC2 changes).
+
+**Usage**:
+```bash
+bash scripts/sync_prod_to_local.sh                      # full sync + PII scrub (default)
+SKIP_PII_SCRUB=1 bash scripts/sync_prod_to_local.sh      # restore only, no scrub (rare)
+```
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the script exists and is executable:
+ls -la scripts/sync_prod_to_local.sh
+# Confirm Layer 1's env gate is still in place (this script's own safety net):
+docker exec stockai-market-data-1 python3 -c "
+import sys; sys.path.insert(0, '/app')
+from src.services.scheduler import _is_alerting_enabled
+print(_is_alerting_enabled())"
+```
+
+---
+
+## Feature Reference: wsz-analyst-accuracy-weighting — Per-Firm Analyst Accuracy Tracking + Weighted Consensus (Built 2026-08-18)
+
+**The ask**: weight analyst price targets by each firm's own historical accuracy, rather than
+treating every analyst's call as equally reliable in a simple mean.
+
+**New `AnalystPriceTarget` model** (`shared/db/models.py`) — a brand-new table (so
+`create_all()` handles it automatically, zero manual migration needed, unlike the
+`target_price` COLUMN addition in the TIER82 section above): `(id, stock_id, symbol, firm,
+grade_date, action, to_grade, current_price_target, prior_price_target,
+outcome_evaluated_at, target_achieved, max_price_in_window, created_at)`, with
+`UniqueConstraint("stock_id", "firm", "grade_date")` (one row per firm per rating action per
+stock — a firm re-rating the same stock on a different day is a genuinely new row) and
+`Index("ix_analyst_price_target_firm_evaluated", "firm", "outcome_evaluated_at")` (supports
+the per-firm accuracy aggregation query efficiently).
+
+**A real bug found and fixed live, mid-deployment**: `shared/db/__init__.py` re-exports
+models by an EXPLICIT name list, not a wildcard import — `AnalystPriceTarget` was defined in
+`models.py` but never added to either the import list or `__all__` in `__init__.py`. This
+caused a real `ImportError: cannot import name 'AnalystPriceTarget' from 'db'` crash-loop on
+`stockai-market-data-1` during EC2 deployment, caught live (not in local testing, since the
+local test environment stubs `db` wholesale and never actually imports the real module this
+way). Fixed by adding the name to both lists; committed as its own dedicated fix commit and
+proactively synced to ALL 11 backend containers' `shared/db/` (not just market-data), per
+this repo's own documented "shared/db/ staleness across containers" recurring-issue class.
+
+**Ingestion**: `services/market-data/src/api/routes.py`'s `get_fundamentals()` extended to
+also capture `currentPriceTarget`/`priorPriceTarget` from yfinance's `upgrades_downgrades`
+DataFrame (the same fetch the TIER82 `analyst_pt_upside` feature reuses — see that section —
+but persisted into a DIFFERENT table here, since this feature needs per-FIRM history, not a
+single latest-consensus value). A literal `0.00` is treated as `None` (yfinance's own
+"no target on this action" sentinel). New, INDEPENDENT persist block for `AnalystPriceTarget`
+rows (its own try/except, isolated from the `Fundamental` persist path so a failure in one
+never blocks the other), using `on_conflict_do_nothing(constraint="uq_analyst_price_target_
+stock_firm_date")`.
+
+**Scoring — `_evaluate_analyst_target_outcomes()`** (`services/market-data/src/services/
+scheduler.py`, new daily job `analyst_target_outcomes_daily`, `CronTrigger(hour=6, minute=45,
+timezone="UTC")`): scores an `AnalystPriceTarget` row once `grade_date <= today - 365 days`
+(`_ANALYST_TARGET_OUTCOME_WINDOW_DAYS`) AND real `Price` rows exist for that window — scoring
+BEFORE the window has fully elapsed would be a false negative (the target simply hasn't had
+time to be hit yet), so the wait is load-bearing, not arbitrary. `target_achieved = (max_high
+>= lo) or (min_low <= hi)` where `lo`/`hi` are ±10% (`_ANALYST_TARGET_TOLERANCE_PCT`) of
+`current_price_target` — symmetric, so both an upside AND a downside target get a fair
+evaluation. Bounded to `.limit(2000)` rows per run to keep the daily job's own cost bounded.
+
+**Consensus — `_compute_weighted_analyst_consensus(session, symbol)`**: computes both a
+simple mean AND an accuracy-weighted mean over the trailing `_ANALYST_CONSENSUS_LOOKBACK_DAYS`
+(90) days of targets, deduped to the MOST RECENT target per firm (a firm's older, superseded
+call shouldn't count alongside its newer one). Firm accuracy is computed ACROSS ALL symbols
+that firm has ever covered (a firm's track record is a property of the firm, not of any one
+stock) — `_ANALYST_ACCURACY_MIN_SAMPLES = 5`: a firm with fewer than 5 scored calls gets
+EQUAL weight (1.0), not its own noisy raw accuracy, avoiding overfitting a firm's weight to a
+tiny, statistically meaningless sample. New `GET /stocks/{symbol}/analyst-consensus` route.
+
+**A real bug self-caught via `func` resolving to a stale MagicMock stub during test-writing**:
+the test extraction technique initially did `from sqlalchemy import func as sa_func` INSIDE
+the lazily-called extraction function — since this runs AFTER the test file's own stub-pop-
+and-restore sequence, it grabbed the STILL-STUBBED `sqlalchemy.func` (a `MagicMock`), causing
+a real `sqlalchemy.exc.ArgumentError`. Fixed by moving `func` into the SAME top-level `from
+sqlalchemy import create_engine, func, select` line that runs BEFORE the stub restoration,
+capturing the genuinely real object.
+
+**"Still passes after sabotage" caught and fixed during adversarial verification**: the first
+version of the min-samples-floor test used a "ThinFirm" fixture with 2 scored targets, BOTH
+`target_achieved=True` (100% accuracy) — coincidentally IDENTICAL to the equal-weight
+fallback value of `1.0`, so removing the min-samples floor produced no detectable change and
+the test kept passing regardless of whether the guard existed. Fixed by changing the fixture
+to 0% accuracy (both targets `target_achieved=False`), a value that genuinely differs from
+`1.0` — re-verified the sabotage now correctly swings `weighted_mean` and is caught.
+
+**Frontend**: new `AnalystConsensusPanel({ symbol })` component (self-contained `useSWR`
+fetch) on the stock detail page, right after the existing "Recent Analyst Actions" block.
+
+**Live-verified against real production data** (2026-08-18): `GET /stocks/AAPL/
+analyst-consensus` returned 17 real firms (TD Cowen $400, Goldman Sachs $360, etc.),
+`simple_mean: 327.04`, `weighted_mean: 327.04` (correctly equal, since no firm has scored
+history yet — the daily evaluation job hasn't had 365 days to run against any of these rows).
+Manually verified the scoring logic itself by inserting/deleting a synthetic old test row and
+confirming `target_achieved=true` computed correctly against real AAPL price history (a real
+max high of $258.226 vs. a $150 test target).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c "SELECT COUNT(*) FROM analyst_price_targets;"
+docker exec stockai-market-data-1 curl -s 'http://localhost:8001/stocks/AAPL/analyst-consensus'
+docker logs stockai-market-data-1 --since 24h | grep analyst_target_outcomes
+```
