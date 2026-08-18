@@ -2406,6 +2406,54 @@ def backtest_extended_gate(
         )
 
 
+# ── T230-BACKTESTING-MULTISYMBOL: multi-symbol / portfolio-level backtest ──────
+# See portfolio_backtest.py's own module docstring for the FULL honest-scope disclosure —
+# this is an MVP day-stepped shared-capital simulator over already-resolved SignalOutcome
+# ground truth, NOT a replay of _scan_for_entries()/paper_trading_step()'s live decision and
+# exit pipeline (that full replay remains an explicitly-deferred, much larger Phase 2b/2c
+# per docs/DESIGN_BACKTEST_HARNESS_PHASE2_2026-07-06.md). Manually-triggered research tool
+# only — never writes to portfolio.config or any promotion history table.
+
+@router.get("/backtest/portfolio")
+def backtest_portfolio(
+    symbols: str = Query(..., description="Comma-separated symbols, e.g. AAPL,MSFT,NVDA"),
+    style: str = Query(..., description="SHORT | SWING | LONG | GROWTH"),
+    market: str = Query("US", description="US | HK"),
+    window_days: int = Query(180, ge=14, le=730, description="Lookback window in calendar days"),
+    initial_capital: float = Query(100_000.0, gt=0, description="Starting cash for the simulated portfolio"),
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """Day-step a shared-capital portfolio across the requested symbols using each symbol's
+    own already-resolved BUY SignalOutcome rows as entry/exit ground truth. See
+    portfolio_backtest.py's own module docstring for exactly what is and is not modeled —
+    this deliberately does NOT replay _should_enter()/decision-engine/regime detection, and
+    exits use the outcome's own resolved hold-window exit, not a simulated stop/target.
+    """
+    from ..backtest.portfolio_backtest import run_portfolio_backtest
+    from dataclasses import asdict
+
+    style = style.upper()
+    if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
+        raise HTTPException(status_code=400, detail=f"Unknown style: {style}")
+    market = market.upper()
+    if market not in ("US", "HK"):
+        raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
+
+    symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
+    if not symbol_list:
+        raise HTTPException(status_code=400, detail="symbols must contain at least one ticker")
+
+    window_end = date.today()
+    window_start = window_end - timedelta(days=window_days)
+
+    with SessionLocal() as session:
+        result = run_portfolio_backtest(
+            session, symbol_list, style, market, window_start, window_end,
+            cfg_overrides={"initial_capital": initial_capital},
+        )
+    return asdict(result)
+
+
 # ── T233-SELFIMPROVE-PHASE3: promotion gate + tune history ─────────────────────
 # See docs/DESIGN_PROMOTION_GATE_PHASE3_2026-07-05.md for full scope/rationale.
 # Still manually-triggered and does NOT write to portfolio.config — records every
