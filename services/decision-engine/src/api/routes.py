@@ -10,7 +10,13 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from common.jwt_auth import get_current_username
 
-from .core.aggregator import abuild_game_plan, aget_entry_gate_params, extract_live_price, fetch_all
+from .core.aggregator import (
+    abuild_game_plan,
+    aget_entry_gate_params,
+    aget_entry_weights,
+    extract_live_price,
+    fetch_all,
+)
 from .core.hard_rejects import check_hard_rejects
 from .core.models import (
     BatchDecisionRequest,
@@ -295,7 +301,43 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         )
 
     # 11. Verdict
-    if score >= min_score:
+    # T232-DL-DUALSCORER-DEBT item #23: paper_trading_engine.py's _should_enter() abandons the
+    # plain additive score>=min_entry_score comparison entirely once a portfolio has >=100
+    # closed trades (PT-3) — it fits a calibrated logistic-regression win-probability model
+    # instead. decision-engine had no equivalent, so /decide/{symbol} always used the plain
+    # threshold even for a portfolio whose fallback gate had already moved on to the calibrated
+    # model — a real divergence for exactly the portfolios most worth trusting (100+ real closed
+    # trades). Mirrors _should_enter()'s own formula/threshold verbatim; only ever engages when
+    # the SAME >=100-trade gate _should_enter() itself checks is satisfied, so a young portfolio
+    # (or a market-data outage — the fetch fails open to {}) sees byte-identical behavior to
+    # before this change.
+    _entry_weights = await aget_entry_weights()
+    if _entry_weights.get("intercept") is not None and _entry_weights.get("n_trades", 0) >= 100:
+        import math as _math
+        _stop_dist = live_price - stop_price
+        _rr = (take_profit - live_price) / max(_stop_dist, 0.0001)
+        _ks_for_cal = float(cfg.get("kscore")) if cfg.get("kscore") is not None else 50.0
+        _logit = (
+            _entry_weights["intercept"]
+            + _entry_weights["w_rr"]         * min(_rr, 8.0)
+            + _entry_weights["w_confidence"] * confidence
+            + _entry_weights["w_score"]      * float(score)
+            + _entry_weights["w_kscore"]     * _ks_for_cal
+        )
+        _cal_prob = 1.0 / (1.0 + _math.exp(-_logit))
+        _cal_threshold = _entry_weights.get("threshold", 0.52)
+        if _cal_prob >= _cal_threshold:
+            verdict = "BUY"
+        elif score >= min_score - 2:
+            verdict = "HOLD"
+        else:
+            verdict = "SKIP"
+        breakdown.append(ScoreItem(
+            layer="calibrated_entry",
+            pts=0,
+            note=f"Calibrated win-prob {_cal_prob*100:.0f}% (threshold {_cal_threshold*100:.0f}%, n_trades={_entry_weights.get('n_trades')})",
+        ))
+    elif score >= min_score:
         verdict = "BUY"
     elif score >= min_score - 2:
         verdict = "HOLD"

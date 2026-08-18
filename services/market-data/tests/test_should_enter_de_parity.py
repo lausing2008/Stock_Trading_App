@@ -15,6 +15,7 @@ already ported into _should_enter() in an earlier pass but had no dedicated regr
 of their own (the tracker text describing them as still "todo" was stale; the code was not).
 """
 from datetime import date, datetime, timedelta, timezone
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -78,7 +79,7 @@ def _neutral_inputs():
 
 
 def _score_only(live_regime=None, kscore=None, cfg_overrides=None, game_plan_overrides=None,
-                 signal_data_overrides=None, max_open_corr=None, as_of=None):
+                 signal_data_overrides=None, max_open_corr=None, as_of=None, recent_win_rate=None):
     live_price, game_plan, signal_data, cfg = _neutral_inputs()
     if cfg_overrides:
         cfg.update(cfg_overrides)
@@ -88,7 +89,7 @@ def _score_only(live_regime=None, kscore=None, cfg_overrides=None, game_plan_ove
         signal_data.update(signal_data_overrides)
     should_enter, score, notes = _should_enter(
         "TEST", signal_data, live_price, game_plan, cfg, live_regime, kscore=kscore,
-        max_open_corr=max_open_corr, as_of=as_of,
+        max_open_corr=max_open_corr, as_of=as_of, recent_win_rate=recent_win_rate,
     )
     return should_enter, score, notes
 
@@ -494,3 +495,149 @@ def test_as_of_mid_session_does_not_hit_the_time_of_day_gate():
     as_of_noon_et = datetime(2026, 6, 15, 17, 0, tzinfo=timezone.utc)  # noon ET
     should_enter, score, notes = _score_only(as_of=as_of_noon_et)
     assert not any("Time-of-day gate" in n for n in notes)
+
+
+# ── T232-DL-DUALSCORER-DEBT item #30: recent win-rate floor bump ─────────────────────────
+
+def test_low_win_rate_raises_the_min_entry_score_floor_by_one():
+    """Mirrors decision-engine's own min_score_for_regime() win-rate floor bump exactly —
+    below 30% recent win rate, the additive-threshold floor is raised by 1."""
+    # Neutral fixture scores exactly 3 (entry-zone +2, freshness +1) on the additive path.
+    # min_entry_score=3 with a healthy win rate clears; with a losing streak the floor
+    # becomes 4 and the SAME score of 3 must now fail.
+    should_enter_healthy, score, _ = _score_only(cfg_overrides={"min_entry_score": 3}, recent_win_rate=0.50)
+    should_enter_losing, score2, _ = _score_only(cfg_overrides={"min_entry_score": 3}, recent_win_rate=0.20)
+    assert score == score2  # the bump raises the THRESHOLD, never the score itself
+    assert should_enter_healthy is True
+    assert should_enter_losing is False
+
+
+def test_win_rate_floor_bump_note_is_only_added_when_it_actually_fires():
+    _, _, notes_healthy = _score_only(cfg_overrides={"min_entry_score": 3}, recent_win_rate=0.50)
+    _, _, notes_losing = _score_only(cfg_overrides={"min_entry_score": 3}, recent_win_rate=0.20)
+    assert not any("Recent win rate" in n for n in notes_healthy)
+    assert any("Recent win rate" in n for n in notes_losing)
+
+
+def test_win_rate_floor_bump_boundary_is_exclusive_of_30_percent():
+    """Matches decision-engine's own `< 0.30` comparison exactly — exactly 30% must NOT
+    trigger the bump (only genuinely below it)."""
+    should_enter, _, notes = _score_only(cfg_overrides={"min_entry_score": 3}, recent_win_rate=0.30)
+    assert should_enter is True
+    assert not any("Recent win rate" in n for n in notes)
+
+
+def test_win_rate_floor_bump_is_absent_by_default():
+    """recent_win_rate defaults to None — every existing caller that doesn't pass it is
+    completely unaffected, matching every other optional parameter's own convention here."""
+    should_enter, _, notes = _score_only(cfg_overrides={"min_entry_score": 3})
+    assert should_enter is True
+    assert not any("Recent win rate" in n for n in notes)
+
+
+def test_win_rate_floor_bump_does_not_apply_on_the_calibrated_logistic_bypass_path():
+    """When >=100 closed trades exist, _should_enter() uses the calibrated logistic-
+    regression bypass instead of the additive threshold — the win-rate bump must only ever
+    apply to the additive-threshold branch, matching decision-engine's own scorer.py, which
+    has no calibrated-logistic path at all to apply this bump differently on."""
+    import src.services.paper_trading_engine as pte
+    fake_weights = {
+        "intercept": 0.0, "w_rr": 0.1, "w_confidence": 0.01, "w_score": 0.1,
+        "w_kscore": 0.01, "threshold": 0.52, "n_trades": 150,
+    }
+    with patch.object(pte, "_load_entry_weights", return_value=fake_weights):
+        _, _, notes_healthy = _score_only(recent_win_rate=0.50)
+        _, _, notes_losing = _score_only(recent_win_rate=0.20)
+    assert not any("Recent win rate" in n for n in notes_healthy)
+    assert not any("Recent win rate" in n for n in notes_losing)
+    assert any("Calibrated win-prob" in n for n in notes_healthy)
+
+
+# ── T232-DL-DUALSCORER-DEBT item #25: research alignment as a direct score layer ─────────
+
+def _score_only_with_research(fake_response, live_regime=None, cfg_overrides=None):
+    """Like _score_only(), but patches httpx.get() to return `fake_response` for the new
+    research-alignment fetch, and _svc_token() (which genuinely fails against this test
+    environment's mocked settings object — same gotcha already documented in
+    test_open_paper_trade_extraction.py) to a real string so the fetch's own try/except
+    doesn't silently swallow the call before it ever reaches the mocked response."""
+    import httpx as _httpx
+    import src.services.paper_trading_engine as pte
+    live_price, game_plan, signal_data, cfg = _neutral_inputs()
+    if cfg_overrides:
+        cfg.update(cfg_overrides)
+    with patch.object(_httpx, "get", return_value=fake_response), \
+         patch.object(pte, "_svc_token", return_value="fake-token"):
+        return _should_enter("TEST", signal_data, live_price, game_plan, cfg, live_regime)
+
+
+class _FakeResearchResponse:
+    def __init__(self, status_code=200, recommendation="BUY", overall_score=70):
+        self.status_code = status_code
+        self._body = {"recommendation": recommendation, "overall_score": overall_score}
+
+    def json(self):
+        return self._body
+
+
+def test_strong_buy_research_adds_two_points():
+    should_enter, score_strong_buy, notes = _score_only_with_research(
+        _FakeResearchResponse(recommendation="STRONG BUY"),
+    )
+    should_enter2, score_none, _ = _score_only_with_research(
+        _FakeResearchResponse(status_code=500),  # non-200 -> no research score applied
+    )
+    assert score_strong_buy == score_none + 2
+    assert any("Research: STRONG BUY" in n for n in notes)
+
+
+def test_buy_research_adds_one_point():
+    _, score_buy, _ = _score_only_with_research(_FakeResearchResponse(recommendation="BUY"))
+    _, score_none, _ = _score_only_with_research(_FakeResearchResponse(status_code=500))
+    assert score_buy == score_none + 1
+
+
+def test_watch_research_adds_no_points_but_no_error_either():
+    should_enter, score_watch, notes = _score_only_with_research(_FakeResearchResponse(recommendation="WATCH"))
+    _, score_none, _ = _score_only_with_research(_FakeResearchResponse(status_code=500))
+    assert score_watch == score_none
+    assert not any(n.startswith("Research:") for n in notes)  # zero-point layer omits the note
+
+
+def test_avoid_research_subtracts_one_point():
+    _, score_avoid, notes = _score_only_with_research(_FakeResearchResponse(recommendation="AVOID"))
+    _, score_none, _ = _score_only_with_research(_FakeResearchResponse(status_code=500))
+    assert score_avoid == score_none - 1
+    assert any("Research: AVOID" in n for n in notes)
+
+
+def test_sell_research_subtracts_two_points():
+    _, score_sell, _ = _score_only_with_research(_FakeResearchResponse(recommendation="SELL"))
+    _, score_none, _ = _score_only_with_research(_FakeResearchResponse(status_code=500))
+    assert score_sell == score_none - 2
+
+
+def test_research_fetch_failure_is_fail_open_no_score_change():
+    """A non-200 response (research-engine down, symbol not covered, etc.) must never crash
+    or fabricate a score adjustment — matches every other optional layer's fail-open contract."""
+    should_enter, score, notes = _score_only_with_research(_FakeResearchResponse(status_code=500))
+    assert not any(n.startswith("Research:") for n in notes)
+
+
+def test_research_network_exception_is_fail_open_no_score_change():
+    import httpx as _httpx
+    import src.services.paper_trading_engine as pte
+    live_price, game_plan, signal_data, cfg = _neutral_inputs()
+    with patch.object(_httpx, "get", side_effect=ConnectionError("no network in tests")), \
+         patch.object(pte, "_svc_token", return_value="fake-token"):
+        should_enter, score, notes = _should_enter("TEST", signal_data, live_price, game_plan, cfg, None)
+    assert not any(n.startswith("Research:") for n in notes)
+
+
+def test_unknown_research_recommendation_string_adds_no_points():
+    """A recommendation string that doesn't match any of the 5 known tiers must fail safe to
+    0 points, matching decision-engine's own _RESEARCH_SCORE.get(rec_upper, 0) default."""
+    _, score, notes = _score_only_with_research(_FakeResearchResponse(recommendation="SOME_UNKNOWN_TIER"))
+    _, score_none, _ = _score_only_with_research(_FakeResearchResponse(status_code=500))
+    assert score == score_none
+    assert not any(n.startswith("Research:") for n in notes)

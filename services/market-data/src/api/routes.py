@@ -612,6 +612,28 @@ def entry_gate_params(style: str = "SWING", market: str = "US"):
     return resolve_entry_gate_params(style, market)
 
 
+@router.get("/entry-weights")
+def entry_weights():
+    """T232-DL-DUALSCORER-DEBT item #23: the calibrated logistic-regression entry weights
+    _should_enter() uses in place of the plain additive score>=min_entry_score comparison once
+    a portfolio has >=100 closed trades (PT-3). decision-engine's own /decide/{symbol} verdict
+    has no access to this — it lives in this service's own local file cache
+    (/data/models/entry_weights.json, written by calibrate_entry_weights()) — so a
+    decision-engine call for a portfolio that HAS crossed the calibration threshold would use
+    the plain additive threshold decision-engine always has, silently diverging from what the
+    real _should_enter() fallback would decide for the identical candidate. Exposes the same
+    dict _should_enter() itself reads via _load_entry_weights(), so decision-engine can apply
+    the identical calibrated-probability check when calibration data exists.
+
+    Returns {} (no "intercept"/"n_trades" keys) when no calibration file exists yet — matching
+    _load_entry_weights()'s own no-file sentinel exactly, so a caller's own
+    `weights.get("n_trades", 0) >= 100` gate degrades correctly with zero special-casing.
+    Unauthenticated — read-only, no sensitive data (this is a fitted-weights blob, not user data).
+    """
+    from ..services.paper_trading_engine import _load_entry_weights
+    return _load_entry_weights()
+
+
 _MARKET_BREADTH_KEY = "stockai:market_breadth"
 _MARKET_BREADTH_TTL = 60 * 60 * 4  # 4 hours
 

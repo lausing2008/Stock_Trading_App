@@ -292,3 +292,40 @@ async def aget_entry_gate_params(style: str, market: str) -> dict:
     the game-plan fetch, not a new class of contention."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(_game_plan_executor, _get_entry_gate_params, style, market)
+
+
+# ── T232-DL-DUALSCORER-DEBT item #23: calibrated-logistic entry-weight fetch ──────────────
+
+_ENTRY_WEIGHTS_CACHE: dict | None = None
+_ENTRY_WEIGHTS_TS: float = 0.0
+_ENTRY_WEIGHTS_TTL = 900  # matches _get_style_params()/_get_entry_gate_params()'s own 15-min cache
+
+
+def _get_entry_weights() -> dict:
+    """Fetch _should_enter()'s own calibrated logistic-regression weights (PT-3) from
+    market-data, with a local cache + fail-open-to-empty-dict fallback if market-data is
+    unreachable — same shape as _get_style_params()/_get_entry_gate_params() above. An empty
+    dict (or a fetch failure) is a SAFE degrade here, not just a fallback default: the caller's
+    own `weights.get("n_trades", 0) >= 100` gate correctly treats {} as "no calibration data,
+    use the plain additive threshold instead" — the exact same behavior _should_enter() itself
+    falls back to when its own local file is missing."""
+    global _ENTRY_WEIGHTS_CACHE, _ENTRY_WEIGHTS_TS
+    if _ENTRY_WEIGHTS_CACHE is not None and (_time.time() - _ENTRY_WEIGHTS_TS) < _ENTRY_WEIGHTS_TTL:
+        return _ENTRY_WEIGHTS_CACHE
+    try:
+        r = httpx.get(f"{_settings.market_data_url}/stocks/entry-weights", timeout=5.0)
+        r.raise_for_status()
+        _ENTRY_WEIGHTS_CACHE = r.json()
+        _ENTRY_WEIGHTS_TS = _time.time()
+        return _ENTRY_WEIGHTS_CACHE
+    except Exception as exc:
+        log.warning("decision.entry_weights_fetch_failed", error=str(exc))
+        return _ENTRY_WEIGHTS_CACHE if _ENTRY_WEIGHTS_CACHE is not None else {}
+
+
+async def aget_entry_weights() -> dict:
+    """Async wrapper matching aget_entry_gate_params()'s own executor pattern — reuses
+    _game_plan_executor for the same reason (an infrequent, short-lived cache-refresh call,
+    not a new class of contention)."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_game_plan_executor, _get_entry_weights)

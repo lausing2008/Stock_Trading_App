@@ -1813,6 +1813,7 @@ def _should_enter(
     kscore: float | None = None,
     max_open_corr: float | None = None,
     as_of: datetime | None = None,
+    recent_win_rate: float | None = None,
 ) -> tuple[bool, int, list[str]]:
     """Score current conditions to decide if NOW is a good time to enter.
 
@@ -1835,6 +1836,15 @@ def _should_enter(
     this, a replay of `_should_enter()` would reject essentially every historical signal
     outside of whatever moment the replay happens to actually execute — a real bug caught via
     live verification against production before Phase 2b was considered deployable.
+
+    recent_win_rate (T232-DL-DUALSCORER-DEBT item #30): mirrors decision-engine's
+    min_score_for_regime() own win-rate floor bump (+1 to the additive-threshold floor when
+    < 30%) — this fallback previously computed _recent_wr at the caller level (_scan_for_entries)
+    purely to forward it to DE, with no local equivalent, so a DE outage during a losing streak
+    got no extra selectivity here even though DE (when reachable) would already be stricter.
+    Only applied on the ADDITIVE-THRESHOLD branch below (calibrated-logistic bypass already has
+    its own, statistically-fit threshold and is left untouched, matching DE's own scorer.py,
+    which has no calibrated-logistic path at all to apply this bump to differently).
     """
     _now = as_of or datetime.now(timezone.utc)
     style = cfg.get("trading_style", "GROWTH")
@@ -2132,6 +2142,39 @@ def _should_enter(
         score -= 1
         notes.append("Pre-choppy: SPY hugging EMA50 — trend weakening, raise bar")
 
+    # ── T232-DL-DUALSCORER-DEBT item #25: research alignment as a direct score layer ──
+    # Ported from decision-engine's scorer.py (compute_score() Layer 4, _RESEARCH_SCORE).
+    # Research previously affected ONLY position sizing here (research_size_mult, in the
+    # caller's _open_paper_trade()) plus a separate hard AVOID/SELL gate — never a direct,
+    # verdict-affecting score component the way it is in decision-engine. A candidate right at
+    # the threshold could cross ENTER/SKIP differently between the two systems purely because
+    # of how research was treated, even with identical underlying research data. Makes its own
+    # short-timeout fetch (matching _open_paper_trade()'s own research_size_mult fetch exactly
+    # — same endpoint, same 1.5s timeout, same fail-open-on-any-error contract) rather than
+    # requiring the caller to pre-fetch and thread it through, since _should_enter() can run
+    # earlier in the pipeline than that sizing block and mirrors decision-engine's own
+    # self-sufficient design (DE also independently fetches research itself, never relying on
+    # being passed it).
+    _research_score_map = {"STRONG BUY": 2, "BUY": 1, "WATCH": 0, "AVOID": -1, "SELL": -2}
+    try:
+        import httpx as _httpx_research
+        from common.config import get_settings as _gs_research
+        _res_resp = _httpx_research.get(
+            f"{_gs_research().research_engine_url}/research/{symbol}/summary",
+            timeout=1.5,
+            headers={"Authorization": f"Bearer {_svc_token()}"},
+        )
+        if _res_resp.status_code == 200:
+            _res_json = _res_resp.json()
+            _research_rec_raw = (_res_json.get("recommendation") or "").upper().replace("_", " ")
+            if _research_rec_raw:
+                _research_pts = _research_score_map.get(_research_rec_raw, 0)
+                if _research_pts != 0:
+                    score += _research_pts
+                    notes.append(f"Research: {_research_rec_raw}")
+    except Exception:
+        pass  # research-engine unreachable/timeout → neutral, no score adjustment
+
     # ── T232-DL-DUALSCORER: market regime as a direct score layer ────────────
     # Ported from decision-engine's scorer.py (compute_score() Layer 5, _REGIME_SCORE). This
     # fallback previously only used regime_state to raise min_entry_score/min_rr (thresholds)
@@ -2198,7 +2241,15 @@ def _should_enter(
         should = cal_prob >= w.get("threshold", 0.52)
         notes.append(f"Calibrated win-prob {cal_prob*100:.0f}% (threshold {w.get('threshold',0.52)*100:.0f}%)")
     else:
-        should = score >= cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"])
+        _min_entry_score = cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"])
+        # T232-DL-DUALSCORER-DEBT item #30: ported from decision-engine's scorer.py
+        # min_score_for_regime() — a human trader who has lost 7 of the last 10 trades gets
+        # more selective, not less. Raises the bar rather than penalizing the score itself,
+        # matching DE's own mechanism exactly (a floor bump, not a score subtraction).
+        if recent_win_rate is not None and recent_win_rate < 0.30:
+            _min_entry_score += 1
+            notes.append(f"Recent win rate {recent_win_rate*100:.0f}% below 30% — floor raised to {_min_entry_score}")
+        should = score >= _min_entry_score
 
     return should, score, notes
 
@@ -5272,7 +5323,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         )
         se_result = _should_enter(
             stock.symbol, signal_data, live_price, game_plan, cfg, live_regime,
-            kscore=kscore_f, max_open_corr=_max_corr,
+            kscore=kscore_f, max_open_corr=_max_corr, recent_win_rate=_recent_wr,
         )
 
         if de_mode == "primary":
