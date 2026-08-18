@@ -13657,3 +13657,270 @@ docker exec stockai-postgres-1 psql -U stockai -d stockai -c "SELECT COUNT(*) FR
 docker exec stockai-market-data-1 curl -s 'http://localhost:8001/stocks/AAPL/analyst-consensus'
 docker logs stockai-market-data-1 --since 24h | grep analyst_target_outcomes
 ```
+
+---
+
+## Feature Reference: AUD288-SQUEEZE-NO-VOLUME-CONFIRM — RVOL Gate for the Classic Short-Squeeze Alert (Built 2026-08-18)
+
+**Closes a real gap from reviewing `docs/COMPREHENSIVE_SYSTEM_AUDIT_2026-08-16.md`** (an
+external audit document from another model/session — most of its 12 claims were stale or
+false, but 4 were real; this was one of them). `check_short_squeeze_alerts()` (`services/
+market-data/src/services/scheduler.py`) previously gated purely on `short_percent_of_float`
+(>=15%) and `change_pct` (>=3%) — a stock could clear both bars on thin, low-conviction volume
+(a handful of large trades in an illiquid name), a materially weaker setup than the same price
+move on genuinely elevated volume.
+
+**What it is**: an RVOL (relative volume — today's volume ÷ the stock's own 20-day average
+volume) floor added to the classic squeeze alert, reusing the SAME session-elapsed-scaled
+formula already established for `check_volume_anomalies()` (T257) and
+`check_squeeze_ignition_alerts()` (T260) — a flat RVOL threshold over-triggers early in the
+trading session, since a stock that's traded 20% of its average daily volume by 10am looks
+"abnormal" against a FULL-day average even on a completely normal day.
+
+**How it works — the shared helper**:
+```python
+def _session_elapsed_rvol_thresholds(base: float, floor: float) -> tuple[float, float]:
+    # scales `base` by how much of the trading session has elapsed (390 min for US, 330 for
+    # HK, both from 9:30 local open), floored at `floor` so the bar never drops to zero
+    # right at the open. Returns (us_threshold, hk_threshold) for the current moment.
+```
+This was previously duplicated inline, once each, inside `check_volume_anomalies()` and
+`check_squeeze_ignition_alerts()` — extracted into one shared function before adding a 3rd
+copy for this fix, closing a real DRY gap in the same pass. `check_short_squeeze_alerts()` now
+calls it with `_SQUEEZE_RVOL_BASE = 2.2` — deliberately BETWEEN the ignition tier's 1.8 (a move
+still building toward 3% should need less volume conviction than one already there) and the
+general volume-anomaly scanner's 2.5 (this alert is already narrowed by the short-float gate,
+so it doesn't need the general scanner's stricter bar).
+
+**Where the check lives**: both the MGET pre-warm pass (a Redis batch-fetch efficiency layer,
+AUD-SQUEEZE250725-PERF4.1) and the main candidate-building loop apply the identical RVOL
+filter — `stockai:avg_volume` (Redis) is read alongside the existing `stockai:live_prices`
+read, and a candidate below its market's RVOL threshold is skipped in BOTH passes. The real,
+measured RVOL is threaded into the candidate dict and rendered in the alert email (both HTML
+and text) right after the short-float %, e.g. `"0.2% of float short · 3.4x avg volume"`.
+
+**How to see it work**:
+```bash
+# Confirm the shared helper and threshold are present:
+docker exec stockai-market-data-1 grep -n '_session_elapsed_rvol_thresholds\|_SQUEEZE_RVOL_BASE' /app/src/services/scheduler.py
+
+# Compute the CURRENT live threshold directly (varies by time of day — floored outside market hours):
+docker exec stockai-market-data-1 python3 -c "
+import sys; sys.path.insert(0, '/app'); sys.path.insert(0, '/app/src')
+from src.services.scheduler import _session_elapsed_rvol_thresholds
+us, hk = _session_elapsed_rvol_thresholds(2.2, 1.5)
+print('US threshold:', round(us, 2), '| HK threshold:', round(hk, 2))
+"
+
+# Confirm the job is running on its real 1-minute schedule with no exception:
+docker logs stockai-market-data-1 --since 5m | grep 'check_short_squeeze_alerts'
+```
+If a stock clears the short-float and price-move bars but STILL doesn't alert, check its real
+volume ratio against the printed threshold above — that's expected, working-as-designed
+behavior now, not a bug.
+
+**Tests**: new `services/market-data/tests/test_session_elapsed_rvol_thresholds.py` (7 cases)
+tests the shared helper directly via a frozen-datetime harness (session-open floor, full-
+session-elapsed reaching the base, linear scaling in between, US 390min vs HK 330min session
+lengths, post-close clamping, pre-open never going negative). Extended
+`test_short_squeeze_alert.py` (+6 cases) and fixed 2 pre-existing source-text tests in
+`test_volume_anomaly_alert.py`/`test_squeeze_ignition_alert.py` that asserted on the now-
+removed inline `_us_frac`/`_hk_frac` locals.
+
+**A real "still passes after sabotage" gap, self-caught during adversarial verification**: the
+first version of the two-pass-consistency test only counted the threshold-ASSIGNMENT line
+appearing twice (once per pass) — sabotaging just the pre-warm pass's own comparison
+(`if float(vol)/float(avg_vol) < rvol_threshold:` → `if False:`) went undetected, since the
+assignment line itself was untouched. Fixed by also asserting the literal comparison strings
+exist in the body, re-ran the same sabotage, and confirmed it's now caught. Full 1,771-test
+market-data suite green at ship time; pyflakes clean (all remaining warnings independently
+confirmed pre-existing via `git stash`).
+
+---
+
+## Design Reference: AUD288-REGIME-HARD-SUPPRESS-DEFERRED — Core Signal Engine Keeps a Soft Threshold-Raise for Regime, Not a Hard Suppress (Resolved 2026-08-18, no code change)
+
+**The question the audit raised**: `signals.py`'s regime filter (bull/neutral/choppy/risk_off/
+bear) only ever RAISES the BUY confidence threshold in bear/risk_off regimes — it never hard-
+blocks a counter-trend signal outright. The squeeze-alert family (`T264-SQUEEZEFAMILY-REGIME-
+FLAG`, 2026-08-15) already deliberately keeps regime a SOFT, informational-only flag for
+itself, reasoning that hiding an alert risks silently withholding the one setup a user would
+most want to see. The audit asked whether the CORE signal engine should behave the same way,
+or should hard-suppress instead.
+
+**Decision: keep the soft threshold-raise for the core engine too** — considered explicitly,
+not defaulted to. Reasoning, generalized beyond just matching the squeeze-alert precedent:
+
+1. **A threshold-raise is proportional, a hard suppress is binary.** A genuinely strong
+   counter-trend setup (high confluence, high K-Score, real fundamentals) can still clear a
+   RAISED bar, while a marginal one can't — a hard suppress discards both indiscriminately,
+   with no way for a strong signal to still get through.
+2. **This app's regime classifier is itself imperfect and lagging** (HMM/breadth-derived, not
+   instantaneous truth). A hard suppress compounds classifier error into a silent,
+   undetectable loss of visibility — the user never even sees the signal to evaluate it
+   themselves. A threshold-raise degrades gracefully instead.
+3. **Hard-suppressing the core BUY/SELL decision is a live-decision-affecting parameter
+   change** — this codebase's own established discipline (walk-forward train/validation
+   splits, promotion-margin gates — `gate_harness.py`, `outcomes_calibrate_apply`,
+   `tune_strategy`) requires real validated evidence before shipping a change like this, not a
+   hand-picked binary rule applied from an audit's own unvalidated recommendation.
+
+**What to check if this looks wrong / how to see the current behavior**:
+```bash
+# See the regime-based threshold ADJUSTMENT (not suppression) directly:
+docker exec stockai-signal-engine-1 grep -n "regime.*threshold\|_get_dynamic_buy_threshold" /app/src/generators/signals.py | head -10
+
+# Check a real signal's own regime context (still generated even in a bear/risk_off regime,
+# just against a higher bar):
+docker exec stockai-signal-engine-1 curl -s 'http://localhost:8005/signals/AAPL?style=SWING' | python3 -m json.tool
+```
+**If ever revisited**: the correct path is a walk-forward validated sweep of a hard-suppress
+candidate against the current soft-raise baseline (matching this repo's own `gate_harness.py`
+precedent — chronological train/validation split, must beat the live baseline's own validation-
+slice EV, unconditional rejection of non-positive lift) — never an unvalidated binary flip.
+
+---
+
+## Feature Reference: AUD288-AUTO-LIQUIDATION-DEFERRED — One-Click Portfolio Liquidation (Built 2026-08-18)
+
+**The gap**: `check_portfolio_drawdown_alerts()` (`services/market-data/src/services/
+scheduler.py`) already emails a user once a portfolio crosses its own configured
+`max_portfolio_drawdown_pct` — but never automatically closes any positions, and there was no
+way to act on it beyond manually force-closing each open position one at a time via the
+existing per-trade `POST /paper-portfolio/trades/{trade_id}/exit` endpoint.
+
+**Fully-automatic liquidation was considered and explicitly rejected** as too risky: no
+empirically-validated trigger threshold exists yet (matching this repo's own
+`T234-CONFIG-UNJUSTIFIED-THRESHOLDS` catalog of unvalidated numeric constants), and an
+unattended circuit breaker could itself lock in losses at a bad moment (e.g. force-selling
+into a flash dip that would have reversed). A pure alert-only status quo also leaves a real
+gap — a user away from the screen can't act quickly. **Built the confirming-click middle
+ground instead**: a real, one-click bulk-close action, but NEVER fired automatically by any
+scheduled job — only ever runs when a human explicitly requests it.
+
+**What it is**: `POST /paper-portfolio/{portfolio_id}/liquidate?confirm=true` (`services/
+market-data/src/api/paper_portfolio.py`) force-closes EVERY open `PaperTrade` in one portfolio
+at once, at current live prices.
+
+**How it works**:
+1. Extracted the existing `manual_exit_trade()` endpoint's own close-math (stop-slippage/
+   commission/cash-credit) into a new shared `_close_one_paper_trade(session, p, trade,
+   exit_price, exit_reason)` helper — so this bulk endpoint reuses it rather than a THIRD
+   independent reimplementation of the same math (a 2nd copy already exists in
+   `conditional_orders.py`'s own `_execute_close_position()`, which additionally does
+   broker-exit routing + `SignalOutcome` writeback — this simpler manual-close path
+   intentionally does NOT, matching `manual_exit_trade()`'s own pre-existing, narrower scope
+   exactly, not silently expanding it during extraction).
+2. Batch-fetches live prices via `_fetch_live_prices()` — the SAME clean one-`yf.download()`-
+   call path `BUG-YFCALLVOL` already fixed elsewhere — instead of one yfinance call per open
+   position, so force-closing N positions never becomes an N-request rate-limit amplifier. A
+   symbol missing from the batch fetch falls back to the trade's own last-known
+   `current_price`/`entry_price`.
+3. **Two independent confirmation layers**: the frontend's own browser `confirm()` dialog
+   ("Force-close ALL N open positions... this cannot be undone."), then the backend's own
+   required `?confirm=true` query param — a POST alone is not enough; the request is rejected
+   with a real `400` if `confirm` is omitted or `false`.
+4. Each open trade closes independently inside its own try/except — one trade's failure
+   (a corrupted row, a math edge case) does NOT abort closing the rest of the portfolio.
+   `exit_reason = "manual_liquidation"` (a new, distinct value from `manual_exit`, so a trade
+   history can tell a bulk liquidation apart from a single manual close).
+
+**Frontend**: a new "⛔ Liquidate All (N)" button on the Paper Portfolio admin page, next to
+the existing Start/Pause/Stop engine controls — styled distinctly (dark red) to signal its
+destructive nature, disabled when there are zero open positions, showing a live result summary
+("Closed 7 positions — cash now $103,450.12") after completion.
+
+**A real bug caught live in production, before any real portfolio was ever touched**: the
+first deployed version used `from .services.paper_trading_engine import _fetch_live_prices`
+(a single dot) — but `paper_portfolio.py` lives at `src/api/paper_portfolio.py` and
+`paper_trading_engine.py` lives at `src/services/paper_trading_engine.py`, SIBLING packages
+under `src/`, not parent/child — the correct relative import needed TWO dots
+(`from ..services.paper_trading_engine import ...`), matching every other `src/api/*.py`
+file's own established convention (`broker.py`, `rl.py`, and this same file's own other 7
+lazy imports of `paper_trading_engine`). This produced a real `500 Internal Server Error`
+(`ModuleNotFoundError: No module named 'src.api.services'`) when live-verified against the
+running EC2 container — caught specifically because the confirm=false rejection path was
+tested against a real, live portfolio (portfolio 1, with 7 real open positions) BEFORE trusting
+the deploy, not just from a green test suite. Fixed the import, added a dedicated assertion in
+the test's own source-extraction step confirming the real module uses the correct 2-dot
+relative path (the original test had silently masked this exact bug — its `.replace()` call
+matched the OLD, buggy single-dot string, so the test never actually exercised the real import
+statement at all). Adversarially re-verified by reintroducing the original single-dot bug and
+confirming the new assertion fails loudly at collection time instead of silently passing.
+
+**How to see it work**:
+```bash
+# Confirm the endpoint exists and rejects without confirm=true (safe — never touches a position):
+docker exec stockai-market-data-1 python3 -c "
+import sys, uuid, time; sys.path.insert(0,'/app'); sys.path.insert(0,'/app/src')
+from common.config import get_settings; from jose import jwt as _jwt; import httpx
+s = get_settings()
+tok = _jwt.encode({'sub':'<your_username>','jti':str(uuid.uuid4()),'exp':int(time.time())+86400}, s.jwt_secret, algorithm='HS256')
+r = httpx.post('http://localhost:8001/paper-portfolio/1/liquidate', headers={'Authorization': f'Bearer {tok}'}, timeout=15)
+print(r.status_code, r.json())
+"
+# Expect: 400 {'detail': 'Liquidation requires explicit confirmation — retry with ?confirm=true'}
+
+# Confirm a portfolio's open-position count is unaffected by the rejection above:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT COUNT(*) FROM paper_trades WHERE portfolio_id = 1 AND stage = 'open';"
+
+# To ACTUALLY liquidate a real portfolio (irreversible — closes every open position for real):
+# use the "⛔ Liquidate All (N)" button on the /paper-portfolio admin page, or call the API
+# directly with confirm=true appended to the URL above.
+```
+
+**Tests**: new `services/market-data/tests/test_liquidate_portfolio.py` (12 cases) exercises
+`_close_one_paper_trade()` and `liquidate_portfolio()` directly against a real in-memory
+SQLite session (the established real-sqlalchemy-via-stub-pop-and-restore technique, matching
+`test_trade_postmortem.py`/`test_broker_position_sync.py`) — pnl/cash-credit math, the
+`confirm=true` gate, portfolio-scoping isolation (must never touch a DIFFERENT portfolio's
+open trades), the live-price-fetch fallback to last-known price, and per-trade failure
+isolation. Adversarially verified 3 sabotage/revert cycles, all caught: removing the
+`confirm=true` gate, removing the portfolio-scoping `WHERE` clause (a real, dangerous
+cross-portfolio close leak — closed 2 portfolios' positions instead of 1), and removing the
+per-trade try/except isolation (an unguarded `ZeroDivisionError` aborted the whole batch).
+Full 1,783-test market-data suite green; pyflakes clean on all touched files.
+
+---
+
+## Design Reference: AUD288-CONFIDENCE-CALIBRATION-NOT-FEDBACK — Confirmed Real, Deliberately Not Yet Built
+
+**The gap**: `_calibrated_win_rate()` (`services/signal-engine/src/api/routes.py`/
+`signals_shared.py`) already computes and SURFACES a real, measured historical win rate per
+confidence-band/horizon/direction/market combination — written into
+`reasons["calibrated_win_rate"]`/`["calibrated_win_rate_count"]` purely for DISPLAY on the
+stock page. Nothing in the actual BUY/SELL decision or the headline confidence NUMBER a user
+sees ever reads this value back. Real production data (re-queried 2026-08-18, NOT the audit's
+own fabricated "13.3%" statistic) shows genuine inversions where a HIGHER raw-confidence band
+has a LOWER measured win rate — e.g. SHORT/SELL: 50-64 band wins 38.4% of the time vs. 65-79
+band winning only 21.7%; GROWTH/SELL shows the same pattern (40.8% vs 25.7%).
+
+**Why this was NOT built this session, deliberately**: the audit's own proposed fix (a naive
+`confidence * (win_rate / 0.35)` linear scale, applied inline with no train/validation
+discipline) would violate this codebase's own established convention that ANY live-decision-
+affecting parameter change needs the same chronological train/validation split +
+validation-beats-baseline promotion gate every other tuning mechanism in this repo already
+enforces (`gate_harness.py`'s `_passes_promotion_margin`, `outcomes_calibrate_apply`,
+`tune_strategy`, etc.) — silently reusing display-only calibration data as a live confidence
+multiplier, with no held-out validation, is exactly the kind of unvalidated live-decision
+change this repo's own audit history has repeatedly found and fixed elsewhere (e.g.
+`AUD283-MLWEIGHT-RATCHET`, same session as the earlier `AUD288` items).
+
+**What a real fix needs, before any code is written**:
+1. Confirm sample sizes are large enough per band to trust — several bands in the real data
+   are `n<50`, some `n<10` (too thin to safely calibrate against without real risk of
+   overfitting pure noise).
+2. Decide the actual mechanism via a real walk-forward validated sweep — a scoring-time
+   penalty vs. a genuine confidence-calibration curve fit (e.g. Platt scaling), not a
+   hand-picked linear formula chosen without evidence.
+
+**How to see the underlying (real) pattern today**:
+```bash
+docker exec stockai-signal-engine-1 curl -s 'http://localhost:8005/signals/confidence-calibration' \
+  -H "Authorization: Bearer <token>" | python3 -m json.tool
+```
+This is the exact display-only endpoint whose data the audit correctly flagged as unused for
+live decisions — re-query before acting on the specific numbers above, since real production
+values shift as more outcomes resolve.
+
