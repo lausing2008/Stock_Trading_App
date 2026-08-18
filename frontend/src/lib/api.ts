@@ -590,6 +590,13 @@ export const api = {
       `/paper-portfolio/trades/${tradeId}/exit${q}`, { method: 'POST' }
     );
   },
+  // T286-LIQUIDATE-PORTFOLIO: force-closes EVERY open position in one portfolio at once —
+  // the confirming-click counterpart to check_portfolio_drawdown_alerts()'s email-only
+  // notification. Never called automatically; only ever a direct, explicit user action.
+  paperLiquidatePortfolio: (portfolioId: number) =>
+    request<{ portfolio_id: number; closed: { trade_id: number; symbol: string; exit_price: number; pnl: number; pnl_pct: number }[]; cash_after: number }>(
+      `/paper-portfolio/${portfolioId}/liquidate?confirm=true`, { method: 'POST' }
+    ),
   paperTradeParams: () => request<Record<string, PaperTradeParamResult>>('/paper-portfolio/trade-params'),
   paperTuneParams: (style: string, nTrials = 80) =>
     request<{ status: string; style: string; n_trials: number }>(

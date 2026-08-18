@@ -1103,6 +1103,55 @@ function EngineControls({ config, onDone, portfolioId }: { config: PaperPortfoli
   );
 }
 
+// ── Liquidate Portfolio (admin only) ──────────────────────────────────────────
+// T286-LIQUIDATE-PORTFOLIO: the confirming-click counterpart to
+// check_portfolio_drawdown_alerts()'s email-only notification — a drawdown alert never closes
+// anything on its own; this button is the one place a user can actually act on it in one step
+// instead of manually force-closing each open position individually. Deliberately requires
+// TWO independent confirmations (a browser confirm() dialog, then the backend's own
+// ?confirm=true requirement) before anything closes — this is the single most destructive
+// action available on this page.
+function LiquidatePortfolioButton({ portfolioId, openCount, onDone }: { portfolioId: number; openCount: number; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  async function handleClick() {
+    if (openCount === 0) return;
+    const ok = window.confirm(
+      `Force-close ALL ${openCount} open position${openCount !== 1 ? 's' : ''} in this portfolio at current market prices? This cannot be undone.`
+    );
+    if (!ok) return;
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await api.paperLiquidatePortfolio(portfolioId);
+      setResult(`Closed ${r.closed.length} position${r.closed.length !== 1 ? 's' : ''} — cash now $${r.cash_after.toLocaleString()}`);
+      onDone();
+    } catch (e) {
+      setResult(e instanceof Error ? e.message : 'Liquidation failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <button
+        disabled={busy || openCount === 0}
+        onClick={handleClick}
+        title="Force-close every open position in this portfolio right now — requires confirmation"
+        style={{
+          border: 'none', borderRadius: 6, padding: '5px 13px', fontSize: 12, fontWeight: 700,
+          cursor: (busy || openCount === 0) ? 'not-allowed' : 'pointer',
+          opacity: (busy || openCount === 0) ? 0.45 : 1,
+          background: '#7f1d1d', color: '#fecaca', letterSpacing: 0.3,
+        }}
+      >⛔ Liquidate All ({openCount})</button>
+      {result && <span style={{ fontSize: 11, color: '#94a3b8' }}>{result}</span>}
+    </div>
+  );
+}
+
 // ── Capital Panel (admin only) ────────────────────────────────────────────────
 
 function CapitalPanel({
@@ -1850,6 +1899,13 @@ export default function PaperPortfolioPage() {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <EngineStateBadge config={summary.config} />
             {isAdmin && <EngineControls config={summary.config} onDone={mutateSummary} portfolioId={selectedPortfolioId} />}
+            {isAdmin && selectedPortfolioId != null && (
+              <LiquidatePortfolioButton
+                portfolioId={selectedPortfolioId}
+                openCount={summary.open_positions}
+                onDone={() => { mutateSummary(); mutatePositions(); }}
+              />
+            )}
             {isAdmin && (
               <button
                 onClick={() => setShowCreateModal(true)}

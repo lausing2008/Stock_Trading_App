@@ -392,6 +392,49 @@ def get_positions(
 
 # ── Manual exit ───────────────────────────────────────────────────────────────
 
+def _close_one_paper_trade(
+    session: Session, p: PaperPortfolio, trade: PaperTrade, exit_price: float, exit_reason: str,
+) -> dict:
+    """Shared close-flow extracted from manual_exit_trade() so T286-LIQUIDATE-PORTFOLIO's
+    bulk-close endpoint doesn't need a THIRD independent reimplementation of the same
+    stop-slippage/commission/cash-credit math already duplicated once between this file and
+    conditional_orders.py's own _execute_close_position() (that one additionally does broker-
+    exit routing + SignalOutcome writeback, which this simpler manual-close path intentionally
+    does not — matching manual_exit_trade()'s own pre-existing, narrower behavior exactly, not
+    silently expanding its scope while extracting it).
+    """
+    cfg = p.config or {}
+    slippage = cfg.get("exit_slippage_pct", 0.001)
+    commission = cfg.get("commission_per_share", 0.0)
+    exit_p = round(exit_price * (1 - slippage), 4)
+    exit_value = round(exit_p * trade.shares, 2)
+    exit_commission = round(commission * trade.shares, 4)
+
+    pnl = round((exit_p - trade.entry_price) * trade.shares, 2)
+    pnl_pct = round((exit_p / trade.entry_price - 1) * 100, 2)
+
+    now = datetime.utcnow()
+    trade.stage = "closed"
+    trade.hold_days = int(np.busday_count(trade.entry_date, now.date() + timedelta(days=1))) if trade.entry_date else 0
+    trade.exit_time = now
+    trade.exit_price = exit_p
+    trade.exit_reason = exit_reason
+    trade.pnl = pnl
+    trade.pct_return = pnl_pct
+    trade.current_price = exit_p
+
+    # Credit cash back
+    p.current_cash = max(0.0, round(p.current_cash + exit_value - exit_commission, 2))
+
+    return {
+        "trade_id": trade.id,
+        "symbol": trade.symbol,
+        "exit_price": exit_p,
+        "pnl": pnl,
+        "pnl_pct": pnl_pct,
+    }
+
+
 @router.post("/trades/{trade_id}/exit")
 def manual_exit_trade(
     trade_id: int,
@@ -418,37 +461,77 @@ def manual_exit_trade(
     if exit_price is None or exit_price <= 0:
         exit_price = trade.current_price or trade.entry_price
 
-    cfg = p.config or {}
-    slippage  = cfg.get("exit_slippage_pct", 0.001)
-    commission = cfg.get("commission_per_share", 0.0)
-    exit_p    = round(exit_price * (1 - slippage), 4)
-    exit_value = round(exit_p * trade.shares, 2)
-    exit_commission = round(commission * trade.shares, 4)
+    result = _close_one_paper_trade(session, p, trade, exit_price, "manual_exit")
+    session.commit()
+    log.info("paper.manual_exit", symbol=trade.symbol, exit_price=result["exit_price"],
+             pnl=result["pnl"], pnl_pct=result["pnl_pct"], trade_id=trade_id)
+    return {
+        "symbol": result["symbol"],
+        "exit_price": result["exit_price"],
+        "pnl": result["pnl"],
+        "pnl_pct": result["pnl_pct"],
+        "cash_after": round(p.current_cash, 2),
+    }
 
-    pnl      = round((exit_p - trade.entry_price) * trade.shares, 2)
-    pnl_pct  = round((exit_p / trade.entry_price - 1) * 100, 2)
 
-    now = datetime.utcnow()
-    trade.stage        = "closed"
-    trade.hold_days    = int(np.busday_count(trade.entry_date, now.date() + timedelta(days=1))) if trade.entry_date else 0
-    trade.exit_time    = now
-    trade.exit_price   = exit_p
-    trade.exit_reason  = "manual_exit"
-    trade.pnl           = pnl
-    trade.pct_return    = pnl_pct
-    trade.current_price = exit_p
+@router.post("/{portfolio_id}/liquidate")
+def liquidate_portfolio(
+    portfolio_id: int,
+    confirm: bool = Query(False),
+    _: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """T286-LIQUIDATE-PORTFOLIO: force-close EVERY open position in one portfolio at current
+    live prices, in one action — the confirming-click counterpart to
+    check_portfolio_drawdown_alerts() (scheduler.py), which only ever emails a notification and
+    never touches a position on its own. Deliberately requires an explicit `confirm=true` query
+    param (not just a POST) as a second, harder-to-fat-finger confirmation, since this is the
+    single most destructive action a user can take against a portfolio — this endpoint itself
+    is NEVER called automatically by any scheduled job; it only ever runs when a human
+    explicitly requests it (a UI button click, surfaced from the drawdown alert email/page).
 
-    # Credit cash back
-    p.current_cash = max(0.0, round(p.current_cash + exit_value - exit_commission, 2))
+    Batch-fetches live prices via _fetch_live_prices() (the SAME clean one-yf.download()-call
+    path BUG-YFCALLVOL already fixed elsewhere) rather than one yfinance call per open
+    position — force-closing N positions must not become an N-request rate-limit amplifier.
+    A symbol missing from the batch fetch (or a mid-cycle failure) falls back to the trade's
+    own last-known current_price/entry_price, exactly matching _close_one_paper_trade()'s own
+    established fallback convention.
+
+    Reuses _close_one_paper_trade() per open trade — the SAME close-math manual_exit_trade()
+    already uses — rather than a third independent reimplementation.
+    """
+    from .services.paper_trading_engine import _fetch_live_prices
+
+    p = _get_portfolio(session, portfolio_id)
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Liquidation requires explicit confirmation — retry with ?confirm=true",
+        )
+
+    open_trades = session.execute(
+        select(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
+    ).scalars().all()
+    if not open_trades:
+        return {"portfolio_id": p.id, "closed": [], "cash_after": round(p.current_cash, 2)}
+
+    live_prices = _fetch_live_prices([t.symbol for t in open_trades])
+
+    closed: list[dict] = []
+    for trade in open_trades:
+        exit_price = live_prices.get(trade.symbol) or trade.current_price or trade.entry_price
+        try:
+            result = _close_one_paper_trade(session, p, trade, exit_price, "manual_liquidation")
+            closed.append(result)
+        except Exception as exc:
+            log.error("paper.liquidate_trade_failed", trade_id=trade.id, symbol=trade.symbol, error=str(exc))
 
     session.commit()
-    log.info("paper.manual_exit", symbol=trade.symbol, exit_price=exit_p,
-             pnl=pnl, pnl_pct=pnl_pct, trade_id=trade_id)
+    log.info("paper.portfolio_liquidated", portfolio_id=p.id, closed=len(closed),
+             cash_after=round(p.current_cash, 2))
     return {
-        "symbol": trade.symbol,
-        "exit_price": exit_p,
-        "pnl": pnl,
-        "pnl_pct": pnl_pct,
+        "portfolio_id": p.id,
+        "closed": closed,
         "cash_after": round(p.current_cash, 2),
     }
 
