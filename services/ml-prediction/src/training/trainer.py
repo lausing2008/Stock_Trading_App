@@ -172,6 +172,9 @@ def _load_fund_snapshots(symbol: str) -> list[dict]:
     price_to_book/peg_ratio/debt_to_equity/ddm_discount/piotroski_score, matching
     builder.py's extended _PIT_COLS list. Older snapshot rows have NULL for these
     (column added later) — builder.py's merge_asof correctly resolves that to NaN.
+
+    TIER82-FMP-ANALYST-ESTIMATES: also selects target_price — builder.py's own
+    analyst_pt_upside join reads this key directly off each returned dict.
     """
     from sqlalchemy import text as _text
     try:
@@ -181,7 +184,7 @@ def _load_fund_snapshots(symbol: str) -> list[dict]:
                        return_on_equity, recommendation_mean,
                        gross_margin, fcf_yield, short_ratio, short_ratio_delta,
                        short_percent_of_float, price_to_book, peg_ratio,
-                       debt_to_equity, ddm_discount, piotroski_score
+                       debt_to_equity, ddm_discount, piotroski_score, target_price
                 FROM fundamentals_snapshot
                 WHERE symbol = :sym
                 ORDER BY snapshot_date
@@ -203,6 +206,7 @@ def _load_fund_snapshots(symbol: str) -> list[dict]:
                 "debt_to_equity":    r.debt_to_equity,
                 "ddm_discount":      r.ddm_discount,
                 "piotroski_score":   r.piotroski_score,
+                "target_price":      r.target_price,
             }
             for r in rows
         ]

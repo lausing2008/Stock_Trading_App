@@ -959,6 +959,12 @@ class Fundamental(Base):
     # Analyst consensus
     recommendation_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
     number_of_analysts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # TIER82-FMP-ANALYST-ESTIMATES: analyst mean price target (yfinance targetMeanPrice) —
+    # was already fetched into get_fundamentals()'s live response but never persisted, so it
+    # could never be joined against historical price for a PIT-safe ML feature. See
+    # analyst_pt_upside in ml-prediction's builder.py, which needs BOTH this value AND the
+    # stock's own historical close price at the same snapshot date.
+    target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Phase 1 additions — valuation
     peg_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
     debt_to_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -1295,6 +1301,11 @@ class FundamentalsSnapshot(Base):
     debt_to_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
     ddm_discount: Mapped[float | None] = mapped_column(Float, nullable=True)
     piotroski_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # TIER82-FMP-ANALYST-ESTIMATES: analyst mean price target as of this snapshot date.
+    # Joined (PIT-safe, merge_asof) against the stock's own historical close price at this
+    # same snapshot_date in builder.py to compute analyst_pt_upside — history accumulates
+    # going forward only, rows before this column existed have NULL here (NaN-safe for XGBoost).
+    target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (UniqueConstraint("symbol", "snapshot_date", name="uq_fundamentals_snapshot_sym_date"),)

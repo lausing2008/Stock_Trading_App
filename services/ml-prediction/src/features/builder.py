@@ -50,6 +50,13 @@
    the original version, removed under T237-ML2, broadcast TODAY's live trend to every
    historical training row with no date bound, the same lookahead-bias class already fixed
    for recommendation_mean itself but missed for this derived feature)
+  analyst_pt_upside     — (analyst_pt_upside as of this row's own fundamentals_snapshot date /
+   this row's own close price) - 1, as a percent (TIER82-FMP-ANALYST-ESTIMATES). Needs no new
+   external data source — yfinance's targetMeanPrice was already fetched into every
+   get_fundamentals() response but never persisted; this feature required only adding a
+   target_price column to Fundamental + FundamentalsSnapshot, plus this PIT price join. NaN
+   until fundamentals_snapshot has captured a value for this symbol (history accumulates
+   going forward only, same as every other T234-ML-FUND-BROADCAST-LEAKAGE PIT column).
 
 3 signal outcome (T206 — look-ahead-safe: only uses outcomes with exit_date ≤ bar_date − 10d):
   sig_acc_30d   — fraction of BUY signals correct in the prior 30-day exit window
@@ -317,6 +324,12 @@ FUNDAMENTAL_COLUMNS = [
     # available yet. See build_features()'s own inline comment for the full lookahead-bias
     # history and why this needed a rolling-window join rather than a simple broadcast.
     "eps_revision_direction",
+    # TIER82-FMP-ANALYST-ESTIMATES: (analyst mean target price as of this row's own snapshot
+    # date / this row's own close price) - 1, as a percent. NaN until fundamentals_snapshot
+    # has captured a target_price value for this symbol (history accumulates going forward
+    # only — see build_features()'s own inline comment for why this needs a PIT price join,
+    # not a simple broadcast/PIT-value join like the other _PIT_COLS below).
+    "analyst_pt_upside",
 ]
 
 # SA-29: Weekly context features — NaN-allowed (like fundamentals) so stocks with
@@ -859,6 +872,49 @@ def build_features(
         except Exception as _rev_exc:
             log.warning("builder.eps_revision_join_failed", error=str(_rev_exc))
             out["eps_revision_direction"] = np.nan
+
+    # TIER82-FMP-ANALYST-ESTIMATES: analyst_pt_upside — (target_price as of THIS row's own
+    # snapshot date / THIS row's own close price) - 1, as a percent. Architecturally distinct
+    # from every other PIT column above: those join a snapshot value onto a row using ONLY
+    # the row's date (the snapshot value itself is the whole feature). This one needs BOTH
+    # the snapshot's target_price AND the row's own close price `c` — target_price alone
+    # means nothing without the price it was measured against, and using TODAY's close with
+    # a historical target_price (or vice versa) would silently produce a nonsensical ratio,
+    # not just a stale one. Computed in BOTH modes (no static fund_data equivalent exists,
+    # same reasoning as eps_revision_direction above — inference_mode's row IS "today", so
+    # the snapshot-based path is genuinely current information there, not lookahead).
+    if fund_snapshots:
+        try:
+            _snap_df = pd.DataFrame(fund_snapshots)
+            _snap_df["snapshot_date"] = pd.to_datetime(_snap_df["snapshot_date"])
+            _snap_df = _snap_df.sort_values("snapshot_date").reset_index(drop=True)
+            if "target_price" in _snap_df.columns:
+                _price_dates = pd.to_datetime(dates).rename("date")
+                _left = pd.DataFrame({"date": _price_dates}, index=out.index)
+                _tp_merged = pd.merge_asof(
+                    _left.reset_index(),
+                    _snap_df[["snapshot_date", "target_price"]],
+                    left_on="date", right_on="snapshot_date", direction="backward",
+                )
+                _tp_merged = _tp_merged.set_index("index")
+                _tp = _tp_merged["target_price"]
+                # c shares df's original index (out's own index too — both derived directly
+                # from df, see out = pd.DataFrame(index=df.index) / c = _adj_close(df) above),
+                # so this aligns positionally with no reindex needed.
+                _valid = (_tp.notna().values) & (c.values > 0)
+                # np.where evaluates BOTH branches eagerly even where _valid is False, so a
+                # non-positive close in the divisor still raises a RuntimeWarning unless the
+                # divisor is substituted with a safe placeholder before dividing.
+                _safe_c = np.where(_valid, c.values, 1.0)
+                _upside = np.where(_valid, (_tp.values / _safe_c - 1) * 100, np.nan)
+                out["analyst_pt_upside"] = _upside
+            else:
+                out["analyst_pt_upside"] = np.nan
+        except Exception as _pt_exc:
+            log.warning("builder.analyst_pt_upside_join_failed", error=str(_pt_exc))
+            out["analyst_pt_upside"] = np.nan
+    else:
+        out["analyst_pt_upside"] = np.nan
 
     if not inference_mode and fund_snapshots:
         try:

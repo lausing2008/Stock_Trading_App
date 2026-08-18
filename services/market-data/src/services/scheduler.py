@@ -6405,7 +6405,7 @@ def _snapshot_fundamentals() -> None:
                      revenue_growth, earnings_growth, return_on_equity,
                      gross_margin, fcf_yield, short_ratio, short_ratio_delta,
                      short_percent_of_float, price_to_book, peg_ratio, debt_to_equity,
-                     ddm_discount, piotroski_score)
+                     ddm_discount, piotroski_score, target_price)
                 SELECT
                     latest.symbol, :today, latest.recommendation_mean, NULL,
                     latest.revenue_growth, latest.earnings_growth, latest.return_on_equity,
@@ -6421,13 +6421,14 @@ def _snapshot_fundamentals() -> None:
                     latest.short_percent_of_float, latest.price_to_book, latest.peg_ratio, latest.debt_to_equity,
                     CASE WHEN latest.dividend_yield IS NOT NULL AND latest.dividend_yield > 0.001
                          THEN ROUND(CAST(latest.dividend_yield / 0.07 - 1.0 AS numeric), 4) END AS ddm_discount,
-                    NULL AS piotroski_score
+                    NULL AS piotroski_score,
+                    latest.target_price
                 FROM (
                     SELECT DISTINCT ON (s.id)
                         s.symbol, f.recommendation_mean, f.revenue_growth, f.earnings_growth,
                         f.return_on_equity, f.gross_margin, f.free_cashflow, f.market_cap,
                         f.short_ratio, f.short_percent_of_float, f.price_to_book, f.peg_ratio,
-                        f.debt_to_equity, f.dividend_yield
+                        f.debt_to_equity, f.dividend_yield, f.target_price
                     FROM fundamentals f
                     JOIN stocks s ON s.id = f.stock_id
                     WHERE s.delisted = false
@@ -8512,7 +8513,7 @@ _DQ_CHECKS: list[dict] = [
         "max_age_hours": 48, "is_date": False, "market": "US",
     },
     {
-        "name": "fundamentals_snapshot", "description": "Weekly fundamentals snapshot — feeds ML eps_revision_direction feature",
+        "name": "fundamentals_snapshot", "description": "Weekly fundamentals snapshot — feeds ML eps_revision_direction + analyst_pt_upside features",
         "query": "SELECT MAX(snapshot_date) FROM fundamentals_snapshot",
         "max_age_hours": 192, "is_date": True,
     },
