@@ -15,6 +15,30 @@ Scope (deliberately narrow — see the design doc §1c/§1d/§2a for why):
 This module lives in market-data (not shared/) because it imports directly from
 paper_trading_engine.py — placing it under shared/ would be the first shared->service dependency
 in the codebase (checked: no precedent exists).
+
+Trust-and-verify review (2026-08-05, full signal-testing-framework audit): every replayed
+_should_enter() call fed a systematically INCOMPLETE view of what a real, LIVE call receives,
+compressing the replayed score distribution toward zero relative to live scoring. Two of the
+gaps are now closed; one remains, disclosed rather than silently left as an unstated gap:
+
+  - confidence_delta (SA-26) — FIXED. Reconstructed point-in-time-safely via
+    _historical_confidence_delta() (queries the most recent PRIOR Signal row strictly before
+    the replayed signal's own date — safe because Signal has a real per-calendar-day row
+    history, confirmed directly against production; see that function's own docstring).
+
+  - live_regime — STILL None on every replay call, and this remains an HONEST, PERMANENT gap,
+    not an oversight left unfixed: the canonical regime classifier (_fetch_market_regime() /
+    _fetch_hk_market_regime(), bull/neutral/choppy/risk_off/bear) has NO historical persistence
+    anywhere in this codebase — it is Redis-cached, live-only, with no time-series table to
+    reconstruct "what was the regime on date X" from. sig.reasons["market_regime"] LOOKS like a
+    tempting substitute but is NOT the same classifier — it's signal-engine's own separate,
+    independently-computed regime value (a different vocabulary: bull/high_vol/bear/unknown —
+    see this repo's own Deep Audit #4 finding on this exact divergence). Silently reusing it
+    would feed a wrong-vocabulary value into _should_enter()'s regime-score and pre-regime
+    logic, a worse bug than the gap it would "fix". A promotion decision made by this harness
+    should be understood as tuned against a regime-blind replay — this is a real, standing
+    limitation of Phase 2a/2b, not something a future session should assume was silently
+    patched over without a real historical-regime data source first.
 """
 from __future__ import annotations
 
@@ -138,6 +162,41 @@ def _historical_atr(session: Session, stock_id: int, as_of: date, period: int = 
     return _ewm_atr_from_ohlc(high, low, close, period)
 
 
+def _historical_confidence_delta(
+    session: Session, stock_id: int, horizon: str, signal_date: date, current_confidence: float | None,
+) -> float | None:
+    """Point-in-time-correct reconstruction of SA-26's confidence_delta for a replay.
+
+    _scan_for_entries()'s own live computation (paper_trading_engine.py ~line 5197) finds the
+    most recent PRIOR Signal row (Signal.ts < sig.ts, same stock+horizon), then computes
+    `round(sig.confidence - prior_conf, 1)`. That query is safe to replay historically ONLY
+    because Signal has a real per-calendar-day row history — confirmed directly against
+    production: `SELECT stock_id, horizon, COUNT(DISTINCT DATE(ts)), COUNT(*) FROM signals
+    GROUP BY stock_id, horizon` shows rows == distinct_days for every (stock, horizon) pair,
+    matching the table's own uq_signals_stock_horizon_day unique index — Signal.reasons gets
+    overwritten intraday, but the ROW itself (and its final ts/confidence for that day)
+    persists as one distinct row per calendar day, so "the prior day's confidence" is a real,
+    queryable fact, not a value only ever visible live. `ts < signal_date` (not `<=`) matches
+    the live query's own strict-less-than semantics — the CURRENT day's own row must never be
+    its own "prior".
+    """
+    if current_confidence is None:
+        return None
+    prior_conf = session.execute(
+        select(Signal.confidence)
+        .where(
+            Signal.stock_id == stock_id,
+            Signal.horizon == SignalHorizon(horizon),
+            Signal.ts < signal_date,
+        )
+        .order_by(Signal.ts.desc())
+        .limit(1)
+    ).scalar()
+    if prior_conf is None:
+        return None
+    return round(float(current_confidence) - float(prior_conf), 1)
+
+
 def _fetch_matched_signals(
     session: Session, style: str, market: str, window_start: date, window_end: date,
 ) -> list[tuple[Signal, SignalOutcome, Stock]]:
@@ -203,11 +262,21 @@ def replay_should_enter(
             continue
         atr = _historical_atr(session, stock.id, outcome.signal_date)
         game_plan = _build_game_plan_for_style(stock.symbol, style, live_price, sig.reasons or {}, atr)
+        # T232-DL-GATEHARNESS-INPUTGAP: confidence_delta (SA-26) is now reconstructed the same
+        # point-in-time-safe way _scan_for_entries() computes it live — see
+        # _historical_confidence_delta()'s own docstring for why this is safe to replay. This
+        # closes one real, previously-undisclosed input gap between what this harness replays
+        # and what a live call to _should_enter() actually receives. live_regime is NOT
+        # threaded in — see this function's own docstring for why that gap remains open.
+        confidence_delta = _historical_confidence_delta(
+            session, stock.id, style, outcome.signal_date, sig.confidence,
+        )
         signal_data = {
             "signal": sig.signal.value,
             "confidence": sig.confidence,
             "bullish_probability": sig.bullish_probability,
             "reasons": sig.reasons or {},
+            "confidence_delta": confidence_delta,
         }
         should, _score, _notes = _should_enter(
             stock.symbol, signal_data, live_price, game_plan, cfg, live_regime=None, kscore=None,
@@ -360,11 +429,17 @@ def replay_extended_gates(
 
         atr = _historical_atr(session, stock.id, outcome.signal_date)
         game_plan = _build_game_plan_for_style(stock.symbol, style, live_price, reasons, atr)
+        # T232-DL-GATEHARNESS-INPUTGAP: same point-in-time confidence_delta reconstruction as
+        # replay_should_enter() above — see _historical_confidence_delta()'s own docstring.
+        confidence_delta = _historical_confidence_delta(
+            session, stock.id, style, outcome.signal_date, sig.confidence,
+        )
         signal_data = {
             "signal": sig.signal.value,
             "confidence": sig.confidence,
             "bullish_probability": sig.bullish_probability,
             "reasons": reasons,
+            "confidence_delta": confidence_delta,
         }
         should, _score, _notes = _should_enter(
             stock.symbol, signal_data, live_price, game_plan, cfg, live_regime=None, kscore=kscore,
@@ -496,7 +571,14 @@ def walk_forward_extended_gate(
             "this can only evaluate TIGHTENING an existing gate (re-filtering signals that "
             "already fired under the CURRENT threshold) — testing a genuinely LOOSER value "
             "would require regenerating signals against historical price data, which this "
-            "replay does not do."
+            "replay does not do. IMPORTANT SCOPE NOTE: this harness only ever replays "
+            "_should_enter() (the DE-outage fallback gate) — decision_engine_mode='primary' is "
+            "the live default, so this parameter only actually governs real entries during a "
+            "decision-engine outage; tuning it here does NOT tune the live primary trading "
+            "path (Phase 2c, still todo). Replayed candidates also see live_regime=None on "
+            "every call — the canonical regime classifier has no historical persistence to "
+            "reconstruct from — so this promotion decision is regime-blind (see this module's "
+            "own docstring for why)."
         ),
     }
 
@@ -597,7 +679,15 @@ def walk_forward_min_entry_score(
             "coin flip at realistic sample sizes and was replaced with this margin). This is a "
             "Phase 2a research signal, NOT an automatic config change, and does not correct for "
             "the train-slice grid search's own multiple-comparisons exposure. No promotion gate "
-            "or tune_history table exists yet for this specific endpoint (Phase 3, still todo)."
+            "or tune_history table exists yet for this specific endpoint (Phase 3, still todo). "
+            "IMPORTANT SCOPE NOTE: this harness only ever replays _should_enter() (the "
+            "DE-outage fallback gate) — decision_engine_mode='primary' is the live default, so "
+            "min_entry_score only actually governs real entries during a decision-engine "
+            "outage; tuning it here does NOT tune the live primary trading path (Phase 2c, "
+            "still todo). Replayed candidates also see live_regime=None on every call — the "
+            "canonical regime classifier has no historical persistence to reconstruct from — "
+            "so this promotion decision is regime-blind (see this module's own docstring for "
+            "why)."
         ),
     }
 
