@@ -170,6 +170,7 @@ _ALERT_JOB_IDS = {
     "paper_portfolio_digest",
     "price_alert_check",
     "volume_anomaly_check",
+    "conditional_order_check",
     "gamma_unwind_alert_check",
     "prebreakout_alert_check",
     "short_squeeze_alert_check",

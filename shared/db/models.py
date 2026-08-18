@@ -379,6 +379,60 @@ class SignalAlert(Base):
     )
 
 
+class ConditionalOrder(Base):
+    """T286-CONDITIONAL-ORDER: a single-hop "if TRIGGER then ACTION" order on ONE portfolio's
+    ONE symbol — the item deliberately deferred from the earlier Tier 287 batch pending its own
+    dedicated design pass. Deliberately named ConditionalOrder, not "chain": single trigger,
+    single action, no multi-step state — a chain of these is just several separate rows the
+    user creates individually, matching the reasoning that motivated this scoping.
+
+    Portfolio-scoped, NOT user-scoped: PaperPortfolio has no user_id (paper portfolios are
+    app-wide, not per-user, per this repo's own long-documented fact) — a conditional order
+    modifies how/when a SPECIFIC portfolio acts on a symbol, so it must be anchored to that
+    portfolio, not a bare user. Notification email follows the same PriceAlert-subscriber
+    audience convention every other portfolio-wide alert in this app already uses.
+
+    Same-symbol only, single-hop only: this is a deliberate scope decision (real-money-adjacent
+    feature) — no cross-symbol triggers ("if SPY breaks down, sell my NVDA"), no multi-step
+    chains. A BUY action never bypasses the real entry pipeline — it requires a real,
+    already-existing BUY-eligible Signal for the symbol and is scored through the SAME
+    _should_enter() gate every organic entry already goes through; a conditional order only
+    ever decides WHEN to act, never WHETHER the underlying setup itself is a valid entry.
+    """
+    __tablename__ = "conditional_orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("paper_portfolios.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    # "buy" | "sell_partial" | "sell_all" | "tighten_stop" | "close_position" | "alert_only"
+    action_type: Mapped[str] = mapped_column(String(24))
+    # buy: unused (sizing follows the portfolio's own normal risk-based sizing, same as an
+    #   organic entry). sell_partial: fraction of CURRENT shares to sell (0-1). tighten_stop:
+    #   the new stop price (must be tighter than the trade's current stop, enforced monotonic
+    #   the same way scale-out/trailing-stop logic already is). sell_all/close_position/
+    #   alert_only: unused.
+    action_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # List of condition dicts, SAME shape as PriceAlert.compound_conditions:
+    # {"metric": "price"|"rsi"|"volume_ratio"|"signal"|"position_pnl_pct"|"time", "op": "gte"|
+    # "lte"|"eq", "value": float|str}. trigger_logic controls how the list combines.
+    conditions: Mapped[list] = mapped_column(JSON)
+    trigger_logic: Mapped[str] = mapped_column(String(8), server_default="AND")  # "AND" | "OR"
+    note: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # "pending" | "triggered" | "failed" | "expired" | "cancelled"
+    status: Mapped[str] = mapped_column(String(16), server_default="pending", index=True)
+    status_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Set once the order actually fires — the PaperTrade a "buy" action created, or the
+    # PaperTrade a sell_partial/sell_all/tighten_stop/close_position action was applied to.
+    # Never set for alert_only.
+    resulting_trade_id: Mapped[int | None] = mapped_column(
+        ForeignKey("paper_trades.id", ondelete="SET NULL"), nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    triggered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class SqueezeWatch(Base):
     """T260-BEARISH-PUTS-WATCHLIST: a user manually adds a short-squeeze-page candidate here to
     track its short-pressure state over time and get a one-shot email the moment that pressure

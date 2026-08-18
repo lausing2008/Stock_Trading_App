@@ -13,7 +13,8 @@ during an outage, when caution matters most.
 
 Fixed: score_size_mult is now derived identically on every gate_source.
 
-paper_trading_engine.py's _scan_for_entries() is a 1000+ line function with heavy
+paper_trading_engine.py's _open_paper_trade() (this snippet's home since T286-CONDITIONAL-
+ORDER extracted it out of _scan_for_entries()'s own for-loop body) still has heavy
 session/portfolio/live_prices state — far too large to import or drive end-to-end for this
 narrow scoring-multiplier calculation. This extracts just the score_size_mult snippet's real
 source text and exec()s it directly against synthetic score/min_entry_score/gate_source
@@ -29,20 +30,23 @@ _ENGINE_SOURCE = _ENGINE_PATH.read_text()
 
 
 def _compute_score_size_mult(score: float, min_entry_score: float, gate_source: str = "de") -> float:
-    """Pulls the real score_size_mult computation out of _scan_for_entries() and exec()s it
+    """Pulls the real score_size_mult computation out of _open_paper_trade() and exec()s it
     against synthetic inputs — the exact statements between the T188 comment and the
     risk_dollar computation that consumes score_size_mult, with `notes = notes + [...]`
     stripped since it's a side effect irrelevant to this calculation."""
     start = _ENGINE_SOURCE.index('_min_score_cfg = cfg.get("min_entry_score", 4)')
     end = _ENGINE_SOURCE.index("_risk_base     = equity", start)
     body = _ENGINE_SOURCE[start:end]
-    # dedent by 8 (the real source's indentation inside _scan_for_entries()'s own body), then
-    # re-indent by 4 to nest inside the wrapper function below. Replace the notes-append side
-    # effect's body with a no-op `pass` (rather than dropping the line, which would leave the
-    # enclosing `if` with no body at all) — the side effect itself is irrelevant to isolating
-    # score_size_mult, but the `if` guard around it is real, load-bearing source we still want
-    # exec()'d unmodified.
-    dedented = [ln[8:] if ln.startswith(" " * 8) else ln for ln in body.splitlines()]
+    # T286-CONDITIONAL-ORDER: this snippet moved from _scan_for_entries()'s own for-loop body
+    # (8-space indentation) to _open_paper_trade()'s plain function body (4-space) when that
+    # ~250-line block was extracted so a conditional order's "buy" action could reuse the exact
+    # same position-sizing logic — the score_size_mult formula itself is unchanged, only its
+    # indentation depth moved. Dedent by 4 (not 8) to match the new location, then re-indent by
+    # 4 to nest inside the wrapper function below. Replace the notes-append side effect's body
+    # with a no-op `pass` (rather than dropping the line, which would leave the enclosing `if`
+    # with no body at all) — the side effect itself is irrelevant to isolating score_size_mult,
+    # but the `if` guard around it is real, load-bearing source we still want exec()'d unmodified.
+    dedented = [ln[4:] if ln.startswith(" " * 4) else ln for ln in body.splitlines()]
     reindented = [
         "        pass" if "notes = notes +" in ln else ("    " + ln if ln.strip() else ln)
         for ln in dedented

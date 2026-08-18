@@ -3796,6 +3796,287 @@ def _slipped_position_value(shares: float, live_price: float, entry_slippage_pct
     return round(shares * slipped_entry, 2)
 
 
+def _open_paper_trade(
+    session, portfolio: PaperPortfolio, stock: Stock, sig: Signal, ranking: "Ranking | None",
+    live_price: float, game_plan: dict, score: int, notes: list[str], gate_source: str,
+    cfg: dict, style: str, equity: float, regime_size_mult: float, live_regime: dict | None,
+    live_prices: dict[str, float], prefetched_open: list, atr: float | None,
+) -> tuple["PaperTrade | None", str | None]:
+    """T286-CONDITIONAL-ORDER: position-sizing + PaperTrade-opening logic, extracted VERBATIM
+    (same variable names, same order of checks, same audit-comment history) out of
+    _scan_for_entries()'s own candidate loop so a conditional order's "buy" action can open a
+    real position through the EXACT same sizing/cap logic as an organic entry, rather than a
+    second, independently-maintained (and inevitably drifting) copy of ~250 lines of real
+    risk-sizing math.
+
+    _scan_for_entries() is the ONLY other caller — its own loop body was replaced with a call
+    to this function, with its `continue` statements becoming this function's `return None,
+    reason` (same skip semantics, now returned to the caller instead of implicit loop-continue).
+
+    Returns (trade_or_None, skip_reason_or_None). `trade_or_None` is None whenever a skip
+    condition fires below (mirrors the original inline `continue` points exactly) — the caller
+    is responsible for updating its own cycle-level state (entries_made, open_symbols, equity,
+    _skip_tally) based on which of the two return values it gets, exactly as it did before this
+    extraction when those updates were inline in the same loop body.
+    """
+    # Position sizing: risk_dollar / stop_distance = shares
+    stop        = game_plan["stop"]
+    take_profit = game_plan["take_profit"]
+    stop_distance = live_price - stop
+    if stop_distance <= 0:
+        return None, "invalid_stop_distance"
+    rr = (take_profit - live_price) / max(stop_distance, live_price * 0.005)
+
+    # PT-B10: Earnings-graduated sizing — reduce size as earnings approach
+    dte = (sig.reasons or {}).get("days_to_earnings")
+    earnings_size_mult = 1.0
+    if dte is not None:
+        dte_int = int(dte)
+        if 6 <= dte_int <= 10:
+            earnings_size_mult = 0.50   # 50% size within 10 days of earnings
+            notes = notes + [f"Size reduced 50% — earnings in {dte_int}d"]
+        elif 11 <= dte_int <= 20:
+            earnings_size_mult = 0.75   # 75% size within 11-20 days
+            notes = notes + [f"Size reduced 75% — earnings in {dte_int}d"]
+
+    # PT-D2: Confidence-band sizing — scale position proportional to signal conviction
+    sig_conf = float(sig.confidence or 0.0)
+    if sig_conf >= 50:
+        confidence_size_mult = 1.25
+        notes = notes + [f"Size 1.25× (confidence {sig_conf:.0f}% — high conviction)"]
+    elif sig_conf >= 30:
+        confidence_size_mult = 1.0
+    else:
+        confidence_size_mult = 0.75
+        notes = notes + [f"Size 0.75× (confidence {sig_conf:.0f}% — marginal signal)"]
+
+    # INT-3: Research-gated position sizing — reduce size when research disagrees
+    _research_rec = ""  # captured outside try for hard gate below
+    research_size_mult = 1.0
+    if cfg.get("research_gating_enabled", True):
+        try:
+            import httpx as _httpx
+            from common.config import get_settings as _gs
+            _res = _httpx.get(
+                f"{_gs().research_engine_url}/research/{stock.symbol}/summary",
+                timeout=1.5,
+                headers={"Authorization": f"Bearer {_svc_token()}"},
+            )
+            if _res.status_code == 200:
+                _rs = _res.json()
+                _research_rec = _rs.get("recommendation", "")
+                _score = float(_rs.get("overall_score") or 0)
+                if _research_rec == "STRONG BUY" and _score >= 75:
+                    research_size_mult = 1.2
+                    notes = notes + [f"Size 1.2× (Research: {_research_rec} {_score:.0f})"]
+                elif _research_rec == "BUY" and _score >= 65:
+                    research_size_mult = 1.0
+                elif _research_rec == "WATCH" and _score >= 60:
+                    research_size_mult = 0.8
+                    notes = notes + [f"Size 0.8× (Research: {_research_rec} {_score:.0f})"]
+                elif _research_rec in ("WATCH", "AVOID", "SELL"):
+                    research_size_mult = 0.6
+                    notes = notes + [f"Size 0.6× (Research: {_research_rec} {_score:.0f})"]
+        except Exception:
+            pass  # no research data → neutral 1.0×
+
+    # Hard gate: AVOID/SELL research blocks entry entirely — mirrors DE hard_rejects logic
+    if cfg.get("research_gating_enabled", True) and _research_rec in ("AVOID", "SELL"):
+        log.info("paper.skip_research_gate", symbol=stock.symbol, research_rec=_research_rec)
+        return None, "research_gate"
+
+    # 40-B: Cross-horizon consensus boost — when ≥2 other styles also fired BUY
+    # for this stock in the same signal batch, we have rare multi-timeframe alignment.
+    consensus_size_mult = 1.0
+    cross_buys = int((sig.reasons or {}).get("cross_style_buys", 0))
+    if cross_buys >= 2:
+        consensus_size_mult = 1.15
+        notes = notes + [f"Size 1.15× (multi-timeframe consensus: {cross_buys} other styles BUY)"]
+    elif cross_buys == 1:
+        consensus_size_mult = 1.07
+        notes = notes + [f"Size 1.07× (partial consensus: 1 other style BUY)"]
+
+    # T188: Score-to-size multiplier — high-conviction scores get more capital, marginal scores less.
+    # Score just at min threshold (excess=0): 0.75×. Score +2 above (normal): 1.0×. Score +4+: 1.25×.
+    # AUD262-FALLBACK-SIZES-LARGER-THAN-DE: this used to only apply when gate_source=="de"
+    # (score_size_mult pinned to 1.0 on fallback/legacy) — but `score` on the fallback path
+    # is _should_enter()'s own returned score, compared against the SAME min_entry_score
+    # threshold DE uses (confirmed: _record_de_shadow_comparison already passes this exact
+    # same cfg value for both paths), so the input needed was already available on every
+    # path — nothing about this multiplier is actually DE-specific. Pinning it to 1.0 meant
+    # a marginal candidate (exactly at min_entry_score) got FULL size on the fallback path
+    # (1.0x) but REDUCED size under DE (0.75x) — 33% MORE capital on the weakest-conviction
+    # trades specifically during a decision-engine outage, when caution matters most.
+    _min_score_cfg = cfg.get("min_entry_score", 4)
+    _score_excess = score - _min_score_cfg
+    score_size_mult = round(max(0.75, min(1.25, 0.75 + _score_excess * 0.125)), 3)
+    if score_size_mult != 1.0:
+        notes = notes + [f"Size {score_size_mult:.2f}× ({gate_source.upper()} score {score}, excess {_score_excess:+d} from min {_min_score_cfg})"]
+    _risk_base     = equity * cfg["risk_per_trade_pct"]
+    risk_dollar    = _risk_base * earnings_size_mult * regime_size_mult * confidence_size_mult * research_size_mult * consensus_size_mult * score_size_mult
+    # T234-PT-SIZING-MULT-STACK: the 6 categories above are independent per-trade signals
+    # (each already min()-composed internally where it overlaps with another, e.g.
+    # regime_size_mult folds in VIX/breadth/HMM via min() rather than multiplying them) —
+    # multiplying independent judgments together is intentional, but with no combined floor
+    # the worst realistic stack sizes a trade down to a token position, where commission/
+    # slippage drag can exceed the position's own expected profit. Floor the composed result
+    # at 25% of the unadjusted base so a trade that clears every other gate is never sized
+    # down below that — multipliers above this floor are unaffected.
+    #
+    # AUD232-011 (corrected by AUD262-FALLBACK-SIZES-LARGER-THAN-DE): score_size_mult used
+    # to only derive from _score_excess when gate_source=="de" — pinned to 1.0 on
+    # fallback/legacy. That meant the fallback path's real floor-triggering minimum was
+    # 0.1125 (11.25%) vs. DE's 0.084 (8.4%) — a LOOSER effective floor, and correspondingly
+    # MORE capital on marginal-conviction trades, specifically during a Decision Engine
+    # outage, when extra caution matters most. score_size_mult is now derived identically
+    # on every gate_source, so the worst-case figure is the same regardless of path:
+    #   earnings 0.50 x regime 0.50 x confidence 0.75 x research 0.6 x score 0.75 = 0.084 (8.4%)
+    risk_dollar    = max(risk_dollar, _risk_base * 0.25)
+    shares         = risk_dollar / stop_distance
+
+    # PA-C1: Max dollar loss per trade — prevents wide ATR stops from risking > 2% equity
+    max_loss_pct = cfg.get("max_loss_per_trade_pct", 0.02)
+    if max_loss_pct and equity > 0:
+        max_loss_dollar = equity * max_loss_pct
+        if stop_distance * shares > max_loss_dollar:
+            shares = max_loss_dollar / stop_distance
+            notes = notes + [f"Shares capped to max loss ${max_loss_dollar:.0f} ({max_loss_pct*100:.0f}% equity)"]
+
+    # PT-C2: round shares first, then compute position_value from rounded shares
+    # so entry cash delta matches exit cash delta exactly
+    shares         = round(shares, 4)
+    position_value = round(shares * live_price, 2)
+
+    # AUD262-HK-NO-BOARD-LOTS: HKEX has no fractional/arbitrary-quantity orders — round
+    # down to a whole number of board lots (see _hk_board_lot_size()'s own docstring for
+    # why this is a documented approximation, not this symbol's real, confirmed lot size).
+    # Rounding DOWN (never up) means this can only ever reduce risk relative to the
+    # risk-budget math above, never exceed it. A candidate whose risk budget doesn't cover
+    # even one whole lot rounds to shares=0, which the FIN-07 check just below already
+    # skips via its existing `shares < 0.01` branch — no new skip logic needed.
+    if cfg.get("market") == "HK":
+        _lot = _hk_board_lot_size(live_price)
+        shares         = float((int(shares) // _lot) * _lot)
+        position_value = round(shares * live_price, 2)
+
+    # FIN-07: skip near-zero share positions that would pollute the journal.
+    # Also serves as an implicit ATR-volatility filter: extreme ATR → wide stop →
+    # tiny shares (via max_loss_per_trade_pct cap) → position_value < min_position_value → skip.
+    min_pos_val = cfg.get("min_position_value", 200.0)
+    if shares < 0.01 or position_value <= 0 or position_value < min_pos_val:
+        atr_pct = round(atr / live_price * 100, 1) if (atr and live_price > 0) else None
+        log.info("paper.skip_min_position", symbol=stock.symbol,
+                 shares=shares, position_value=position_value, min_required=min_pos_val,
+                 atr_pct=atr_pct, stop_dist=round(stop_distance, 2))
+        return None, "min_position"
+
+    # Cap position at max_position_pct of equity
+    max_pos = equity * cfg["max_position_pct"] * earnings_size_mult
+    if position_value > max_pos:
+        shares         = round(max_pos / live_price, 4)
+        # AUD262-HK-NO-BOARD-LOTS: this branch recomputes a fresh, fractional `shares`
+        # from max_pos/live_price — the lot-rounding applied right after PT-C2 above must
+        # be re-applied here too, or a HK trade that hits the max-position cap would exit
+        # this block with a fractional share count again.
+        if cfg.get("market") == "HK":
+            shares = float((int(shares) // _hk_board_lot_size(live_price)) * _hk_board_lot_size(live_price))
+        position_value = round(shares * live_price, 2)
+
+    # PT-B5: Aggregate open-risk check — sum (price - stop) * shares for all open trades
+    # AUD19-PERF2: uses prefetched_open (pre-fetched before the loop) — no DB query.
+    max_open_risk = cfg.get("max_open_risk_pct", 0.12)
+    if max_open_risk and equity > 0:
+        open_risk = sum(
+            abs(live_prices.get(t.symbol, t.entry_price) - t.current_stop) * t.shares
+            for t, _ in prefetched_open
+        )
+        new_trade_risk = stop_distance * shares
+        if (open_risk + new_trade_risk) / equity > max_open_risk:
+            log.info("paper.skip_open_risk_cap", symbol=stock.symbol,
+                     open_risk_pct=round((open_risk + new_trade_risk) / equity * 100, 1),
+                     limit_pct=round(max_open_risk * 100, 1))
+            return None, "open_risk_cap"
+
+    # Sector concentration check — AUD19-PERF2: computed in Python from pre-fetched open trades.
+    _sector = stock.sector  # may be None (unclassified stocks count against a shared bucket)
+    sector_value = sum(
+        _best_price(t, live_prices) * t.shares
+        for t, st in prefetched_open
+        if (st.sector is None) == (_sector is None) and (st.sector == _sector or _sector is None and st.sector is None)
+    )
+    if (sector_value + position_value) / max(equity, 1) > cfg["max_sector_pct"]:
+        log.info("paper.skip_sector_cap", symbol=stock.symbol,
+                 sector=_sector or "unclassified",
+                 sector_pct=round((sector_value + position_value) / equity * 100, 1))
+        return None, "sector_cap"
+    max_sector_pos = int(cfg.get("max_sector_positions", 3))
+    sector_count = sum(
+        1 for _, st in prefetched_open
+        if (st.sector is None) == (_sector is None) and (st.sector == _sector or _sector is None and st.sector is None)
+    )
+    if sector_count >= max_sector_pos:
+        log.info("paper.skip_sector_count_cap", symbol=stock.symbol,
+                 sector=_sector or "unclassified", limit=max_sector_pos)
+        return None, "sector_count_cap"
+
+    # PT-B6: Apply entry slippage — simulates spread / market impact
+    slippage = cfg.get("entry_slippage_pct", 0.001)
+    commission = round(cfg.get("commission_per_share", 0.0) * shares, 4)
+
+    # Cash gate and the actual deduction below both use this same slipped value now
+    # (see _slipped_position_value's docstring — T247-MARKETDATA-CASHGATE-PRESLIPPAGE).
+    position_value = _slipped_position_value(shares, live_price, slippage)
+    if position_value > portfolio.current_cash * 0.98:
+        log.info("paper.skip_insufficient_cash",
+                 symbol=stock.symbol, need=position_value,
+                 have=portfolio.current_cash)
+        return None, "insufficient_cash"
+
+    slipped_entry = round(live_price * (1 + slippage), 4)
+    # Deduct cash at slipped price (not live_price) so cash and cost basis are consistent
+    portfolio.current_cash = max(0.0, round(portfolio.current_cash - position_value - commission, 2))
+    now = datetime.now(timezone.utc)
+    trade = PaperTrade(
+        portfolio_id          = portfolio.id,
+        symbol                = stock.symbol,
+        signal_id             = sig.id,
+        trading_style         = style,
+        entry_date            = date.today(),
+        entry_time            = now,
+        entry_price           = slipped_entry,   # slippage-adjusted entry
+        sector                = stock.sector,    # H-SECTOR FIX: PA-D1 monitor reads trade.sector
+        stock_id              = stock.id,        # PT-H2: needed for double-top mid-trade detection
+        shares                = shares,
+        entry_shares          = shares,          # T232-PT6: snapshot before scale-outs shrink `shares`
+        entry_commission      = commission,      # AUD262: stored so exit-time pnl can reconcile to it
+        stop_loss             = stop,
+        take_profit           = take_profit,
+        current_stop          = stop,
+        highest_price         = slipped_entry,
+        current_price         = slipped_entry,
+        entry_score           = score,
+        entry_decision_notes  = notes,
+        confidence_at_entry   = sig.confidence,
+        kscore_at_entry       = ranking.score if ranking else None,
+        rr_ratio_at_entry     = round(rr, 2),
+        market_regime_at_entry= (live_regime or {}).get("state") or (sig.reasons or {}).get("market_regime"),
+        entry_reasons         = sig.reasons,
+        stage                 = "open",
+        hold_days             = 0,
+    )
+    session.add(trade)
+    # Broker routing: submit real BUY order to linked broker (US only; falls back on error)
+    if portfolio.broker_connection_id:
+        _place_broker_entry(session, trade, portfolio)
+
+    log.info("paper.entry",
+             symbol=stock.symbol, price=live_price,
+             shares=round(shares, 2), stop=stop,
+             target=take_profit, score=score, rr=round(rr, 2),
+             cash_remaining=round(portfolio.current_cash, 2))
+    return trade, None
+
+
 def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str, float], live_regime: dict | None = None) -> None:
     """Find fresh BUY signals and evaluate them for entry."""
     cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(portfolio.config.get("trading_style", "GROWTH"), {}), **portfolio.config}
@@ -5038,271 +5319,20 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         log.info("paper.entry_decision",
                  symbol=stock.symbol, score=score, gate=gate_source, notes=notes[:2])
 
-        # Position sizing: risk_dollar / stop_distance = shares
-        stop        = game_plan["stop"]
-        take_profit = game_plan["take_profit"]
-        stop_distance = live_price - stop
-        if stop_distance <= 0:
-            continue
-        rr = (take_profit - live_price) / max(stop_distance, live_price * 0.005)
-
-        # PT-B10: Earnings-graduated sizing — reduce size as earnings approach
-        dte = (sig.reasons or {}).get("days_to_earnings")
-        earnings_size_mult = 1.0
-        if dte is not None:
-            dte_int = int(dte)
-            if 6 <= dte_int <= 10:
-                earnings_size_mult = 0.50   # 50% size within 10 days of earnings
-                notes = notes + [f"Size reduced 50% — earnings in {dte_int}d"]
-            elif 11 <= dte_int <= 20:
-                earnings_size_mult = 0.75   # 75% size within 11-20 days
-                notes = notes + [f"Size reduced 75% — earnings in {dte_int}d"]
-
-        # PT-D2: Confidence-band sizing — scale position proportional to signal conviction
-        sig_conf = float(sig.confidence or 0.0)
-        if sig_conf >= 50:
-            confidence_size_mult = 1.25
-            notes = notes + [f"Size 1.25× (confidence {sig_conf:.0f}% — high conviction)"]
-        elif sig_conf >= 30:
-            confidence_size_mult = 1.0
-        else:
-            confidence_size_mult = 0.75
-            notes = notes + [f"Size 0.75× (confidence {sig_conf:.0f}% — marginal signal)"]
-
-        # INT-3: Research-gated position sizing — reduce size when research disagrees
-        _research_rec = ""  # captured outside try for hard gate below
-        research_size_mult = 1.0
-        if cfg.get("research_gating_enabled", True):
-            try:
-                import httpx as _httpx
-                from common.config import get_settings as _gs
-                _res = _httpx.get(
-                    f"{_gs().research_engine_url}/research/{stock.symbol}/summary",
-                    timeout=1.5,
-                    headers={"Authorization": f"Bearer {_svc_token()}"},
-                )
-                if _res.status_code == 200:
-                    _rs = _res.json()
-                    _research_rec = _rs.get("recommendation", "")
-                    _score = float(_rs.get("overall_score") or 0)
-                    if _research_rec == "STRONG BUY" and _score >= 75:
-                        research_size_mult = 1.2
-                        notes = notes + [f"Size 1.2× (Research: {_research_rec} {_score:.0f})"]
-                    elif _research_rec == "BUY" and _score >= 65:
-                        research_size_mult = 1.0
-                    elif _research_rec == "WATCH" and _score >= 60:
-                        research_size_mult = 0.8
-                        notes = notes + [f"Size 0.8× (Research: {_research_rec} {_score:.0f})"]
-                    elif _research_rec in ("WATCH", "AVOID", "SELL"):
-                        research_size_mult = 0.6
-                        notes = notes + [f"Size 0.6× (Research: {_research_rec} {_score:.0f})"]
-            except Exception:
-                pass  # no research data → neutral 1.0×
-
-        # Hard gate: AVOID/SELL research blocks entry entirely — mirrors DE hard_rejects logic
-        if cfg.get("research_gating_enabled", True) and _research_rec in ("AVOID", "SELL"):
-            log.info("paper.skip_research_gate", symbol=stock.symbol, research_rec=_research_rec)
-            _skip_tally["research_gate"] = _skip_tally.get("research_gate", 0) + 1
-            continue
-
-        # 40-B: Cross-horizon consensus boost — when ≥2 other styles also fired BUY
-        # for this stock in the same signal batch, we have rare multi-timeframe alignment.
-        consensus_size_mult = 1.0
-        cross_buys = int((sig.reasons or {}).get("cross_style_buys", 0))
-        if cross_buys >= 2:
-            consensus_size_mult = 1.15
-            notes = notes + [f"Size 1.15× (multi-timeframe consensus: {cross_buys} other styles BUY)"]
-        elif cross_buys == 1:
-            consensus_size_mult = 1.07
-            notes = notes + [f"Size 1.07× (partial consensus: 1 other style BUY)"]
-
-        # T188: Score-to-size multiplier — high-conviction scores get more capital, marginal scores less.
-        # Score just at min threshold (excess=0): 0.75×. Score +2 above (normal): 1.0×. Score +4+: 1.25×.
-        # AUD262-FALLBACK-SIZES-LARGER-THAN-DE: this used to only apply when gate_source=="de"
-        # (score_size_mult pinned to 1.0 on fallback/legacy) — but `score` on the fallback path
-        # is _should_enter()'s own returned score, compared against the SAME min_entry_score
-        # threshold DE uses (confirmed: _record_de_shadow_comparison already passes this exact
-        # same cfg value for both paths), so the input needed was already available on every
-        # path — nothing about this multiplier is actually DE-specific. Pinning it to 1.0 meant
-        # a marginal candidate (exactly at min_entry_score) got FULL size on the fallback path
-        # (1.0x) but REDUCED size under DE (0.75x) — 33% MORE capital on the weakest-conviction
-        # trades specifically during a decision-engine outage, when caution matters most.
-        _min_score_cfg = cfg.get("min_entry_score", 4)
-        _score_excess = score - _min_score_cfg
-        score_size_mult = round(max(0.75, min(1.25, 0.75 + _score_excess * 0.125)), 3)
-        if score_size_mult != 1.0:
-            notes = notes + [f"Size {score_size_mult:.2f}× ({gate_source.upper()} score {score}, excess {_score_excess:+d} from min {_min_score_cfg})"]
-        _risk_base     = equity * cfg["risk_per_trade_pct"]
-        risk_dollar    = _risk_base * earnings_size_mult * regime_size_mult * confidence_size_mult * research_size_mult * consensus_size_mult * score_size_mult
-        # T234-PT-SIZING-MULT-STACK: the 6 categories above are independent per-trade signals
-        # (each already min()-composed internally where it overlaps with another, e.g.
-        # regime_size_mult folds in VIX/breadth/HMM via min() rather than multiplying them) —
-        # multiplying independent judgments together is intentional, but with no combined floor
-        # the worst realistic stack sizes a trade down to a token position, where commission/
-        # slippage drag can exceed the position's own expected profit. Floor the composed result
-        # at 25% of the unadjusted base so a trade that clears every other gate is never sized
-        # down below that — multipliers above this floor are unaffected.
-        #
-        # AUD232-011 (corrected by AUD262-FALLBACK-SIZES-LARGER-THAN-DE): score_size_mult used
-        # to only derive from _score_excess when gate_source=="de" — pinned to 1.0 on
-        # fallback/legacy. That meant the fallback path's real floor-triggering minimum was
-        # 0.1125 (11.25%) vs. DE's 0.084 (8.4%) — a LOOSER effective floor, and correspondingly
-        # MORE capital on marginal-conviction trades, specifically during a Decision Engine
-        # outage, when extra caution matters most. score_size_mult is now derived identically
-        # on every gate_source, so the worst-case figure is the same regardless of path:
-        #   earnings 0.50 x regime 0.50 x confidence 0.75 x research 0.6 x score 0.75 = 0.084 (8.4%)
-        risk_dollar    = max(risk_dollar, _risk_base * 0.25)
-        shares         = risk_dollar / stop_distance
-
-        # PA-C1: Max dollar loss per trade — prevents wide ATR stops from risking > 2% equity
-        max_loss_pct = cfg.get("max_loss_per_trade_pct", 0.02)
-        if max_loss_pct and equity > 0:
-            max_loss_dollar = equity * max_loss_pct
-            if stop_distance * shares > max_loss_dollar:
-                shares = max_loss_dollar / stop_distance
-                notes = notes + [f"Shares capped to max loss ${max_loss_dollar:.0f} ({max_loss_pct*100:.0f}% equity)"]
-
-        # PT-C2: round shares first, then compute position_value from rounded shares
-        # so entry cash delta matches exit cash delta exactly
-        shares         = round(shares, 4)
-        position_value = round(shares * live_price, 2)
-
-        # AUD262-HK-NO-BOARD-LOTS: HKEX has no fractional/arbitrary-quantity orders — round
-        # down to a whole number of board lots (see _hk_board_lot_size()'s own docstring for
-        # why this is a documented approximation, not this symbol's real, confirmed lot size).
-        # Rounding DOWN (never up) means this can only ever reduce risk relative to the
-        # risk-budget math above, never exceed it. A candidate whose risk budget doesn't cover
-        # even one whole lot rounds to shares=0, which the FIN-07 check just below already
-        # skips via its existing `shares < 0.01` branch — no new skip logic needed.
-        if cfg.get("market") == "HK":
-            _lot = _hk_board_lot_size(live_price)
-            shares         = float((int(shares) // _lot) * _lot)
-            position_value = round(shares * live_price, 2)
-
-        # FIN-07: skip near-zero share positions that would pollute the journal.
-        # Also serves as an implicit ATR-volatility filter: extreme ATR → wide stop →
-        # tiny shares (via max_loss_per_trade_pct cap) → position_value < min_position_value → skip.
-        min_pos_val = cfg.get("min_position_value", 200.0)
-        if shares < 0.01 or position_value <= 0 or position_value < min_pos_val:
-            atr_pct = round(atr / live_price * 100, 1) if (atr and live_price > 0) else None
-            log.info("paper.skip_min_position", symbol=stock.symbol,
-                     shares=shares, position_value=position_value, min_required=min_pos_val,
-                     atr_pct=atr_pct, stop_dist=round(stop_distance, 2))
-            _skip_tally["min_position"] = _skip_tally.get("min_position", 0) + 1
-            continue
-
-        # Cap position at max_position_pct of equity
-        max_pos = equity * cfg["max_position_pct"] * earnings_size_mult
-        if position_value > max_pos:
-            shares         = round(max_pos / live_price, 4)
-            # AUD262-HK-NO-BOARD-LOTS: this branch recomputes a fresh, fractional `shares`
-            # from max_pos/live_price — the lot-rounding applied right after PT-C2 above must
-            # be re-applied here too, or a HK trade that hits the max-position cap would exit
-            # this block with a fractional share count again.
-            if cfg.get("market") == "HK":
-                shares = float((int(shares) // _hk_board_lot_size(live_price)) * _hk_board_lot_size(live_price))
-            position_value = round(shares * live_price, 2)
-
-        # PT-B5: Aggregate open-risk check — sum (price - stop) * shares for all open trades
-        # AUD19-PERF2: uses _prefetched_open (pre-fetched before the loop) — no DB query.
-        max_open_risk = cfg.get("max_open_risk_pct", 0.12)
-        if max_open_risk and equity > 0:
-            open_risk = sum(
-                abs(live_prices.get(t.symbol, t.entry_price) - t.current_stop) * t.shares
-                for t, _ in _prefetched_open
-            )
-            new_trade_risk = stop_distance * shares
-            if (open_risk + new_trade_risk) / equity > max_open_risk:
-                log.info("paper.skip_open_risk_cap", symbol=stock.symbol,
-                         open_risk_pct=round((open_risk + new_trade_risk) / equity * 100, 1),
-                         limit_pct=round(max_open_risk * 100, 1))
-                _skip_tally["open_risk_cap"] = _skip_tally.get("open_risk_cap", 0) + 1
-                continue
-
-        # Sector concentration check — AUD19-PERF2: computed in Python from pre-fetched open trades.
-        _sector = stock.sector  # may be None (unclassified stocks count against a shared bucket)
-        sector_value = sum(
-            _best_price(t, live_prices) * t.shares
-            for t, st in _prefetched_open
-            if (st.sector is None) == (_sector is None) and (st.sector == _sector or _sector is None and st.sector is None)
+        trade, skip_reason = _open_paper_trade(
+            session, portfolio, stock, sig, ranking, live_price, game_plan, score, notes,
+            gate_source, cfg, style, equity, regime_size_mult, live_regime, live_prices,
+            _prefetched_open, atr,
         )
-        if (sector_value + position_value) / max(equity, 1) > cfg["max_sector_pct"]:
-            log.info("paper.skip_sector_cap", symbol=stock.symbol,
-                     sector=_sector or "unclassified",
-                     sector_pct=round((sector_value + position_value) / equity * 100, 1))
-            _skip_tally["sector_cap"] = _skip_tally.get("sector_cap", 0) + 1
-            continue
-        max_sector_pos = int(cfg.get("max_sector_positions", 3))
-        sector_count = sum(
-            1 for _, st in _prefetched_open
-            if (st.sector is None) == (_sector is None) and (st.sector == _sector or _sector is None and st.sector is None)
-        )
-        if sector_count >= max_sector_pos:
-            log.info("paper.skip_sector_count_cap", symbol=stock.symbol,
-                     sector=_sector or "unclassified", limit=max_sector_pos)
-            _skip_tally["sector_count_cap"] = _skip_tally.get("sector_count_cap", 0) + 1
+        if trade is None:
+            _skip_tally[skip_reason] = _skip_tally.get(skip_reason, 0) + 1
             continue
 
-        # PT-B6: Apply entry slippage — simulates spread / market impact
-        slippage = cfg.get("entry_slippage_pct", 0.001)
-        commission = round(cfg.get("commission_per_share", 0.0) * shares, 4)
-
-        # Cash gate and the actual deduction below both use this same slipped value now
-        # (see _slipped_position_value's docstring — T247-MARKETDATA-CASHGATE-PRESLIPPAGE).
-        position_value = _slipped_position_value(shares, live_price, slippage)
-        if position_value > portfolio.current_cash * 0.98:
-            log.info("paper.skip_insufficient_cash",
-                     symbol=stock.symbol, need=position_value,
-                     have=portfolio.current_cash)
-            _skip_tally["insufficient_cash"] = _skip_tally.get("insufficient_cash", 0) + 1
-            continue
-
-        slipped_entry = round(live_price * (1 + slippage), 4)
-        # Deduct cash at slipped price (not live_price) so cash and cost basis are consistent
-        portfolio.current_cash = max(0.0, round(portfolio.current_cash - position_value - commission, 2))
-        trade = PaperTrade(
-            portfolio_id          = portfolio.id,
-            symbol                = stock.symbol,
-            signal_id             = sig.id,
-            trading_style         = style,
-            entry_date            = date.today(),
-            entry_time            = now,
-            entry_price           = slipped_entry,   # slippage-adjusted entry
-            sector                = stock.sector,    # H-SECTOR FIX: PA-D1 monitor reads trade.sector
-            stock_id              = stock.id,        # PT-H2: needed for double-top mid-trade detection
-            shares                = shares,
-            entry_shares          = shares,          # T232-PT6: snapshot before scale-outs shrink `shares`
-            entry_commission      = commission,      # AUD262: stored so exit-time pnl can reconcile to it
-            stop_loss             = stop,
-            take_profit           = take_profit,
-            current_stop          = stop,
-            highest_price         = slipped_entry,
-            current_price         = slipped_entry,
-            entry_score           = score,
-            entry_decision_notes  = notes,
-            confidence_at_entry   = sig.confidence,
-            kscore_at_entry       = ranking.score if ranking else None,
-            rr_ratio_at_entry     = round(rr, 2),
-            market_regime_at_entry= (live_regime or {}).get("state") or (sig.reasons or {}).get("market_regime"),
-            entry_reasons         = sig.reasons,
-            stage                 = "open",
-            hold_days             = 0,
-        )
-        session.add(trade)
-        # Broker routing: submit real BUY order to linked broker (US only; falls back on error)
-        if portfolio.broker_connection_id:
-            _place_broker_entry(session, trade, portfolio)
         open_symbols.add(stock.symbol)
         entries_made += 1
         # Recalculate equity after each entry so successive entries in this cycle
         # use the updated cash/position value rather than the stale snapshot
         equity = _compute_equity(session, portfolio, live_prices)
-
-        log.info("paper.entry",
-                 symbol=stock.symbol, price=live_price,
-                 shares=round(shares, 2), stop=stop,
-                 target=take_profit, score=score, rr=round(rr, 2),
-                 cash_remaining=round(portfolio.current_cash, 2))
 
     # T232-WHYNOTRADE: when the scan reaches this point with zero entries, no
     # portfolio-level gate blocked it (those `return` earlier in this function) — every

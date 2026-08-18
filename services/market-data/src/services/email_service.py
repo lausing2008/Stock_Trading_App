@@ -1852,6 +1852,45 @@ def send_portfolio_drawdown_alert_email(to: str, breaches: list[dict]) -> bool:
     return send_email(to, subject, body_html, body_text)
 
 
+def send_conditional_order_email(to: str, order, fired_ok: bool, reason: str) -> bool:
+    """T286-CONDITIONAL-ORDER: sent whenever a conditional order's trigger fires — regardless
+    of whether the resulting action actually succeeded. A failure (e.g. the entry gate
+    rejected a buy, insufficient cash) is just as important to surface as a success, since the
+    user is relying on this order to act on their behalf without them watching."""
+    action_label = {
+        "buy": "BUY", "sell_partial": "Partial Sell", "sell_all": "Sell All",
+        "tighten_stop": "Tighten Stop", "close_position": "Close Position",
+        "alert_only": "Alert",
+    }.get(order.action_type, order.action_type)
+    status_word = "Fired" if fired_ok else "Failed"
+    color = "#16a34a" if fired_ok else "#ef4444"
+    subject = f"{'✅' if fired_ok else '⚠️'} Conditional Order {status_word} — {order.symbol} {action_label}"
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:520px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:{color}">{'✅' if fired_ok else '⚠️'} Conditional Order {status_word}</h2>
+    <div style="padding:10px 0;border-bottom:1px solid #f1f5f9">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:14px">{order.symbol}</strong>
+        <span style="font-size:12px;color:{color};font-weight:700">{action_label}</span>
+      </div>
+      <div style="font-size:12px;color:#64748b;margin-top:6px">{reason}</div>
+    </div>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      Conditional Order #{order.id}{f' — {order.note}' if order.note else ''}.
+      This order has now completed its single-hop lifecycle and will not fire again — create a
+      new one if you want another action. Not financial advice.
+    </p>
+  </div>
+</body></html>"""
+    body_text = (
+        f"Conditional Order {status_word} — {order.symbol} {action_label}\n\n"
+        f"{reason}\n\n"
+        f"Conditional Order #{order.id}. This order has completed its single-hop lifecycle. Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_top3_conviction_email(to: str, picks: list[dict]) -> bool:
     """T257-TOP3-CONVICTION-ALERT: up to 3 picks, each gated on a MEASURED historical win
     rate (not raw model confidence) — the email's whole point is to make that accuracy claim

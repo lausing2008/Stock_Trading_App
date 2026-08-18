@@ -112,6 +112,7 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Platform Guide', href: '/learn' },
       { label: 'Alerts Guide',   href: '/alerts-guide', color: '#f59e0b', tag: 'new' },
       { label: 'Watchlist Rotation — How It Works', href: '/watchlist-rotation-explainer', color: '#f59e0b', tag: 'new' },
+      { label: 'Conditional Orders Guide', href: '/conditional-orders-guide', color: '#22c55e', tag: 'new' },
       { label: 'Session Changelog', href: '/session-changelog', color: '#a78bfa', tag: 'new' },
     ],
   },
@@ -120,6 +121,7 @@ const NAV_GROUPS: NavGroupDef[] = [
     adminOnly: true,
     items: [
       { label: 'Paper Portfolio',  href: '/paper-portfolio',  color: '#22c55e' },
+      { label: 'Conditional Orders', href: '/conditional-orders', color: '#22c55e', tag: 'new' },
       { label: 'E*Trade Transactions', href: '/etrade-transactions', color: '#4ade80', tag: 'new' },
       { label: 'Entry Gates',      href: '/paper-gates',      color: '#22c55e' },
       { label: 'Horizon Compare',  href: '/horizon-compare',  color: '#38bdf8', tag: 'new' },

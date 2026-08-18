@@ -12932,3 +12932,216 @@ check the real row count first — this sweep needs `_KSCORE_SWEEP_MIN_ROWS * 2 
 rows (a real forward return, not just a `Ranking` row existing) before either slice can be
 trusted; a young/thin universe may simply not have accumulated enough history yet, which is
 correct, expected behavior, not a bug.
+
+---
+
+## Feature Reference: T286-CONDITIONAL-ORDER — Single-Hop "If TRIGGER Then ACTION" Orders (Built 2026-08-18)
+
+**Closes the last remaining open item from Tier 287** — `T286-CONDITIONAL-ORDER-CHAINS-
+DEFERRED`, deliberately left unbuilt in the original 2026-08-17 batch pending its own dedicated
+design pass, since it's the one item in that batch that touches the live paper-trading entry
+pipeline directly. This session's own design conversation (before any code was written)
+deliberately scoped DOWN from the original "conditional order **chains**" ask
+(`docs/FEATURE_ROADMAP_PYRAMID_GOALS_2026-08-16.md`'s literal "if X breaks $140, buy Y with
+stop at Z") to a materially safer, still-genuinely-useful core: **same-symbol only** (no
+cross-symbol triggers), **single-hop only** (no multi-step chained state — a user wanting a
+multi-step plan creates several independent orders), and every `buy` action routed through the
+**exact same real entry gate** every organic trade already uses — a conditional order only
+ever decides WHEN to act on an already-real, already-eligible setup, never WHETHER the setup
+itself is valid. Named `ConditionalOrder`, deliberately not "chain," to keep this scoping
+visible in the code itself, not just in a design doc.
+
+### The trigger vocabulary — reuses, not reinvents, existing infrastructure
+
+6 metrics (`price`, `rsi`, `volume_ratio`, `signal`, `position_pnl_pct`, `time`), each a
+`{"metric", "op": "gte"|"lte"|"eq", "value"}` dict — the SAME JSON-list-of-condition-dicts
+shape as `PriceAlert.compound_conditions` (T230-ALERTING-COMPOUND-CONDITIONS), extended with
+`trigger_logic: "AND"|"OR"` (PriceAlert's own compound conditions are AND-only; OR is new here,
+per an explicit ask for genuine AND/OR support). `rsi`/`signal` read the SAME persisted
+(`live=false`) DB signal `check_signal_alerts()`/`_evaluate_compound_conditions()` already read
+— a conditional order's "if RSI < 30" shows the identical RSI a `PriceAlert` compound condition
+or the stock detail page would. `volume_ratio` reuses the same `get_rvol()` helper. `price` and
+`position_pnl_pct` (a new metric — your CURRENT open position's live unrealized P&L% on that
+exact portfolio/symbol) and `time` (an HH:MM UTC clock check) are genuinely new, since neither
+had an existing equivalent. Every metric **fails closed** on missing/unavailable data — an
+order that can't measure its own trigger right now can never fire on incomplete information.
+
+### The action vocabulary
+
+`buy`, `sell_partial` (a fraction 0-1 of current shares), `sell_all`/`close_position` (aliased
+to the same full-close handler), `tighten_stop` (a new stop price, monotonic-only — can never
+loosen an existing stop, matching every other stop-tightening mechanism in this codebase),
+`alert_only` (never touches a position — just sends the notification email).
+
+### The design decision this session spent the most real effort on: how `buy` actually opens a position
+
+**The core problem**: a conditional order's `buy` action needs to open a REAL position at the
+exact moment its custom trigger fires — that's the entire point (entering earlier/more
+precisely than the organic 5-10min `_scan_for_entries()` scan cycle would, which only reacts
+to signal changes, never an arbitrary user-defined price/RSI/volume/time trigger). But the real
+position-sizing/opening logic (~250 lines: risk-based sizing, earnings/confidence/research/
+consensus/score size multipliers, HK board-lot rounding, the aggregate open-risk cap, the
+sector-concentration cap, the cash gate, the actual `PaperTrade` insert) was entirely inlined
+inside `_scan_for_entries()`'s own candidate loop — not a separately-callable function.
+
+**Three options were weighed explicitly with the user before writing any code**: (1) properly
+extract the sizing/opening block into a reusable helper (real effort + real risk to a critical,
+heavily-audited function, but the only way to get full sizing/gate parity), (2) ship a
+simplified v1 where `buy` only sends an "would pass the gate" notification with a manual
+one-click execute button, (3) drop `buy` entirely, conditional orders only manage existing
+positions. **The user chose (1)** after being shown the real complexity discovered mid-
+investigation (`regime_size_mult` — one of the sizing multipliers — depends on cycle-level
+`live_regime`/market-breadth data, not just candidate-level state, meaning a clean extraction
+needed several more parameters threaded through than a simple "move this block" operation).
+
+**The extraction performed**: a new `_open_paper_trade()` function in `paper_trading_engine.py`,
+containing the ~250-line block moved **verbatim** — same variable names, same order of checks,
+same audit-comment history (T188, PT-B10, PT-D2, INT-3, AUD262-*, AUD232-*, etc. all preserved
+untouched) — with each original `continue` (skip this candidate, try the next) converted to a
+`return None, "<skip_reason>"`. `_scan_for_entries()`'s own loop body was replaced with a call
+to this function plus 4 lines of cycle-level bookkeeping (`open_symbols.add`, `entries_made
++= 1`, `equity` recompute) it still owns — `_scan_for_entries()`'s own observable behavior is
+completely unchanged; it's the SAME code, just relocated so a second caller can reuse it.
+
+**`buy`'s own action handler** (`_execute_buy()` in the new `conditional_orders.py`) resolves
+the same portfolio-level context `_scan_for_entries()` computes once per scan cycle
+(`_compute_equity`, `_recent_win_rate`, `_consec_loss_streak`, the regime-size-multiplier
+lookup from the portfolio's own persisted `regime_state`) for just this ONE candidate, calls
+`_call_decision_engine()` (falling back to `_should_enter()` if DE is unreachable — the exact
+same dual-scorer pattern `_scan_for_entries()` itself uses), and only on a real, passing verdict
+calls the newly-extracted `_open_paper_trade()`. A **deliberate, disclosed scope-narrowing**:
+some optional DE parameters (`open_sector_counts`, `market_open_count`, `short_signal`,
+`recent_stop_count`) are left at their `None`/default fail-open values rather than exactly
+reconstructed — confirmed safe via `_call_decision_engine()`'s own conditional-inclusion
+pattern (`if X is not None`), matching this codebase's established convention that a missing
+optional field means "gate not applicable here," never a bypass of a mandatory check. Every
+HARD circuit breaker (drawdown, daily/weekly loss, confidence floor, R:R ratio) still fully
+applies via the real `equity`/`recent_win_rate`/`consec_losses` values that ARE computed exactly.
+
+**A critical, deliberate safety invariant**: `_execute_buy()` never fabricates a signal. It
+requires a REAL, already-persisted `Signal` row with `signal == BUY` for the target symbol
+before doing anything else — a conditional order only ever decides **when** to act on an
+already-real, already-eligible setup, never **whether** the setup itself is valid. A user
+"buy if price breaks $140" order does nothing at all if no real BUY signal exists for that
+symbol yet, regardless of price — it fails with an explicit, honest reason, not a fabricated
+entry.
+
+### A real regression this extraction caught — and confirmed was NOT a behavioral bug
+
+Running the FULL market-data test suite after the extraction (not just the new test file)
+surfaced 7 failures in a PRE-EXISTING test file, `test_score_size_mult_gate_source_parity.py` —
+exactly the kind of catch this repo's own "run the whole suite, not just your new tests"
+discipline exists for. Root cause: that file uses **source-text extraction** (reading the real
+`score_size_mult` computation directly out of `paper_trading_engine.py` and `exec()`-ing it
+against synthetic inputs) with a HARDCODED dedent amount (8 spaces) matching the code's
+original nesting depth inside `_scan_for_entries()`'s own `for` loop. The extraction moved this
+same code to 4-space nesting (a plain function body, not a loop) — the underlying
+`score_size_mult` FORMULA is byte-for-byte unchanged (verified: `pyflakes`/full-suite-diff
+confirm no logic changed, only file location), but the test's own dedent constant needed
+updating to match. Fixed by changing the dedent from 8 to 4 spaces and correcting the file's
+own docstring references from `_scan_for_entries()` to `_open_paper_trade()`. This is the
+one and only test that needed changing anywhere in the full 1604-test suite — everything else
+passed with zero modification, a strong signal the extraction was genuinely faithful.
+
+### Scheduler wiring, API, email
+
+`check_conditional_orders()` — 1-minute interval job (`services/market-data/src/services/
+conditional_orders.py`), registered right after `check_volume_anomalies` in `scheduler.py`.
+**Deliberately fails CLOSED on a Redis lock-acquire failure** — unlike most other 1-minute
+alert jobs in this codebase (`check_price_alerts` et al., which fail OPEN, accepting a rare
+double-send risk for a passive notification), this feature places real trades, so skipping one
+cycle is always the safer choice than risking a double-fire. Per-order try/except isolation
+(one order's evaluation failure doesn't abort the rest of that cycle's batch), matching this
+codebase's established per-recipient/per-order isolation convention.
+
+`POST/GET/DELETE /conditional-orders` (`services/market-data/src/api/conditional_orders.py`) —
+portfolio-scoped (no `user_id` on the model at all, since `PaperPortfolio` itself has none —
+paper portfolios are app-wide, not per-user, a fact this codebase has documented repeatedly).
+No PUT/edit endpoint — matches the single-hop design: an order the user wants changed is
+cancelled and recreated, never mutated in place, keeping "what does this order actually do"
+always readable from its own row with no hidden edit history.
+
+`send_conditional_order_email()` — sent on EVERY fire, success or failure, matching this
+codebase's own "a silent failure defeats the purpose of an unattended trigger" discipline
+already established for other alert types.
+
+### Frontend
+
+New `/conditional-orders` (create/list/cancel page, portfolio dropdown + a dynamic condition-
+builder form) and `/conditional-orders-guide` (a dedicated documentation page, per an explicit
+user request — matches `alerts-guide.tsx`'s own established `Callout`/`Code`/`WorkflowDiagram`
+visual language, not a new one-off style). Nav entries added: the guide under "Learning"
+(alongside `alerts-guide`), the management page under "Admin" (alongside `Paper Portfolio`,
+since conditional orders modify a specific portfolio's real trading behavior).
+
+### Tests
+
+`services/market-data/tests/test_open_paper_trade_extraction.py` (14 cases) — direct behavioral
+tests of the newly-extracted `_open_paper_trade()`, covering the risk-sizing formula (hand-
+computed expectation, corrected mid-writing for a real miscalculation — see below), every skip-
+reason path (invalid stop distance, AVOID/SELL research hard-gate, min-position-value floor,
+aggregate open-risk cap, sector concentration cap, sector position-count cap, insufficient
+cash), HK board-lot rounding, broker-entry routing (placed only when `broker_connection_id` is
+set), and K-Score-at-entry sourcing. A `_FakePaperTrade` capturing class replaces the module's
+own `MagicMock`-stubbed `PaperTrade` (this test environment stubs `db` wholesale) so
+constructor kwargs become real, assertable attributes instead of opaque mock accesses.
+
+**A real hand-calculation mistake self-caught while writing these tests, not shipped**: the
+first version of `test_shares_computed_from_risk_dollar_over_stop_distance` assumed
+`confidence_size_mult = 1.0` for a `sig_conf=60` fixture — but the real formula's `sig_conf >=
+50` branch actually yields `1.25`, not the `30 <= sig_conf < 50` neutral branch. The test
+failed immediately with the real function's actual output (`100.0`, not the hand-miscalculated
+`150.0`), which on tracing back turned out to ALSO reflect the `max_position_pct` cap engaging
+(a `187.5`-share position at `$100/share` exceeds the fixture's `10%`-of-equity cap, correctly
+rounding down to exactly `100.0`) — both a confidence-multiplier mistake AND a missed
+downstream cap in the original hand-calculation, caught by the test disagreeing with itself
+before being trusted, not assumed correct on the first pass.
+
+`services/market-data/tests/test_conditional_orders.py` (30 cases) — direct behavioral tests
+of `_evaluate_one_condition()`/`evaluate_conditions()`/`execute_action()`'s dispatch (all real,
+DB-light functions with only `position_pnl_pct`/`volume_ratio`/`rsi`/`signal` metrics touching
+a mocked session/HTTP call), plus source-text regression checks on the heavier action-execution
+functions' key safety properties (matching `test_should_enter_de_parity.py`'s own established
+proportionate-testing precedent for functions whose full DB-dependent behavior is
+disproportionate to drive end-to-end locally): the real-BUY-signal requirement, DE/fallback
+gate reuse, the already-open-position rejection, the monotonic stop-tightening guard, the
+close-flow's cash-credit + `SignalOutcome` writeback, the fail-closed lock convention, expiry
+checked before trigger evaluation, and the always-send-email-regardless-of-outcome property.
+
+**Adversarial verification** — 3 sabotage/revert cycles on `conditional_orders.py`, all caught
+correctly: reverting the fail-closed lock handling to fail-open (caught by the dedicated
+source-text test); removing the `SignalType.BUY` check from `_execute_buy()` (caught by the
+dedicated source-text test, with the real assertion diff showing the guard string genuinely
+absent — not a false match); flipping `evaluate_conditions()`'s empty-conditions default from
+`False` to `True` (caught by the dedicated behavioral test). All 3 reverted and confirmed
+byte-identical via `md5sum` before moving on.
+
+Full 1634-test market-data suite green (up from 1604 — 14 new extraction tests + 30 new
+conditional-order tests); frontend `npx tsc --noEmit`, the 132-test vitest suite, and a full
+`next build` (both `/conditional-orders` and `/conditional-orders-guide` compile cleanly) all
+green; `pyflakes` clean on every touched file (confirmed via `git stash` that every remaining
+warning predates this session's changes — only line numbers shifted from new code added
+earlier in the same files).
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the scheduler job is registered and running:
+docker logs stockai-market-data-1 --since 1h | grep conditional_order
+
+# Check a specific order's real status:
+docker exec stockai-market-data-1 python3 -c "
+import sys, uuid, time; sys.path.insert(0,'/app'); sys.path.insert(0,'/app/src')
+from common.config import get_settings; from jose import jwt as _jwt; import httpx
+s = get_settings()
+tok = _jwt.encode({'sub':'lausing','jti':str(uuid.uuid4()),'exp':int(time.time())+86400}, s.jwt_secret, algorithm='HS256')
+r = httpx.get('http://localhost:8001/conditional-orders', headers={'Authorization': f'Bearer {tok}'}, timeout=15)
+print(r.status_code, r.json())
+"
+
+# Confirm _open_paper_trade() and _scan_for_entries() are still calling the same function:
+docker exec stockai-market-data-1 grep -n "_open_paper_trade(" /app/src/services/paper_trading_engine.py
+```
+If a `buy` conditional order always fails with "No current BUY-eligible signal," that's
+correct, expected behavior — check whether the symbol genuinely has a real, current BUY
+signal via `GET /signals/{symbol}?style=SWING&live=false` before assuming the order itself is
+broken; the whole point of this design is that it never fabricates one.

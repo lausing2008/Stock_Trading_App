@@ -450,6 +450,17 @@ export const api = {
   updateStockGoal: (id: number, req: Partial<StockGoalCreateRequest> & { status?: string }) =>
     request<StockGoalItem>(`/stocks/goals/${id}`, { method: 'PUT', body: JSON.stringify(req) }),
   deleteStockGoal: (id: number) => request(`/stocks/goals/${id}`, { method: 'DELETE' }),
+  listConditionalOrders: (params?: { portfolio_id?: number; status?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.portfolio_id != null) qs.set('portfolio_id', String(params.portfolio_id));
+    if (params?.status) qs.set('status', params.status);
+    const q = qs.toString();
+    return request<{ orders: ConditionalOrderItem[] }>(`/conditional-orders${q ? `?${q}` : ''}`);
+  },
+  createConditionalOrder: (req: ConditionalOrderCreateRequest) =>
+    request<ConditionalOrderItem>('/conditional-orders', { method: 'POST', body: JSON.stringify(req) }),
+  cancelConditionalOrder: (id: number) =>
+    request<ConditionalOrderItem>(`/conditional-orders/${id}`, { method: 'DELETE' }),
 
   // Short interest dashboard
   shortInterest: () => request<ShortInterestRow[]>('/stocks/short-interest'),
@@ -1331,6 +1342,42 @@ export type StockGoalCreateRequest = {
   target_date?: string | null;
   start_shares?: number;
   notes?: string | null;
+};
+
+export type ConditionalOrderCondition = {
+  metric: 'price' | 'rsi' | 'volume_ratio' | 'signal' | 'position_pnl_pct' | 'time';
+  op: 'gte' | 'lte' | 'eq';
+  value: number | string;
+};
+
+export type ConditionalOrderItem = {
+  id: number;
+  portfolio_id: number;
+  symbol: string;
+  action_type: 'buy' | 'sell_partial' | 'sell_all' | 'tighten_stop' | 'close_position' | 'alert_only';
+  action_value: number | null;
+  conditions: ConditionalOrderCondition[];
+  trigger_logic: 'AND' | 'OR';
+  note: string | null;
+  email: string | null;
+  status: 'pending' | 'triggered' | 'failed' | 'expired' | 'cancelled';
+  status_reason: string | null;
+  expires_at: string | null;
+  resulting_trade_id: number | null;
+  created_at: string;
+  triggered_at: string | null;
+};
+
+export type ConditionalOrderCreateRequest = {
+  portfolio_id: number;
+  symbol: string;
+  action_type: ConditionalOrderItem['action_type'];
+  conditions: ConditionalOrderCondition[];
+  trigger_logic?: 'AND' | 'OR';
+  action_value?: number | null;
+  note?: string | null;
+  email?: string | null;
+  expires_at?: string | null;
 };
 
 export type MarketScreenerRow = {

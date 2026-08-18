@@ -9281,6 +9281,20 @@ def start_scheduler() -> None:
             max_instances=1, coalesce=True,
         )
 
+        # ── T286-CONDITIONAL-ORDER: single-hop "if TRIGGER then ACTION" order evaluator ──
+        # Fail-CLOSED on a lock-acquire failure (unlike most other 1-min alert jobs' fail-open
+        # convention) — real-money-adjacent, so skipping one cycle is always safer than risking
+        # a double-fire. See conditional_orders.py's own module docstring for the full design.
+        from .conditional_orders import check_conditional_orders
+        _scheduler.add_job(
+            check_conditional_orders,
+            "interval",
+            minutes=1,
+            id="conditional_order_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
+
         # ── Options-expiry gamma-unwind alert — a few times a day ───────────────
         # OI concentration/expiry-proximity data doesn't change minute-to-minute — see
         # check_gamma_unwind_alerts()'s own docstring for the full mechanism + honest limitations.
