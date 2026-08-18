@@ -15,7 +15,7 @@ _PP_SOURCE = _PP_PATH.read_text()
 
 def _route_body():
     start = _PP_SOURCE.index('@router.get("/backtest/portfolio")')
-    end = _PP_SOURCE.index("\n\n\n# ── T233-SELFIMPROVE-PHASE3", start)
+    end = _PP_SOURCE.index('\n\n\n@router.get("/backtest/drawdown-breaker-sweep")', start)
     return _PP_SOURCE[start:end]
 
 

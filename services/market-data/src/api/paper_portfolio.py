@@ -2454,6 +2454,43 @@ def backtest_portfolio(
     return asdict(result)
 
 
+@router.get("/backtest/drawdown-breaker-sweep")
+def backtest_drawdown_breaker_sweep(
+    symbols: str = Query(..., description="Comma-separated symbols, e.g. AAPL,MSFT,NVDA"),
+    style: str = Query(..., description="SHORT | SWING | LONG | GROWTH"),
+    market: str = Query("US", description="US | HK"),
+    window_days: int = Query(365, ge=30, le=730, description="Lookback window in calendar days"),
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """T234-CONFIG-UNJUSTIFIED-THRESHOLDS: walk-forward sweep over candidate
+    max_portfolio_drawdown_pct values (the master portfolio circuit breaker — 0.20 today, never
+    empirically validated). Reuses run_portfolio_backtest() as the replay primitive and
+    gate_harness.py's own promotion-margin discipline. See
+    portfolio_backtest.py's sweep_max_portfolio_drawdown_pct() for exactly what this does and
+    does not model — this is a research signal, NOT an automatic config change.
+    """
+    from ..backtest.portfolio_backtest import sweep_max_portfolio_drawdown_pct
+
+    style = style.upper()
+    if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
+        raise HTTPException(status_code=400, detail=f"Unknown style: {style}")
+    market = market.upper()
+    if market not in ("US", "HK"):
+        raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
+
+    symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
+    if not symbol_list:
+        raise HTTPException(status_code=400, detail="symbols must contain at least one ticker")
+
+    window_end = date.today()
+    window_start = window_end - timedelta(days=window_days)
+
+    with SessionLocal() as session:
+        return sweep_max_portfolio_drawdown_pct(
+            session, symbol_list, style, market, window_start, window_end,
+        )
+
+
 # ── T233-SELFIMPROVE-PHASE3: promotion gate + tune history ─────────────────────
 # See docs/DESIGN_PROMOTION_GATE_PHASE3_2026-07-05.md for full scope/rationale.
 # Still manually-triggered and does NOT write to portfolio.config — records every

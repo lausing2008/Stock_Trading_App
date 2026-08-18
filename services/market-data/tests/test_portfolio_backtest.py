@@ -19,7 +19,7 @@ _saved_stubs = {_mod: sys.modules.pop(_mod, None) for _mod in _STUBBED_MODULES}
 
 import importlib.util
 import pathlib
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -91,22 +91,39 @@ def _extract_historical_atr():
 
 _historical_atr = _extract_historical_atr()
 _HORIZON_BUCKET = {"SHORT": "5d", "SWING": "10d", "LONG": "20d", "GROWTH": "10d"}
+# Same lag table gate_harness.py's own _HORIZON_RESOLUTION_LAG_DAYS defines (AUD19-DB3's
+# calendar-day approximation of each style's trading horizon) — duplicated here rather than
+# extracted, since it's a plain module-level dict literal with zero function-body logic to
+# accidentally drift from.
+_HORIZON_RESOLUTION_LAG_DAYS = {"SHORT": 7, "SWING": 14, "LONG": 20, "GROWTH": 14}
+# gate_harness.py's own promotion-margin constants (BUG233-BACKTESTHARNESS-COINFLIP) —
+# portfolio_backtest.py's sweep re-uses these EXACT values (not a second, independently-tuned
+# margin), so the test fixture must inject the SAME real numbers, not a duplicated guess.
+_MIN_PROMOTION_EV_LIFT_PCT = 0.5
+_MIN_PROMOTION_LIFT_SD_RATIO = 0.5
 
 
 def _extract_module():
     """Extract portfolio_backtest.py's own real functions (everything after its imports),
-    substituting the already-extracted _historical_atr/_HORIZON_BUCKET for the ones it would
-    normally import from .gate_harness (a relative import that can't resolve during exec())."""
+    substituting the already-extracted _historical_atr/_HORIZON_BUCKET/etc. for the ones it
+    would normally import from .gate_harness (a relative import that can't resolve during
+    exec())."""
     import numpy as np
+    from datetime import timedelta
+    from dataclasses import asdict
     marker = "# Simplified subset of paper_trading_engine.py's _DEFAULT_CONFIG"
     start = _PB_SOURCE.index(marker)
     namespace = {
-        "np": np, "date": date, "field": __import__("dataclasses").field,
-        "dataclass": __import__("dataclasses").dataclass,
+        "np": np, "date": date, "timedelta": timedelta,
+        "field": __import__("dataclasses").field,
+        "dataclass": __import__("dataclasses").dataclass, "asdict": asdict,
         "select": select, "Session": Session,
         "Market": Market, "Signal": Signal, "SignalHorizon": SignalHorizon,
         "SignalOutcome": SignalOutcome, "SignalType": SignalType, "Stock": Stock,
         "_HORIZON_BUCKET": _HORIZON_BUCKET, "_historical_atr": _historical_atr,
+        "_HORIZON_RESOLUTION_LAG_DAYS": _HORIZON_RESOLUTION_LAG_DAYS,
+        "_MIN_PROMOTION_EV_LIFT_PCT": _MIN_PROMOTION_EV_LIFT_PCT,
+        "_MIN_PROMOTION_LIFT_SD_RATIO": _MIN_PROMOTION_LIFT_SD_RATIO,
     }
     exec(_PB_SOURCE[start:], namespace)  # noqa: S102 — isolated eval of real source, matching repo convention
     return namespace
@@ -117,6 +134,8 @@ _size_position = _ns["_size_position"]
 _max_drawdown_pct = _ns["_max_drawdown_pct"]
 _annualized_sharpe = _ns["_annualized_sharpe"]
 run_portfolio_backtest = _ns["run_portfolio_backtest"]
+sweep_max_portfolio_drawdown_pct = _ns["sweep_max_portfolio_drawdown_pct"]
+_passes_return_promotion_margin = _ns["_passes_return_promotion_margin"]
 _DEFAULT_CFG = _ns["_DEFAULT_CFG"]
 
 
@@ -458,3 +477,226 @@ class TestRunPortfolioBacktest:
         assert result.n_signals_seen == 1
         assert all(t.symbol == "WANTED" for t in result.trades)
         session.close()
+
+
+# ── T234-CONFIG-UNJUSTIFIED-THRESHOLDS: max_portfolio_drawdown_pct circuit breaker ──────────
+
+class TestDrawdownCircuitBreaker:
+    def _drawdown_scenario(self, session, drawdown_pct_cfg, symbol_prefix):
+        """A -> a large loss that pushes the portfolio well underwater, THEN B tries to enter.
+        A tight drawdown_pct_cfg must block B; a loose one must admit it. Sized so A alone
+        drives the portfolio's own equity down by ~18% (a real -60% trade at ~30% position
+        sizing), independent of B's own outcome. symbol_prefix keeps each test's own symbols
+        distinct — tests share ONE in-memory engine with a real UNIQUE(symbol, exchange)
+        constraint, so re-using a literal symbol across test methods would collide."""
+        sym_a, sym_b = f"{symbol_prefix}A", f"{symbol_prefix}B"
+        sid_a = _insert_stock(session, sym_a, sector="Technology")
+        sid_b = _insert_stock(session, sym_b, sector="Technology")
+        _insert_daily_prices(session, sid_a, date(2026, 1, 1), [100.0 for _ in range(60)])
+        _insert_daily_prices(session, sid_b, date(2026, 1, 1), [100.0 for _ in range(60)])
+        _insert_buy_signal_with_outcome(
+            session, sid_a, sym_a, "SWING",
+            signal_date=date(2026, 2, 1), entry_date=date(2026, 2, 2), exit_date=date(2026, 2, 10),
+            entry_price=100.0, exit_price=40.0, pct_return=-0.60,
+        )
+        _insert_buy_signal_with_outcome(
+            session, sid_b, sym_b, "SWING",
+            signal_date=date(2026, 2, 5), entry_date=date(2026, 2, 15), exit_date=date(2026, 2, 25),
+            entry_price=100.0, exit_price=110.0, pct_return=0.10,
+        )
+        result = run_portfolio_backtest(
+            session, [sym_a, sym_b], "SWING", "US", date(2026, 1, 1), date(2026, 3, 1),
+            cfg_overrides={
+                "initial_capital": 1_000.0, "max_position_pct": 0.30, "risk_per_trade_pct": 1.0,
+                "max_loss_per_trade_pct": 1.0, "max_sector_pct": 1.0,
+                "max_portfolio_drawdown_pct": drawdown_pct_cfg,
+            },
+        )
+        return result, sym_a
+
+    def test_a_tight_drawdown_cap_blocks_a_later_entry_after_a_big_loss(self):
+        session = _make_session()
+        result, sym_a = self._drawdown_scenario(session, drawdown_pct_cfg=0.05, symbol_prefix="DDTIGHT")
+        assert result.n_entered == 1  # only A got in — B was blocked by the breaker
+        assert result.n_skipped_drawdown_breaker >= 1
+        assert all(t.symbol == sym_a for t in result.trades)
+        session.close()
+
+    def test_a_loose_drawdown_cap_still_admits_the_later_entry(self):
+        session = _make_session()
+        result, _ = self._drawdown_scenario(session, drawdown_pct_cfg=0.90, symbol_prefix="DDLOOSE")
+        assert result.n_entered == 2  # both A and B got in — the loose cap never trips
+        assert result.n_skipped_drawdown_breaker == 0
+        session.close()
+
+    def test_default_config_still_has_the_real_020_breaker_value(self):
+        """Confirms the module's own _DEFAULT_CFG carries the real, currently-live 0.20 value —
+        not a value this test file silently duplicated and could drift from."""
+        assert _DEFAULT_CFG["max_portfolio_drawdown_pct"] == 0.20
+
+    def test_n_skipped_drawdown_breaker_defaults_to_zero_when_never_tripped(self):
+        session = _make_session()
+        sid = _insert_stock(session, "NODIP")
+        _insert_daily_prices(session, sid, date(2026, 1, 1), [100.0 for _ in range(40)])
+        _insert_buy_signal_with_outcome(
+            session, sid, "NODIP", "SWING",
+            signal_date=date(2026, 2, 1), entry_date=date(2026, 2, 2), exit_date=date(2026, 2, 12),
+            entry_price=100.0, exit_price=105.0, pct_return=0.05,
+        )
+        result = run_portfolio_backtest(session, ["NODIP"], "SWING", "US", date(2026, 1, 1), date(2026, 3, 1))
+        assert result.n_skipped_drawdown_breaker == 0
+        session.close()
+
+
+# ── _passes_return_promotion_margin() — the two independent promotion guards, tested directly
+
+class TestPassesReturnPromotionMargin:
+    def test_none_candidate_or_baseline_never_promotes(self):
+        assert _passes_return_promotion_margin(None, 1.0, [0.01, 0.02]) is False
+        assert _passes_return_promotion_margin(2.0, None, [0.01, 0.02]) is False
+
+    def test_a_lift_below_the_absolute_floor_never_promotes_even_with_zero_dispersion(self):
+        """0.3pp of lift is below _MIN_PROMOTION_EV_LIFT_PCT (0.5pp) — must be rejected even
+        with IDENTICAL (zero-dispersion) combined returns, isolating the absolute-floor guard
+        from the SD-ratio guard (which would otherwise trivially pass at sd_pct<=0)."""
+        assert _passes_return_promotion_margin(1.3, 1.0, [0.02, 0.02, 0.02, 0.02]) is False
+
+    def test_a_lift_at_or_above_the_floor_with_zero_dispersion_promotes(self):
+        assert _passes_return_promotion_margin(1.5, 1.0, [0.02, 0.02, 0.02, 0.02]) is True
+
+    def test_a_lift_clearing_the_floor_but_failing_the_sd_ratio_does_not_promote(self):
+        """A large absolute lift (12.64pp) that fails the SD-ratio requirement because the
+        underlying trades are wildly dispersed — the exact scenario the dedicated
+        sweep-level test below reproduces end to end, isolated here as a pure-function check."""
+        combined = [0.95, -0.6, 0.95, -0.6, -0.4]
+        assert _passes_return_promotion_margin(5.37, -7.27, combined) is False
+
+    def test_fewer_than_two_combined_returns_never_promotes(self):
+        assert _passes_return_promotion_margin(5.0, 1.0, [0.02]) is False
+        assert _passes_return_promotion_margin(5.0, 1.0, []) is False
+
+
+# ── sweep_max_portfolio_drawdown_pct() — the walk-forward candidate search ──────────────────
+
+class TestSweepMaxPortfolioDrawdownPct:
+    def _insert_n_trades(self, session, symbols_returns, style="SWING", base_date=date(2026, 1, 1)):
+        """symbols_returns: list of (symbol, signal_date, entry_date, exit_date, entry_price,
+        exit_price, pct_return) tuples — bulk-inserts a stock + daily prices + a resolved BUY
+        SignalOutcome for each, matching the exact shape sweep_max_portfolio_drawdown_pct's own
+        two run_portfolio_backtest() calls (train + validation slices) will read."""
+        for sym, sig_date, entry_date, exit_date, entry_price, exit_price, pct_return in symbols_returns:
+            sid = _insert_stock(session, sym, sector="Technology")
+            _insert_daily_prices(session, sid, base_date, [entry_price for _ in range(400)])
+            _insert_buy_signal_with_outcome(
+                session, sid, sym, style,
+                signal_date=sig_date, entry_date=entry_date, exit_date=exit_date,
+                entry_price=entry_price, exit_price=exit_price, pct_return=pct_return,
+            )
+
+    def test_window_too_short_for_a_resolvable_validation_slice_skips_cleanly(self):
+        """A window entirely inside the last _HORIZON_RESOLUTION_LAG_DAYS['SWING']=14 days has
+        no resolvable validation slice at all — must degrade to a clear skipped_reason, never
+        crash or fabricate a result."""
+        session = _make_session()
+        result = sweep_max_portfolio_drawdown_pct(
+            session, ["ANY"], "SWING", "US", date(2026, 6, 20), date(2026, 6, 25),
+        )
+        assert result["skipped_reason"] is not None
+        session.close()
+
+    def test_no_admitted_trades_on_the_train_slice_skips_with_a_clear_reason(self):
+        session = _make_session()
+        result = sweep_max_portfolio_drawdown_pct(
+            session, ["NOSUCHSYM"], "SWING", "US", date(2026, 1, 1), date(2026, 6, 1),
+        )
+        assert result["skipped_reason"] is not None
+        assert "baseline_validation" in result
+
+    def test_a_genuinely_better_candidate_gets_promoted_on_the_validation_slice(self):
+        """Constructs a scenario where a TIGHTER drawdown cap materially improves
+        total_return_pct on BOTH the train slice (so it's selected as best_cand) AND the
+        validation slice (so it clears the promotion margin) — a large early loss followed by
+        a second, also-losing entry that a tight breaker would have blocked, versus a loose cap
+        that lets the second loss through too."""
+        session = _make_session()
+        base = date(2026, 1, 1)
+        # Train slice: a big loss, then a second loss that a tight cap should block.
+        self._insert_n_trades(session, [
+            ("TRA", base + timedelta(days=30), base + timedelta(days=31), base + timedelta(days=39), 100.0, 40.0, -0.60),
+            ("TRB", base + timedelta(days=34), base + timedelta(days=44), base + timedelta(days=54), 100.0, 60.0, -0.40),
+        ])
+        # Validation slice: the SAME shape, later in time, so a tight cap ALSO helps there.
+        self._insert_n_trades(session, [
+            ("VLA", base + timedelta(days=200), base + timedelta(days=201), base + timedelta(days=209), 100.0, 40.0, -0.60),
+            ("VLB", base + timedelta(days=204), base + timedelta(days=214), base + timedelta(days=224), 100.0, 60.0, -0.40),
+        ])
+        window_start = base
+        window_end = base + timedelta(days=280)
+        result = sweep_max_portfolio_drawdown_pct(
+            session, ["TRA", "TRB", "VLA", "VLB"], "SWING", "US", window_start, window_end,
+            candidates=[0.05, 0.90],
+            base_cfg_overrides={
+                "initial_capital": 1_000.0, "max_position_pct": 0.30, "risk_per_trade_pct": 1.0,
+                "max_loss_per_trade_pct": 1.0, "max_sector_pct": 1.0,
+            },
+        )
+        assert result["candidate_value"] == 0.05  # the tight cap wins on the train slice
+        assert result["promoted"] is True
+        assert result["candidate_validation"]["total_return_pct"] > result["baseline_validation"]["total_return_pct"]
+        session.close()
+
+    def test_a_positive_lift_that_clears_the_floor_but_fails_the_sd_ratio_still_does_not_promote(self):
+        """The lift-magnitude floor and the SD-ratio requirement are two INDEPENDENT guards
+        (matching gate_harness.py's own BUG233-BACKTESTHARNESS-COINFLIP fix) — a lift that
+        clears the absolute floor by a wide margin (12.64pp >> 0.5pp) must still be rejected
+        when the underlying trade returns are dispersed enough that the lift isn't a meaningful
+        fraction of that dispersion. Isolated by adding a huge (+95%) win that gets admitted
+        IDENTICALLY under both candidate and baseline (it's the very first chronological entry,
+        well before either candidate value could ever have tripped) — it inflates the combined
+        return pool's own SD without touching the lift itself, so a naive `lift > 0` check
+        would wrongly promote here while the real SD-ratio guard correctly does not."""
+        session = _make_session()
+        base = date(2026, 1, 1)
+        self._insert_n_trades(session, [
+            ("SDTRA", base + timedelta(days=30), base + timedelta(days=31), base + timedelta(days=39), 100.0, 40.0, -0.60),
+            ("SDTRB", base + timedelta(days=34), base + timedelta(days=44), base + timedelta(days=54), 100.0, 60.0, -0.40),
+        ])
+        self._insert_n_trades(session, [
+            ("SDVLC", base + timedelta(days=195), base + timedelta(days=196), base + timedelta(days=198), 100.0, 195.0, 0.95),
+            ("SDVLA", base + timedelta(days=200), base + timedelta(days=201), base + timedelta(days=209), 100.0, 40.0, -0.60),
+            ("SDVLB", base + timedelta(days=204), base + timedelta(days=214), base + timedelta(days=224), 100.0, 60.0, -0.40),
+        ])
+        result = sweep_max_portfolio_drawdown_pct(
+            session, ["SDTRA", "SDTRB", "SDVLA", "SDVLB", "SDVLC"], "SWING", "US",
+            base, base + timedelta(days=280),
+            candidates=[0.05, 0.90],
+            base_cfg_overrides={
+                "initial_capital": 1_000.0, "max_position_pct": 0.30, "risk_per_trade_pct": 1.0,
+                "max_loss_per_trade_pct": 1.0, "max_sector_pct": 1.0,
+            },
+        )
+        lift = result["candidate_validation"]["total_return_pct"] - result["baseline_validation"]["total_return_pct"]
+        assert lift > 0.5  # clears the absolute floor by a wide margin
+        assert result["promoted"] is False  # ...but the SD-ratio guard still correctly rejects it
+        session.close()
+
+    def test_current_value_reflects_the_real_default_when_no_override_is_passed(self):
+        session = _make_session()
+        result = sweep_max_portfolio_drawdown_pct(
+            session, ["NOSUCHSYM"], "SWING", "US", date(2026, 1, 1), date(2026, 6, 1),
+        )
+        # Even in the no-candidate-admitted skip path, current_value must reflect the module's
+        # own real default (0.20) — not a hardcoded/duplicated literal that could silently drift.
+        assert result.get("current_value", _DEFAULT_CFG["max_portfolio_drawdown_pct"]) == 0.20
+
+    def test_note_field_discloses_this_is_a_research_signal_not_an_automatic_config_change(self):
+        session = _make_session()
+        self._insert_n_trades(session, [
+            ("NOTEA", date(2026, 1, 31), date(2026, 2, 1), date(2026, 2, 9), 100.0, 110.0, 0.10),
+        ])
+        result = sweep_max_portfolio_drawdown_pct(
+            session, ["NOTEA"], "SWING", "US", date(2026, 1, 1), date(2026, 8, 1),
+        )
+        if "note" in result:
+            assert "research signal" in result["note"]
+            assert "NOT" in result["note"]

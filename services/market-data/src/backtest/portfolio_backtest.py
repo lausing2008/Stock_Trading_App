@@ -52,8 +52,8 @@ Phase 2b/2c per the design doc instead of extending this module's own simplified
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import date
+from dataclasses import asdict, dataclass, field
+from datetime import date, timedelta
 
 import numpy as np
 from sqlalchemy import select
@@ -61,7 +61,13 @@ from sqlalchemy.orm import Session
 
 from db import Market, Signal, SignalHorizon, SignalOutcome, SignalType, Stock
 
-from .gate_harness import _HORIZON_BUCKET, _historical_atr
+from .gate_harness import (
+    _HORIZON_BUCKET,
+    _HORIZON_RESOLUTION_LAG_DAYS,
+    _MIN_PROMOTION_EV_LIFT_PCT,
+    _MIN_PROMOTION_LIFT_SD_RATIO,
+    _historical_atr,
+)
 
 # Simplified subset of paper_trading_engine.py's _DEFAULT_CONFIG — only the fields this
 # module's own sizing/cap logic actually reads. Matching the real defaults exactly (not
@@ -76,6 +82,13 @@ _DEFAULT_CFG = {
     "max_loss_per_trade_pct": 0.02,
     "min_position_value": 200.0,
     "stop_atr_mult": 2.0,  # matches paper_trading_engine.py's non-GROWTH style default
+    # T234-CONFIG-UNJUSTIFIED-THRESHOLDS: paper_trading_engine.py's real circuit breaker
+    # (PA-D2) computes peak = max(equity-curve peak, CURRENT equity) and suspends new entries
+    # once (peak - current) / peak exceeds this fraction — reproduced here as a genuine gate
+    # inside the day-stepping loop below, not a post-hoc filter on the finished equity curve
+    # (a post-hoc filter can't know which entries the breaker would ACTUALLY have blocked,
+    # since blocking an early entry changes every later day's cash/position state too).
+    "max_portfolio_drawdown_pct": 0.20,
 }
 
 
@@ -105,6 +118,7 @@ class PortfolioBacktestResult:
     n_signals_seen: int          # resolved BUY signals across all requested symbols in window
     n_entered: int                # how many actually got a position sized and opened
     n_skipped_no_room: int        # blocked by max_positions/sector_cap/cash — real candidates, not admitted
+    n_skipped_drawdown_breaker: int = 0  # blocked specifically by the drawdown circuit breaker
     win_rate: float | None = None
     avg_return_pct: float | None = None
     sharpe_ratio: float | None = None      # daily-equity-curve Sharpe, annualized (252 trading days)
@@ -237,6 +251,8 @@ def run_portfolio_backtest(
     trades: list[PortfolioTrade] = []
     n_entered = 0
     n_skipped_no_room = 0
+    n_skipped_drawdown_breaker = 0
+    running_peak = cfg["initial_capital"]  # PA-D2: peak = max(curve peak, current equity), updated every day
 
     def _mark_to_market() -> float:
         """Equity = cash + sum(shares * entry_price) for still-open positions — a simplified
@@ -256,6 +272,12 @@ def run_portfolio_backtest(
     all_dates = sorted(all_dates_set)
 
     for day in all_dates:
+        # 0. Update the running peak BEFORE today's entries/exits are processed — mirrors
+        # PA-D2's own "peak = max(equity-curve peak, current equity)" read at the top of each
+        # paper_trading_step() cycle, using yesterday's closing equity as "current" for today's
+        # gating decision (today's own equity isn't known yet until step 3 below runs).
+        running_peak = max(running_peak, _mark_to_market())
+
         # 1. Process exits scheduled for today FIRST — frees cash/room before today's entries.
         still_open = []
         for p in open_positions:
@@ -276,10 +298,14 @@ def run_portfolio_backtest(
 
         # 2. Process entries scheduled for today.
         for sig, outcome, stock in events_by_date.get(day, []):
+            equity = _mark_to_market()
+            drawdown = (running_peak - equity) / running_peak if running_peak > 0 else 0.0
+            if drawdown > cfg["max_portfolio_drawdown_pct"]:
+                n_skipped_drawdown_breaker += 1
+                continue
             if len(open_positions) >= cfg["max_positions"]:
                 n_skipped_no_room += 1
                 continue
-            equity = _mark_to_market()
             atr = _historical_atr(session, stock.id, outcome.signal_date)
             sized = _size_position(equity, outcome.entry_price, atr, cfg)
             if sized is None:
@@ -313,6 +339,7 @@ def run_portfolio_backtest(
 
     result.n_entered = n_entered
     result.n_skipped_no_room = n_skipped_no_room
+    result.n_skipped_drawdown_breaker = n_skipped_drawdown_breaker
     result.trades = trades
     result.equity_curve = [(d.isoformat(), e) for d, e in equity_curve]
 
@@ -339,3 +366,178 @@ def run_portfolio_backtest(
         result.skipped_reason = "no signals were ever admitted (portfolio caps/cash always blocked entry)"
 
     return result
+
+
+# T234-CONFIG-UNJUSTIFIED-THRESHOLDS: max_portfolio_drawdown_pct (0.20) was flagged as one of
+# the highest-leverage never-empirically-validated constants in the codebase — "the master
+# circuit breaker for the whole portfolio." Unlike gate_harness.py's per-signal sweeps
+# (min_entry_score, min_kscore, etc. — filters on WHICH signals get admitted, replayed via
+# replay_should_enter()), the drawdown breaker only ever gates NEW ENTRIES once the running
+# portfolio is already underwater — testing a candidate value means re-running the WHOLE
+# day-stepped simulation with that threshold (a post-hoc filter on an already-finished equity
+# curve can't know what the breaker would ACTUALLY have blocked, since blocking one entry
+# changes every later day's cash/position state too). This reuses run_portfolio_backtest()
+# itself as the "replay" primitive, one full call per candidate, rather than a lighter
+# per-signal function — a materially more expensive sweep than gate_harness.py's, but the only
+# honest way to test a portfolio-level state-dependent gate.
+_DRAWDOWN_SWEEP_CANDIDATES = [0.10, 0.15, 0.20, 0.25, 0.30]
+
+
+def _drawdown_sweep_resolvable_window_end(window_end: date, style: str) -> date:
+    """Same BUG233-BACKTESTHARNESS-EMPTYVALIDATION fix as gate_harness.py's own
+    _resolvable_window_end() — pull window_end back by the style's own outcome-resolution lag
+    so the validation slice's SignalOutcome rows have actually resolved by the time it's
+    replayed, reusing the SAME lag table (not a second, independently-guessed one)."""
+    return window_end - timedelta(days=_HORIZON_RESOLUTION_LAG_DAYS.get(style.upper(), 14))
+
+
+def _passes_return_promotion_margin(
+    candidate_total_return_pct: float | None,
+    baseline_total_return_pct: float | None,
+    combined_trade_returns: list[float],
+) -> bool:
+    """Reuses the SAME lift-margin discipline gate_harness.py's own _passes_promotion_margin()
+    established (BUG233-BACKTESTHARNESS-COINFLIP: a bare "any positive difference" comparison
+    is a near-coin-flip at realistic sample sizes) — but on total_return_pct (a portfolio-level
+    pct, already comparable in scale to the per-trade pct returns _passes_promotion_margin was
+    designed around) with the SD computed directly from the combined candidate+baseline
+    trade-level returns, since there's no BacktestResult object here to read a pre-computed SD
+    off of. Requires BOTH values to be genuinely measurable, a minimum absolute lift
+    (_MIN_PROMOTION_EV_LIFT_PCT), AND that lift to be a meaningful fraction
+    (_MIN_PROMOTION_LIFT_SD_RATIO) of the combined trades' own return dispersion — two
+    independent guards, not one, so a candidate can clear the absolute floor by a wide margin
+    and still correctly fail here if the underlying trades are too dispersed for that lift to
+    be distinguishable from noise."""
+    if candidate_total_return_pct is None or baseline_total_return_pct is None:
+        return False
+    lift = candidate_total_return_pct - baseline_total_return_pct
+    if lift < _MIN_PROMOTION_EV_LIFT_PCT:
+        return False
+    if len(combined_trade_returns) < 2:
+        return False
+    mean = sum(combined_trade_returns) / len(combined_trade_returns)
+    variance = sum((r - mean) ** 2 for r in combined_trade_returns) / (len(combined_trade_returns) - 1)
+    sd_pct = (variance ** 0.5) * 100
+    if sd_pct <= 0:
+        return True  # zero dispersion means the lift (already >= the absolute floor) is real
+    return lift >= _MIN_PROMOTION_LIFT_SD_RATIO * sd_pct
+
+
+def sweep_max_portfolio_drawdown_pct(
+    session: Session,
+    symbols: list[str],
+    style: str,
+    market: str,
+    window_start: date,
+    window_end: date,
+    candidates: list[float] | None = None,
+    base_cfg_overrides: dict | None = None,
+) -> dict:
+    """Walk-forward search over candidate max_portfolio_drawdown_pct values — same chronological
+    70/30 train/validation split and promotion-margin discipline as gate_harness.py's own
+    walk_forward_extended_gate()/walk_forward_min_entry_score(), reusing its EXACT promotion
+    margin constants (not a second, independently-tuned threshold) so this stays no more
+    permissive than the sibling sweeps this repo already trusts.
+
+    Promotion metric is total_return_pct (the module's own headline portfolio stat) — NOT
+    max_drawdown_pct alone, since a breaker tuned purely to minimize drawdown trivially wins by
+    being maximally strict (fewer entries, less exposure, less drawdown, but also less return);
+    the whole point of a circuit breaker is a return/risk TRADE-OFF, so the promotion criterion
+    has to weigh the return side, with max_drawdown_pct reported alongside for context on what
+    that return was bought/sold for.
+    """
+    style = style.upper()
+    base_cfg = {**_DEFAULT_CFG, **(base_cfg_overrides or {})}
+    current_value = base_cfg.get("max_portfolio_drawdown_pct", 0.20)
+    candidates = candidates if candidates is not None else sorted(set(_DRAWDOWN_SWEEP_CANDIDATES + [current_value]))
+
+    resolvable_end = _drawdown_sweep_resolvable_window_end(window_end, style)
+    if resolvable_end <= window_start:
+        return {
+            "style": style, "market": market.upper(),
+            "skipped_reason": (
+                f"window too short to leave any resolvable validation slice after accounting "
+                f"for {style}'s {_HORIZON_RESOLUTION_LAG_DAYS.get(style, 14)}-day outcome "
+                f"resolution lag (requested window ends {window_end}, resolvable end is "
+                f"{resolvable_end}, window starts {window_start})"
+            ),
+        }
+
+    total_days = (resolvable_end - window_start).days
+    split_days = max(1, int(total_days * 0.7))
+    train_end = window_start + timedelta(days=split_days)
+    val_start = train_end + timedelta(days=1)
+
+    if val_start > resolvable_end:
+        return {
+            "style": style, "market": market.upper(),
+            "skipped_reason": f"window too short to split ({total_days} resolvable days)",
+        }
+
+    baseline_val = run_portfolio_backtest(
+        session, symbols, style, market, val_start, resolvable_end,
+        cfg_overrides={**base_cfg, "max_portfolio_drawdown_pct": current_value},
+    )
+
+    train_results = []
+    for cand in candidates:
+        cand_result = run_portfolio_backtest(
+            session, symbols, style, market, window_start, train_end,
+            cfg_overrides={**base_cfg, "max_portfolio_drawdown_pct": cand},
+        )
+        train_results.append((cand, cand_result))
+
+    best_cand, best_train = None, None
+    for cand, res in train_results:
+        if res.skipped_reason is not None or res.total_return_pct is None:
+            continue
+        if best_train is None or res.total_return_pct > best_train.total_return_pct:
+            best_cand, best_train = cand, res
+
+    if best_cand is None:
+        return {
+            "style": style, "market": market.upper(), "param": "max_portfolio_drawdown_pct",
+            "current_value": current_value,
+            "skipped_reason": "no candidate produced any admitted trades on the train slice",
+            "baseline_validation": asdict(baseline_val),
+        }
+
+    best_val = run_portfolio_backtest(
+        session, symbols, style, market, val_start, resolvable_end,
+        cfg_overrides={**base_cfg, "max_portfolio_drawdown_pct": best_cand},
+    )
+
+    promoted = False
+    if best_val.skipped_reason is None and baseline_val.skipped_reason is None:
+        combined_returns = [t.pct_return for t in best_val.trades] + [t.pct_return for t in baseline_val.trades]
+        promoted = _passes_return_promotion_margin(
+            best_val.total_return_pct, baseline_val.total_return_pct, combined_returns,
+        )
+
+    return {
+        "style": style, "market": market.upper(), "param": "max_portfolio_drawdown_pct",
+        "current_value": current_value,
+        "candidate_value": best_cand,
+        "train_window": [str(window_start), str(train_end)],
+        "validation_window": [str(val_start), str(resolvable_end)],
+        "train_result": asdict(best_train),
+        "candidate_validation": asdict(best_val),
+        "baseline_validation": asdict(baseline_val),
+        "promoted": promoted,
+        "note": (
+            "promoted=True means the candidate's total_return_pct beat the CURRENT LIVE "
+            f"max_portfolio_drawdown_pct's own validation-slice return by at least "
+            f"{_MIN_PROMOTION_EV_LIFT_PCT}pp AND by at least {_MIN_PROMOTION_LIFT_SD_RATIO}x "
+            "the combined slices' own trade-return dispersion (same margin discipline as "
+            "gate_harness.py's BUG233-BACKTESTHARNESS-COINFLIP fix — a bare 'any positive "
+            "difference' comparison is a near-coin-flip at realistic sample sizes). Compare "
+            "candidate_validation.max_drawdown_pct against baseline_validation.max_drawdown_pct "
+            "to see what risk change bought that return — a promoted candidate with materially "
+            "WORSE max_drawdown_pct is trading safety for return and should be reviewed by a "
+            "human before ever being applied, not auto-applied. This is a research signal, NOT "
+            "an automatic config change — see this module's own top-of-file docstring for what "
+            "run_portfolio_backtest() does and does not model (no decision-engine/_should_"
+            "enter() replay, no aggregate open-risk cap, no correlation cap, no commission/"
+            "slippage)."
+        ),
+    }
