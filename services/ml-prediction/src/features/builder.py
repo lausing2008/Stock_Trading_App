@@ -44,12 +44,12 @@
   days_to_earnings      — days to next expected earnings (0–90, 90=unknown/far)
   avg_post_earnings_return_5d — mean 5d return after past 4 earnings (PEAD signal)
   avg_revenue_surprise_pct    — mean revenue beat/miss % over last 4 quarters
-  (eps_revision_direction removed T237-ML2: broadcast today's analyst-recommendation-trend
-   to every historical training row with no date bound — the exact lookahead-bias class
-   already fixed for recommendation_mean itself via the PIT snapshot join below, but missed
-   for this derived feature. Removed rather than reimplemented, matching this session's
-   ML-DEAD1 precedent, since a correct point-in-time version needs a nontrivial rolling-window
-   join against fundamentals_snapshot.)
+  eps_revision_direction — analyst recommendation-trend direction over the last <=8 weekly
+   fundamentals_snapshot rows AS OF EACH ROW'S OWN DATE (T237-ML2b: reintroduced
+   point-in-time-correctly, via a rolling window over the snapshot history joined per-row —
+   the original version, removed under T237-ML2, broadcast TODAY's live trend to every
+   historical training row with no date bound, the same lookahead-bias class already fixed
+   for recommendation_mean itself but missed for this derived feature)
 
 3 signal outcome (T206 — look-ahead-safe: only uses outcomes with exit_date ≤ bar_date − 10d):
   sig_acc_30d   — fraction of BUY signals correct in the prior 30-day exit window
@@ -311,8 +311,12 @@ FUNDAMENTAL_COLUMNS = [
     "ddm_discount",         # (div_yield / 0.07) - 1; positive = undervalued on dividend basis
     # T89-B: Piotroski F-Score — 0-9 composite quality metric from existing fundamentals
     "piotroski_score",      # 0=distressed, 9=high quality; NaN when insufficient fundamentals
-    # T220-F/T237-ML2: eps_revision_direction removed — broadcast lookahead bias, see module
-    # docstring above for the full explanation. Not reimplemented as point-in-time (yet).
+    # T220-F/T237-ML2b: earnings revision momentum — reintroduced point-in-time-correctly.
+    # +1 = analysts upgrading (recommendation_mean trending down) over the last <=8 weekly
+    # snapshots as of THIS row's own date, -1 = downgrading, 0 = flat, NaN = <2 snapshots
+    # available yet. See build_features()'s own inline comment for the full lookahead-bias
+    # history and why this needed a rolling-window join rather than a simple broadcast.
+    "eps_revision_direction",
 ]
 
 # SA-29: Weekly context features — NaN-allowed (like fundamentals) so stocks with
@@ -805,6 +809,57 @@ def build_features(
         "short_percent_of_float", "price_to_book", "peg_ratio", "debt_to_equity",
         "ddm_discount", "piotroski_score",
     ]
+    # T237-ML2b: eps_revision_direction, reintroduced point-in-time-correctly — computed
+    # whenever fund_snapshots is available, in BOTH training and inference mode. Unlike the
+    # other _PIT_COLS below (training-only, since inference_mode already gets a genuinely
+    # correct value from the plain fund_data broadcast), this feature has no such broadcast
+    # equivalent — it was ALWAYS computed from a rolling snapshot window, never a single
+    # fund_data field, so it needs this same snapshot-based path at inference time too. This
+    # is still safe: the inference row IS "today," so using the full snapshot history through
+    # today is genuinely current information, not lookahead.
+    #
+    # signals.py's own LIVE T220-F formula is: among the most recent 8 fundamentals_snapshot
+    # rows as of "now", (oldest.recommendation_mean - newest.recommendation_mean), thresholded
+    # at +-0.15 (lower recommendation_mean = more bullish, so a POSITIVE delta means analysts
+    # upgraded on net). The original T237-ML2 removal was correct to reject a naive re-add —
+    # broadcasting TODAY's live delta to every historical training row is the exact same
+    # lookahead-bias class already fixed for recommendation_mean itself. This reimplementation
+    # re-anchors the SAME "oldest of the last 8 snapshots minus newest" computation to EACH
+    # snapshot's own date, via a rolling window over _snap_df itself (already sorted by
+    # snapshot_date) — so a TRAINING row's snapshot only ever sees snapshots at or before its
+    # own date, never the future.
+    if fund_snapshots:
+        try:
+            _snap_df = pd.DataFrame(fund_snapshots)
+            _snap_df["snapshot_date"] = pd.to_datetime(_snap_df["snapshot_date"])
+            _snap_df = _snap_df.sort_values("snapshot_date").reset_index(drop=True)
+
+            if "recommendation_mean" in _snap_df.columns:
+                _snap_df["eps_revision_direction"] = (
+                    _snap_df["recommendation_mean"]
+                    .rolling(window=8, min_periods=2)
+                    .apply(lambda w: w.iloc[0] - w.iloc[-1], raw=False)
+                )
+                _price_dates = pd.to_datetime(dates).rename("date")
+                _left = pd.DataFrame({"date": _price_dates}, index=out.index)
+                _rev_merged = pd.merge_asof(
+                    _left.reset_index(),
+                    _snap_df[["snapshot_date", "eps_revision_direction"]],
+                    left_on="date", right_on="snapshot_date", direction="backward",
+                )
+                _rev_merged = _rev_merged.set_index("index")
+                # Thresholded to the SAME +-0.15 bands as the live T220-F signal — a raw,
+                # unthresholded delta would be a genuinely different feature than what
+                # eps_revision_direction has always meant elsewhere in this codebase.
+                _delta = _rev_merged["eps_revision_direction"]
+                out["eps_revision_direction"] = np.select(
+                    [_delta > 0.15, _delta < -0.15], [1, -1], default=0,
+                )
+                out.loc[_delta.isna().values, "eps_revision_direction"] = np.nan
+        except Exception as _rev_exc:
+            log.warning("builder.eps_revision_join_failed", error=str(_rev_exc))
+            out["eps_revision_direction"] = np.nan
+
     if not inference_mode and fund_snapshots:
         try:
             _snap_df = pd.DataFrame(fund_snapshots)

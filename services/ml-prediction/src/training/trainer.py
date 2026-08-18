@@ -881,14 +881,24 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
         infer_fund_data = _load_fundamentals(symbol) or {}
     except Exception:
         pass
-    # T220-F: store symbol so build_features can look up earnings revision direction
     infer_fund_data["_symbol"] = symbol
+
+    # T237-ML2b: eps_revision_direction needs the same fund_snapshots history at inference
+    # time as at training time — the live-prediction row IS "today", so using the full
+    # snapshot history through today is genuinely safe here (this is the one code path where
+    # "broadcast today's value" is actually correct, not lookahead bias).
+    infer_fund_snapshots: list[dict] = []
+    try:
+        infer_fund_snapshots = _load_fund_snapshots(symbol)
+    except Exception:
+        pass
 
     # inference_mode=True: keeps the latest bar even without a known future return
     X, _, _ = build_features(
         df, horizon=horizon, macro_df=macro_df,
         label_threshold=0.0, inference_mode=True,
         fund_data=infer_fund_data, sector_df=sector_df, outcome_df=outcome_df,
+        fund_snapshots=infer_fund_snapshots,
     )
     if X.empty:
         return {"symbol": symbol, "bullish_probability": 0.5, "confidence": 0}

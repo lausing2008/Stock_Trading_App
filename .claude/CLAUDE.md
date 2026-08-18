@@ -12619,3 +12619,111 @@ print(r.status_code, r.json())
 If a new Alpaca connection fails immediately at creation with "credential check failed", that's
 the upfront `AuthStyle.KEY_SECRET` validation working correctly — check the actual key/secret
 against Alpaca's own dashboard before assuming this app's code is wrong.
+
+---
+
+## Feature Reference: T237-ML2b — eps_revision_direction Reintroduced Point-in-Time-Correctly (2026-08-18)
+
+**Continues the next-improvements survey**, item 2 of the 3 remaining verified candidates
+(FMP analyst estimates / K-Score weight validation were the other two). Verified against real
+code before building: `eps_revision_direction` was removed under `T237-ML2` (2026-07-something,
+per the module docstring's own history) for a real look-ahead-bias reason — the original
+implementation broadcast TODAY's live analyst-recommendation trend to every historical training
+row with no date bound, the exact bias class already fixed for `recommendation_mean` itself via
+a point-in-time (PIT) snapshot join, but missed for this derived feature.
+
+**Root cause of the original bug, confirmed via `git log -p`**: the removed implementation ran
+its own live `SELECT recommendation_mean FROM fundamentals_snapshot WHERE symbol=:sym ORDER BY
+snapshot_date DESC LIMIT 8` query — unconditionally, with no date bound — then stored the
+result into `fund_data["eps_revision_direction"]`, which the generic `FUNDAMENTAL_COLUMNS`
+broadcast loop then applied identically to EVERY row in the training set, regardless of that
+row's own historical date.
+
+**The reimplementation**: `FundamentalsSnapshot` rows already flow into `build_features()` via
+`fund_snapshots` (a list of per-snapshot dicts, already used for `recommendation_mean`'s own
+correct PIT join). A new computation on `_snap_df` (already sorted by `snapshot_date`) applies
+`.rolling(window=8, min_periods=2).apply(lambda w: w.iloc[0] - w.iloc[-1])` directly on the
+`recommendation_mean` SERIES ITSELF — producing, for every snapshot row, the delta between its
+own value and the value up to 8 snapshots prior. This per-snapshot delta series is then
+`merge_asof(..., direction="backward")`'d onto the training rows exactly like every other PIT
+column — so a training row's snapshot can only ever be at or before its OWN date, never the
+future. Thresholded to the SAME `±0.15` bands as the live `T220-F` signal in `signals.py`
+(lower `recommendation_mean` = more bullish, so a positive delta means analysts upgraded).
+
+**A genuine, previously-undiscovered second gap found while reimplementing this**: the ORIGINAL
+implementation's `fund_data["_symbol"] = symbol` stash (still present as dead code in
+`trainer.py`'s inference call site, with a comment saying "so build_features can look up
+earnings revision direction") was leftover from the removed live-query version — nothing wired
+`fund_snapshots` into the `inference_mode=True` call site at all, meaning even a correctly
+point-in-time-safe reimplementation would have silently returned `NaN` at LIVE prediction time
+forever (this feature has no broadcast-from-`fund_data` equivalent the way other PIT columns
+do — it was ALWAYS computed from a rolling snapshot window, never a single field). Fixed by
+adding a `_load_fund_snapshots(symbol)` call to the inference call site (`trainer.py`, mirroring
+the existing training call site's own identical call) and computing `eps_revision_direction`
+UNCONDITIONALLY whenever `fund_snapshots` is available — not gated behind `not inference_mode`
+the way the OTHER PIT columns correctly are, since a live-prediction row IS "today," so using
+the full snapshot history through today is genuinely current information, not lookahead (the
+other PIT columns don't need this special case since their broadcast-from-`fund_data` path is
+already correct at inference time).
+
+**`FUNDAMENTAL_COLUMNS`** gained `eps_revision_direction` back (it flows automatically into
+`FEATURE_COLUMNS` via `*FUNDAMENTAL_COLUMNS`) — the broadcast loop sets it to `NaN` as a safe
+default (no raw `fund_data` field exists for it), then the new snapshot-based computation
+overwrites it with the real value whenever `fund_snapshots` is non-empty.
+
+**Tests**: `services/ml-prediction/tests/test_eps_revision_direction.py` (11 cases) —
+`build_features()` only depends on `numpy`/`pandas` (real, installed), so it imports and runs
+directly under pytest with no stub workaround, matching `test_features.py`'s own established
+precedent. Covers: no-snapshots degrades to `NaN` not a crash, upgrade/downgrade/flat trend
+classification, the exact `±0.15` threshold band boundary, the `<2`-snapshots-insufficient
+case, the 8-snapshot window cap (a 9th, older snapshot must NOT be included in the delta —
+matching `signals.py`'s own live `LIMIT 8` semantics exactly), and — the two tests this whole
+reimplementation exists for — an EARLY training row never reflecting a LATER
+upgrade/downgrade that hadn't happened yet as of that row's own date, and the mirror case
+confirming a LATER row correctly DOES see an earlier-completed downgrade (proving the fix
+doesn't just always degrade to `NaN`/`0`). A dedicated test also confirms `inference_mode=True`
+computes the feature too, not just training mode — the exact second gap found and fixed above.
+
+**Adversarial verification** — 3 sabotage cycles, all caught and reverted:
+1. Removing the `window=8` cap (using the full snapshot history instead) — caught by the
+   dedicated window-cap test, with a real value mismatch (`1.0` instead of the correct `0.0`)
+   proving an out-of-window snapshot leaked into the delta.
+2. Widening the `±0.15` threshold to `0.0` — caught by the dedicated small-delta-stays-flat
+   test.
+3. Swapping `merge_asof(direction="backward")` for `direction="forward"` (the exact class of
+   bug this whole reimplementation exists to prevent) — caught broadly across 7 of 11 tests,
+   confirming this property is well-covered from multiple angles, not just one narrow check.
+
+Full 72-test ml-prediction suite green (up from 61); `pyflakes` clean on every touched file
+(confirmed via `git stash` that the 4 pre-existing warnings — 2x unused `json` import in
+`builder.py`, unused `db.Signal`/`..features.SECTOR_COLUMNS` imports in `trainer.py` — predate
+this change, only line numbers shifted).
+
+**Tracker**: `improvements.tsx` — new entry `T237-ML2b-EPS-REVISION-REINTRODUCED`.
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the feature is present in a real trained model's feature columns:
+docker exec stockai-ml-prediction-1 python3 -c "
+import sys; sys.path.insert(0, '/app')
+from src.features import FEATURE_COLUMNS
+print('eps_revision_direction' in FEATURE_COLUMNS)
+"
+
+# Confirm the inference-time fund_snapshots wiring is present (the second gap fixed here):
+docker exec stockai-ml-prediction-1 grep -n "infer_fund_snapshots\|_load_fund_snapshots(symbol)" /app/src/training/trainer.py
+
+# Spot-check the computed value against real production data for a specific symbol:
+docker exec stockai-ml-prediction-1 python3 -c "
+import sys; sys.path.insert(0, '/app')
+from src.training.trainer import _load_fund_snapshots
+snaps = _load_fund_snapshots('AAPL')
+print(f'{len(snaps)} snapshots loaded')
+print(snaps[-3:] if len(snaps) >= 3 else snaps)
+"
+```
+If a retrained model's `eps_revision_direction` importance looks suspiciously flat/always-NaN,
+check whether `fundamentals_snapshot` actually has enough real weekly history for that symbol
+yet (`min_periods=2` requires at least 2 real snapshot rows) — a symbol added to this app
+recently may simply not have accumulated enough snapshot history for this feature to ever
+produce a non-NaN value, which is correct, expected behavior, not a bug.
