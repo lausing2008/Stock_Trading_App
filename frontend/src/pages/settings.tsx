@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { loadSettings, saveSettings, type AppSettings } from '@/lib/settings';
 import { getSession, changePassword, startImpersonation } from '@/lib/auth';
-import { api, type AppUser, type BrokerConnection, type BrokerType, type BrokerOrderHistoryItem } from '@/lib/api';
+import { api, type AppUser, type BrokerConnection, type BrokerType, type BrokerOrderHistoryItem, type BrokerTypeMeta } from '@/lib/api';
 import { storage } from '@/lib/storage';
 import { isPushSupported, getExistingSubscription, enablePushNotifications, disablePushNotifications } from '@/lib/push';
 
@@ -232,10 +232,16 @@ export default function SettingsPage() {
   const [brokers, setBrokers] = useState<BrokerConnection[]>([]);
   const [brokerLoading, setBrokerLoading] = useState(false);
   const [brokerMsg, setBrokerMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  // TIER84-BROKER-PORTABILITY: brokerTypeMetas drives the dynamic credential form below —
+  // a NEW broker (Schwab, a real Fidelity API, etc.) just needs its adapter registered
+  // server-side; this page renders its form fields automatically from GET /broker/types with
+  // zero code changes here. account_number stays its own dedicated field (not part of any
+  // broker's config_fields) since it's fidelity_manual's own account-display convention, not
+  // a real credential.
+  const [brokerTypeMetas, setBrokerTypeMetas] = useState<BrokerTypeMeta[]>([]);
   const [newBrokerType, setNewBrokerType] = useState<BrokerType>('etrade_sandbox');
   const [newBrokerName, setNewBrokerName] = useState('');
-  const [newBrokerKey, setNewBrokerKey] = useState('');
-  const [newBrokerSecret, setNewBrokerSecret] = useState('');
+  const [newBrokerFields, setNewBrokerFields] = useState<Record<string, string>>({});
   const [newBrokerAcctNum, setNewBrokerAcctNum] = useState('');
   const [oauthUrl, setOauthUrl] = useState<Record<number, string>>({});
   const [oauthVerifier, setOauthVerifier] = useState<Record<number, string>>({});
@@ -249,7 +255,10 @@ export default function SettingsPage() {
     // entirely for a non-admin session rather than making a call guaranteed to 403.
     if (!session || session.role !== 'admin') return;
     api.brokerList().then(setBrokers).catch(() => {});
+    api.brokerTypes().then(res => setBrokerTypeMetas(res.broker_types)).catch(() => {});
   }, [session]);
+
+  const currentBrokerMeta = brokerTypeMetas.find(m => m.broker_type === newBrokerType);
 
   async function handleCreateBroker(e: React.FormEvent) {
     e.preventDefault();
@@ -260,15 +269,15 @@ export default function SettingsPage() {
         name: newBrokerName.trim(),
         broker_type: newBrokerType,
       };
-      if (newBrokerType === 'etrade' || newBrokerType === 'etrade_sandbox') {
-        payload.consumer_key    = newBrokerKey.trim();
-        payload.consumer_secret = newBrokerSecret.trim();
-      } else {
+      for (const field of currentBrokerMeta?.config_fields ?? []) {
+        payload[field.key] = (newBrokerFields[field.key] || '').trim();
+      }
+      if (newBrokerType === 'fidelity_manual') {
         payload.account_number = newBrokerAcctNum.trim();
       }
       const conn = await api.brokerCreate(payload);
       setBrokers(prev => [...prev, conn]);
-      setNewBrokerName(''); setNewBrokerKey(''); setNewBrokerSecret(''); setNewBrokerAcctNum('');
+      setNewBrokerName(''); setNewBrokerFields({}); setNewBrokerAcctNum('');
       setBrokerMsg({ ok: true, text: 'Broker connection added.' });
       setTimeout(() => setBrokerMsg(null), 3000);
     } catch (err: unknown) {
@@ -1434,6 +1443,8 @@ export default function SettingsPage() {
                 etrade:          'E*Trade Live',
                 etrade_sandbox:  'E*Trade Sandbox',
                 fidelity_manual: 'Fidelity (Manual)',
+                alpaca:          'Alpaca Live',
+                alpaca_paper:    'Alpaca Paper',
               };
               const acct = brokerAccount[b.id];
               const orders = brokerOrders[b.id];
@@ -1580,6 +1591,8 @@ export default function SettingsPage() {
               <select value={newBrokerType} onChange={e => setNewBrokerType(e.target.value as BrokerType)} style={{ ...inp, width: 'auto', minWidth: 180 }}>
                 <option value="etrade_sandbox">E*Trade Sandbox (paper)</option>
                 <option value="etrade">E*Trade Live</option>
+                <option value="alpaca_paper">Alpaca Paper</option>
+                <option value="alpaca">Alpaca Live</option>
                 <option value="fidelity_manual">Fidelity (Manual)</option>
               </select>
             </div>
@@ -1588,16 +1601,24 @@ export default function SettingsPage() {
               <input value={newBrokerName} onChange={e => setNewBrokerName(e.target.value)} required placeholder="e.g. My E*Trade" style={inp} />
             </div>
           </div>
-          {(newBrokerType === 'etrade' || newBrokerType === 'etrade_sandbox') && (
+          {/* TIER84-BROKER-PORTABILITY: credential fields rendered generically from
+              currentBrokerMeta.config_fields (GET /broker/types) — a newly-registered broker
+              adapter's own fields appear here automatically, no JSX change needed. */}
+          {currentBrokerMeta && currentBrokerMeta.config_fields.length > 0 && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-              <div style={{ flex: '1 1 200px' }}>
-                <label style={{ ...lbl, marginBottom: 4 }}>Consumer Key</label>
-                <input value={newBrokerKey} onChange={e => setNewBrokerKey(e.target.value)} required placeholder="From E*Trade developer portal" style={inpKey} />
-              </div>
-              <div style={{ flex: '1 1 200px' }}>
-                <label style={{ ...lbl, marginBottom: 4 }}>Consumer Secret</label>
-                <input type="password" value={newBrokerSecret} onChange={e => setNewBrokerSecret(e.target.value)} required placeholder="Consumer secret" style={inpKey} />
-              </div>
+              {currentBrokerMeta.config_fields.map(field => (
+                <div key={field.key} style={{ flex: '1 1 200px' }}>
+                  <label style={{ ...lbl, marginBottom: 4 }}>{field.label}</label>
+                  <input
+                    type={field.secret ? 'password' : 'text'}
+                    value={newBrokerFields[field.key] || ''}
+                    onChange={e => setNewBrokerFields(prev => ({ ...prev, [field.key]: e.target.value }))}
+                    required
+                    placeholder={field.placeholder || field.label}
+                    style={inpKey}
+                  />
+                </div>
+              ))}
             </div>
           )}
           {newBrokerType === 'fidelity_manual' && (
@@ -1611,6 +1632,10 @@ export default function SettingsPage() {
               ? 'Register at developer.etrade.com → Create a sandbox app → copy Consumer Key + Secret here. After saving, click "Authorize" to complete OAuth.'
               : newBrokerType === 'etrade'
               ? 'Use production Consumer Key + Secret from developer.etrade.com. Tokens expire daily — click "Renew Today\'s Session" each trading morning.'
+              : newBrokerType === 'alpaca_paper'
+              ? 'Create a paper-trading API key at alpaca.markets → your dashboard\'s Paper Trading tab. No daily re-auth needed — the key/secret pair works immediately and never expires on its own.'
+              : newBrokerType === 'alpaca'
+              ? 'Use a LIVE-trading API key from alpaca.markets (not the paper-trading one) — this places real orders with real money. No daily re-auth needed, unlike E*Trade.'
               : 'No API credentials needed. Trade instructions will be shown for manual execution in Fidelity\'s platform.'}
           </p>
           <button type="submit" disabled={brokerLoading} style={{ padding: '8px 18px', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer', background: 'rgba(34,211,238,0.1)', border: '1px solid rgba(34,211,238,0.3)', color: '#22d3ee' }}>

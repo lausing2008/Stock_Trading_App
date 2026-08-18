@@ -12433,3 +12433,189 @@ docker exec stockai-market-data-1 grep -n 'id="trade_coach_weekly"' /app/src/ser
 # Confirm the earnings playbook is wired into the impact-alert email:
 docker exec stockai-market-data-1 grep -n "_build_earnings_playbook\|_open_by_symbol" /app/src/services/scheduler.py
 ```
+
+---
+
+## Feature Reference: TIER84-BROKER-ALPACA + TIER84-BROKER-PORTABILITY — Alpaca Broker Adapter + Metadata-Driven Broker Registry (2026-08-18)
+
+**Continues the next-improvements survey** after Tier 287 — verified `docs/improvements.tsx`'s
+`TIER84-BROKER-ALPACA` `todo` entry against real code (confirmed: only `EtradeBroker`/
+`ManualBroker` existed, zero `AlpacaBroker` class anywhere) before building anything. A mid-turn
+user request ("Make the broker integration more portable so that it will be easier to plug with
+different brokers like charles schwab, etrade, fidelity etc") arrived while Alpaca was mid-build
+and directly shaped its design — rather than building Alpaca as a 4th hardcoded special case,
+this session generalized the whole broker-registration surface at the same time.
+
+### Alpaca adapter
+
+**New `services/market-data/src/services/broker/alpaca_broker.py`** — a full
+`BrokerInterface` implementation using Alpaca's Trading API v2 (`paper-api.alpaca.markets` /
+`api.alpaca.markets`), header-based `APCA-API-KEY-ID`/`APCA-API-SECRET-KEY` auth, no OAuth flow
+at all. Two genuinely new architectural properties relative to `EtradeBroker`:
+1. **No daily re-auth** — the whole reason this was named "the structural answer" in the
+   earlier T257-ETRADE-PROD-SYSTEMATIC entry: a key/secret pair works immediately and never
+   expires on its own (only if the user revokes/rotates it at Alpaca's own dashboard).
+2. **Split trading/market-data hosts** — `get_quote()` hits `data.alpaca.markets`, a
+   completely separate host from the trading API — Alpaca's own documented architecture, not a
+   mistake carried over from E*Trade's single-host design.
+
+Order-status vocabulary (`new`/`accepted`/`partially_filled`/`filled`/`canceled`/`expired`/
+`rejected`/etc. — Alpaca has ~14 real states) collapsed to this app's existing 5-state
+vocabulary (`pending`/`partially_filled`/`filled`/`cancelled`/`rejected`), matching
+`EtradeBroker.list_orders()`'s own established status-mapping convention. `get_quote()`
+approximates `last_price` as the bid/ask midpoint (Alpaca's `quotes/latest` endpoint returns no
+last-trade field at all, unlike E*Trade) — `None` when either side is missing, never fabricated
+from a one-sided quote.
+
+**Scheduler infrastructure needed ZERO changes** — confirmed by reading
+`_renew_broker_tokens()` (`scheduler.py`) before touching anything: it already does
+`if not conn.broker_type.startswith("etrade"): continue` (a non-E*Trade broker is correctly
+skipped, since `renew_access_token()` is an OAuth1-only concept), and `_check_broker_auth()`'s
+health check calls the fully-generic `broker.get_account()` + `_is_token_rejected_error()`'s
+own generic `"401"`/`"unauthorized"` substring match — both already broker-agnostic.
+
+**Upfront credential validation at connection-creation time** — unlike E*Trade (whose OAuth
+flow itself validates consumer key/secret at the authorize step) or `fidelity_manual` (no real
+credentials to validate), a key/secret-only broker has no separate authorize step where a
+typo'd credential would surface. `create_connection()` now calls a live `get_account()` at
+creation time for any `AuthStyle.KEY_SECRET` broker, catching a bad key/secret same-session
+instead of leaving it silently "authorized" until the next 08:30 ET health check.
+
+### Portability generalization (TIER84-BROKER-PORTABILITY)
+
+**The problem this closes**: before this session, `api/broker.py` had its own hardcoded
+`_SUPPORTED_TYPES` tuple, a per-broker-type `if`/`elif` chain building `config` inside
+`create_connection()`, and 3 separate OAuth-route guards each independently checking
+`broker_type not in ("etrade", "etrade_sandbox")`. Adding Alpaca as a 4th broker meant touching
+all of these — exactly the kind of parallel-hardcoded-list drift risk this repo's own broker
+registry pattern (`docker cp` file lists, feature-flag touch-points, etc.) already avoids
+elsewhere. Generalized so a FUTURE broker (Schwab, a real Fidelity API if one ever ships) needs
+only: write an adapter class implementing `BrokerInterface` + declare 3 class attributes +
+register it in one list — zero changes to `api/broker.py`'s routes or `settings.tsx`'s form.
+
+**New `BrokerInterface` class attributes** (`interface.py`):
+- `BROKER_TYPES: tuple[str, ...]` — the `broker_type` string(s) this class handles (e.g.
+  `EtradeBroker` handles BOTH `"etrade"`/`"etrade_sandbox"` — one class, two type strings
+  differing only by a constructor flag).
+- `AUTH_STYLE: AuthStyle` — a new 3-value enum (`OAUTH1`/`KEY_SECRET`/`MANUAL`) driving which
+  routes/UI a connection of this type needs.
+- `CONFIG_FIELDS: tuple[ConfigField, ...]` — the credential fields `CreateBrokerRequest` must
+  validate and the frontend must render (`key`/`label`/`secret`/`placeholder` each).
+
+**New registry in `broker/__init__.py`** — `_ADAPTER_CLASSES` (the one list to edit for a new
+broker), `broker_class_for_type()`, `broker_metadata()`, `SUPPORTED_BROKER_TYPES` (derived, not
+hand-maintained), and a `get_broker()` factory that still handles the one genuinely
+irreducible per-broker difference (each adapter's own sandbox/paper constructor flag, under a
+different keyword name per broker — E*Trade calls it "sandbox", Alpaca calls it "paper";
+correctly NOT force-unified into an identical signature that would fight each broker's own
+natural terminology).
+
+**`api/broker.py` changes**:
+- `_SUPPORTED_TYPES` is now `from src.services.broker import SUPPORTED_BROKER_TYPES` — a
+  direct import, not a hand-copied duplicate.
+- `create_connection()`'s config-building loop iterates `broker_metadata(body.broker_type)
+  ["config_fields"]` generically (`getattr(body, field.key)` + a required-field check) instead
+  of a per-type `if`/`elif`. `fidelity_manual`'s `account_number`/`notes` remain a small,
+  targeted special case (optional display metadata, not real credentials — `ManualBroker.
+  CONFIG_FIELDS` is deliberately left EMPTY so the generic required-field loop never wrongly
+  demands one).
+- The 3 OAuth routes (`oauth_start`/`oauth_complete`/`reconnect`) now guard on
+  `broker_class_for_type(conn.broker_type).AUTH_STYLE != AuthStyle.OAUTH1` instead of the old
+  hardcoded `("etrade", "etrade_sandbox")` tuple — a future OAuth1 broker's connections would
+  correctly pass this guard without an `api/broker.py` edit. The actual `start_oauth()`/
+  `complete_oauth()`/`renew_access_token()` calls inside these routes remain `EtradeBroker`-
+  specific (those 3 methods live on the class itself, not `BrokerInterface` — correctly NOT
+  abstracted further with only one real OAuth1 implementation to generalize against).
+- New `GET /broker/types` endpoint (admin-only, matching every other route in this file per
+  `T270-BROKER-ADMIN-GATE`) returns every registered broker's metadata as plain JSON.
+
+**Frontend (`settings.tsx`)**: fetches `GET /broker/types` alongside the existing
+`brokerList()` call. The credential-field block in "Add Broker Connection" is now generic —
+`currentBrokerMeta.config_fields.map(...)` renders each field's label/placeholder/secret-vs-
+plain input type, replacing the two hardcoded per-type JSX blocks. `newBrokerKey`/
+`newBrokerSecret` state (2 hardcoded fields) replaced with a generic
+`newBrokerFields: Record<string, string>` keyed by field key. The broker-type dropdown itself,
+the OAuth start/complete/reconnect UI (still correctly gated on `isEtrade`, since only E*Trade
+needs it today), and the dedicated `fidelity_manual` account-number field/hint text are all
+unchanged — those are either a genuinely small curated list (new broker TYPES still need real
+backend registration, so a static dropdown is correct) or broker-specific prose that doesn't
+belong in generic metadata.
+
+**A real overlap caught and fixed during implementation, not shipped**: the first draft gave
+`ManualBroker.CONFIG_FIELDS` a real `account_number` field entry (matching the "declare your
+real fields" pattern every other adapter follows) — but this would have rendered `account_number`
+TWICE (once via the new generic block, once via the pre-existing dedicated `fidelity_manual`
+JSX block) and made it incorrectly `required` via the generic loop's own validation, when it's
+genuinely optional display metadata. Fixed by making `CONFIG_FIELDS` empty for `ManualBroker`
+specifically, with a comment explaining why (`account_number`/`notes` are handled as a
+targeted special case in `create_connection()`, never through the generic per-field loop).
+
+### Tests
+
+`services/market-data/tests/test_alpaca_broker.py` (28 cases) — `AlpacaBroker` only depends on
+`requests` (real, installed, not stubbed), tested directly with `requests.get`/`post`/`delete`
+mocked. Fixtures built from Alpaca's own documented, stable v2 API response schemas
+(`docs.alpaca.markets/reference`) rather than hand-idealized guesses — matching this repo's own
+standing lesson (the CAPE-feature entry) that a fixture matching a buggy implementation's own
+assumptions can silently certify the bug as correct. Covers account/position parsing, paper-vs-
+live base URL + broker_type selection, order placement/status-vocabulary mapping (including the
+genuinely-different-from-E*Trade "side is always a plain buy/sell, never a BUY_OPEN/BUY_CLOSE
+options variant" property), the split trading/data-API hosts, bid/ask-midpoint quote computation
+with one-sided-quote and missing-symbol fail-soft cases, and `is_market_open()`'s fail-open
+fallback on a clock-endpoint error.
+
+`services/market-data/tests/test_broker_registry.py` (21 cases) — the registry's own behavior
+(`SUPPORTED_BROKER_TYPES` completeness/no-duplicates, `broker_class_for_type()` resolution +
+unknown-type rejection, `broker_metadata()`'s per-broker `auth_style`/`config_fields` shape,
+JSON-serializability, `get_broker()`'s sandbox/paper flag resolution) plus source-text
+regression checks for `api/broker.py`'s generalized wiring (the required-field validation loop,
+the `AuthStyle.KEY_SECRET` upfront-check, the 3 OAuth routes genuinely gating on `AuthStyle.
+OAUTH1` rather than a lingering hardcoded tuple, the new `/broker/types` endpoint).
+
+**Pre-existing `test_broker_admin_gate.py` updated, not broken**: its own
+`test_all_12_known_routes_are_still_present` guardrail correctly caught the new
+`list_broker_types` route as an untracked 13th `@router.` decorator — added to
+`_ALL_ROUTE_FUNCTIONS` and confirmed it's admin-gated like every other route, renamed the test
+to drop the now-stale "12" from its name.
+
+**Adversarial verification** — 3 sabotage cycles, all caught and reverted:
+1. Removing `AlpacaBroker` from `_ADAPTER_CLASSES` (a forgotten registration) — caught by 6
+   tests across both new test files.
+2. Removing `create_connection()`'s required-field validation (silently storing an empty
+   string instead of raising 400) — caught by a dedicated source-text test.
+3. Reverting the `reconnect` route's OAuth guard back to the old hardcoded
+   `("etrade", "etrade_sandbox")` tuple — caught by a dedicated source-text test checking all 3
+   OAuth routes generically.
+
+Full 1,590-test market-data suite green (up from 1,541); 132-test frontend suite green;
+`npx tsc --noEmit` (including `--strict`) clean; a full `next build` compiled all 51 routes
+clean; `pyflakes` clean on every touched file (confirmed via `git stash` that the file's 2
+pre-existing warnings — `etrade_broker.py`'s unused `date` import, `manual_broker.py`'s unused
+`BrokerPosition` import — predate this change).
+
+**Tracker**: `improvements.tsx` — `TIER84-BROKER-ALPACA` flipped to `done`;
+`TIER84-BROKER-PORTABILITY` added as a new `done` entry.
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the registry resolves Alpaca correctly:
+docker exec stockai-market-data-1 python3 -c "
+import sys; sys.path.insert(0, '/app')
+from src.services.broker import SUPPORTED_BROKER_TYPES, broker_metadata
+print(SUPPORTED_BROKER_TYPES)
+print(broker_metadata('alpaca_paper'))
+"
+
+# Confirm the new endpoint works end-to-end (needs an admin JWT):
+docker exec stockai-market-data-1 python3 -c "
+import sys, uuid, time; sys.path.insert(0,'/app'); sys.path.insert(0,'/app/src')
+from common.config import get_settings; from jose import jwt as _jwt; import httpx
+s = get_settings()
+tok = _jwt.encode({'sub':'<admin_username>','jti':str(uuid.uuid4()),'exp':int(time.time())+86400}, s.jwt_secret, algorithm='HS256')
+r = httpx.get('http://localhost:8001/broker/types', headers={'Authorization': f'Bearer {tok}'}, timeout=10)
+print(r.status_code, r.json())
+"
+```
+If a new Alpaca connection fails immediately at creation with "credential check failed", that's
+the upfront `AuthStyle.KEY_SECRET` validation working correctly — check the actual key/secret
+against Alpaca's own dashboard before assuming this app's code is wrong.

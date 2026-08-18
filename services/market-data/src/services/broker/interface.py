@@ -65,6 +65,27 @@ class BrokerAccount:
     open_positions: list[BrokerPosition] = field(default_factory=list)
 
 
+class AuthStyle(str, Enum):
+    """How a broker adapter authenticates. Drives what api/broker.py's routes/UI show for a
+    given broker_type WITHOUT that file needing its own hardcoded per-type branch — see
+    BrokerInterface.CONFIG_FIELDS/AUTH_STYLE below."""
+    OAUTH1 = "oauth1"          # 3-legged OAuth 1.0a (E*Trade) — needs start/complete/renew steps
+    KEY_SECRET = "key_secret"  # a static key/secret pair, authorized immediately (Alpaca)
+    MANUAL = "manual"          # no API at all — instructions only (Fidelity manual)
+
+
+@dataclass(frozen=True)
+class ConfigField:
+    """One credential field a broker adapter needs at connection-creation time — drives both
+    CreateBrokerRequest validation and the frontend's dynamically-rendered credential form,
+    so adding a new broker never requires editing api/broker.py's request schema or
+    settings.tsx's form JSX by hand for the NEW broker's own fields."""
+    key: str            # the CreateBrokerRequest field name (also the stored config dict key)
+    label: str           # frontend form label, e.g. "Consumer Key"
+    secret: bool = False  # render as a password input if True
+    placeholder: str = ""
+
+
 class BrokerInterface(ABC):
     """All broker adapters must implement these methods.
 
@@ -72,7 +93,28 @@ class BrokerInterface(ABC):
     - Raise RuntimeError with a human-readable message on any broker API failure.
     - Raise NotImplementedError for features the broker does not support.
     - Never swallow exceptions silently — let the caller decide on retry/fallback.
+
+    TIER84-BROKER-PORTABILITY: every concrete adapter must also declare 3 class attributes so
+    api/broker.py can drive connection-creation, config validation, and the frontend's
+    credential form GENERICALLY — adding a new broker (Schwab, Fidelity's real API if one ever
+    ships, etc.) means adding one new adapter class + registering it in
+    broker/__init__.py's _REGISTRY, never editing api/broker.py's own routes:
+
+      BROKER_TYPES : tuple[str, ...] — the broker_type string(s) this class handles (e.g.
+                     ("etrade", "etrade_sandbox") — one class, two type strings differing only
+                     by a constructor flag).
+      AUTH_STYLE   : AuthStyle       — drives whether the frontend/backend show an OAuth
+                     start/complete flow, a plain credential form, or neither.
+      CONFIG_FIELDS: tuple[ConfigField, ...] — the credential fields CreateBrokerRequest must
+                     accept and validate for this broker_type; empty for AUTH_STYLE.MANUAL
+                     brokers with no real credentials, or OAUTH1 brokers whose fields are
+                     consumer_key/consumer_secret (still declared, since the OAuth flow itself
+                     still needs them collected upfront).
     """
+
+    BROKER_TYPES: tuple[str, ...] = ()
+    AUTH_STYLE: AuthStyle = AuthStyle.KEY_SECRET
+    CONFIG_FIELDS: tuple[ConfigField, ...] = ()
 
     @abstractmethod
     def place_order(

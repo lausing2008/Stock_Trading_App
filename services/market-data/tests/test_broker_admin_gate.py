@@ -18,6 +18,7 @@ _BROKER_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "br
 _BROKER_SOURCE = _BROKER_PATH.read_text()
 
 _ALL_ROUTE_FUNCTIONS = [
+    "list_broker_types",
     "list_connections",
     "create_connection",
     "update_connection",
@@ -73,7 +74,7 @@ def test_the_portfolio_broker_assignment_route_specifically_is_admin_gated():
     assert "Depends(get_current_user)" not in body
 
 
-def test_all_12_known_routes_are_still_present():
+def test_all_known_routes_are_still_present():
     """Guards against the list above silently going stale (e.g. a route renamed or removed)
     and this test suite quietly checking fewer routes than actually exist in the file."""
     real_route_count = _BROKER_SOURCE.count("@router.")

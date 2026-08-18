@@ -660,6 +660,10 @@ export const api = {
   newsHot: (symbol: string) => request<HotNewsFlag>(`/news/hot/${symbol}`),
 
   // ── Broker integration ──────────────────────────────────────────────────
+  // TIER84-BROKER-PORTABILITY: metadata-driven — the frontend renders each broker_type's
+  // credential form from this response instead of a hardcoded per-broker JSX branch, so a
+  // newly-registered adapter (Schwab, a real Fidelity API, etc.) needs zero frontend changes.
+  brokerTypes: () => request<{ broker_types: BrokerTypeMeta[] }>('/broker/types'),
   brokerList: () => request<BrokerConnection[]>('/broker/connections'),
   brokerCreate: (body: CreateBrokerConnectionPayload) =>
     request<BrokerConnection>('/broker/connections', { method: 'POST', body: JSON.stringify(body) }),
@@ -2061,7 +2065,7 @@ export type FeatureImportanceResult = {
 
 // ── Broker integration ────────────────────────────────────────────────────────
 
-export type BrokerType = 'etrade' | 'etrade_sandbox' | 'fidelity_manual';
+export type BrokerType = 'etrade' | 'etrade_sandbox' | 'fidelity_manual' | 'alpaca' | 'alpaca_paper';
 
 export type BrokerConnection = {
   id: number;
@@ -2072,6 +2076,21 @@ export type BrokerConnection = {
   is_authorized: boolean;
 };
 
+// TIER84-BROKER-PORTABILITY: one entry per registered broker_type, from GET /broker/types —
+// drives the "Add Broker Connection" form's dynamic credential fields generically.
+export type BrokerConfigFieldMeta = {
+  key: string;
+  label: string;
+  secret: boolean;
+  placeholder: string;
+};
+
+export type BrokerTypeMeta = {
+  broker_type: string;
+  auth_style: 'oauth1' | 'key_secret' | 'manual';
+  config_fields: BrokerConfigFieldMeta[];
+};
+
 export type CreateBrokerConnectionPayload = {
   name: string;
   broker_type: BrokerType;
@@ -2079,6 +2098,13 @@ export type CreateBrokerConnectionPayload = {
   consumer_secret?: string;
   account_number?: string;
   notes?: string;
+  // TIER84-BROKER-ALPACA: plain key/secret pair, no OAuth flow.
+  key_id?: string;
+  secret_key?: string;
+  // Index signature so a NEW broker's own credential field names (declared server-side via
+  // BrokerTypeMeta.config_fields) can be sent without a frontend type change for every future
+  // adapter — the specific fields above remain typed for the brokers that already exist.
+  [key: string]: string | undefined;
 };
 
 export type BrokerAccountInfo = {

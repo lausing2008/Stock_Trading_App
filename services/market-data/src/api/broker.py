@@ -43,7 +43,10 @@ from .auth import get_admin_user, User
 log = get_logger(__name__)
 router = APIRouter(prefix="/broker", tags=["broker"])
 
-_SUPPORTED_TYPES = ("etrade", "etrade_sandbox", "fidelity_manual")
+# TIER84-BROKER-PORTABILITY: derived from the broker registry (services/market-data/src/
+# services/broker/__init__.py) rather than a hand-maintained duplicate list — a new broker
+# adapter's BROKER_TYPES automatically become "supported" here the moment it's registered.
+from src.services.broker import SUPPORTED_BROKER_TYPES as _SUPPORTED_TYPES
 
 
 # ── Credential encryption (Fernet with SHA-256 of JWT secret as key) ─────────
@@ -86,6 +89,10 @@ class CreateBrokerRequest(BaseModel):
     consumer_secret: str | None = None
     account_number: str | None = None  # Fidelity manual
     notes: str | None = None
+    # TIER84-BROKER-ALPACA: plain key/secret pair, no OAuth — set once at creation and never
+    # rotated through a separate flow the way E*Trade's request/access tokens are.
+    key_id: str | None = None
+    secret_key: str | None = None
 
 
 class UpdateBrokerRequest(BaseModel):
@@ -126,6 +133,19 @@ def _out(conn: BrokerConnection) -> BrokerConnectionOut:
     )
 
 
+# ── Broker type metadata ───────────────────────────────────────────────────────
+
+@router.get("/types")
+def list_broker_types(current: User = Depends(get_admin_user)):
+    """TIER84-BROKER-PORTABILITY: metadata for every supported broker_type (auth style +
+    required credential fields), driven entirely by the registry in services/market-data/src/
+    services/broker/__init__.py — lets the frontend render the "Add Broker Connection" form's
+    dynamic credential fields for ANY registered broker (including a future Schwab/real-
+    Fidelity-API adapter) without a hardcoded per-broker-type JSX branch."""
+    from src.services.broker import SUPPORTED_BROKER_TYPES, broker_metadata
+    return {"broker_types": [broker_metadata(t) for t in SUPPORTED_BROKER_TYPES]}
+
+
 # ── CRUD ─────────────────────────────────────────────────────────────────────
 
 @router.get("/connections", response_model=list[BrokerConnectionOut])
@@ -146,22 +166,45 @@ def create_connection(
     current: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
+    """TIER84-BROKER-PORTABILITY: config-building is now entirely metadata-driven off each
+    adapter class's own CONFIG_FIELDS/AUTH_STYLE declaration (services/market-data/src/
+    services/broker/__init__.py's registry) rather than a hardcoded if/elif per broker_type —
+    adding a new broker (Schwab, a real Fidelity API, etc.) never requires touching this
+    function, only registering the new adapter class in that one registry.
+    """
+    from src.services.broker import AuthStyle, broker_class_for_type, broker_metadata, get_broker
+
     if body.broker_type not in _SUPPORTED_TYPES:
         raise HTTPException(400, f"Unsupported broker_type. Supported: {_SUPPORTED_TYPES}")
 
+    meta = broker_metadata(body.broker_type)
     config: dict = {}
-    if body.broker_type in ("etrade", "etrade_sandbox"):
-        if not body.consumer_key or not body.consumer_secret:
-            raise HTTPException(400, "consumer_key and consumer_secret are required for E*Trade")
-        config = {
-            "consumer_key":    body.consumer_key.strip(),
-            "consumer_secret": body.consumer_secret.strip(),
-        }
-    elif body.broker_type == "fidelity_manual":
-        config = {
-            "account_number": (body.account_number or "").strip(),
-            "notes":          (body.notes or "").strip(),
-        }
+    for field_meta in meta["config_fields"]:
+        value = getattr(body, field_meta["key"], None)
+        if not value:
+            raise HTTPException(
+                400, f"{field_meta['key']} is required for {body.broker_type}"
+            )
+        config[field_meta["key"]] = value.strip()
+
+    # fidelity_manual's account_number/notes are display-only metadata, not real credentials —
+    # kept as a targeted special case rather than folded into CONFIG_FIELDS (which drives
+    # required-field VALIDATION; these two are always optional regardless of broker_type).
+    if body.broker_type == "fidelity_manual":
+        config.setdefault("account_number", (body.account_number or "").strip())
+        config["notes"] = (body.notes or "").strip()
+
+    # AUTH_STYLE.KEY_SECRET brokers (Alpaca, and any future key/secret-only broker) have no
+    # separate OAuth authorize step to validate credentials against — a typo'd key/secret
+    # would otherwise sit silently "authorized" until the daily 08:30 ET health check (or the
+    # first real order attempt) eventually surfaces it. A cheap upfront check here catches
+    # that same-session instead, generically for ANY broker declaring this auth style.
+    cls = broker_class_for_type(body.broker_type)
+    if cls.AUTH_STYLE == AuthStyle.KEY_SECRET:
+        try:
+            get_broker(body.broker_type, config).get_account()
+        except Exception as exc:
+            raise HTTPException(400, f"{body.broker_type} credential check failed: {exc}")
 
     conn = BrokerConnection(
         user_id      = current.id,
@@ -169,7 +212,9 @@ def create_connection(
         broker_type  = body.broker_type,
         account_id   = body.account_number if body.broker_type == "fidelity_manual" else None,
         config       = _encrypt_config(config),
-        is_authorized= body.broker_type == "fidelity_manual",  # manual never needs OAuth
+        # MANUAL and KEY_SECRET brokers need no separate authorize step — only OAUTH1 brokers
+        # (E*Trade) start out unauthorized pending the oauth/start + oauth/complete flow.
+        is_authorized= cls.AUTH_STYLE != AuthStyle.OAUTH1,
     )
     session.add(conn)
     session.commit()
@@ -219,10 +264,18 @@ def oauth_start(
     current: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
-    """Step 1 of E*Trade OAuth: returns the URL the user must visit to authorize."""
+    """Step 1 of the OAuth flow: returns the URL the user must visit to authorize.
+
+    TIER84-BROKER-PORTABILITY: the guard checks AUTH_STYLE generically (any future OAuth1
+    broker's connections would pass this check too), but the actual start_oauth()/
+    complete_oauth()/renew_access_token() calls below remain EtradeBroker-specific — those
+    3 methods live on EtradeBroker itself, not BrokerInterface, since no second OAuth1-style
+    broker exists yet to generalize the call signature against.
+    """
+    from src.services.broker import AuthStyle, broker_class_for_type
     conn = _fetch(conn_id, current, session)
-    if conn.broker_type not in ("etrade", "etrade_sandbox"):
-        raise HTTPException(400, "OAuth is only available for E*Trade connections")
+    if broker_class_for_type(conn.broker_type).AUTH_STYLE != AuthStyle.OAUTH1:
+        raise HTTPException(400, "OAuth is only available for OAuth-based broker connections")
 
     from src.services.broker import EtradeBroker
     broker = EtradeBroker(_decrypt_config(conn.config), sandbox=(conn.broker_type == "etrade_sandbox"))
@@ -249,10 +302,11 @@ def oauth_complete(
     current: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
-    """Step 2 of E*Trade OAuth: exchange the verifier PIN for access tokens."""
+    """Step 2 of the OAuth flow: exchange the verifier PIN for access tokens."""
+    from src.services.broker import AuthStyle, broker_class_for_type
     conn = _fetch(conn_id, current, session)
-    if conn.broker_type not in ("etrade", "etrade_sandbox"):
-        raise HTTPException(400, "OAuth is only available for E*Trade connections")
+    if broker_class_for_type(conn.broker_type).AUTH_STYLE != AuthStyle.OAUTH1:
+        raise HTTPException(400, "OAuth is only available for OAuth-based broker connections")
 
     from src.services.broker import EtradeBroker
     broker = EtradeBroker(_decrypt_config(conn.config), sandbox=(conn.broker_type == "etrade_sandbox"))
@@ -284,10 +338,12 @@ def reconnect(
     current: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
-    """Renew E*Trade access token for today's session (must call once per trading day)."""
+    """Renew the OAuth access token for today's session (must call once per trading day —
+    an OAuth1 concept; key/secret-only brokers like Alpaca never need this)."""
+    from src.services.broker import AuthStyle, broker_class_for_type
     conn = _fetch(conn_id, current, session)
-    if conn.broker_type not in ("etrade", "etrade_sandbox"):
-        raise HTTPException(400, "Only available for E*Trade connections")
+    if broker_class_for_type(conn.broker_type).AUTH_STYLE != AuthStyle.OAUTH1:
+        raise HTTPException(400, "Only available for OAuth-based broker connections")
     if not conn.is_authorized:
         raise HTTPException(400, "Not yet authorized — run OAuth flow first")
 

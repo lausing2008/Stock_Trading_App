@@ -14,7 +14,8 @@ import uuid
 from datetime import datetime, timezone
 
 from .interface import (
-    BrokerAccount, BrokerInterface, BrokerOrder, BrokerPosition, OrderSide, OrderType,
+    AuthStyle, BrokerAccount, BrokerInterface, BrokerOrder, BrokerPosition,
+    OrderSide, OrderType,
 )
 
 
@@ -27,6 +28,14 @@ class ManualBroker(BrokerInterface):
     """
 
     BROKER_TYPE = "fidelity_manual"
+    BROKER_TYPES = ("fidelity_manual",)
+    AUTH_STYLE = AuthStyle.MANUAL
+    # Deliberately empty: account_number/notes are optional display metadata, not required
+    # credentials — api/broker.py's create_connection() special-cases them directly rather
+    # than through the generic required-CONFIG_FIELDS validation loop (which would otherwise
+    # incorrectly demand a value here, or double up with the frontend's own dedicated
+    # fidelity_manual account-number field).
+    CONFIG_FIELDS = ()
 
     def __init__(self, config: dict):
         self._config = config

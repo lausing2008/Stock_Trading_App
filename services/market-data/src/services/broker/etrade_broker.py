@@ -19,7 +19,8 @@ import requests
 from requests_oauthlib import OAuth1
 
 from .interface import (
-    BrokerAccount, BrokerInterface, BrokerOrder, BrokerPosition, BrokerQuote, OrderSide, OrderType,
+    AuthStyle, BrokerAccount, BrokerInterface, BrokerOrder, BrokerPosition, BrokerQuote,
+    ConfigField, OrderSide, OrderType,
 )
 
 _PROD_BASE   = "https://api.etrade.com"
@@ -38,6 +39,13 @@ class EtradeBroker(BrokerInterface):
       request_token       — temp token (only valid during OAuth flow)
       request_token_secret— temp secret (only valid during OAuth flow)
     """
+
+    BROKER_TYPES = ("etrade", "etrade_sandbox")
+    AUTH_STYLE = AuthStyle.OAUTH1
+    CONFIG_FIELDS = (
+        ConfigField("consumer_key", "Consumer Key", placeholder="From E*Trade developer portal"),
+        ConfigField("consumer_secret", "Consumer Secret", secret=True),
+    )
 
     def __init__(self, config: dict, sandbox: bool = False):
         self._config  = config
