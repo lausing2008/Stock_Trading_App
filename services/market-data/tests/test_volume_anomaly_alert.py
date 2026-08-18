@@ -109,11 +109,14 @@ def test_scan_reads_only_the_existing_redis_caches_never_yfinance_directly():
 
 def test_threshold_is_session_elapsed_scaled_not_a_flat_ratio():
     """Must reuse T241's session-elapsed scaling (a flat volume/avg_volume ratio over-
-    triggers early in the trading session against a full-day average)."""
+    triggers early in the trading session against a full-day average) — extracted
+    AUD288-SQUEEZE-NO-VOLUME-CONFIRM into a shared _session_elapsed_rvol_thresholds() helper
+    also used by check_short_squeeze_alerts()/check_squeeze_ignition_alerts(), so this function
+    now delegates rather than computing the scaling inline itself."""
     start = _scheduler_source.index("def check_volume_anomalies(")
     end = _scheduler_source.index("\ndef ", start + 1)
     body = _scheduler_source[start:end]
-    assert "_us_frac" in body and "_hk_frac" in body
+    assert "_session_elapsed_rvol_thresholds(" in body
     assert "_ABNORMAL_BASE" in body
 
 

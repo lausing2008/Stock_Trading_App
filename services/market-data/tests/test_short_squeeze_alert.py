@@ -84,6 +84,32 @@ def test_missing_change_pct_or_price_degrades_gracefully_not_crash():
     assert "—" in calls[0]["html"]
 
 
+# ── AUD288-SQUEEZE-NO-VOLUME-CONFIRM: RVOL rendered alongside short-float % ─────────────────
+
+def test_rvol_rendered_in_html_and_text_when_present():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_short_squeeze_email("user@example.com", [
+            {"symbol": "TMDX", "short_percent_of_float": 34.5, "change_pct": 5.2, "price": 92.0,
+             "rvol": 3.1},
+        ])
+    html, text = calls[0]["html"], calls[0]["text"]
+    assert "3.1x avg volume" in html
+    assert "3.1x avg volume" in text
+
+
+def test_missing_rvol_degrades_gracefully_no_placeholder_shown():
+    """An older candidate dict (or a symbol whose avg-volume cache entry was missing) has no
+    rvol key at all — must not crash or render a fabricated "0.0x avg volume" placeholder."""
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        result = send_short_squeeze_email("user@example.com", [
+            {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10},
+        ])
+    assert result is True
+    assert "avg volume" not in calls[0]["html"]
+
+
 # ── AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED: settlement date surfaced in the email ──────────
 
 def test_short_interest_date_rendered_when_present():
@@ -170,6 +196,49 @@ def test_requires_both_short_float_and_intraday_move_thresholds():
     body = _check_short_squeeze_alerts_body()
     assert "_SQUEEZE_MIN_SHORT_FLOAT" in body
     assert "_SQUEEZE_MIN_INTRADAY_MOVE_PCT" in body
+
+
+# ── AUD288-SQUEEZE-NO-VOLUME-CONFIRM: RVOL confirmation gate ────────────────────────────────
+
+def test_requires_an_rvol_floor_using_the_shared_session_elapsed_helper():
+    """Must reuse the SAME shared _session_elapsed_rvol_thresholds() helper check_volume_
+    anomalies()/check_squeeze_ignition_alerts() also call — not a naive flat threshold (which
+    would over-trigger early in the session relative to a full-day average), and not a 3rd
+    independently-duplicated copy of the same formula."""
+    body = _check_short_squeeze_alerts_body()
+    assert "_SQUEEZE_RVOL_BASE" in body
+    assert "_session_elapsed_rvol_thresholds(" in body
+    assert "rvol < rvol_threshold" in body
+
+
+def test_avg_volume_cache_is_read_alongside_live_prices():
+    body = _check_short_squeeze_alerts_body()
+    assert '"stockai:avg_volume"' in body
+
+
+def test_rvol_check_applies_in_both_the_prewarm_pass_and_the_main_loop():
+    """The MGET pre-warm pass and the main candidate-building loop each independently repeat
+    the same price-only filters (AUD-SQUEEZE250725-PERF4.1) — both copies must apply the SAME
+    rvol gate, or the pre-warm pass would wrongly admit/reject symbols the main loop disagrees
+    with. Checks the actual COMPARISON in each pass (not just the threshold-assignment line,
+    which stays present even if only the comparison itself were sabotaged — a real gap caught
+    via adversarial verification: sabotaging just the pre-warm pass's own `if` condition left
+    the threshold-assignment line untouched, so a count on that line alone did not catch it)."""
+    body = _check_short_squeeze_alerts_body()
+    assert body.count("rvol_threshold = _sq_hk_rvol_threshold if _is_hk_sym else _sq_us_rvol_threshold") == 2
+    # Pre-warm pass computes the ratio inline in its own condition; the main loop assigns it to
+    # `rvol` first (since `rvol` is later reused for the candidate dict) — genuinely different
+    # surface forms of the SAME check, both must be present.
+    assert "if float(vol) / float(avg_vol) < rvol_threshold:" in body
+    assert "if rvol < rvol_threshold:" in body
+
+
+def test_rvol_is_threaded_into_the_candidate_dict():
+    """The real rvol value must reach the candidate dict passed to send_short_squeeze_email() —
+    otherwise the email builder's own rvol-rendering (tested above) would never have anything
+    to show."""
+    body = _check_short_squeeze_alerts_body()
+    assert '"rvol": round(rvol, 2)' in body
 
 
 def test_fires_only_on_state_transition_via_redis_set_diff():

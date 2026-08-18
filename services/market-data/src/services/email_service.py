@@ -1300,6 +1300,11 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
     SWING-style profile. Omitted for a symbol with no recent SWING signal on file (a real,
     honest gap — not every squeeze candidate has one), in which case the email simply skips
     that section for that stock rather than showing a placeholder.
+
+    AUD288-SQUEEZE-NO-VOLUME-CONFIRM: rvol (session-elapsed-scaled RVOL, the volume-
+    confirmation floor this alert now requires — see check_short_squeeze_alerts()'s own
+    docstring) rendered alongside short_percent_of_float, same "Nx avg volume" phrasing
+    send_squeeze_ignition_email() already established for its own earlier-stage sibling.
     """
     n = len(candidates)
     n_critical = sum(1 for c in candidates if c.get("days_to_cover_critical"))
@@ -1326,6 +1331,8 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
         si_str = _short_interest_age_str(si_date)
         chg_str = f"+{chg:.2f}%" if chg is not None else "—"
         price_str = f"${price:.2f}" if price else "—"
+        rvol = c.get("rvol")
+        rvol_str = f" · {rvol:.1f}x avg volume" if rvol is not None else ""
         short_ratio = c.get("short_ratio")
         is_critical = bool(c.get("days_to_cover_critical"))
         dtc_str = ""
@@ -1370,12 +1377,12 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
             f'<strong style="font-size:14px">{sym}</strong>'
             f'<span style="font-size:13px;color:#22c55e;font-weight:700">{chg_str}</span>'
             f'</div>'
-            f'<div style="font-size:12px;color:#64748b;margin-top:2px">{price_str} · <strong style="color:#ef4444">{spf:.1f}%</strong> of float short{si_str}{dtc_str}</div>'
+            f'<div style="font-size:12px;color:#64748b;margin-top:2px">{price_str} · <strong style="color:#ef4444">{spf:.1f}%</strong> of float short{rvol_str}{si_str}{dtc_str}</div>'
             f'{plan_html}{cal_html}{regime_html}'
             f'</div>'
         )
         dtc_text = f", {short_ratio:.1f}d to cover" + (" [CRITICAL]" if is_critical else "") if short_ratio is not None else ""
-        rows_text += f"  {sym}: {price_str}, {chg_str} today, {spf:.1f}% of float short{si_str}{dtc_text}\n" + plan_text + cal_text + regime_text
+        rows_text += f"  {sym}: {price_str}, {chg_str} today, {spf:.1f}% of float short{rvol_str}{si_str}{dtc_text}\n" + plan_text + cal_text + regime_text
 
     critical_note = (
         f'<p style="font-size:12px;color:#dc2626;font-weight:600;margin-top:-4px">'

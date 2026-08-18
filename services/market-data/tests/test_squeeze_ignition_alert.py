@@ -195,12 +195,14 @@ def test_requires_short_float_threshold_same_as_classic_alert():
 
 
 def test_requires_an_rvol_floor_using_session_elapsed_scaling():
-    """Must reuse check_volume_anomalies()'s own session-elapsed RVOL scaling (T241-AUDIT-
-    RVOL-INTRADAY-BIAS), not a naive flat threshold that would over-trigger early in the
-    session relative to a full-day average."""
+    """Must reuse the SAME shared _session_elapsed_rvol_thresholds() helper check_volume_
+    anomalies()/check_short_squeeze_alerts() also call (T241-AUDIT-RVOL-INTRADAY-BIAS,
+    extracted AUD288-SQUEEZE-NO-VOLUME-CONFIRM) — not a naive flat threshold that would
+    over-trigger early in the session relative to a full-day average, and not a 4th
+    independently-duplicated copy of the same session-elapsed math."""
     body = _check_squeeze_ignition_alerts_body()
     assert "_SQUEEZE_IGNITION_RVOL_BASE" in body
-    assert "_us_frac" in body and "_hk_frac" in body
+    assert "_session_elapsed_rvol_thresholds(" in body
     assert "rvol < rvol_threshold" in body
 
 

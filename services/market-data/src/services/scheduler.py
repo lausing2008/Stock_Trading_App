@@ -2393,6 +2393,32 @@ def send_premarket_brief(markets: list | None = None) -> None:
         _record_job_status(_job_name, "error", time.monotonic() - _t0, str(exc))
 
 
+def _session_elapsed_rvol_thresholds(base: float, floor: float) -> tuple[float, float]:
+    """T241-AUDIT-RVOL-INTRADAY-BIAS: comparing partial-day cumulative volume against a FULL-day
+    average over-triggers early in the session — a stock that's traded 20% of its average daily
+    volume by 10am looks "abnormal" against a full-day average even on a completely normal day.
+    Scales the RVOL bar by how much of the session has actually elapsed (390 min for a US
+    regular session, 330 min for HK — both from 9:30 local open), floored at `floor` so the bar
+    never drops to zero right at the open.
+
+    AUD288-SQUEEZE-NO-VOLUME-CONFIRM: extracted from check_volume_anomalies()'s own inline
+    calculation (which check_squeeze_ignition_alerts() then duplicated a second time with its
+    own `base`/`floor`) into one shared function — every RVOL-gated alert in this file should
+    call this rather than re-deriving the same session-elapsed math a third/fourth time with
+    its own copy-pasted literals that could silently drift out of sync with each other.
+
+    Returns (us_threshold, hk_threshold) for the CURRENT moment — must be called fresh each
+    scan cycle (not cached), since elapsed-session-fraction changes every minute.
+    """
+    _now_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
+    _now_hkt = datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Hong_Kong"))
+    _us_elapsed_min = max(0.0, (_now_et.hour * 60 + _now_et.minute) - (9 * 60 + 30))
+    _hk_elapsed_min = max(0.0, (_now_hkt.hour * 60 + _now_hkt.minute) - (9 * 60 + 30))
+    _us_frac = min(1.0, _us_elapsed_min / 390.0)
+    _hk_frac = min(1.0, _hk_elapsed_min / 330.0)
+    return max(floor, base * _us_frac), max(floor, base * _hk_frac)
+
+
 _VOL_ANOMALY_LOCK_KEY = "stockai:lock:check_volume_anomalies"
 _VOL_ANOMALY_LOCK_TTL = 55  # seconds — runs every 60s, same pattern as check_price_alerts
 _VOL_ANOMALY_DAILY_CAP = 10  # per-user cap so a broad-market high-volume day doesn't spam
@@ -2463,19 +2489,11 @@ def check_volume_anomalies() -> None:
             return
 
         # Same session-elapsed scaling as the post-open digest's vol_surge (T241-AUDIT-
-        # RVOL-INTRADAY-BIAS), computed once per market since HK/US have different session
-        # lengths and open at different UTC times — cheap, no DB query needed for this.
-        _now_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
-        _now_hkt = datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Hong_Kong"))
-        _us_elapsed_min = max(0.0, (_now_et.hour * 60 + _now_et.minute) - (9 * 60 + 30))
-        _hk_elapsed_min = max(0.0, (_now_hkt.hour * 60 + _now_hkt.minute) - (9 * 60 + 30))
-        _us_frac = min(1.0, _us_elapsed_min / 390.0)
-        _hk_frac = min(1.0, _hk_elapsed_min / 330.0)
+        # RVOL-INTRADAY-BIAS) — see _session_elapsed_rvol_thresholds()'s own docstring.
         # Higher base than the digest's 1.5x — this alert is for "abnormal/huge" volume
         # specifically, not the softer "worth a mention in today's digest" bar.
         _ABNORMAL_BASE = 2.5
-        _us_threshold = max(1.5, _ABNORMAL_BASE * _us_frac)
-        _hk_threshold = max(1.5, _ABNORMAL_BASE * _hk_frac)
+        _us_threshold, _hk_threshold = _session_elapsed_rvol_thresholds(_ABNORMAL_BASE, 1.5)
 
         with SessionLocal() as session:
             alerts = session.execute(
@@ -2622,6 +2640,10 @@ _SQUEEZE_LOCK_KEY = "stockai:lock:check_short_squeeze_alerts"
 _SQUEEZE_LOCK_TTL = 55  # seconds — runs every 60s, same pattern as check_volume_anomalies
 _SQUEEZE_MIN_SHORT_FLOAT = 15.0  # % of float — matches short-squeeze.tsx's "Prime Candidate" bar exactly
 _SQUEEZE_MIN_INTRADAY_MOVE_PCT = 3.0  # a real move already in progress, not just "green today"
+# AUD288-SQUEEZE-NO-VOLUME-CONFIRM: stricter than check_squeeze_ignition_alerts()'s own 1.8 —
+# this alert's own move (>=3%, already confirmed) should show at least as much volume
+# conviction as the earlier-stage ignition tier's smaller, still-building move.
+_SQUEEZE_RVOL_BASE = 2.2
 # T270-SQUEEZE-DAYSTOCOVER-ALERT: days-to-cover (short_ratio = shares_short / avg_daily_volume)
 # answers "can shorts get out quietly" — a real, already-computed metric this alert never read
 # before, despite it already being in the same stockai:fundamentals:v2:{sym} cache blob this
@@ -2729,6 +2751,19 @@ def check_short_squeeze_alerts() -> None:
     changing stockai:fundamentals:v2:{symbol} cache (weekly refresh) since that's genuinely how
     often that data changes — only the MOVE-IN-PROGRESS half needs to be fast.
 
+    AUD288-SQUEEZE-NO-VOLUME-CONFIRM (2026-08-18): also requires session-elapsed-scaled RVOL
+    confirmation (stockai:avg_volume, the same cache check_volume_anomalies()/check_squeeze_
+    ignition_alerts() already read) — reusing _session_elapsed_rvol_thresholds() rather than a
+    4th independent copy of the same formula. A stricter base than check_squeeze_ignition_
+    alerts()'s own 1.8 (this alert's own move is already >=3%, a real move already confirmed —
+    it should show AT LEAST as much volume conviction as the earlier-stage ignition tier that
+    fires on a smaller, still-building move), looser than check_volume_anomalies()'s own
+    universe-wide 2.5 (this alert is already narrowed by the short-float gate, so it doesn't
+    need as strict a bar as a scan with no other filter at all). Before this fix, a candidate
+    could clear the short-float + price-move bar on genuinely thin, low-conviction volume (a
+    handful of large trades in an illiquid name) — a materially weaker setup than the same move
+    on real volume, with no way for the recipient to tell the two apart from the email alone.
+
     Deliberately ONE-DIRECTIONAL (long/BUY only) — there is no reliable "long interest of
     float" data source in this app the way short interest exists for the classic case, so a
     symmetric "crowded longs unwinding on a drop" alert would lean on a much fuzzier proxy
@@ -2764,8 +2799,9 @@ def check_short_squeeze_alerts() -> None:
         _rc = _get_redis()
         try:
             _live_raw = _json.loads(_rc.get("stockai:live_prices") or "[]")
+            _avg_vol_cache = _json.loads(_rc.get("stockai:avg_volume") or "{}")
         except Exception:
-            _live_raw = []
+            _live_raw, _avg_vol_cache = [], {}
         if not _live_raw:
             _record_job_status("check_short_squeeze_alerts", "ok", time.monotonic() - _t0)
             return
@@ -2776,6 +2812,13 @@ def check_short_squeeze_alerts() -> None:
         if not _us_market_open and not _hk_market_open:
             _record_job_status("check_short_squeeze_alerts", "ok", time.monotonic() - _t0)
             return
+
+        # AUD288-SQUEEZE-NO-VOLUME-CONFIRM: same session-elapsed RVOL scaling as
+        # check_volume_anomalies()/check_squeeze_ignition_alerts() — see
+        # _session_elapsed_rvol_thresholds()'s own docstring.
+        _sq_us_rvol_threshold, _sq_hk_rvol_threshold = _session_elapsed_rvol_thresholds(
+            _SQUEEZE_RVOL_BASE, 1.5,
+        )
 
         # T264-SQUEEZEFAMILY-REGIME-FLAG (2026-08-15): a SOFT, informational flag only — never
         # suppresses an alert. A squeeze/coiling setup doesn't stop being real just because the
@@ -2829,7 +2872,9 @@ def check_short_squeeze_alerts() -> None:
                 sym = row.get("symbol")
                 price = row.get("price")
                 prev_close = row.get("prev_close")
-                if not sym or not price or not prev_close:
+                vol = row.get("volume")
+                avg_vol = _avg_vol_cache.get(sym)
+                if not sym or not price or not prev_close or not vol or not avg_vol:
                     continue
                 _is_hk_sym = sym.upper().endswith(".HK")
                 if _is_hk_sym and not _hk_market_open:
@@ -2838,6 +2883,9 @@ def check_short_squeeze_alerts() -> None:
                     continue
                 change_pct = (float(price) - float(prev_close)) / float(prev_close) * 100
                 if change_pct < _SQUEEZE_MIN_INTRADAY_MOVE_PCT:
+                    continue
+                rvol_threshold = _sq_hk_rvol_threshold if _is_hk_sym else _sq_us_rvol_threshold
+                if float(vol) / float(avg_vol) < rvol_threshold:
                     continue
                 _pricefilter_qualifying.append(sym)
             try:
@@ -2858,7 +2906,9 @@ def check_short_squeeze_alerts() -> None:
                 sym = row.get("symbol")
                 price = row.get("price")
                 prev_close = row.get("prev_close")
-                if not sym or not price or not prev_close:
+                vol = row.get("volume")
+                avg_vol = _avg_vol_cache.get(sym)
+                if not sym or not price or not prev_close or not vol or not avg_vol:
                     continue
                 _is_hk_sym = sym.upper().endswith(".HK")
                 if _is_hk_sym and not _hk_market_open:
@@ -2867,6 +2917,10 @@ def check_short_squeeze_alerts() -> None:
                     continue
                 change_pct = (float(price) - float(prev_close)) / float(prev_close) * 100
                 if change_pct < _SQUEEZE_MIN_INTRADAY_MOVE_PCT:
+                    continue
+                rvol_threshold = _sq_hk_rvol_threshold if _is_hk_sym else _sq_us_rvol_threshold
+                rvol = float(vol) / float(avg_vol)
+                if rvol < rvol_threshold:
                     continue
                 try:
                     cached = _fund_by_symbol.get(sym)
@@ -2913,6 +2967,7 @@ def check_short_squeeze_alerts() -> None:
                     "short_percent_of_float": _spf_pct,
                     "short_interest_date": _si_date,
                     "change_pct": round(change_pct, 2),
+                    "rvol": round(rvol, 2),
                     "price": price,
                     "short_ratio": _short_ratio,
                     "days_to_cover_critical": (
@@ -3092,16 +3147,11 @@ def check_squeeze_ignition_alerts() -> None:
             _record_job_status("check_squeeze_ignition_alerts", "ok", time.monotonic() - _t0)
             return
 
-        # Same session-elapsed RVOL scaling as check_volume_anomalies() — see that function's
-        # own comment for why a naive full-day average over-triggers early in the session.
-        _now_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
-        _now_hkt = datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Hong_Kong"))
-        _us_elapsed_min = max(0.0, (_now_et.hour * 60 + _now_et.minute) - (9 * 60 + 30))
-        _hk_elapsed_min = max(0.0, (_now_hkt.hour * 60 + _now_hkt.minute) - (9 * 60 + 30))
-        _us_frac = min(1.0, _us_elapsed_min / 390.0)
-        _hk_frac = min(1.0, _hk_elapsed_min / 330.0)
-        _us_rvol_threshold = max(1.3, _SQUEEZE_IGNITION_RVOL_BASE * _us_frac)
-        _hk_rvol_threshold = max(1.3, _SQUEEZE_IGNITION_RVOL_BASE * _hk_frac)
+        # Same session-elapsed RVOL scaling as check_volume_anomalies() — see
+        # _session_elapsed_rvol_thresholds()'s own docstring.
+        _us_rvol_threshold, _hk_rvol_threshold = _session_elapsed_rvol_thresholds(
+            _SQUEEZE_IGNITION_RVOL_BASE, 1.3,
+        )
 
         try:
             _sqi_us_regime = (get_last_regime() or {}).get("state", "neutral")
