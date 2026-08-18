@@ -208,6 +208,8 @@ _ROLLING_COUNTER_TTL_S = 48 * 3600
 # since a nonzero miss count is expected background noise, not itself a functional failure).
 _SQUEEZE_FUND_CACHE_MISS_COUNTER_KEY = "stockai:metric:squeeze_fund_cache_miss_count_48h"
 _SQUEEZE_WATCH_FUND_CACHE_MISS_COUNTER_KEY = "stockai:metric:squeeze_watch_fund_cache_miss_count_48h"
+# T260-SQUEEZE-IGNITION: same rolling-48h-counter convention, for the new early-warning tier.
+_SQUEEZE_IGNITION_FUND_CACHE_MISS_COUNTER_KEY = "stockai:metric:squeeze_ignition_fund_cache_miss_count_48h"
 
 
 def _incr_rolling_counter(key: str) -> None:
@@ -2999,6 +3001,280 @@ def check_short_squeeze_alerts() -> None:
     finally:
         try:
             _get_redis().delete(_SQUEEZE_LOCK_KEY)
+        except Exception:
+            pass
+
+
+_SQUEEZE_IGNITION_LOCK_KEY = "stockai:lock:check_squeeze_ignition_alerts"
+_SQUEEZE_IGNITION_LOCK_TTL = 55  # every 60s, same pattern as check_short_squeeze_alerts
+# T260-SQUEEZE-IGNITION: fires BELOW check_short_squeeze_alerts()'s own 3.0% move floor, so a
+# candidate here is, by construction, always one that WOULD NOT yet have fired the classic
+# alert. The upper bound guards against pure overlap at the boundary (a candidate at exactly
+# 3.0% should get the classic alert, not a duplicate ignition one on the same tick).
+_SQUEEZE_IGNITION_MIN_MOVE_PCT = 1.0
+_SQUEEZE_IGNITION_MAX_MOVE_PCT = _SQUEEZE_MIN_INTRADAY_MOVE_PCT  # 3.0, kept as one named reference
+# Session-elapsed-scaled RVOL floor, same formula check_volume_anomalies() already established
+# (T241-AUDIT-RVOL-INTRADAY-BIAS) — a lower base (1.8 vs that job's 2.5) since this alert is
+# meant to catch an EARLY, still-modest volume pickup, not "abnormal/huge" volume; the real
+# selectivity here comes from ALSO requiring the short-float floor, which the general volume-
+# anomaly scan has no concept of at all.
+_SQUEEZE_IGNITION_RVOL_BASE = 1.8
+
+
+def check_squeeze_ignition_alerts() -> None:
+    """T260-SQUEEZE-IGNITION: the EARLY-WARNING tier between check_prebreakout_alerts() (fires
+    while a high-short-float stock is still COMPRESSING, before any real move) and
+    check_short_squeeze_alerts() (fires once a real move has ALREADY crossed 3% intraday).
+
+    Direct user report: TMDX fired the classic squeeze alert ~45 minutes into a real move that
+    started quietly on real (if modest) volume — TMDX was never actually compressing beforehand
+    (check_prebreakout_alerts() never flagged it, confirmed against real logs), so the existing
+    pre-breakout alert could never have caught it either. The general check_volume_anomalies()
+    scan ALSO never fired for TMDX's early bars — that scanner has no concept of short interest
+    at all, so it under-triggers on a "quietly building" move like this one that never reaches
+    its own "abnormal/huge" bar. This alert closes exactly that gap: a high-short-float stock
+    whose intraday move is STILL BELOW the classic alert's 3% floor, but whose volume has
+    ALREADY started picking up in a session-elapsed-scaled sense (same formula check_volume_
+    anomalies() uses, T241-AUDIT-RVOL-INTRADAY-BIAS — comparing partial-day volume against a
+    partial-day-scaled average, not a naive full-day average that would over-trigger early in
+    the session).
+
+    Deliberately reuses EVERY mechanism check_short_squeeze_alerts() already established rather
+    than inventing new ones: the SAME stockai:fundamentals:v2:{sym} short-float + staleness
+    gate (AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED's 30-day cutoff), the SAME game-plan/
+    calibration/regime-flag enrichments, the SAME per-recipient newly-qualifying Redis-set
+    dedup pattern, and the SAME SqueezeAlertOutcome forward-return tracking (a new alert_type
+    value, "squeeze_ignition", rather than a new table — the column is already String(24) and
+    the table's own docstring frames itself as covering exactly this class of alert).
+
+    HONEST FRAMING, carried over from the classic alert's own disclaimer: this reports a
+    MEASURED early-stage condition (elevated short interest + volume starting to build), never
+    a prediction that the move will continue to a real breakout. Most candidates here will
+    likely fade back into "just some early trading" rather than becoming a full squeeze —
+    that's an accepted, deliberate trade-off of moving the warning earlier, not a flaw. A user
+    who wants the current, higher-confidence-but-later signal still keeps getting it from
+    check_short_squeeze_alerts() unchanged.
+
+    Fires only on a state TRANSITION per user (same mechanism as check_short_squeeze_alerts()),
+    keyed under its OWN Redis set (stockai:squeeze_ignition_active:{uid}) — deliberately
+    SEPARATE from that alert's own stockai:squeeze_active:{uid} set, so a symbol progressing
+    from ignition -> classic still fires BOTH alerts once each (two genuinely different,
+    useful moments), rather than the classic alert being silently suppressed because the
+    symbol was already "active" under the ignition alert's own bookkeeping.
+    """
+    try:
+        acquired = _get_redis().set(_SQUEEZE_IGNITION_LOCK_KEY, "1", nx=True, ex=_SQUEEZE_IGNITION_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    _t0 = time.monotonic()
+    try:
+        import json as _json
+        from datetime import date as _sqi_date, timedelta as _sqi_timedelta
+
+        _sqi_stale_cutoff_str = (_sqi_date.today() - _sqi_timedelta(days=30)).isoformat()
+
+        _rc = _get_redis()
+        try:
+            _live_raw = _json.loads(_rc.get("stockai:live_prices") or "[]")
+            _avg_vol_cache = _json.loads(_rc.get("stockai:avg_volume") or "{}")
+        except Exception:
+            _live_raw, _avg_vol_cache = [], {}
+        if not _live_raw:
+            _record_job_status("check_squeeze_ignition_alerts", "ok", time.monotonic() - _t0)
+            return
+
+        from .paper_trading_engine import _is_market_hours
+        _us_market_open = _is_market_hours("US")
+        _hk_market_open = _is_market_hours("HK")
+        if not _us_market_open and not _hk_market_open:
+            _record_job_status("check_squeeze_ignition_alerts", "ok", time.monotonic() - _t0)
+            return
+
+        # Same session-elapsed RVOL scaling as check_volume_anomalies() — see that function's
+        # own comment for why a naive full-day average over-triggers early in the session.
+        _now_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
+        _now_hkt = datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Hong_Kong"))
+        _us_elapsed_min = max(0.0, (_now_et.hour * 60 + _now_et.minute) - (9 * 60 + 30))
+        _hk_elapsed_min = max(0.0, (_now_hkt.hour * 60 + _now_hkt.minute) - (9 * 60 + 30))
+        _us_frac = min(1.0, _us_elapsed_min / 390.0)
+        _hk_frac = min(1.0, _hk_elapsed_min / 330.0)
+        _us_rvol_threshold = max(1.3, _SQUEEZE_IGNITION_RVOL_BASE * _us_frac)
+        _hk_rvol_threshold = max(1.3, _SQUEEZE_IGNITION_RVOL_BASE * _hk_frac)
+
+        try:
+            _sqi_us_regime = (get_last_regime() or {}).get("state", "neutral")
+        except Exception:
+            _sqi_us_regime = "neutral"
+        try:
+            from .paper_trading_engine import get_last_hk_regime as _sqi_get_last_hk_regime
+            _sqi_hk_regime = (_sqi_get_last_hk_regime() or {}).get("state", "neutral")
+        except Exception:
+            _sqi_hk_regime = "neutral"
+
+        with SessionLocal() as session:
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            if not alerts:
+                _record_job_status("check_squeeze_ignition_alerts", "ok", time.monotonic() - _t0)
+                return
+            recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            if not recipients:
+                _record_job_status("check_squeeze_ignition_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            # Reuses the SAME calibration cache key/bucket scheme as the classic short_squeeze
+            # alert (both gate on short_percent_of_float, same 15% floor, same band scheme) —
+            # a candidate's measured win rate is reported using whichever alert type's own
+            # resolved history is being asked about, via alert_type below.
+            _sqi_cal_buckets = _cached_calibration_buckets(
+                "stockai:cal:squeeze_family:short_squeeze",
+                lambda: _build_squeeze_family_calibration(session, "short_squeeze"),
+            )
+
+            # Two-pass price/volume-then-fundamentals filter, same shape as check_short_squeeze_
+            # alerts()'s own AUD-SQUEEZE250725-PERF4.1 fix — only MGET fundamentals for symbols
+            # that already cleared the cheap RVOL+move-band filters.
+            _pricefilter_qualifying: list[str] = []
+            for row in _live_raw:
+                sym = row.get("symbol")
+                price = row.get("price")
+                prev_close = row.get("prev_close")
+                vol = row.get("volume")
+                avg_vol = _avg_vol_cache.get(sym)
+                if not sym or not price or not prev_close or not vol or not avg_vol:
+                    continue
+                _is_hk_sym = sym.upper().endswith(".HK")
+                if _is_hk_sym and not _hk_market_open:
+                    continue
+                if not _is_hk_sym and not _us_market_open:
+                    continue
+                change_pct = (float(price) - float(prev_close)) / float(prev_close) * 100
+                if not (_SQUEEZE_IGNITION_MIN_MOVE_PCT <= change_pct < _SQUEEZE_IGNITION_MAX_MOVE_PCT):
+                    continue
+                rvol_threshold = _hk_rvol_threshold if _is_hk_sym else _us_rvol_threshold
+                rvol = float(vol) / float(avg_vol)
+                if rvol < rvol_threshold:
+                    continue
+                _pricefilter_qualifying.append(sym)
+            try:
+                _fund_mget_keys = [f"stockai:fundamentals:v2:{s}" for s in _pricefilter_qualifying]
+                _fund_mget_vals = _rc.mget(_fund_mget_keys) if _fund_mget_keys else []
+                _fund_by_symbol = dict(zip(_pricefilter_qualifying, _fund_mget_vals))
+            except Exception:
+                _fund_by_symbol = {}
+
+            candidates: dict[str, dict] = {}
+            _fundamentals_cache_misses = 0
+            for row in _live_raw:
+                sym = row.get("symbol")
+                price = row.get("price")
+                prev_close = row.get("prev_close")
+                vol = row.get("volume")
+                avg_vol = _avg_vol_cache.get(sym)
+                if not sym or not price or not prev_close or not vol or not avg_vol:
+                    continue
+                _is_hk_sym = sym.upper().endswith(".HK")
+                if _is_hk_sym and not _hk_market_open:
+                    continue
+                if not _is_hk_sym and not _us_market_open:
+                    continue
+                change_pct = (float(price) - float(prev_close)) / float(prev_close) * 100
+                if not (_SQUEEZE_IGNITION_MIN_MOVE_PCT <= change_pct < _SQUEEZE_IGNITION_MAX_MOVE_PCT):
+                    continue
+                rvol_threshold = _hk_rvol_threshold if _is_hk_sym else _us_rvol_threshold
+                rvol = float(vol) / float(avg_vol)
+                if rvol < rvol_threshold:
+                    continue
+                try:
+                    cached = _fund_by_symbol.get(sym)
+                    if not cached:
+                        _fundamentals_cache_misses += 1
+                        _incr_rolling_counter(_SQUEEZE_IGNITION_FUND_CACHE_MISS_COUNTER_KEY)
+                        continue
+                    data = _json.loads(cached)
+                    spf = data.get("short_percent_of_float")
+                    if spf is None or spf * 100 < _SQUEEZE_MIN_SHORT_FLOAT:
+                        continue
+                    _si_date = data.get("short_interest_date")
+                    if _si_date is None or _si_date < _sqi_stale_cutoff_str:
+                        continue
+                    _short_ratio = data.get("short_ratio")
+                except Exception:
+                    continue
+                _spf_pct = round(spf * 100, 2)
+                _sqi_win_rate, _sqi_win_count = _squeeze_family_calibration_for_alert_type(
+                    _sqi_cal_buckets, "short_squeeze", _spf_pct,
+                )
+                candidates[sym] = {
+                    "symbol": sym,
+                    "short_percent_of_float": _spf_pct,
+                    "short_interest_date": _si_date,
+                    "change_pct": round(change_pct, 2),
+                    "rvol": round(rvol, 2),
+                    "price": price,
+                    "short_ratio": _short_ratio,
+                    "calibrated_win_rate": _sqi_win_rate,
+                    "calibrated_win_rate_count": _sqi_win_count,
+                    "market_regime": _sqi_hk_regime if _is_hk_sym else _sqi_us_regime,
+                }
+            if not candidates:
+                if _fundamentals_cache_misses > 0:
+                    log.info("squeeze_ignition_alert.done", candidates=0, sent=0, recipients=len(recipients),
+                             fundamentals_cache_misses=_fundamentals_cache_misses)
+                _record_job_status("check_squeeze_ignition_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            for sym, cand in candidates.items():
+                plan = _squeeze_game_plan(session, sym, float(cand["price"]))
+                if plan is not None:
+                    cand["game_plan"] = plan
+
+            for sym, cand in candidates.items():
+                _record_squeeze_alert_outcome(
+                    session, "squeeze_ignition", sym, float(cand["price"]), cand.get("short_percent_of_float"),
+                )
+
+            from .email_service import send_squeeze_ignition_email
+            sent = 0
+            for uid, user in recipients.items():
+                state_key = f"stockai:squeeze_ignition_active:{uid}"
+                try:
+                    prev_active = set(_rc.smembers(state_key) or set())
+                except Exception:
+                    prev_active = set()
+                current_active = set(candidates.keys())
+                newly_qualifying = sorted(current_active - prev_active)
+                send_ok = True
+                if newly_qualifying:
+                    payload = [candidates[sym] for sym in newly_qualifying]
+                    try:
+                        send_ok = send_squeeze_ignition_email(user.email, payload)
+                    except Exception as _send_exc:
+                        send_ok = False
+                        log.warning("squeeze_ignition_alert.recipient_send_error", user=uid, error=str(_send_exc))
+                    if send_ok:
+                        sent += 1
+                resync_set = current_active if send_ok else (current_active - set(newly_qualifying))
+                try:
+                    _rc.delete(state_key)
+                    if resync_set:
+                        _rc.sadd(state_key, *resync_set)
+                    _rc.expire(state_key, 20 * 3600)
+                except Exception:
+                    pass
+
+            _record_job_status("check_squeeze_ignition_alerts", "ok", time.monotonic() - _t0)
+            log.info("squeeze_ignition_alert.done", candidates=len(candidates), sent=sent, recipients=len(recipients),
+                     fundamentals_cache_misses=_fundamentals_cache_misses)
+    except Exception as exc:
+        log.error("squeeze_ignition_alert.failed", error=str(exc), exc_info=True)
+        _record_job_status("check_squeeze_ignition_alerts", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        try:
+            _get_redis().delete(_SQUEEZE_IGNITION_LOCK_KEY)
         except Exception:
             pass
 
@@ -8714,6 +8990,12 @@ _DQ_CHECKS: list[dict] = [
         "source": "gauge",
         "counter_key": _SQUEEZE_WATCH_FUND_CACHE_MISS_COUNTER_KEY,
     },
+    {
+        "name": "squeeze_ignition_fund_cache_misses_48h",
+        "description": "squeeze-ignition alert (T260-SQUEEZE-IGNITION): stockai:fundamentals:v2:* cache misses in the last 48h",
+        "source": "gauge",
+        "counter_key": _SQUEEZE_IGNITION_FUND_CACHE_MISS_COUNTER_KEY,
+    },
 ]
 
 
@@ -9404,6 +9686,21 @@ def start_scheduler() -> None:
             "interval",
             minutes=1,
             id="short_squeeze_alert_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
+
+        # ── T260-SQUEEZE-IGNITION: early-warning tier, below the classic alert's 3% move floor
+        # — every minute ──────────────────────────────────────────────────────────────────────
+        # Fires BEFORE check_short_squeeze_alerts() on the same symbol (a smaller move, an
+        # earlier volume pickup) — see check_squeeze_ignition_alerts()'s own docstring for the
+        # full gap this closes and why check_prebreakout_alerts()/check_volume_anomalies() each
+        # miss this specific case.
+        _scheduler.add_job(
+            check_squeeze_ignition_alerts,
+            "interval",
+            minutes=1,
+            id="squeeze_ignition_alert_check",
             replace_existing=True,
             max_instances=1, coalesce=True,
         )

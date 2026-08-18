@@ -174,6 +174,7 @@ _ALERT_JOB_IDS = {
     "gamma_unwind_alert_check",
     "prebreakout_alert_check",
     "short_squeeze_alert_check",
+    "squeeze_ignition_alert_check",
     "squeeze_watch_revert_check",
     "value_area_breakdown_check",
     "portfolio_drawdown_alert_check",

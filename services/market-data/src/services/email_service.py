@@ -1223,6 +1223,10 @@ def send_volume_anomaly_email(to: str, alerts: list[dict]) -> bool:
 # so the value is restated here for the email copy — the actual gating decision is made once,
 # upstream in scheduler.py, before a candidate ever reaches this function).
 _SQUEEZE_CRITICAL_DAYS_TO_COVER_LABEL = "2.0"
+# T260-SQUEEZE-IGNITION: same display-only-restatement convention, matching scheduler.py's own
+# _SQUEEZE_MIN_INTRADAY_MOVE_PCT=3.0 (the classic short-squeeze alert's own move floor, which
+# this alert's own candidates are, by construction, always below).
+_SQUEEZE_MIN_INTRADAY_MOVE_PCT_LABEL = "3%"
 
 
 def _regime_warning_lines(regime: str | None) -> tuple[str, str]:
@@ -1403,6 +1407,108 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
         + "\nMeasured setup, not a prediction the move continues. Game plan (where shown) is "
         + "illustrative SWING-style entry/stop/target math, not a guaranteed fill. "
         + "Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
+def send_squeeze_ignition_email(to: str, candidates: list[dict]) -> bool:
+    """T260-SQUEEZE-IGNITION: the EARLY-WARNING sibling of send_short_squeeze_email() — fires
+    while a high-short-float stock's intraday move is still BELOW the classic alert's 3% floor
+    (1-2.9%), but its trading volume has already started picking up in a session-elapsed-scaled
+    sense (see check_squeeze_ignition_alerts()'s own docstring for the full mechanism). Each
+    dict: {symbol, short_percent_of_float, change_pct, rvol, price, short_ratio (optional),
+    game_plan (optional), calibrated_win_rate/_count (optional), market_regime (optional)}.
+
+    Deliberately softer framing than the classic alert's "BUY signal" subject line — this is a
+    WATCH, not a firm signal, since most candidates here are expected to fade back into
+    ordinary trading rather than becoming a real squeeze. The measured-win-rate field (reused
+    from the classic short_squeeze alert's own calibration, since both gate on the same short-
+    float metric) exists specifically so a recipient isn't left guessing how seriously to take
+    an earlier-stage, lower-confidence read.
+    """
+    n = len(candidates)
+    subject = f"👀 Squeeze Watch (early stage) — {n} high-short-interest stock{'s' if n != 1 else ''} starting to move"
+
+    rows_html = ""
+    rows_text = ""
+    for c in candidates:
+        sym = c["symbol"]
+        spf = c["short_percent_of_float"]
+        chg = c.get("change_pct")
+        rvol = c.get("rvol")
+        price = c.get("price")
+        si_date = c.get("short_interest_date")
+        si_str = _short_interest_age_str(si_date)
+        chg_str = f"+{chg:.2f}%" if chg is not None else "—"
+        rvol_str = f"{rvol:.1f}x avg volume" if rvol is not None else "—"
+        price_str = f"${price:.2f}" if price else "—"
+        short_ratio = c.get("short_ratio")
+        dtc_str = f' · {short_ratio:.1f}d to cover' if short_ratio is not None else ""
+        plan = c.get("game_plan")
+        plan_html = ""
+        plan_text = ""
+        if plan:
+            plan_html = (
+                f'<div style="font-size:11px;color:#475569;margin-top:6px;padding-top:6px;border-top:1px dashed #e2e8f0">'
+                f'Game plan (SWING): entry ~${plan["entry1"]:.2f} · stop ${plan["stop"]:.2f} · '
+                f'target ${plan["take_profit"]:.2f}'
+                f'</div>'
+            )
+            plan_text = (
+                f"    Game plan (SWING): entry ~${plan['entry1']:.2f}, "
+                f"stop ${plan['stop']:.2f}, target ${plan['take_profit']:.2f}\n"
+            )
+        cal_win_rate = c.get("calibrated_win_rate")
+        cal_count = c.get("calibrated_win_rate_count")
+        cal_html = ""
+        cal_text = ""
+        if cal_win_rate is not None and cal_count is not None:
+            cal_html = (
+                f'<div style="font-size:11px;color:#475569;margin-top:4px">'
+                f'Measured historical win rate (short_squeeze family): {cal_win_rate * 100:.0f}% '
+                f'<span style="color:#94a3b8">(n={cal_count})</span></div>'
+            )
+            cal_text = f"    Measured historical win rate (short_squeeze family): {cal_win_rate * 100:.0f}% (n={cal_count})\n"
+        else:
+            cal_html = '<div style="font-size:11px;color:#94a3b8;margin-top:4px">Not enough resolved history yet for a measured win rate</div>'
+            cal_text = "    Not enough resolved history yet for a measured win rate\n"
+        regime_html, regime_text = _regime_warning_lines(c.get("market_regime"))
+        rows_html += (
+            f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
+            f'<strong style="font-size:14px">{sym}</strong>'
+            f'<span style="font-size:13px;color:#0ea5e9;font-weight:700">{chg_str}</span>'
+            f'</div>'
+            f'<div style="font-size:12px;color:#64748b;margin-top:2px">{price_str} · <strong style="color:#ef4444">{spf:.1f}%</strong> of float short · {rvol_str}{dtc_str}{si_str}</div>'
+            f'{plan_html}{cal_html}{regime_html}'
+            f'</div>'
+        )
+        rows_text += f"  {sym}: {price_str}, {chg_str} today, {spf:.1f}% of float short, {rvol_str}{dtc_str}{si_str}\n" + plan_text + cal_text + regime_text
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:#0ea5e9">👀 Squeeze Watch — early stage, not a firm signal</h2>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} heavily-shorted stock{'s' if n != 1 else ''} showing an early volume pickup, still below the {_SQUEEZE_MIN_INTRADAY_MOVE_PCT_LABEL} move that triggers the full Short Squeeze Alert.</p>
+    <div style="margin-top:12px">{rows_html}</div>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      Thesis: high short interest + volume ALREADY starting to build, before a real move has
+      fully confirmed. This is an intentionally EARLIER, LOWER-CONFIDENCE read than the Short
+      Squeeze Alert — most candidates here are expected to fade back into ordinary trading
+      rather than becoming a real squeeze; that trade-off is the whole point of trading some
+      false positives for an earlier warning. If the move keeps building, you will also
+      receive the regular Short Squeeze Alert once it clears the higher confirmation bar. Game
+      plan (where shown) is the same illustrative SWING-style entry/stop/target math the paper-
+      trading engine uses — a reference point, not a guaranteed fill. Not financial advice.
+    </p>
+  </div>
+</body></html>"""
+    body_text = (
+        f"Squeeze Watch (early stage) — {n} stock{'s' if n != 1 else ''}\n\n"
+        + rows_text
+        + "\nEarly-stage, lower-confidence read — most candidates fade back to ordinary "
+        + "trading. If the move keeps building you'll also get the full Short Squeeze Alert. "
+        + "Game plan (where shown) is illustrative SWING-style entry/stop/target math, not a "
+        + "guaranteed fill. Not financial advice.\n"
     )
     return send_email(to, subject, body_html, body_text)
 

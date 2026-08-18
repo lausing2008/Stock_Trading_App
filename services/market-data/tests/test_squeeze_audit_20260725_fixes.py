@@ -203,7 +203,7 @@ def test_backtest_normal_result_reason_is_none_not_a_stale_default():
 # ── Issues 1 & 5: rolling cache-miss counters + the new "gauge" DQ-check type ───────────────
 
 def test_squeeze_alert_cache_miss_increments_the_new_rolling_counter():
-    body = _function_body("check_short_squeeze_alerts", _scheduler_source, "\n\ndef check_prebreakout_alerts(")
+    body = _function_body("check_short_squeeze_alerts", _scheduler_source, "\n\ndef check_squeeze_ignition_alerts(")
     assert "_incr_rolling_counter(_SQUEEZE_FUND_CACHE_MISS_COUNTER_KEY)" in body
 
 
@@ -227,7 +227,10 @@ def test_the_two_cache_miss_counter_keys_are_genuinely_distinct():
 def test_gauge_dq_checks_registered_for_both_new_counters():
     assert '"counter_key": _SQUEEZE_FUND_CACHE_MISS_COUNTER_KEY' in _scheduler_source
     assert '"counter_key": _SQUEEZE_WATCH_FUND_CACHE_MISS_COUNTER_KEY' in _scheduler_source
-    assert _scheduler_source.count('"source": "gauge"') == 2
+    # T260-SQUEEZE-IGNITION added a 3rd gauge (its own fundamentals-cache-miss counter,
+    # matching this same pattern) — the count below was 2 before that alert existed.
+    assert '"counter_key": _SQUEEZE_IGNITION_FUND_CACHE_MISS_COUNTER_KEY' in _scheduler_source
+    assert _scheduler_source.count('"source": "gauge"') == 3
 
 
 def test_gauge_dq_check_dispatch_branch_always_reports_ok_true():
@@ -253,7 +256,7 @@ def test_gauge_dispatch_branch_comes_before_the_job_status_branch_and_after_rati
 # ── Performance 4.1: MGET pre-warming ────────────────────────────────────────────────────────
 
 def test_short_squeeze_alerts_uses_mget_not_per_symbol_get_for_fundamentals():
-    body = _function_body("check_short_squeeze_alerts", _scheduler_source, "\n\ndef check_prebreakout_alerts(")
+    body = _function_body("check_short_squeeze_alerts", _scheduler_source, "\n\ndef check_squeeze_ignition_alerts(")
     assert "_rc.mget(_fund_mget_keys)" in body
     # The old per-symbol _rc.get(f"stockai:fundamentals:v2:{sym}") call must be gone from the
     # main candidate-building loop — only the pre-warming pass constructs a fundamentals key
@@ -266,7 +269,7 @@ def test_mget_prewarm_pass_only_includes_symbols_that_already_cleared_price_filt
     """The MGET pass must run AFTER the price-only filtering loop (presence, market-hours,
     intraday-move threshold) — fetching fundamentals for every live-price row regardless of
     those filters would defeat the whole point of narrowing the MGET to real candidates."""
-    body = _function_body("check_short_squeeze_alerts", _scheduler_source, "\n\ndef check_prebreakout_alerts(")
+    body = _function_body("check_short_squeeze_alerts", _scheduler_source, "\n\ndef check_squeeze_ignition_alerts(")
     filter_pass_idx = body.index("_pricefilter_qualifying: list[str] = []")
     mget_idx = body.index("_rc.mget(_fund_mget_keys)")
     assert filter_pass_idx < mget_idx
@@ -279,19 +282,19 @@ def test_prewarm_filter_pass_and_main_loop_apply_the_identical_intraday_move_thr
     dict either omits a real candidate (treated as a false cache-miss) or wastes MGET slots on
     symbols the main loop would reject anyway. Confirms both copies reference the SAME
     threshold constant, not two independently-hardcoded literals that could drift apart."""
-    body = _function_body("check_short_squeeze_alerts", _scheduler_source, "\n\ndef check_prebreakout_alerts(")
+    body = _function_body("check_short_squeeze_alerts", _scheduler_source, "\n\ndef check_squeeze_ignition_alerts(")
     assert body.count("change_pct < _SQUEEZE_MIN_INTRADAY_MOVE_PCT") == 2
     assert body.count("_is_hk_sym and not _hk_market_open") == 2
     assert body.count("not _is_hk_sym and not _us_market_open") == 2
 
 
 def test_main_loop_reads_from_the_prewarmed_dict_not_a_fresh_redis_call():
-    body = _function_body("check_short_squeeze_alerts", _scheduler_source, "\n\ndef check_prebreakout_alerts(")
+    body = _function_body("check_short_squeeze_alerts", _scheduler_source, "\n\ndef check_squeeze_ignition_alerts(")
     assert "cached = _fund_by_symbol.get(sym)" in body
 
 
 def test_mget_failure_fails_open_to_an_empty_dict_not_a_crash():
-    body = _function_body("check_short_squeeze_alerts", _scheduler_source, "\n\ndef check_prebreakout_alerts(")
+    body = _function_body("check_short_squeeze_alerts", _scheduler_source, "\n\ndef check_squeeze_ignition_alerts(")
     mget_try_idx = body.index("_fund_mget_keys = [")
     except_idx = body.index("except Exception:\n                _fund_by_symbol = {}", mget_try_idx)
     assert mget_try_idx < except_idx
@@ -387,7 +390,7 @@ def test_cached_calibration_buckets_fails_open_to_the_builder_on_a_redis_get_exc
 
 
 def test_short_squeeze_short_squeeze_calibration_uses_its_own_distinct_redis_key():
-    body = _function_body("check_short_squeeze_alerts", _scheduler_source, "\n\ndef check_prebreakout_alerts(")
+    body = _function_body("check_short_squeeze_alerts", _scheduler_source, "\n\ndef check_squeeze_ignition_alerts(")
     assert '"stockai:cal:squeeze_family:short_squeeze"' in body
 
 
