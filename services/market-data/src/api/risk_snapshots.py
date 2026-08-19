@@ -23,11 +23,44 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from common.config import get_settings
+from common.logging import get_logger
 from db import PortfolioRiskMetric, StressTestResult, User, UserPosition, get_session
 from .auth import get_current_user
 
 router = APIRouter(prefix="/risk-snapshots", tags=["risk-snapshots"])
 _settings = get_settings()
+log = get_logger("risk_snapshots")
+
+# BUG-RISKSNAP-NOSERVICETOKEN: portfolio-optimizer's GET /portfolio-risk/risk and
+# /portfolio-risk/stress-test both require Depends(get_current_username) — a plain outbound
+# httpx call with no Authorization header 401s, exactly the class of gap
+# INT-7/T247-*-SERVICETOKEN document elsewhere in this repo for service-to-service calls
+# against an auth-protected endpoint. Found and fixed via live verification against real
+# production data immediately after this feature's first deploy (not caught by any local test,
+# since every test here mocks the httpx call itself and never exercises real auth).
+_service_token_cache: str | None = None
+_service_token_exp: float = 0.0
+
+
+def _service_token() -> str:
+    """A market-data -> portfolio-optimizer service JWT, matching scheduler.py's own
+    _service_token() pattern exactly (same 365-day expiry, same 7-day-before-expiry refresh)."""
+    import time as _time_mod
+    global _service_token_cache, _service_token_exp
+    if _service_token_cache and _time_mod.time() < _service_token_exp - 7 * 86400:
+        return _service_token_cache
+    try:
+        from datetime import datetime, timedelta, timezone
+        from jose import jwt as _jwt
+        import uuid
+        exp = datetime.now(timezone.utc) + timedelta(days=365)
+        payload = {"sub": "risk-snapshots", "jti": str(uuid.uuid4()), "exp": exp}
+        _service_token_cache = _jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
+        _service_token_exp = exp.timestamp()
+        return _service_token_cache
+    except Exception as exc:
+        log.error("risk_snapshots.service_token_failed", error=str(exc))
+        return ""
 
 
 def _user_symbols_and_weights(session: Session, user_id: int) -> tuple[list[str], list[float]]:
@@ -64,6 +97,7 @@ def save_var_snapshot(
             r = c.get(
                 f"{_settings.portfolio_optimizer_url}/portfolio-risk/risk",
                 params={"symbols": ",".join(symbols[:10]), "weights": ",".join(str(w) for w in weights[:10])},
+                headers={"Authorization": f"Bearer {_service_token()}"},
             )
             r.raise_for_status()
             data = r.json()
@@ -153,6 +187,7 @@ def save_stress_test(
                     "weights": ",".join(str(w) for w in weights[:10]),
                     "scenario": scenario,
                 },
+                headers={"Authorization": f"Bearer {_service_token()}"},
             )
             if r.status_code == 400:
                 raise HTTPException(status_code=400, detail=r.json().get("detail", "Invalid scenario"))

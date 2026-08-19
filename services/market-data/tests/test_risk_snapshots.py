@@ -161,6 +161,7 @@ def _extract_route_function(name: str, end_marker: str):
         "User": User, "UserPosition": UserPosition,
         "get_session": lambda: None, "get_current_user": lambda: None,
         "_user_symbols_and_weights": _user_symbols_and_weights,
+        "_service_token": lambda: "fake-service-token",
         "_settings": MagicMock(portfolio_optimizer_url="http://portfolio-optimizer:8007"),
         "date": __import__("datetime").date,
         "router": MagicMock(),
@@ -187,6 +188,7 @@ class _FakeResp:
 class _FakeClient:
     def __init__(self, resp):
         self._resp = resp
+        self.last_kwargs = None  # captures headers/params for assertions
 
     def __enter__(self):
         return self
@@ -195,6 +197,7 @@ class _FakeClient:
         return False
 
     def get(self, *a, **kw):
+        self.last_kwargs = kw
         return self._resp
 
 
@@ -309,3 +312,59 @@ def test_save_stress_test_raises_400_on_an_invalid_scenario(monkeypatch):
             assert False, "expected HTTPException"
         except HTTPException as exc:
             assert exc.status_code == 400
+
+
+# ── BUG-RISKSNAP-NOSERVICETOKEN regression guard ────────────────────────────────────────────
+# Real bug caught via live-verification against real production data immediately after this
+# feature's first deploy: portfolio-optimizer's risk endpoints require auth, and the outbound
+# httpx calls originally sent no Authorization header at all, 401ing every real call. Both
+# tests below assert the real Authorization: Bearer <token> header is actually present —
+# neither test above (which only checks the RESULT, not the request that produced it) would
+# have caught this class of bug on its own.
+
+def test_save_var_snapshot_sends_a_real_authorization_header(monkeypatch):
+    with _session() as s:
+        _add_position(s, 9306, "AAPL", 10, 150.0)
+        _add_position(s, 9306, "MSFT", 5, 300.0)
+        user = MagicMock(id=9306)
+
+        fake_client = _FakeClient(_FakeResp(200, {
+            "symbols": ["AAPL", "MSFT"], "portfolio_beta": 1.0, "var_95_pct": 3.0,
+            "historical_var": {"var_95_1d_pct": 3.0, "var_99_1d_pct": None,
+                               "var_95_10d_pct": None, "var_99_10d_pct": None,
+                               "cvar_95_1d_pct": None, "cvar_99_1d_pct": None,
+                               "cvar_95_10d_pct": None, "cvar_99_10d_pct": None,
+                               "sample_size": 60, "insufficient_data": False},
+        }))
+        monkeypatch.setattr(save_var_snapshot.__httpx_module__, "Client", lambda *a, **kw: fake_client)
+
+        save_var_snapshot(session=s, user=user)
+
+        assert fake_client.last_kwargs is not None
+        headers = fake_client.last_kwargs.get("headers", {})
+        assert "Authorization" in headers
+        assert headers["Authorization"].startswith("Bearer ")
+        assert headers["Authorization"] != "Bearer "  # a real, non-empty token
+
+
+def test_save_stress_test_sends_a_real_authorization_header(monkeypatch):
+    with _session() as s:
+        _add_position(s, 9307, "AAPL", 10, 150.0)
+        _add_position(s, 9307, "MSFT", 5, 300.0)
+        user = MagicMock(id=9307)
+
+        fake_client = _FakeClient(_FakeResp(200, {
+            "scenario": "covid_2020", "label": "COVID-19 Crash",
+            "symbols": ["AAPL", "MSFT"], "benchmark_move_pct": -34.0,
+            "portfolio_impact_pct": -30.0,
+            "per_position_impact_pct": {"AAPL": -30.0, "MSFT": -30.0},
+        }))
+        monkeypatch.setattr(save_stress_test.__httpx_module__, "Client", lambda *a, **kw: fake_client)
+
+        save_stress_test(scenario="covid_2020", session=s, user=user)
+
+        assert fake_client.last_kwargs is not None
+        headers = fake_client.last_kwargs.get("headers", {})
+        assert "Authorization" in headers
+        assert headers["Authorization"].startswith("Bearer ")
+        assert headers["Authorization"] != "Bearer "
