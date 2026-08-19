@@ -3762,6 +3762,57 @@ def _compute_portfolio_drawdown(session, portfolio_id: int, equity: float) -> fl
     return (peak_equity - equity) / peak_equity
 
 
+_VOL_TARGET_MIN_SAMPLE_DAYS = 20  # same annualizing-sample floor as _MIN_SHARPE_DAYS (paper_portfolio.py)
+_VOL_TARGET_ANNUAL_PCT = 0.15     # target annualized portfolio volatility (design doc default)
+_VOL_TARGET_MULT_MIN = 0.5
+_VOL_TARGET_MULT_MAX = 1.5
+
+
+def _compute_portfolio_vol_targeting_mult(session, portfolio_id: int) -> float:
+    """IF-13: portfolio-level realized-volatility-targeting position-size multiplier.
+
+    Genuinely distinct signal from what regime_size_mult already dampens on: VIX (T192) is
+    market-wide, ATR-based sizing elsewhere is per-stock — neither reflects THIS portfolio's
+    own realized return volatility, which can diverge from both (e.g. a concentrated,
+    correlated book can realize much higher volatility than a calm VIX would suggest, or vice
+    versa for a well-diversified one).
+
+    vol_mult = target_vol / realized_vol, clamped to [_VOL_TARGET_MULT_MIN, _VOL_TARGET_MULT_MAX]
+    — a portfolio realizing MORE volatility than the target gets sized down (mult < 1), one
+    realizing LESS gets sized up (mult > 1), matching the design doc's own formula exactly.
+
+    Reuses _portfolio_risk_metrics()'s own annualized-volatility derivation
+    (paper_portfolio.py) rather than re-deriving a second, possibly-drifting formula: daily
+    returns from the equity curve -> sample variance -> sqrt(252) annualization.
+
+    Fails open to 1.0 (no adjustment) when there isn't yet enough equity-curve history to
+    annualize meaningfully (same _VOL_TARGET_MIN_SAMPLE_DAYS floor _portfolio_risk_metrics()
+    itself uses for Sharpe/Sortino/Calmar) or when realized volatility is degenerate (zero).
+    """
+    import math
+
+    rows = session.execute(
+        select(PaperEquityCurve.equity)
+        .where(PaperEquityCurve.portfolio_id == portfolio_id)
+        .order_by(PaperEquityCurve.date)
+    ).scalars().all()
+    equities = [e for e in rows if e and e > 0]
+    if len(equities) < _VOL_TARGET_MIN_SAMPLE_DAYS:
+        return 1.0
+
+    daily_returns = [(equities[i] / equities[i - 1]) - 1 for i in range(1, len(equities))]
+    n = len(daily_returns)
+    mean_r = sum(daily_returns) / n
+    variance = sum((r - mean_r) ** 2 for r in daily_returns) / max(n - 1, 1)
+    std_r = math.sqrt(variance) if variance > 0 else 0.0
+    realized_vol = std_r * math.sqrt(252)
+    if realized_vol <= 0:
+        return 1.0
+
+    vol_mult = _VOL_TARGET_ANNUAL_PCT / realized_vol
+    return round(min(_VOL_TARGET_MULT_MAX, max(_VOL_TARGET_MULT_MIN, vol_mult)), 3)
+
+
 def _write_gate_block(portfolio_id: int, gate: str, reason: str) -> None:
     """Record the most recent portfolio-level gate that blocked new entries.
 
@@ -4600,6 +4651,23 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 regime_size_mult = _vix_mult
                 log.info("paper.vix_size_reduced", vix=round(_vix_f, 1),
                          mult=_vix_mult, note="VIX gradient sizing applied")
+
+    # IF-13: portfolio-level realized-volatility-targeting size adjustment — a genuinely
+    # distinct signal from VIX (market-wide)/breadth/HMM above (which only ever dampen via
+    # min(), never scale up): this portfolio's OWN realized return volatility can diverge from
+    # what market-wide VIX suggests (e.g. a concentrated, correlated book realizing more
+    # volatility than a calm VIX implies, or a diversified one realizing less). Applied as its
+    # own multiply of regime_size_mult (not a further min()) specifically because it must be
+    # able to move sizing UP when realized vol is comfortably below target, not just down.
+    if cfg.get("vol_targeting_enabled", True):
+        _vol_mult = _compute_portfolio_vol_targeting_mult(session, portfolio.id)
+        if _vol_mult != 1.0:
+            _prev_regime_mult = regime_size_mult
+            regime_size_mult = round(regime_size_mult * _vol_mult, 3)
+            log.info("paper.vol_targeting_size_adjusted", vol_mult=_vol_mult,
+                     prev_regime_mult=round(_prev_regime_mult, 3),
+                     new_regime_mult=regime_size_mult,
+                     note="portfolio realized-vol-targeting multiplier applied")
 
     # T189: Regime-aware entry throttle — choppy/risk_off regimes cap new entries at 1/day.
     # Human traders become more selective in difficult markets and don't force setups.

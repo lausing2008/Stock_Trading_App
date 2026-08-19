@@ -14311,3 +14311,98 @@ If `max_pain` is always `null` for a symbol with real, actively-traded options, 
 `calls`/`puts` arrays' own `oi` fields first — a `null` max pain with real non-zero OI present
 would be a genuine regression; a `null` alongside genuinely thin/zero OI on both sides is
 correct, expected behavior.
+
+---
+
+## Feature Reference: IF-13 (partial) — Portfolio-Level Volatility-Targeting Size Multiplier (2026-08-19)
+
+**Closes the volatility-targeting half of Tier 289's `IF-13-REGIME-AWARE-SIZING` finding** —
+the Kelly-consumption half (`GET /paper-portfolio/kelly` is computed but never consumed by
+real sizing) remains deliberately open, not attempted in the same pass.
+
+**Confirmed as a genuinely distinct signal before building anything**: `regime_size_mult`
+(`paper_trading_engine.py`) already stacks 4 dampeners via `min()` — base regime state,
+pre-regime early warning, market breadth (IWM/MDY vs 200EMA), HMM bear pressure — plus a
+continuous VIX gradient. None of these is THIS portfolio's own realized return volatility,
+which can diverge from all of them: a concentrated, correlated book can realize far MORE
+volatility than a calm VIX implies, or a well-diversified one can realize far LESS.
+
+**Design risk flagged and resolved via `AskUserQuestion`** before writing code: stacking a 5th
+correlated volatility dampener onto live trading capital is a real risk worth a deliberate
+choice, not a default. Presented shadow/log-only vs. live/immediate vs. skip — user explicitly
+chose **"Build it live, applied immediately."**
+
+**Implementation**: new `_compute_portfolio_vol_targeting_mult(session, portfolio_id)` in
+`paper_trading_engine.py`, placed right next to the sibling `_compute_portfolio_drawdown()`
+(T286-DRAWDOWN-ALERT) it's structurally closest to. Reuses `_portfolio_risk_metrics()`'s own
+established annualized-volatility formula (`paper_portfolio.py`) rather than re-deriving a
+second, possibly-drifting one: daily returns from `PaperEquityCurve.equity` (ordered by date)
+→ sample variance → `sqrt(252)` annualization. Reuses that same function's own
+`_MIN_SHARPE_DAYS = 20` sample floor (renamed `_VOL_TARGET_MIN_SAMPLE_DAYS` locally) — fewer
+than 20 equity-curve points fails open to a neutral `1.0`, since annualizing a shorter window
+produces a meaningless estimate. `vol_mult = 0.15 (target annual vol) / realized_vol`, clamped
+to `[0.5, 1.5]` — matches the design doc's own bounds exactly. A zero-variance (perfectly flat)
+equity curve also fails open to `1.0` rather than a divide-by-zero crash.
+
+**Composition — a genuine multiply, not a `min()`, and this distinction is load-bearing**:
+`regime_size_mult`'s own pre-existing comment (`T234-PT-SIZING-MULT-STACK`) states its 4
+internal dampeners compose via `min()` specifically to avoid multiple downward-pressure
+signals compounding multiplicatively. But vol-targeting must be able to move sizing **UP**
+when realized volatility is comfortably below target — a `min()` composition would silently
+discard any upward adjustment, defeating half the feature. Applied as `regime_size_mult =
+round(regime_size_mult * _vol_mult, 3)`, its own final step in the composition chain, right
+after the VIX gradient block. Gated behind a new `vol_targeting_enabled` cfg flag (default
+`True`). A neutral (`== 1.0`) multiplier is never logged, to avoid a log line on every scan
+cycle for every portfolio when nothing changed.
+
+**Tests**: `services/market-data/tests/test_vol_targeting.py` (11 cases), matching
+`test_drawdown_alert.py`'s established real-sqlalchemy-via-stub-pop-and-restore technique
+exactly (the sibling function it sits next to already uses this pattern) — a real in-memory
+SQLite engine + the real `PaperEquityCurve` model, with the function itself extracted via
+`exec()` from its own real source text (`paper_trading_engine.py`'s own module-level
+`from sqlalchemy import ...` would otherwise resolve against conftest's stubbed `sqlalchemy` if
+that module gets imported elsewhere in the same pytest session). Covers both fail-open paths
+(sample floor, zero variance), both clamp directions (high realized vol → sizes down to the
+0.5 floor; low realized vol → sizes up to the 1.5 ceiling), a near-target realized-vol case
+landing near-neutral, per-portfolio isolation, and 3 source-text regression checks on the
+`_scan_for_entries()` wiring (the multiply-not-`min()` property, the admin toggle gate, and the
+neutral-multiplier log-suppression).
+
+**A real, self-caught test gap during adversarial verification** (matching this repo's own
+"still passes after sabotage is itself a finding" discipline): the first version of
+`test_fewer_than_min_sample_days_returns_neutral_1_0` used a **constant** return sequence
+(`[0.01] * 10`). Lowering the real sample floor from 20 to 2 (the sabotage) did NOT make this
+test fail — because a constant return produces exactly zero variance, which trips the
+*separate* zero-variance fail-open guard regardless of sample size, masking the sabotage
+entirely. Investigated per this repo's standing discipline rather than shrugged off; fixed by
+switching the fixture to genuinely-varying (non-constant) returns, which isolates the
+sample-floor guard specifically — re-verified the sabotage is now correctly caught.
+
+**Adversarial verification** — 3 sabotage/revert cycles, all caught and reverted (confirmed
+byte-identical via `md5sum` before moving on): removing the `[0.5, 1.5]` clamp entirely (caught
+by both clamp-direction tests, which would otherwise have seen an unbounded multiplier);
+loosening the sample floor to `< 2` (caught by the corrected fixture above); and — the most
+important one — swapping the composition from a genuine multiply to a `min()` (caught by the
+dedicated multiply-not-`min()` wiring test, confirming this distinction is actually enforced by
+a test, not just asserted in a comment).
+
+Full 1810-test market-data suite green; `pyflakes` clean on both touched files (all 3
+pre-existing warnings in `paper_trading_engine.py` confirmed via `git stash` to predate this
+change — one warning's line number shifted by exactly the ~51 lines of new code added above it,
+nothing new introduced).
+
+**Not built this pass, documented not silently dropped**: the Kelly-consumption half of the
+original IF-13 finding (`GET /paper-portfolio/kelly` computes quarter-Kelly + a
+`recommended_risk_pct` but nothing consumes it for real sizing — it remains advisory-only,
+matching the tracker's own original framing that this is a deliberate, separately-scoped
+decision, not an oversight).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n "_compute_portfolio_vol_targeting_mult\|vol_targeting_enabled" /app/src/services/paper_trading_engine.py
+docker logs stockai-market-data-1 --since 1h | grep 'paper.vol_targeting_size_adjusted'
+```
+A portfolio with fewer than 20 real `PaperEquityCurve` rows will always show a neutral `1.0`
+(no log line at all) — this is correct, expected fail-open behavior, not a bug; check
+`SELECT COUNT(*) FROM paper_equity_curve WHERE portfolio_id = <id>` directly before assuming
+the multiplier itself is broken.
