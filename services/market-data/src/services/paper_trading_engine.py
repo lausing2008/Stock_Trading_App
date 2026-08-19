@@ -2806,7 +2806,11 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             # fills at live_price regardless of label. Fixed by using live_price directly for
             # every exit_reason, matching what the code already did, rather than leaving a
             # conditional that describes logic that doesn't run.
-            slippage = cfg.get("entry_slippage_pct", 0.001)
+            _base_slippage = cfg.get("entry_slippage_pct", 0.001)
+            slippage = (
+                _size_aware_slippage_pct(trade.shares, _avg_daily_volume_for(trade.symbol), _base_slippage)
+                if cfg.get("size_aware_slippage_enabled", True) else _base_slippage
+            )
             exit_price = round(live_price * (1 - slippage), 4)
             exit_commission = round(cfg.get("commission_per_share", 0.0) * trade.shares, 4)
             exit_value = round(exit_price * trade.shares, 2)
@@ -2927,10 +2931,14 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         notes_list = list(trade.entry_decision_notes or [])
         p1_done = _P1 in notes_list or "PARTIAL_TAKEN" in notes_list
         p2_done = _P2 in notes_list
-        slippage = cfg.get("entry_slippage_pct", 0.001)
+        _base_slippage = cfg.get("entry_slippage_pct", 0.001)
 
         if not p1_done and partial_tp_pct and pnl_pct >= partial_tp_pct and trade.shares > 0.01:
             partial_shares = round(trade.shares * 0.33, 4)
+            slippage = (
+                _size_aware_slippage_pct(partial_shares, _avg_daily_volume_for(trade.symbol), _base_slippage)
+                if cfg.get("size_aware_slippage_enabled", True) else _base_slippage
+            )
             partial_price  = round(live_price * (1 - slippage), 4)
             partial_value  = round(partial_shares * partial_price, 2)
             partial_pnl    = round((partial_price - entry) * partial_shares, 2)
@@ -2955,6 +2963,10 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
 
         if p1_done and not p2_done and partial_tp2_pct and pnl_pct >= partial_tp2_pct and trade.shares > 0.01:
             partial_shares = round(trade.shares * 0.50, 4)
+            slippage = (
+                _size_aware_slippage_pct(partial_shares, _avg_daily_volume_for(trade.symbol), _base_slippage)
+                if cfg.get("size_aware_slippage_enabled", True) else _base_slippage
+            )
             partial_price  = round(live_price * (1 - slippage), 4)
             partial_value  = round(partial_shares * partial_price, 2)
             partial_pnl    = round((partial_price - entry) * partial_shares, 2)
@@ -3902,6 +3914,48 @@ def _clear_no_entry_summary(portfolio_id: int) -> None:
         pass
 
 
+def _avg_daily_volume_for(symbol: str) -> float | None:
+    """IF-06: look up the symbol's own cached 20-day average daily volume (shares) from the
+    same stockai:avg_volume Redis cache _fetch_live_bulk()/check_volume_anomalies() already
+    read — no new data source, reusing this app's established average-volume cache. Fails open
+    to None (never raises) on any Redis/parse error, matching every other lookup in this file
+    that reads this same key.
+    """
+    try:
+        import json as _json_lib
+        from common.redis_client import get_redis as _get_pool_redis
+        _cache = _json_lib.loads(_get_pool_redis().get("stockai:avg_volume") or "{}")
+        _v = _cache.get(symbol)
+        return float(_v) if _v else None
+    except Exception:
+        return None
+
+
+_SIZE_AWARE_SLIPPAGE_IMPACT_K = 2.0  # scales the sqrt(participation) impact term — see docstring
+
+
+def _size_aware_slippage_pct(shares: float, avg_daily_volume: float | None, base_slippage_pct: float) -> float:
+    """IF-06: scale the flat entry/exit slippage assumption with position size relative to the
+    stock's own liquidity, instead of a single constant applied to every trade regardless of
+    size or how thin the name is.
+
+    Uses the standard simplified market-impact approximation: impact grows with the SQUARE
+    ROOT of participation rate (shares / avg_daily_volume), not linearly — a well-established
+    approximation (see e.g. the square-root law of market impact) reflecting that impact cost
+    grows sub-linearly with size for any single trade. Returns
+    base_slippage_pct * (1 + _SIZE_AWARE_SLIPPAGE_IMPACT_K * sqrt(participation_rate)).
+
+    Fails open to the unmodified base_slippage_pct — never LOWER than it — whenever
+    avg_daily_volume is missing/non-positive (no average-volume data yet for this symbol) or
+    shares is non-positive (a degenerate order size). This means a size-aware model can only
+    ever be as-or-more conservative than the flat constant it replaces, never less.
+    """
+    if not avg_daily_volume or avg_daily_volume <= 0 or shares <= 0:
+        return base_slippage_pct
+    participation = shares / avg_daily_volume
+    return round(base_slippage_pct * (1 + _SIZE_AWARE_SLIPPAGE_IMPACT_K * (participation ** 0.5)), 6)
+
+
 def _slipped_position_value(shares: float, live_price: float, entry_slippage_pct: float) -> float:
     """T247-MARKETDATA-CASHGATE-PRESLIPPAGE: the cash-sufficiency gate previously compared
     pre-slippage position_value (at live_price) against current_cash, but the actual cash
@@ -4139,7 +4193,13 @@ def _open_paper_trade(
         return None, "sector_count_cap"
 
     # PT-B6: Apply entry slippage — simulates spread / market impact
-    slippage = cfg.get("entry_slippage_pct", 0.001)
+    # IF-06: scale the flat base slippage with position size relative to this symbol's own
+    # liquidity, instead of applying the same constant to every trade regardless of size.
+    _base_slippage = cfg.get("entry_slippage_pct", 0.001)
+    slippage = (
+        _size_aware_slippage_pct(shares, _avg_daily_volume_for(stock.symbol), _base_slippage)
+        if cfg.get("size_aware_slippage_enabled", True) else _base_slippage
+    )
     commission = round(cfg.get("commission_per_share", 0.0) * shares, 4)
 
     # Cash gate and the actual deduction below both use this same slipped value now
@@ -4970,7 +5030,15 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         if _si_fire_level is not None and _si_size_pct:
                             _si_add_value = _si_live * _si_trade.shares * _si_size_pct
                             if portfolio.current_cash >= _si_add_value * 1.1:
-                                _si_slippage = cfg.get("entry_slippage_pct", 0.001)
+                                _si_base_slippage = cfg.get("entry_slippage_pct", 0.001)
+                                # IF-06: approximate the add-on share count pre-slippage for the
+                                # size-aware lookup (a small circularity — exact shares depend on
+                                # slippage, slippage depends on shares — negligible at this scale).
+                                _si_approx_shares = _si_add_value / _si_live
+                                _si_slippage = (
+                                    _size_aware_slippage_pct(_si_approx_shares, _avg_daily_volume_for(_si_trade.symbol), _si_base_slippage)
+                                    if cfg.get("size_aware_slippage_enabled", True) else _si_base_slippage
+                                )
                                 _si_add_shares = round(_si_add_value / (_si_live * (1 + _si_slippage)), 4)
                                 _si_cost = round(_si_add_shares * _si_live * (1 + _si_slippage), 2)
                                 portfolio.current_cash = round(portfolio.current_cash - _si_cost, 2)

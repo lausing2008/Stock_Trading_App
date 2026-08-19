@@ -14406,3 +14406,99 @@ A portfolio with fewer than 20 real `PaperEquityCurve` rows will always show a n
 (no log line at all) — this is correct, expected fail-open behavior, not a bug; check
 `SELECT COUNT(*) FROM paper_equity_curve WHERE portfolio_id = <id>` directly before assuming
 the multiplier itself is broken.
+
+---
+
+## Feature Reference: IF-06 (partial) — Size-Aware Entry/Exit Slippage (2026-08-19)
+
+**Closes the size-aware-slippage half of Tier 289's `IF-06-SMART-ORDER-EXECUTION` finding** —
+limit-order support and the full TWAP/VWAP/iceberg design remain deliberately unbuilt, matching
+this item's own original scoping (execution algorithms aren't justified at current ~$100k
+paper-portfolio sizes against liquid US large-caps).
+
+**Found 5 real call sites, not the 3 originally cited**: a repo-wide grep for
+`entry_slippage_pct` in `paper_trading_engine.py` turned up 5 places reading the flat 10bps
+constant, not the 3 the original Tier 289 review cited — the real entry
+(`_open_paper_trade()`), the final exit (`_monitor_positions()`), BOTH levels of T232-PT6's
+two-tier partial scale-out, and T286-PYRAMID-TIERS' pyramid scale-in ADD path. All 5 now route
+through a new pure function.
+
+**`_size_aware_slippage_pct(shares, avg_daily_volume, base_slippage_pct)`**
+(`paper_trading_engine.py`, placed right before the sibling pure function
+`_slipped_position_value()` it's structurally closest to) — uses the standard simplified
+square-root market-impact approximation: `base_slippage_pct * (1 + K * sqrt(participation_
+rate))` where `participation_rate = shares / avg_daily_volume` and `K = 2.0`
+(`_SIZE_AWARE_SLIPPAGE_IMPACT_K`). Impact growing with the SQUARE ROOT of size (not linearly)
+is a well-established simplification reflecting that per-trade impact cost grows sub-linearly
+with size. **Fails open to the unmodified `base_slippage_pct` — never lower** — whenever
+`avg_daily_volume` is missing/non-positive or `shares` is non-positive, meaning the size-aware
+model can only ever be as-or-more conservative than the flat constant it replaces, never less
+conservative.
+
+**`_avg_daily_volume_for(symbol)`** — reads the ALREADY-EXISTING `stockai:avg_volume` Redis
+cache (`refresh_avg_volume_cache()` in `routes.py`, a real 20-day mean-share-volume-per-symbol
+cache already refreshed 4-hourly for this app's RVOL/screener/volume-anomaly features) — no new
+data source, no new ingestion job. Fails open to `None` on any Redis/parse error, matching
+every other lookup in this file that reads this same key.
+
+**Wiring — 5 call sites, each gated behind a new `size_aware_slippage_enabled` cfg flag
+(default `True`)**:
+1. **Entry** (`_open_paper_trade()`) — uses the real, already-computed `shares` for this
+   candidate.
+2. **Final exit** (`_monitor_positions()`) — uses `trade.shares` (the full remaining position
+   being closed).
+3/4. **Both partial scale-out levels** (T232-PT6, `_monitor_positions()`) — a real, deliberate
+   distinction: each level's lookup uses THAT level's own tranche share count
+   (`partial_shares`, 33% or 50% of the remaining position), **never** the full remaining
+   `trade.shares` — a 33%-of-position sale must not be size-adjusted as if the whole position
+   were being sold at once.
+5. **Scale-in ADD** (T286-PYRAMID-TIERS, `_scan_for_entries()`) — the add-on share count is
+   approximated pre-slippage (`_si_add_value / _si_live`), a small, explicitly-documented
+   circularity (the exact add-on share count itself depends on slippage, which depends on
+   shares) judged negligible at this scale rather than worth an iterative solve.
+
+**Tests**: `services/market-data/tests/test_size_aware_slippage.py` (19 cases) — the pure
+function's fail-open guards (missing/zero/negative `avg_daily_volume`, non-positive `shares`),
+a hand-verified exact-formula check (not just directional behavior), monotonicity in
+participation rate, a thinner stock producing higher slippage than a more liquid one for the
+identical share count, the never-lower-than-base invariant, `_avg_daily_volume_for()`'s Redis
+fail-open matrix (missing symbol, empty cache, connection error, malformed JSON — patched via
+`sys.modules["common.redis_client"].get_redis` directly, matching this repo's own documented
+gotcha that a freshly re-imported name against a `MagicMock`-stubbed parent package silently
+misses the real call site), and source-text regression checks confirming all 5 sites are wired
+AND correctly fall back to the plain flat constant when the toggle is off.
+
+**Adversarial verification** — 4 sabotage/revert cycles, all caught and reverted (confirmed
+byte-identical via `md5sum` before moving on):
+1. Removing the fail-open guard entirely — caught with a REAL crash (`TypeError: type complex
+   doesn't define __round__ method`), from taking the square root of a negative participation
+   rate when `avg_daily_volume` is negative — not just a wrong value, a genuine exception.
+2. Changing the impact exponent from `0.5` (sqrt) to `1.0` (linear) — caught by the dedicated
+   hand-computed formula test.
+3. Removing the `size_aware_slippage_enabled` toggle gate at the entry site — caught by 2 tests.
+4. Swapping a partial scale-out level's tranche share count for the full `trade.shares` — the
+   exact regression class the dedicated per-tranche test targets — caught correctly.
+
+Full 1829-test market-data suite green (up from 1810); `pyflakes` clean on the touched file
+(all 3 pre-existing warnings confirmed via `git stash` to predate this change — one warning's
+line number shifted by exactly the ~54 lines of new code added above it).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n "_size_aware_slippage_pct\|_avg_daily_volume_for\|size_aware_slippage_enabled" /app/src/services/paper_trading_engine.py
+
+# Spot-check the avg-volume cache and a real computed slippage value directly:
+docker exec stockai-market-data-1 python3 -c "
+import sys; sys.path.insert(0, '/app'); sys.path.insert(0, '/app/src')
+from src.services.paper_trading_engine import _avg_daily_volume_for, _size_aware_slippage_pct
+adv = _avg_daily_volume_for('AAPL')
+print('avg daily volume:', adv)
+print('slippage for 1000 shares:', _size_aware_slippage_pct(1000, adv, 0.001))
+"
+```
+If a real trade's slippage looks unexpectedly identical to the flat 10bps regardless of size,
+first confirm `stockai:avg_volume` actually has a real entry for that symbol —
+`docker exec stockai-redis-1 redis-cli get stockai:avg_volume | python3 -m json.tool | grep
+<SYMBOL>` — a missing cache entry (not yet refreshed, or a symbol outside this app's tracked
+universe) correctly falls back to the flat base, which is fail-open working as designed, not a
+bug.
