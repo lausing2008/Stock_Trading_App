@@ -69,6 +69,25 @@ async def backfill_release_actuals(_: str = Depends(get_current_username)):
     return result
 
 
+# ── IF-04: Cross-Asset Readings (yield curve / credit spread / dollar) ───────────
+
+@router.get("/events/cross-asset")
+def get_cross_asset(_: str = Depends(get_current_username)):
+    """Most recent daily reading plus a rule-based RISK_ON/RISK_OFF/NEUTRAL read — measured
+    macro context, not a validated trading signal (see get_latest_cross_asset_reading()'s own
+    docstring)."""
+    reading = economic.get_latest_cross_asset_reading()
+    if reading is None:
+        return {"reading": None, "note": "No cross-asset data synced yet"}
+    return {"reading": reading}
+
+
+@router.post("/events/sync/cross-asset")
+async def sync_cross_asset_route(_: str = Depends(get_current_username)):
+    result = await economic.sync_cross_asset()
+    return result
+
+
 # ── CAPE / AI-Bubble-Warning Valuation Indicator ──────────────────────────────
 
 @router.get("/events/valuation/cape")

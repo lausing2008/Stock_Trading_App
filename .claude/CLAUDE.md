@@ -14108,3 +14108,86 @@ docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
 # alongside real monitor/exit activity in the same window, outside market hours):
 docker logs stockai-market-data-1 --since <window> | grep 'entry_scan_skip\|paper.exit\|paper.stop_to_breakeven'
 ```
+
+---
+
+## Feature Reference: IF-04 Phase 1 — Cross-Asset Signals (Yield Curve + Credit Spread + Dollar Index) (Built 2026-08-19)
+
+**Closes the first, cheapest slice of IF-04** (see the Tier 289 review above) — extends the
+already-configured FRED sync in `event-intelligence` with real cross-asset macro data, rather
+than building a new integration from scratch.
+
+**What it is**: a new daily-synced `CrossAssetReading` table (one row per calendar day, all
+continuous numeric fields — a genuinely different SHAPE from `EconomicEvent`'s row-per-release-
+event structure) storing 5 FRED series: `DGS10`/`DGS2` (10Y/2Y treasury yields), `T10Y2Y` (the
+2s10s spread — the standard yield-curve-inversion signal), `BAMLH0A0HYM2` (high-yield credit
+OAS spread), `DTWEXBGS` (broad trade-weighted dollar index). All 5 series IDs were verified LIVE
+against the real FRED API before being hardcoded (2026-08-19) — not guessed:
+```
+DGS10 4.72%  DGS2 4.19%  T10Y2Y +0.52%  BAMLH0A0HYM2 2.70%  DTWEXBGS 118.9
+```
+
+**How it works**: `sync_cross_asset()` (`services/event-intelligence/src/services/economic.py`)
+reuses the exact same per-series-isolated fetch pattern `sync_fred()` already established — a
+failure on one series never blocks the others. Each observation upserts into ONE row per
+`as_of` date via `on_conflict_do_update(index_elements=["as_of"], set_={column: value})` —
+critically, 5 separate series calls correctly accumulate into a single day's row (each updating
+only its OWN column), rather than 5 series each creating/colliding on their own row. Scheduled
+daily at 06:20 UTC (`job_sync_cross_asset`, right after the existing `sync_fred_release_dates`
+job) plus a startup seed task, matching that job's own established convention.
+
+`get_latest_cross_asset_reading()` adds a rule-based `RISK_ON`/`RISK_OFF`/`NEUTRAL` classification
+— explicitly stated in its own docstring as unvalidated macro CONTEXT, not a trading signal
+(no walk-forward backtest of these specific thresholds has been run), matching the same honesty
+convention already established for CAPE and options-flow sentiment elsewhere in this app. A
+2s10s inversion or a wide HY spread (>5%) scores toward RISK_OFF; a steep curve or tight spread
+(<3.5%) scores toward RISK_ON; a genuine tie between the two reads NEUTRAL rather than silently
+picking a side.
+
+**API**: `GET /events/cross-asset` (the latest reading + classification), `POST /events/sync/
+cross-asset` (manual trigger). **Frontend**: a new "🌐 CROSS-ASSET SIGNALS" card on
+`intelligence.tsx`'s Overview tab, right after the existing Market Pulse card.
+
+**Deliberately deferred, not built in this pass**: gold/oil (yfinance-sourced, not FRED) and VIX
+term structure — adding them here would introduce a new cross-service dependency
+(`event-intelligence` has no yfinance dependency today) into what was scoped as the cheapest,
+FRED-only slice. A natural follow-on, not silently dropped.
+
+**A real, self-caught test bug during development** (the exact "still passes after sabotage"
+red flag this repo's testing discipline treats as a finding in its own right): the first test
+run against a genuinely correct implementation still reported `synced: 0` — traced to the test's
+OWN stub-pop-and-restore sequence importing `economic.py` AFTER restoring `sqlalchemy.dialects.
+postgresql`'s stub, meaning `economic.py`'s own `from sqlalchemy.dialects.postgresql import
+insert as pg_insert` silently bound to a `MagicMock`, not the real function — every upsert
+silently no-op'd. Fixed by capturing the real `insert` function BEFORE the stub restore (as
+`_real_pg_insert`) and patching `economic.pg_insert` with it directly in each test, alongside
+`economic.CrossAssetReading` (same root cause — a module-level import resolved against the
+wrong module state at exactly the moment `economic.py` itself was imported).
+
+**A second, genuine "still passes after sabotage" finding, investigated rather than dismissed**:
+removing the explicit `obs["value"] in (".", "")` skip-guard for FRED's own missing-observation
+sentinel did NOT make the dedicated test fail — because `float(".")` already raises
+`ValueError`, caught by the surrounding `try/except Exception: continue`, producing the
+IDENTICAL final observable outcome either way. The guard is real defensive code (clearer
+intent, avoids an internal exception) but not distinguishable from the crash-and-catch path at
+the level this test checks — the test's own docstring was corrected to state this precisely
+rather than over-claim what it proves.
+
+**Tests**: `services/event-intelligence/tests/test_cross_asset.py` (14 cases) — the multi-series
+upsert-into-one-row property, per-series failure isolation, the FRED "." sentinel never
+fabricating a 0.0, and the full RISK_ON/RISK_OFF/NEUTRAL classification matrix (inverted+wide,
+steep+tight, mixed-signals-read-neutral, a middling reading producing no direction bias, and
+using the MOST RECENT `as_of` row, not the first inserted). 3 adversarial sabotage cycles, 2
+caught correctly (the upsert conflict-action swap, the classification direction flip) and 1
+correctly identified as testing a redundant-but-harmless guard (documented above). Full
+270-test event-intelligence suite green; 132-test frontend suite + full `next build` green;
+pyflakes clean on all touched files.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT * FROM cross_asset_readings ORDER BY as_of DESC LIMIT 5;"
+docker exec stockai-event-intelligence-1 curl -s 'http://localhost:8010/events/cross-asset' \
+  -H "Authorization: Bearer <token>"
+docker logs stockai-event-intelligence-1 --since 24h | grep 'sync_cross_asset\|cross_asset'
+```

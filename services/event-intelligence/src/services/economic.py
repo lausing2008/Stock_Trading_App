@@ -10,7 +10,7 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from common.config import get_settings
-from db import get_session, SessionLocal, EconomicEvent
+from db import get_session, SessionLocal, EconomicEvent, CrossAssetReading
 
 log = structlog.get_logger()
 _settings = get_settings()
@@ -250,6 +250,137 @@ async def sync_fred_release_dates(lookback_days: int = 180, lookahead_days: int 
                 log.warning("economic.fred_release_dates_error", release_id=release_id, error=str(exc))
 
     return {"synced": upserted, "skipped": None}
+
+
+# IF-04: FRED series ID -> CrossAssetReading column. Deliberately just 5 series (yield curve +
+# credit spread + dollar index) — see CrossAssetReading's own docstring for why gold/oil/VIX
+# term structure are a separate follow-on, not this slice. All 5 series IDs were verified live
+# against the real FRED API before being hardcoded here (2026-08-19) — not guessed.
+_CROSS_ASSET_SERIES: list[tuple[str, str]] = [
+    ("DGS10",        "yield_10y"),
+    ("DGS2",         "yield_2y"),
+    ("T10Y2Y",       "yield_curve_2s10s"),
+    ("BAMLH0A0HYM2", "hy_spread"),
+    ("DTWEXBGS",     "dxy"),
+]
+
+
+async def sync_cross_asset(lookback_days: int = 30) -> dict:
+    """IF-04: fetch the latest cross-asset readings and upsert one row per calendar day into
+    cross_asset_readings. Reuses the SAME FRED api_key/rate-limit/error-handling pattern as
+    sync_fred() above rather than a second, independently-written HTTP client.
+
+    Each series is fetched independently (a failure on one series must not block the others —
+    matching sync_fred()'s own per-series try/except), and each observation is upserted keyed
+    on its OWN date, updating only that series' column via on_conflict_do_update — so fetching
+    5 series across 5 separate calls correctly accumulates into one row per day rather than
+    5 series each creating (and then immediately violating the unique constraint on) their own
+    row.
+    """
+    api_key = getattr(_settings, "fred_api_key", "")
+    if not api_key:
+        log.info("economic.cross_asset_skip", reason="FRED_API_KEY not set")
+        return {"synced": 0, "skipped": "no_api_key"}
+
+    base_url = "https://api.stlouisfed.org/fred"
+    observation_start = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    upserted = 0
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        for series_id, column in _CROSS_ASSET_SERIES:
+            try:
+                r = await client.get(
+                    f"{base_url}/series/observations",
+                    params={
+                        "series_id": series_id,
+                        "api_key": api_key,
+                        "file_type": "json",
+                        "observation_start": observation_start,
+                        "sort_order": "asc",
+                        "limit": 100,
+                    },
+                )
+                if r.status_code != 200:
+                    log.warning("economic.cross_asset_fetch_failed", series=series_id, status=r.status_code)
+                    continue
+                observations = r.json().get("observations", [])
+                with SessionLocal() as s:
+                    for obs in observations:
+                        if obs["value"] in (".", ""):
+                            continue
+                        try:
+                            as_of = datetime.strptime(obs["date"], "%Y-%m-%d").date()
+                            value = float(obs["value"])
+                            stmt = (
+                                pg_insert(CrossAssetReading)
+                                .values(as_of=as_of, **{column: value})
+                                .on_conflict_do_update(
+                                    index_elements=["as_of"],
+                                    set_={column: value},
+                                )
+                            )
+                            result = s.execute(stmt)
+                            upserted += result.rowcount
+                        except Exception:
+                            continue
+                    s.commit()
+                await asyncio.sleep(0.1)  # FRED rate limit: 120/min
+            except Exception as exc:
+                log.warning("economic.cross_asset_error", series=series_id, error=str(exc))
+
+    return {"synced": upserted, "skipped": None}
+
+
+def get_latest_cross_asset_reading() -> dict | None:
+    """Most recent cross_asset_readings row, plus a rule-based RISK_ON/RISK_OFF/NEUTRAL read.
+
+    The classification is deliberately simple and stated, not hidden — a real backtest of these
+    specific thresholds has not been run (unlike this app's live-decision-affecting parameters,
+    which all go through walk-forward validation before being trusted); this is a measured
+    macro CONTEXT panel, matching the honesty convention already established for CAPE/options-
+    flow sentiment elsewhere in this app, not a validated trading signal.
+    """
+    with SessionLocal() as s:
+        row = s.execute(
+            select(CrossAssetReading).order_by(CrossAssetReading.as_of.desc()).limit(1)
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+
+        notes: list[str] = []
+        risk_score = 0  # positive = risk-on, negative = risk-off
+        if row.yield_curve_2s10s is not None:
+            if row.yield_curve_2s10s < 0:
+                risk_score -= 1
+                notes.append("Yield curve inverted (2s10s < 0) — historically a recession-risk signal, though with a long and variable lead time.")
+            elif row.yield_curve_2s10s > 1.0:
+                risk_score += 1
+                notes.append("Yield curve steep (2s10s > 1.0%) — historically associated with expansion/growth conditions.")
+        if row.hy_spread is not None:
+            if row.hy_spread > 5.0:
+                risk_score -= 1
+                notes.append(f"High-yield credit spread elevated ({row.hy_spread:.2f}%) — signals rising credit stress/risk aversion.")
+            elif row.hy_spread < 3.5:
+                risk_score += 1
+                notes.append(f"High-yield credit spread tight ({row.hy_spread:.2f}%) — signals low credit stress.")
+
+        if risk_score >= 1:
+            direction = "RISK_ON"
+        elif risk_score <= -1:
+            direction = "RISK_OFF"
+        else:
+            direction = "NEUTRAL"
+
+        return {
+            "as_of": row.as_of.isoformat(),
+            "yield_2y": row.yield_2y,
+            "yield_10y": row.yield_10y,
+            "yield_curve_2s10s": row.yield_curve_2s10s,
+            "hy_spread": row.hy_spread,
+            "dxy": row.dxy,
+            "direction": direction,
+            "notes": notes,
+        }
 
 
 def get_upcoming_economic_events(days: int = 14, country: str = "US") -> list[dict]:

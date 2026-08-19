@@ -649,6 +649,9 @@ export const api = {
   // ── Event Intelligence ──────────────────────────────────────────────────
   eventsOverview: () => request<EventIntelOverview>('/events/overview'),
   eventsEconomic: (days = 14, market = 'US') => request<EconomicEventsResponse>(`/events/economic?days=${days}&market=${market}`),
+  // IF-04: yield curve / credit spread / dollar index — measured macro context, not a
+  // validated trading signal (see get_latest_cross_asset_reading()'s own docstring).
+  eventsCrossAsset: () => request<CrossAssetResponse>('/events/cross-asset'),
   eventsCape: (months = 24) => request<CapeResponse>(`/events/valuation/cape?months=${months}`),
   eventsEarningsCalendar: (days = 14) => request<EarningsEvent[]>(`/events/earnings/calendar?days=${days}`),
   eventsEarningsSymbol: (symbol: string) => request<EarningsEvent[]>(`/events/earnings?symbol=${symbol}`),
@@ -2380,6 +2383,22 @@ export type EconomicEvent = {
 export type EconomicEventsResponse = {
   events: EconomicEvent[];
   fomc_days_away: number | null;
+};
+
+export type CrossAssetReading = {
+  as_of: string;
+  yield_2y: number | null;
+  yield_10y: number | null;
+  yield_curve_2s10s: number | null;
+  hy_spread: number | null;
+  dxy: number | null;
+  direction: 'RISK_ON' | 'RISK_OFF' | 'NEUTRAL';
+  notes: string[];
+};
+
+export type CrossAssetResponse = {
+  reading: CrossAssetReading | null;
+  note?: string;
 };
 
 export type CapeReading = {

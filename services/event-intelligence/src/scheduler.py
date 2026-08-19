@@ -39,6 +39,13 @@ async def job_sync_fred_release_dates():
     await _run("sync_fred_release_dates", economic.sync_fred_release_dates())
 
 
+async def job_sync_cross_asset():
+    # IF-04: yield curve / credit spread / dollar index daily readings — a genuinely
+    # different SHAPE from sync_fred()'s row-per-release-event rows (one row per calendar
+    # day, all continuous numeric fields), so it gets its own sync + its own table.
+    await _run("sync_cross_asset", economic.sync_cross_asset())
+
+
 async def job_sync_earnings():
     await _run("sync_earnings", earnings.sync_all_earnings())
 
@@ -130,10 +137,12 @@ async def start_scheduler():
     # T249-MARKETMOVER-P0: seed the real release-date calendar immediately at startup too,
     # so a fresh deploy doesn't leave the calendar empty until the next 06:15 cron run.
     asyncio.create_task(job_sync_fred_release_dates())
+    asyncio.create_task(job_sync_cross_asset())
 
     # Daily sync jobs (UTC times)
     _scheduler.add_job(job_sync_economic,      "cron", hour=6,  minute=0,  id="sync_economic")
     _scheduler.add_job(job_sync_fred_release_dates, "cron", hour=6, minute=15, id="sync_fred_release_dates")
+    _scheduler.add_job(job_sync_cross_asset,   "cron", hour=6,  minute=20, id="sync_cross_asset")
     _scheduler.add_job(job_sync_earnings,      "cron", hour=6,  minute=30, id="sync_earnings")
     # AUD-EARNINGS-INTRADAY-SYNC-GAP: sync_earnings above only runs once/day before the US
     # open — a report released during market hours or after the close (the normal case) sat

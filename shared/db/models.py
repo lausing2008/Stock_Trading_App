@@ -1019,6 +1019,36 @@ class EconomicEvent(Base):
     )
 
 
+class CrossAssetReading(Base):
+    """IF-04: daily cross-asset market readings (yield curve, credit spreads, dollar index) —
+    a genuinely different SHAPE from EconomicEvent's row-per-release-event structure. One row
+    per calendar day, all fields continuous numeric series, sourced from FRED (the same
+    already-configured API key sync_fred()/sync_fred_release_dates() use).
+
+    Deliberately scoped to what a real, verified FRED sync can populate — DGS10/DGS2/T10Y2Y
+    (treasury yields + the 2s10s spread, the standard yield-curve-inversion signal) and
+    BAMLH0A0HYM2 (high-yield OAS credit spread) and DTWEXBGS (broad trade-weighted dollar
+    index). Gold/oil/commodities and VIX term structure are yfinance-sourced, not FRED, and
+    intentionally deferred to a separate follow-on rather than adding a new cross-service
+    dependency (event-intelligence has no yfinance dependency today) to this first slice.
+    See .claude/CLAUDE.md's IF-04 review entry for the full scoping rationale.
+
+    A brand-new table — create_all() handles it automatically, no manual ALTER TABLE needed.
+    """
+    __tablename__ = "cross_asset_readings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    as_of: Mapped[date] = mapped_column(Date, unique=True, index=True)
+
+    yield_2y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    yield_10y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    yield_curve_2s10s: Mapped[float | None] = mapped_column(Float, nullable=True)  # 10y - 2y, FRED's own T10Y2Y series
+    hy_spread: Mapped[float | None] = mapped_column(Float, nullable=True)  # BAMLH0A0HYM2, high-yield OAS in %
+    dxy: Mapped[float | None] = mapped_column(Float, nullable=True)  # DTWEXBGS, broad trade-weighted dollar index
+
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class EarningsEvent(Base):
     __tablename__ = "earnings_events"
 

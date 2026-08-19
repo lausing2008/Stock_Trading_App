@@ -141,6 +141,69 @@ function MarketPulseCard() {
   );
 }
 
+function crossAssetColor(direction: string): string {
+  if (direction === 'RISK_ON') return '#4ade80';
+  if (direction === 'RISK_OFF') return '#f87171';
+  return '#9ca3af';
+}
+
+// IF-04: yield curve / credit spread / dollar index — reuses event-intelligence's own daily
+// FRED sync rather than a new data source. The RISK_ON/RISK_OFF/NEUTRAL read is a stated,
+// rule-based read (not a validated trading signal) — matching the same honesty convention
+// already established for CAPE/options-flow sentiment elsewhere in this app.
+function CrossAssetCard() {
+  const { data, isLoading } = useSWR('crossAsset', () => api.eventsCrossAsset(), { refreshInterval: 3_600_000 });
+  if (isLoading) return null;
+  if (!data || !data.reading) return null;
+
+  const r = data.reading;
+  const color = crossAssetColor(r.direction);
+
+  return (
+    <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: 8, padding: '16px 20px', marginBottom: 24 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+        <h3 style={{ color: '#d1d5db', fontSize: 13, fontWeight: 600, margin: 0 }}>
+          🌐 CROSS-ASSET SIGNALS
+        </h3>
+        <span style={{ color: '#6b7280', fontSize: 11 }}>as of {r.as_of}</span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <span style={{ color, fontWeight: 700, fontSize: 15 }}>{r.direction.replace('_', '-')}</span>
+        <span style={{ color: '#6b7280', fontSize: 12 }}>(rule-based macro context, not a validated signal)</span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 10, marginBottom: r.notes.length ? 12 : 0 }}>
+        <div>
+          <div style={{ color: '#6b7280', fontSize: 11 }}>10Y Yield</div>
+          <div style={{ color: '#e5e7eb', fontSize: 14, fontWeight: 600 }}>{r.yield_10y != null ? `${r.yield_10y.toFixed(2)}%` : '—'}</div>
+        </div>
+        <div>
+          <div style={{ color: '#6b7280', fontSize: 11 }}>2Y Yield</div>
+          <div style={{ color: '#e5e7eb', fontSize: 14, fontWeight: 600 }}>{r.yield_2y != null ? `${r.yield_2y.toFixed(2)}%` : '—'}</div>
+        </div>
+        <div>
+          <div style={{ color: '#6b7280', fontSize: 11 }}>2s10s Spread</div>
+          <div style={{ color: r.yield_curve_2s10s != null && r.yield_curve_2s10s < 0 ? '#f87171' : '#e5e7eb', fontSize: 14, fontWeight: 600 }}>
+            {r.yield_curve_2s10s != null ? `${r.yield_curve_2s10s >= 0 ? '+' : ''}${r.yield_curve_2s10s.toFixed(2)}%` : '—'}
+          </div>
+        </div>
+        <div>
+          <div style={{ color: '#6b7280', fontSize: 11 }}>HY Credit Spread</div>
+          <div style={{ color: '#e5e7eb', fontSize: 14, fontWeight: 600 }}>{r.hy_spread != null ? `${r.hy_spread.toFixed(2)}%` : '—'}</div>
+        </div>
+        <div>
+          <div style={{ color: '#6b7280', fontSize: 11 }}>Dollar Index</div>
+          <div style={{ color: '#e5e7eb', fontSize: 14, fontWeight: 600 }}>{r.dxy != null ? r.dxy.toFixed(1) : '—'}</div>
+        </div>
+      </div>
+      {r.notes.length > 0 && (
+        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: '#9ca3af' }}>
+          {r.notes.map((n, i) => <li key={i} style={{ marginBottom: 4 }}>{n}</li>)}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function OverviewTab() {
   const { data, isLoading } = useSWR('eventsOverview', () => api.eventsOverview(), { refreshInterval: 300_000 });
 
@@ -168,6 +231,9 @@ function OverviewTab() {
 
       {/* T249-MARKETMOVER-P4: market-level news pulse card */}
       <MarketPulseCard />
+
+      {/* IF-04: yield curve / credit spread / dollar index */}
+      <CrossAssetCard />
 
       {/* T249-MARKETMOVER-P2: latest macro fast-reaction */}
       {ov.latest_macro_reaction && (
