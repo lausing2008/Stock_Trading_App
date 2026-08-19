@@ -1307,6 +1307,86 @@ def get_attribution(
     }
 
 
+# ── IF-07: Fama-French 5-factor exposure ────────────────────────────────────
+# Genuinely distinct from get_attribution() above (per-entry-characteristic diagnostics) and
+# from signal-engine's own factor-exposure/factor_attribution endpoints (technical-indicator
+# diagnostics) — this regresses the portfolio's own real daily equity-curve returns against
+# real Fama-French factor returns. See services/fama_french.py's own module docstring for the
+# full sourcing/verification rationale.
+
+_FF5_CACHE_KEY = "stockai:fama_french_factors"
+_FF5_CACHE_TTL = 7 * 86400  # the source data itself only updates ~monthly; a week is generous
+
+
+def _get_cached_ff5_factors() -> dict:
+    """Redis-cached wrapper around fama_french.fetch_ff5_factors_live() — avoids re-downloading
+    the ~150KB factor file on every request for data that only changes monthly. Fails open to a
+    fresh live fetch on any Redis error, matching every other Redis-cache helper in this file."""
+    from ..services.fama_french import fetch_ff5_factors_live
+
+    try:
+        from common.redis_client import get_redis as _get_pool_redis
+        _r = _get_pool_redis()
+        cached = _r.get(_FF5_CACHE_KEY)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    factors = fetch_ff5_factors_live()
+    if factors:
+        try:
+            from common.redis_client import get_redis as _get_pool_redis
+            _get_pool_redis().setex(_FF5_CACHE_KEY, _FF5_CACHE_TTL, json.dumps(factors))
+        except Exception:
+            pass
+    return factors
+
+
+@router.get("/fama-french")
+def get_fama_french_exposure(
+    portfolio_id: int | None = Query(None),
+    _: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """IF-07: real OLS regression of this portfolio's own daily equity-curve returns against
+    the 5 Fama-French factors (Mkt-RF/SMB/HML/RMW/CMA) — "is my return actually just market
+    beta / a style tilt, or genuine stock selection?"
+
+    IMPORTANT CAVEAT (stated directly in the response, not just in code comments — per this
+    tracker item's own fix note): with only a few months of daily equity-curve history the
+    confidence intervals on these betas are very wide. sample_size and r_squared are always
+    included so a caller can judge reliability rather than trusting a point estimate alone.
+    """
+    from ..services.fama_french import compute_factor_exposure
+
+    p = _get_portfolio(session, portfolio_id)
+    all_curve = session.execute(
+        select(PaperEquityCurve).where(PaperEquityCurve.portfolio_id == p.id).order_by(PaperEquityCurve.date)
+    ).scalars().all()
+
+    factors = _get_cached_ff5_factors()
+    if not factors:
+        return {
+            "portfolio_id": p.id, "portfolio_name": p.name,
+            "error": "Fama-French factor data temporarily unavailable — try again shortly.",
+        }
+
+    equity_curve = [(r.date, r.equity) for r in all_curve if r.equity and r.equity > 0]
+    result = compute_factor_exposure(equity_curve, factors)
+
+    return {
+        "portfolio_id": p.id,
+        "portfolio_name": p.name,
+        "note": (
+            "With only a few months of daily equity-curve history, confidence intervals on "
+            "these betas are very wide — treat alpha/betas as illustrative, not confirmed, "
+            "until sample_size grows substantially and r_squared is reasonably high."
+        ),
+        **result,
+    }
+
+
 # ── Multi-portfolio: list ─────────────────────────────────────────────────────
 
 @router.patch("/{portfolio_id}/active")
