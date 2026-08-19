@@ -61,7 +61,7 @@ def _extract_alpha_decay():
     from fastapi import HTTPException
 
     start = _OUTCOMES_SOURCE.index("def alpha_decay(")
-    end = _OUTCOMES_SOURCE.index('\n@router.get("/information_coefficient")', start)
+    end = _OUTCOMES_SOURCE.index('\n@router.get("/signal_age_decay")', start)
     raw = _OUTCOMES_SOURCE[start:end]
     sig_end = raw.index("):\n") + 3
     body = raw[sig_end:]

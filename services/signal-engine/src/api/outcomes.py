@@ -1934,6 +1934,105 @@ def alpha_decay(
     }
 
 
+_SIGNAL_AGE_LAG_DAYS = [0, 1, 2, 3, 4]
+# Real, measured entry-lag distribution in production (re-verified 2026-08-19): lag=1 (T+1)
+# heavily dominates at ~6,263 rows; lag=0/2/3/4 combined are ~1,730 rows; lag>=5 is a handful
+# of single-digit-count outliers not worth a separate bucket. Matches _ALPHA_DECAY_MIN_N's own
+# established min-sample floor for a read-only diagnostic curve (not a promotion gate).
+_SIGNAL_AGE_MIN_N = 5
+
+
+@router.get("/signal_age_decay")
+def signal_age_decay(
+    horizon: str = Query("SWING"),
+    lookback_days: int = Query(365, ge=30, le=730),
+    session: Session = Depends(get_session),
+):
+    """IF-02: the "how much edge is lost by acting N days late?" question — genuinely the
+    INVERSE axis from GET /alpha_decay (which holds entry_date/entry_price FIXED and varies
+    the exit day to find the optimal HOLD period). This endpoint holds the exit rule fixed
+    (each row's own already-resolved pct_return, from its own real hold window) and instead
+    groups by ENTRY LAG — (entry_date - signal_date).days, i.e. how many calendar days after
+    the signal fired before a real entry was actually recorded — to see whether a signal's
+    edge measurably decays the later a trader acts on it.
+
+    IMPORTANT FEASIBILITY CONSTRAINT (measured directly against production, not assumed): this
+    app's own T+1 entry-timing convention (see SE-F2 elsewhere in this codebase) means lag=1
+    dominates the real data by a wide margin, with lag=0/2/3/4 combined making up a much
+    smaller, real-but-thinner sample, and lag>=5 too sparse to bucket meaningfully. This is
+    therefore a DAY-grained read (not hourly, which the raw data cannot support) and a real,
+    stated confound: WHY a signal's actual entry lagged (a busy period, an ingestion delay, a
+    portfolio-level cap deferring the entry) is not independent of the outcome, so a later-lag
+    bucket showing a different average return is suggestive, not a controlled experiment.
+    Genuinely resolving that confound needs the forward-looking recording mechanism this
+    tracker item's own note names as the "real answer" (see record_signal_snapshot() below,
+    which starts accumulating that data going forward).
+    """
+    cutoff = date.today() - timedelta(days=lookback_days)
+
+    try:
+        hz = SignalHorizon(horizon.upper())
+    except ValueError:
+        raise HTTPException(400, f"Unknown horizon: {horizon}")
+
+    q = select(SignalOutcome).where(
+        SignalOutcome.signal_date >= cutoff,
+        SignalOutcome.signal_direction == "BUY",
+        SignalOutcome.horizon == hz,
+        SignalOutcome.entry_date.is_not(None),
+        SignalOutcome.pct_return.is_not(None),
+    )
+    outcomes = session.execute(q).scalars().all()
+
+    if not outcomes:
+        return {
+            "horizon": horizon.upper(), "signal_count": 0, "lookback_days": lookback_days,
+            "curve": [], "fastest_lag_avg_return_pct": None, "slowest_lag_avg_return_pct": None,
+            "note": "No resolved BUY outcomes in this window.",
+        }
+
+    lag_returns: dict[int, list] = {d: [] for d in _SIGNAL_AGE_LAG_DAYS}
+    lag_overflow: list = []  # lag >= 5, too sparse to bucket individually but still counted
+    for o in outcomes:
+        lag = (o.entry_date - o.signal_date).days
+        if lag < 0:
+            continue  # a data anomaly (entry before signal) — exclude, don't fabricate a bucket
+        if lag in lag_returns:
+            lag_returns[lag].append(o.pct_return * 100)
+        else:
+            lag_overflow.append(o.pct_return * 100)
+
+    curve = []
+    for d in _SIGNAL_AGE_LAG_DAYS:
+        rets = lag_returns[d]
+        n = len(rets)
+        curve.append({
+            "lag_days": d,
+            "avg_return_pct": round(sum(rets) / n, 2) if n >= _SIGNAL_AGE_MIN_N else None,
+            "n": n,
+            "eligible": n >= _SIGNAL_AGE_MIN_N,
+        })
+
+    eligible = [c for c in curve if c["eligible"]]
+    fastest = eligible[0] if eligible else None
+    slowest = eligible[-1] if eligible else None
+
+    return {
+        "horizon": horizon.upper(),
+        "signal_count": len(outcomes),
+        "lookback_days": lookback_days,
+        "curve": curve,
+        "overflow_n": len(lag_overflow),  # lag>=5 rows, real but too sparse to bucket
+        "fastest_lag_avg_return_pct": fastest["avg_return_pct"] if fastest else None,
+        "slowest_lag_avg_return_pct": slowest["avg_return_pct"] if slowest else None,
+        "note": (
+            "Day-grained only — the T+1 entry-timing convention means lag=1 dominates real "
+            "data; entry lag is not randomly assigned (it can correlate with WHY entry was "
+            "delayed), so this is a suggestive read, not a controlled experiment."
+        ),
+    }
+
+
 @router.get("/information_coefficient")
 def information_coefficient(
     horizon: str = Query("SWING"),

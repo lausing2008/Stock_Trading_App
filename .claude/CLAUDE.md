@@ -14700,3 +14700,95 @@ an endpoint gated by `Depends(get_current_username)`/`Depends(get_current_user)`
 real Authorization header — grep for `Depends(get_current_username)` in the target service and
 confirm the calling code's own `httpx`/`c.get`/`c.post` calls include `headers={"Authorization":
 ...}` BEFORE considering a new cross-service integration done, not after a live 401 surfaces it.
+
+---
+
+## Feature Reference: IF-02 (option a) — Entry-Lag Signal Age Decay (2026-08-19)
+
+**Closes the day-grained interim half of Tier 289's `IF-02-ALPHA-DECAY-TRACKING` finding** —
+the forward-looking hourly recording mechanism (option b, this item's own "real answer") is
+deliberately deferred, matching the item's own explicit "(a) only as a clearly-labeled interim
+read" framing.
+
+**The name-collision this item's own review warned about, avoided by design**: the pre-existing
+`GET /signals/alpha_decay` holds `entry_date`/`entry_price` FIXED and varies the EXIT day to
+find the optimal hold period — it answers "how long should I hold?". This new endpoint,
+deliberately named `GET /signals/signal_age_decay` (not a variant of "alpha_decay"), holds each
+row's own already-resolved `pct_return` fixed and groups by **entry lag** —
+`(entry_date - signal_date).days` — answering the genuinely inverse question: "how much edge
+is lost by acting N days late?"
+
+**Re-verified the feasibility constraint against CURRENT production data before building
+anything** (not assumed from the original review): `lag=0` (8 rows), `lag=1` (6,263), `lag=2`
+(135), `lag=3` (1,188), `lag=4` (396), `lag>=5` (3 total) — confirms the T+1 convention still
+dominates and the day-grained (not hourly) scope is still the right call.
+
+**Implementation** (`services/signal-engine/src/api/outcomes.py`) — genuinely SIMPLER to build
+than `alpha_decay()`: no `Price` join needed at all, since `pct_return` is already stored
+per-row. Buckets `[0, 1, 2, 3, 4]`, each needing `>= _SIGNAL_AGE_MIN_N = 5` resolved outcomes to
+report a real average (matching `alpha_decay()`'s own established `AUD261-ALPHADECAY-
+CHERRYPICKS-MAX` min-sample discipline in the same file). A negative lag (entry recorded before
+the signal — a real, rare data anomaly) is explicitly excluded, never fabricated into a bucket.
+A real `lag >= 5` row is counted in a separate `overflow_n` rather than silently dropped or
+given its own misleadingly-precise bucket at that sample size. The response includes an
+explicit `note` field stating the day-grained-only limitation AND the confound (entry lag is
+not randomly assigned — it can correlate with WHY entry was delayed) directly in the API
+response, not buried in a code comment, so any future consumer sees the caveat without reading
+this tracker entry.
+
+### A real regression caught in a SIBLING test, not this new one
+
+`test_alpha_decay_no_profitable_hold.py`'s own `_extract_alpha_decay()` bounds its source-text
+extraction with a hardcoded end-marker string
+(`'\n@router.get("/information_coefficient")'`). Inserting the new `signal_age_decay()`
+function BETWEEN `alpha_decay()` and `information_coefficient()` in the real file made that
+hardcoded boundary silently swallow the new function's own `@router.get(...)` decorator too —
+producing a real `NameError: name 'router' is not defined` in all 5 of that sibling test
+file's tests once the new function was added. Caught by running the FULL signal-engine test
+suite (not just the new test file) before considering this change done — exactly the
+discipline this repo's own testing convention calls for. Fixed by updating the sibling test's
+end-marker to the new function's own decorator string.
+
+**Tests**: `services/signal-engine/tests/test_signal_age_decay.py` (7 cases) — entry-lag
+grouping (proven distinct from a fixed-exit-day grouping), the min-n eligibility floor, the
+negative-lag exclusion, the `overflow_n` bucket for real `lag>=5` rows, fastest/slowest-eligible-
+lag selection, and BUY-only scoping (a `SELL` row must never leak into the curve).
+
+**A real, self-caught "still passes after sabotage" gap** (matching this repo's own testing
+discipline): the first version of the negative-lag test only asserted `lag0["n"]` stayed
+unpolluted after removing the `if lag < 0: continue` guard — but this passed EVEN WITH the
+guard removed, because a negative lag already fails the `lag in lag_returns` dict-membership
+check (keys are `[0,1,2,3,4]`) and falls into `overflow_n` instead, never touching `lag0` at
+all either way. Investigated per this repo's own standing discipline rather than accepted as a
+coincidence; fixed by asserting `overflow_n` stays exactly `0` too — this correctly distinguishes
+"genuinely excluded" from "accidentally miscounted as a real `lag>=5` row" — re-verified the
+sabotage is now caught.
+
+**Adversarial verification** — 3 sabotage/revert cycles on the new function itself (the
+negative-lag guard, the min-n eligibility floor, the BUY-only direction filter), all caught
+correctly and reverted, confirmed byte-identical via `md5sum` before moving on.
+
+Full signal-engine suite green (340 passed, excluding the 2 pre-existing, unrelated failure
+groups already documented elsewhere in this file — `test_signal_generator.py`'s `_decide`
+import-collection error and 4 `test_analyst_momentum.py` failures, both reconfirmed via `git
+stash` to predate this change). `pyflakes` clean (the sole warning, an unused `httpx` import,
+confirmed pre-existing via `git stash`).
+
+**Not built this pass, documented not silently dropped**: the forward-looking mechanism
+(option b, this item's own "real answer") — recording intraday price at fixed hourly offsets
+after each signal fires. A genuinely different, larger piece of work (new persistence, a
+scheduled recording job, months to accumulate a usable sample) than the day-grained interim
+read shipped here.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-signal-engine-1 curl -s 'http://localhost:8005/signals/signal_age_decay?horizon=SWING' \
+  -H "Authorization: Bearer <token>" | python3 -m json.tool
+```
+If every lag bucket shows `eligible: false`, check the real per-lag sample counts against
+production directly before assuming the endpoint is broken — a young/thin data window can
+legitimately fail to clear the 5-sample floor at some or all lags:
+```bash
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT (entry_date - signal_date) AS lag_days, COUNT(*) FROM signal_outcomes WHERE entry_date IS NOT NULL AND signal_direction = 'BUY' AND pct_return IS NOT NULL GROUP BY lag_days ORDER BY lag_days;"
+```
