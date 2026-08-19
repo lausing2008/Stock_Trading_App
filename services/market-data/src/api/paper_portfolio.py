@@ -1387,6 +1387,111 @@ def get_fama_french_exposure(
     }
 
 
+# ── IF-10: Brinson sector allocation-vs-selection attribution ────────────────
+# Genuinely distinct from get_attribution() above (per-entry-characteristic diagnostics) and
+# from the single-scalar outperformance_vs_spy/qqq/hsi fields — this decomposes portfolio
+# vs. benchmark return per SECTOR into allocation/selection/interaction effects. See
+# brinson_attribution.py's own module docstring for the full benchmark-honesty caveat.
+
+_BRINSON_BENCHMARK_CACHE_KEY_PREFIX = "stockai:brinson_benchmark:"
+_BRINSON_BENCHMARK_CACHE_TTL = 24 * 3600  # sector-ETF returns for a closed date range never change
+
+
+def _get_cached_benchmark_sector_returns(start: date, end: date) -> dict[str, float]:
+    """Redis-cached wrapper around fetch_benchmark_sector_returns() — the [start, end] range
+    is fixed once trades are closed, so this never needs to re-fetch for the same range.
+    Fails open to a fresh live fetch on any Redis error, matching every other cache helper
+    in this file."""
+    from ..services.brinson_attribution import fetch_benchmark_sector_returns
+
+    cache_key = f"{_BRINSON_BENCHMARK_CACHE_KEY_PREFIX}{start.isoformat()}:{end.isoformat()}"
+    try:
+        from common.redis_client import get_redis as _get_pool_redis
+        _r = _get_pool_redis()
+        cached = _r.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    returns = fetch_benchmark_sector_returns(start, end)
+    if returns:
+        try:
+            from common.redis_client import get_redis as _get_pool_redis
+            _get_pool_redis().setex(cache_key, _BRINSON_BENCHMARK_CACHE_TTL, json.dumps(returns))
+        except Exception:
+            pass
+    return returns
+
+
+@router.get("/brinson-attribution")
+def get_brinson_attribution(
+    portfolio_id: int | None = Query(None),
+    _: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """IF-10: real Brinson sector allocation-vs-selection decomposition over this portfolio's
+    closed trades — "did I make money from being overweight the RIGHT sectors, or from
+    picking the right STOCKS within a sector, or both?"
+
+    BENCHMARK HONESTY CAVEAT (stated directly in the response, not just code comments): real
+    live S&P 500 sector WEIGHTS require a paid data feed this app does not have — benchmark
+    weight uses an equal-weight-across-11-SPDR-sectors proxy instead, explicitly disclosed.
+    Benchmark sector RETURNS are real (fetched from the same SPDR sector-ETF tickers this
+    app's own RES-4 sector-rotation feature already uses).
+    """
+    from ..services.brinson_attribution import compute_brinson_attribution
+
+    p = _get_portfolio(session, portfolio_id)
+    closed = session.execute(
+        select(PaperTrade, Stock.sector)
+        .join(Stock, PaperTrade.symbol == Stock.symbol, isouter=True)
+        .where(
+            PaperTrade.portfolio_id == p.id,
+            PaperTrade.stage == "closed",
+            PaperTrade.pct_return.is_not(None),
+        )
+    ).all()
+
+    if not closed:
+        return {
+            "portfolio_id": p.id, "portfolio_name": p.name,
+            "insufficient_data": True, "n_trades": 0, "sectors": [],
+            "note": "No closed trades with a resolved return yet.",
+        }
+
+    trades_in = [
+        {
+            "sector": t.sector or stock_sector,
+            "entry_date": t.entry_date,
+            "exit_date": t.exit_date,
+            "entry_price": t.entry_price,
+            "shares": t.shares,
+            "pct_return": t.pct_return,
+        }
+        for t, stock_sector in closed
+    ]
+
+    start = min(t["entry_date"] for t in trades_in if t["entry_date"])
+    end = max(t["exit_date"] for t in trades_in if t["exit_date"]) or date.today()
+    benchmark_returns = _get_cached_benchmark_sector_returns(start, end)
+
+    result = compute_brinson_attribution(trades_in, benchmark_returns)
+
+    return {
+        "portfolio_id": p.id,
+        "portfolio_name": p.name,
+        "note": (
+            "Benchmark sector WEIGHTS use an equal-weight-across-11-SPDR-sectors proxy "
+            "(real S&P sector composition needs a paid data feed this app does not have) — "
+            "benchmark sector RETURNS are real (SPDR ETF closes over this same date range). "
+            "Treat allocation/selection effects as directionally informative, not an exact "
+            "S&P decomposition."
+        ),
+        **result,
+    }
+
+
 # ── Multi-portfolio: list ─────────────────────────────────────────────────────
 
 @router.patch("/{portfolio_id}/active")
