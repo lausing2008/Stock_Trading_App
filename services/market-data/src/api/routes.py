@@ -3073,6 +3073,58 @@ def _options_chain_rows(df) -> list[dict]:
     return out
 
 
+def compute_max_pain(calls: list[dict], puts: list[dict]) -> dict | None:
+    """IF-05: max pain — the strike at which options WRITERS (typically viewed as "the market")
+    would owe the LEAST total intrinsic value at expiry, i.e. where the aggregate holder payout
+    is minimized. Genuinely different from, and complementary to, check_gamma_unwind_alerts()'s
+    own OI-concentration proxy (scheduler.py) — that one flags a lopsided position near price;
+    this one computes an actual expiry-day price target from open interest alone.
+
+    Needs only strike + open interest (both already fetched by get_options_chain() above) — no
+    implied volatility, no Black-Scholes, no dealer-positioning assumption. That's why this is
+    the cheaper IF-05 half to build first (see the design doc's own scoping note); a real GEX
+    calculation would additionally need a dealer-sign ASSUMPTION, not just a measurement, which
+    is why it's deliberately NOT attempted here.
+
+    For each candidate strike S among the chain's own listed strikes, total payout at expiry:
+      call_value(S) = sum over all call strikes K of call_OI[K] * max(0, S - K)   (ITM calls)
+      put_value(S)  = sum over all put  strikes K of put_OI[K]  * max(0, K - S)   (ITM puts)
+    Max pain = the S that minimizes call_value(S) + put_value(S).
+
+    Returns None if either side has zero total open interest (nothing to compute against —
+    a common case for a thin/newly-listed expiry) rather than fabricating a strike from noise.
+    """
+    total_oi = sum(c["oi"] for c in calls) + sum(p["oi"] for p in puts)
+    if total_oi <= 0:
+        return None
+
+    # Every strike listed on EITHER side is a real candidate — a strike with only puts (or
+    # only calls) listed can still be the pain-minimizing point once both sides' payouts are
+    # summed against it.
+    candidate_strikes = sorted({c["strike"] for c in calls} | {p["strike"] for p in puts})
+    if not candidate_strikes:
+        return None
+
+    best_strike = None
+    best_total_value = None
+    for s in candidate_strikes:
+        call_value = sum(c["oi"] * max(0.0, s - c["strike"]) for c in calls)
+        put_value = sum(p["oi"] * max(0.0, p["strike"] - s) for p in puts)
+        total_value = call_value + put_value
+        if best_total_value is None or total_value < best_total_value:
+            best_total_value = total_value
+            best_strike = s
+
+    total_call_oi = sum(c["oi"] for c in calls)
+    total_put_oi = sum(p["oi"] for p in puts)
+    return {
+        "max_pain_strike": best_strike,
+        "total_call_oi": total_call_oi,
+        "total_put_oi": total_put_oi,
+        "put_call_oi_ratio": round(total_put_oi / total_call_oi, 3) if total_call_oi > 0 else None,
+    }
+
+
 @router.get("/{symbol}/options-chain")
 def get_options_chain(symbol: str, expiry: str | None = None):
     """T230-DATA-OPTIONS-CHAIN: full strike/expiry matrix for one expiration date.
@@ -3115,13 +3167,17 @@ def get_options_chain(symbol: str, expiry: str | None = None):
             log.warning("options_chain.fetch_failed", symbol=sym, expiry=exp, error=str(exc))
             return {"symbol": sym, "available": False, "reason": "fetch_error"}
 
+        _calls_rows = _options_chain_rows(chain.calls)
+        _puts_rows = _options_chain_rows(chain.puts)
         result = {
             "symbol":          sym,
             "available":       True,
             "expiry":          exp,
             "expiries":        list(expiries),
-            "calls":           _options_chain_rows(chain.calls),
-            "puts":            _options_chain_rows(chain.puts),
+            "calls":           _calls_rows,
+            "puts":            _puts_rows,
+            # IF-05: max pain — needs only strike + OI, both already in the rows above.
+            "max_pain":        compute_max_pain(_calls_rows, _puts_rows),
         }
 
         if rdb is not None:

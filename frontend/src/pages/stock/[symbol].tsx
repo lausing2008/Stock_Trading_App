@@ -4239,6 +4239,31 @@ Return ONLY valid JSON — no markdown, no prose:
                       </button>
                     ))}
                   </div>
+                  {/* IF-05: max pain — the strike at which options writers would owe the
+                      least total intrinsic value at this expiry. Needs only strike + open
+                      interest (no IV/Black-Scholes/dealer-positioning assumption) — a
+                      genuinely different, complementary read from the gamma-unwind alert's own
+                      OI-concentration proxy. null when this expiry has zero real OI to compute
+                      against, rendered as a plain "not enough data" note rather than nothing. */}
+                  {optionsChain.max_pain && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 12, padding: '8px 12px', background: '#0f172a', border: '1px solid #1e293b', borderRadius: 6, flexWrap: 'wrap' }}>
+                      <div>
+                        <span style={{ fontSize: 11, color: '#64748b' }}>Max Pain: </span>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: '#facc15' }}>${optionsChain.max_pain.max_pain_strike.toFixed(2)}</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: '#64748b' }}>
+                        Put/Call OI Ratio: <span style={{ color: '#94a3b8', fontWeight: 600 }}>{optionsChain.max_pain.put_call_oi_ratio != null ? optionsChain.max_pain.put_call_oi_ratio.toFixed(2) : '—'}</span>
+                      </div>
+                      <div style={{ fontSize: 10, color: '#475569' }}>
+                        (measured from open interest alone — not a prediction of where price will land)
+                      </div>
+                    </div>
+                  )}
+                  {!optionsChain.max_pain && (
+                    <div style={{ fontSize: 11, color: '#475569', marginBottom: 12 }}>
+                      Max pain unavailable — no open interest on either side for this expiry yet.
+                    </div>
+                  )}
                   {/* T270-STOCKDETAIL-CALLPUT-CHART: OI-by-strike bar chart — calls (green)
                       above zero, puts (red) below zero, sitting alongside (not replacing)
                       the detailed strike-matrix table below for anyone who wants exact

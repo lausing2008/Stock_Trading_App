@@ -14246,3 +14246,68 @@ docker exec stockai-postgres-1 psql -U stockai -d stockai -c "\dt" | grep <new_t
 restarted more recently. This is now the 2nd occurrence of this exact class of bootstrap gap
 in this app (only 2 of 11 services do this) — worth a broader audit of the other 9 services if
 a similar issue recurs.
+
+---
+
+## Feature Reference: IF-05 Phase 1 — Real Max Pain Calculation (Built 2026-08-19)
+
+**Closes the cheapest half of IF-05** (see the Tier 289 review above) — the deterministic
+strike-minimization calculation, deliberately BEFORE true GEX (which needs a dealer-
+positioning ASSUMPTION, not just a measurement, and was correctly scoped out of this pass).
+
+**What it is**: `compute_max_pain(calls, puts)` (`services/market-data/src/api/routes.py`,
+right next to `_options_chain_rows()` it reuses) — for every strike listed on EITHER side of
+an options chain, computes the total intrinsic-value payout option HOLDERS would receive if
+the underlying expired exactly at that strike:
+```
+call_value(S) = sum(call_OI[K] * max(0, S - K))   # ITM calls at hypothetical expiry price S
+put_value(S)  = sum(put_OI[K]  * max(0, K - S))   # ITM puts  at hypothetical expiry price S
+```
+Max pain = the strike `S` minimizing `call_value(S) + put_value(S)` — the price point where
+option WRITERS (typically viewed as "the market") owe the least, hence "pain" for holders at
+any other expiry price.
+
+**Needs only strike + open interest** — both already fetched by the existing `GET /{symbol}/
+options-chain` endpoint (`T230-DATA-OPTIONS-CHAIN`) — zero new data source, zero implied
+volatility, zero Black-Scholes, zero dealer-positioning assumption. Returns `None` (not a
+fabricated strike) when an expiry has zero real open interest on either side — a genuinely
+common case for a thin or newly-listed expiry.
+
+**Genuinely different from, and complementary to, `check_gamma_unwind_alerts()`'s own OI-
+concentration proxy** (`services/market-data/src/services/scheduler.py`) — that one flags a
+lopsided position clustered near the current price as elevated hedge-unwind risk; this one
+computes an actual expiry-day price target from the FULL open-interest distribution across
+every strike.
+
+**Frontend**: a new "Max Pain" + "Put/Call OI Ratio" readout on the stock detail page's
+options-chain panel, right above the existing OI-by-strike bar chart — framed explicitly as
+"measured from open interest alone — not a prediction of where price will land," matching this
+app's established options/squeeze-alert honesty convention (the same discipline already
+applied to the gamma-unwind alert's own "NOT a real GEX calculation" disclaimer).
+
+**Tests**: `services/market-data/tests/test_max_pain.py` (8 cases) using the established
+source-text-extraction technique (`routes.py` can't be imported directly in this test
+environment) — including a fully hand-computed 3-strike chain (verified the exact arithmetic
+BY HAND before trusting the test, not just checking directional behavior — a 3rd, middle
+strike correctly wins on total payout, not just OI concentration) and a case confirming a
+strike listed on only ONE side of the chain is still a real candidate (the union of both
+sides' strikes, not just one side's). Adversarially verified 3 sabotage cycles, all caught and
+reverted: swapping the call/put payout-direction formulas, restricting candidate strikes to
+calls-only (losing the either-side-counts property), and removing the zero-OI guard (which
+would have fabricated a strike from a chain with zero real interest).
+
+**Deliberately deferred, not built in this pass**: true GEX (per-contract Black-Scholes gamma
+× OI × 100 × spot², summed with a dealer net-positioning sign) — the missing piece is a real
+ASSUMPTION about which side of every trade dealers are on, not a measurement this app can make,
+matching this codebase's own established discipline of stating an unvalidated assumption
+honestly rather than presenting it as a known fact.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 curl -s 'http://localhost:8001/stocks/AAPL/options-chain' \
+  | python3 -c "import sys, json; d = json.load(sys.stdin); print(d.get('max_pain'))"
+```
+If `max_pain` is always `null` for a symbol with real, actively-traded options, check the
+`calls`/`puts` arrays' own `oi` fields first — a `null` max pain with real non-zero OI present
+would be a genuine regression; a `null` alongside genuinely thin/zero OI on both sides is
+correct, expected behavior.
