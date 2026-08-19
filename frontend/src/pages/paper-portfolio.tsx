@@ -792,6 +792,67 @@ function CompareEquityChart({ data }: { data: PaperCompareData[] }) {
   return <div ref={ref} style={{ width: '100%' }} />;
 }
 
+// ── IF-11: side-by-side portfolio comparison metrics ──────────────────────────
+// The manual-comparison "step 1" dashboard the IF-11 tracker review recommended before ever
+// considering automatic capital reallocation between strategies — reads real Sharpe/Sortino/
+// win-rate/max-drawdown/CAGR/alpha per portfolio so any reallocation decision stays a human
+// one, made with real evidence, never automated here.
+function ComparisonMetricsTable({ data }: { data: PaperPortfolioSummary[] }) {
+  const rows: Array<{ key: keyof PaperPortfolioSummary; label: string; fmt: (v: any) => string; colorByValue?: boolean }> = [
+    { key: 'total_return_pct', label: 'Total Return', fmt: v => fmtPct(v), colorByValue: true },
+    { key: 'win_rate_pct', label: 'Win Rate', fmt: v => fmtPct(v, 1) },
+    { key: 'profit_factor', label: 'Profit Factor', fmt: v => v == null ? '—' : v.toFixed(2) },
+    { key: 'sharpe', label: 'Sharpe', fmt: v => v == null ? '—' : v.toFixed(2), colorByValue: true },
+    { key: 'sortino', label: 'Sortino', fmt: v => v == null ? '—' : v.toFixed(2), colorByValue: true },
+    { key: 'cagr_pct', label: 'CAGR', fmt: v => fmtPct(v), colorByValue: true },
+    { key: 'max_drawdown_pct', label: 'Max Drawdown', fmt: v => v == null ? '—' : `${v.toFixed(2)}%` },
+    { key: 'calmar', label: 'Calmar', fmt: v => v == null ? '—' : v.toFixed(2), colorByValue: true },
+    { key: 'alpha', label: 'Alpha (ann.)', fmt: v => v == null ? '—' : `${v.toFixed(2)}%`, colorByValue: true },
+    { key: 'beta', label: 'Beta (SPY)', fmt: v => v == null ? '—' : v.toFixed(2) },
+    { key: 'closed_trades', label: 'Closed Trades', fmt: v => String(v) },
+  ];
+
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 560 }}>
+        <thead>
+          <tr>
+            <th style={{ textAlign: 'left', padding: '6px 10px', color: '#64748b', fontWeight: 600, borderBottom: '1px solid #1e293b' }}>Metric</th>
+            {data.map(p => (
+              <th key={p.portfolio_id} style={{ textAlign: 'right', padding: '6px 10px', color: '#cbd5e1', fontWeight: 600, borderBottom: '1px solid #1e293b', whiteSpace: 'nowrap' }}>
+                {p.name}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.key}>
+              <td style={{ padding: '5px 10px', color: '#94a3b8' }}>{r.label}</td>
+              {data.map(p => {
+                const v = p[r.key] as any;
+                const numeric = typeof v === 'number';
+                const color = r.colorByValue && numeric ? (v >= 0 ? '#22c55e' : '#ef4444') : '#e2e8f0';
+                return (
+                  <td key={p.portfolio_id} style={{ padding: '5px 10px', textAlign: 'right', color, fontVariantNumeric: 'tabular-nums' }}>
+                    {r.fmt(v)}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {data.some(p => p.insufficient_data) && (
+        <div style={{ fontSize: 10, color: '#64748b', marginTop: 6 }}>
+          Sharpe/Sortino/Calmar require at least 20 days of equity-curve history — shown as
+          "—" for any portfolio still below that floor.
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Real-money confirmation dialog ──────────────────────────────────────────────
 // T270-ETRADE-PROD-REAL-MONEY (gate 2): linking a REAL (broker_type === 'etrade', not
 // 'etrade_sandbox') connection was previously a single unconfirmed dropdown selection with
@@ -1808,6 +1869,14 @@ export default function PaperPortfolioPage() {
     authed && (portfolioList?.length ?? 0) > 1 ? 'paper-compare' : null,
     () => api.paperCompare(180), { refreshInterval: 300_000 }
   );
+  // IF-11: side-by-side Sharpe/Sortino/win-rate/drawdown/CAGR — the comparison DASHBOARD
+  // recommended as the safe, evidence-gathering first step before ever considering automatic
+  // capital reallocation between portfolios (never built here — reallocation stays a manual,
+  // human decision with real numbers in front of them, matching the tracker's own recommendation).
+  const { data: compareMetrics } = useSWR(
+    authed && (portfolioList?.length ?? 0) > 1 ? 'paper-compare-metrics' : null,
+    () => api.paperCompareMetrics(), { refreshInterval: 300_000 }
+  );
 
   const { data: summary, mutate: mutateSummary, error: summaryError } = useSWR(
     authed && selectedPortfolioId != null ? ['paper-summary', selectedPortfolioId] : null,
@@ -2091,6 +2160,14 @@ export default function PaperPortfolioPage() {
             <div style={{ background: '#0f172a', borderRadius: 10, border: '1px solid #1e293b', padding: '14px 12px' }}>
               <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>Normalized return % — all portfolios vs SPY</div>
               <CompareEquityChart data={compareData} />
+            </div>
+          )}
+          {multiPortfolio && compareMetrics && compareMetrics.length > 1 && (
+            <div style={{ background: '#0f172a', borderRadius: 10, border: '1px solid #1e293b', padding: '14px 12px', marginTop: 12 }}>
+              <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>
+                Risk/return comparison — for manual capital-allocation decisions only; this app never auto-reallocates between portfolios
+              </div>
+              <ComparisonMetricsTable data={compareMetrics} />
             </div>
           )}
           {multiPortfolio && (

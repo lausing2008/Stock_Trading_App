@@ -202,14 +202,11 @@ def _get_portfolio(session: Session, portfolio_id: int | None = None) -> PaperPo
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 
-@router.get("/summary")
-def get_summary(
-    portfolio_id: int | None = Query(None),
-    _: User = Depends(get_current_user),
-    session: Session = Depends(get_session),
-) -> dict:
-    p = _get_portfolio(session, portfolio_id)
-
+def _build_portfolio_summary(session: Session, p: PaperPortfolio) -> dict:
+    """The full single-portfolio summary computation, extracted from get_summary() so a SECOND
+    caller (IF-11's compare_portfolio_metrics(), below) can reuse it across every active
+    portfolio at once without a second, independently-drifting reimplementation of the same
+    win-rate/Sharpe/alpha-beta/benchmark-outperformance math."""
     open_trades = session.execute(
         select(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
     ).scalars().all()
@@ -317,6 +314,41 @@ def get_summary(
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "exit_breakdown": exit_breakdown,
     }
+
+
+@router.get("/summary")
+def get_summary(
+    portfolio_id: int | None = Query(None),
+    _: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    p = _get_portfolio(session, portfolio_id)
+    return _build_portfolio_summary(session, p)
+
+
+# ── IF-11: side-by-side portfolio comparison metrics ──────────────────────────
+# Genuinely distinct from GET /compare (above), which returns raw/indexed EQUITY CURVES for
+# an overlay chart, but zero comparative metrics. This is the "step 1" the IF-11 tracker
+# entry's own review recommended before ever considering automatic capital reallocation
+# between portfolios: surface Sharpe/Sortino/win-rate/drawdown/CAGR side by side so a
+# reallocation decision (if ever made) can be made MANUALLY, with real evidence, first.
+# Reuses _build_portfolio_summary() verbatim per active portfolio — never a second,
+# independently-drifting reimplementation of the same win-rate/risk/alpha-beta math.
+
+@router.get("/compare-metrics")
+def compare_portfolio_metrics(
+    _: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    """Side-by-side risk/return metrics for every active portfolio — the comparison dashboard
+    IF-11's own tracker review recommended as the safe, evidence-gathering first step before
+    ever considering automatic capital reallocation between strategies (which this endpoint
+    deliberately does NOT do — it only surfaces the numbers a human would need to decide that
+    manually)."""
+    portfolios = session.execute(
+        select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True)).order_by(PaperPortfolio.id)
+    ).scalars().all()
+    return [_build_portfolio_summary(session, p) for p in portfolios]
 
 
 # ── Open positions ────────────────────────────────────────────────────────────

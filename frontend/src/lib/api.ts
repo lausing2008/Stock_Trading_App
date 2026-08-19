@@ -506,6 +506,11 @@ export const api = {
     const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
     return request<PaperPortfolioSummary>(`/paper-portfolio/summary${q}`);
   },
+  // IF-11: side-by-side Sharpe/Sortino/win-rate/drawdown/CAGR across every active portfolio —
+  // genuinely distinct from paperCompare() above, which returns raw/indexed equity CURVES for
+  // an overlay chart, not comparative metrics. Reuses the exact same PaperPortfolioSummary
+  // shape get_summary() already returns for one portfolio at a time.
+  paperCompareMetrics: () => request<PaperPortfolioSummary[]>('/paper-portfolio/compare-metrics'),
   paperPositions: (portfolioId?: number | null) => {
     const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
     return request<PaperPosition[]>(`/paper-portfolio/positions${q}`);
