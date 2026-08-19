@@ -14052,3 +14052,59 @@ grep -rn "target_vol\|volatility_target" services/ --include="*.py"
 # IF-13 is the most-built — see the real live multipliers:
 sed -n '4513,4519p' services/market-data/src/services/paper_trading_engine.py
 ```
+
+---
+
+## Design Reference: PT-MONITOR-NO-MARKET-HOURS-GATE — Position Monitoring Runs 24/7, Only New Entries Are Gated by Market Hours
+
+**User asked directly** why a `"[Paper Trade] 🛑 Stop Loss Triggered — DFNS"` email arrived while
+the US market was closed. Traced fully against real production logs and the DB before answering
+— **the exit was correct and no false trigger occurred**; the interesting part is a genuine,
+previously-undocumented design asymmetry.
+
+**What actually happened**: Trade #105 (DFNS, entered $27.5475 on 2026-08-18) had already
+trailed its stop to breakeven after a 12.5% gain. `paper.stop_to_breakeven` logged at
+`2026-08-19T05:05:19Z` (01:05 AM ET), then `paper.exit` closed it 37 seconds later at
+`exit_price=$27.1728` — computed from `_fetch_live_prices()`'s daily-close fetch. **Independently
+re-ran the exact same `yf.download(["DFNS"], period="5d", interval="1d")` call live against
+production and got the identical number**: DFNS's real 2026-08-18 close was `$27.200001`,
+matching the DB's `current_price` field exactly. The price was real and correct — this was
+Tuesday's already-final regular-session close, not a stale or fabricated value.
+
+**The real finding**: in the SAME log window, `paper.entry_scan_skip` fired repeatedly with
+`reason="outside_market_hours"` — confirming `_scan_for_entries()` correctly checks
+`_is_market_hours("US")` before considering any NEW entry. `_monitor_positions()` (the function
+that moved the stop and then closed the trade) has **no equivalent check anywhere in its body**
+and runs on its own unconditional ~5-minute cycle regardless of session state. So a genuinely
+correct stop-hit, computed from a real end-of-day close, can fire — and email a user — hours into
+the overnight, worded identically to a live intraday trigger.
+
+**Why this is NOT simply "add the market-hours gate everywhere"**: closing a position the moment
+a stop is genuinely breached is usually the CORRECT behavior even outside regular hours — a
+position sitting unprotected until the next open is a worse default than closing it promptly.
+Gating `_monitor_positions()` behind market hours the way entries are gated would be a strictly
+worse design, not a fix.
+
+**The narrower, real gap is about framing, not suppression**: when an exit fires outside regular
+market hours, the resulting email should say so explicitly ("this reflects Tuesday's
+regular-session close — the market is currently closed") rather than reading identically to a
+live intraday trigger. Tracked as **Tier 290** / `PT-MONITOR-NO-MARKET-HOURS-GATE` in
+`improvements.tsx`, not yet built.
+
+**What to check if a similar overnight email looks confusing**:
+```bash
+# Confirm the exit price matches the real prior-session close (not stale/fabricated):
+docker exec stockai-market-data-1 python3 -c "
+import yfinance as yf
+raw = yf.download(['<SYMBOL>'], period='5d', interval='1d', auto_adjust=True, progress=False, group_by='ticker')
+print(raw['<SYMBOL>']['Close'].dropna())
+"
+
+# Confirm the trade's own recorded exit_price against the DB:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT symbol, entry_price, current_stop, exit_price, exit_time, exit_reason FROM paper_trades WHERE symbol = '<SYMBOL>' ORDER BY id DESC LIMIT 3;"
+
+# Confirm the entry-scan-vs-monitor asymmetry directly in logs (should show entry skips
+# alongside real monitor/exit activity in the same window, outside market hours):
+docker logs stockai-market-data-1 --since <window> | grep 'entry_scan_skip\|paper.exit\|paper.stop_to_breakeven'
+```
