@@ -204,3 +204,17 @@ def test_no_closed_trades_returns_an_explicit_insufficient_data_shape():
     body = _route_body("get_brinson_attribution")
     assert "if not closed:" in body
     assert '"insufficient_data": True' in body
+
+
+def test_exit_date_is_derived_from_the_real_exit_time_column_not_a_nonexistent_attribute():
+    """Regression test for a real bug caught by live production verification (not by any test
+    in this file, since every OTHER test here only exercises compute_brinson_attribution()'s
+    pure dict-in/dict-out contract, never the ORM-to-dict extraction the route itself performs).
+    PaperTrade has no exit_date column at all — only entry_date (a real Date column) and
+    exit_time (a DateTime). A naive `t.exit_date` reference crashes with a real
+    AttributeError the moment the route is actually hit, which none of the source-text checks
+    above would ever catch, since they only look for KEY NAMES in the constructed dict
+    ("exit_date": ...), not the VALUE EXPRESSION on the right-hand side of that key."""
+    body = _route_body("get_brinson_attribution")
+    assert "t.exit_time.date() if t.exit_time else None" in body
+    assert "t.exit_date" not in body

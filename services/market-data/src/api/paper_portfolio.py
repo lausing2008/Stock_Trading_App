@@ -1464,7 +1464,7 @@ def get_brinson_attribution(
         {
             "sector": t.sector or stock_sector,
             "entry_date": t.entry_date,
-            "exit_date": t.exit_date,
+            "exit_date": t.exit_time.date() if t.exit_time else None,
             "entry_price": t.entry_price,
             "shares": t.shares,
             "pct_return": t.pct_return,
