@@ -2903,6 +2903,15 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                 "signal_at_exit": sig_type,
                 "highest_price": trade.highest_price,
                 "entry_notes": trade.entry_decision_notes or [],
+                # PT-MONITOR-NO-MARKET-HOURS-GATE: _monitor_positions() intentionally has no
+                # market-hours gate (a genuinely breached stop should still close promptly
+                # outside regular hours — leaving it open and unprotected until the next open
+                # would be worse) — but the resulting email previously read identically to a
+                # live intraday trigger even when it reflects a stale end-of-day close computed
+                # hours into the overnight. Records whether the market was actually open AT THE
+                # MOMENT of this exit so the email can label it honestly rather than the caller
+                # re-deriving this after the fact against a DIFFERENT (later, wall-clock) moment.
+                "market_hours_open": _is_market_hours(cfg.get("market", "US")),
             })
             continue
 
@@ -5608,6 +5617,7 @@ def _send_exit_emails(session, closed_exits: list[dict]) -> None:
                         signal_at_exit=exit_info.get("signal_at_exit"),
                         highest_price=exit_info.get("highest_price"),
                         entry_notes=exit_info.get("entry_notes", []),
+                        market_hours_open=exit_info.get("market_hours_open", True),
                     )
                     log.info("paper.exit_email_sent", symbol=symbol, to=email,
                              reason=exit_info["exit_reason"])

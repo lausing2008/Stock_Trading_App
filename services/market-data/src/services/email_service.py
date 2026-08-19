@@ -2252,8 +2252,17 @@ def send_trade_exit_email(
     signal_at_exit: str | None = None,
     highest_price: float | None = None,
     entry_notes: list | None = None,
+    market_hours_open: bool = True,
 ) -> bool:
-    """Send a paper trade exit email — fired whenever the paper trading engine closes a position."""
+    """Send a paper trade exit email — fired whenever the paper trading engine closes a position.
+
+    PT-MONITOR-NO-MARKET-HOURS-GATE: _monitor_positions() deliberately has no market-hours
+    gate (a genuinely breached stop should still close promptly outside regular hours, not sit
+    unprotected until the next open) — but that means this email can arrive hours into the
+    overnight, computed from a stale, already-final end-of-day close, worded identically to a
+    live intraday trigger. `market_hours_open=False` adds an explicit note so the email is
+    honest about WHEN this reflects rather than implying something just happened live.
+    """
     _EXIT_LABEL = {
         "signal_exit":       ("🔴 SELL Signal Exit",    "#ef4444", "The signal engine issued a SELL — position closed."),
         "stop_hit":          ("🛑 Stop Loss Triggered",  "#ef4444", "Price hit the trailing stop — capital protected."),
@@ -2282,6 +2291,19 @@ def send_trade_exit_email(
         bullets = "".join(f'<li style="margin:2px 0;color:#64748b">{n}</li>' for n in entry_notes[:4])
         notes_html = f'<div style="margin-top:16px"><p style="font-weight:600;margin:0 0 6px">Entry rationale</p><ul style="margin:0;padding-left:20px;font-size:13px">{bullets}</ul></div>'
 
+    after_hours_note = (
+        "Note: the market was CLOSED at the moment this exit was evaluated — the exit price "
+        "above reflects the prior session's regular-close price, not a live intraday move. "
+        "The position was still correctly closed since a genuinely breached stop shouldn't sit "
+        "unprotected until the next open."
+    )
+    after_hours_html = ""
+    if not market_hours_open:
+        after_hours_html = (
+            f'<div style="margin-top:12px;padding:12px;background:#fffbeb;border-radius:8px;'
+            f'font-size:12px;color:#92400e;border:1px solid #fde68a">⏰ {after_hours_note}</div>'
+        )
+
     subject = f"[Paper Trade] {label} — {symbol} ({pnl_pct_f})"
     body_text = (
         f"{label}: {symbol}\n"
@@ -2289,6 +2311,7 @@ def send_trade_exit_email(
         f"Entry: ${entry_price:.4f}  Exit: ${exit_price:.4f}\n"
         f"Signal at exit: {signal_at_exit or '—'}\n"
         f"Reason: {reason_note}"
+        + (f"\n\n{after_hours_note}" if not market_hours_open else "")
     )
     body_html = f"""<!DOCTYPE html><html><body style="font-family:sans-serif;background:#f8fafc;padding:24px;margin:0">
   <div style="max-width:520px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
@@ -2318,6 +2341,7 @@ def send_trade_exit_email(
     <div style="margin-top:16px;padding:12px;background:#fef2f2 if not is_win else #f0fdf4;border-radius:8px;font-size:13px;color:#64748b">
       {reason_note}
     </div>
+    {after_hours_html}
     {notes_html}
     <p style="font-size:12px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:12px">
       This is a paper trade simulation — no real money involved. StockAI Paper Trading Engine.
