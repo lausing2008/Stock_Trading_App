@@ -378,6 +378,14 @@ def _execute_close_position(order: ConditionalOrder, portfolio: PaperPortfolio, 
     trade.pct_return = round(total_pnl_pct * 100, 4)
     portfolio.current_cash = max(0.0, round(portfolio.current_cash + exit_value - exit_commission, 2))
 
+    # IF-12: same append-only decision-audit write every other real exit path makes
+    # (_monitor_positions()'s automated exits, manual_exit_trade()'s manual close).
+    from .paper_trading_engine import _write_decision_log
+    _write_decision_log(
+        session, trade, "exit", exit_price, trade.shares, "conditional_order",
+        {"pnl_dollar": total_pnl_dollar, "pnl_pct": trade.pct_return, "order_id": order.id},
+    )
+
     if portfolio.broker_connection_id and trade.broker_order_id:
         try:
             from .paper_trading_engine import _place_broker_exit

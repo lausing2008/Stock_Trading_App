@@ -511,6 +511,25 @@ export const api = {
   // an overlay chart, not comparative metrics. Reuses the exact same PaperPortfolioSummary
   // shape get_summary() already returns for one portfolio at a time.
   paperCompareMetrics: () => request<PaperPortfolioSummary[]>('/paper-portfolio/compare-metrics'),
+  // IF-12: user-maintained no-trade symbol list, enforced as the first check in every future
+  // entry-scan cycle — global, not per-portfolio (matching PaperPortfolio's own app-wide shape).
+  restrictedSymbolsList: () => request<RestrictedSymbolItem[]>('/paper-portfolio/restricted-symbols'),
+  restrictedSymbolsAdd: (symbol: string, reason?: string) =>
+    request<{ ok: boolean; id: number; symbol: string }>('/paper-portfolio/restricted-symbols', {
+      method: 'POST', body: JSON.stringify({ symbol, reason }),
+    }),
+  restrictedSymbolsRemove: (symbol: string) =>
+    request<{ ok: boolean; symbol: string }>(`/paper-portfolio/restricted-symbols/${encodeURIComponent(symbol)}`, { method: 'DELETE' }),
+  // IF-12: append-only decision-audit trail — a genuine INSERT written once at entry and once
+  // at exit, never mutated afterward (unlike paper_trades itself).
+  paperDecisionLog: (params?: { portfolioId?: number | null; symbol?: string; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.portfolioId) p.set('portfolio_id', String(params.portfolioId));
+    if (params?.symbol) p.set('symbol', params.symbol);
+    if (params?.limit) p.set('limit', String(params.limit));
+    const qs = p.toString();
+    return request<PaperDecisionLogItem[]>(`/paper-portfolio/decision-log${qs ? `?${qs}` : ''}`);
+  },
   paperPositions: (portfolioId?: number | null) => {
     const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
     return request<PaperPosition[]>(`/paper-portfolio/positions${q}`);
@@ -1880,6 +1899,27 @@ export type PaperPortfolioSummary = {
   config: PaperPortfolioConfig;
   created_at: string | null;
   exit_breakdown: Record<string, number>;
+};
+
+export type RestrictedSymbolItem = {
+  id: number;
+  symbol: string;
+  reason: string | null;
+  added_by: string | null;
+  created_at: string | null;
+};
+
+export type PaperDecisionLogItem = {
+  id: number;
+  trade_id: number;
+  portfolio_id: number;
+  symbol: string;
+  action: 'entry' | 'exit';
+  price: number;
+  shares: number;
+  reason: string | null;
+  details: Record<string, any>;
+  logged_at: string | null;
 };
 
 export type PaperPosition = {

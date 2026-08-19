@@ -58,12 +58,44 @@ def _extract_close_one_paper_trade():
     start = _ROUTES_SOURCE.index("def _close_one_paper_trade(")
     end = _ROUTES_SOURCE.index("\n\n\n@router.post(\"/trades/{trade_id}/exit\")", start)
     raw = _ROUTES_SOURCE[start:end]
-    namespace = {
-        "np": __import__("numpy"),
-        "datetime": datetime, "timedelta": timedelta,
-        "Session": Session, "PaperPortfolio": PaperPortfolio, "PaperTrade": PaperTrade,
+    # IF-12: the real function's own lazy `from ..services.paper_trading_engine import
+    # _write_decision_log` is a RELATIVE import — resolving it inside exec()'d code needs both
+    # a real __package__ (matching where paper_portfolio.py actually lives, "src.api") AND a
+    # registered sys.modules entry at the exact dotted path the import targets, matching
+    # test_broker_position_sync.py's own established fake-module-registration technique (used
+    # there for absolute imports; relative imports need __package__ set too). The write itself
+    # is covered directly by test_write_decision_log.py against the real function — this stub
+    # is a no-op, only here to let _close_one_paper_trade()'s own source execute unmodified.
+    # Real-module-leak guard: sys.modules["src.services.paper_trading_engine"] is the REAL
+    # module for every OTHER test file in this suite (e.g. test_paper_trading_engine.py's own
+    # `from src.services.paper_trading_engine import _composite_priority`) — swapping in a fake
+    # here and forgetting to restore it corrupts every test file collected AFTER this one for
+    # the rest of the pytest session (the exact test-isolation bug this file's own module
+    # docstring already warns readers to watch for, applied to a NEW site this session added).
+    import types
+    _saved_pte_modules = {
+        m: sys.modules.get(m) for m in ("src", "src.services", "src.services.paper_trading_engine")
     }
-    exec(raw, namespace)  # noqa: S102 — real source, not a duplicate
+    _fake_pte = types.ModuleType("src.services.paper_trading_engine")
+    _fake_pte._write_decision_log = lambda *a, **kw: None
+    sys.modules["src.services.paper_trading_engine"] = _fake_pte
+    sys.modules.setdefault("src", types.ModuleType("src"))
+    sys.modules.setdefault("src.services", types.ModuleType("src.services"))
+    try:
+        namespace = {
+            "np": __import__("numpy"),
+            "datetime": datetime, "timedelta": timedelta,
+            "Session": Session, "PaperPortfolio": PaperPortfolio, "PaperTrade": PaperTrade,
+            "__name__": "src.api.paper_portfolio_extracted",
+            "__package__": "src.api",
+        }
+        exec(raw, namespace)  # noqa: S102 — real source, not a duplicate
+    finally:
+        for m, saved in _saved_pte_modules.items():
+            if saved is not None:
+                sys.modules[m] = saved
+            else:
+                sys.modules.pop(m, None)
     return namespace["_close_one_paper_trade"]
 
 

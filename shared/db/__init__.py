@@ -61,6 +61,8 @@ from .models import (
     AnalystPriceTarget,
     PortfolioRiskMetric,
     StressTestResult,
+    RestrictedSymbol,
+    PaperTradeDecisionLog,
 )
 from .session import SessionLocal, engine, get_session, init_db
 
@@ -127,6 +129,8 @@ __all__ = [
     "AnalystPriceTarget",
     "PortfolioRiskMetric",
     "StressTestResult",
+    "RestrictedSymbol",
+    "PaperTradeDecisionLog",
     "SessionLocal",
     "engine",
     "get_session",

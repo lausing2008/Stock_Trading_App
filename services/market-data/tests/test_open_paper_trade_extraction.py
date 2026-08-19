@@ -49,7 +49,11 @@ def _portfolio(current_cash=100_000.0, broker_connection_id=None):
 
 def _base_kwargs(**overrides):
     kwargs = dict(
-        session=SimpleNamespace(add=lambda x: None),
+        # add/flush are both real no-ops here — IF-12's _write_decision_log() call inside
+        # _open_paper_trade() does session.flush() (to assign trade.id) then session.add()
+        # again (for the PaperTradeDecisionLog row); both must exist on the fake session or
+        # the whole function call raises before this test can assert on the opened trade.
+        session=SimpleNamespace(add=lambda x: None, flush=lambda: None),
         portfolio=_portfolio(),
         stock=_stock(),
         sig=_signal(),

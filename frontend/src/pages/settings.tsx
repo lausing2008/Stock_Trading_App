@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { loadSettings, saveSettings, type AppSettings } from '@/lib/settings';
 import { getSession, changePassword, startImpersonation } from '@/lib/auth';
-import { api, type AppUser, type BrokerConnection, type BrokerType, type BrokerOrderHistoryItem, type BrokerTypeMeta } from '@/lib/api';
+import { api, type AppUser, type BrokerConnection, type BrokerType, type BrokerOrderHistoryItem, type BrokerTypeMeta, type RestrictedSymbolItem } from '@/lib/api';
 import { storage } from '@/lib/storage';
 import { isPushSupported, getExistingSubscription, enablePushNotifications, disablePushNotifications } from '@/lib/push';
 
@@ -227,6 +227,13 @@ export default function SettingsPage() {
   const [resetTarget, setResetTarget] = useState('');
   const [resetPwd, setResetPwd] = useState('');
   const [resetMsg, setResetMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // IF-12: restricted/no-trade symbol list (admin)
+  const [restrictedSymbols, setRestrictedSymbols] = useState<RestrictedSymbolItem[]>([]);
+  const [restrictedLoading, setRestrictedLoading] = useState(false);
+  const [newRestrictedSymbol, setNewRestrictedSymbol] = useState('');
+  const [newRestrictedReason, setNewRestrictedReason] = useState('');
+  const [restrictedMsg, setRestrictedMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   // Broker accounts
   const [brokers, setBrokers] = useState<BrokerConnection[]>([]);
@@ -568,6 +575,40 @@ export default function SettingsPage() {
       api.listUsers().then(setUsers).catch(() => {}).finally(() => setUsersLoading(false));
     }
   }, [isAdmin]);
+
+  function loadRestrictedSymbols() {
+    setRestrictedLoading(true);
+    api.restrictedSymbolsList().then(setRestrictedSymbols).catch(() => {}).finally(() => setRestrictedLoading(false));
+  }
+
+  useEffect(() => {
+    if (isAdmin) loadRestrictedSymbols();
+  }, [isAdmin]);
+
+  async function handleAddRestrictedSymbol(e: React.FormEvent) {
+    e.preventDefault();
+    setRestrictedMsg(null);
+    const symbol = newRestrictedSymbol.trim().toUpperCase();
+    if (!symbol) return;
+    try {
+      await api.restrictedSymbolsAdd(symbol, newRestrictedReason.trim() || undefined);
+      setNewRestrictedSymbol('');
+      setNewRestrictedReason('');
+      setRestrictedMsg({ ok: true, text: `${symbol} added to the no-trade list.` });
+      loadRestrictedSymbols();
+    } catch (err) {
+      setRestrictedMsg({ ok: false, text: err instanceof Error ? err.message : 'Failed to add symbol.' });
+    }
+  }
+
+  async function handleRemoveRestrictedSymbol(symbol: string) {
+    try {
+      await api.restrictedSymbolsRemove(symbol);
+      loadRestrictedSymbols();
+    } catch (err) {
+      setRestrictedMsg({ ok: false, text: err instanceof Error ? err.message : 'Failed to remove symbol.' });
+    }
+  }
 
   async function handleChangePassword(e: React.FormEvent) {
     e.preventDefault();
@@ -1721,6 +1762,78 @@ export default function SettingsPage() {
                 {brokerEnabled ? 'On' : 'Off'}
               </span>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── IF-12: Restricted (no-trade) symbols (admin only) ─────────
+           Global, not per-portfolio — PaperPortfolio itself has no user_id (paper portfolios
+           are app-wide), and "I've decided to avoid this stock" naturally applies everywhere
+           it could be traded. Enforced as the FIRST hard-reject check in every future
+           _scan_for_entries() cycle — never touches an already-open position. */}
+      {isAdmin && (
+        <div style={section('#f97316')}>
+          <div style={sectionBar('linear-gradient(90deg,#f97316,#fb923c,#f97316)')} />
+          <div style={sectionHead}>
+            Restricted Symbols
+            <span style={{ fontSize: '10px', color: '#fb923c', fontWeight: 400, marginLeft: '8px', padding: '2px 8px', border: '1px solid rgba(251,146,60,0.3)', borderRadius: '4px', background: 'rgba(249,115,22,0.1)' }}>Admin only</span>
+          </div>
+          <div style={{ padding: '14px 20px' }}>
+            <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '12px', lineHeight: 1.5 }}>
+              A no-trade list — e.g. a stock you already hold in a real brokerage account, or
+              one you've deliberately decided to avoid. Blocks all NEW entries across every
+              portfolio; does not touch any already-open position.
+            </div>
+
+            <form onSubmit={handleAddRestrictedSymbol} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+              <input
+                value={newRestrictedSymbol}
+                onChange={e => setNewRestrictedSymbol(e.target.value)}
+                placeholder="Symbol (e.g. AAPL)"
+                style={{ flex: '0 1 140px', padding: '8px 10px', borderRadius: '6px', border: '1px solid #1e293b', background: '#0a0f1e', color: '#e2e8f0', fontSize: '13px' }}
+              />
+              <input
+                value={newRestrictedReason}
+                onChange={e => setNewRestrictedReason(e.target.value)}
+                placeholder="Reason (optional)"
+                style={{ flex: '1 1 200px', padding: '8px 10px', borderRadius: '6px', border: '1px solid #1e293b', background: '#0a0f1e', color: '#e2e8f0', fontSize: '13px' }}
+              />
+              <button type="submit" disabled={!newRestrictedSymbol.trim()} style={{
+                padding: '8px 16px', borderRadius: '6px', fontSize: '13px', fontWeight: 700, cursor: 'pointer',
+                background: 'rgba(249,115,22,0.15)', border: '1px solid rgba(249,115,22,0.3)', color: '#fb923c',
+                opacity: newRestrictedSymbol.trim() ? 1 : 0.5,
+              }}>
+                Add
+              </button>
+            </form>
+
+            {restrictedMsg && (
+              <div style={{ fontSize: '12px', marginBottom: '10px', color: restrictedMsg.ok ? '#4ade80' : '#f87171' }}>
+                {restrictedMsg.text}
+              </div>
+            )}
+
+            {restrictedLoading ? (
+              <div style={{ fontSize: '13px', color: '#475569' }}>Loading…</div>
+            ) : restrictedSymbols.length === 0 ? (
+              <div style={{ fontSize: '13px', color: '#475569' }}>No restricted symbols.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {restrictedSymbols.map(r => (
+                  <div key={r.id} style={{
+                    display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px',
+                    borderRadius: '8px', background: '#0a0f1e', border: '1px solid #1e293b',
+                  }}>
+                    <span style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', minWidth: 70 }}>{r.symbol}</span>
+                    {r.reason && <span style={{ flex: 1, fontSize: '12px', color: '#64748b' }}>{r.reason}</span>}
+                    <button onClick={() => handleRemoveRestrictedSymbol(r.symbol)} style={{
+                      fontSize: '11px', padding: '4px 10px', borderRadius: '6px', cursor: 'pointer',
+                      background: 'transparent', border: '1px solid #1e293b', color: '#64748b',
+                    }}>Remove</button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

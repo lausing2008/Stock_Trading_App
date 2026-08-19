@@ -43,6 +43,7 @@ from common.indicators import atr as _canon_atr
 from db import (
     BrokerConnection, Indicator, PaperEquityCurve, PaperPortfolio, PaperTrade, Price, TimeFrame,
     Ranking, SessionLocal, Signal, SignalAlert, Stock, User, UserPosition, Watchlist, WatchlistItem,
+    RestrictedSymbol, PaperTradeDecisionLog,
 )
 from sqlalchemy import desc, func, select
 from .email_service import send_trade_exit_email
@@ -2839,6 +2840,11 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             trade.exit_reasons        = exit_notes
             trade.pnl                 = total_pnl_dollar
             trade.pct_return          = round(total_pnl_pct * 100, 4)
+            _write_decision_log(
+                session, trade, "exit", exit_price, trade.shares, exit_reason,
+                {"pnl_dollar": total_pnl_dollar, "pnl_pct": trade.pct_return,
+                 "hold_days": days_held, "exit_reasons": exit_notes},
+            )
             # PA-G3: record signal state at exit for walk-forward attribution
             trade.signal_at_exit_id   = current_sig.id   if current_sig else None
             trade.signal_at_exit_type = current_sig.signal.value if current_sig and current_sig.signal else None
@@ -3969,6 +3975,29 @@ def _slipped_position_value(shares: float, live_price: float, entry_slippage_pct
     return round(shares * slipped_entry, 2)
 
 
+def _write_decision_log(
+    session, trade: "PaperTrade", action: str, price: float, shares: float,
+    reason: str | None, details: dict,
+) -> None:
+    """IF-12: append-only decision-audit row — a genuine INSERT, never an UPDATE to a prior
+    row, unlike paper_trades itself (mutated in place throughout a trade's lifecycle). Called
+    once at entry and once at exit; never elsewhere. Fails open (log + swallow) on any error —
+    a logging failure must never abort a real trade entry/exit."""
+    try:
+        session.add(PaperTradeDecisionLog(
+            trade_id=trade.id,
+            portfolio_id=trade.portfolio_id,
+            symbol=trade.symbol,
+            action=action,
+            price=price,
+            shares=shares,
+            reason=reason,
+            details_json=json.dumps(details, default=str),
+        ))
+    except Exception as exc:
+        log.warning("paper.decision_log_write_failed", symbol=trade.symbol, action=action, error=str(exc))
+
+
 def _open_paper_trade(
     session, portfolio: PaperPortfolio, stock: Stock, sig: Signal, ranking: "Ranking | None",
     live_price: float, game_plan: dict, score: int, notes: list[str], gate_source: str,
@@ -4244,6 +4273,13 @@ def _open_paper_trade(
         hold_days             = 0,
     )
     session.add(trade)
+    session.flush()  # IF-12: assign trade.id before the decision-log FK reference below
+    _write_decision_log(
+        session, trade, "entry", slipped_entry, shares, "; ".join(notes) if notes else None,
+        {"entry_score": score, "rr_ratio": round(rr, 2), "gate_source": gate_source,
+         "confidence": sig.confidence, "kscore": ranking.score if ranking else None,
+         "market_regime": trade.market_regime_at_entry},
+    )
     # Broker routing: submit real BUY order to linked broker (US only; falls back on error)
     if portfolio.broker_connection_id:
         _place_broker_entry(session, trade, portfolio)
@@ -4314,6 +4350,13 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             .join(PaperTrade, PaperTrade.symbol == Stock.symbol)
             .where(PaperTrade.stage == "open")
         ).all()
+    )
+
+    # IF-12: bulk-fetch the user-maintained no-trade list ONCE per scan cycle — never a
+    # per-candidate query — so a small, deliberately-avoided symbol list can never itself
+    # become a per-symbol N+1 cost inside the candidate loop below.
+    _restricted_symbols: set[str] = set(
+        r[0] for r in session.execute(select(RestrictedSymbol.symbol)).all()
     )
 
     # PA-E1: live_prices health check — skip entries if price data is too sparse (yfinance outage)
@@ -4970,6 +5013,13 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     for sig, stock, ranking in buy_signals:
         if open_count + entries_made >= cfg["max_positions"]:
             break
+        # IF-12: restricted/no-trade symbol check — deliberately the FIRST check in the loop,
+        # ahead of every other candidate-specific computation, since a user-banned symbol
+        # should never even be considered regardless of any other state.
+        if stock.symbol in _restricted_symbols:
+            log.info("paper.skip_restricted_symbol", symbol=stock.symbol)
+            _skip_tally["restricted_symbol"] = _skip_tally.get("restricted_symbol", 0) + 1
+            continue
         if stock.symbol in _recently_stopped:
             log.info("paper.skip_stop_cooldown", symbol=stock.symbol, cooldown_hours=stop_cooldown_hours)
             _skip_tally["stop_cooldown"] = _skip_tally.get("stop_cooldown", 0) + 1

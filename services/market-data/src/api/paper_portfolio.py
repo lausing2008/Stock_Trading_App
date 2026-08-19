@@ -12,7 +12,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
-from db import PaperEquityCurve, PaperPortfolio, PaperTrade, SessionLocal, Signal, SignalHorizon, get_session
+from db import (
+    PaperEquityCurve, PaperPortfolio, PaperTrade, SessionLocal, Signal, SignalHorizon, get_session,
+    RestrictedSymbol, PaperTradeDecisionLog,
+)
 from db.models import User, Stock, Price, TimeFrame
 from .auth import get_current_user, get_admin_user
 from common.config import get_settings
@@ -454,6 +457,15 @@ def _close_one_paper_trade(
     trade.pnl = pnl
     trade.pct_return = pnl_pct
     trade.current_price = exit_p
+
+    # IF-12: same append-only decision-audit write the automated exit flow makes
+    # (paper_trading_engine.py's _monitor_positions()) — a manual close is still a real
+    # exit and deserves the same immutable trail.
+    from ..services.paper_trading_engine import _write_decision_log
+    _write_decision_log(
+        session, trade, "exit", exit_p, trade.shares, exit_reason,
+        {"pnl_dollar": pnl, "pnl_pct": pnl_pct, "hold_days": trade.hold_days},
+    )
 
     # Credit cash back
     p.current_cash = max(0.0, round(p.current_cash + exit_value - exit_commission, 2))
@@ -2871,3 +2883,89 @@ def get_tune_history(
                 for r in rows
             ],
         }
+
+
+# ── IF-12: restricted/no-trade symbol list + append-only decision-audit log ──────────────────
+
+@router.get("/restricted-symbols")
+def list_restricted_symbols(
+    _: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    rows = session.execute(select(RestrictedSymbol).order_by(RestrictedSymbol.symbol)).scalars().all()
+    return [
+        {"id": r.id, "symbol": r.symbol, "reason": r.reason, "added_by": r.added_by,
+         "created_at": r.created_at.isoformat() if r.created_at else None}
+        for r in rows
+    ]
+
+
+@router.post("/restricted-symbols")
+def add_restricted_symbol(
+    body: dict,
+    user: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Add a symbol to the no-trade list — enforced as the first check in every future
+    _scan_for_entries() cycle (paper_trading_engine.py). Does NOT touch any already-open
+    position in this symbol; it only blocks NEW entries going forward."""
+    symbol = (body.get("symbol") or "").strip().upper()
+    if not symbol:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    existing = session.execute(
+        select(RestrictedSymbol).where(RestrictedSymbol.symbol == symbol)
+    ).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"{symbol} is already restricted")
+    row = RestrictedSymbol(symbol=symbol, reason=body.get("reason"), added_by=user.username)
+    session.add(row)
+    session.commit()
+    log.info("paper.restricted_symbol_added", symbol=symbol, added_by=user.username)
+    return {"ok": True, "id": row.id, "symbol": symbol}
+
+
+@router.delete("/restricted-symbols/{symbol}")
+def remove_restricted_symbol(
+    symbol: str,
+    user: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    symbol = symbol.strip().upper()
+    row = session.execute(
+        select(RestrictedSymbol).where(RestrictedSymbol.symbol == symbol)
+    ).scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"{symbol} is not restricted")
+    session.delete(row)
+    session.commit()
+    log.info("paper.restricted_symbol_removed", symbol=symbol, removed_by=user.username)
+    return {"ok": True, "symbol": symbol}
+
+
+@router.get("/decision-log")
+def get_decision_log(
+    portfolio_id: int | None = Query(None),
+    symbol: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+    _: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    """The append-only audit trail — every row here is a genuine INSERT written once at entry
+    or exit, never mutated afterward (unlike paper_trades itself, whose current_price/
+    current_stop/hold_days all update in place throughout a trade's lifecycle)."""
+    q = select(PaperTradeDecisionLog).order_by(desc(PaperTradeDecisionLog.logged_at)).limit(limit)
+    if portfolio_id is not None:
+        q = q.where(PaperTradeDecisionLog.portfolio_id == portfolio_id)
+    if symbol:
+        q = q.where(PaperTradeDecisionLog.symbol == symbol.strip().upper())
+    rows = session.execute(q).scalars().all()
+    return [
+        {
+            "id": r.id, "trade_id": r.trade_id, "portfolio_id": r.portfolio_id,
+            "symbol": r.symbol, "action": r.action, "price": r.price, "shares": r.shares,
+            "reason": r.reason,
+            "details": json.loads(r.details_json) if r.details_json else {},
+            "logged_at": r.logged_at.isoformat() if r.logged_at else None,
+        }
+        for r in rows
+    ]

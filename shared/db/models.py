@@ -1889,3 +1889,58 @@ class StressTestResult(Base):
     portfolio_impact_pct: Mapped[float] = mapped_column(Float)
     per_position_impact_json: Mapped[str] = mapped_column(Text)  # {"AAPL": -34.2, ...}
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class RestrictedSymbol(Base):
+    """IF-12 (P3): a user-maintained no-trade list — genuinely useful for a single-user app
+    (e.g. blocking a stock already held in a real brokerage account, or one deliberately
+    avoided for personal reasons) without needing the full ComplianceRule/surveillance-layer
+    design the source doc proposed, which the tracker's own review explicitly rejected as
+    over-engineering for this app's single-user shape.
+
+    Deliberately GLOBAL, not per-portfolio — PaperPortfolio itself has no user_id (paper
+    portfolios are app-wide, per this repo's own established convention), and "I've decided to
+    avoid this stock" is naturally a decision that should apply everywhere the symbol could be
+    traded, not just in one portfolio. Enforced as one more hard-reject check in
+    _scan_for_entries()'s existing candidate loop — the FIRST check, before any other
+    computation is spent on a symbol the user has explicitly banned.
+    """
+    __tablename__ = "restricted_symbols"
+    __table_args__ = (UniqueConstraint("symbol", name="uq_restricted_symbol"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    added_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class PaperTradeDecisionLog(Base):
+    """IF-12 (P3): an append-only, NEVER-mutated audit trail written once at entry and once at
+    exit — the genuinely missing half of this app's existing decision-audit story.
+    paper_trades.entry_decision_notes/confidence_at_entry/kscore_at_entry/etc. (models.py,
+    PaperTrade) already capture a rich decision snapshot, but that ROW is mutated throughout
+    the trade's lifecycle (current_price, current_stop, hold_days all update in place) — so the
+    existing trail is rich but not immutable, a real distinction for audit purposes the
+    tracker's own review flagged as the one piece with standalone value regardless of any
+    formal compliance requirement.
+
+    Two rows per completed trade lifecycle: one written at entry (action="entry"), one at exit
+    (action="exit") — each a genuine INSERT, never an UPDATE to a prior row. Denormalizes the
+    key entry/exit facts directly onto this table (rather than only a trade_id FK) so the log
+    stays readable/queryable even if the source PaperTrade row is ever deleted, and so it never
+    depends on joining back to a row that, by definition, keeps changing after this snapshot
+    was taken.
+    """
+    __tablename__ = "paper_trade_decision_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    trade_id: Mapped[int] = mapped_column(ForeignKey("paper_trades.id", ondelete="CASCADE"), index=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("paper_portfolios.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    action: Mapped[str] = mapped_column(String(16))  # "entry" | "exit"
+    price: Mapped[float] = mapped_column(Float)
+    shares: Mapped[float] = mapped_column(Float)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)  # entry_decision_notes joined, or exit_reason
+    details_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # full snapshot at this moment
+    logged_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
