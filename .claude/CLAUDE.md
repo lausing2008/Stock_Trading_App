@@ -14191,3 +14191,58 @@ docker exec stockai-event-intelligence-1 curl -s 'http://localhost:8010/events/c
   -H "Authorization: Bearer <token>"
 docker logs stockai-event-intelligence-1 --since 24h | grep 'sync_cross_asset\|cross_asset'
 ```
+
+---
+
+## Recurring Issue: `event-intelligence` Never Called `init_db()` — A New Table Silently Depended on Which Sibling Service Restarted First (Found + Fixed 2026-08-19)
+
+**Found live while deploying IF-04's new `CrossAssetReading` table** — a real, previously-
+unnoticed bootstrap gap surfaced by trying to sync real data immediately after deploy, not by
+theoretical review.
+
+**Symptom**: `sync_cross_asset()` raised `psycopg2.errors.UndefinedTable: relation
+"cross_asset_readings" does not exist` when manually invoked right after restarting
+`event-intelligence` with the new model in its `shared/db/models.py`.
+
+**Root cause**: `Base.metadata.create_all()` (`shared/db/session.py`'s `init_db()`) is only
+ever called by **2 of 11** backend services — confirmed via `grep -rln "init_db()"
+services/*/src/main.py` returning just `market-data` and `research-engine`. Every other
+service, including `event-intelligence`, never runs `create_all()` at all — it silently
+depended on ONE OF THOSE TWO services happening to restart AFTER a new shared table's model
+was added, purely by chance of deploy ordering. Confirmed directly: `economic_events`
+(an old, long-established table) already existed in production, but `cross_asset_readings`
+(brand new) did not — until `market-data` was restarted, at which point `create_all()` ran and
+the table appeared immediately.
+
+**Fix applied**: added `init_db()` to `event-intelligence`'s own `main.py` startup, wrapped in
+a small local `async def _on_startup(): init_db(); await start_scheduler()` (matching
+`market-data`'s own established `on_startup` pattern exactly — `create_app()`'s `lifespan`
+always `await`s whatever callable is passed). `Base.metadata.create_all()` is idempotent, so
+calling it from a second service is completely safe — it only ever creates tables that don't
+exist yet, never touches ones that do.
+
+**Live-verified end-to-end**: before the fix, a direct call to `sync_cross_asset()` inside the
+freshly-restarted `event-intelligence` container failed with `UndefinedTable`. After adding
+`init_db()` and restarting, the container's own startup log showed `sync_cross_asset` firing
+its startup-seed task and correctly reporting `{"synced": 105, "skipped": null}` — the table
+existed and real FRED data landed on the very first boot, with no dependency on `market-data`'s
+own restart timing at all.
+
+**What to check if a similar `UndefinedTable` error appears after adding a new shared model**:
+```bash
+# Confirm which services actually call init_db() today:
+grep -rln "init_db()" services/*/src/main.py
+
+# Check whether the table actually exists in production:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c "\dt" | grep <new_table_name>
+
+# If missing, restart market-data OR research-engine (either one's create_all() will create
+# it) — or, better, add init_db() to whichever service actually OWNS/writes the new table,
+# matching this fix's own reasoning, so it's never dependent on a sibling's restart order again.
+```
+
+**Design invariant**: any service that WRITES to a brand-new shared table should call
+`init_db()` in its own startup, not rely on `market-data`/`research-engine` happening to have
+restarted more recently. This is now the 2nd occurrence of this exact class of bootstrap gap
+in this app (only 2 of 11 services do this) — worth a broader audit of the other 9 services if
+a similar issue recurs.
