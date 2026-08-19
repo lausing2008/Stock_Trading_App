@@ -14502,3 +14502,138 @@ first confirm `stockai:avg_volume` actually has a real entry for that symbol —
 <SYMBOL>` — a missing cache entry (not yet refreshed, or a symbol outside this app's tracked
 universe) correctly falls back to the flat base, which is fail-open working as designed, not a
 bug.
+
+---
+
+## Feature Reference: IF-01 (phases 1-3 + persistence) — Historical VaR/CVaR + Stress Testing (2026-08-19)
+
+**Closes the "never persisted, stress testing entirely absent" half of Tier 289's `IF-01-
+VAR-STRESS-TESTING` finding** — the ENTIRE pre-existing VaR implementation was 3 lines
+(`port_vol = float(port_rets.std())`, `var_95_pct = port_vol * 1.645 * 100`), request-scoped
+and discarded on every call, with zero stress-testing capability of any kind.
+
+**Historical VaR/CVaR — `compute_var_cvar()`** (`services/portfolio-optimizer/src/api/risk.py`)
+— computes EMPIRICAL-PERCENTILE VaR (not just the pre-existing parametric/normal-distribution
+assumption) plus CVaR (Conditional VaR / Expected Shortfall — the average of the tail BEYOND
+the VaR threshold, a materially more informative "how bad does it get" figure than a single
+VaR point), at both 95%/99% confidence and 1-day/10-day horizons. **Kept ALONGSIDE the
+pre-existing parametric `var_95_pct`, not replacing it** — a large divergence between the two
+is itself a useful signal that the return distribution is meaningfully non-normal. 10-day
+scaling uses the standard `sqrt(time)` convention (the same simplification this app's own
+CAGR/Sharpe annualization already makes elsewhere). Fails safe to `None` (never a fabricated
+number) below a 20-sample floor.
+
+**5 predefined stress scenarios — `STRESS_SCENARIOS` + `run_stress_test()`** (same file) — 2008
+GFC (-46%), COVID-19 (-34%), 2022 rate-hike selloff (-25%), 2010 flash crash (-9%), 1973-74
+stagflation proxy (-48%), each a real, dated historical benchmark-index move. Per-position
+impact = `beta * scenario_move` — an explicitly-stated **beta-scaled proxy**, not a claim that
+a specific stock actually moved this way historically (a full historical replay would need
+per-symbol price history reaching back to 2008, which this app doesn't have for most of its
+tracked universe). New `GET /portfolio-risk/stress-test` and `GET /portfolio-risk/
+stress-test/scenarios` endpoints; `portfolio_risk()` itself gained a `historical_var` field.
+
+**Persistence — the other half of this item's headline finding, and the harder architectural
+problem**: portfolio-optimizer has **no DB access of its own** (confirmed via its own module
+docstring — a pure HTTP-consumer service). New `services/market-data/src/api/
+risk_snapshots.py` calls portfolio-optimizer's risk endpoints over HTTP (the SAME established
+cross-service compute-then-persist pattern already used for `OptionsFlowSnapshot`/
+`SectorRotationSnapshot`) using a user's REAL `UserPosition` holdings (weighted by
+`shares * avg_cost` — the same cost-basis convention `positions.py`'s own `PositionOut`
+already surfaces), then writes into two new tables:
+- `PortfolioRiskMetric` — one row per `(user_id, as_of)`, real upsert (running twice the same
+  day updates in place, never duplicates).
+- `StressTestResult` — one row per `(user_id, as_of, scenario)` — a user can run multiple
+  scenarios against the same day's holdings.
+
+Both are brand-new tables (`create_all()`-friendly — no manual `ALTER TABLE` needed, per this
+repo's own standing `create_all()`-gap invariant). New endpoints: `POST /risk-snapshots/var`,
+`GET /risk-snapshots/var/history`, `POST /risk-snapshots/stress-test`, `GET /risk-snapshots/
+stress-test/history` — the last two finally answering the question this whole tracker item
+existed to close: "what has my VaR actually looked like over time."
+
+**Scoped PER USER, not per-`PaperPortfolio`** — deliberate: `portfolio.tsx`'s real call site
+passes an arbitrary comma-separated symbol/weight list built from `UserPosition` (a user's own
+manually-tracked holdings), not a `PaperPortfolio` (which already has its own, separate
+Sharpe/Sortino/CAGR/max-drawdown risk metrics via `_portfolio_risk_metrics()` in
+`paper_portfolio.py` — genuinely different figures from VaR/CVaR, not a duplicate).
+
+### A real, unrelated bug found and fixed along the way
+
+While wiring the new `risk-snapshots` proxy route into api-gateway's `_ROUTES` table, this
+repo's own pre-existing `test_every_backend_router_prefix_has_a_gateway_route` test (built
+specifically to catch exactly this class of bug) failed — not just for the new route, but for
+**T286-CONDITIONAL-ORDER's own `/conditional-orders` router, which had NEVER been added to the
+proxy table since that feature shipped**. Every real request to `/conditional-orders/...` had
+been silently 404ing at the gateway (`_upstream()` has no default fallback) since that feature
+was deployed. Confirmed via `git stash` on `proxy.py` that the test fails WITHOUT this fix and
+passes WITH it. Fixed both gaps in the same edit — `"conditional-orders"` and
+`"risk-snapshots"` both now map to `_settings.market_data_url`.
+
+### A real, self-caught test gotcha (matching this repo's own documented Redis-connection-
+### pooling gotcha, generalized to sqlalchemy itself)
+
+`test_risk_snapshots.py` needs a real DB session (the established stub-pop/`create_all()`/
+stub-restore technique), but a NAIVE version — re-importing `from sqlalchemy import select`
+INSIDE a function called AFTER the stub restore — silently re-resolves to the STUBBED mock
+again, not the real module, because `sys.modules["sqlalchemy"]` has already been restored to
+the mock by that point. This produced a real `sqlalchemy.exc.ArgumentError: Executable SQL or
+text() construct expected, got <MagicMock ...>` the first time these tests ran. Fixed by
+capturing `select`/`Session`/`pg_insert` ONCE, at the top of the file, BEFORE the stub restore,
+and reusing those captured references everywhere downstream instead of re-importing.
+
+### Two more self-caught test gaps during adversarial verification, both fixed before shipping
+
+1. `test_stress_test_endpoint_computes_a_real_result_end_to_end`'s first version reused an
+   existing sibling test's fake benchmark fixture (`np.linspace(100, 110, 90)`, a deterministic
+   price ramp) — this produces essentially ZERO return variance (`std ~3e-5`), sending
+   `_beta()`'s `cov/var` computation into an absurd 650x-amplified beta against real noisy
+   stock returns, and the test's own `assert result["portfolio_impact_pct"] < 0` failed with
+   `650.47 < 0`. Not a bug in `run_stress_test()`/`_beta()` — real production benchmark data
+   always has genuine variance. Fixed with a realistic noisy-benchmark fixture and a
+   bounds-based assertion (the sign/scaling correctness is already covered by the dedicated
+   hand-computed unit tests) rather than assuming a specific sign from random independent noise.
+2. `test_cvar_is_at_least_as_severe_as_var_at_the_same_confidence_and_horizon` used a plain
+   `>=` comparison — sabotaging CVaR to just re-report the VaR value (`cvar_1d = var_1d`
+   instead of averaging the tail) still passed every test, since `cvar == var` still satisfies
+   `>=`. Investigated per this repo's own "still passes after sabotage is itself a finding"
+   discipline; fixed by adding a dedicated fat-tail fixture (a handful of much-worse-than-
+   typical days) and asserting STRICT inequality (`>`) specifically for that case, while
+   keeping a separate, weaker `>=` test for the genuinely-degenerate equal case.
+
+**Tests**: `services/portfolio-optimizer/tests/test_var_stress_test.py` (27 cases — sample-
+floor fail-open, the strict/weak CVaR-severity pair above, 99%>=95% ordering, sqrt-time 10-day
+scaling hand-verified, all 5 scenarios present, hand-computed beta-scaling cases, missing-beta
+fallback, endpoint-level wiring for both new routes) plus `services/market-data/tests/
+test_risk_snapshots.py` (9 cases — symbol/weight building from real `UserPosition` rows,
+zero-value-position exclusion, per-user isolation, the 2-symbol floor, real persisted rows,
+and the same-day upsert-not-duplicate property). Adversarially verified 3 more sabotage/revert
+cycles on `risk_snapshots.py` (the value-guard, the upsert conflict target, the 2-symbol
+floor) and 3 on `risk.py` (the sample floor, the CVaR tail-mean, the unknown-scenario-key
+guard) — all caught correctly and reverted, confirmed byte-identical via `md5sum` before
+moving on.
+
+Full 55-test portfolio-optimizer suite (up from 8), 1838-test market-data suite (up from
+1829), and 40-test api-gateway suite (unchanged count, but now correctly passing the
+route-registration test) all green; `pyflakes` clean on every touched file.
+
+**Deliberately deferred, not silently dropped**: a scheduled DAILY post-close job (phase 4 —
+snapshots are currently USER-TRIGGERED on-demand, not automatic) and a full frontend risk
+dashboard (phase 5, showing the VaR/stress-test history charts these new endpoints now make
+possible). Both are real, separately-scoped follow-ups once the calculation+persistence layer
+itself has been live long enough to validate.
+
+**What to check if this looks wrong**:
+```bash
+# Confirm the api-gateway route fix landed (both new AND the pre-existing conditional-orders gap):
+docker exec stockai-api-gateway-1 grep -n '"conditional-orders"\|"risk-snapshots"' /app/src/api/proxy.py
+
+# Live-check the new VaR/stress-test computation directly:
+docker exec stockai-portfolio-optimizer-1 curl -s 'http://localhost:8007/portfolio-risk/risk?symbols=AAPL,MSFT'
+docker exec stockai-portfolio-optimizer-1 curl -s 'http://localhost:8007/portfolio-risk/stress-test?symbols=AAPL,MSFT&scenario=covid_2020'
+
+# Confirm a real snapshot persists (needs a real user JWT with >=2 real UserPosition rows):
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT user_id, as_of, var_95_1d_pct, cvar_95_1d_pct FROM portfolio_risk_metrics ORDER BY as_of DESC LIMIT 10;"
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT user_id, as_of, scenario, portfolio_impact_pct FROM stress_test_results ORDER BY as_of DESC LIMIT 10;"
+```

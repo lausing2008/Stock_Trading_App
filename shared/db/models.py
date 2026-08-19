@@ -1819,3 +1819,73 @@ class PreBreakoutAlertOutcome(Base):
     return_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_correct_20d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class PortfolioRiskMetric(Base):
+    """IF-01: persisted VaR/CVaR snapshot for a user's real position book, closing the gap this
+    tracker item's own review found — portfolio-optimizer's GET /portfolio-risk/risk was
+    entirely request-scoped, computed fresh and discarded on every call, with no time series to
+    trend, alert on, or backtest a VaR model's own breach rate against (a risk figure is only
+    trustworthy once you can measure how often reality actually exceeded it).
+
+    Scoped per (user_id, as_of) rather than per-portfolio — the /portfolio-risk/risk endpoint
+    takes an arbitrary comma-separated symbol/weight list from portfolio.tsx's real
+    UserPosition holdings, not a PaperPortfolio (paper portfolios are a separate, app-wide
+    concept with their own risk metrics already — see PaperEquityCurve/_portfolio_risk_metrics
+    in paper_portfolio.py, which computes Sharpe/Sortino/CAGR/drawdown, genuinely different
+    figures from VaR/CVaR). symbols_json is a plain sorted JSON list of the symbols this
+    snapshot was computed over, kept for display/audit purposes (not part of the uniqueness
+    key — a user changing their exact position list intraday still gets one row per day,
+    reflecting their CURRENT holdings at snapshot time).
+
+    Computed via portfolio-optimizer's own compute_var_cvar() (an HTTP call — portfolio-
+    optimizer has no DB access of its own, market-data does, matching the established
+    cross-service compute-then-persist pattern already used for OptionsFlowSnapshot/
+    SectorRotationSnapshot). Currently written on-demand (a user-triggered "save snapshot"
+    action), not yet a scheduled daily job — see this item's own tracker note for why that
+    phase was deliberately deferred.
+    """
+    __tablename__ = "portfolio_risk_metrics"
+    __table_args__ = (UniqueConstraint("user_id", "as_of", name="uq_portfolio_risk_metric_user_date"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    as_of: Mapped[date] = mapped_column(Date, index=True)
+    symbols_json: Mapped[str] = mapped_column(Text)  # sorted JSON list, e.g. ["AAPL","MSFT"]
+    portfolio_beta: Mapped[float | None] = mapped_column(Float, nullable=True)
+    var_95_pct: Mapped[float | None] = mapped_column(Float, nullable=True)  # pre-existing parametric 1d/95%
+    var_95_1d_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    var_99_1d_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    var_95_10d_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    var_99_10d_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cvar_95_1d_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cvar_99_1d_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cvar_95_10d_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cvar_99_10d_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sample_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class StressTestResult(Base):
+    """IF-01: persisted result of applying a predefined historical stress scenario to a user's
+    real position book — see PortfolioRiskMetric's own docstring for the shared architectural
+    reasoning (scoped per user, not per-portfolio; computed via an HTTP call to portfolio-
+    optimizer's run_stress_test(), which market-data then persists since it has real DB access
+    and portfolio-optimizer does not).
+
+    One row per (user_id, as_of, scenario) — a user can run multiple scenarios against the same
+    day's holdings, each getting its own row rather than overwriting a single day's slot.
+    """
+    __tablename__ = "stress_test_results"
+    __table_args__ = (UniqueConstraint("user_id", "as_of", "scenario", name="uq_stress_test_result_user_date_scenario"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    as_of: Mapped[date] = mapped_column(Date, index=True)
+    scenario: Mapped[str] = mapped_column(String(64))
+    scenario_label: Mapped[str] = mapped_column(String(256))
+    symbols_json: Mapped[str] = mapped_column(Text)
+    benchmark_move_pct: Mapped[float] = mapped_column(Float)
+    portfolio_impact_pct: Mapped[float] = mapped_column(Float)
+    per_position_impact_json: Mapped[str] = mapped_column(Text)  # {"AAPL": -34.2, ...}
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

@@ -124,3 +124,26 @@ def test_falls_back_to_beta_one_when_benchmark_fetch_fails(monkeypatch):
     result = portfolio_risk(symbols="AAPL,MSFT", weights=None, _user="testuser")
     assert all(b == 1.0 for b in result["betas"].values())
     assert result["portfolio_beta"] == 1.0
+
+
+def test_response_includes_the_historical_var_block(monkeypatch):
+    """IF-01: portfolio_risk() must now also surface historical_var alongside the pre-existing
+    parametric var_95_pct, not replace it."""
+    import src.api.risk as risk_mod
+    syms = ["AAPL", "MSFT"]
+    monkeypatch.setattr(risk_mod, "_fetch_returns", lambda symbols, days=60: _returns_df(syms, n=90))
+    monkeypatch.setattr(risk_mod, "_fetch_stock_meta", lambda symbols: {
+        "AAPL": {"sector": "Technology", "market": "US"},
+        "MSFT": {"sector": "Technology", "market": "US"},
+    })
+    monkeypatch.setattr(risk_mod, "yf", type("FakeYf", (), {
+        "download": staticmethod(lambda *a, **kw: pd.DataFrame({"Close": np.linspace(100, 110, 90)}))
+    }))
+
+    result = portfolio_risk(symbols="AAPL,MSFT", weights=None, _user="testuser")
+
+    assert "var_95_pct" in result  # pre-existing parametric field, unchanged
+    assert "historical_var" in result
+    assert result["historical_var"]["insufficient_data"] is False
+    assert result["historical_var"]["var_95_1d_pct"] is not None
+    assert result["historical_var"]["cvar_99_10d_pct"] is not None

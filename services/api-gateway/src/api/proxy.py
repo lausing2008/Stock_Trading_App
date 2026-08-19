@@ -80,6 +80,15 @@ _ROUTES = {
     "rl-agent": _settings.market_data_url,
     # T258-NEWS-INTELLIGENCE: new service (port 8011) — real-time headline ingestion.
     "news": _settings.news_intelligence_url,
+    # BUG-PROXYGAP-CONDITIONALORDERS: T286-CONDITIONAL-ORDER shipped its own
+    # APIRouter(prefix="/conditional-orders") on market-data but was never added to this
+    # table — every real request 404'd at the gateway with "No route for
+    # /conditional-orders..." since _upstream() has no default fallback. Found and fixed
+    # while wiring IF-01's own new risk-snapshots route (a completely separate feature,
+    # discovered only because this table was being read closely for an unrelated addition).
+    "conditional-orders": _settings.market_data_url,
+    # IF-01: persisted VaR/CVaR + stress-test snapshots (risk_snapshots.py, market-data).
+    "risk-snapshots": _settings.market_data_url,
 }
 
 

@@ -59,6 +59,8 @@ from .models import (
     PreBreakoutAlertOutcome,
     StockGoal,
     AnalystPriceTarget,
+    PortfolioRiskMetric,
+    StressTestResult,
 )
 from .session import SessionLocal, engine, get_session, init_db
 
@@ -123,6 +125,8 @@ __all__ = [
     "PreBreakoutAlertOutcome",
     "StockGoal",
     "AnalystPriceTarget",
+    "PortfolioRiskMetric",
+    "StressTestResult",
     "SessionLocal",
     "engine",
     "get_session",
