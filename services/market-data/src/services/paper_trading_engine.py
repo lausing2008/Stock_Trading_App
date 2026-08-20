@@ -2137,6 +2137,43 @@ def _should_enter(
             score += 1
             notes.append(f"Congress net buying (score {_congress_sc:.0f}) — informed capital inflow")
 
+    # ── AUD288-CONFIDENCE-CALIBRATION-NOT-FEDBACK: calibrated win-rate feedback ──
+    # calibrated_win_rate/calibrated_win_rate_count are real, measured historical win rates
+    # per (horizon, direction, market, confidence-band) — computed by signal-engine's
+    # _build_confidence_calibration() and, as of the same fix that added this score layer, now
+    # durably persisted into Signal.reasons by _bulk_persist() (previously computed correctly
+    # but only ever written into a response dict AFTER the real DB commit had already run,
+    # making it invisible to this function no matter how "real" the number was).
+    #
+    # Gated behind cfg["calibration_feedback_enabled"] (default False — a pure no-op unless
+    # explicitly turned on) because this is a NEW score adjustment, not a tuned value of an
+    # EXISTING one — it must be validated via a walk-forward train/validation sweep
+    # (gate_harness.py's established _passes_promotion_margin() discipline) BEFORE being
+    # trusted to affect real entries, matching this repo's own standing rule that any new
+    # sizing/scoring parameter needs that same promotion gate before going live. Real
+    # production calibration data (2026-08-19) shows genuine, non-monotonic confidence
+    # inversions — e.g. SWING|BUY|HK: 30.9% win rate at the 40-55 confidence band vs. 13.4% at
+    # 55-70 — so the adjustment intentionally does NOT assume "higher confidence = higher
+    # score"; it reads whichever band's OWN measured win rate applies to this exact signal.
+    if cfg.get("calibration_feedback_enabled") and reasons.get("calibrated_win_rate") is not None:
+        _cal_wr = float(reasons["calibrated_win_rate"])
+        _cal_n = reasons.get("calibrated_win_rate_count")
+        # _calibrated_win_rate() itself already enforces _CONF_CAL_MIN_COUNT (30) before ever
+        # returning a non-None value, so no second sample-floor check is needed here — a
+        # present value is already a trustworthy one by that upstream contract.
+        if _cal_wr >= 0.55:
+            score += 1
+            notes.append(
+                f"Calibrated win rate {_cal_wr*100:.0f}% (n={_cal_n}) for this exact "
+                f"confidence band — measured edge above baseline"
+            )
+        elif _cal_wr <= 0.35:
+            score -= 1
+            notes.append(
+                f"Calibrated win rate {_cal_wr*100:.0f}% (n={_cal_n}) for this exact "
+                f"confidence band — measured underperformance"
+            )
+
     # ── T232-DL-DUALSCORER: pre-regime early-warning score (F11) ─────────────
     # Ported from decision-engine's scorer.py (compute_score() Layer 3g) — this fallback had
     # no equivalent, so during a DE outage in a pre-choppy/pre-risk-off window a candidate got

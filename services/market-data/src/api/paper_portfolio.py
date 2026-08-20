@@ -2662,6 +2662,47 @@ def backtest_min_entry_score(
         return walk_forward_min_entry_score(session, style, market, base_cfg, window_start, window_end)
 
 
+@router.get("/backtest/calibration-feedback")
+def backtest_calibration_feedback(
+    style: str = Query(..., description="SHORT | SWING | LONG | GROWTH"),
+    market: str = Query("US", description="US | HK"),
+    window_days: int = Query(60, ge=14, le=365, description="Lookback window in calendar days"),
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """AUD288-CONFIDENCE-CALIBRATION-NOT-FEDBACK: walk-forward validation of _should_enter()'s
+    new calibration-feedback score layer (reads Signal.reasons["calibrated_win_rate"], a real
+    measured historical win rate per confidence band that is now durably persisted by
+    signal-engine's _bulk_persist() — previously computed correctly but only ever written into
+    a response dict after the real DB commit had already run, making it invisible to any live
+    entry decision no matter how real the number was).
+
+    Binary ON-vs-OFF comparison, not a continuous search — the score layer's own thresholds are
+    fixed constants. Confirms turning it on beats OFF on the train slice first (cheap, avoids
+    spending the validation slice on a candidate that doesn't even clear that low bar), then
+    only promotes if it ALSO beats OFF on the held-out validation slice by the same
+    BUG233-BACKTESTHARNESS-COINFLIP margin every other walk-forward endpoint in this file
+    enforces. Research tool only — does not write to portfolio.config or any promotion history
+    table; turning cfg["calibration_feedback_enabled"] on for a real portfolio still requires
+    an explicit config change of its own.
+    """
+    from ..backtest.gate_harness import walk_forward_calibration_feedback
+    from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+
+    style = style.upper()
+    if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
+        raise HTTPException(status_code=400, detail=f"Unknown style: {style}")
+    market = market.upper()
+    if market not in ("US", "HK"):
+        raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
+
+    base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    window_end = date.today()
+    window_start = window_end - timedelta(days=window_days)
+
+    with SessionLocal() as session:
+        return walk_forward_calibration_feedback(session, style, market, base_cfg, window_start, window_end)
+
+
 # ── T233-SELFIMPROVE-PHASE2b: min_kscore / min_ta_score / min_volume_z ──────────
 # See gate_harness.py's own module docstring (search "Phase 2b") for the full re-scoping
 # rationale — these three pre-filter gates live in _scan_for_entries' candidate loop, not

@@ -692,6 +692,121 @@ def walk_forward_min_entry_score(
     }
 
 
+def walk_forward_calibration_feedback(
+    session: Session,
+    style: str,
+    market: str,
+    base_cfg: dict,
+    window_start: date,
+    window_end: date,
+) -> dict:
+    """AUD288-CONFIDENCE-CALIBRATION-NOT-FEDBACK: validates whether _should_enter()'s new
+    calibration-feedback score layer (reads Signal.reasons["calibrated_win_rate"], gated behind
+    cfg["calibration_feedback_enabled"]) actually improves outcomes before it is ever turned on
+    for real trading.
+
+    Unlike walk_forward_min_entry_score()/walk_forward_extended_gate(), this is not a search
+    over a continuous parameter — the score layer's own thresholds (>=0.55 boosts, <=0.35
+    penalizes) are fixed constants, matching every other score layer in _should_enter(). The
+    only real question is binary: does turning the layer ON beat the current OFF baseline on
+    data the comparison never saw. So "train slice" here just confirms turning it on is a
+    genuine train-slice improvement (not a coin flip already resolvable at zero cost) before
+    spending the validation slice on it — the validation-slice comparison against baseline is
+    the one that actually decides promotion, exactly as in the other two walk-forward
+    functions.
+    """
+    style = style.upper()
+    resolvable_end = _resolvable_window_end(window_end, style)
+    if resolvable_end <= window_start:
+        return {
+            "style": style, "market": market,
+            "skipped_reason": (
+                f"window too short to leave any resolvable validation slice after accounting "
+                f"for {style}'s {_HORIZON_RESOLUTION_LAG_DAYS.get(style, 14)}-day outcome "
+                f"resolution lag (requested window ends {window_end}, resolvable end is "
+                f"{resolvable_end}, window starts {window_start})"
+            ),
+        }
+
+    total_days = (resolvable_end - window_start).days
+    split_days = max(1, int(total_days * 0.7))
+    train_end = window_start + timedelta(days=split_days)
+    val_start = train_end + timedelta(days=1)
+
+    if val_start > resolvable_end:
+        return {
+            "style": style, "market": market,
+            "skipped_reason": f"window too short to split ({total_days} resolvable days)",
+        }
+
+    off_cfg = {**base_cfg, "calibration_feedback_enabled": False}
+    on_cfg = {**base_cfg, "calibration_feedback_enabled": True}
+
+    train_off = replay_should_enter(
+        session, style, market, off_cfg, window_start, train_end, cfg_label="calibration OFF (train)",
+    )
+    train_on = replay_should_enter(
+        session, style, market, on_cfg, window_start, train_end, cfg_label="calibration ON (train)",
+    )
+    if (
+        train_off.skipped_reason is not None or train_off.avg_return_pct is None
+        or train_on.skipped_reason is not None or train_on.avg_return_pct is None
+    ):
+        return {
+            "style": style, "market": market,
+            "skipped_reason": "insufficient train-slice samples for either the ON or OFF variant",
+            "train_off": _result_dict(train_off),
+            "train_on": _result_dict(train_on),
+        }
+
+    if train_on.avg_return_pct <= train_off.avg_return_pct:
+        return {
+            "style": style, "market": market,
+            "promoted": False,
+            "train_window": [str(window_start), str(train_end)],
+            "train_off": _result_dict(train_off),
+            "train_on": _result_dict(train_on),
+            "note": (
+                "calibration feedback did not even beat the OFF baseline on the TRAIN slice — "
+                "no reason to spend the validation slice checking it further. Not promoted."
+            ),
+        }
+
+    baseline_val = replay_should_enter(
+        session, style, market, off_cfg, val_start, resolvable_end, cfg_label="calibration OFF (validation)",
+    )
+    candidate_val = replay_should_enter(
+        session, style, market, on_cfg, val_start, resolvable_end, cfg_label="calibration ON (validation)",
+    )
+
+    promoted = _passes_promotion_margin(candidate_val, baseline_val)
+
+    return {
+        "style": style, "market": market,
+        "train_window": [str(window_start), str(train_end)],
+        "validation_window": [str(val_start), str(resolvable_end)],
+        "train_off": _result_dict(train_off),
+        "train_on": _result_dict(train_on),
+        "baseline_validation": _result_dict(baseline_val),
+        "candidate_validation": _result_dict(candidate_val),
+        "promoted": promoted,
+        "note": (
+            "promoted=True means turning ON the calibration-feedback score layer beat the OFF "
+            "baseline on the held-out validation slice by at least "
+            f"{_MIN_PROMOTION_EV_LIFT_PCT}pp AND by at least {_MIN_PROMOTION_LIFT_SD_RATIO}x "
+            "the validation slice's own return dispersion (same BUG233-BACKTESTHARNESS-"
+            "COINFLIP margin every other walk-forward function in this module enforces). This "
+            "is a research signal for whether cfg['calibration_feedback_enabled'] should ever "
+            "be set True for real trading — it is NOT itself a live config change; turning the "
+            "feature on for a real portfolio still requires the portfolio's own cfg to set this "
+            "flag explicitly, exactly like every other opt-in cfg key in this app. Same scope "
+            "caveats as every other function in this module: only ever replays _should_enter() "
+            "(the DE-outage fallback gate, not the live primary decision-engine path), and "
+            "live_regime=None on every replayed call (no historical regime data source exists)."
+        ),
+    }
+
+
 def _resolvable_window_end(window_end: date, style: str) -> date:
     """Pull window_end back by the style's own resolution lag (_HORIZON_RESOLUTION_LAG_DAYS) so
     a subsequent 70/30 split's validation slice actually contains signals old enough to have a

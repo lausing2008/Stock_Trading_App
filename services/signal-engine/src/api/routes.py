@@ -395,11 +395,33 @@ def _bulk_persist(symbols: list[str]) -> None:
                 except Exception:
                     pass
 
+                # AUD288-CONFIDENCE-CALIBRATION-NOT-FEDBACK: enrich with the SAME calibrated
+                # win rate already shown on the two live-response paths (routes.py's manual
+                # /signals/refresh and /signals/{symbol} live=true) — but landing it in the
+                # actual PERSISTED reasons column this time. Both of those paths compute this
+                # value AFTER their own upsert already committed (or don't persist at all),
+                # so _scan_for_entries() (paper_trading_engine.py) — which only ever reads
+                # sig.reasons from the DB — has never once been able to see it, despite the
+                # value being real and already displayed to users on the stock page. Fetched
+                # ONCE per symbol (not per style), matching the sector-rotation fetch above.
+                _cal_map_bp = _get_confidence_calibration(s)
+                _stock_mkt_bp = stock.market.value if hasattr(stock.market, "value") else stock.market
+
                 # Cache the research summary once per symbol (shared across styles)
                 _research_summary: dict | None = None
                 _research_fetched = False
                 for style_key, ai in all_sig.items():
                     horizon_enum = SignalHorizon(ai.horizon)
+                    if ai.signal in ("BUY", "SELL") and _cal_map_bp:
+                        _cwr_bp = _calibrated_win_rate(
+                            ai.confidence, _cal_map_bp,
+                            horizon=ai.horizon, direction=ai.signal, market=_stock_mkt_bp,
+                        )
+                        if _cwr_bp is not None:
+                            if ai.reasons is None:
+                                ai.reasons = {}
+                            ai.reasons["calibrated_win_rate"] = _cwr_bp[0]
+                            ai.reasons["calibrated_win_rate_count"] = _cwr_bp[1]
                     # F2: annotate confidence_delta before upsert
                     prev = prior_conf.get(ai.horizon)
                     if prev is not None and ai.confidence is not None:

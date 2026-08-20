@@ -14792,3 +14792,197 @@ legitimately fail to clear the 5-sample floor at some or all lags:
 docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
   "SELECT (entry_date - signal_date) AS lag_days, COUNT(*) FROM signal_outcomes WHERE entry_date IS NOT NULL AND signal_direction = 'BUY' AND pct_return IS NOT NULL GROUP BY lag_days ORDER BY lag_days;"
 ```
+
+---
+
+## Feature Reference: AUD288-CONFIDENCE-CALIBRATION-NOT-FEDBACK — Calibration Now Persisted +
+## a Validated, OFF-by-Default Score Layer (Built 2026-08-19)
+
+**The gap**: `_calibrated_win_rate()` (signal-engine's `signals_shared.py`) has always computed
+a real, measured historical win rate per `(horizon, direction, market, confidence-band)` — but
+it was only ever consumed by 2 code paths, BOTH of which write into a response dict AFTER
+their own DB commit already ran. `_scan_for_entries()` (`paper_trading_engine.py`, the real
+trading engine) only ever reads `Signal.reasons` from the DB — so the value was computed
+correctly and displayed to real users on the stock page, but had never once reached anything a
+live entry decision could see.
+
+**Fix, part 1 — durable persistence**: `_bulk_persist()` (`services/signal-engine/src/api/
+routes.py` — the ONE function that durably persists `Signal.reasons`, since it's the real
+5x/day scheduled path `_scan_for_entries()` reads from) now fetches `_get_confidence_
+calibration(s)` ONCE per symbol (matching the sibling T220-G sector-rotation fetch's own
+established shape — not once per style, which would be a redundant 4x round-trip) and, for
+every BUY/SELL signal in that symbol's batch, writes `ai.reasons["calibrated_win_rate"]`/
+`["calibrated_win_rate_count"]` BEFORE the per-style `INSERT ... ON CONFLICT ... DO UPDATE`
+upsert serializes and persists `reasons` via `json.dumps(_json_safe(ai.reasons))`. A `None`
+result from `_calibrated_win_rate()` (below the sample floor, or horizon/direction not
+supplied) correctly writes nothing — never a fabricated 0.0/None pair.
+
+**Fix, part 2 — a new, OFF-by-default score layer**: `_should_enter()` gained a new score
+layer, placed right after the existing T172-B catalyst-intelligence block:
+```python
+if cfg.get("calibration_feedback_enabled") and reasons.get("calibrated_win_rate") is not None:
+    _cal_wr = float(reasons["calibrated_win_rate"])
+    if _cal_wr >= 0.55:
+        score += 1
+    elif _cal_wr <= 0.35:
+        score -= 1
+```
+Gated behind `cfg["calibration_feedback_enabled"]` (default `False` — a pure no-op for every
+existing portfolio unless explicitly turned on), because this is a NEW score adjustment, not a
+tuned value of an existing one — it needed the same walk-forward validation discipline every
+other new sizing/scoring parameter in this codebase gets before being trusted live (matching
+this session's own `AUD283-MLWEIGHT-RATCHET` precedent). Deliberately does NOT assume "higher
+confidence implies higher win rate" — real production calibration data (2026-08-19) shows
+genuine non-monotonic inversions (e.g. SWING|BUY|HK: 30.9% win rate at the 40-55 band vs. 13.4%
+at 55-70), so the layer reads whichever band's OWN measured number applies to THIS signal, not
+a generic confidence-scaled adjustment. Trusts `calibrated_win_rate`'s presence without a
+second sample-floor check, since `_calibrated_win_rate()` itself already enforces
+`_CONF_CAL_MIN_COUNT` (30) before ever returning a non-`None` value.
+
+**Validation — a new walk-forward sweep, before this is ever turned on for real trading**:
+`walk_forward_calibration_feedback()` (`gate_harness.py`) — unlike `walk_forward_min_entry_
+score()`/`walk_forward_extended_gate()`, this isn't a search over a continuous parameter (the
+score layer's own thresholds are fixed constants) — it's a binary ON-vs-OFF comparison. Cheap
+train-slice check first (does turning it ON beat OFF on the older 70% at all — if not, return
+early without spending the validation slice), then the real promotion decision: does ON beat
+OFF on the held-out newer 30% by the SAME `_passes_promotion_margin()` (min absolute EV-lift
+AND min lift-vs-dispersion ratio) every other walk-forward function in this module already
+enforces (`BUG233-BACKTESTHARNESS-COINFLIP`'s own fix, reused verbatim, not re-derived). Both
+`off_cfg`/`on_cfg` are built from the SAME `base_cfg`, differing only in the one flag under
+test — a controlled comparison, not confounded by any other cfg difference. New admin-only
+research endpoint `GET /paper-portfolio/backtest/calibration-feedback` (`paper_portfolio.py`),
+matching the existing `/backtest/min-entry-score` endpoint's exact shape — never writes to any
+portfolio's live config; turning the flag on for real trading still requires an explicit,
+separate config change.
+
+**Tests**: `services/signal-engine/tests/test_bulk_persist_calibration_enrichment.py` (9 cases,
+source-text regression — `_bulk_persist()` can't be imported directly in this test environment,
+`conftest.py` stubs `common`/`db` wholesale) — the once-per-symbol fetch placement (guarding
+against the real trap of a SECOND, unrelated `for style_key, ai in all_sig.items():` loop
+earlier in the same function that an initial version of this test's own `.index()` call
+matched first instead of the intended one), the BUY/SELL-only gate, the `None`-reasons guard,
+the only-write-on-a-real-value guard, and strict ordering before the upsert.
+`services/market-data/tests/test_walk_forward_calibration_feedback.py` (15 cases, same
+source-text-extraction technique for both `gate_harness.py` and `paper_trading_engine.py`) —
+the sweep's chronological split, the train-slice cheap-reject-before-validation-spend property,
+reuse of the shared promotion-margin gate (not a bare comparison), the controlled ON/OFF cfg
+pairing, and the score layer's own flag-gate/threshold/non-monotonicity properties.
+
+**Adversarial verification** — 6 sabotage/revert cycles total, all caught correctly and
+reverted (confirmed byte-identical via `diff`/`md5sum` before moving on): removing the
+`ai.reasons is None` guard in `_bulk_persist()` (caught); disabling the BUY/SELL condition
+entirely (caught by 3 tests); moving the calibration fetch to inside the per-style loop instead
+of before it (caught by the ordering test); removing the train-slice cheap-reject early return
+in the sweep (caught); swapping the sweep's promotion-margin gate for a bare `>` comparison —
+the exact `BUG233-BACKTESTHARNESS-COINFLIP` bug class this margin exists to prevent — (caught);
+removing the `cfg.get("calibration_feedback_enabled")` flag check from the score layer entirely
+(caught by 2 tests, confirming the layer would otherwise fire unconditionally for every
+existing portfolio the moment `calibrated_win_rate` became non-`None`).
+
+Full 1,924-test market-data suite and 349-in-scope-test signal-engine suite (excluding the 2
+pre-existing, unrelated failure groups already documented elsewhere in this file —
+`test_signal_generator.py`'s `_decide` import-collection error and 4 `test_analyst_momentum.py`
+failures, both reconfirmed via `git stash` to predate this change) green. `pyflakes` clean on
+all 4 touched files (confirmed via `git stash` that the sole remaining diff, an f-string
+warning's shifted line number, predates this change).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-signal-engine-1 grep -n '_cal_map_bp = _get_confidence_calibration' /app/src/api/routes.py
+docker exec stockai-market-data-1 grep -n 'calibration_feedback_enabled' /app/src/services/paper_trading_engine.py
+
+# Confirm calibrated_win_rate is now actually landing in newly-persisted signals (won't
+# backfill old rows — only signals generated after this deploy will carry it):
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT COUNT(*) FILTER (WHERE reasons->>'calibrated_win_rate' IS NOT NULL), COUNT(*) FROM signals WHERE ts > now() - interval '1 day' AND signal IN ('BUY', 'SELL');"
+
+# Run the new sweep against real production data for a specific style/market (needs an admin JWT):
+docker exec stockai-market-data-1 curl -s \
+  'http://localhost:8001/paper-portfolio/backtest/calibration-feedback?style=SWING&market=HK&window_days=90' \
+  -H "Authorization: Bearer <admin token>" | python3 -m json.tool
+```
+The score layer will correctly stay a no-op for EVERY real portfolio until a real,
+`promoted: true` sweep result justifies setting `calibration_feedback_enabled: True` on that
+portfolio's own config — an empty/unchanged result from the sweep endpoint is not a bug, it
+means real production data does not yet show a validated edge for this specific style/market
+combination.
+
+---
+
+## Feature Reference: Short-Squeeze Alert Pipeline Audit — Confirmed Healthy (2026-08-19)
+
+**User report**: no short-squeeze alert emails received for several days, after a change a
+few days earlier (this session's own `AUD288-SQUEEZE-NO-VOLUME-CONFIRM` RVOL gate, shipped
+`a3fbab5`, 2026-08-18). Investigated end-to-end before touching any code — found the pipeline
+is genuinely healthy, not regressed.
+
+**What was checked and confirmed clean**: zero exceptions in 7 days of logs for either
+`check_short_squeeze_alerts()`/`check_squeeze_ignition_alerts()`; deployed container code
+byte-identical (`md5sum`) to the local repo — no stale/reverted `docker cp`; the user IS a
+valid recipient (77 real untriggered `PriceAlert` rows, real email on file); SMTP delivered
+dozens of OTHER real alert emails to the same address in the prior 24h, ruling out a broader
+outage; the per-user `stockai:squeeze_active:{uid}` dedup key was empty (nothing stuck
+"active" and silently suppressing a resend); the RVOL gate shipped 2026-08-18 and STILL
+produced 2 real, confirmed-sent candidates (FCEL, TMDX) that same day, proving it wasn't
+DOA at deploy.
+
+**Root cause of the reported silence**: a genuine 2-day quiet stretch for a narrow,
+multi-condition filter, not a bug. `squeeze_alert_outcomes` (the real, authoritative DB
+ground truth, unaffected by Docker log retention) shows `short_squeeze` fired on 2026-08-17
+(7 real candidates) and 2026-08-18 (2 real candidates), then zero on 08-19/08-20. Live-
+simulated the EXACT filter chain against real production Redis data (`stockai:live_prices`/
+`stockai:avg_volume`/`stockai:fundamentals:v2:*`) at the moment of investigation: 5 stocks
+cleared the 3%+ move + RVOL floor, but NONE cleared the `>=15%` short-float floor (the
+closest, BULL/MRVL, were only ~5-6% short) — the market simply hadn't produced a candidate
+clearing all 4 gates (real move + volume confirmation + genuinely high short interest +
+non-stale short-interest data) simultaneously in that window.
+
+**One real, flagged-but-not-yet-actioned observation**: `squeeze_ignition` (T260, the earlier-
+warning tier below the classic alert's 3% floor) has ZERO rows across its entire 5-day
+retained history (`squeeze_alert_outcomes` table spans 2026-08-15 through 08-19). Traced its
+logic and found it structurally sound — same shared `_session_elapsed_rvol_thresholds()`
+helper, same fundamentals cache (confirmed `dq_check:squeeze_ignition_fund_cache_misses_48h`
+count_48h: 0, i.e. no fetch failures), zero exceptions. Plausible this is simply a rare-enough
+intersection (1-3% move AND RVOL confirmation AND >=15% short float AND fresh data,
+simultaneously) that 5 quiet days is normal — but 5-for-5 on a WIDER net than the classic
+alert (which did fire 9 times in the same window) is worth a longer observation window before
+concluding it's fine, rather than dismissing outright.
+
+**What to check if this recurs**:
+```bash
+# Confirm the job is running with no exceptions:
+docker logs stockai-market-data-1 --since 24h 2>&1 | grep -iE 'squeeze.*(traceback|error|exception)'
+
+# Confirm the deployed code matches the repo (rules out a stale/reverted container):
+docker exec stockai-market-data-1 md5sum /app/src/services/scheduler.py
+md5sum services/market-data/src/services/scheduler.py
+
+# Check the real, authoritative candidate history directly (unaffected by log retention):
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT alert_type, fired_date, COUNT(DISTINCT symbol) FROM squeeze_alert_outcomes GROUP BY alert_type, fired_date ORDER BY fired_date, alert_type;"
+
+# Live-simulate the exact filter chain against real current data (safe, read-only):
+docker exec stockai-market-data-1 python3 -c "
+import json, redis
+rc = redis.Redis(host='redis', port=6379, decode_responses=True)
+rows = json.loads(rc.get('stockai:live_prices'))
+avg_vol = json.loads(rc.get('stockai:avg_volume') or '{}')
+for row in rows:
+    sym, price, prev_close = row.get('symbol'), row.get('price'), row.get('prev_close')
+    vol, av = row.get('volume'), avg_vol.get(sym)
+    if not all([sym, price, prev_close, vol, av]): continue
+    change_pct = (float(price) - float(prev_close)) / float(prev_close) * 100
+    if change_pct < 3.0: continue
+    rvol = float(vol) / float(av)
+    if rvol < 1.5: continue
+    print(sym, round(change_pct, 2), round(rvol, 2))
+"
+
+# Check the DQ cache-miss gauges (AUD-SQUEEZE250725-ISSUE1/5):
+docker exec stockai-redis-1 redis-cli get 'dq_check:squeeze_fund_cache_misses_48h'
+docker exec stockai-redis-1 redis-cli get 'dq_check:squeeze_ignition_fund_cache_misses_48h'
+```
+A truly broken pipeline shows real exceptions in logs, a `dq_check` job-status entry with
+`status: error`, or an SMTP-delivery gap affecting OTHER alert types too — none of which were
+present at the time of this investigation. Zero candidates clearing every gate for a few days
+is, on its own, consistent with correct behavior for this specific narrow filter.
