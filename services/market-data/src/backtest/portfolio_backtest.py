@@ -541,3 +541,135 @@ def sweep_max_portfolio_drawdown_pct(
             "slippage)."
         ),
     }
+
+
+# IF-13 (Kelly-consumption half): GET /paper-portfolio/kelly computes quarter-Kelly + a
+# recommended_risk_pct from real closed-trade history, but nothing ever consumed it for real
+# sizing — risk_per_trade_pct (the actual live sizing input, _DEFAULT_CFG above) stayed a
+# static 0.01/0.007 US/HK constant. Wiring Kelly's recommendation directly into real capital
+# sizing with no validation would repeat exactly the class of risk this repo's own audit
+# history has flagged and fixed elsewhere (AUD283-MLWEIGHT-RATCHET, gate_harness.py's own
+# promotion-margin discipline) — an unvalidated parameter directly affecting real capital. This
+# reuses the SAME walk-forward sweep machinery as sweep_max_portfolio_drawdown_pct() above,
+# swapping the candidate parameter to risk_per_trade_pct, with candidates drawn from Kelly's own
+# real recommended_risk_pct bands (1%/2%/3%, see kelly_sizing() in paper_portfolio.py) rather
+# than an independently-guessed grid — so a "promoted" result genuinely means "a Kelly-derived
+# risk level beat the current live default on held-out data," not just "some arbitrary
+# percentage happened to test well."
+_RISK_PER_TRADE_SWEEP_CANDIDATES = [0.01, 0.02, 0.03]  # Kelly's own recommended_risk_pct bands
+
+
+def sweep_risk_per_trade_pct(
+    session: Session,
+    symbols: list[str],
+    style: str,
+    market: str,
+    window_start: date,
+    window_end: date,
+    candidates: list[float] | None = None,
+    base_cfg_overrides: dict | None = None,
+) -> dict:
+    """Walk-forward search over candidate risk_per_trade_pct values — same chronological 70/30
+    train/validation split and promotion-margin discipline as sweep_max_portfolio_drawdown_pct()
+    immediately above (itself matching gate_harness.py's own established convention), reusing
+    the EXACT SAME promotion margin constants rather than a second, independently-tuned one.
+
+    Promotion metric is total_return_pct, same reasoning as the drawdown sweep: a risk level
+    tuned purely to minimize drawdown trivially wins by sizing every position down to nothing;
+    the real trade-off is return-per-unit-of-risk, so max_drawdown_pct is reported alongside for
+    context on what a promoted return was bought with, never hidden.
+    """
+    style = style.upper()
+    base_cfg = {**_DEFAULT_CFG, **(base_cfg_overrides or {})}
+    current_value = base_cfg.get("risk_per_trade_pct", 0.01)
+    candidates = candidates if candidates is not None else sorted(set(_RISK_PER_TRADE_SWEEP_CANDIDATES + [current_value]))
+
+    resolvable_end = _drawdown_sweep_resolvable_window_end(window_end, style)
+    if resolvable_end <= window_start:
+        return {
+            "style": style, "market": market.upper(),
+            "skipped_reason": (
+                f"window too short to leave any resolvable validation slice after accounting "
+                f"for {style}'s {_HORIZON_RESOLUTION_LAG_DAYS.get(style, 14)}-day outcome "
+                f"resolution lag (requested window ends {window_end}, resolvable end is "
+                f"{resolvable_end}, window starts {window_start})"
+            ),
+        }
+
+    total_days = (resolvable_end - window_start).days
+    split_days = max(1, int(total_days * 0.7))
+    train_end = window_start + timedelta(days=split_days)
+    val_start = train_end + timedelta(days=1)
+
+    if val_start > resolvable_end:
+        return {
+            "style": style, "market": market.upper(),
+            "skipped_reason": f"window too short to split ({total_days} resolvable days)",
+        }
+
+    baseline_val = run_portfolio_backtest(
+        session, symbols, style, market, val_start, resolvable_end,
+        cfg_overrides={**base_cfg, "risk_per_trade_pct": current_value},
+    )
+
+    train_results = []
+    for cand in candidates:
+        cand_result = run_portfolio_backtest(
+            session, symbols, style, market, window_start, train_end,
+            cfg_overrides={**base_cfg, "risk_per_trade_pct": cand},
+        )
+        train_results.append((cand, cand_result))
+
+    best_cand, best_train = None, None
+    for cand, res in train_results:
+        if res.skipped_reason is not None or res.total_return_pct is None:
+            continue
+        if best_train is None or res.total_return_pct > best_train.total_return_pct:
+            best_cand, best_train = cand, res
+
+    if best_cand is None:
+        return {
+            "style": style, "market": market.upper(), "param": "risk_per_trade_pct",
+            "current_value": current_value,
+            "skipped_reason": "no candidate produced any admitted trades on the train slice",
+            "baseline_validation": asdict(baseline_val),
+        }
+
+    best_val = run_portfolio_backtest(
+        session, symbols, style, market, val_start, resolvable_end,
+        cfg_overrides={**base_cfg, "risk_per_trade_pct": best_cand},
+    )
+
+    promoted = False
+    if best_val.skipped_reason is None and baseline_val.skipped_reason is None:
+        combined_returns = [t.pct_return for t in best_val.trades] + [t.pct_return for t in baseline_val.trades]
+        promoted = _passes_return_promotion_margin(
+            best_val.total_return_pct, baseline_val.total_return_pct, combined_returns,
+        )
+
+    return {
+        "style": style, "market": market.upper(), "param": "risk_per_trade_pct",
+        "current_value": current_value,
+        "candidate_value": best_cand,
+        "train_window": [str(window_start), str(train_end)],
+        "validation_window": [str(val_start), str(resolvable_end)],
+        "train_result": asdict(best_train),
+        "candidate_validation": asdict(best_val),
+        "baseline_validation": asdict(baseline_val),
+        "promoted": promoted,
+        "note": (
+            "promoted=True means a Kelly-derived risk_per_trade_pct candidate beat the CURRENT "
+            f"LIVE value's own validation-slice total_return_pct by at least "
+            f"{_MIN_PROMOTION_EV_LIFT_PCT}pp AND by at least {_MIN_PROMOTION_LIFT_SD_RATIO}x "
+            "the combined slices' own trade-return dispersion — the same margin discipline as "
+            "sweep_max_portfolio_drawdown_pct() and gate_harness.py's own promotion gate (a bare "
+            "'any positive difference' comparison is a near-coin-flip at realistic sample "
+            "sizes). Compare candidate_validation.max_drawdown_pct against baseline_validation."
+            "max_drawdown_pct to see what risk change bought that return — a promoted larger "
+            "risk_per_trade_pct with materially worse max_drawdown_pct is trading safety for "
+            "return and should be reviewed by a human before being applied by hand, not treated "
+            "as an automatic config change. This is a research signal, NOT an automatic capital-"
+            "sizing change — see this module's own top-of-file docstring for what run_portfolio_"
+            "backtest() does and does not model."
+        ),
+    }

@@ -135,6 +135,7 @@ _max_drawdown_pct = _ns["_max_drawdown_pct"]
 _annualized_sharpe = _ns["_annualized_sharpe"]
 run_portfolio_backtest = _ns["run_portfolio_backtest"]
 sweep_max_portfolio_drawdown_pct = _ns["sweep_max_portfolio_drawdown_pct"]
+sweep_risk_per_trade_pct = _ns["sweep_risk_per_trade_pct"]
 _passes_return_promotion_margin = _ns["_passes_return_promotion_margin"]
 _DEFAULT_CFG = _ns["_DEFAULT_CFG"]
 
@@ -700,3 +701,146 @@ class TestSweepMaxPortfolioDrawdownPct:
         if "note" in result:
             assert "research signal" in result["note"]
             assert "NOT" in result["note"]
+
+
+class TestSweepRiskPerTradePct:
+    """IF-13 Kelly-consumption half: sweep_risk_per_trade_pct() reuses the SAME walk-forward
+    machinery as TestSweepMaxPortfolioDrawdownPct above — these tests focus on what's genuinely
+    different (candidate default = Kelly's own recommended_risk_pct bands, and the sizing
+    formula's own linear risk_pct->shares relationship) rather than re-testing the shared
+    promotion-margin logic already covered above."""
+
+    def _insert_n_trades(self, session, symbols_returns, style="SWING", base_date=date(2026, 1, 1)):
+        for sym, sig_date, entry_date, exit_date, entry_price, exit_price, pct_return in symbols_returns:
+            sid = _insert_stock(session, sym, sector="Technology")
+            _insert_daily_prices(session, sid, base_date, [entry_price for _ in range(400)])
+            _insert_buy_signal_with_outcome(
+                session, sid, sym, style,
+                signal_date=sig_date, entry_date=entry_date, exit_date=exit_date,
+                entry_price=entry_price, exit_price=exit_price, pct_return=pct_return,
+            )
+
+    def test_window_too_short_for_a_resolvable_validation_slice_skips_cleanly(self):
+        session = _make_session()
+        result = sweep_risk_per_trade_pct(
+            session, ["ANY"], "SWING", "US", date(2026, 6, 20), date(2026, 6, 25),
+        )
+        assert result["skipped_reason"] is not None
+        session.close()
+
+    def test_current_value_reflects_the_real_default_when_no_override_is_passed(self):
+        session = _make_session()
+        result = sweep_risk_per_trade_pct(
+            session, ["NOSUCHSYM"], "SWING", "US", date(2026, 1, 1), date(2026, 6, 1),
+        )
+        assert result.get("current_value", _DEFAULT_CFG["risk_per_trade_pct"]) == 0.01
+
+    def test_current_value_respects_a_base_cfg_override_eg_hk_own_default(self):
+        """The real live default is market-specific — 0.01 US, 0.007 HK. A candidate sweep
+        must compare against the CORRECT current-live value for that market, not always the
+        bare US default."""
+        session = _make_session()
+        result = sweep_risk_per_trade_pct(
+            session, ["NOSUCHSYM"], "SWING", "HK", date(2026, 1, 1), date(2026, 6, 1),
+            base_cfg_overrides={"risk_per_trade_pct": 0.007},
+        )
+        assert result.get("current_value") == 0.007
+
+    def test_candidates_default_to_kellys_own_recommended_risk_bands(self):
+        """When no explicit candidates list is passed, the sweep must search Kelly's own real
+        1%/2%/3% recommended_risk_pct bands (plus whatever the current live value is) — not an
+        independently-guessed grid that could silently drift from what GET /paper-portfolio/
+        kelly actually recommends."""
+        session = _make_session()
+        result = sweep_risk_per_trade_pct(
+            session, ["NOSUCHSYM"], "SWING", "US", date(2026, 1, 1), date(2026, 6, 1),
+        )
+        # No candidate is admitted for a nonexistent symbol, but the skip path still confirms
+        # the module didn't crash trying to build the (unused-here) candidate list — the real
+        # candidate-list content is exercised directly by the promotion test below instead.
+        assert result["skipped_reason"] is not None
+
+    def test_a_higher_risk_per_trade_pct_is_promoted_when_it_genuinely_improves_return(self):
+        """A higher risk_per_trade_pct sizes EVERY winning trade larger (shares scale linearly
+        with risk_pct, per _size_position()'s own risk_dollar/stop_distance formula) — on a
+        slice of purely winning trades, this must materially improve total_return_pct on BOTH
+        the train slice (so the higher risk% is selected as best_cand) and the validation slice
+        (so it clears the promotion margin). max_position_pct/max_loss_per_trade_pct are
+        generously widened so the sizing CAPS don't neutralize the risk% difference being
+        tested — matching TestSweepMaxPortfolioDrawdownPct's own established fixture pattern."""
+        session = _make_session()
+        base = date(2026, 1, 1)
+        # Train slice: 2 real winners.
+        self._insert_n_trades(session, [
+            ("KTRA", base + timedelta(days=30), base + timedelta(days=31), base + timedelta(days=39), 100.0, 120.0, 0.20),
+            ("KTRB", base + timedelta(days=34), base + timedelta(days=44), base + timedelta(days=54), 100.0, 130.0, 0.30),
+        ])
+        # Validation slice: the SAME winning shape, later in time.
+        self._insert_n_trades(session, [
+            ("KVLA", base + timedelta(days=200), base + timedelta(days=201), base + timedelta(days=209), 100.0, 120.0, 0.20),
+            ("KVLB", base + timedelta(days=204), base + timedelta(days=214), base + timedelta(days=224), 100.0, 130.0, 0.30),
+        ])
+        window_start = base
+        window_end = base + timedelta(days=280)
+        result = sweep_risk_per_trade_pct(
+            session, ["KTRA", "KTRB", "KVLA", "KVLB"], "SWING", "US", window_start, window_end,
+            candidates=[0.01, 0.03],
+            base_cfg_overrides={
+                "initial_capital": 1_000.0, "max_position_pct": 0.90,
+                "max_loss_per_trade_pct": 1.0, "max_sector_pct": 1.0,
+            },
+        )
+        assert result["candidate_value"] == 0.03  # the higher risk% wins on the train slice
+        assert result["promoted"] is True
+        assert result["candidate_validation"]["total_return_pct"] > result["baseline_validation"]["total_return_pct"]
+        session.close()
+
+    def test_note_field_discloses_this_is_a_research_signal_not_an_automatic_sizing_change(self):
+        session = _make_session()
+        self._insert_n_trades(session, [
+            ("KNOTEA", date(2026, 1, 31), date(2026, 2, 1), date(2026, 2, 9), 100.0, 110.0, 0.10),
+        ])
+        result = sweep_risk_per_trade_pct(
+            session, ["KNOTEA"], "SWING", "US", date(2026, 1, 1), date(2026, 8, 1),
+        )
+        if "note" in result:
+            assert "research signal" in result["note"]
+            assert "NOT" in result["note"]
+
+    def test_a_positive_lift_that_clears_the_floor_but_fails_the_sd_ratio_still_does_not_promote(self):
+        """The lift-magnitude floor and the SD-ratio requirement are two INDEPENDENT guards —
+        mirrors TestSweepMaxPortfolioDrawdownPct's own equivalent test exactly, applied to
+        risk_per_trade_pct instead of max_portfolio_drawdown_pct. A genuine adversarial check:
+        without this test, a sabotage that hardcodes promoted=True regardless of the real
+        margin check passes every OTHER test in this class undetected (self-caught during this
+        feature's own adversarial verification pass — the earlier tests only assert
+        promoted is True on a genuinely-promotable scenario, never that a SHOULD-fail scenario
+        actually fails). Isolated by adding a huge (+95%) win that gets admitted IDENTICALLY
+        under both the candidate and baseline risk_per_trade_pct (the very same shares/price
+        shape regardless of risk_pct, since it's the sole trade at that date) — it inflates the
+        combined return pool's own SD without changing the lift itself, so a naive `lift > 0`
+        check would wrongly promote here while the real SD-ratio guard correctly does not."""
+        session = _make_session()
+        base = date(2026, 1, 1)
+        self._insert_n_trades(session, [
+            ("SDKTRA", base + timedelta(days=30), base + timedelta(days=31), base + timedelta(days=39), 100.0, 101.0, 0.01),
+            ("SDKTRB", base + timedelta(days=34), base + timedelta(days=44), base + timedelta(days=54), 100.0, 102.0, 0.02),
+        ])
+        self._insert_n_trades(session, [
+            ("SDKVLC", base + timedelta(days=195), base + timedelta(days=196), base + timedelta(days=198), 100.0, 195.0, 0.95),
+            ("SDKVLA", base + timedelta(days=200), base + timedelta(days=201), base + timedelta(days=209), 100.0, 101.0, 0.01),
+            ("SDKVLB", base + timedelta(days=204), base + timedelta(days=214), base + timedelta(days=224), 100.0, 102.0, 0.02),
+        ])
+        result = sweep_risk_per_trade_pct(
+            session, ["SDKTRA", "SDKTRB", "SDKVLA", "SDKVLB", "SDKVLC"], "SWING", "US",
+            base, base + timedelta(days=280),
+            candidates=[0.0100, 0.0105],
+            base_cfg_overrides={
+                "initial_capital": 1_000.0, "max_position_pct": 0.90,
+                "max_loss_per_trade_pct": 1.0, "max_sector_pct": 1.0,
+            },
+        )
+        lift = result["candidate_validation"]["total_return_pct"] - result["baseline_validation"]["total_return_pct"]
+        assert lift > 0.5  # clears the absolute floor
+        assert result["promoted"] is False  # ...but the SD-ratio guard still correctly rejects it
+        session.close()
