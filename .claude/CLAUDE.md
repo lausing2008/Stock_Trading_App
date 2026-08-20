@@ -15113,3 +15113,94 @@ docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
 # Once this crosses 100, _should_enter() automatically switches from the additive score to the
 # calibrated logistic-regression win-probability — no code change needed, just data accumulation.
 ```
+
+---
+
+## INCIDENT 2026-08-20: Full EC2 Instance Reboot During a Routine Frontend Rebuild — Recovered,
+## Plus a Real Pre-Existing shared/db/ Drift Found and Fixed During the Sweep
+
+**What happened**: mid-session, while rebuilding the frontend image for a routine tracker-page
+docs update (`git pull` on EC2 had already succeeded), the instance became fully unreachable —
+SSH timed out at the banner exchange, `ping` showed 100% packet loss, `https://lausing.com`
+returned nothing. This lasted roughly 10 minutes across several checks. When SSH came back,
+`uptime` showed the host itself had been up only 5 minutes, and **every one of the 15
+containers** showed the identical ~5-minute uptime — confirming a genuine full instance
+reboot, not just the build process or SSH session dying. Root cause of the reboot itself is
+unknown (external to anything this session did, most likely — the same class of unexplained
+event this file's own 2026-07-17/2026-08-05 incident entries document, where the trigger was
+never determined and a manual/automatic restart was the only recovery path).
+
+**Recovery, following this file's own standing "docker cp is session-scoped, a reboot reverts
+everything, sweep exhaustively not from memory" discipline**:
+
+1. Confirmed the git checkout on the EC2 host itself was untouched (git repos are just files
+   on disk, unaffected by container recreation) — `git log -1` still showed the latest commit.
+2. Rebuilt and redeployed the frontend image (the original build had been interrupted
+   mid-way by the reboot and needed re-running from scratch, not resumed).
+3. **Ran a genuinely exhaustive sweep** — not a remembered subset — across all 12 backend
+   services: collected `md5sum` for every `.py` file under `/app/src`, `/app/shared/db`, and
+   `/app/shared/common` inside each running container, then diffed against the equivalent
+   local git checkout paths.
+
+**Result — `/app/src` and `/app/shared/common` were completely clean (0 mismatches across all
+174 `src/` files + all `common/` files, all 12 services)** — this particular reboot didn't
+actually revert anything in those two categories, likely because no outstanding
+session-scoped `docker cp` hotfix existed in either at the moment it happened.
+
+**But the sweep found a REAL, PRE-EXISTING drift in `shared/db/`, unrelated to this reboot**:
+11 of 12 services (everything except `market-data`) were running STALE copies of
+`shared/db/__init__.py`/`models.py`/`session.py` — missing 4 real model classes
+(`PortfolioRiskMetric`, `StressTestResult`, `RestrictedSymbol`, `PaperTradeDecisionLog`, all
+from the IF-01/IF-12 sessions) and missing `session.py`'s `prebreakout_alert_outcomes` column-
+migration block. This wasn't caused by the reboot — `market-data` had received a `docker cp`
+update to these 3 files at some point in an earlier session, but that update was never
+propagated to the other 11 services, exactly the recurring class of gap this file's own
+"Local Dev Containers Run Stale shared/db/" entry documents. **The consequential part**:
+`research-engine` — one of only 2 services that call `init_db()` at startup (per this file's
+own documented "only 2 of 11 services do this" gap) — was ALSO running the stale copy, meaning
+its own `create_all()` call would never have created those 4 tables if `market-data` hadn't
+already done so first, and its migration block would never have run the `prebreakout_alert_
+outcomes` column additions at all.
+
+**Fix**: synced `shared/db/__init__.py`/`models.py`/`session.py` from the git checkout to all
+11 stale services via `docker cp`, cleared `__pycache__`, restarted all 11. Confirmed clean
+startup logs (`"Application startup complete"`, zero tracebacks) across every service — the 2
+log lines that DID appear during the restart window (`signal-engine`'s `ml.fetch_failed:
+timed out` and `news-intelligence`'s `job_edgar ... CancelledError`) were both transient,
+expected artifacts of an in-flight request/scheduled job being interrupted by the restart
+itself, unrelated to the `shared/db/` sync. Re-ran the full checksum sweep a second time —
+0 mismatches across all 12 services for `src/`, `shared/db/`, AND `shared/common/`. Confirmed
+all 4 previously-missing tables (`portfolio_risk_metrics`, `stress_test_results`,
+`restricted_symbols`, `paper_trade_decision_log`) exist in production Postgres. Final state:
+all 15 containers healthy, both the frontend and API responding with real 200s at
+`https://lausing.com`.
+
+**Design invariant reinforced (the Nth recurrence of this exact discipline in this file's own
+history)**: after ANY event that force-restarts containers — a targeted `--force-recreate`, a
+full `docker compose down/up`, or a genuine instance reboot like this one — the only reliable
+recovery check is an EXHAUSTIVE sweep (every `.py` file, every service, `src/` AND
+`shared/db/` AND `shared/common/`) diffed directly against the git checkout, never a
+remembered subset of "files I touched this session." This incident's own drift
+(`shared/db/`) predated the reboot entirely and would have stayed silently unnoticed
+indefinitely if this sweep hadn't been run as a matter of course during recovery — the reboot
+was the OCCASION for finding it, not the CAUSE of it.
+
+**What to check if this recurs**:
+```bash
+# Confirm host uptime vs. container uptime — if ALL containers share an unusually short,
+# identical uptime, that's the signature of a full instance reboot, not a targeted restart:
+uptime
+docker ps --format '{{.Names}}: {{.Status}}' | sort
+
+# Exhaustive src/ + shared/ sweep, one service at a time (repeat for every service):
+docker exec stockai-<service>-1 sh -c "cd /app/src && find . -name '*.py' -exec md5sum {} \;"
+docker exec stockai-<service>-1 sh -c "cd /app/shared/db && find . -name '*.py' -exec md5sum {} \;"
+docker exec stockai-<service>-1 sh -c "cd /app/shared/common && find . -name '*.py' -exec md5sum {} \;"
+# Compare each against the equivalent local `md5sum` output for the git checkout — any
+# mismatch means a docker-cp'd file was reverted (or, as found here, was never actually
+# propagated to that service in the first place).
+
+# Confirm the 4 tables this incident's own fix restored are still present:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c "\dt" | grep -iE \
+  'portfolio_risk_metrics|stress_test_results|restricted_symbol|paper_trade_decision_log'
+```
