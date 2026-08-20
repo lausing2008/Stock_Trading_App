@@ -18731,7 +18731,7 @@ export default function ImprovementsPage() {
           <h1 style={{ fontSize: 22, fontWeight: 800, color: '#e2e8f0', margin: 0 }}>
             Improvement Tracker
           </h1>
-          <span style={{ fontSize: 12, color: '#475569' }}>Expert review — 2026-05-31 · Updated 2026-06-06</span>
+          <span style={{ fontSize: 12, color: '#475569' }}>Expert review — 2026-05-31 · Updated 2026-08-19</span>
         </div>
         <p style={{ fontSize: 13, color: '#64748b', margin: 0, maxWidth: 680 }}>
           All findings from the data analyst & stock expert review. Click any item to expand details and fix guidance.
