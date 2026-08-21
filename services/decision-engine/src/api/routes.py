@@ -82,7 +82,25 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
 
     # 3. Resolve game plan
     if req.game_plan:
-        game_plan = {k: float(v) for k, v in req.game_plan.items()}
+        # BUG-DECIDE-GAMEPLAN-STYLEFLOAT: the real caller (paper_trading_engine.py's
+        # _build_game_plan_for_style()) returns a dict that legitimately includes a "style"
+        # key (a string like "GROWTH") alongside the numeric entry1/entry2/breakout/stop/
+        # take_profit/current_price fields — this function only ever reads the numeric keys
+        # (scorer.py/sizer.py/hard_rejects.py all use game_plan.get("stop"/"take_profit"/etc.)
+        # with a numeric default; "style" is never read anywhere in this service). A blanket
+        # float(v) over every key crashed on the FIRST real non-numeric value with a raw,
+        # unhandled ValueError — confirmed live in production: 3 real BUY candidates
+        # (AXON, DIVO, NET) hit this over a 24h window, each silently falling back to
+        # _should_enter() (the DE-outage fallback gate) instead of getting decision-engine's
+        # real, primary scoring, with no visibility beyond a "decision_engine.bad_status"
+        # warning log on the CALLING side. Convert only values that are actually numeric;
+        # pass anything else through unchanged rather than crashing on it.
+        game_plan = {}
+        for k, v in req.game_plan.items():
+            try:
+                game_plan[k] = float(v)
+            except (TypeError, ValueError):
+                game_plan[k] = v
     else:
         # T247-DECISIONENGINE-STYLEPARAMS-BLOCKING: must use the async variant — a cache miss
         # inside build_game_plan()'s _get_style_params() call does a blocking httpx.get(),

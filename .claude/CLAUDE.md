@@ -15204,3 +15204,156 @@ docker exec stockai-<service>-1 sh -c "cd /app/shared/common && find . -name '*.
 docker exec stockai-postgres-1 psql -U stockai -d stockai -c "\dt" | grep -iE \
   'portfolio_risk_metrics|stress_test_results|restricted_symbol|paper_trade_decision_log'
 ```
+
+---
+
+## Recurring Issue: BUG-DECIDE-GAMEPLAN-STYLEFLOAT — decision-engine Crashed on Every Real
+## Game-Plan-Bearing BUY Candidate, Silently Falling Back to the DE-Outage Scorer (Fixed
+## 2026-08-20)
+
+**Found while sweeping logs across all 12 backend services during EC2 reboot recovery** —
+unrelated to the reboot itself, a pre-existing production bug the sweep happened to surface.
+
+**Symptom**: `POST /decide/{symbol}` returned a raw 500 for real BUY candidates. Confirmed
+live in production over a 24h window: 3 real symbols (AXON, DIVO, NET) hit this, against a
+background of ~660 real 200s in the same window — rare, but real, and each occurrence meant a
+live trading decision was made by the FALLBACK scorer instead of decision-engine's own
+primary scoring.
+
+**Root cause**: `_decide()`'s game-plan resolution (`routes.py:85`) did
+`game_plan = {k: float(v) for k, v in req.game_plan.items()}` — a blanket conversion over
+EVERY key in the incoming dict. `paper_trading_engine.py`'s `_build_game_plan_for_style()`
+(the ONLY real production caller with a non-empty `game_plan` — `decide.tsx` never sends one)
+legitimately returns a dict including `"style": style` (e.g. `"GROWTH"`) alongside the numeric
+`entry1`/`entry2`/`breakout`/`stop`/`take_profit`/`current_price` fields. `float("GROWTH")`
+raises a raw, unhandled `ValueError`. This bug has existed since decision-engine was FIRST
+built (Tier 57, `5871ebc`) — it went unnoticed this long because most real candidates get
+filtered out by earlier gates before ever reaching this call site; only a small fraction
+actually trigger it on any given day.
+
+**Why the failure was invisible**: `_call_decision_engine()` (the caller,
+`paper_trading_engine.py`) catches the non-200 response and logs
+`log.warning("decision_engine.bad_status", ...)` — a real log line, but easy to miss amid
+routine traffic, and decision-engine's own side shows nothing beyond a bare 500 with no
+structured logging of the underlying exception at all.
+
+**Fix applied**: convert only values that are actually numeric-convertible
+(`try: float(v) except (TypeError, ValueError): pass through unchanged`) — confirmed via grep
+that nothing in decision-engine ever reads a non-numeric `game_plan` key
+(`scorer.py`/`sizer.py`/`hard_rejects.py` all use `.get("stop"/"take_profit"/etc.)` with a
+numeric default; `"style"` is never read anywhere in this service), so passing it through
+unconverted is safe.
+
+**Tests**: `services/decision-engine/tests/test_decide_gameplan_style_float.py` (5 cases) —
+source-text extraction of just the fixed block (routes.py is directly importable, but
+`_decide()` itself is `async` with too many other dependencies to drive whole). Covers the
+exact reported bug, all 4 real trading styles, a `None` value (a different exception type
+than the string case), and confirms the fix produces IDENTICAL output to the original
+behavior for the common, already-correct case (no `"style"` key at all). Adversarially
+verified: reverted to the original blanket-float bug and confirmed 4 of 5 tests failed with
+the exact real production `ValueError`, then restored and confirmed byte-identical via `diff`.
+Full 239-test decision-engine suite green; `pyflakes` clean.
+
+**What to check if this recurs**:
+```bash
+docker exec stockai-decision-engine-1 grep -n "except (TypeError, ValueError)" /app/src/api/routes.py
+docker logs stockai-decision-engine-1 --since 24h 2>&1 | grep "500 Internal Server Error" | grep "POST /decide"
+```
+
+---
+
+## Recurring Issue: BUG-TALEVELS-EMPTYPIVOTS-FLOATIDX — GET /ta/{symbol}/levels Crashed for
+## Any Thin-History Stock (Fixed 2026-08-20)
+
+**Found in the same log-sweep pass as the decision-engine bug above.**
+
+**Symptom**: `GET /ta/{symbol}/levels` 500'd repeatedly (86 occurrences in 8h) exclusively for
+`SSNLF`/`SKHYV` — both already independently flagged elsewhere as possibly-delisted, thin-
+history symbols. Confirmed `SSNLF` has only 62 real daily price bars in production.
+
+**Root cause**: `trendlines.py`'s `_find_pivots()` returned `np.array(highs), np.array(lows)`
+where `highs`/`lows` are plain Python lists built by appending indices during a local-max/min
+scan. `np.array([])` (numpy's own default dtype inference for an EMPTY list, with no dtype
+hint) produces a **float64** array, not an integer one. `_cluster_pivots()` then does
+`df["high"].values[highs_idx]` — indexing a real array with a float64 array raises a raw,
+unhandled `IndexError: arrays used as indices must be of integer (or boolean) type`. This
+triggers whenever the pivot-detection loop finds ZERO local extrema — either a too-short
+history (fewer bars than `2×order+1`, so the loop's own `range(order, n - order)` never
+iterates at all) or a genuinely strictly-monotonic series (no interior bar is ever a local
+max/min of its own window). `detect_support_resistance()` calls `_cluster_pivots()` TWICE
+(once on the last-90-bars `local_df`, once on the full `df`) — either call could
+independently trigger this.
+
+**Fix applied**: `np.array(highs, dtype=int), np.array(lows, dtype=int)` — a no-op for the
+normal (non-empty) case, since a real list of Python ints already produces an int64 array
+regardless of an explicit dtype hint; this only changes behavior for the empty-list edge
+case, where it now correctly returns an empty INTEGER array instead of an empty FLOAT array,
+letting the downstream fancy-indexing succeed (zero levels found, correctly) instead of
+raising.
+
+**Tests**: `services/technical-analysis/tests/test_find_pivots_empty_dtype.py` (5 cases) —
+directly imports and exercises the real `_find_pivots()`/`_cluster_pivots()`/
+`detect_support_resistance()`. Covers both real ways to trigger a zero-pivot result (too-short
+history; strictly monotonic series), confirms the fix doesn't change the already-correct
+non-empty case, and a full end-to-end call through `detect_support_resistance()` against the
+exact input shape that crashed in production. Adversarially verified: reverted to the
+original dtype-less `np.array()` calls and confirmed 4 of 5 tests failed with the EXACT real
+production `IndexError`, then restored and confirmed byte-identical via `diff`. Full 66-test
+technical-analysis suite green; `pyflakes` clean.
+
+**What to check if this recurs**:
+```bash
+docker exec stockai-technical-analysis-1 grep -n "dtype=int" /app/src/indicators/trendlines.py
+docker logs stockai-technical-analysis-1 --since 8h 2>&1 | grep -c "arrays used as indices"
+```
+
+---
+
+## Design Reference: Short-Squeeze Watch Revert — Real User Report Traced, One Real Gap Found
+
+**A user asked directly (2026-08-20)** why a "Short Squeeze Watch Reverted — DFNS" email
+arrived, whether reverted means price went up (it doesn't necessarily), why the dashboard
+showed "days to cover: 0.0d" for a stock the same dashboard flagged as a 🔥 Prime Candidate,
+and whether that's a contradiction.
+
+**A real unit-misread caught and corrected mid-investigation**: the first pass at this
+question misread `short_percent_of_float: 0.3577` as 0.36% instead of the correct **35.77%**
+(the field is stored as a fraction-of-1, not fraction-of-100) — this led to an initially wrong
+conclusion that DFNS's short interest was negligible. Re-checked directly against the same
+Redis fundamentals blob and the real `/stocks/short_squeeze` endpoint (note: requires the
+`/stocks` prefix — a bare `/short_squeeze` 404s, a mistake also made during the first pass)
+and confirmed the dashboard's own `35.8% short` display is correct. Both mistakes were
+self-caught by cross-checking against the actual dashboard screenshot the user provided,
+rather than trusting an initial, uncorroborated API read.
+
+**"Days to cover: 0.0d" is real, correct math, not a bug**: `shares_short (279,125) ÷
+average_volume (3,288,659) ≈ 0.08 days`. This measures something DIFFERENT from "is this
+stock hot" — it answers "how fast could shorts exit if they wanted to," which is a genuinely
+separate axis from "how much short interest exists" (35.8%) and "how fast did that short
+interest build" (`shares_short_prior_month: 72,419` → `279,125`, a real +285% MoM increase).
+A stock can simultaneously have (a) a large, freshly-built short position, (b) high liquidity
+allowing a fast exit if shorts choose to cover, and (c) still be a legitimate "prime candidate"
+by this app's own 15%-short-float threshold — these are not contradictory.
+
+**The one real gap this surfaced**: `check_squeeze_watch_reverts()`'s `price_recovered` check
+(`scheduler.py`) is a bare `float(current_price) > float(w.price_at_add)` — zero tolerance
+band. DFNS's real watch record showed `price_at_add=$24.35` (2026-08-05); the revert fired
+when price ticked to `$24.40` — a **0.2%** move — while DFNS's `short_percent_of_float` was
+STILL 35.77% (well above the 15% floor) and `change_pct` was -6.19% that same day (negative
+momentum, not a "shorts squeezed, price ran" scenario). Documented as
+`AUD292-SQUEEZEWATCH-REVERT-NOTOLERANCE` (tier 292, `todo`) — not fixed yet, since the right
+tolerance/confirmation semantics need a real design decision (a percentage floor? requiring
+BOTH OR-conditions instead of either? a multi-cycle confirmation window?), not a reflexive
+patch. The existing `POST /squeeze-watch` re-add flow already correctly re-arms a reverted
+watch with fresh values, so the immediate user-facing workaround (re-add the symbol) already
+works without any code change.
+
+**What to check if a similar "reverted" report looks premature**:
+```bash
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT symbol, watch_type, price_at_add, added_at, reverted, revert_reason FROM squeeze_watches WHERE symbol = '<SYMBOL>';"
+docker logs stockai-market-data-1 --since 24h 2>&1 | grep "squeeze_watch.done"
+# Check the real fundamentals at the moment of the revert to judge whether metric_faded or
+# price_recovered (or both) actually fired, and by how much:
+docker exec stockai-redis-1 redis-cli get 'stockai:fundamentals:v2:<SYMBOL>'
+```

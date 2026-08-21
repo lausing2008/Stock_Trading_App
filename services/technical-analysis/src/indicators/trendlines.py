@@ -36,7 +36,20 @@ class FairValueGap:
 
 
 def _find_pivots(series: pd.Series, order: int = 5) -> tuple[np.ndarray, np.ndarray]:
-    """Simple pivot detection: local max/min within +-order bars."""
+    """Simple pivot detection: local max/min within +-order bars.
+
+    BUG-TALEVELS-EMPTYPIVOTS-FLOATIDX: np.array([]) (numpy's own default for an empty Python
+    list, with no dtype hint) produces a float64 array, not an integer one — a thin-history
+    stock (e.g. a delisted/newly-listed symbol with fewer than 2*order+1 bars, or one whose
+    range genuinely never produces a local extremum in the loop above) returns an EMPTY
+    highs/lows list here, and the caller (_cluster_pivots) then does
+    `df["high"].values[highs_idx]` — indexing a real array with a float64 array raises a raw,
+    unhandled IndexError ("arrays used as indices must be of integer (or boolean) type").
+    Confirmed live in production: GET /ta/{symbol}/levels 500'd repeatedly for SSNLF/SKHYV
+    (both already flagged elsewhere as possibly-delisted, thin-history symbols) for exactly
+    this reason. dtype=int is a no-op for the normal (non-empty) case — np.array([3, 7, 12])
+    is already int64 regardless — this only changes behavior for the empty-list edge case.
+    """
     vals = series.values
     n = len(vals)
     highs, lows = [], []
@@ -46,7 +59,7 @@ def _find_pivots(series: pd.Series, order: int = 5) -> tuple[np.ndarray, np.ndar
             highs.append(i)
         if vals[i] == window.min():
             lows.append(i)
-    return np.array(highs), np.array(lows)
+    return np.array(highs, dtype=int), np.array(lows, dtype=int)
 
 
 def _cluster_pivots(df: pd.DataFrame, order: int, tolerance: float) -> list[Level]:
