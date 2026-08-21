@@ -2642,6 +2642,98 @@ def kelly_sizing(
     }
 
 
+# AUD261-PAPERTRADE-PANEL-MISLABEL's own fix description offered this as the honest
+# alternative to the hypothetical forward-return panel it relabeled — a genuine realized-P&L
+# summary sourced from actual, closed PaperTrade rows (real entry/exit fills, real stops,
+# real position sizing), not evaluate_signal_outcomes()'s hypothetical forward returns. Never
+# built as part of that fix (deliberately scoped to the relabel only); built now to complete
+# the signal-testing-framework work that item's own text pointed at.
+def _real_trade_stats(trades: list) -> dict | None:
+    """Win rate / avg / median return from a list of closed PaperTrade rows with a real
+    pct_return. Mirrors outcomes_summary()'s own overall-stats shape so the frontend can
+    render this alongside the existing hypothetical panel with the same visual convention."""
+    rets = [t.pct_return for t in trades if t.pct_return is not None]
+    if not rets:
+        return None
+    wins = sum(1 for r in rets if r > 0)
+    return {
+        "count": len(rets),
+        "win_rate": round(wins / len(rets), 4),
+        "avg_return_pct": round(sum(rets) / len(rets), 2),
+        "median_return_pct": round(sorted(rets)[len(rets) // 2], 2),
+        "avg_hold_days": round(sum(t.hold_days for t in trades if t.hold_days is not None) / len(trades), 1) if trades else None,
+    }
+
+
+@router.get("/realized-performance")
+def realized_performance(
+    style: str | None = Query(None, description="SHORT | SWING | LONG | GROWTH"),
+    market: str | None = Query(None, description="US | HK"),
+    days: int = Query(90, description="Look-back window in calendar days, by exit_time"),
+    _user: str = Depends(get_current_user),
+):
+    """Real, realized win-rate/return stats from actual closed PaperTrade rows — genuine
+    entry/exit fills, real stops, real position sizing, real exits. The honest counterpart to
+    GET /signals/outcomes/summary (signal-engine), which reports HYPOTHETICAL forward returns
+    from each signal's own entry price with no stops/sizing/real exits at all (see that
+    endpoint's own AUD261-PAPERTRADE-PANEL-MISLABEL fix note for why the two must never be
+    conflated). Cross-portfolio: aggregates every active or inactive portfolio's closed trades
+    matching the filters, not scoped to one portfolio.
+
+    market filters by the trade's own symbol suffix (".HK" = HK, matching this app's own
+    established convention elsewhere — e.g. paper_trading_engine.py's HK-specific branches) —
+    PaperTrade has no direct market column; market lives only in PaperPortfolio.config.
+    """
+    cutoff = datetime.combine(date.today() - timedelta(days=days), time.min)
+    with SessionLocal() as session:
+        q = select(PaperTrade).where(
+            PaperTrade.stage == "closed",
+            PaperTrade.exit_time >= cutoff,
+            PaperTrade.pct_return.isnot(None),
+        )
+        if style:
+            q = q.where(PaperTrade.trading_style == style.upper())
+        trades = session.execute(q).scalars().all()
+
+    if market:
+        is_hk = market.upper() == "HK"
+        trades = [t for t in trades if t.symbol.upper().endswith(".HK") == is_hk]
+
+    overall = _real_trade_stats(trades)
+    if overall is None:
+        return {
+            "total": 0,
+            "days_lookback": days,
+            "style": style.upper() if style else None,
+            "market": market.upper() if market else None,
+            "message": "No closed real trades in this window",
+        }
+
+    by_style: dict[str, dict] = {}
+    for s in ("SHORT", "SWING", "LONG", "GROWTH"):
+        sub = [t for t in trades if t.trading_style == s]
+        stats = _real_trade_stats(sub)
+        if stats:
+            by_style[s] = stats
+
+    by_exit_reason: dict[str, dict] = {}
+    for reason in {t.exit_reason for t in trades if t.exit_reason}:
+        sub = [t for t in trades if t.exit_reason == reason]
+        stats = _real_trade_stats(sub)
+        if stats:
+            by_exit_reason[reason] = stats
+
+    return {
+        "total": len(trades),
+        "days_lookback": days,
+        "style": style.upper() if style else None,
+        "market": market.upper() if market else None,
+        "overall": overall,
+        "by_style": by_style,
+        "by_exit_reason": by_exit_reason,
+    }
+
+
 # ── T233-SELFIMPROVE-PHASE2 (Phase 2a): gate-threshold backtest harness ────────
 # See docs/DESIGN_BACKTEST_HARNESS_PHASE2_2026-07-06.md for full scope/rationale.
 # Manually-triggered research tool — NOT wired to any promotion gate or config write.

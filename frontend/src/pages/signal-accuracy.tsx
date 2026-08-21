@@ -67,7 +67,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type SignalAccuracyRow, type FactorRow, type MLWeightCurvePoint, type WalkForwardReport, type WalkForwardWindow, type OutcomesSummary, type OutcomesCalibration, type SignalAccuracyReport, type AlphaDecayReport, type AlphaDecayCurvePoint } from '@/lib/api';
+import { api, type SignalAccuracyRow, type FactorRow, type MLWeightCurvePoint, type WalkForwardReport, type WalkForwardWindow, type OutcomesSummary, type OutcomesCalibration, type SignalAccuracyReport, type AlphaDecayReport, type AlphaDecayCurvePoint, type RealizedPerformance } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 type RollingPoint = { date: string; accuracy: number; signal_count: number };
@@ -883,6 +883,16 @@ export default function SignalAccuracyPage() {
     { revalidateOnFocus: false },
   );
 
+  // AUD261-PAPERTRADE-PANEL-MISLABEL's own fix offered this as the honest alternative to the
+  // hypothetical forward-return panel above — real closed PaperTrade rows, not a synthetic
+  // forward return from the signal's own entry price. Same lookback/market filters already
+  // on this page, so no new filter UI is needed.
+  const { data: realizedData } = useSWR<RealizedPerformance>(
+    authed ? ['realized-performance', lookback, outcomesMarket] : null,
+    () => api.realizedPerformance(lookback, undefined, outcomesMarket === 'ALL' ? undefined : outcomesMarket),
+    { revalidateOnFocus: false },
+  );
+
   const { data: rollingData } = useSWR(
     authed ? 'rolling-accuracy' : null,
     () => api.rollingAccuracy(30, 180),
@@ -1240,9 +1250,68 @@ export default function SignalAccuracyPage() {
                 </div>
               )}
 
+              {/* AUD261-PAPERTRADE-PANEL-MISLABEL's own fix description offered this as the
+                  honest alternative to the hypothetical panel above; built now to complete
+                  that item. Genuine closed PaperTrade rows — real fills, real stops, real
+                  sizing, real exits — cross-portfolio, scoped by the SAME lookback/market
+                  filters already on this page. */}
+              {realizedData && realizedData.total > 0 && realizedData.overall && (
+                <div style={{ marginTop: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8', marginBottom: 8, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                    Realized Trade Performance <span style={{ fontWeight: 400, fontSize: 11, color: '#475569' }}>· real closed trades — actual fills, stops, sizing, exits</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+                    <div style={{ flex: '1 1 120px', minWidth: 110, background: '#0a0f1a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px' }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: '#475569', letterSpacing: '0.06em', marginBottom: 6 }}>OVERALL</div>
+                      <div style={{ fontSize: 20, fontWeight: 800, color: realizedData.overall.win_rate >= 0.55 ? '#4ade80' : realizedData.overall.win_rate >= 0.50 ? '#facc15' : '#f87171' }}>
+                        {(realizedData.overall.win_rate * 100).toFixed(1)}%
+                      </div>
+                      <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>win rate · {realizedData.overall.count} trade{realizedData.overall.count !== 1 ? 's' : ''}</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: realizedData.overall.avg_return_pct >= 0 ? '#4ade80' : '#f87171', marginTop: 4 }}>
+                        {realizedData.overall.avg_return_pct >= 0 ? '+' : ''}{realizedData.overall.avg_return_pct.toFixed(2)}% avg
+                      </div>
+                      {realizedData.overall.avg_hold_days != null && (
+                        <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>{realizedData.overall.avg_hold_days.toFixed(1)}d avg hold</div>
+                      )}
+                    </div>
+                    {realizedData.by_style && Object.entries(realizedData.by_style).map(([s, v]) => (
+                      <div key={s} style={{ flex: '1 1 120px', minWidth: 110, background: '#0a0f1a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px' }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: '#475569', letterSpacing: '0.06em', marginBottom: 6 }}>{s}</div>
+                        <div style={{ fontSize: 18, fontWeight: 800, color: v.win_rate >= 0.55 ? '#4ade80' : v.win_rate >= 0.50 ? '#facc15' : '#f87171' }}>
+                          {(v.win_rate * 100).toFixed(1)}%
+                        </div>
+                        <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>{v.count} trade{v.count !== 1 ? 's' : ''}</div>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: v.avg_return_pct >= 0 ? '#4ade80' : '#f87171', marginTop: 4 }}>
+                          {v.avg_return_pct >= 0 ? '+' : ''}{v.avg_return_pct.toFixed(2)}% avg
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {realizedData.by_exit_reason && Object.keys(realizedData.by_exit_reason).length > 0 && (
+                    <div style={{ fontSize: 11 }}>
+                      <div style={{ color: '#475569', marginBottom: 4 }}>By exit reason:</div>
+                      {Object.entries(realizedData.by_exit_reason).map(([reason, v]) => (
+                        <div key={reason} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderTop: '1px solid #1e293b' }}>
+                          <span style={{ color: '#e2e8f0', fontWeight: 600, textTransform: 'capitalize' }}>{reason.replace(/_/g, ' ')}</span>
+                          <span style={{ color: '#94a3b8' }}>{v.count}</span>
+                          <span style={{ color: v.avg_return_pct >= 0 ? '#4ade80' : '#f87171', fontWeight: 700 }}>
+                            {v.avg_return_pct >= 0 ? '+' : ''}{v.avg_return_pct.toFixed(2)}%
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {realizedData && realizedData.total === 0 && (
+                <div style={{ fontSize: 11, color: '#334155', marginTop: 16 }}>
+                  No closed real trades yet in this window for the realized-performance panel.
+                </div>
+              )}
+
               <div style={{ fontSize: 11, color: '#334155', padding: '8px 12px', background: '#0a0f1a', borderRadius: 6 }}>
                 ℹ️ Outcomes use fixed hold windows: SHORT=7d, SWING=14d, LONG=28d. Entry = first close ≥ signal date. Exit = first close ≥ entry + hold days.
-                Forward return by hold window (above) is a hypothetical forward return from each signal's own entry price — no stops, no position sizing, and no real exits (a genuine realized-P&L panel would be sourced from actual PaperTrade rows, a separate query).
+                Forward return by hold window (above) is a hypothetical forward return from each signal's own entry price — no stops, no position sizing, and no real exits. Realized Trade Performance (below it) is the genuine counterpart — real closed PaperTrade rows with actual fills, stops, sizing, and exits.
                 Once SWING outcomes exceed 500, run Optuna on signal parameters — see SIGNAL_ACCURACY.md for the tuning workflow.
               </div>
 

@@ -15462,3 +15462,113 @@ r = httpx.get('http://localhost:8001/paper-portfolio/1/summary', headers={'Autho
 print(r.json().get('risk_metrics'))
 "
 ```
+
+---
+
+## Signal-Testing-Framework Improvement Series — Closed Out (2026-08-20)
+
+**User ask, verbatim**: "let's finish the self testing framework improvements." Referred to the
+signal-testing-framework audit series that began with the 2026-07-31 review documented above
+("Full Signal-Testing-Framework Review — 4 Critical Fixes") and continued through the
+`Tier 261` deep audit (2026-08-05) and several later sessions' own fixes.
+
+**Verified every deferred item against current code before assuming anything was still
+open** — the exact discipline this file's own history has repeatedly shown is necessary,
+since a tracker/CLAUDE.md entry can be stale in either direction (claiming something broken
+that's fixed, or something fine that's still broken). Result: **3 of the 4 items the July 31
+review deferred were already independently closed by later work**, none of it cross-referenced
+back to the original review:
+
+1. **`calibrate_ml_weight()`'s fixed-neutral-0.5 baseline** — already fixed under
+   `AUD283-MLWEIGHT-RATCHET` (this same session's own earlier work): `baseline_weight =
+   prev_cap if prev_cap is not None else 0.5`, confirmed live in `calibration.py`.
+2. **`tune_style_profiles()`'s nested-subset baseline** — already fixed under
+   `AUD263-STYLEPROFILES-SUPERSET-BASELINE`: the baseline is now `CURRENT_ML_CAP[style]`'s own
+   filtered subset, not the full unfiltered validation slice.
+3. **`gate_harness.py`'s missing `confidence_delta`/regime-blind replay** — `confidence_delta`
+   was already fixed under `T232-DL-GATEHARNESS-INPUTGAP` (this session's own earlier work),
+   confirmed via the module's own current top-of-file docstring, which explicitly tracks both
+   gaps: `confidence_delta` marked FIXED, `live_regime` marked a PERMANENT, honestly-disclosed
+   limitation (no historical regime-persistence table exists anywhere in this codebase to
+   reconstruct "what was the regime on date X" from — building one is a real, separate,
+   larger project, not something this pass could close).
+4. **`gate_backtest()`'s same-day-close lookahead bias** — already fixed under
+   `AUD283-GATEBACKTEST-LOOKAHEAD` (2026-08-16), confirmed via the function's own current
+   docstring and a live grep showing it's a real, reachable, frontend-tabbed research tool
+   (`gate-backtest-tool` in the tracker) — NOT the dead code the original review described.
+
+**The Tier 261 audit (2026-08-05) had already gone far beyond the July 31 review's own scope**
+— all 12 of its items are `defaultStatus: 'done'`, closing the win/loss-hurdle gaps in
+`filter_audit()`/`factor_exposure()`/`walkforward_backtest()`, the unsigned-SELL mixing in
+`outcomes_summary()`, the mark-to-today mislabeling, the profit-factor decoupling, the
+paper-trade panel's false "actual closed trades" claim, the censoring staleness bound, the
+drift-alarm threshold, the alpha-decay cherry-picking, the IC quality tiering, and the
+by-symbol minimum-count floor — plus a closing `AUD261-CLEAN-VERIFIED` reference item
+explicitly restating everything checked and confirmed correct.
+
+**The one genuinely new piece of work built this session**: `AUD261-PAPERTRADE-PANEL-
+MISLABEL`'s own fix (2026-08-06) relabeled the "Paper Trade Results" panel's false claim
+honestly ("Forward Return by Hold Window · hypothetical") but deliberately did NOT build the
+real alternative its own fix description named — "a genuine realized-P&L panel would be
+sourced from actual PaperTrade rows, a separate query." Checked the real data volume before
+building (96 real closed trades in production: 50 GROWTH, 46 SWING — enough to be meaningful,
+not a wasted-effort panel with zero data) and built it: `GET /paper-portfolio/realized-
+performance` in `paper_portfolio.py`, aggregating real closed `PaperTrade` rows (real fills,
+real stops, real sizing, real exits) via a shared `_real_trade_stats()` pure helper reused
+across `overall`/`by_style`/`by_exit_reason` — never 3 independently-drifting hand-rolled
+aggregations. `market` scopes by the trade's own symbol suffix (`.HK`, matching this app's
+established convention, e.g. `paper_trading_engine.py`'s HK-specific branches) since
+`PaperTrade` has no direct `market` column of its own. New `RealizedPerformance` type +
+`realizedPerformance()` wrapper in `api.ts`; new "Realized Trade Performance" panel on
+`signal-accuracy.tsx`, placed directly below the existing (already-relabeled) hypothetical
+panel so a user can compare the two side by side — reusing the page's EXISTING
+`lookback`/`outcomesMarket` filter state, no new filter UI needed.
+
+**A real test-writing trap self-caught during development, matching this repo's own "still
+passes after sabotage is itself a finding" discipline**: the first version of the market-
+scoping regression test checked that the bare string `"PaperPortfolio.config"` was absent from
+the function's source — but the function's OWN docstring explains, BY NAME, why it deliberately
+does NOT join against `PaperPortfolio.config` (explaining the design choice, not making it) —
+so the naive string-absence check false-positived against its own explanatory prose the moment
+it was run. Fixed by checking for an actual join/filter usage pattern instead
+(`.join(PaperPortfolio` / `PaperPortfolio.config ==` / `PaperPortfolio.config[`) rather than the
+bare substring.
+
+**Tests**: `services/market-data/tests/test_realized_performance.py` (12 cases) —
+`_real_trade_stats()` is pure with zero DB dependency, extracted via source-text `exec()` and
+tested behaviorally: hand-computed win-rate/avg/median assertions, a strict `> 0` win boundary
+(matching `kelly_sizing()`'s own established decisive-trades convention — a breakeven exit must
+never inflate the win rate), all-`None`-`pct_return` degrading to `None` not a crash, and the
+`avg_hold_days` denominator's real (documented, not "fixed") behavior of dividing by the full
+trade count rather than just the trades with a non-`None` `hold_days`. `realized_performance()`
+itself covered via source-text regression checks matching `test_compare_portfolio_metrics.py`'s
+own established pattern for this file's import constraint.
+
+**Adversarial verification** — 2 sabotage/revert cycles, both caught correctly and reverted
+(confirmed byte-identical via `diff` before moving on): loosening the win-rate boundary from
+`r > 0` to `r >= 0` (a breakeven exit wrongly counted as a win) — caught by the dedicated
+boundary test; removing the market-scoping filter entirely — caught by the (corrected) market-
+scoping test. Full 1941-test market-data suite green (up from 1929); `pyflakes` clean (all 4
+remaining warnings confirmed pre-existing via `git stash`). Frontend: `tsc --noEmit` clean,
+full 132-test Vitest suite unaffected (no test imports `signal-accuracy.tsx` directly), a full
+`next build` clean (`/signal-accuracy` compiled at 17.2 kB, up from the pre-change baseline,
+reflecting the new panel's added content).
+
+**What remains genuinely open, not silently claimed closed**:
+- `gate_harness.py`'s `live_regime` gap — a PERMANENT limitation (no historical regime-
+  persistence table exists; building one is a separate, larger project).
+- The grid-search promotion margin's own disclosed lack of a formal multiple-comparisons
+  correction (Bonferroni-style or similar) — `_passes_promotion_margin()` already provides
+  real protection against the worst case (a bare coin-flip), but does not formally correct for
+  the train-slice grid search's own multiple-comparisons exposure. A statistical-rigor
+  enhancement, not a bug, and not attempted this pass.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 curl -s 'http://localhost:8001/paper-portfolio/realized-performance?days=90' \
+  -H "Authorization: Bearer <token>" | python3 -m json.tool
+```
+If `total: 0` despite knowing real closed trades exist, check the `days` window against
+`SELECT trading_style, COUNT(*) FROM paper_trades WHERE stage='closed' GROUP BY trading_style;`
+directly — a too-narrow `days` window (default 90) can legitimately exclude real trades closed
+before the cutoff.

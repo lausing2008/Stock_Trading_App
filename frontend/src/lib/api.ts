@@ -90,6 +90,12 @@ export const api = {
   signalConsensus: (market?: string) => request<Record<string, Record<string, { signal: string; confidence: number; bullish_probability: number | null; ts: string | null }>>>(`/signals/consensus${market ? `?market=${market}` : ''}`),
   convictionAll: () => request<Record<string, { sent: boolean; passed: string[]; failed: string[]; signal: string; ts: string }>>('/stocks/conviction'),
   kellySize: (style: string, lookbackDays?: number) => request<{ kelly_f: number | null; quarter_kelly: number | null; recommended_risk_pct: number; win_rate: number | null; avg_win_pct: number | null; avg_loss_pct: number | null; reward_risk_ratio: number | null; trades_count: number; note?: string }>(`/paper-portfolio/kelly?style=${style}${lookbackDays ? `&lookback_days=${lookbackDays}` : ''}`),
+  realizedPerformance: (days = 90, style?: string, market?: string) => {
+    const q = new URLSearchParams({ days: String(days) });
+    if (style) q.set('style', style);
+    if (market) q.set('market', market);
+    return request<RealizedPerformance>(`/paper-portfolio/realized-performance?${q.toString()}`);
+  },
   signalHistory: (symbol: string, style = 'SWING', days = 60) =>
     request<SignalHistoryPoint[]>(`/signals/${symbol}/history?style=${style}&days=${days}`),
   signalChanges: (symbols: string[], hours = 48) =>
@@ -998,6 +1004,27 @@ export type OutcomesSummary = {
   // single-sample win_rate is either 0% or 100%, not a meaningful statistic) — this count is
   // why the table's own rows don't sum to `total`.
   by_symbol_excluded_n1?: number;
+};
+// The genuine realized-P&L counterpart to OutcomesSummary — real closed PaperTrade rows
+// (real entry/exit fills, real stops, real position sizing), not hypothetical forward
+// returns from a signal's own entry price. See AUD261-PAPERTRADE-PANEL-MISLABEL / the
+// GET /paper-portfolio/realized-performance backend docstring for the full distinction.
+export type RealTradeStats = {
+  count: number;
+  win_rate: number;
+  avg_return_pct: number;
+  median_return_pct: number;
+  avg_hold_days: number | null;
+};
+export type RealizedPerformance = {
+  total: number;
+  days_lookback: number;
+  style: string | null;
+  market: string | null;
+  message?: string;
+  overall?: RealTradeStats;
+  by_style?: Record<string, RealTradeStats>;
+  by_exit_reason?: Record<string, RealTradeStats>;
 };
 export type OutcomesCalibrationRow = {
   horizon: string;
