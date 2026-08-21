@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 from fastapi import HTTPException
 
-from src.api.risk import portfolio_risk
+from src.api.risk import _beta, portfolio_risk
 
 
 def _returns_df(symbols, n=90, seed=0):
@@ -147,3 +147,48 @@ def test_response_includes_the_historical_var_block(monkeypatch):
     assert result["historical_var"]["insufficient_data"] is False
     assert result["historical_var"]["var_95_1d_pct"] is not None
     assert result["historical_var"]["cvar_99_10d_pct"] is not None
+
+
+# ── AUD292-SHARPE-VAREPS's own sibling gap: _beta() used a bare `var > 0` guard ─────────────
+# paper_portfolio.py's Sharpe/Sortino computation (services/market-data) already had this
+# exact bug — a near-zero-but-nonzero variance from floating-point noise (not an exact 0.0)
+# can pass a bare `> 0` check and explode the resulting ratio. _beta() sits in the same file
+# as that fix's own module docstring header (IF-01) but was never updated with the same real
+# epsilon threshold convention until now.
+
+def test_beta_all_identical_but_nonzero_benchmark_returns_falls_back_to_neutral_one():
+    """A benchmark return series recomputed via a deliberately-perturbed target rate (matching
+    the exact fixture construction test_sharpe_variance_epsilon.py in market-data's own test
+    suite uses for this identical bug class) — genuinely nonzero but sub-epsilon variance must
+    fall back to the neutral beta=1.0, not explode via a bare `var > 0` gate."""
+    base_rate = 0.001
+    bench = pd.Series([base_rate + i * 1e-17 for i in range(10)])
+    stock = pd.Series([0.02, -0.01, 0.03, -0.02, 0.015, -0.01, 0.025, -0.015, 0.01, -0.005])
+    result = _beta(stock, bench)
+    assert result == 1.0, f"expected neutral fallback for float-noise variance, got {result}"
+
+
+def test_beta_genuine_variance_still_produces_a_real_finite_value():
+    """The fix must not break the normal case — real, meaningfully-varying benchmark returns
+    must still produce a real, non-fallback beta."""
+    bench = pd.Series([0.02, -0.01, 0.015, -0.02, 0.01, -0.015, 0.025, -0.01, 0.02, -0.005])
+    stock = pd.Series([0.04, -0.02, 0.03, -0.04, 0.02, -0.03, 0.05, -0.02, 0.04, -0.01])
+    result = _beta(stock, bench)
+    assert result != 1.0
+    assert 0.5 < result < 3.0  # a roughly 2x-levered relationship by construction
+
+
+def test_beta_fewer_than_five_common_dates_still_returns_neutral_regardless_of_the_fix():
+    """The pre-existing len(s) < 5 floor is unrelated to and unaffected by the epsilon fix —
+    confirms this fix didn't accidentally change that separate guard's own behavior."""
+    bench = pd.Series([0.02, -0.01, 0.03])
+    stock = pd.Series([0.04, -0.02, 0.05])
+    assert _beta(stock, bench) == 1.0
+
+
+def test_beta_uses_a_real_epsilon_not_a_hardcoded_literal_in_source():
+    import pathlib
+    risk_path = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "risk.py"
+    source = risk_path.read_text()
+    assert "_BETA_VAR_EPS = 1e-9" in source
+    assert "var > _BETA_VAR_EPS" in source

@@ -4132,6 +4132,17 @@ def _bearish_puts_watch_candidates(session, gamma_candidates: dict[str, dict]) -
 
 _SQUEEZE_WATCH_LOCK_KEY = "stockai:lock:check_squeeze_watch_reverts"
 _SQUEEZE_WATCH_LOCK_TTL = 55  # runs every 1 min, matching check_short_squeeze_alerts' own cadence
+# AUD292-SQUEEZEWATCH-REVERT-NOTOLERANCE: price_recovered used to be a bare `current_price >
+# price_at_add` with zero tolerance — a real user report (DFNS: $24.35->$24.40, a 0.2% wiggle)
+# reverted a watch while short interest was STILL genuinely elevated (35.8%, well above the
+# _SQUEEZE_MIN_SHORT_FLOAT floor) and momentum was negative that same day — the opposite of
+# "shorts got squeezed and price ran." A 2% floor requires a real, meaningful recovery before
+# treating price alone as evidence the thesis has resolved, matching this app's own established
+# convention of requiring a real move (not sub-1% noise) elsewhere — e.g.
+# _SQUEEZE_MIN_INTRADAY_MOVE_PCT for the original alert trigger. Deliberately keeps the OR
+# semantics with metric_faded exactly as they were (a deliberate, already-made design choice
+# per this function's own docstring) — only the price leg's own bar is raised.
+_SQUEEZE_WATCH_PRICE_RECOVERY_MIN_PCT = 2.0
 
 
 def check_squeeze_watch_reverts() -> None:
@@ -4148,11 +4159,14 @@ def check_squeeze_watch_reverts() -> None:
     alone is treated as real evidence the short-side pressure has faded:
       - short_squeeze watches: short_percent_of_float has dropped back below
         _SQUEEZE_MIN_SHORT_FLOAT (the same threshold that made it a candidate in the first
-        place), OR current price is back above the price captured when the watch was added.
+        place), OR current price has recovered at least _SQUEEZE_WATCH_PRICE_RECOVERY_MIN_PCT
+        above the price captured when the watch was added (AUD292-SQUEEZEWATCH-REVERT-
+        NOTOLERANCE — a real, meaningful recovery, not any positive delta at all).
       - bearish_puts watches: the puts concentration_pct for that symbol (read from the same
         bearish-puts-watch cache) has dropped back below _GAMMA_UNWIND_MIN_OI_CONCENTRATION, OR
         it's no longer puts-dominant/no longer present in the current scan at all (the setup
-        genuinely rolled off), OR price is back above the add-time price.
+        genuinely rolled off), OR price has recovered by the same meaningful margin above the
+        add-time price.
 
     AUD265-REVERT-CHECKER-NO-MARKET-HOURS-GATE: this loop runs every 60s around the clock and
     reads stockai:live_prices, which only refreshes during market hours — outside hours it
@@ -4226,7 +4240,9 @@ def check_squeeze_watch_reverts() -> None:
                     current_price = live.get("price") if live else None
                     price_recovered = (
                         current_price is not None and w.price_at_add is not None
-                        and float(current_price) > float(w.price_at_add)
+                        and float(w.price_at_add) > 0
+                        and (float(current_price) / float(w.price_at_add) - 1) * 100
+                        >= _SQUEEZE_WATCH_PRICE_RECOVERY_MIN_PCT
                     )
 
                     metric_faded = False
@@ -6547,9 +6563,7 @@ def _check_position_scaling_gate_drift() -> None:
     try:
         import json as _json
 
-        import redis as _rb
-
-        r = _rb.Redis.from_url(_settings.redis_url, decode_responses=True)
+        r = _get_redis()
         cutoff = datetime.now(timezone.utc) - timedelta(days=7)
         recent_probs = []
         for raw in r.lrange("ps:shadow:pending", 0, -1) + r.lrange("ps:shadow:resolved", 0, -1):

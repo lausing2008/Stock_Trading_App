@@ -1460,7 +1460,13 @@ def _compute_hk_breadth() -> float | None:
     try:
         with SessionLocal() as session:
             rows = session.execute(
-                select(Stock.id, Stock.symbol).where(Stock.market == "HK", Stock.active.is_(True))
+                select(Stock.id, Stock.symbol).where(
+                    Stock.market == "HK", Stock.active.is_(True),
+                    # BUG-DELISTED-GENERATION-BLIND: a delisted stock frozen at its last real
+                    # price shouldn't count toward the market-wide breadth %, which feeds
+                    # regime classification.
+                    Stock.delisted.is_(False),
+                )
             ).all()
             if not rows:
                 return None
@@ -3574,9 +3580,8 @@ def _record_de_shadow_comparison(
             "paper_enter": paper_enter, "de_score": de_score, "paper_score": paper_score,
         }
     try:
-        import redis as _rb
-        from common.config import get_settings as _gs_shadow
-        _r = _rb.Redis.from_url(_gs_shadow().redis_url, decode_responses=True)
+        from common.redis_client import get_redis as _get_pool_redis
+        _r = _get_pool_redis()
         _r.lpush(key, _json.dumps(payload))
         _r.ltrim(key, 0, _DE_SHADOW_LIST_MAXLEN - 1)
     except Exception as exc:
@@ -3648,9 +3653,8 @@ def _record_position_scaling_shadow_verdict(
         "entry_price": round(entry_price, 4),
     }
     try:
-        import redis as _rb
-        from common.config import get_settings as _gs_ps_shadow
-        _r = _rb.Redis.from_url(_gs_ps_shadow().redis_url, decode_responses=True)
+        from common.redis_client import get_redis as _get_pool_redis
+        _r = _get_pool_redis()
         if not _r.set(dedup_key, "1", nx=True, ex=25 * 3600):
             return  # already recorded this symbol+portfolio+day — skip the duplicate
         _r.lpush("ps:shadow:pending", _json.dumps(payload))
@@ -3683,9 +3687,8 @@ def resolve_position_scaling_shadow_verdicts(session) -> dict:
     import json as _json
 
     try:
-        import redis as _rb
-        from common.config import get_settings as _gs_ps_resolve
-        r = _rb.Redis.from_url(_gs_ps_resolve().redis_url, decode_responses=True)
+        from common.redis_client import get_redis as _get_pool_redis
+        r = _get_pool_redis()
     except Exception as exc:
         return {"resolved": 0, "still_pending": 0, "error": str(exc)}
 
@@ -3787,9 +3790,8 @@ def resolve_position_scaling_shadow_verdicts(session) -> dict:
 def _clear_gate_block(portfolio_id: int) -> None:
     """Delete the Redis gate_block key so the UI no longer shows a block reason."""
     try:
-        import redis as _rb
-        from common.config import get_settings as _gs_gb
-        _r = _rb.Redis.from_url(_gs_gb().redis_url, decode_responses=True)
+        from common.redis_client import get_redis as _get_pool_redis
+        _r = _get_pool_redis()
         _r.delete(f"paper:gate_block:{portfolio_id}")
     except Exception:
         pass
@@ -3877,9 +3879,8 @@ def _write_gate_block(portfolio_id: int, gate: str, reason: str) -> None:
     """
     import json as _json
     try:
-        import redis as _rb
-        from common.config import get_settings as _gs_gb
-        _r = _rb.Redis.from_url(_gs_gb().redis_url, decode_responses=True)
+        from common.redis_client import get_redis as _get_pool_redis
+        _r = _get_pool_redis()
         _r.setex(
             f"paper:gate_block:{portfolio_id}",
             60 * 60 * 4,  # 4 hour TTL
@@ -3926,9 +3927,8 @@ def _write_no_entry_summary(portfolio_id: int, candidates_seen: int, skip_tally:
     """
     import json as _json
     try:
-        import redis as _rb
-        from common.config import get_settings as _gs_ne
-        _r = _rb.Redis.from_url(_gs_ne().redis_url, decode_responses=True)
+        from common.redis_client import get_redis as _get_pool_redis
+        _r = _get_pool_redis()
         top_reasons = sorted(skip_tally.items(), key=lambda kv: kv[1], reverse=True)[:5]
         _r.setex(
             f"paper:no_entry_summary:{portfolio_id}",
@@ -3949,9 +3949,8 @@ def _write_no_entry_summary(portfolio_id: int, candidates_seen: int, skip_tally:
 def _clear_no_entry_summary(portfolio_id: int) -> None:
     """Clear the no-entry summary once the portfolio actually enters a position."""
     try:
-        import redis as _rb
-        from common.config import get_settings as _gs_ne
-        _r = _rb.Redis.from_url(_gs_ne().redis_url, decode_responses=True)
+        from common.redis_client import get_redis as _get_pool_redis
+        _r = _get_pool_redis()
         _r.delete(f"paper:no_entry_summary:{portfolio_id}")
     except Exception:
         pass
@@ -4452,6 +4451,10 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             Signal.confidence >= cfg["min_confidence"] * 0.90,
             Signal.ts >= cutoff,             # within 5-day window
             Stock.active.is_(True),
+            # BUG-DELISTED-GENERATION-BLIND: this is _scan_for_entries()'s own real BUY-
+            # candidate query — a confirmed-delisted stock must never be entered as a new
+            # paper trade, the highest-stakes site this bug class could exist at.
+            Stock.delisted.is_(False),
             Stock.market == cfg.get("market", "US"),
         )
         .order_by(desc(Signal.confidence))
@@ -5879,9 +5882,16 @@ def paper_trading_step() -> None:
                     select(Stock.symbol)
                     .join(WatchlistItem, WatchlistItem.stock_id == Stock.id)
                     .join(Watchlist, WatchlistItem.watchlist_id == Watchlist.id)
-                    .where(Watchlist.trading_style.in_(
-                        [p.config.get("trading_style", "GROWTH") for p in portfolios]
-                    ), Stock.active.is_(True))
+                    .where(
+                        Watchlist.trading_style.in_(
+                            [p.config.get("trading_style", "GROWTH") for p in portfolios]
+                        ),
+                        Stock.active.is_(True),
+                        # BUG-DELISTED-GENERATION-BLIND: a delisted watchlist symbol never
+                        # needs a live price pre-fetch — it can never become a real BUY
+                        # candidate (_scan_for_entries()'s own query already excludes it).
+                        Stock.delisted.is_(False),
+                    )
                 ).all()
             ))
 

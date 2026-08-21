@@ -247,3 +247,65 @@ def test_per_watch_gate_sits_inside_the_for_loop_before_any_price_lookup():
     gate_idx = body.index('_is_hk_watch = w.symbol.upper().endswith(".HK")')
     live_lookup_idx = body.index("live = _live_by_symbol.get(w.symbol)")
     assert loop_idx < gate_idx < live_lookup_idx
+
+
+# ── AUD292-SQUEEZEWATCH-REVERT-NOTOLERANCE — price_recovered now requires a real, meaningful
+# margin (not any positive delta) before treating price alone as evidence the thesis resolved ──
+
+def _price_recovered(current_price: float | None, price_at_add: float | None, min_pct: float = 2.0) -> bool:
+    """Extracted, real arithmetic (not a hand-copied reimplementation) — pulls the exact
+    price_recovered expression out of check_squeeze_watch_reverts()'s own source and evaluates
+    it against real numeric inputs, isolating just this computation from the surrounding
+    DB/Redis-dependent function body it can't be run inside directly."""
+    body = _check_squeeze_watch_reverts_body()
+    start = body.index("price_recovered = (")
+    end = body.index("\n\n", start)
+    expr = body[start:end]
+    namespace = {"current_price": current_price, "w": type("W", (), {"price_at_add": price_at_add})(),
+                 "_SQUEEZE_WATCH_PRICE_RECOVERY_MIN_PCT": min_pct}
+    exec(f"result = {expr[len('price_recovered = '):]}", namespace)  # noqa: S102 — isolated eval of real source
+    return namespace["result"]
+
+
+def test_a_sub_2pct_wiggle_no_longer_counts_as_recovered():
+    """The exact real-world regression case: DFNS $24.35 -> $24.40, a 0.2% move — must no
+    longer trip price_recovered."""
+    assert _price_recovered(current_price=24.40, price_at_add=24.35) is False
+
+
+def test_a_genuine_2pct_or_greater_recovery_still_counts():
+    assert _price_recovered(current_price=25.00, price_at_add=24.35) is True  # +2.67%
+
+
+def test_exactly_at_the_threshold_counts_as_recovered():
+    assert _price_recovered(current_price=102.0, price_at_add=100.0) is True  # exactly +2.0%
+
+
+def test_just_below_the_threshold_does_not_count():
+    assert _price_recovered(current_price=101.9, price_at_add=100.0) is False  # +1.9%
+
+
+def test_a_price_drop_never_counts_as_recovered():
+    assert _price_recovered(current_price=90.0, price_at_add=100.0) is False
+
+
+def test_missing_current_price_fails_safe_to_not_recovered():
+    assert _price_recovered(current_price=None, price_at_add=100.0) is False
+
+
+def test_missing_price_at_add_fails_safe_to_not_recovered():
+    assert _price_recovered(current_price=105.0, price_at_add=None) is False
+
+
+def test_zero_price_at_add_does_not_crash_via_division_by_zero():
+    """A degenerate price_at_add=0.0 (should never occur in real data, but must not crash the
+    whole revert-check loop for every other watch if it somehow does)."""
+    assert _price_recovered(current_price=10.0, price_at_add=0.0) is False
+
+
+def test_the_real_function_uses_the_module_constant_not_a_hardcoded_literal():
+    """Confirms the real source reads _SQUEEZE_WATCH_PRICE_RECOVERY_MIN_PCT rather than a
+    hardcoded 2.0 literal inline — so a future change to the constant actually takes effect."""
+    body = _check_squeeze_watch_reverts_body()
+    assert "_SQUEEZE_WATCH_PRICE_RECOVERY_MIN_PCT" in body
+    assert "_SQUEEZE_WATCH_PRICE_RECOVERY_MIN_PCT = 2.0" in _scheduler_source

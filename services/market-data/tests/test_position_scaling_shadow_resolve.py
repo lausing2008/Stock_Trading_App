@@ -89,8 +89,13 @@ class _FakeRedis:
 
 def _extract_resolve_function():
     """Pulls resolve_position_scaling_shadow_verdicts()'s real source out of
-    paper_trading_engine.py and exec()s it against real sqlalchemy/models, with `redis`
-    stubbed to return a pre-built _FakeRedis instance instead of a real connection."""
+    paper_trading_engine.py and exec()s it against real sqlalchemy/models, with
+    common.redis_client.get_redis() stubbed to return a pre-built _FakeRedis instance instead
+    of a real connection. The real function does `from common.redis_client import get_redis as
+    _get_pool_redis` (a pooled-connection fix — see the "closing the loop" Redis-pooling audit
+    documented elsewhere in this codebase) rather than a raw `import redis` — the injection
+    point here must match that real import path, not `redis` itself, or the mock is silently
+    never actually exercised by the real code path."""
     start = _ENGINE_SOURCE.index("def resolve_position_scaling_shadow_verdicts(")
     marker = '"hit_rate": round(correct_count / resolved_count, 4) if resolved_count else None,'
     marker_idx = _ENGINE_SOURCE.index(marker, start)
@@ -98,12 +103,6 @@ def _extract_resolve_function():
     func_source = _ENGINE_SOURCE[start:end]
 
     fake_redis_holder: dict = {}
-
-    class _FakeRedisModule:
-        class Redis:
-            @staticmethod
-            def from_url(*a, **kw):
-                return fake_redis_holder["client"]
 
     namespace = {
         "select": select,
@@ -120,14 +119,10 @@ def _extract_resolve_function():
     def _run(session, fake_redis):
         fake_redis_holder["client"] = fake_redis
         import types
-        fake_redis_mod = types.ModuleType("redis")
-        fake_redis_mod.Redis = _FakeRedisModule.Redis
-        sys.modules["redis"] = fake_redis_mod
-
-        fake_common_config = types.ModuleType("common.config")
-        fake_common_config.get_settings = lambda: MagicMock(redis_url="redis://fake")
+        fake_redis_client_mod = types.ModuleType("common.redis_client")
+        fake_redis_client_mod.get_redis = lambda: fake_redis_holder["client"]
         sys.modules.setdefault("common", types.ModuleType("common"))
-        sys.modules["common.config"] = fake_common_config
+        sys.modules["common.redis_client"] = fake_redis_client_mod
 
         return namespace["resolve_position_scaling_shadow_verdicts"](session)
 

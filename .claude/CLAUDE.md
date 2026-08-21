@@ -15572,3 +15572,156 @@ If `total: 0` despite knowing real closed trades exist, check the `days` window 
 `SELECT trading_style, COUNT(*) FROM paper_trades WHERE stage='closed' GROUP BY trading_style;`
 directly — a too-narrow `days` window (default 90) can legitimately exclude real trades closed
 before the cutoff.
+
+---
+
+## Next Improvement Batch — 4 Real Fixes Found by Re-Running Established Bug-Class Sweeps (2026-08-21)
+
+**User ask**: "next batch of improvements." Launched a background research agent to survey the
+codebase, explicitly instructed to verify every candidate against `improvements.tsx`'s current
+status and this file's own documented history before proposing anything — the exact discipline
+this repo's own history shows is necessary, since re-proposing already-closed work is a real,
+recurring failure mode. The agent's own bottom line: **the tracker is extraordinarily current**
+— most candidates that looked open on first grep were already closed, several multiple times
+over. Of 6 candidates reported, I personally re-verified all of them against current code before
+building anything (one of the agent's own citations — a `_VAR_EPS` constant supposedly at
+`risk.py:90` — turned out not to exist at all; the real finding underneath it did). A 4th fix
+in this same batch — `AUD292-SQUEEZEWATCH-REVERT-NOTOLERANCE` — closes a real design gap this
+session had already DOCUMENTED (but deliberately not fixed) the day before; see that item's
+own dedicated section elsewhere in this file for the full original discovery, and its
+`improvements.tsx` entry for the fix itself.
+
+### 1. AUD293-RB-ALIAS-REDIS-POOLING-BLINDSPOT — 8 sites evaded the pooling audit's own closing grep
+
+**Root cause**: this repo's own multi-session Redis-connection-pooling audit (documented at
+length elsewhere in this file) ends with a "closing the loop" verification pass whose own final
+grep pattern is `redis\.Redis\.from_url\|redis\.from_url\|redis_lib\.Redis\.from_url\|
+redis_lib\.from_url` — confirmed via direct re-run that this STILL returns zero matches against
+current code. But 8 sites (`paper_trading_engine.py`'s `_write_gate_block()`, `_write_no_entry_
+summary()`, `_clear_no_entry_summary()`, the DE-shadow-comparison logger, and the T241-P6
+position-scaling shadow writer/resolver's 3 call sites, plus `scheduler.py`'s position-scaling
+drift-check job) instead did `import redis as _rb; _rb.Redis.from_url(...)` — an alias
+INVISIBLE to that exact grep pattern. Confirmed via `grep -rn "import redis as \w\+"` that `_rb`
+is used nowhere else in the repo, meaning these 8 sites were written AFTER the audit already
+declared the codebase clean, not missed by it.
+
+**Why it matters**: `_write_gate_block()` fires on every gate check per portfolio scan cycle
+(drawdown, daily_loss, weekly_loss, consecutive_losses, regime_bear, regime_risk_off,
+heat_brake, index_trend, market_cluster_cap, ...) and the position-scaling shadow writer/
+resolver run on every real BUY candidate — the hot trading-decision loop, not a cold path.
+
+**Fix**: swapped each site for the shared pooled helper — `from common.redis_client import
+get_redis as _get_pool_redis` (matching 5 other already-correct sites in the same file) in
+`paper_trading_engine.py`, and the module's own pre-existing `_get_redis()` wrapper in
+`scheduler.py` (matching every other site in that file). Both are drop-in replacements with
+zero behavior change, since `common.redis_client`'s connection pool already bakes in the
+identical `decode_responses=True`/timeout settings the raw construction used.
+
+**A real, pre-existing test broken as a direct consequence, found and fixed in the same pass**:
+`test_position_scaling_shadow_resolve.py` mocks Redis by stubbing `sys.modules["redis"]` and
+patching `redis.Redis.from_url` — a mechanism that silently stops actually testing anything the
+moment the real code no longer imports `redis` directly at all. Fixed by re-pointing the
+injection to `sys.modules["common.redis_client"]` instead, matching this repo's own documented
+"a fresh import against a stubbed parent silently misses whatever was registered under the OLD
+module path" gotcha (already hit and fixed multiple times elsewhere in this codebase's history)
+— confirmed all 4 of that test's cases now genuinely re-exercise the real fixed code, not a
+mock the fix made permanently unreachable.
+
+**Tests**: new `test_redis_pooling_and_delisted_sweep.py` includes a repo-wide re-run of the
+audit's own canonical closing grep — scoped to `src/` directories only this time, since several
+test files legitimately reference the exact pattern in their own mocking-setup docstrings/
+comments (a naive repo-wide re-run false-positived on these before the scoping fix). This is
+now a standing regression guard against the identical blind spot recurring under yet another
+alias in the future. Adversarially verified: reintroduced a raw `redis.Redis.from_url()`
+construction and confirmed the grep-regression test caught it; removed the fix at one specific
+site and confirmed the dedicated test caught it; both reverted, confirmed byte-identical via
+`diff`. Full 1961-test market-data suite green (up from 1950); `pyflakes` clean.
+
+### 2. AUD293-DELISTED-SWEEP-ROUND-N — `_scan_for_entries()`'s own BUY-candidate query, missed by every prior "exhaustive" sweep
+
+**The headline finding**: `BUG-DELISTED-GENERATION-BLIND` already has 10+ fixed sites across 5
+services from prior sweeps in this repo's own history, each one explicitly framed as an
+"exhaustive" check. Re-running the identical check (every `Stock.active.is_(True)` site, testing
+for the paired `Stock.delisted.is_(False)` filter) found **5 more real, previously-missed
+instances** — most importantly `paper_trading_engine.py`'s `_scan_for_entries()`, THE function
+that decides which real new paper trades actually get opened. Confirmed by direct trace (not
+assumed from the function name) that this is the genuine entry point every real BUY decision in
+this app flows through — the single highest-stakes site this whole bug class could exist at,
+and it had simply never been touched by any of the "exhaustive" prior passes.
+
+**The other 4 real sites**: `_compute_hk_breadth()` (a delisted stock frozen at its last real
+price could still count toward the market-wide breadth %, which feeds regime classification —
+a real trading-relevant signal, not cosmetic); `paper_trading_step()`'s watchlist-candidate
+price pre-fetch (wasted work fetching a price for a symbol that can never become a real
+candidate); `admin.py`'s watchlist-rotation candidate query (a real, live recommendation feed —
+a confirmed-delisted stock could be recommended into a user's watchlist) and its
+index-membership backfill (lower-stakes, metadata-only, fixed for consistency).
+
+**Two look-alike sites investigated directly and correctly left untouched, not silently
+skipped**: `candidate_event_mining.py` (ML training-data mining for the T241 position-scaling
+gate) deliberately RETAINS delisted stocks — confirmed directly that `Stock.delisted` is set
+independently of `Stock.active` in `ingestion.py`'s `_record_delisting_signal()` (a delisted
+stock's `active` flag is never touched), so adding this filter here would have introduced
+exactly the survivorship bias this repo's own CLAUDE.md "Known Ongoing Limitations" section
+already documents as a deliberate, accepted gap. `signal-engine`'s `walkforward_backtest()`/
+`trade_performance()` are read-only historical-research endpoints with no live trading action
+resulting from their output, matching this bug class's own established "display-blind is
+harmless, generation-blind is real" distinction already drawn multiple times in this file's
+history.
+
+**Fix**: added `Stock.delisted.is_(False)` alongside the existing filter at all 5 confirmed-real
+sites, matching the exact convention already established at every other fixed site in this
+codebase.
+
+**Tests**: source-text regression checks for each of the 5 fixed sites, PLUS a dedicated
+negative-check confirming `candidate_event_mining.py` was correctly left untouched (the string
+`Stock.delisted` never appears in that file at all) — proving this was a deliberate decision,
+not an oversight. Adversarially verified: removed the filter from `_scan_for_entries()` and
+confirmed the dedicated test caught it with a real substring-not-found failure; removed it from
+`admin.py`'s watchlist-rotation query and confirmed the same; both reverted and confirmed
+byte-identical via `diff`.
+
+### 3. AUD293-BETA-VAREPS — portfolio-optimizer's `_beta()` had AUD292-SHARPE-VAREPS's own bug, one function away from the fix
+
+**Root cause**: `AUD292-SHARPE-VAREPS` (documented at length above) found and fixed a real bug
+in `paper_portfolio.py`'s Sharpe/Sortino computation — a bare `variance > 0` gate lets
+floating-point NOISE (a near-zero-but-nonzero variance, not an exact `0.0`) through as a valid
+divisor, exploding the resulting ratio toward absurd values. `portfolio-optimizer/src/api/
+risk.py`'s `_beta()` — a completely separate function in a sibling service — has the IDENTICAL
+`var > 0` gate, never updated with the same epsilon-threshold fix.
+
+**A citation correction, worth recording**: the research agent's own report cited "`_VAR_EPS`
+established at line 90" in this same file as the sibling convention `_beta()` should have used
+— checked directly and found NO such constant exists anywhere in `risk.py` at all (the agent's
+citation was simply fabricated/misremembered). The real, correct finding underneath the
+imprecise citation held up on direct inspection: `_beta()`'s own bare `var > 0` guard, sitting a
+few lines above the `# IF-01: VaR/CVaR + stress testing` section header, is real and unfixed —
+just not for the reason originally cited.
+
+**Fix**: added `_BETA_VAR_EPS = 1e-9` (matching `AUD292`'s own established epsilon convention
+exactly) and changed the guard from `var > 0` to `var > _BETA_VAR_EPS`.
+
+**Tests**: 4 new cases appended to `test_portfolio_risk.py` — a deliberately-constructed
+float-noise fixture (perturbing a target daily rate by `1e-17` per step, matching
+`test_sharpe_variance_epsilon.py`'s own established construction for this exact bug class)
+confirming the fix falls back to the neutral `beta=1.0` rather than exploding; a genuine-
+variance case confirming the normal path is unaffected; the pre-existing `len(s) < 5` sample
+floor confirmed unrelated/unaffected; and a source-text check confirming a real epsilon
+constant is used, not a hardcoded literal. Adversarially verified: reverted to the bare
+`var > 0` guard and confirmed exactly the 2 dedicated tests failed correctly (the other 2,
+testing unrelated properties, correctly stayed green); reverted and confirmed byte-identical
+via `diff`. Full 59-test portfolio-optimizer suite green (up from 55); `pyflakes` clean (zero
+warnings, before and after).
+
+**What to check if any of these 3 look wrong**:
+```bash
+# 1. Redis pooling — confirm the alias is gone and the canonical grep is clean:
+grep -rn "import redis as _rb" services/market-data/src/
+grep -rln "redis\.Redis\.from_url\|redis\.from_url" services/*/src/
+
+# 2. Delisted sweep — confirm all 5 sites carry the filter:
+docker exec stockai-market-data-1 grep -n "Stock.delisted.is_(False)" /app/src/services/paper_trading_engine.py /app/src/api/admin.py
+
+# 3. Beta epsilon — confirm the constant is present and in use:
+docker exec stockai-portfolio-optimizer-1 grep -n "_BETA_VAR_EPS" /app/src/api/risk.py
+```

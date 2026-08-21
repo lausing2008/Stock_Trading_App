@@ -70,6 +70,13 @@ def _fetch_stock_meta(symbols: list[str]) -> dict[str, dict]:
     return meta
 
 
+_BETA_VAR_EPS = 1e-9  # AUD292-SHARPE-VAREPS: a bare `var > 0` lets floating-point noise (a
+# near-zero-but-nonzero variance from an all-identical or near-identical benchmark return
+# series) through as a valid divisor, exploding beta toward an absurd value instead of the
+# correct neutral 1.0 fallback — the exact bug class already found and fixed in
+# paper_portfolio.py's Sharpe/Sortino computation, ported here to this sibling division.
+
+
 def _beta(stock_rets: pd.Series, bench_rets: pd.Series) -> float:
     """Compute beta of stock_rets vs bench_rets on common dates."""
     s, b = stock_rets.align(bench_rets, join="inner")
@@ -79,7 +86,7 @@ def _beta(stock_rets: pd.Series, bench_rets: pd.Series) -> float:
     bv = np.asarray(b, dtype=float).ravel()
     cov = float(np.cov(sv, bv)[0, 1])
     var = float(np.var(bv))
-    return cov / var if var > 0 else 1.0
+    return cov / var if var > _BETA_VAR_EPS else 1.0
 
 
 # ── IF-01: VaR/CVaR + stress testing ────────────────────────────────────────────────────────

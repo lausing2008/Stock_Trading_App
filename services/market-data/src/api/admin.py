@@ -533,7 +533,13 @@ def watchlist_performance(
             cand_rows = session.execute(
                 select(Ranking.score, Stock.id, Stock.symbol, Stock.sector, Stock.market)
                 .join(Stock, Ranking.stock_id == Stock.id)
-                .where(Ranking.as_of == latest_as_of, Stock.active.is_(True))
+                .where(
+                    Ranking.as_of == latest_as_of,
+                    Stock.active.is_(True),
+                    # BUG-DELISTED-GENERATION-BLIND: a confirmed-delisted stock must never be
+                    # recommended into a live watchlist rotation candidate list.
+                    Stock.delisted.is_(False),
+                )
                 .order_by(desc(Ranking.score))
                 .limit(candidate_limit + len(excluded_ids))
             ).all()
@@ -1054,7 +1060,12 @@ def backfill_index_membership(
         index_map.setdefault(sym, []).append("SP500")
 
     stocks = session.execute(
-        select(Stock).where(Stock.active.is_(True), Stock.market == "US")
+        select(Stock).where(
+            Stock.active.is_(True), Stock.market == "US",
+            # BUG-DELISTED-GENERATION-BLIND: a confirmed-delisted stock's index membership is
+            # dead metadata — skip it rather than keep it in sync with real S&P/DOW/Nasdaq lists.
+            Stock.delisted.is_(False),
+        )
     ).scalars().all()
 
     updated = 0
