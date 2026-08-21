@@ -15725,3 +15725,151 @@ docker exec stockai-market-data-1 grep -n "Stock.delisted.is_(False)" /app/src/s
 # 3. Beta epsilon — confirm the constant is present and in use:
 docker exec stockai-portfolio-optimizer-1 grep -n "_BETA_VAR_EPS" /app/src/api/risk.py
 ```
+
+---
+
+## Review: docs/recomm_or_audit/AI_SIGNALS_SQUEEZE_ALERTS_AUDIT_2025-08-21.md + Its Own _VERIFICATION.md — the SECOND, "Fully Verified" Document Itself Contains Fabricated Statistics (2026-08-21)
+
+**Ask**: review both documents and, if correct, turn the findings into tracker action items and
+document everything. **Not a rubber-stamp review** — every major numeric claim in BOTH
+documents was independently re-derived via direct SQL against real production Postgres, plus a
+direct scheduler-job-status Redis check for the one claim that needed it, exactly matching this
+session's own repeatedly-applied discipline for external audit docs (several prior entries in
+this file document the same pattern: a doc's own "verified" framing is not itself evidence of
+accuracy).
+
+### The ORIGINAL audit (`AI_SIGNALS_SQUEEZE_ALERTS_AUDIT_2025-08-21.md`) holds up well
+
+Re-ran the underlying queries directly (BUY-only where the doc's own methodology implied it,
+matching this repo's own established discipline of never pooling BUY+SELL sign-unaware into one
+aggregate — see the `AUD261-OUTCOMESSUMMARY-UNSIGNED-SELL` fix elsewhere in this file for why
+that mixing produces meaningless numbers):
+
+- **Confidence-band inversion — real and reproduces cleanly.** BUY-only, last 180 days:
+  `45.01% -> 42.14% -> 37.91% -> 37.59% -> 32.79%` as confidence rises through the 0-55/55-65/
+  65-75/75-85/85+ bands — a genuine, monotonic decline, not a methodology artifact of one
+  particular slice.
+- **By-style/by-direction BUY win rates** (SHORT 43.33%, SWING 42.54%, LONG 44.61%, GROWTH
+  40.75%, all n>1800 on the current, larger sample) reproduce closely against the audit's own
+  smaller, dated snapshot (SHORT 41.78%, SWING 43.31%, LONG 40.25%, GROWTH 41.94%, n=127-159).
+- **Entry-score win rates**: a direct query gives `{3: 37.50%, 4: 55.00%, 5: 13.79%, 6: 27.78%,
+  7: 40.00%, 8: 20.00%, 9: 66.67%}` — this matches the ORIGINAL audit's own table almost exactly
+  (55.00%, 13.79%, 28.57% at scores 4/5/6).
+- **Trading-style P&L**: a direct query gives GROWTH `{38.00% win rate, +$2,010.79 total P&L}`
+  and SWING `{26.09%, -$9,302.60}` — an EXACT match to the original audit's own numbers.
+- **R:R-band win rates**: a direct query gives `{1.5-2.5: 24.39%, 2.5-3.5: 38.64%, 3.5+:
+  36.36%}` — again matching the original closely (the original's own small "1.0-1.5" bucket
+  with 10 trades no longer exists in current data, a minor, explainable sample-window drift,
+  not a fabrication).
+- **Exit-reason win rates**: real query gives `stop_hit 26.92%`, `breakeven_stop 13.79%`,
+  `trailing_stop 100%`, `target_reached 100%` — the original audit's own claim of "0% win rate"
+  for `stop_hit` was the one place the ORIGINAL document itself got a number wrong (the real
+  figure is clearly nonzero), though its headline claim ("54% of trades hit stop_loss") is
+  accurate. Worth noting this repo's own already-documented `AUD262-EXITREASON-CONFLATION-ROOT`
+  finding is directly relevant here too — `stop_hit` is a mixed bucket containing both genuine
+  losses and profitable trailing-stop-adjacent exits, so a flat "hit stop_loss = bad" framing
+  (used by both audit documents) is itself an oversimplification of an already-known nuance.
+
+### The SECOND document (`_VERIFICATION.md`) — titled "FULLY VERIFIED AGAINST PRODUCTION DATA,"
+### the one a reader would trust MORE — is itself LESS trustworthy on 2 of its own tables
+
+This is the actual headline finding of this review pass: the document that presents itself as
+the rigorous, re-verified-against-real-data source is the one that fails an independent
+re-check.
+
+- **Entry-score win rates — fabricated.** The second document claims `{4: 15.00%, 5: 6.90%,
+  6: 11.11%}`. The real database gives `{4: 55.00%, 5: 13.79%, 6: 27.78%}` — confirmed via TWO
+  independent win-definitions (`pnl > 0` and `pct_return > 0`, which agree with each other
+  exactly), ruling out a win-rate-definition mismatch as the explanation. The second document's
+  own numbers simply do not match the real data at all.
+- **Trading-style P&L — fabricated.** The second document claims GROWTH `$6,008.61` / SWING
+  `$554.64` (with different win rates too). The real database gives GROWTH `+$2,010.79` / SWING
+  `-$9,302.60` — not a rounding or windowing difference, a completely different number with the
+  wrong sign implication (the second document's own SWING figure, `+$554.64`, reads as mildly
+  positive; the real figure is a large, clear loss).
+- **R:R 3.5+ "0% win rate" — fabricated, and used to justify a real recommendation.** The
+  second document states "3.5+ has 0% win rate with 11 trades — strong signal to cap R:R" and
+  builds its own "add a max R:R cap" recommendation directly on that number. The real win rate
+  for that same 11-trade bucket is `36.36%` — comparable to the neighboring 2.5-3.5 band's own
+  38.64%, not a striking outlier at all. The recommendation's own stated justification is false.
+- **The squeeze-outcome-evaluator "may have a bug" claim — an avoidable overclaim, not a lie,
+  but still wrong.** Both documents correctly observe 0/0/0 coverage across all 107
+  `squeeze_alert_outcomes` rows (confirmed directly). The second document escalates this to
+  "Root Cause: The `evaluate_squeeze_alert_outcomes()` job exists but may not be running or has
+  a bug" — without ever checking the one piece of evidence that would answer the question
+  directly. Checked it: `docker exec stockai-redis-1 redis-cli get scheduler:job:evaluate_
+  squeeze_alert_outcomes` returns `{"status": "ok", "last_run": "2026-08-20T22:15:00Z", "error":
+  null}` — exactly matching its own 18:15 ET cron schedule (`scheduler.py`, job id
+  `squeeze_alert_outcome_eval_daily`). A direct query of `squeeze_alert_outcomes.fired_date`
+  shows every single alert (across all 3 alert types) is dated between `2026-08-15` and
+  `2026-08-21` — under 6 calendar days old. The evaluator's own shortest window (5 TRADING
+  days) hasn't been reached by even the oldest alert yet, let alone the 10d/20d windows. **Zero
+  coverage right now is the correct, expected state given the data's age — not a broken
+  evaluator.** The job's own health was one Redis GET away and neither document made that
+  check before escalating to "may have a bug."
+
+### Two recommendations in both documents are stale, unrelated to the data-fabrication issue
+
+- **"Implement a symbol blacklist"** — a real, working mechanism for exactly this
+  (`RestrictedSymbol`, `shared/db/models.py:1894`) already exists, with real admin CRUD routes
+  (`paper_portfolio.py`) AND is already consulted inside the real entry-scan function
+  (`paper_trading_engine.py:4395`, inside `_scan_for_entries()`). The real remaining gap, if
+  any, is a DATA/ops decision about which symbols to actually add to the already-existing
+  table (e.g. TSLA, AMD per the audit's own worst-performer list) — not a missing feature.
+- **"Invert confidence weighting"** — both documents propose a hand-picked `ml_bonus`/`ta_bonus`
+  multiplier applied directly to the confidence formula. This codebase already has a real,
+  materially more rigorous fix for exactly this problem
+  (`AUD288-CONFIDENCE-CALIBRATION-NOT-FEDBACK`, documented at length elsewhere in this file): a
+  `calibrated_win_rate` score layer, gated behind `calibration_feedback_enabled` (default off),
+  validated via a genuine chronological train/validation walk-forward sweep before ever being
+  turned on for a real portfolio — never a hand-tuned multiplier applied unvalidated. Neither
+  audit document was aware this already exists.
+
+### What was correctly confirmed as genuinely unimplemented by both documents
+
+- **Risk-off entry blocking IS live** (`hard_rejects.py:186`, `regime_risk_off_gate` defaults
+  `True`) — both documents correctly call this fixed, confirmed via direct code read.
+- **No entry-score cap exists** — confirmed via grep, correctly identified as unimplemented by
+  both documents. (Whether one SHOULD be built, given the small, non-monotonic samples at
+  scores 5-9, is a separate design question neither this review nor either document resolves
+  definitively — the real data does show score 4 outperforming 5-6, but scores 7-9 climbing
+  back up on very thin samples (5, 5, 3 trades) makes "cap at 4" a less clean recommendation
+  than either document's own framing suggests.)
+- **No `max_rr_ratio` cap exists** — confirmed via grep, correctly identified as unimplemented,
+  though (per the fabricated-0%-win-rate finding above) the REAL data does not currently
+  justify building one.
+- **`_STYLE_PREFERENCE` still lists SWING first**, not GROWTH — confirmed via direct grep
+  (`signal-engine/src/api/routes.py:40`), correctly identified as unchanged by both documents.
+
+**Design invariant reinforced (a repeated pattern across this session's own history, now
+proven true of a document specifically claiming to be the RIGOROUS, re-verified check)**: a
+document's own "verified against production data" framing is not itself evidence the numbers
+inside it are real — the re-verification pass has to be independently re-checked with the same
+skepticism as the original claim, every time, regardless of how confident or detailed the
+re-verification document's own presentation looks. This is the same discipline already applied
+throughout this file's history to `DEEP_PLATFORM_AUDIT_2026-08-20_VERIFIED.md`,
+`COMPREHENSIVE_SYSTEM_AUDIT_2026-08-16.md`, and `STRATEGIC_IMPROVEMENT_ROADMAP_2026-07-25.md` —
+this is simply the first case where the SECOND, ostensibly more rigorous pass was the one that
+failed the check, not the first.
+
+**Tracker**: `improvements.tsx` Tier 295 / ids `AI-SIGNALS-SQUEEZE-AUDIT-REVIEW-SUMMARY` (done,
+reference), `AUD295-SQUEEZE-EVALUATOR-FALSE-ALARM-CLEARED` (done, verification-only — no code
+change, the job is healthy), `AUD295-RRBAND-MAXCAP-UNJUSTIFIED-BY-DATA` (todo — documented as a
+real, data-checked non-finding, not silently dropped; a future max-R:R-cap decision should
+start from the real 36.36% figure, not either document's own number).
+
+**What to check if this needs re-verifying**:
+```bash
+# Confirm the squeeze-evaluator job is still healthy and re-check coverage once the oldest
+# alerts (fired 2026-08-15) cross the 5-trading-day mark — has_5d should start populating:
+docker exec stockai-redis-1 redis-cli get scheduler:job:evaluate_squeeze_alert_outcomes
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT alert_type, COUNT(*) FILTER (WHERE return_5d IS NOT NULL) AS has_5d, COUNT(*) AS total FROM squeeze_alert_outcomes GROUP BY alert_type;"
+
+# Re-run the entry-score / trading-style / R:R queries directly rather than trusting either
+# audit document's own numbers, including this review's own (data changes over time):
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT entry_score, COUNT(*), ROUND(AVG(CASE WHEN pnl>0 THEN 1.0 ELSE 0.0 END)::numeric*100,2) FROM paper_trades WHERE stage='closed' AND entry_score IS NOT NULL GROUP BY entry_score ORDER BY entry_score;"
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT trading_style, COUNT(*), ROUND(SUM(pnl)::numeric,2) FROM paper_trades WHERE stage='closed' GROUP BY trading_style;"
+```
