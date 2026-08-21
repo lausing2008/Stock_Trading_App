@@ -116,17 +116,34 @@ def _portfolio_risk_metrics(curve_rows: list) -> dict:
     n = len(daily_returns)
     mean_r = sum(daily_returns) / n
     variance = sum((r - mean_r) ** 2 for r in daily_returns) / max(n - 1, 1)
-    std_r = math.sqrt(variance) if variance > 0 else 0.0
+    # AUD292-SHARPE-VAREPS: `variance > 0` alone does not catch floating-point noise. An
+    # all-identical (but nonzero) return series has a variance that is pure float noise
+    # (~1e-17, not exactly 0.0) — it still passes `> 0` and produces a near-zero std_r, which
+    # then explodes the sharpe/sortino ratio below toward +-1e7-1e9. This is the exact bug
+    # class strategy-engine/backtest/engine.py's own T237-SE1 fix already found and guarded
+    # against in its own, independent Sharpe/Sortino implementation — never ported back to
+    # this sibling implementation until now. Use a real epsilon threshold instead of a bare
+    # `> 0` check, matching T237-SE1's own _VOL_EPS convention.
+    _VAR_EPS = 1e-9
+    std_r = math.sqrt(variance) if variance > _VAR_EPS else 0.0
 
     annualised_return = mean_r * 252
     annualised_vol = std_r * math.sqrt(252)
     risk_free = 0.05
-    sharpe = round((annualised_return - risk_free) / annualised_vol, 2) if annualised_vol > 0 else None
+    # Same AUD292-SHARPE-VAREPS reasoning applies at the annualized scale too — annualizing a
+    # float-noise-sized std_r by sqrt(252) keeps it near-zero but nonzero, so `> 0` alone still
+    # lets it through the gate below.
+    sharpe = round((annualised_return - risk_free) / annualised_vol, 2) if annualised_vol > _VAR_EPS else None
 
     # Sortino — downside deviation (returns below 0)
     downside_sq = [min(r, 0.0) ** 2 for r in daily_returns]
     downside_dev = math.sqrt(sum(downside_sq) / max(n, 1)) * math.sqrt(252)
-    sortino = round((annualised_return - risk_free) / downside_dev, 2) if downside_dev > 0 else None
+    # AUD292-SHARPE-VAREPS: an all-nonnegative-but-not-exactly-zero return series (e.g. a
+    # strategy with zero real losing days but tiny per-day rounding) produces a downside_dev
+    # that is pure float noise rather than a genuine "no downside risk" 0.0 — the same
+    # near-zero-denominator explosion T237-SE1 already documented for strategy-engine's own
+    # sortino, applied here to the equivalent bare `> 0` gate.
+    sortino = round((annualised_return - risk_free) / downside_dev, 2) if downside_dev > _VAR_EPS else None
 
     # Calmar = CAGR / max drawdown (use geometric compound rate, not arithmetic mean * 252)
     calmar = round((cagr_pct / 100) / max_dd, 2) if max_dd > 0 and cagr_pct is not None else None
