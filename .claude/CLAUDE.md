@@ -16003,3 +16003,132 @@ docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
 docker exec stockai-market-data-1 curl -s 'http://localhost:8001/admin/squeeze-alert-performance?days_back=180' \
   -H "Authorization: Bearer <admin token>" | python3 -c "import sys, json; d=json.load(sys.stdin); print(d['by_alert_type'][0].keys())"
 ```
+
+---
+
+## Review: docs/recomm_or_audit/AI_SIGNALS_SQUEEZE_ALERTS_DEEP_AUDIT_2025-08-22.md ("Deep Audit
+## v2") — Raw Data Mostly Real, Every P0/P1 Analysis Conclusion Stale (2026-08-22)
+
+**This is the THIRD external "verified against production" audit doc reviewed this session**
+(after `AI_SIGNALS_SQUEEZE_ALERTS_AUDIT_2025-08-21.md` and its own `_VERIFICATION.md`) — same
+discipline applied again: never trust a claim, however precisely cited, without independently
+re-running it against the real database first.
+
+### What actually reproduces, verified directly
+
+- **Confidence-band inversion** (`43.12/40.52/37.10/39.92/27.81%`, n=`4177/970/690/471/356`) —
+  **exact match** with a 60-day, BUY-only, `is_correct_10d IS NOT NULL` window. Real, and
+  already known (Tier 261).
+- **By-style paper-trading table** (SWING `30/20.00%/-$8841.08`, GROWTH `39/38.46%/+$2202.74`)
+  — **exact match** with a 60-day window.
+- **Risk-off regime table** (`10 trades, 0% win rate, -$10,805.54`) — the raw numbers are real,
+  but see below for why the conclusion drawn from them is stale.
+
+### What does NOT reproduce, or reproduces for the wrong reason
+
+**The entry-score table uses a DIFFERENT, undisclosed window than its own section header
+claims.** The doc's Part 5 groups the entry-score table under the same "(Last 60 Days)" header
+as the by-style table above — but a 60-day-filtered query gives `{3: 4/50%, 4: 11/36.36%,
+5: 25/16.00%, 6: 15/33.33%, ...}`, which does NOT match the doc's own claimed
+`{4: 55.00%, 5: 13.79%, 6: 27.78%}`. Removing the date filter entirely (**all-time**) gives an
+**exact match**. Two tables in the same labeled section silently used different windows.
+
+**The "0% win rate" symbol list is only half right.** A direct all-time query
+(`GROUP BY symbol HAVING COUNT(*)>=10 AND wins=0`) finds exactly **8** symbols genuinely at
+0.00%: `SNDK (n=47), AMKR (n=40), KMT (n=31), 6809.HK (n=28), 3323.HK (n=26), SOXL (n=18),
+AAON (n=18), WMT (n=14)`. Of the doc's other named symbols, **none** are actually 0% —
+`CAT 8.75% (n=80), TSLA 2.86% (n=35), GOOG 9.52% (n=42), AMAT 5.63% (n=71), SMH 2.70% (n=37),
+3986.HK 5.56% (n=72), 6082.HK 12.24% (n=49)` — all real, poor performers, but the doc's own
+"15 symbols, exactly 0%" framing (and its P0 #3 "blacklist all 15" recommendation) overstates
+what the data actually shows for 7 of them.
+
+**The risk-off "STILL CRITICAL — STILL LEAKING" claim describes an already-fixed incident as a
+live gap.** All 10 risk-off trades in the table entered `2026-06-25` through `2026-07-06` —
+confirmed by querying `entry_time` directly. `T226-A` (the hard risk-off block, already
+documented at length elsewhere in this file) was deployed **2026-06-30**, specifically *because
+of* this exact incident. A direct query (`entry_time > '2026-07-07'`) confirms **zero** risk-off
+entries in the 6+ weeks since. The doc re-surfaced the same historical rows every prior audit
+already found, without checking whether a post-fix entry exists.
+
+**The squeeze-outcome "0/108 evaluated — job may be broken" claim is the SAME false alarm this
+session's own Tier 295 review already cleared for the PRIOR audit doc**, re-surfacing one
+calendar day later. Checked `scheduler:job:evaluate_squeeze_alert_outcomes` in Redis directly:
+the job ran successfully hours before this doc's own stated date. The oldest alert's 5-trading-
+day window resolves exactly on `2026-08-22` (the doc's own date) — and that date's own price
+bar for the relevant symbol simply hadn't landed in `prices` yet at query time. Confirmed
+directly: `evaluate_squeeze_alert_outcomes()` and `evaluate_prebreakout_alert_outcomes()` were
+manually re-triggered during this same session (see the `DESIGN-SQUEEZE-1D2D3D-WINDOWS` entry
+above) and correctly backfilled 86 of 107 rows the moment T+1 entries existed — the mechanism
+works; there was simply nothing left to fill for the newest few rows yet.
+
+### Every P0/P1 recommendation describes something already built
+
+- **Risk-off blocking** already exists and is MORE sophisticated than the doc's proposed
+  `if state == "risk_off": return []` snippet — the real gate (`hard_rejects.py`) includes a
+  time-boxed, self-expiring override the doc's version lacks.
+- **Squeeze outcome tracking** already exists, runs daily, and was independently re-verified
+  working end-to-end earlier this same session.
+- **Symbol blacklist** already exists (`RestrictedSymbol`, real admin CRUD routes, already
+  consulted inside `_scan_for_entries()` at `paper_trading_engine.py:4395`) — the doc's P0 #3
+  proposes a brand-new mechanism for something already built.
+- **Confidence-formula fix** — the doc's own proposed fix (a hand-picked
+  `ml_penalty`/`ta_penalty`/`ml_bonus`/`ta_bonus` multiplier, chosen by eyeballing the current
+  tables, zero validation) is the exact unvalidated-shortcut pattern this repo has already
+  rejected twice. A real, materially more rigorous fix already exists
+  (`AUD288-CONFIDENCE-CALIBRATION-NOT-FEDBACK`) — a measured `calibrated_win_rate` score layer,
+  gated behind `calibration_feedback_enabled` (default off on every real portfolio), meant to
+  be turned on only after a real walk-forward validation, not asserted from a hand-tuned
+  formula.
+- **Entry-score cap** — the doc's proposed `if entry_score in [5, 6]: return False` is a
+  hardcoded rule off an n=18-29 sample with zero train/validation split. A real walk-forward
+  sweep with a chronological train/validation split and a promotion-margin gate already exists
+  (`gate_harness.py`'s `walk_forward_min_entry_score()`).
+- **"Default to GROWTH style"** (P1 #7) doesn't map onto this system's actual architecture —
+  each of the 5 real paper portfolios already has its own fixed style baked into how it was
+  created; there is no single global default constant to flip.
+
+### The doc's own "gap analysis" (Part 10) reached the wrong conclusion because of this
+
+The doc's Part 9 cross-references "153+ improvements marked done" using its own invented
+lowercase shorthand ids (`sa1`, `re2`, `pt-drawdown-circuit-breaker`) that mostly don't match
+this codebase's real tracker id conventions (`SA-19`, `T226-A`, `AUD292-...`, etc.) — it's a
+paraphrased summary, not a direct tracker cross-reference. Part 10 then asks "why aren't these
+improvements reflected in production" and proposes 5 possible causes (code not deployed,
+feature flags off, scheduler jobs not running, schema mismatch, config drift) — every one of
+which, checked directly against the real system, is false for every specific case the doc
+raises. The improvements ARE deployed; the confidence/entry-score fixes just haven't been
+*activated* yet, which is a genuinely different, much narrower gap than the doc's framing
+implies.
+
+**Design invariant reinforced (now the 3rd time in a row for this exact class of doc in this
+session)**: a document's precise, directly-checkable data (raw SQL query outputs, specific
+counts) being real does not mean the ANALYSIS built on top of that data — what's broken, what
+needs building, what's "still critical" — is accurate. Every external audit doc reviewed this
+session got the raw numbers approximately right and the "what does this mean, what should we
+do" layer wrong, usually by not checking whether a described gap had already been closed.
+
+**Tracker**: `improvements.tsx` Tier 297 / ids `AI-SIGNALS-DEEP-AUDIT-V2-REVIEW-SUMMARY` (done,
+reference), `AUD297-RESTRICTEDSYMBOL-POPULATE-8-CONFIRMED-ZERO` (todo — a real, re-verified
+8-symbol list, distinct from the doc's own partially-wrong 15-symbol one),
+`AUD297-ACTIVATE-EXISTING-CALIBRATION-AND-ENTRYSCORE-INFRA` (todo — both mechanisms already
+exist and just need to be run/activated, not built).
+
+**What to check if this needs re-verifying**:
+```bash
+# Confirm zero risk-off entries since the T226-A fix:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT COUNT(*) FROM paper_trades WHERE market_regime_at_entry='risk_off' AND entry_time > '2026-07-07';"
+
+# Re-verify the entry-score table's real window (all-time, not 60 days):
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT entry_score, COUNT(*), ROUND(COUNT(*) FILTER(WHERE pnl>0)*100.0/COUNT(*),2) win_rate, ROUND(SUM(pnl)::numeric,2) FROM paper_trades WHERE exit_time IS NOT NULL GROUP BY entry_score ORDER BY entry_score;"
+
+# Re-verify the real 0%-win-rate symbol list (all-time):
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT s.symbol, COUNT(*) n, COUNT(*) FILTER(WHERE so.is_correct_10d) wins FROM signal_outcomes so JOIN stocks s ON s.id=so.stock_id WHERE so.signal_direction='BUY' AND so.is_correct_10d IS NOT NULL GROUP BY s.symbol HAVING COUNT(*)>=10 AND COUNT(*) FILTER(WHERE so.is_correct_10d)=0 ORDER BY n DESC;"
+
+# Confirm the squeeze evaluator's real coverage state right now (not the doc's stale snapshot):
+docker exec stockai-redis-1 redis-cli get scheduler:job:evaluate_squeeze_alert_outcomes
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT alert_type, COUNT(*) total, COUNT(*) FILTER(WHERE return_5d IS NOT NULL) has_5d FROM squeeze_alert_outcomes GROUP BY alert_type;"
+```
