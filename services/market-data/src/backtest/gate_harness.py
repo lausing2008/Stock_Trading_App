@@ -692,6 +692,223 @@ def walk_forward_min_entry_score(
     }
 
 
+# ── AUD298-BLOCKED-ENTRY-SCORES-VALIDATE-FIRST ──────────────────────────────────────────────
+# PAPER_TRADING_DEEP_AUDIT_2025-08-22.md observed that min_entry_score is a pure `score >=
+# threshold` comparison — structurally unable to express "exclude 5 and 6 specifically, but
+# allow 7+" the way its own per-score win-rate table superficially suggests is needed (score 4
+# best, 5/6 disasters, 7-9 recovering). walk_forward_min_entry_score() above only ever searches
+# THRESHOLD candidates, never a discrete exclusion set — this is the sibling sweep that can.
+#
+# Reviewed against the SAME dataset before building anything: entry_score shows almost NO
+# winner/loser differentiation on average (winners avg 5.0, losers avg 5.1) — a real signal
+# that the "5/6 disaster" pattern in the doc's own table could be driven by a handful of
+# outsized losing trades rather than a genuine per-score effect, at n=18-29 per bucket. This
+# sweep exists specifically to let real, held-out validation data settle that question rather
+# than trusting the doc's own reflexive hardcode.
+#
+# Design note on why this can't just reuse replay_should_enter() unmodified: _should_enter()'s
+# min_entry_score comparison is INTERNAL (score >= cfg["min_entry_score"]) — there's no cfg
+# key to inject an exclusion SET through. The trick: call _should_enter() with a floor cfg key
+# equal to the CURRENT live threshold (so a genuine below-floor signal is still correctly
+# rejected exactly as it is live), then additionally reject via score IF the returned score
+# falls in the exclusion set. This composes correctly with PT-3's calibrated-logistic-
+# regression branch too (which bypasses the additive score entirely once >=100 closed trades
+# exist — none of today's real portfolios have reached that yet) — should is already False in
+# hard-reject/calibrated-no cases regardless of what the exclusion check does, so this can only
+# ever REJECT trades the plain-threshold baseline would have entered, never admit extra ones.
+
+def replay_should_enter_excluding_scores(
+    session: Session,
+    style: str,
+    market: str,
+    cfg: dict,
+    excluded_scores: frozenset[int],
+    window_start: date,
+    window_end: date,
+    cfg_label: str = "",
+) -> BacktestResult:
+    """Sibling to replay_should_enter() — identical per-signal replay, except a candidate
+    whose returned score falls in `excluded_scores` is rejected even when the plain
+    `score >= cfg["min_entry_score"]` comparison alone would have admitted it. `cfg` should
+    already carry the real, current min_entry_score floor — excluded_scores narrows what that
+    floor already admits, it never widens it."""
+    style = style.upper()
+    bucket = _HORIZON_BUCKET[style]
+    matched = _fetch_matched_signals(session, style, market, window_start, window_end)
+
+    result = BacktestResult(
+        style=style, market=market, cfg_label=cfg_label or "(baseline)",
+        window_start=window_start, window_end=window_end,
+        n_signals_seen=len(matched), n_entered=0,
+    )
+    if len(matched) < MIN_SAMPLES_PER_SPLIT:
+        result.skipped_reason = (
+            f"only {len(matched)} resolved BUY signals in window (need {MIN_SAMPLES_PER_SPLIT})"
+        )
+        return result
+
+    returns: list[float] = []
+    wins = 0
+    for sig, outcome, stock in matched:
+        live_price = outcome.entry_price
+        if not live_price or live_price <= 0:
+            continue
+        atr = _historical_atr(session, stock.id, outcome.signal_date)
+        game_plan = _build_game_plan_for_style(stock.symbol, style, live_price, sig.reasons or {}, atr)
+        confidence_delta = _historical_confidence_delta(
+            session, stock.id, style, outcome.signal_date, sig.confidence,
+        )
+        signal_data = {
+            "signal": sig.signal.value,
+            "confidence": sig.confidence,
+            "bullish_probability": sig.bullish_probability,
+            "reasons": sig.reasons or {},
+            "confidence_delta": confidence_delta,
+        }
+        should, score, _notes = _should_enter(
+            stock.symbol, signal_data, live_price, game_plan, cfg, live_regime=None, kscore=None,
+            as_of=_entry_as_of(outcome.entry_date or outcome.signal_date, market),
+        )
+        if not should or score in excluded_scores:
+            continue
+        pct_return = getattr(outcome, f"return_{bucket}")
+        is_correct = getattr(outcome, f"is_correct_{bucket}")
+        returns.append(float(pct_return))
+        if is_correct:
+            wins += 1
+        result.entered_signal_ids.append(sig.id)
+
+    result.n_entered = len(returns)
+    result.returns = returns
+    if result.n_entered < MIN_SAMPLES_PER_SPLIT:
+        result.skipped_reason = (
+            f"only {result.n_entered} signals passed the gate (need {MIN_SAMPLES_PER_SPLIT})"
+        )
+        return result
+
+    result.win_rate = round(wins / result.n_entered, 4)
+    result.avg_return_pct = round(sum(returns) / len(returns) * 100, 4)
+    return result
+
+
+def walk_forward_blocked_entry_scores(
+    session: Session,
+    style: str,
+    market: str,
+    base_cfg: dict,
+    window_start: date,
+    window_end: date,
+    candidate_exclusion_sets: list[frozenset[int]] | None = None,
+) -> dict:
+    """Search candidate entry-score EXCLUSION sets on the train slice (older 70%), then only
+    report a candidate as beating baseline if it ALSO wins on the validation slice (newer 30%,
+    never seen during the search) — same chronological split pattern and promotion-margin gate
+    as walk_forward_min_entry_score() above.
+
+    The baseline is the CURRENT live min_entry_score threshold with NO exclusions — i.e. "does
+    excluding any of these score sets beat doing nothing beyond today's plain threshold."
+    Default candidate sets are single- and paired-score exclusions drawn from the doc's own
+    observed pattern (5, 6, and {5,6} together) plus an empty-set sanity baseline — deliberately
+    NOT an exhaustive powerset search (a 9-way score range would produce hundreds of candidate
+    sets at this sample size, pure overfitting bait; the doc's own specific claim is what this
+    sweep is built to check, not a blind search for whatever exclusion looks best in-sample).
+    """
+    style = style.upper()
+    current_min_score = base_cfg.get("min_entry_score", 4)
+    if candidate_exclusion_sets is None:
+        candidate_exclusion_sets = [
+            frozenset(), frozenset({5}), frozenset({6}), frozenset({5, 6}),
+        ]
+
+    resolvable_end = _resolvable_window_end(window_end, style)
+    if resolvable_end <= window_start:
+        return {
+            "style": style, "market": market,
+            "skipped_reason": (
+                f"window too short to leave any resolvable validation slice after accounting "
+                f"for {style}'s {_HORIZON_RESOLUTION_LAG_DAYS.get(style, 14)}-day outcome "
+                f"resolution lag (requested window ends {window_end}, resolvable end is "
+                f"{resolvable_end}, window starts {window_start})"
+            ),
+        }
+
+    total_days = (resolvable_end - window_start).days
+    split_days = max(1, int(total_days * 0.7))
+    train_end = window_start + timedelta(days=split_days)
+    val_start = train_end + timedelta(days=1)
+
+    if val_start > resolvable_end:
+        return {
+            "style": style, "market": market,
+            "skipped_reason": f"window too short to split ({total_days} resolvable days)",
+        }
+
+    baseline_val = replay_should_enter_excluding_scores(
+        session, style, market, base_cfg, frozenset(), val_start, resolvable_end,
+        cfg_label="baseline, no exclusions (validation)",
+    )
+
+    train_results = []
+    for excl in candidate_exclusion_sets:
+        label = "no exclusions" if not excl else f"exclude {sorted(excl)}"
+        train_results.append((excl, replay_should_enter_excluding_scores(
+            session, style, market, base_cfg, excl, window_start, train_end,
+            cfg_label=f"{label} (train)",
+        )))
+
+    best_excl, best_train = None, None
+    for excl, res in train_results:
+        if res.skipped_reason is not None or res.avg_return_pct is None:
+            continue
+        if best_train is None or res.avg_return_pct > best_train.avg_return_pct:
+            best_excl, best_train = excl, res
+
+    if best_excl is None:
+        return {
+            "style": style, "market": market,
+            "current_min_entry_score": current_min_score,
+            "skipped_reason": "no exclusion-set candidate cleared the sample floor on the train slice",
+            "baseline_validation": _result_dict(baseline_val),
+        }
+
+    best_val = replay_should_enter_excluding_scores(
+        session, style, market, base_cfg, best_excl, val_start, resolvable_end,
+        cfg_label=f"exclude {sorted(best_excl)} (validation)" if best_excl else "no exclusions (validation)",
+    )
+    promoted = _passes_promotion_margin(best_val, baseline_val)
+
+    return {
+        "style": style, "market": market,
+        "current_min_entry_score": current_min_score,
+        "candidate_exclusion_set": sorted(best_excl),
+        "train_window": [str(window_start), str(train_end)],
+        "validation_window": [str(val_start), str(resolvable_end)],
+        "train_result": _result_dict(best_train),
+        "candidate_validation": _result_dict(best_val),
+        "baseline_validation": _result_dict(baseline_val),
+        "promoted": promoted,
+        "note": (
+            "promoted=True means excluding this specific score set beat the plain-threshold "
+            "baseline on the held-out validation slice by at least "
+            f"{_MIN_PROMOTION_EV_LIFT_PCT}pp AND by at least {_MIN_PROMOTION_LIFT_SD_RATIO}x "
+            "the validation slice's own return dispersion (same BUG233-BACKTESTHARNESS-COINFLIP "
+            "margin every other walk-forward endpoint in this module enforces). A promoted "
+            "empty-set candidate simply means no exclusion beat doing nothing, not that scores "
+            "5/6 are fine to keep exactly as-is if a NON-empty set also promoted with a larger "
+            "lift — always compare against every candidate's own train-slice avg_return_pct, "
+            "not just whichever one happened to win the search. This is a Phase 2a-style "
+            "research signal, NOT an automatic config change, and does not correct for the "
+            "train-slice search's own multiple-comparisons exposure across the (small, "
+            "deliberately non-exhaustive) candidate list. Same standing scope note as "
+            "walk_forward_min_entry_score(): this only replays _should_enter() (the DE-outage "
+            "fallback gate), is regime-blind (live_regime=None on every call), and composes "
+            "correctly with PT-3's calibrated-logistic-regression branch once >=100 closed "
+            "trades exist for a portfolio (a hard-reject or calibrated-no stays excluded "
+            "regardless of the score-exclusion check)."
+        ),
+    }
+
+
 def walk_forward_calibration_feedback(
     session: Session,
     style: str,

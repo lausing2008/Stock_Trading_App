@@ -2771,6 +2771,42 @@ def backtest_min_entry_score(
         return walk_forward_min_entry_score(session, style, market, base_cfg, window_start, window_end)
 
 
+@router.get("/backtest/blocked-entry-scores")
+def backtest_blocked_entry_scores(
+    style: str = Query(..., description="SHORT | SWING | LONG | GROWTH"),
+    market: str = Query("US", description="US | HK"),
+    window_days: int = Query(60, ge=14, le=365, description="Lookback window in calendar days"),
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """AUD298-BLOCKED-ENTRY-SCORES-VALIDATE-FIRST: walk-forward backtest of candidate entry-
+    score EXCLUSION SETS (e.g. "keep the current min_entry_score floor, but additionally
+    reject scores 5 and 6 specifically") via the real _should_enter() — the sibling to
+    backtest_min_entry_score() above, which can only search a plain threshold, never a
+    discrete exclusion.
+
+    Searches candidates on the older 70% of the window (train), only reports a candidate
+    as beating the plain-threshold baseline if it ALSO wins on the newer 30% (validation) the
+    search never saw. Research tool only — does not write to portfolio.config or any
+    promotion history table.
+    """
+    from ..backtest.gate_harness import walk_forward_blocked_entry_scores
+    from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+
+    style = style.upper()
+    if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
+        raise HTTPException(status_code=400, detail=f"Unknown style: {style}")
+    market = market.upper()
+    if market not in ("US", "HK"):
+        raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
+
+    base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    window_end = date.today()
+    window_start = window_end - timedelta(days=window_days)
+
+    with SessionLocal() as session:
+        return walk_forward_blocked_entry_scores(session, style, market, base_cfg, window_start, window_end)
+
+
 @router.get("/backtest/calibration-feedback")
 def backtest_calibration_feedback(
     style: str = Query(..., description="SHORT | SWING | LONG | GROWTH"),
