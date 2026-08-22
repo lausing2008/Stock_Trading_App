@@ -16132,3 +16132,157 @@ docker exec stockai-redis-1 redis-cli get scheduler:job:evaluate_squeeze_alert_o
 docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
   "SELECT alert_type, COUNT(*) total, COUNT(*) FILTER(WHERE return_5d IS NOT NULL) has_5d FROM squeeze_alert_outcomes GROUP BY alert_type;"
 ```
+
+---
+
+## Review: docs/recomm_or_audit/PAPER_TRADING_DEEP_AUDIT_2025-08-22.md — Most Accurate External
+## Audit Doc Reviewed This Session, But 2 Recommendations Would Undo Already-Shipped Fixes
+## (2026-08-22)
+
+**This is the FOURTH external audit doc reviewed this session** — but the first one where
+every single numeric table reproduces exactly against a direct, no-date-filter re-query:
+overall performance (111/97/32.99%/-$6,781.75), by-portfolio (all 5 rows), by-style, by-exit-
+reason, by-regime, by-entry-score, winner-vs-loser characteristics (`avg_hold 10.3 vs 4.0`,
+`avg_rr 3.37 vs 2.72`, `avg_score/avg_conf/avg_kscore` all flat), and by-hold-duration — no
+internal date-window inconsistencies of the kind found in the two squeeze-alert docs.
+
+### The real risk: 2 recommendations would UNDO already-shipped, data-backed fixes
+
+**GROWTH's `trail_trigger_pct` recommendation is backwards.** The doc reads
+`_DEFAULT_CONFIG["trail_trigger_pct"] = 0.05` (the module-level default) and proposes lowering
+it to `0.03` for GROWTH. But `paper_trading_engine.py`'s real per-style override table already
+sets GROWTH's `trail_trigger_pct` to **0.07**, not 0.05 — deliberately RAISED under a real,
+dated fix (`T227-D`): *"open GROWTH trades avg +8% — they need room"* — fixing a genuine bug
+where breakeven and trailing both armed from the identical peak, giving zero additional
+protection. The doc's recommendation would move this parameter in the OPPOSITE direction from
+what a real, already-completed audit found necessary, purely because it never checked the
+per-style override that supersedes the module default it read.
+
+**`min_rr_ratio` and the regime size multipliers are treated as bare constants, when they're
+not.** `min_rr_ratio` is already resolved through `_default_min_rr_ratio()`
+(`SELFIMPROVE-NEVER-CALIBRATED-PARAMS`), reading a real calibrated-override file rather than a
+hardcoded `2.0` literal. `regime_risk_off_size_mult`/`regime_choppy_size_mult` already exist at
+exactly `0.50`/`0.75` — matching the doc's own "current config" table — but risk-off entries
+are ALREADY hard-blocked by a completely separate, stronger mechanism
+(`regime_risk_off_gate`, confirmed in this same session's earlier squeeze-alert review),
+making the risk-off SIZE multiplier moot for new entries regardless of its own value.
+`max_consecutive_losses` is already `3`, not an unstated default the doc's proposed "add: 4"
+implies — a config nudge on an already-tuned real value, not a new feature.
+
+### What IS genuinely novel — filed as real action items, with a caveat
+
+`blocked_entry_scores` and `min_hold_before_stop` are real gaps: neither key nor mechanism
+exists anywhere in the codebase. The underlying observation is sound —
+`min_entry_score` is a pure `score >= threshold` comparison, structurally unable to express
+"exclude 5 and 6 specifically, but allow 7+" the way the doc's own per-score table suggests is
+needed. `gate_harness.py`'s `walk_forward_min_entry_score()` only searches threshold
+candidates, never an exclusion set.
+
+**But the SAME dataset that produced the "score 5/6 disaster" framing also shows entry_score
+has almost zero winner/loser differentiation on average** (`avg_score`: winners 5.0, losers
+5.1 — Part 9's own table). That's a real signal worth taking seriously: the 5/6 pattern could
+be driven by a handful of large losing trades rather than a genuine per-score effect, at
+n=18-29 per bucket. Any exclusion-set fix needs the SAME chronological train/validation
+promotion-margin discipline every other live-decision parameter in this codebase already
+requires (`gate_harness.py`'s own established pattern) before being wired into
+`_should_enter()` — never a reflexive hardcode off this sample size, which is exactly the class
+of mistake already found and rejected twice this session for the squeeze-alert docs.
+
+**The "short holds = losses" finding has an equally-plausible alternative reading the doc
+never considers**: a working stop-loss system is SUPPOSED to cut losers fast and let winners
+run — that's not evidence stops fire prematurely, it's the natural signature of stops doing
+their job correctly. Adding artificial hold-before-stop delay risks turning small, correctly-
+cut losses into larger ones, with no walk-forward evidence yet that it helps.
+
+### A real, separate correction surfaced along the way
+
+Investigating the doc's own "Kelly endpoint... zero consumers" framing (shared with the
+companion news/events doc, see below) found a real, already-built consumer:
+`GET /paper-portfolio/backtest/risk-per-trade-sweep`
+(`backtest_risk_per_trade_sweep()`/`sweep_risk_per_trade_pct()`) — a walk-forward validation
+sweep built SPECIFICALLY to resolve "should Kelly inform real sizing or stay advisory,"
+confirmed via its own docstring. `risk_per_trade_pct` is still a fixed `cfg` default in
+`_should_enter()` today, so the underlying observation (Kelly isn't yet driving real capital
+sizing) is directionally right — but the fix is running the ALREADY-BUILT sweep and applying
+its own promotion verdict, not building a new wire-in from scratch as either doc proposes.
+
+**Tracker**: `improvements.tsx` Tier 298 / ids `PAPER-TRADING-DEEP-AUDIT-REVIEW-SUMMARY` (done,
+reference), `AUD298-BLOCKED-ENTRY-SCORES-VALIDATE-FIRST` (todo — a real, novel gap, needs
+validation before hardcoding), `AUD298-KELLY-SWEEP-ALREADY-BUILT-RUN-IT` (todo — run the
+existing sweep instead of building a new mechanism).
+
+**What to check if this needs re-verifying**:
+```bash
+# Confirm GROWTH's real trail_trigger_pct (should be 0.07, not the module default 0.05):
+docker exec stockai-market-data-1 grep -A5 '"GROWTH": {' /app/src/services/paper_trading_engine.py | grep trail_trigger_pct
+
+# Confirm min_rr_ratio's real calibration-aware resolution (not a bare literal):
+docker exec stockai-market-data-1 grep -n "_default_min_rr_ratio" /app/src/services/paper_trading_engine.py
+
+# Confirm the Kelly sweep already exists and risk_per_trade_pct is still a fixed default:
+docker exec stockai-market-data-1 grep -n "def backtest_risk_per_trade_sweep\|risk_per_trade_pct.*cfg\[" /app/src/api/paper_portfolio.py /app/src/services/paper_trading_engine.py
+
+# Re-verify entry_score's actual winner/loser differentiation (should be nearly flat):
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT CASE WHEN pnl>0 THEN 'winners' ELSE 'losers' END grp, COUNT(*), ROUND(AVG(entry_score)::numeric,1) avg_score FROM paper_trades WHERE stage='closed' GROUP BY grp;"
+```
+
+---
+
+## Review: docs/recomm_or_audit/REALTIME_NEWS_EVENTS_INTELLIGENCE_2025-08-22.md — A Capability
+## Inventory, Mostly Accurate, 2 Concrete Errors Found (2026-08-22)
+
+**Different risk profile from the 3 numeric audit docs reviewed earlier this session** — this
+one is a capability inventory ("what's already built vs. what's a genuine gap"), so the check
+was a representative sample of "✅ DONE" claims against real code, not an exhaustive re-run of
+every SQL query (there mostly aren't any to re-run).
+
+### What checked out
+
+- Earnings hard-reject (`dte <= 5` → hard reject) and sizing bands (`6-10 dte` → 50% size,
+  `11-20 dte` → 75% size) — **exact match** to `_should_enter()`'s real code.
+- `EconomicEvent.expected_value` — confirmed read/passed through in multiple places but never
+  actually populated by any real writer, matching the doc's "column exists but never
+  populated" claim exactly.
+- `news-intelligence`'s `_mark_hot()` hot-news-flag function — confirmed exists as described.
+
+### What's wrong
+
+**The Cross-Asset Signals table (§1.7) names the wrong instruments entirely.** The doc claims
+`sync_cross_asset()` syncs `"TLT, HYG, LQD, DXY, GLD, USO, ^TNX"` — 7 yfinance-style ETF/index
+tickers, including gold and oil. The REAL implementation (this same session's own `IF-04
+Phase 1` work, documented at length earlier in this file) syncs exactly **5 FRED macro
+series** — `DGS10`, `DGS2`, `T10Y2Y`, `BAMLH0A0HYM2`, `DTWEXBGS` (10Y/2Y treasury yields, the
+2s10s curve, HY credit spread, and the trade-weighted dollar index) — with gold/oil/bond-ETF
+coverage EXPLICITLY documented as a deferred follow-on at build time, not silently missing.
+The doc also cites the wrong endpoint path (`GET /events/cross-asset/latest` — the real route
+has no `/latest` suffix, confirmed via grep).
+
+**"Kelly endpoint... zero consumers" is false** — see the companion `PAPER_TRADING_DEEP_AUDIT`
+review above for the full finding: a real walk-forward validation sweep
+(`backtest_risk_per_trade_sweep()`) already consumes it, built specifically to answer this
+exact question. `risk_per_trade_pct` just hasn't been promoted to a live portfolio yet from
+that sweep's own output — a materially narrower gap than "zero consumers" implies.
+
+### What's genuinely good about this doc
+
+Unlike the squeeze-alert docs' analysis layer, this one's overall framing ("~80% already
+built, gaps are composition/enhancement, not greenfield") holds up, and its 4 proposed
+enhancements — FOMO composite score, Market Pulse dashboard, theme/sector rotation alert,
+sector news sentiment rollup — are all genuinely additive, built from data this app already
+computes, not duplicates of existing mechanisms. Its own Part 5 "What NOT to Build" list
+(confidence calibration, risk-off blocking, symbol blacklist, entry-score calibration) is
+correct in every item checked — the one document reviewed this session whose "don't rebuild
+this" section is itself accurate.
+
+**Tracker**: `improvements.tsx` Tier 299 / id `REALTIME-NEWS-EVENTS-INTELLIGENCE-REVIEW-
+SUMMARY` (done, reference).
+
+**What to check if this needs re-verifying**:
+```bash
+# Confirm the real cross-asset series list (should be 5 FRED series, not 7 ETF tickers):
+docker exec stockai-event-intelligence-1 grep -n "_CROSS_ASSET_SERIES" -A 6 /app/src/services/economic.py
+
+# Confirm the real endpoint path (no /latest suffix):
+docker exec stockai-event-intelligence-1 grep -n "cross-asset" /app/src/api/routes.py
+```
