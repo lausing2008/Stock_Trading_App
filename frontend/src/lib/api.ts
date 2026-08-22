@@ -1707,6 +1707,9 @@ export type SqueezeAlertTypeSummary = {
   label: string;
   fired_count: number;
   window_10d: SqueezeAlertWindowStat;
+  window_1d: SqueezeAlertWindowStat;
+  window_2d: SqueezeAlertWindowStat;
+  window_3d: SqueezeAlertWindowStat;
   window_5d: SqueezeAlertWindowStat;
   window_20d: SqueezeAlertWindowStat;
 };
@@ -1719,6 +1722,9 @@ export type SqueezeAlertOutcomeRow = {
   qualifying_metric: number | null;
   entry_date: string | null;
   entry_price: number | null;
+  return_1d: number | null;
+  return_2d: number | null;
+  return_3d: number | null;
   return_5d: number | null;
   return_10d: number | null;
   return_20d: number | null;

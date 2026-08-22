@@ -508,6 +508,22 @@ def _run_migrations() -> None:  # noqa: C901
             "ALTER TABLE prebreakout_alert_outcomes ADD COLUMN IF NOT EXISTS calibrated_win_rate_count INTEGER"
         ))
 
+        # DESIGN_SQUEEZE_ALERT_PERFORMANCE_MEASUREMENT: 1d/2d/3d forward-return windows on
+        # both squeeze/gamma-unwind and prebreakout outcome tables — answers "will the price
+        # go up the next day or later" without waiting the full 5-calendar-day window the
+        # pre-existing 5d/10d/20d columns require.
+        for _tbl in ("squeeze_alert_outcomes", "prebreakout_alert_outcomes"):
+            for _w in (1, 2, 3):
+                conn.execute(text(
+                    f"ALTER TABLE {_tbl} ADD COLUMN IF NOT EXISTS price_{_w}d FLOAT"
+                ))
+                conn.execute(text(
+                    f"ALTER TABLE {_tbl} ADD COLUMN IF NOT EXISTS return_{_w}d FLOAT"
+                ))
+                conn.execute(text(
+                    f"ALTER TABLE {_tbl} ADD COLUMN IF NOT EXISTS is_correct_{_w}d BOOLEAN"
+                ))
+
 
 def _seed_admin() -> None:
     try:

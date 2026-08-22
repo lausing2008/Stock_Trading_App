@@ -23,6 +23,7 @@ import pathlib
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
+import pytest
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
@@ -481,6 +482,9 @@ def test_evaluate_fills_entry_price_and_scores_a_bullish_win():
     st = _make_stock(session, "AAPL")
     fired = date(2026, 1, 1)
     _make_price(session, st.id, fired + timedelta(days=1), 100.0)
+    _make_price(session, st.id, fired + timedelta(days=2), 101.0)
+    _make_price(session, st.id, fired + timedelta(days=3), 102.0)
+    _make_price(session, st.id, fired + timedelta(days=4), 103.0)
     _make_price(session, st.id, fired + timedelta(days=11), 108.0)
     session.add(PreBreakoutAlertOutcome(id=_new_id(), stock_id=st.id, symbol="AAPL", fired_date=fired, alert_price=99.0, rule_gate_passed=True))
     session.commit()
@@ -491,9 +495,35 @@ def test_evaluate_fills_entry_price_and_scores_a_bullish_win():
     with Session(_ENGINE) as check:
         row = check.execute(select(PreBreakoutAlertOutcome)).scalar_one()
         assert row.entry_price == 100.0
+        assert row.return_1d == pytest.approx(0.01)
+        assert row.is_correct_1d is True
+        assert row.return_2d == pytest.approx(0.02)
+        assert row.is_correct_2d is True
+        assert row.return_3d == pytest.approx(0.03)
+        assert row.is_correct_3d is True
         assert row.return_10d == 0.08
         assert row.is_correct_10d is True
         assert row.evaluated_at is not None
+
+
+def test_evaluate_1d_2d_3d_are_always_bullish_thesis_scored_never_a_bearish_variant():
+    """PreBreakoutAlertOutcome has no gamma_unwind_puts-style bearish sibling — every window,
+    including the new 1d/2d/3d, must score a price DROP as a loss, matching the module's own
+    docstring ("shorts forced to cover" only ever predicts a move UP)."""
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    fired = date(2026, 1, 1)
+    _make_price(session, st.id, fired + timedelta(days=1), 100.0)
+    _make_price(session, st.id, fired + timedelta(days=2), 97.0)  # 1d close, down 3%
+    session.add(PreBreakoutAlertOutcome(id=_new_id(), stock_id=st.id, symbol="AAPL", fired_date=fired, alert_price=99.0, rule_gate_passed=True))
+    session.commit()
+
+    evaluate = _extract_evaluate_prebreakout_alert_outcomes()
+    evaluate()
+
+    with Session(_ENGINE) as check:
+        row = check.execute(select(PreBreakoutAlertOutcome)).scalar_one()
+        assert row.is_correct_1d is False
 
 
 def test_evaluate_scores_a_loss_when_price_falls():
@@ -536,6 +566,11 @@ def test_evaluate_leaves_a_window_open_when_it_hasnt_closed_yet():
     with Session(_ENGINE) as check:
         row = check.execute(select(PreBreakoutAlertOutcome)).scalar_one()
         assert row.entry_price == 100.0
+        # 1d/2d targets are already in the PAST here (fired is 3 days old) — they legitimately
+        # resolve against the same future-dated bar via the nearest-on-or-after lookup, unlike
+        # 5d/10d whose OWN targets are still in the future and must stay None.
+        assert row.return_1d is not None
+        assert row.return_2d is not None
         assert row.return_5d is None
         assert row.return_10d is None
         assert row.return_20d is None

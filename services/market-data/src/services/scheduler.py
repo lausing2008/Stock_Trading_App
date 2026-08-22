@@ -4324,7 +4324,13 @@ _SQUEEZE_OUTCOME_EVAL_LOCK_KEY = "stockai:lock:evaluate_squeeze_alert_outcomes"
 _SQUEEZE_OUTCOME_EVAL_LOCK_TTL = 3600  # generous — daily job, only needs to prevent true overlap
 _SQUEEZE_OUTCOME_CENSOR_GRACE_DAYS = 10  # matches signal-engine's own _OUTCOME_CENSOR_GRACE_DAYS
 _SQUEEZE_OUTCOME_WIN_HURDLE_PCT = 0.005  # matches signal-engine's own _OUTCOME_WIN_HURDLE_PCT
-_SQUEEZE_OUTCOME_WINDOWS = (5, 10, 20)  # calendar days after entry — matches SignalOutcome's own 5d/10d/20d
+_SQUEEZE_OUTCOME_WINDOWS = (1, 2, 3, 5, 10, 20)  # calendar days after entry — matches SignalOutcome's own
+# 5d/10d/20d, plus 1d/2d/3d added under DESIGN_SQUEEZE_ALERT_PERFORMANCE_MEASUREMENT to answer
+# "will the price go up the next day or later" without waiting the full 5-day window. Both
+# evaluate_squeeze_alert_outcomes() and evaluate_prebreakout_alert_outcomes() loop over this
+# constant generically (for window in _SQUEEZE_OUTCOME_WINDOWS: ...) — extending it here is the
+# entire evaluator-side fix; the schema (SqueezeAlertOutcome/PreBreakoutAlertOutcome models)
+# already carries the matching price_Nd/return_Nd/is_correct_Nd columns for 1/2/3.
 
 
 def _squeeze_outcome_lookup_price(bucket: list[tuple], on_or_after: date) -> tuple[date, float] | None:

@@ -629,7 +629,10 @@ def squeeze_alert_performance(
             for row in rows
         }
 
-    by_window = {w: _summary_for_window(w) for w in (5, 10, 20)}
+    # DESIGN_SQUEEZE_ALERT_PERFORMANCE_MEASUREMENT: 1d/2d/3d added alongside the pre-existing
+    # 5d/10d/20d — the primary win-rate metric stays 10d (see docstring above), these three
+    # answer the narrower "will it go up the NEXT day or the day after" question directly.
+    by_window = {w: _summary_for_window(w) for w in (1, 2, 3, 5, 10, 20)}
 
     # Total fired count per type (regardless of whether any window has resolved yet) — lets
     # the page show "N alerts fired, M outcomes resolved" rather than silently hiding a type
@@ -647,6 +650,9 @@ def squeeze_alert_performance(
             "label": _SQUEEZE_ALERT_TYPE_LABELS[alert_type],
             "fired_count": fired_counts.get(alert_type, 0),
             "window_10d": by_window[10].get(alert_type),
+            "window_1d": by_window[1].get(alert_type),
+            "window_2d": by_window[2].get(alert_type),
+            "window_3d": by_window[3].get(alert_type),
             "window_5d": by_window[5].get(alert_type),
             "window_20d": by_window[20].get(alert_type),
         })
@@ -667,6 +673,9 @@ def squeeze_alert_performance(
             "qualifying_metric": row.qualifying_metric,
             "entry_date": row.entry_date.isoformat() if row.entry_date else None,
             "entry_price": row.entry_price,
+            "return_1d": round(row.return_1d * 100, 2) if row.return_1d is not None else None,
+            "return_2d": round(row.return_2d * 100, 2) if row.return_2d is not None else None,
+            "return_3d": round(row.return_3d * 100, 2) if row.return_3d is not None else None,
             "return_5d": round(row.return_5d * 100, 2) if row.return_5d is not None else None,
             "return_10d": round(row.return_10d * 100, 2) if row.return_10d is not None else None,
             "return_20d": round(row.return_20d * 100, 2) if row.return_20d is not None else None,

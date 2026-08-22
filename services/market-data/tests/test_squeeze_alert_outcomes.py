@@ -24,6 +24,7 @@ import pathlib
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
+import pytest
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
@@ -316,6 +317,9 @@ def test_evaluate_fills_entry_price_and_a_bullish_win():
     st = _make_stock(session, "AAPL")
     fired = date(2026, 1, 1)
     _make_price(session, st.id, fired + timedelta(days=1), 100.0)   # T+1 entry
+    _make_price(session, st.id, fired + timedelta(days=2), 101.0)   # 1d close, up 1%
+    _make_price(session, st.id, fired + timedelta(days=3), 102.0)   # 2d close, up 2%
+    _make_price(session, st.id, fired + timedelta(days=4), 103.0)   # 3d close, up 3%
     _make_price(session, st.id, fired + timedelta(days=6), 106.0)   # 5d close, up 6%
     _make_price(session, st.id, fired + timedelta(days=11), 108.0)  # 10d close, up 8%
     _make_price(session, st.id, fired + timedelta(days=21), 112.0)  # 20d close, up 12%
@@ -328,6 +332,12 @@ def test_evaluate_fills_entry_price_and_a_bullish_win():
     with Session(_ENGINE) as check:
         row = check.execute(select(SqueezeAlertOutcome)).scalar_one()
         assert row.entry_price == 100.0
+        assert row.return_1d == pytest.approx(0.01)
+        assert row.is_correct_1d is True
+        assert row.return_2d == pytest.approx(0.02)
+        assert row.is_correct_2d is True
+        assert row.return_3d == pytest.approx(0.03)
+        assert row.is_correct_3d is True
         assert row.return_5d == 0.06
         assert row.is_correct_5d is True
         assert row.return_10d == 0.08
@@ -335,6 +345,51 @@ def test_evaluate_fills_entry_price_and_a_bullish_win():
         assert row.return_20d == 0.12
         assert row.is_correct_20d is True
         assert row.evaluated_at is not None
+
+
+def test_evaluate_leaves_the_1d_2d_3d_windows_open_when_they_havent_closed_yet():
+    """DESIGN_SQUEEZE_ALERT_PERFORMANCE_MEASUREMENT: a fire from today has NO closed window at
+    all yet — 1d/2d/3d must degrade to None exactly like 5d/10d/20d already do, never a
+    fabricated 0.0 just because the target date happens to be "close."""
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    fired = date.today()  # zero days old — even the 1d window's target (fired+1) is tomorrow
+    session.add(SqueezeAlertOutcome(id=_new_id(), alert_type="short_squeeze", stock_id=st.id, symbol="AAPL", fired_date=fired, alert_price=99.0))
+    session.commit()
+
+    evaluate, _ = _extract_evaluate_squeeze_alert_outcomes()
+    evaluate()
+
+    with Session(_ENGINE) as check:
+        row = check.execute(select(SqueezeAlertOutcome)).scalar_one()
+        assert row.entry_price is None  # T+1 entry itself hasn't happened yet either
+        assert row.return_1d is None
+        assert row.return_2d is None
+        assert row.return_3d is None
+
+
+def test_evaluate_1d_window_can_resolve_while_5d_10d_20d_are_still_open():
+    """The whole point of adding 1d/2d/3d — a fire 2 real days old should already have a
+    resolved 1d return even though 5d/10d/20d all remain None. Confirms the per-window loop's
+    independent "target > today: skip" check, not a single all-or-nothing gate."""
+    session = _make_session()
+    st = _make_stock(session, "AAPL")
+    fired = date.today() - timedelta(days=2)
+    _make_price(session, st.id, fired + timedelta(days=1), 50.0)  # T+1 entry
+    _make_price(session, st.id, fired + timedelta(days=2), 51.0)  # 1d close, up 2%
+    session.add(SqueezeAlertOutcome(id=_new_id(), alert_type="short_squeeze", stock_id=st.id, symbol="AAPL", fired_date=fired, alert_price=49.0))
+    session.commit()
+
+    evaluate, _ = _extract_evaluate_squeeze_alert_outcomes()
+    evaluate()
+
+    with Session(_ENGINE) as check:
+        row = check.execute(select(SqueezeAlertOutcome)).scalar_one()
+        assert row.return_1d == pytest.approx(0.02)
+        assert row.is_correct_1d is True
+        assert row.return_5d is None
+        assert row.return_10d is None
+        assert row.return_20d is None
 
 
 def test_evaluate_scores_gamma_unwind_puts_as_a_bearish_thesis():
@@ -388,6 +443,8 @@ def test_evaluate_leaves_a_window_open_when_it_hasnt_closed_yet():
     with Session(_ENGINE) as check:
         row = check.execute(select(SqueezeAlertOutcome)).scalar_one()
         assert row.entry_price == 100.0  # entry fills immediately once T+1 is available
+        assert row.return_1d is None     # no bar exists for the 1d/2d targets either
+        assert row.return_2d is None
         assert row.return_5d is None     # but no forward window has closed yet
         assert row.return_10d is None
         assert row.return_20d is None
@@ -503,9 +560,36 @@ def test_squeeze_alert_performance_gamma_unwind_puts_is_never_merged_with_calls(
     alert_type, so a looser check could pass even if THIS specific query's own grouping were
     removed."""
     start = _ADMIN_SOURCE.index("def _summary_for_window(window: int)")
-    end = _ADMIN_SOURCE.index("\n\n    by_window = ", start)
+    end = _ADMIN_SOURCE.index("by_window = {w: _summary_for_window(w)", start)
     body = _ADMIN_SOURCE[start:end]
     assert "group_by(SqueezeAlertOutcome.alert_type)" in body
+
+
+def test_squeeze_alert_performance_now_computes_the_1d_2d_3d_windows_too():
+    """DESIGN_SQUEEZE_ALERT_PERFORMANCE_MEASUREMENT: the by_window dict comprehension must
+    actually include 1/2/3 alongside the pre-existing 5/10/20, not just extend the schema/
+    evaluator without wiring the endpoint's own summary to report them."""
+    start = _ADMIN_SOURCE.index("by_window = {w: _summary_for_window(w) for w in")
+    end = _ADMIN_SOURCE.index("\n", start)
+    line = _ADMIN_SOURCE[start:end]
+    for w in (1, 2, 3, 5, 10, 20):
+        assert str(w) in line, f"window {w} missing from by_window comprehension: {line}"
+
+
+def test_squeeze_alert_performance_by_alert_type_exposes_the_1d_2d_3d_fields():
+    start = _ADMIN_SOURCE.index('by_alert_type = []')
+    end = _ADMIN_SOURCE.index("\n\n    recent_rows = ", start)
+    body = _ADMIN_SOURCE[start:end]
+    for key in ("window_1d", "window_2d", "window_3d"):
+        assert f'"{key}"' in body
+
+
+def test_squeeze_alert_performance_recent_alerts_row_includes_the_1d_2d_3d_returns():
+    start = _ADMIN_SOURCE.index("recent_alerts = [")
+    end = _ADMIN_SOURCE.index("\n    ]\n", start)
+    body = _ADMIN_SOURCE[start:end]
+    for key in ("return_1d", "return_2d", "return_3d"):
+        assert f'"{key}"' in body
 
 
 # ── admin.py squeeze_alert_backtest() — real behavioral tests ────────────────────────────────

@@ -1710,6 +1710,20 @@ class SqueezeAlertOutcome(Base):
     qualifying_metric: Mapped[float | None] = mapped_column(Float, nullable=True)
     entry_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # T+1 trading day close used as the actual entry fill
     entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # DESIGN_SQUEEZE_ALERT_PERFORMANCE_MEASUREMENT: the 1d/2d/3d windows this table originally
+    # lacked — added specifically to answer the user's own original question ("will the price
+    # go up the other day or later") without waiting the full 5 calendar days the pre-existing
+    # windows require. Same T+1-entry / bisect-nearest-bar-with-grace-window discipline as the
+    # 5d/10d/20d columns below, filled by the SAME evaluator loop (_SQUEEZE_OUTCOME_WINDOWS).
+    price_1d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_1d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_1d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_2d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_2d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_2d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_3d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_3d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_3d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     price_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
     return_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_correct_5d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
@@ -1809,6 +1823,18 @@ class PreBreakoutAlertOutcome(Base):
     calibrated_win_rate_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     entry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # DESIGN_SQUEEZE_ALERT_PERFORMANCE_MEASUREMENT — same 1d/2d/3d addition as
+    # SqueezeAlertOutcome above, filled by the shared evaluate_prebreakout_alert_outcomes()
+    # loop (also driven by _SQUEEZE_OUTCOME_WINDOWS).
+    price_1d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_1d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_1d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_2d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_2d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_2d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_3d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_3d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_3d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     price_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
     return_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_correct_5d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)

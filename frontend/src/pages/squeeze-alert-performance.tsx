@@ -59,7 +59,10 @@ function TypeCard({ row }: { row: SqueezeAlertTypeSummary }) {
       ) : (
         <div style={{ fontSize: '12px', color: '#475569' }}>No 10-day outcomes resolved yet in this window.</div>
       )}
-      <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: '11px', color: '#64748b' }}>
+      <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: '11px', color: '#64748b', flexWrap: 'wrap' }}>
+        <span>1d: {row.window_1d ? `${fmtPct(row.window_1d.avg_return_pct)} (${row.window_1d.n})` : '—'}</span>
+        <span>2d: {row.window_2d ? `${fmtPct(row.window_2d.avg_return_pct)} (${row.window_2d.n})` : '—'}</span>
+        <span>3d: {row.window_3d ? `${fmtPct(row.window_3d.avg_return_pct)} (${row.window_3d.n})` : '—'}</span>
         <span>5d: {row.window_5d ? `${fmtPct(row.window_5d.avg_return_pct)} (${row.window_5d.n})` : '—'}</span>
         <span>20d: {row.window_20d ? `${fmtPct(row.window_20d.avg_return_pct)} (${row.window_20d.n})` : '—'}</span>
       </div>
@@ -222,7 +225,7 @@ export default function SqueezeAlertPerformancePage() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px' }}>
                 <thead>
                   <tr style={{ background: 'rgba(148,163,184,0.05)' }}>
-                    {['Date', 'Type', 'Symbol', 'Alert Price', 'Entry Price', '5d', '10d', '20d'].map(h => (
+                    {['Date', 'Type', 'Symbol', 'Alert Price', 'Entry Price', '1d', '2d', '3d', '5d', '10d', '20d'].map(h => (
                       <th key={h} style={{ textAlign: h === 'Date' || h === 'Type' || h === 'Symbol' ? 'left' : 'right', padding: '8px 12px', color: '#475569', fontWeight: 700, fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '0.04em', borderBottom: '1px solid #1e293b' }}>
                         {h}
                       </th>
@@ -239,13 +242,16 @@ export default function SqueezeAlertPerformancePage() {
                       <td style={{ padding: '8px 12px', fontWeight: 700, color: '#e2e8f0' }}>{row.symbol}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: '#64748b' }}>{row.alert_price.toFixed(2)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: '#64748b' }}>{row.entry_price != null ? row.entry_price.toFixed(2) : '—'}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: (row.return_1d ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>{fmtPct(row.return_1d)}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: (row.return_2d ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>{fmtPct(row.return_2d)}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: (row.return_3d ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>{fmtPct(row.return_3d)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: (row.return_5d ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>{fmtPct(row.return_5d)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: (row.return_10d ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>{fmtPct(row.return_10d)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: (row.return_20d ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>{fmtPct(row.return_20d)}</td>
                     </tr>
                   ))}
                   {data.recent_alerts.length === 0 && (
-                    <tr><td colSpan={8} style={{ padding: '20px', textAlign: 'center', color: '#475569' }}>No alerts fired in this window.</td></tr>
+                    <tr><td colSpan={11} style={{ padding: '20px', textAlign: 'center', color: '#475569' }}>No alerts fired in this window.</td></tr>
                   )}
                 </tbody>
               </table>

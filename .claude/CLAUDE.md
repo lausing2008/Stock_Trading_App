@@ -15873,3 +15873,133 @@ docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
 docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
   "SELECT trading_style, COUNT(*), ROUND(SUM(pnl)::numeric,2) FROM paper_trades WHERE stage='closed' GROUP BY trading_style;"
 ```
+
+---
+
+## Feature Reference: DESIGN-SQUEEZE-1D2D3D-WINDOWS — 1d/2d/3d Forward-Return Windows for
+## Squeeze / Prebreakout Alerts (Built 2026-08-21)
+
+**Trigger**: user asked to review `docs/DESIGN_SQUEEZE_ALERT_PERFORMANCE_MEASUREMENT.md` and
+assess whether it's already implemented, worth building, and how sound the design is — before
+building anything, verified every claim in the doc against real current code, matching this
+session's own repeatedly-applied discipline for design/audit documents in this repo.
+
+### What the doc got right, confirmed by direct code read
+
+`_SQUEEZE_OUTCOME_WINDOWS = (5, 10, 20)` in `services/market-data/src/services/scheduler.py`
+had no 1d/2d/3d equivalent, and neither `SqueezeAlertOutcome` nor `PreBreakoutAlertOutcome`
+carried the matching columns — exactly as the doc described. This meant the app could not yet
+answer the user's own original squeeze-alert question ("will the price go up the other day or
+later") without waiting the full 5 calendar days the pre-existing windows require.
+
+### What the doc got wrong — 2 proposals already exist under different names
+
+- **§6.1.B "Volume Confirmation"** proposed a flat `>=1.5x avg volume` gate. Checked
+  `check_short_squeeze_alerts()` directly and found this ALREADY LIVE, and materially
+  stricter: `_SQUEEZE_RVOL_BASE = 2.2` gated through `_session_elapsed_rvol_thresholds()`
+  (shipped `AUD288-SQUEEZE-NO-VOLUME-CONFIRM`, 2026-08-18) — a session-elapsed-scaled
+  threshold specifically designed to avoid the flat-threshold false-trigger-early-in-the-day
+  problem the doc's own simpler proposal would reintroduce. Building the doc's version as
+  written would have been a genuine regression.
+- **§6.4.A "Symbol Blacklist"** proposed a new auto-blacklist mechanism (`<30% win rate over
+  20+ alerts`). Checked and found a real, working mechanism already exists —
+  `RestrictedSymbol` (`shared/db/models.py`), with real admin CRUD routes
+  (`paper_portfolio.py`) and already consulted directly inside `_scan_for_entries()`
+  (`paper_trading_engine.py:4395`). Any future auto-blacklist logic for squeeze-alert
+  underperformers should write into that existing table, never a parallel new one.
+- **§6.1.C "Short-Interest-Trend Check"** assumed a `shares_short_prior_month` field this app
+  stores — checked directly (`grep -n "shares_short_prior_month" shared/db/models.py
+  services/market-data/src/services/scheduler.py`) and found no such field is captured
+  anywhere. Not free, already-available data as the doc implied.
+
+### The design's real weakness — no train/validation discipline on the filter/sizing proposals
+
+§6.1.A (pre-squeeze-momentum filter), §6.1.C, §6.3.A (stop-loss recommendation), §6.3.B (Kelly
+sizing), §6.4.A/B (blacklist/sector filter) are all "compute a hand-picked threshold, hard-gate
+on it" with no chronological train/validation split and no promotion-margin check — a step
+backward in rigor relative to this codebase's own established pattern for exactly this kind of
+change (`gate_harness.py`'s `_passes_promotion_margin()` — must beat the live baseline on
+held-out data, unconditional rejection of non-positive lift). At the doc's own stated data
+volume (107 total alerts, zero resolved forward returns as of the doc's date), any of these
+would be pure overfitting bait against this repo's own `MIN_SAMPLES_PER_SPLIT`-style floors.
+
+### What was built — only the P0 schema/evaluator/UI gap, nothing else from the doc
+
+1. **Schema** (`shared/db/models.py`) — `price_1d/return_1d/is_correct_1d` +the 2d/3d
+   equivalents added to BOTH `SqueezeAlertOutcome` and `PreBreakoutAlertOutcome`.
+2. **Migration** (`shared/db/session.py`) — a small loop over `("squeeze_alert_outcomes",
+   "prebreakout_alert_outcomes") × (1, 2, 3)`, matching this repo's own `create_all()`-gap
+   invariant for adding columns to an existing, already-populated table.
+3. **Evaluator** (`scheduler.py`) — `_SQUEEZE_OUTCOME_WINDOWS = (1, 2, 3, 5, 10, 20)`. Both
+   `evaluate_squeeze_alert_outcomes()` and `evaluate_prebreakout_alert_outcomes()` already
+   loop over this constant generically (`for window in _SQUEEZE_OUTCOME_WINDOWS:`) — widening
+   the constant was the ENTIRE evaluator-side fix, no per-window code duplicated. The
+   `pending` predicate (`return_20d.is_(None)`) is correctly unaffected — it still marks a row
+   pending until the LARGEST window closes, and the per-window loop independently skips
+   already-filled fields regardless of window order.
+4. **Free bonus**: `squeeze_alert_backtest()` (`admin.py`, a separate retroactive research
+   endpoint) reads `_SQUEEZE_OUTCOME_WINDOWS` generically too — it now automatically reports
+   `window_1d/2d/3d` alongside its existing 5d/10d/20d, at zero extra code cost. Confirmed via
+   its own existing test suite staying green; no UI was built for this since that section of
+   the page is already de-emphasized.
+5. **API** (`admin.py`) — `squeeze_alert_performance()`'s `by_window` dict comprehension
+   extended to `(1, 2, 3, 5, 10, 20)`; `by_alert_type` and `recent_alerts` both extended with
+   the 3 new fields.
+6. **Frontend** (`api.ts`, `squeeze-alert-performance.tsx`) — `SqueezeAlertTypeSummary`/
+   `SqueezeAlertOutcomeRow` types extended; the per-type summary line and the recent-alerts
+   table both render 1d/2d/3d alongside the pre-existing columns.
+
+**Deliberately NOT built**: everything in §6 of the doc. Revisit only once the 5d/10d/20d
+windows have real resolved data (starting ~2026-08-22 per the doc's own math) and a genuine
+sample floor is cleared — any filter proposal at that point should go through
+`gate_harness.py`'s own walk-forward promotion-margin gate, not a hardcoded threshold shipped
+as-is from the doc's example code.
+
+**A real reasoning trap caught and fixed before shipping, in the test suite itself**:
+`test_prebreakout_alert.py`'s pre-existing "leaves a window open" fixture uses a fire 3 days
+old — this session's first draft of an added assertion (`return_1d is None`, `return_2d is
+None`) was WRONG: with `entry_date = fired+1`, the 1d/2d targets (`entry_date+1`,
+`entry_date+2`) are actually already in the PAST relative to `date.today()` in that specific
+fixture, not still-open windows the way 5d/10d genuinely are. They correctly resolve against
+the fixture's own deliberately-future-dated bar (added to that test for a DIFFERENT reason —
+guarding the `target > today` skip logic) via the nearest-on-or-after lookup. Caught by
+tracing the actual dates by hand before trusting the assertion, not by the test failing —
+fixed to assert `is not None` for 1d/2d in that specific fixture, with a comment explaining
+why, distinct from the genuinely-open 5d/10d/20d windows in the same row.
+
+**Tests**: 4 new cases in `test_squeeze_alert_outcomes.py` (the bullish-win fixture extended
+to assert real 1d/2d/3d values; a same-day fire correctly leaving all 3 new windows `None`; a
+2-day-old fire correctly resolving `return_1d` while 5d/10d/20d stay open — proving the
+per-window independence, not an all-or-nothing gate; 3 source-text checks confirming
+`admin.py`'s `by_window` comprehension, `by_alert_type` dict, and `recent_alerts` row
+construction all genuinely include the new fields) and 3 new/extended cases in
+`test_prebreakout_alert.py` (the same bullish-win extension, a dedicated bearish-loss-on-1d
+case confirming this always-BUY-thesis table has no accidental bearish variant on the new
+windows, and the corrected "leaves a window open" assertion described above).
+
+**Verification**: full 1967-test market-data suite green (up from 1958); `pyflakes` clean on
+all 4 touched backend files (confirmed via `git stash` that every pre-existing warning
+predates this change — only line numbers shifted). Frontend: `tsc --noEmit` clean, full
+132-test Vitest suite unaffected, full `next build` clean (all 51 routes,
+`/squeeze-alert-performance` compiled at 3.51 kB) — confirmed the actual compiled chunk
+contains all 6 new field names via a direct grep against
+`.next/static/chunks/pages/squeeze-alert-performance-*.js`, not just correct-looking source.
+
+**Tracker**: `improvements.tsx` Tier 296 / id `DESIGN-SQUEEZE-1D2D3D-WINDOWS`.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n "_SQUEEZE_OUTCOME_WINDOWS = " /app/src/services/scheduler.py
+# Should show (1, 2, 3, 5, 10, 20), not (5, 10, 20).
+
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c "\d squeeze_alert_outcomes" | grep -E "price_1d|return_1d|is_correct_1d|price_2d|price_3d"
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c "\d prebreakout_alert_outcomes" | grep -E "price_1d|return_1d|is_correct_1d|price_2d|price_3d"
+
+# Check whether the evaluator has actually populated the new windows for any resolved alert
+# (needs an alert at least 1 real trading day past its own fired_date):
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT alert_type, symbol, fired_date, return_1d, return_2d, return_3d, return_5d FROM squeeze_alert_outcomes WHERE return_1d IS NOT NULL ORDER BY fired_date DESC LIMIT 10;"
+
+docker exec stockai-market-data-1 curl -s 'http://localhost:8001/admin/squeeze-alert-performance?days_back=180' \
+  -H "Authorization: Bearer <admin token>" | python3 -c "import sys, json; d=json.load(sys.stdin); print(d['by_alert_type'][0].keys())"
+```
