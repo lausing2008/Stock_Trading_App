@@ -16286,3 +16286,121 @@ docker exec stockai-event-intelligence-1 grep -n "_CROSS_ASSET_SERIES" -A 6 /app
 # Confirm the real endpoint path (no /latest suffix):
 docker exec stockai-event-intelligence-1 grep -n "cross-asset" /app/src/api/routes.py
 ```
+
+---
+
+## Action Items Completed: Tier 297-299 (AUD297/AUD298) — RestrictedSymbol Populated, 3
+## Walk-Forward Sweeps Run Live, 1 New Sweep Built (2026-08-22)
+
+**All 4 real `todo` action items from the Tier 297-299 doc reviews were run to completion in
+one session.**
+
+1. **`AUD297-RESTRICTEDSYMBOL-POPULATE-8-CONFIRMED-ZERO`** — re-verified the 8-symbol
+   confirmed-0%-win-rate list was still current (identical n/win counts), confirmed the exact-
+   string-match enforcement in `_scan_for_entries()`, then added all 8 (`SNDK`, `AMKR`, `KMT`,
+   `6809.HK`, `3323.HK`, `SOXL`, `AAON`, `WMT`) via `POST /paper-portfolio/restricted-symbols`
+   against the live production API. Zero code changes.
+
+2. **`AUD297-ACTIVATE-EXISTING-CALIBRATION-AND-ENTRYSCORE-INFRA`** — ran both the
+   `walk_forward_min_entry_score()` and `walk_forward_calibration_feedback()` sweeps live for
+   all 4 real style/market combos (`GROWTH/US`, `SWING/US`, `GROWTH/HK`, `SWING/HK`). Neither
+   promoted anything for any combo — GROWTH/US and SWING/US produced real, meaningful baseline
+   numbers with no candidate clearing the train-slice sample floor; GROWTH/HK and SWING/HK had
+   zero signals pass the base entry gate at all in the tested window. **A real methodology
+   correction made mid-run**: the calibration-feedback sweep's first attempt at `window_days=
+   365` produced a misleadingly-uninformative "0 signals" result for every combo — traced to
+   `signal_outcomes` only having resolved data back to `2026-05-25`, meaning a 365-day train
+   window landed entirely BEFORE any real data existed. Re-ran at `window_days=90` (aligned to
+   the real data range) and got genuine results: US combos showed calibration ON and OFF
+   producing IDENTICAL train-slice numbers (the layer had zero measurable effect on these
+   candidates in this window) — correctly NOT promoted, per the sweep's own train-slice-first
+   gate. **Net result: `calibration_feedback_enabled` should stay off for every real
+   portfolio** — the sweep found no measurable benefit, which is the honest answer this
+   mechanism exists to produce, not evidence it was "not yet tried."
+
+3. **`AUD298-KELLY-SWEEP-ALREADY-BUILT-RUN-IT`** — ran `backtest_risk_per_trade_sweep()` live
+   for all 4 combos using each real portfolio's own actual historically-traded symbol list (28
+   symbols for GROWTH/US from portfolio 1, 26 for SWING/US from portfolio 3, 8 for GROWTH/HK
+   from portfolio 4, 3 for SWING/HK from portfolio 2). No Kelly candidate promoted anywhere —
+   same honest "not enough data yet" result. But the baseline-validation runs themselves
+   surfaced a real, useful signal independent of the Kelly question: GROWTH/US and SWING/US
+   both show genuinely positive baseline performance in this window (`total_return_pct`
+   +5.18%/+2.27%, `win_rate` 0.60/0.60, `sharpe_ratio` 3.70/1.58), while GROWTH/HK and SWING/HK
+   both show genuinely NEGATIVE baseline performance (-2.45%/-3.82%, `win_rate` 0.48/0.37,
+   `sharpe_ratio` -1.90/-2.75) — a real, current-data confirmation that the 2 HK portfolios are
+   underperforming, surfaced as a side effect of running this sweep, not something either
+   audit doc's own recommendations were built to find.
+
+4. **`AUD298-BLOCKED-ENTRY-SCORES-VALIDATE-FIRST`** — the one genuinely new build. Added
+   `replay_should_enter_excluding_scores()` and `walk_forward_blocked_entry_scores()` to
+   `gate_harness.py` (`services/market-data/src/backtest/`) — the sibling to the existing
+   THRESHOLD-only `walk_forward_min_entry_score()`, able to test a discrete EXCLUSION set
+   ("keep the current `min_entry_score` floor, but additionally reject scores 5 and 6
+   specifically") via a real, held-out validation, rather than the doc's own reflexive
+   hardcode off an n=18-29 sample.
+
+   **The one new line of logic**: `_should_enter()`'s `min_entry_score` comparison is
+   internal — there's no `cfg` key to inject an exclusion set through. The fix: call
+   `_should_enter()` with `cfg` already carrying the real, current floor (so a genuine
+   below-floor signal is rejected exactly as it is live), then additionally reject via score
+   IF the returned score falls in the exclusion set —
+   `if not should or score in excluded_scores: continue`. This composes correctly with PT-3's
+   calibrated-logistic-regression branch too (activates once ≥100 closed trades exist for a
+   portfolio — none of today's 5 real portfolios have reached that yet): a hard-reject or a
+   calibrated-no is already `should=False` regardless of the exclusion check, so this can only
+   ever REJECT trades the plain-threshold baseline would have entered, never admit extra ones.
+
+   `walk_forward_blocked_entry_scores()` mirrors `walk_forward_min_entry_score()`'s exact
+   chronological 70/30 split and `_passes_promotion_margin()` gate, searching a small,
+   deliberately non-exhaustive candidate list (`{}`, `{5}`, `{6}`, `{5,6}`) — built
+   specifically to test the doc's OWN claim, not a blind powerset search across the full
+   score range, which at this sample size would be pure overfitting bait. New
+   `GET /paper-portfolio/backtest/blocked-entry-scores` admin endpoint, research-only, never
+   writes to `portfolio.config`.
+
+   **Tests**: `test_walk_forward_blocked_entry_scores.py`, 15 cases — 6 behavioral tests
+   directly proving the exclusion-filtering semantics via a fake `_should_enter()` injected
+   into the real extracted source (the surrounding fetch/game-plan/ATR machinery is an
+   unmodified copy of the already-shipped `replay_should_enter()`, not independently re-proven
+   here — confirmed via grep that `replay_should_enter()` itself has no dedicated behavioral
+   test anywhere in this codebase either; its pipeline was instead live-verified against real
+   production data, the same discipline applied here), plus 9 source-text regression checks
+   for the sweep's own orchestration, matching `test_walk_forward_calibration_feedback.py`'s
+   established convention for this exact Docker-only-dependency constraint.
+
+   **Adversarially verified**: reverted the one new line back to a bare `if not should:` and
+   confirmed exactly 2 of 15 tests failed — the 2 targeting exclusion-filtering directly (a
+   score-in-set-rejected case and a mixed-batch case); the other 13, testing unrelated
+   properties, correctly stayed green. Reverted and confirmed byte-identical via `diff` before
+   moving on.
+
+   **Deployed and live-verified**: only `market-data` restarted (confirmed via `docker ps`
+   uptime diff), clean startup log, zero tracebacks. Ran the new endpoint live for all 4 real
+   combos — every `baseline_validation` result (the empty-exclusion-set case) matches the
+   sibling `min_entry_score` sweep's own baseline EXACTLY (identical `n_entered`/`win_rate`/
+   `avg_return_pct` per combo), confirming the shared empty-set path is a genuine no-op against
+   real data, not just in the unit tests. No exclusion candidate cleared the train-slice sample
+   floor for any of the 4 combos — same honest "not enough resolved data yet" result as every
+   other sweep run this session.
+
+**Tracker**: `improvements.tsx` — all 4 action items (`AUD297-RESTRICTEDSYMBOL-POPULATE-8-
+CONFIRMED-ZERO`, `AUD297-ACTIVATE-EXISTING-CALIBRATION-AND-ENTRYSCORE-INFRA`,
+`AUD298-BLOCKED-ENTRY-SCORES-VALIDATE-FIRST`, `AUD298-KELLY-SWEEP-ALREADY-BUILT-RUN-IT`)
+flipped from `todo` to `done`, each with a full implementedNote.
+
+**What to check if this needs re-verifying**:
+```bash
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c "SELECT symbol, reason FROM restricted_symbols ORDER BY symbol;"
+
+docker exec stockai-market-data-1 grep -n "def replay_should_enter_excluding_scores\|def walk_forward_blocked_entry_scores" /app/src/backtest/gate_harness.py
+
+# Re-run any of the 4 sweeps for a real combo (needs an admin JWT):
+docker exec stockai-market-data-1 python3 -c "
+import sys, uuid, time, json; sys.path.insert(0,'/app'); sys.path.insert(0,'/app/src')
+from common.config import get_settings; from jose import jwt as _jwt; import httpx
+s = get_settings()
+tok = _jwt.encode({'sub':'<admin_username>','jti':str(uuid.uuid4()),'exp':int(time.time())+86400}, s.jwt_secret, algorithm='HS256')
+r = httpx.get('http://localhost:8001/paper-portfolio/backtest/blocked-entry-scores', params={'style': 'GROWTH', 'market': 'US', 'window_days': 365}, headers={'Authorization': f'Bearer {tok}'}, timeout=120)
+print(r.status_code, json.dumps(r.json(), indent=2))
+"
+```
