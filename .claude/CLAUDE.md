@@ -16404,3 +16404,134 @@ r = httpx.get('http://localhost:8001/paper-portfolio/backtest/blocked-entry-scor
 print(r.status_code, json.dumps(r.json(), indent=2))
 "
 ```
+
+---
+
+## Review: docs/AI Stock Intelligence Data & Decision Engine.md — FMP + Unusual Whales Paid
+## Data Subscriptions, Deliberately Deferred (2026-08-24)
+
+**Not the same document as `docs/recomm_or_audit/PAID_DATA_SERVICES_RECOMMENDATION_2025-08-22.md`**
+— a genuine mix-up worth recording so a future session doesn't repeat it. The user first asked
+about FMP + Unusual Whales, got an answer built from the `recomm_or_audit/` pricing doc (which
+never mentions FMP at all, and prices Unusual Whales' Flow tier at $57/mo), then corrected: the
+document they actually meant is `docs/AI Stock Intelligence Data & Decision Engine.md` — a
+Claude-prompt-shaped architecture spec (not a numeric audit) proposing a full provider-adapter
+upgrade with FMP for fundamentals and Unusual Whales for options/flow/squeeze, written as
+instructions to hand an AI coding agent.
+
+### What the doc got right about the codebase, verified directly
+
+- **A provider-adapter abstraction matching the doc's own §2 ask already exists** —
+  `services/market-data/src/adapters/base.py`'s `DataAdapter(ABC)` (`fetch_ohlcv()`/
+  `supports()`) plus `registry.py`'s priority-ordered fallback (`polygon → alpha_vantage →
+  yfinance`, first-success-wins, never crashes the platform on a provider failure — exactly
+  §3's "never allow a temporary provider failure to crash the entire trading platform").
+  **Scoped to OHLCV price bars only** — no `FundamentalDataProvider`/`OptionsDataProvider`
+  interface exists, and neither FMP nor Unusual Whales has an adapter anywhere.
+- **Walk-forward validation, point-in-time feature joins, and a real promotion gate** (the
+  doc's §18-19, §29, §45 "mandatory" sections) — all already exist and are unusually rigorous
+  for a project this size: `gate_harness.py`/`ev_gate.py`/`promotion_gate.py` require a
+  candidate to beat the live baseline on held-out, chronologically-split data before promoting;
+  `builder.py` has explicit PIT joins with a documented history of catching and fixing
+  lookahead bugs.
+- **A 0-100 configurable-weight scoring system** (§12-15) — already built (K-Score, TA
+  weights), Redis-backed override support.
+- **News is already genuinely multi-source** (contradicting the doc's implicit yfinance-only
+  framing) — PR Newswire, Business Wire, SEC EDGAR real-time filings, and Alpaca are all live
+  (`T259-NEWS-INTELLIGENCE`).
+
+### What's missing relative to the doc
+
+- **Fundamentals, options, and short-interest are 100% yfinance-sourced** —
+  `get_fundamentals()`/`get_options_flow()`/`get_options_chain()`/`shortPercentOfFloat` all pull
+  straight from yfinance's `info`/`option_chain()`. No FMP or Unusual Whales adapter exists.
+- **No typed Data Quality enum** (§7's VALID/PARTIAL/STALE/INVALID/UNAVAILABLE) — current
+  handling is ad-hoc fail-open `None` returns plus a monitoring job (`run_data_quality_checks()`),
+  not a per-field status consumed by callers.
+- **No dedicated model-versioning table** (§30) — models persist as joblib bundles with
+  embedded metadata (`trained_at`/`metrics`/`feature_columns`/hyperparams), plus a real
+  `TuneHistory` table tracking tuning attempts — partial, not the doc's full `model_version`
+  entity.
+
+### The real usage check — why $125/mo wasn't a clear yes
+
+Before treating "the doc's architecture is sound" as "therefore subscribe," a dedicated
+usage-first check was run: of 6 mechanisms in this codebase touching squeeze/options/gamma data
+(`check_short_squeeze_alerts`, `check_squeeze_ignition_alerts`, `check_prebreakout_alerts`,
+`check_gamma_unwind_alerts`, `GET /{symbol}/options-flow`, `GET /{symbol}/options-chain`), only
+**one** — `check_gamma_unwind_alerts()` — actually consumes options-chain data at all. The other
+two squeeze alert types use short-interest + price/volume only, no options; `check_
+prebreakout_alerts()` uses options positioning as a reported context field only, never a gate,
+per its own comment ("too little history exists to validate it as anything more than a minor
+tilt yet").
+
+`check_gamma_unwind_alerts()` computes an open-interest-concentration ratio in a ±5% strike band
+around the current price (`_GAMMA_UNWIND_STRIKE_BAND_PCT`) — its own docstring states explicitly
+this is **NOT** a real gamma-exposure (GEX) calculation; neither Black-Scholes gamma nor a
+dealer-positioning assumption is computed anywhere in this app. This was already the subject of
+a prior audit (IF-05, `docs/recomm_or_audit/` review) which deliberately deferred building true
+GEX — not for lack of a data source, but because true GEX needs a dealer-positioning
+**assumption** layered on top of raw gamma numbers, which is a real engineering build, not
+something a data subscription alone supplies.
+
+The whole squeeze/gamma alert family (`SqueezeAlertOutcome`, `PreBreakoutAlertOutcome`) has
+fired only **~107 alerts across all three alert types combined**, over ~9 days since launch,
+with **zero closed forward-return outcomes** yet (the 1d/2d/3d windows added in Tier 296 help
+this resolve faster going forward, but nothing has closed as of this review). Paying for
+real-GEX-grade precision on a feature line that hasn't yet earned its first statistically
+meaningful sample is a sequencing problem, not a wrong idea.
+
+### The real pricing, live-fetched — correcting a stale figure
+
+`unusualwhales.com/pricing?product=api&interval=annual` was fetched directly rather than
+trusted from either document's own text:
+
+| Tier | Price | Notes |
+|---|---|---|
+| API Trial | Free (1-week only) | Includes Spot GEX, dark pool, 1-min SPX Market Maker Exposure |
+| **API Basic** | **$125/mo** ($150 regular) / $1,500/yr | Same feature set as trial, 2-year lookback, 80k req/day |
+| API Advanced | $315/mo ($375 regular) / $3,780/yr | Unlimited requests + CME futures live tape |
+
+**$125/mo is the real floor for API access — there is no cheaper paid tier.** The earlier
+$57/mo figure (from `docs/recomm_or_audit/PAID_DATA_SERVICES_RECOMMENDATION_2025-08-22.md`,
+which recommended the "Flow" tier) is stale relative to Unusual Whales' current published
+pricing structure. Notably, even the entry $125/mo tier already includes "Spot GEX" and
+"1-minute SPX Market Maker Exposure" as named, pre-computed metrics — potentially closing the
+exact dealer-positioning gap IF-05 flagged as unbuilt, rather than only supplying raw inputs a
+future build would still need to process. **Not independently verified this session**: whether
+these metrics cover individual equity symbols (vs. SPX/index-level only) and their real update
+cadence/methodology — worth checking directly before assuming they slot into
+`check_gamma_unwind_alerts()` cleanly.
+
+### Decision
+
+User explicitly chose to document this and wait: *"let's document all these, and wait for some
+times and we may come back for it."* No code changes made. FMP has no comparable urgency —
+yfinance fundamentals already work, just less reliably for smaller/international names, so FMP
+would be a reliability upgrade, not a new capability, and is correctly lower-priority regardless
+of the Unusual Whales timing question.
+
+**Revisit criteria** (both should hold before reconsidering the subscription):
+1. The squeeze/gamma/prebreakout alert family has enough closed, resolved forward-return
+   outcomes to judge whether the current OI-concentration heuristic is materially wrong or
+   missing real squeezes — check `SqueezeAlertOutcome`/`PreBreakoutAlertOutcome` row counts and
+   `return_1d/2d/3d/5d/10d/20d` population directly.
+2. "Spot GEX"/"SPX Market Maker Exposure" methodology and per-symbol coverage have been checked
+   directly against Unusual Whales' own docs (not assumed from the pricing page's marketing
+   copy) to confirm they cover the actual tickers this app's squeeze alerts watch.
+
+**What to check when revisiting**:
+```bash
+# Closed-outcome coverage across the squeeze/gamma/prebreakout alert family:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT alert_type, COUNT(*) total, COUNT(*) FILTER (WHERE return_5d IS NOT NULL) has_5d, COUNT(*) FILTER (WHERE return_20d IS NOT NULL) has_20d FROM squeeze_alert_outcomes GROUP BY alert_type;"
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT COUNT(*) total, COUNT(*) FILTER (WHERE return_5d IS NOT NULL) has_5d FROM prebreakout_alert_outcomes;"
+
+# Real win-rate/avg-return once enough outcomes exist:
+docker exec stockai-market-data-1 curl -s 'http://localhost:8001/admin/squeeze-alert-performance?days_back=180' \
+  -H "Authorization: Bearer <admin token>" | python3 -m json.tool
+
+# Confirm current Unusual Whales pricing hasn't changed again before committing:
+# fetch https://unusualwhales.com/pricing?product=api directly rather than trusting this note.
+```
