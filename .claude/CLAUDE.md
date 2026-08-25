@@ -17234,3 +17234,126 @@ If the analyst-target fields are always `null` for a symbol you'd expect real co
 check `GET /stocks/{symbol}/analyst-consensus` directly first — a genuinely empty `firms` list
 there means no firm has issued a target for that symbol in the last 90 days, which is a real,
 correct "no data" state, not a bug in this wiring.
+
+---
+
+## Feature Reference: Full Earnings History & Forward Consensus — EPS/Revenue Actuals + Chart + Market Estimates (Built 2026-08-25)
+
+**User follow-up, verbatim**: after the analyst price-target consensus shipped ("I would like
+to get the company and market estimate earning data not only the target stock price"), then
+mid-turn: "Also, I would like to see the past Quarter data/history and the graph."
+
+**Scope decision confirmed via `AskUserQuestion` before building**: one combined "Earnings
+History & Estimates" section on the stock detail page (not split across multiple sections, not
+a new standalone page) showing BOTH past-quarter actuals (with a chart) and forward-looking
+market consensus together.
+
+### What was investigated before building
+
+Checked yfinance's real, live response for `earnings_estimate`, `revenue_estimate`, `eps_trend`,
+`eps_revisions`, `quarterly_financials`, and `growth_estimates` against NVDA directly (not
+assumed from documentation) — confirmed all 4 forward-consensus DataFrames and the historical
+`quarterly_financials` statement return real, current data, each indexed by period
+(`"0q"`/`"+1q"`/`"0y"`/`"+1y"`, sometimes `"LTG"`). `earnings_dates` was tried and found broken
+in this environment (`Missing optional dependency 'lxml'`) — not used, since `quarterly_
+financials`' own "Total Revenue" row already supplies what was actually needed (real historical
+revenue), making the broken dependency moot.
+
+### Backend — `services/market-data/src/api/routes.py`, `get_fundamentals()`
+
+**`earnings_consensus`** (new field on `FundamentalsOut`) — forward-looking market estimates for
+the next report: `earnings_estimate`/`revenue_estimate` (avg/low/high/analyst-count/growth),
+`eps_trend` (current vs. 7/30/90 days ago — shows whether the Street is revising estimates up or
+down), `eps_revisions` (analyst up/down-revision counts). Only the 4 real, priceable periods
+(`"0q"`/`"+1q"`/`"0y"`/`"+1y"`) are kept — `"LTG"` (long-term growth) has no matching row in
+`earnings_estimate`/`revenue_estimate` at all, so it's dropped rather than emitted
+half-populated. `None` (not `{}`) when yfinance has zero consensus data for a symbol — the same
+"absent means genuinely absent, never fabricated" convention already established for
+`_prebreakout_calibration_for_band()` elsewhere in this codebase.
+
+**A real, caught-before-shipping NaN hazard**: yfinance's own consensus DataFrames can carry
+genuine `NaN` (confirmed live: `earnings_estimate`'s `yearAgoEps` for a thinly-covered symbol
+with no comparable prior period, and `growth_estimates`' own `LTG` row) — `json.dumps(float
+('nan'))` produces the literal, non-standard `NaN` token, rejected by a strict `JSON.parse` the
+same way this repo's own documented `Infinity`-in-JSON incident (`updown_vol_ratio`) was. New
+`_consensus_num(v)` helper explicitly checks `fv != fv` (the standard self-inequality NaN test)
+and degrades to `None` — verified this is a REAL, reachable case via a live yfinance call before
+writing the guard, not a hypothetical worry.
+
+**`revenue_history`** (new field) — past-quarter ACTUAL revenue from `ticker.quarterly_
+financials`' `"Total Revenue"` row, sorted oldest-first, `.dropna()`'d. Deliberately a SEPARATE
+field from the pre-existing `eps_history` (which is actual-vs-ESTIMATE) — `quarterly_
+financials` has no matching "what was estimated at the time" figure for revenue the way
+`earnings_history` does for EPS, so this is real-values-only, not a comparison.
+
+Both new fetches are wrapped in their OWN dedicated `try/except` blocks, isolated from each
+other and from the pre-existing `eps_history` fetch — a failure in one must never prevent the
+others from running. Neither is persisted to the DB `Fundamental` table (that table only ever
+stored flat scalars, matching this app's own `create_all()`-gap invariant for adding new
+columns to an existing table) — both are Redis-cache-only via the existing 24h-TTL
+`FundamentalsOut` JSON blob, the same lifecycle `eps_history` already had.
+
+### Frontend — `frontend/src/pages/stock/[symbol].tsx`
+
+New `EarningsHistoryAndEstimates` component, placed right after the pre-existing "EPS Surprise
+History" mini-cards (kept, unchanged — its per-quarter surprise-%.badges are still genuinely
+useful and this new section doesn't duplicate them). Two hand-rolled SVG bar charts (matching
+`ConfidenceTrend`'s established convention on this same page — no charting library) side by
+side: EPS actual-vs-estimate (green=beat, red=miss, with a translucent "estimate" ghost bar
+behind each real bar) and revenue-actual-only. Below the charts, a forward-consensus table: EPS
+estimate + range, revenue estimate + range, analyst count, and 30-day up/down revision counts,
+one column per period (`Next Qtr`/`Qtr After`/`This FY`/`Next FY`). A thin-coverage warning
+("Thin analyst coverage — treat this consensus as low-confidence") shows when the max analyst
+count across all periods is ≤3.
+
+### Tests
+
+`services/market-data/tests/test_earnings_consensus_and_revenue_history.py` (14 cases) —
+`_consensus_num()` is directly, behaviorally tested via source-text `exec()` extraction
+(pure, dependency-free function, matching `test_fundamentals_cache_miss_logging.py`'s
+established `_extract_log_helper()` technique): real numbers pass through unchanged, `None`
+stays `None`, a real `NaN` degrades to `None` (and a JSON round-trip of that result is
+confirmed to never contain the literal `NaN`/`Infinity` tokens), non-numeric strings degrade
+safely, and a real `0` is preserved (not falsy-zero-coerced to `None`, a distinct bug class
+this repo has caught before elsewhere). `get_fundamentals()`'s own wiring is covered via
+source-text regression checks (the function can't be imported directly in this test
+environment — matches `test_fundamentals_empty_fetch_guard.py`'s established pattern): only the
+4 real periods are kept, all 4 yfinance sources are read, `earnings_consensus` defaults to
+`None` not `{}`, the consensus fetch is isolated in its own try/except separate from
+`eps_history`'s, `revenue_history` reads the right DataFrame row, is sorted oldest-first,
+drops NaN rows, and is isolated in its own try/except.
+
+**Adversarially verified** — 2 sabotage cycles, both caught and reverted: removing the NaN
+self-inequality check from `_consensus_num()` (caught by 2 dedicated tests, with a real,
+concrete demonstration that `json.dumps(float('nan'))` genuinely produces the literal `NaN`
+token — not a hypothetical); removing `.dropna()` from the revenue-history extraction (caught
+by its own dedicated test). Both reverted and confirmed byte-identical via `diff`.
+
+Full 2034-test market-data suite green (up from 2020); pyflakes clean (all 6 remaining warnings
+confirmed via `git stash` to predate this change — only line numbers shifted). Full 132-test
+frontend vitest suite unaffected; `npx tsc --noEmit` and a full `next build` both clean
+(`/stock/[symbol]` grew 54.6kB → 56.1kB, a reasonable size for a new chart+table section).
+
+**Live latency check before deploying**: measured the real, expanded yfinance fetch (info + 6
+DataFrames: `earnings_estimate`/`revenue_estimate`/`eps_trend`/`eps_revisions`/
+`earnings_history`/`quarterly_financials`) against NVDA directly — 0.54s total. Acceptable
+given this whole endpoint is already Redis-cached for 24h per symbol (the existing, unchanged
+`_FUND_TTL` lifecycle), not a hot-path cost.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n "def _consensus_num\|ticker.quarterly_financials" /app/src/api/routes.py
+
+# Live-check a real symbol's full response includes both new fields:
+docker exec stockai-market-data-1 curl -s 'http://localhost:8001/stocks/NVDA/fundamentals?refresh=true' \
+  -H "Authorization: Bearer <token>" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print('earnings_consensus keys:', list((d.get('earnings_consensus') or {}).keys()))
+print('revenue_history:', d.get('revenue_history'))
+"
+```
+If `earnings_consensus`/`revenue_history` are always `null`/`[]` for a symbol you'd expect real
+coverage on, check whether the SAME symbol's `ticker.earnings_estimate`/`quarterly_financials`
+return real data directly via yfinance first — a genuinely thin-coverage or newly-listed stock
+correctly has nothing here, which is not a bug in this wiring.

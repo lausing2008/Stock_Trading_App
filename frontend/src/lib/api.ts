@@ -1186,6 +1186,21 @@ export type Fundamentals = {
   eps_avg_surprise_pct: number | null; // average % beat (positive = beating)
   eps_surprise_trend: string | null;   // "improving" | "declining" | "stable"
   eps_history: { quarter: string; actual: number | null; estimate: number | null; surprise_pct: number | null }[];
+  // Forward-looking market consensus for the NEXT report (distinct from eps_history above,
+  // which is backward-looking). One row per period key: "0q" (current/next quarter), "+1q"
+  // (quarter after), "0y"/"+1y" (current/next fiscal year). Absent keys mean yfinance had no
+  // consensus data for that period at all — never a fabricated row.
+  earnings_consensus: Record<string, {
+    eps_avg?: number | null; eps_low?: number | null; eps_high?: number | null;
+    eps_year_ago?: number | null; number_of_analysts?: number | null; eps_growth?: number | null;
+    revenue_avg?: number | null; revenue_low?: number | null; revenue_high?: number | null; revenue_growth?: number | null;
+    eps_trend_current?: number | null; eps_trend_7d_ago?: number | null; eps_trend_30d_ago?: number | null; eps_trend_90d_ago?: number | null;
+    revisions_up_7d?: number | null; revisions_up_30d?: number | null; revisions_down_30d?: number | null; revisions_down_7d?: number | null;
+  }> | null;
+  // Past-quarter REVENUE history (actual only, oldest first) — a separate source from
+  // eps_history above (which is actual-vs-estimate), since yfinance's quarterly_financials
+  // has no "what was estimated at the time" figure for revenue the way earnings_history does.
+  revenue_history: { quarter: string; revenue: number }[];
   // Data freshness
   fetched_at: string | null;
 };

@@ -922,6 +922,16 @@ class FundamentalsOut(BaseModel):
     eps_avg_surprise_pct: float | None = None   # mean surprise % across available quarters
     eps_surprise_trend: str | None = None       # "improving" | "declining" | "stable"
     eps_history: list[dict] = []                # [{quarter, actual, estimate, surprise_pct}]
+    # AUD-EARNINGSCONSENSUS: forward-looking market consensus for the NEXT quarter/year (not
+    # historical, unlike eps_history above) — yfinance's earnings_estimate/revenue_estimate/
+    # eps_trend/eps_revisions, one row per period ("0q" = current/next quarter, "+1q" = quarter
+    # after, "0y"/"+1y" = current/next fiscal year). None (not []) when yfinance has no
+    # consensus data for this symbol at all (e.g. thin coverage) — never a fabricated row.
+    earnings_consensus: dict | None = None
+    # Past-quarter revenue history (actual only — yfinance's quarterly_financials has no
+    # matching "what was estimated at the time" figure the way earnings_history does for EPS,
+    # so this is real-values-only, not an actual-vs-estimate comparison like eps_history).
+    revenue_history: list[dict] = []            # [{quarter, revenue}], oldest first
     # Data freshness
     fetched_at: str | None = None               # ISO datetime when yfinance data was last fetched
 
@@ -1192,6 +1202,69 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
         held_percent_insiders=_safe(info, "heldPercentInsiders"),
     )
 
+    # AUD-EARNINGSCONSENSUS: forward-looking market estimates for the next report — a
+    # DIFFERENT question from eps_history below (which is backward-looking, "did the company
+    # beat past estimates"). yfinance's earnings_estimate/revenue_estimate/eps_trend/
+    # eps_revisions each return a small DataFrame indexed by period ("0q", "+1q", "0y", "+1y",
+    # sometimes "LTG"). Only "0q"/"+1q"/"0y"/"+1y" are kept — "LTG" (long-term growth) has no
+    # matching row in earnings_estimate/revenue_estimate at all, so a period this app can't
+    # actually price a concrete estimate for is dropped rather than emitted half-populated.
+    try:
+        def _consensus_num(v):
+            # yfinance's DataFrames can carry real NaN (confirmed live: growth_estimates'
+            # own LTG row) — json.dumps(float('nan')) is non-standard and rejected by a strict
+            # JSON.parse the same way the already-documented Infinity bug was (see this repo's
+            # own AUD288-SQUEEZE-NO-VOLUME-CONFIRM-adjacent history for the exact prior
+            # incident) — must degrade to None, never pass a real NaN through.
+            if v is None:
+                return None
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                return None
+            return None if fv != fv else fv  # fv != fv is the standard NaN self-inequality check
+
+        _periods = ("0q", "+1q", "0y", "+1y")
+        _ee = ticker.earnings_estimate
+        _re = ticker.revenue_estimate
+        _et = ticker.eps_trend
+        _er = ticker.eps_revisions
+        consensus: dict[str, dict] = {}
+        for period in _periods:
+            row: dict = {}
+            if _ee is not None and not _ee.empty and period in _ee.index:
+                r = _ee.loc[period]
+                row["eps_avg"] = _consensus_num(r.get("avg"))
+                row["eps_low"] = _consensus_num(r.get("low"))
+                row["eps_high"] = _consensus_num(r.get("high"))
+                row["eps_year_ago"] = _consensus_num(r.get("yearAgoEps"))
+                row["number_of_analysts"] = _consensus_num(r.get("numberOfAnalysts"))
+                row["eps_growth"] = _consensus_num(r.get("growth"))
+            if _re is not None and not _re.empty and period in _re.index:
+                r = _re.loc[period]
+                row["revenue_avg"] = _consensus_num(r.get("avg"))
+                row["revenue_low"] = _consensus_num(r.get("low"))
+                row["revenue_high"] = _consensus_num(r.get("high"))
+                row["revenue_growth"] = _consensus_num(r.get("growth"))
+            if _et is not None and not _et.empty and period in _et.index:
+                r = _et.loc[period]
+                row["eps_trend_current"] = _consensus_num(r.get("current"))
+                row["eps_trend_7d_ago"] = _consensus_num(r.get("7daysAgo"))
+                row["eps_trend_30d_ago"] = _consensus_num(r.get("30daysAgo"))
+                row["eps_trend_90d_ago"] = _consensus_num(r.get("90daysAgo"))
+            if _er is not None and not _er.empty and period in _er.index:
+                r = _er.loc[period]
+                row["revisions_up_7d"] = _consensus_num(r.get("upLast7days"))
+                row["revisions_up_30d"] = _consensus_num(r.get("upLast30days"))
+                row["revisions_down_30d"] = _consensus_num(r.get("downLast30days"))
+                row["revisions_down_7d"] = _consensus_num(r.get("downLast7Days"))
+            if row:
+                consensus[period] = row
+        if consensus:
+            data.earnings_consensus = consensus
+    except Exception as exc:
+        log.warning("fundamentals.earnings_consensus_fetch_failed", symbol=symbol, error=str(exc))
+
     # Fetch earnings surprise history (last 8 quarters)
     try:
         eh = ticker.earnings_history
@@ -1219,6 +1292,22 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
             ]
     except Exception:
         pass
+
+    # Past-quarter revenue history — a separate DataFrame from earnings_history above
+    # (quarterly_financials is a full financial statement; only the "Total Revenue" row is
+    # kept, not the whole thing). No pandas NaN can reach this: yfinance only reports a
+    # "Total Revenue" ROW for a quarter that was genuinely reported (an unreported/future
+    # quarter simply has no column at all), so real numeric values are the only thing here.
+    try:
+        qf = ticker.quarterly_financials
+        if qf is not None and not qf.empty and "Total Revenue" in qf.index:
+            rev_row = qf.loc["Total Revenue"].dropna().sort_index()
+            data.revenue_history = [
+                {"quarter": str(idx.date()) if hasattr(idx, "date") else str(idx), "revenue": float(v)}
+                for idx, v in rev_row.items()
+            ]
+    except Exception as exc:
+        log.warning("fundamentals.revenue_history_fetch_failed", symbol=symbol, error=str(exc))
 
     from datetime import datetime as _dt
     data.fetched_at = _dt.utcnow().isoformat() + "Z"

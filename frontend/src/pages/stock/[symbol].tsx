@@ -38,7 +38,7 @@ import PositionSizer from '@/components/PositionSizer';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
 import OptionsChainChart from '@/components/OptionsChainChart';
-import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult, type OutcomesSummary, type QuarterlyRow, type AnalystConsensus } from '@/lib/api';
+import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult, type OutcomesSummary, type QuarterlyRow, type AnalystConsensus, type Fundamentals } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { nearestActionableFvg, nearestPivotToFvg, classifyFvgVolumeContext } from '@/lib/fvgTradePlan';
 import { detectSwingPivots } from '@/lib/swingPivots';
@@ -197,6 +197,208 @@ function ConfidenceTrend({ history }: { history: SignalHistoryPoint[] }) {
   );
 }
 
+
+function fmtBigMoney(v: number | null | undefined): string {
+  if (v == null) return '—';
+  const abs = Math.abs(v);
+  const sign = v < 0 ? '-' : '';
+  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(2)}T`;
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(1)}M`;
+  return `${sign}$${abs.toLocaleString()}`;
+}
+
+const CONSENSUS_PERIOD_LABEL: Record<string, string> = {
+  '0q': 'Next Qtr', '+1q': 'Qtr After', '0y': 'This FY', '+1y': 'Next FY',
+};
+
+// AUD-EARNINGSCONSENSUS: "Earnings History & Estimates" — combines PAST-quarter actuals
+// (eps_history's actual-vs-estimate, revenue_history's actual-only) with the FORWARD-looking
+// market consensus (earnings_consensus, next quarter/year EPS+revenue range/analyst count/
+// revision trend) in one section, per the user's own explicit request to see both together
+// rather than scattered across the page.
+function EarningsHistoryAndEstimates({ f }: { f: Fundamentals }) {
+  const hasHistory = (f.eps_history?.length ?? 0) > 0 || (f.revenue_history?.length ?? 0) > 0;
+  const hasConsensus = f.earnings_consensus != null && Object.keys(f.earnings_consensus).length > 0;
+  if (!hasHistory && !hasConsensus) return null;
+
+  // ── Small hand-rolled bar chart, matching this page's existing SVG-chart convention
+  // (ConfidenceTrend above) rather than pulling in a charting library ──────────────────────
+  function BarChart({ bars, valueFmt }: {
+    bars: { label: string; value: number | null; secondary?: number | null; color: string }[];
+    valueFmt: (v: number) => string;
+  }) {
+    const W = 280, H = 90, PAD_L = 4, PAD_R = 4, PAD_TOP = 16, PAD_BOTTOM = 16;
+    const plotW = W - PAD_L - PAD_R;
+    const plotH = H - PAD_TOP - PAD_BOTTOM;
+    const vals = bars.flatMap(b => [b.value, b.secondary ?? null]).filter((v): v is number => v != null);
+    if (vals.length === 0) return null;
+    const max = Math.max(...vals, 0);
+    const min = Math.min(...vals, 0);
+    const range = max - min || 1;
+    const zeroY = PAD_TOP + plotH - ((0 - min) / range) * plotH;
+    const barW = plotW / bars.length;
+
+    return (
+      <svg width={W} height={H} style={{ display: 'block', overflow: 'visible' }}>
+        <line x1={PAD_L} y1={zeroY} x2={W - PAD_R} y2={zeroY} stroke="#1e293b" strokeWidth="1" />
+        {bars.map((b, i) => {
+          const cx = PAD_L + i * barW + barW / 2;
+          const bw = Math.min(barW * 0.5, 22);
+          return (
+            <g key={i}>
+              {b.secondary != null && (
+                <rect
+                  x={cx - bw / 2 - 1} width={bw}
+                  y={b.secondary >= 0 ? zeroY - ((b.secondary - 0) / range) * plotH : zeroY}
+                  height={Math.max(1, Math.abs((b.secondary / range) * plotH))}
+                  fill="rgba(148,163,184,0.25)" rx="1"
+                />
+              )}
+              {b.value != null && (
+                <rect
+                  x={cx - bw / 2 + (b.secondary != null ? 3 : 0)} width={bw}
+                  y={b.value >= 0 ? zeroY - ((b.value - 0) / range) * plotH : zeroY}
+                  height={Math.max(1, Math.abs((b.value / range) * plotH))}
+                  fill={b.color} rx="1"
+                />
+              )}
+              <text x={cx} y={H - 3} fontSize="8" fill="#475569" textAnchor="middle">{b.label}</text>
+            </g>
+          );
+        })}
+        <text x={PAD_L} y={PAD_TOP - 4} fontSize="8" fill="#334155">{valueFmt(max)}</text>
+      </svg>
+    );
+  }
+
+  const epsBars = (f.eps_history ?? []).map(q => ({
+    label: q.quarter.slice(2, 7).replace('-', '/'),
+    value: q.actual,
+    secondary: q.estimate,
+    color: (q.actual != null && q.estimate != null && q.actual >= q.estimate) ? '#4ade80' : '#f87171',
+  }));
+  const revBars = (f.revenue_history ?? []).map(q => ({
+    label: q.quarter.slice(2, 7).replace('-', '/'),
+    value: q.revenue,
+    color: '#818cf8',
+  }));
+
+  return (
+    <div style={{ borderRadius: '10px', border: '1px solid rgba(148,163,184,0.12)', background: 'rgba(255,255,255,0.02)', padding: '14px 16px' }}>
+      <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '12px' }}>
+        Earnings History &amp; Estimates
+      </div>
+
+      {hasHistory && (
+        <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', marginBottom: hasConsensus ? '16px' : 0 }}>
+          {epsBars.length > 0 && (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                <span style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>EPS — Actual vs Estimate</span>
+                {f.eps_beat_rate != null && (
+                  <span style={{ fontSize: '10px', fontWeight: 700, color: f.eps_beat_rate >= 0.75 ? '#4ade80' : f.eps_beat_rate >= 0.5 ? '#fbbf24' : '#f87171' }}>
+                    {Math.round(f.eps_beat_rate * 100)}% beat rate
+                  </span>
+                )}
+              </div>
+              <BarChart bars={epsBars} valueFmt={v => `$${v.toFixed(2)}`} />
+              <div style={{ display: 'flex', gap: '10px', fontSize: '9px', color: '#64748b', marginTop: '2px' }}>
+                <span><span style={{ display: 'inline-block', width: 6, height: 6, background: '#4ade80', borderRadius: 1, marginRight: 3 }} />Beat</span>
+                <span><span style={{ display: 'inline-block', width: 6, height: 6, background: '#f87171', borderRadius: 1, marginRight: 3 }} />Miss</span>
+                <span><span style={{ display: 'inline-block', width: 6, height: 6, background: 'rgba(148,163,184,0.4)', borderRadius: 1, marginRight: 3 }} />Est.</span>
+              </div>
+            </div>
+          )}
+          {revBars.length > 0 && (
+            <div>
+              <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600, marginBottom: '4px' }}>Revenue (Actual)</div>
+              <BarChart bars={revBars} valueFmt={fmtBigMoney} />
+            </div>
+          )}
+        </div>
+      )}
+
+      {hasConsensus && (
+        <div>
+          <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600, marginBottom: '6px' }}>Market Consensus (Forward)</div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+              <thead>
+                <tr style={{ textAlign: 'left' as const, color: '#475569' }}>
+                  <th style={{ fontWeight: 600, padding: '2px 6px' }}></th>
+                  {Object.keys(f.earnings_consensus ?? {}).map(period => (
+                    <th key={period} style={{ fontWeight: 600, padding: '2px 6px', textAlign: 'center' as const }}>
+                      {CONSENSUS_PERIOD_LABEL[period] ?? period}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style={{ padding: '2px 6px', color: '#64748b' }}>EPS est.</td>
+                  {Object.values(f.earnings_consensus ?? {}).map((row, i) => (
+                    <td key={i} style={{ padding: '2px 6px', textAlign: 'center' as const, color: '#e2e8f0', fontWeight: 700 }}>
+                      {row.eps_avg != null ? `$${row.eps_avg.toFixed(2)}` : '—'}
+                      {(row.eps_low != null && row.eps_high != null) && (
+                        <div style={{ fontSize: '9px', color: '#475569', fontWeight: 400 }}>{row.eps_low.toFixed(2)}–{row.eps_high.toFixed(2)}</div>
+                      )}
+                    </td>
+                  ))}
+                </tr>
+                <tr>
+                  <td style={{ padding: '2px 6px', color: '#64748b' }}>Revenue est.</td>
+                  {Object.values(f.earnings_consensus ?? {}).map((row, i) => (
+                    <td key={i} style={{ padding: '2px 6px', textAlign: 'center' as const, color: '#e2e8f0', fontWeight: 700 }}>
+                      {row.revenue_avg != null ? fmtBigMoney(row.revenue_avg) : '—'}
+                      {(row.revenue_low != null && row.revenue_high != null) && (
+                        <div style={{ fontSize: '9px', color: '#475569', fontWeight: 400 }}>{fmtBigMoney(row.revenue_low)}–{fmtBigMoney(row.revenue_high)}</div>
+                      )}
+                    </td>
+                  ))}
+                </tr>
+                <tr>
+                  <td style={{ padding: '2px 6px', color: '#64748b' }}># Analysts</td>
+                  {Object.values(f.earnings_consensus ?? {}).map((row, i) => (
+                    <td key={i} style={{ padding: '2px 6px', textAlign: 'center' as const, color: '#94a3b8' }}>
+                      {row.number_of_analysts != null ? Math.round(row.number_of_analysts) : '—'}
+                    </td>
+                  ))}
+                </tr>
+                <tr>
+                  <td style={{ padding: '2px 6px', color: '#64748b' }}>Revisions (30d)</td>
+                  {Object.values(f.earnings_consensus ?? {}).map((row, i) => {
+                    const up = row.revisions_up_30d ?? 0;
+                    const down = row.revisions_down_30d ?? 0;
+                    const hasRev = row.revisions_up_30d != null || row.revisions_down_30d != null;
+                    return (
+                      <td key={i} style={{ padding: '2px 6px', textAlign: 'center' as const }}>
+                        {hasRev ? (
+                          <span style={{ color: up > down ? '#4ade80' : down > up ? '#f87171' : '#94a3b8' }}>
+                            ↑{up} / ↓{down}
+                          </span>
+                        ) : '—'}
+                      </td>
+                    );
+                  })}
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          {(() => {
+            const analystCounts = Object.values(f.earnings_consensus ?? {}).map(r => r.number_of_analysts ?? 0);
+            const thinCoverage = analystCounts.length > 0 && Math.max(...analystCounts) > 0 && Math.max(...analystCounts) <= 3;
+            return thinCoverage ? (
+              <div style={{ fontSize: '9px', color: '#94a3b8', marginTop: '6px' }}>
+                Thin analyst coverage — treat this consensus as low-confidence.
+              </div>
+            ) : null;
+          })()}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function StockDetail() {
   const r = useRouter();
@@ -3212,6 +3414,8 @@ Return ONLY valid JSON — no markdown, no prose:
                   </div>
                 </div>
               )}
+
+              <EarningsHistoryAndEstimates f={f} />
 
               {/* Row 6 — Analyst Ratings & Price Targets */}
               {(() => {
