@@ -144,7 +144,7 @@ function MacroEventsCard() {
 
   return (
     <div style={card()}>
-      {sectionTitle('📅 MACRO EVENTS TODAY')}
+      {sectionTitle('📅 MACRO EVENTS TODAY', <span style={{ fontSize: 11, color: '#6b7280' }}>scheduled release date — see Event Intelligence for the actual result once published</span>)}
       {todays.length === 0 && <div style={{ color: '#4b5563', fontSize: 12 }}>No macro releases scheduled today.</div>}
       {todays.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -175,24 +175,44 @@ function MoversAndSectors() {
   const allStocks: (SectorStock & { sector: string })[] = sectors.flatMap((s: SectorGroup) =>
     s.stocks.map(st => ({ ...st, sector: s.sector }))
   );
+  // A single sort-by-|change_pct| list can go entirely one-sided on a broadly up or down day
+  // (e.g. a day with several large losers and only modest gainers would silently show 10
+  // losers and zero gainers) — split into two explicit, independently-sorted lists instead so
+  // today's actual top gainer is never crowded out by today's actual top loser.
   const withChange = allStocks.filter(s => s.change_pct != null);
-  const topMovers = [...withChange].sort((a, b) => Math.abs(b.change_pct!) - Math.abs(a.change_pct!)).slice(0, 10);
+  const topGainers = [...withChange].filter(s => s.change_pct! > 0).sort((a, b) => b.change_pct! - a.change_pct!).slice(0, 6);
+  const topLosers = [...withChange].filter(s => s.change_pct! < 0).sort((a, b) => a.change_pct! - b.change_pct!).slice(0, 6);
   const sortedSectors = [...sectors].sort((a, b) => (b.avg_change_pct ?? 0) - (a.avg_change_pct ?? 0));
+
+  function moverGrid(list: (SectorStock & { sector: string })[]) {
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 8 }}>
+        {list.map(s => (
+          <div key={s.symbol} style={{ padding: '8px 10px', borderRadius: 6, background: '#0f172a', border: '1px solid #1f2937' }}>
+            <div style={{ color: '#e5e7eb', fontWeight: 700, fontSize: 13 }}>{s.symbol}</div>
+            <div style={{ color: changeColor(s.change_pct), fontWeight: 600, fontSize: 13 }}>{fmtPct(s.change_pct)}</div>
+            <div style={{ color: '#6b7280', fontSize: 10 }}>{s.sector}</div>
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   return (
     <>
       <div style={card()}>
-        {sectionTitle('🔥 TOP MOVERS', <span style={{ fontSize: 11, color: '#6b7280' }}>by |% change| across all tracked sectors</span>)}
-        {topMovers.length === 0 && <div style={{ color: '#4b5563', fontSize: 12 }}>No data yet.</div>}
-        {topMovers.length > 0 && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 8 }}>
-            {topMovers.map(s => (
-              <div key={s.symbol} style={{ padding: '8px 10px', borderRadius: 6, background: '#0f172a', border: '1px solid #1f2937' }}>
-                <div style={{ color: '#e5e7eb', fontWeight: 700, fontSize: 13 }}>{s.symbol}</div>
-                <div style={{ color: changeColor(s.change_pct), fontWeight: 600, fontSize: 13 }}>{fmtPct(s.change_pct)}</div>
-                <div style={{ color: '#6b7280', fontSize: 10 }}>{s.sector}</div>
-              </div>
-            ))}
+        {sectionTitle('🔥 TOP MOVERS', <span style={{ fontSize: 11, color: '#6b7280' }}>gainers &amp; losers across all tracked sectors</span>)}
+        {topGainers.length === 0 && topLosers.length === 0 && <div style={{ color: '#4b5563', fontSize: 12 }}>No data yet.</div>}
+        {topGainers.length > 0 && (
+          <div style={{ marginBottom: topLosers.length > 0 ? 14 : 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: '#4ade80', marginBottom: 6 }}>▲ TOP GAINERS</div>
+            {moverGrid(topGainers)}
+          </div>
+        )}
+        {topLosers.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: '#f87171', marginBottom: 6 }}>▼ TOP LOSERS</div>
+            {moverGrid(topLosers)}
           </div>
         )}
       </div>

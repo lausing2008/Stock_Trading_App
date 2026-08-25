@@ -16931,3 +16931,53 @@ If the Top Movers / Sector Heat Map sections look empty despite real market acti
 `GET /stocks/sector_performance` directly first — both sections are pure derivations of that
 one response; an empty response there means both sections are correctly showing nothing, not
 a bug in this new page's own composition logic.
+
+---
+
+## Recurring Issue: Market Pulse Dashboard's "Top Movers" Could Go Entirely One-Sided (Fixed 2026-08-25)
+
+**Symptom**: user reported "why the top movers all are negatives" the same day the page shipped.
+Live-checked the real `GET /stocks/sector_performance` data behind it — genuine, real market
+moves: a broad down-day dominated by DFNS (-46.58%) and a cluster of quantum-computing/tech
+names (RGTI/IONQ/QBTS/QUBT, -6% to -9%), with real gainers present too (V +3.06%, DIS +2.63%,
+META +1.66%) but smaller in magnitude.
+
+**Root cause**: the section's own sort — `[...withChange].sort((a, b) => Math.abs(b.change_pct!)
+- Math.abs(a.change_pct!)).slice(0, 10)` — ranked purely by `|change_pct|`, with no split by
+sign. On any day where losers are simply larger in magnitude than gainers (exactly today's real
+data), the top-10-by-magnitude list can silently become 100% losers even when real gainers
+exist elsewhere in the same dataset — the sort never excluded them on purpose, it's just an
+inherent property of ranking by absolute value alone.
+
+**Fix applied**: split into two explicit, independently-sorted lists — Top Gainers (positive
+`change_pct` only, sorted descending) and Top Losers (negative `change_pct` only, sorted
+ascending), 6 each, both rendered together under one "Top Movers" card with their own labeled
+sub-headers (▲ green / ▼ red). This guarantees today's real top gainer is always visible
+alongside today's real top loser, regardless of which side has larger absolute magnitudes.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 curl -s 'http://localhost:8001/stocks/sector_performance' \
+  -H "Authorization: Bearer <token>" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+all_stocks = [(st['symbol'], st['change_pct']) for sec in data for st in sec['stocks'] if st.get('change_pct') is not None]
+print('gainers:', sorted([s for s in all_stocks if s[1] > 0], key=lambda x: -x[1])[:6])
+print('losers:', sorted([s for s in all_stocks if s[1] < 0], key=lambda x: x[1])[:6])
+"
+```
+If either list is empty, that's real: it means every tracked stock genuinely moved the same
+direction that day — not a bug in the split logic.
+
+**Same-day companion fix — Macro Events Today section could look ambiguous about whether a
+result exists yet.** User separately asked "do we get any result or information about Housing
+Starts Release today?" — investigated the real `economic_events` row directly: its `event_date`
+was `2026-08-25T08:30:00 UTC`, ~10 hours in the future relative to the real current time, with
+`actual_value`/`expected_value` correctly still empty (the release genuinely hasn't happened
+yet). The poll mechanism itself is confirmed healthy and correctly wired (mapped to real FRED
+series `HOUST`, armed 8:30-9:59am ET matching the release's own publish time) — this was not a
+bug, just a real scheduled-but-not-yet-published event. Added a small subtitle to the "Macro
+Events Today" section — *"scheduled release date — see Event Intelligence for the actual
+result once published"* — pointing at `intelligence.tsx`'s own "Latest Macro Reaction" card
+(confirmed it genuinely shows `actual_value` once a release's poll fills it in), so a future
+user isn't left wondering whether a listed macro event has already happened or not.
