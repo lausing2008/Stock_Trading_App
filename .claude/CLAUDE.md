@@ -16725,3 +16725,121 @@ history)**: a tracker/CLAUDE.md entry claiming a page/feature is "still deferred
 open" needs the same re-verification against current code as one claiming something is
 "done" — this session's own finding #3 is the mirror image of every prior "stale tracker
 entry" incident documented elsewhere in this file, just caught from the opposite direction.
+
+---
+
+## Completing the Interrupted Survey: meta_trainer.py Scaler Leakage + 2 More Digest
+## Send-Loop Gaps (2026-08-24)
+
+**Continues Tier 301** (documented immediately above) — after deploying that batch, resumed
+the 2 checks the earlier org spend limit had cut off mid-run: the `scheduler.py` alert-job
+audit and the signal-engine/ml-prediction gap check. Both were re-dispatched fresh and this
+time ran to genuine completion.
+
+### 1. AUD301-METASCALER-LEAKAGE — StandardScaler fit on the full dataset before the train/validation split
+
+**The gap**: `meta_trainer.py:293` did `scaler.fit_transform(X)` on the ENTIRE dataset (train
++ validation combined, up to 20,000 rows) BEFORE the 80/20 chronological split ran. The held-
+out validation rows' own mean/variance leaked into the normalization applied to the training
+rows (and vice versa) — a real, if noisy, form of train/test contamination. Since the AUC
+computed on `X_val` directly gates whether this retrained meta-model is promoted over the
+currently-deployed bundle (`SELFIMPROVE-PROMOTION-GATES-INCOMPLETE`'s own `MIN_AUC_IMPROVEMENT`
+check a few lines below), an inflated AUC could let a genuinely worse model pass the gate.
+
+**Confirmed not already fixed**: this exact function has been touched by at least 6 prior
+`AUD232-0xx` fixes (query join, point-in-time fundamentals, feature-column ordering, the
+promotion-gate logic itself) plus `T247-ML-META-FEATURE-ORDER` — none mention the scaler
+fit/transform ordering. The sibling per-symbol trainer, `trainer.py`, already gets this right
+in 2 separate places (`fit_transform` on `X_train` only, then `.transform()` on `X_es`/`X_cal`/
+`X_test`/`X_te`) — confirming this was a genuine, isolated deviation from an already-established
+convention, not a systemic unaddressed assumption.
+
+**Fix**: moved the 80/20 chronological split to run FIRST, on the raw unscaled feature matrix,
+then fit `StandardScaler` only on the resulting train slice and `.transform()` (never re-fit)
+the validation slice. The scaler persisted into the model bundle for live inference
+(`predict_meta()`, which already only ever calls `.transform()`) is completely unaffected.
+
+**Verification**: existing `test_meta_trainer.py` (9 cases) and `test_meta_trainer_feature_
+dedup.py` suites both green after the fix — no behavioral regression at any call site that
+already exercises this function. Full 82-test ml-prediction suite green; pyflakes clean (the
+one pre-existing unused-import warning in this file confirmed via `git stash` to predate this
+change).
+
+### 2. AUD301-POSTOPEN-PAPERPORTFOLIO-DIGEST-SENDLOOP — 2 more unguarded send loops in scheduler.py
+
+**Re-confirmed most of the codebase already fixed this class of bug**: `AUD256` fixed exactly
+`send_premarket_brief`/`send_morning_digest`; `Tier 266`'s own 2026-08-05 doc-only audit
+flagged "the other 7 alert loops still lack [this]" as future work, never shipped at the time.
+Re-checking all ~24 candidate multi-recipient loops directly found nearly all of them (`check_
+volume_anomalies`, `check_short_squeeze_alerts`, `check_squeeze_ignition_alerts`, `check_
+prebreakout_alerts`, `check_gamma_unwind_alerts`, `check_value_area_breakdown`, `check_top3_
+conviction`, `check_signal_alerts`, `check_price_alerts`, `check_technical_alerts`, `check_
+earnings_beat_screener_alerts`, `check_portfolio_drawdown_alerts`, `send_weekly_theme_
+forecast`, `send_weekly_trade_coach`, `check_sector_rotation_alerts`, `check_early_earnings_
+news_alerts`) have SINCE received the fix under their own `AUD266` tags — quietly closing most
+of Tier 266's own backlog since it was written, without a dedicated CLAUDE.md entry.
+
+**2 genuine gaps remained**:
+
+1. **`send_post_open_digest(market, window)`** (`scheduler.py:8515`, send loop ~8791-8807) —
+   missing BOTH halves entirely: no per-recipient Redis dedup key, no try/except around the
+   send call — a bare `for user in users:` loop under only the function-level except.
+2. **`send_paper_portfolio_digest()`** (`scheduler.py:9334`) — also missing both halves, and
+   WORSE than every sibling: the per-portfolio metrics computation itself (risk metrics,
+   closed-trade queries, unrealized-P&L math) sat unguarded inside the same nested loop, not
+   just the send call — a single portfolio's data anomaly (e.g. `initial_capital == 0` →
+   `ZeroDivisionError`) could abort the digest for every OTHER user and portfolio still left
+   in that cycle. Also found, while restructuring this same loop: `portfolios` (a query with
+   NO per-user filter at all — every user gets the identical active-portfolio list) was being
+   re-executed once per user in the outer loop, a pure `O(n_users)` redundant-query waste.
+
+**Fix**: ported the exact `AUD256`/`send_morning_digest` pattern to both — a per-(user,
+market, window, date) / per-(user, portfolio, date) Redis dedup key checked before the send
+and set only after a confirmed successful send, plus a dedicated try/except around the send
+call. For `send_paper_portfolio_digest()` specifically, the try/except was widened to wrap the
+ENTIRE per-portfolio block (metrics computation + trade queries + send), not just the send
+call, matching the wider blast radius this specific loop's own structure demanded. The
+redundant `portfolios` query was hoisted to run exactly once, before the outer per-user loop.
+
+**A real, self-caught test-quality bug during adversarial verification, not shipped**: the
+first version of the paper-portfolio-digest isolation test used
+`body.rindex("try:", 0, metrics_call_idx)` to locate the wrapping try block — copying the
+naive "find the nearest preceding `try:`" idea without checking whether it was unique. There
+are actually TWO `try:` blocks before the metrics call in this function: the outer function-
+level one (wrapping the whole `with SessionLocal()` block) and the real per-portfolio
+isolation try. Sabotaging the fix (removing the per-portfolio `try:`, replacing it with `if
+True:`) did NOT fail this test — the search silently fell back to the unrelated, earlier
+function-level `try:`, which still happened to precede the metrics call regardless of whether
+the real fix was present. Caught by noticing the sabotage produced a "still passes" result
+(this repo's own standing discipline treats that as a finding in its own right, not a shrug) —
+fixed by anchoring the test on the exact structural adjacency between the dedup-check's own
+closing `except Exception:\n    pass` and the per-portfolio isolation try's opening clause
+immediately after it, a marker that can only exist if the real fix is genuinely present.
+Re-verified: the corrected test now fails with a clear `ValueError` when the fix is removed,
+rather than silently passing for the wrong reason.
+
+**Tests**: `services/market-data/tests/test_post_open_and_paper_portfolio_digest_send_loop.py`
+(11 cases, source-text extraction — `scheduler.py` can't be imported directly in this test
+environment, matching `test_morning_digest_send_loop.py`'s established pattern exactly) —
+dedup-checked-before-send, dedup-key-set-only-after-success, per-recipient error isolation,
+errors logged/counted without re-raising, dedup key correctly scoped (per market+window for
+`post_open_digest`; per user+portfolio for `paper_portfolio_digest`, so a user with 2 active
+portfolios still gets 2 separate digests), and the redundant-query fix.
+
+**Adversarial verification** — 3 sabotage cycles, all caught and reverted (confirmed byte-
+identical via `diff` before moving on): the corrected isolation-scope test described above;
+removing `send_post_open_digest()`'s dedup check entirely (caught by 2 dedicated tests); and
+re-introducing the per-user redundant `portfolios` query (caught by the dedicated query-count
+test). Full 2004-test market-data suite green (up from 1993); pyflakes clean on both touched
+files (all 5 pre-existing warnings across the two files confirmed via `git stash` to predate
+this change).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n "post_open_digest\|paper_portfolio_digest" /app/src/services/scheduler.py | grep -i "redis_key\|recipient_send_error"
+docker exec stockai-ml-prediction-1 grep -n "AUD301-METASCALER-LEAKAGE" /app/src/training/meta_trainer.py
+
+# Confirm no duplicate post-open digests fire within the same market+window+day:
+docker exec stockai-redis-1 redis-cli keys 'stockai:post_open_digest:*'
+docker exec stockai-redis-1 redis-cli keys 'stockai:paper_portfolio_digest:*'
+```

@@ -8788,28 +8788,54 @@ def send_post_open_digest(market: str, window: str) -> None:
                 log.info("post_open_digest.skipped_no_change", market=market, window=window)
                 return
 
+            # AUD301-POSTOPENDIGEST-SENDLOOP: this loop had the identical unguarded pattern
+            # already found and fixed in send_premarket_brief()/send_morning_digest() (AUD256)
+            # — no dedup (a restart within this job's own misfire-grace window could re-email
+            # every recipient a second time) and no per-recipient error isolation (a single bad
+            # send would propagate to the outer except, aborting the whole batch and silently
+            # skipping every recipient still left in the loop). Same fix pattern, ported
+            # directly: a per-(user, market, window, date) Redis dedup key set only after a
+            # genuinely successful send, and a dedicated try/except around just the send call.
+            today_str = datetime.now(timezone.utc).date().isoformat()
+            _rc = _get_redis()
             sent = 0
+            errors = 0
             for user in users:
-                ok = send_post_open_digest_email(
-                    to=user.email,
-                    market=market,
-                    window=window,
-                    regime_changed=regime_changed,
-                    prev_state=prev_state,
-                    cur_state=cur_state,
-                    cur_vix=cur_vix,
-                    positions=position_rows,
-                    new_signal_changes=new_signal_changes,
-                    top_movers=movers[:3],
-                    bottom_movers=movers[-3:][::-1] if len(movers) > 3 else [],
-                    vol_surge=vol_surge,
-                    vol_dryup=vol_dryup,
-                )
+                redis_key = f"stockai:post_open_digest:{user.id}:{market}:{window}:{today_str}"
+                try:
+                    if _rc and _rc.exists(redis_key):
+                        continue
+                except Exception:
+                    pass
+                try:
+                    ok = send_post_open_digest_email(
+                        to=user.email,
+                        market=market,
+                        window=window,
+                        regime_changed=regime_changed,
+                        prev_state=prev_state,
+                        cur_state=cur_state,
+                        cur_vix=cur_vix,
+                        positions=position_rows,
+                        new_signal_changes=new_signal_changes,
+                        top_movers=movers[:3],
+                        bottom_movers=movers[-3:][::-1] if len(movers) > 3 else [],
+                        vol_surge=vol_surge,
+                        vol_dryup=vol_dryup,
+                    )
+                except Exception as _send_exc:
+                    ok = False
+                    errors += 1
+                    log.warning("post_open_digest.recipient_send_error", user=user.id, error=str(_send_exc))
                 if ok:
                     sent += 1
+                    try:
+                        _rc and _rc.setex(redis_key, 20 * 3600, "1")  # 20h TTL — one digest/user/market/window/day
+                    except Exception:
+                        pass
 
         _record_job_status(_job_name, "ok", time.monotonic() - _t0)
-        log.info("post_open_digest.done", market=market, window=window, sent=sent,
+        log.info("post_open_digest.done", market=market, window=window, sent=sent, errors=errors,
                   regime_changed=regime_changed, signal_changes=len(new_signal_changes))
 
     except Exception as exc:
@@ -9316,67 +9342,103 @@ def send_paper_portfolio_digest() -> None:
     from ..db import SessionLocal
     from ..db.models import User, PaperPortfolio, PaperTrade
     _t0 = time.monotonic()
+    # AUD301-PAPERPORTFOLIODIGEST-SENDLOOP: this loop had the identical unguarded pattern
+    # already found and fixed in send_premarket_brief()/send_morning_digest()/
+    # send_post_open_digest() (AUD256/AUD301) — no dedup (a restart within this job's own
+    # misfire-grace window could re-email every recipient a second time) and no per-recipient
+    # error isolation. WORSE than those siblings: the per-portfolio METRICS COMPUTATION itself
+    # (risk metrics, closed-trade queries, unrealized-P&L math — not just the send call) sat
+    # unguarded inside the same nested loop, so a single portfolio's data anomaly (e.g.
+    # initial_capital == 0 -> ZeroDivisionError on the total_return_pct line, or a malformed
+    # PaperEquityCurve row) aborted the digest for every OTHER user and portfolio still left in
+    # the loop that cycle, not merely the one send call. Same fix pattern, ported directly: a
+    # per-(user, portfolio, date) Redis dedup key set only after a genuinely successful send,
+    # and a dedicated try/except now wrapping the ENTIRE per-portfolio block (computation +
+    # send), matching the wider blast-radius this specific loop's own structure demanded.
+    #
+    # Also fixed in the same pass: `portfolios` (a query with no per-user filter at all — every
+    # user gets the SAME active-portfolio list) was being re-executed once per user inside the
+    # outer loop, a pure O(n_users) redundant-query waste — hoisted to run exactly once, before
+    # the outer loop, since its result never depends on which user is currently being emailed.
+    today_str = _date.today().isoformat()
+    _rc = _get_redis()
     try:
         with SessionLocal() as session:
             users = session.execute(_sel(User).where(User.email != None, User.email != "")).scalars().all()  # noqa: E711
+            portfolios = session.execute(
+                _sel(PaperPortfolio).where(PaperPortfolio.is_active.is_(True))
+            ).scalars().all()
             sent = 0
-            for user in users:
-                if not user.email:
-                    continue
-                portfolios = session.execute(
-                    _sel(PaperPortfolio).where(PaperPortfolio.is_active.is_(True))
-                ).scalars().all()
-                if not portfolios:
-                    continue
-                for p in portfolios:
-                    from ..api.paper_portfolio import _portfolio_risk_metrics
-                    from ..db.models import PaperEquityCurve
-                    # Summary metrics
-                    curve_rows = session.execute(
-                        _sel(PaperEquityCurve).where(PaperEquityCurve.portfolio_id == p.id).order_by(PaperEquityCurve.date)
-                    ).scalars().all()
-                    risk = _portfolio_risk_metrics(curve_rows)
-                    open_trades = session.execute(
-                        _sel(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
-                    ).scalars().all()
-                    today_utc_start = datetime.combine(_date.today(), datetime.min.time())
-                    closed_today = session.execute(
-                        _sel(PaperTrade).where(
-                            PaperTrade.portfolio_id == p.id,
-                            PaperTrade.stage == "closed",
-                            PaperTrade.exit_time >= today_utc_start,
-                        ).order_by(_desc(PaperTrade.exit_time))
-                    ).scalars().all()
-                    # Include market value of open positions (not just cash)
-                    positions_value = sum(
-                        float(t.current_price or t.entry_price) * float(t.shares)
-                        for t in open_trades if t.shares and t.shares > 0
-                    )
-                    equity = float(p.current_cash) + positions_value
-                    total_return_pct = round((equity / float(p.initial_capital) - 1) * 100, 2)
-                    total_pnl = round(equity - float(p.initial_capital), 2)
-                    today_closed_list = [
-                        {"symbol": t.symbol, "pnl": float(t.pnl or 0), "pnl_pct": float(t.pct_return or 0), "exit_reason": t.exit_reason or ""}
-                        for t in closed_today
-                    ]
-                    top_positions = sorted(
-                        [{"symbol": t.symbol, "unrealized_pct": round(((t.current_price or t.entry_price) / float(t.entry_price) - 1) * 100, 2) if t.entry_price else 0.0, "style": t.trading_style or ""} for t in open_trades],
-                        key=lambda x: abs(x["unrealized_pct"]), reverse=True
-                    )
-                    ok = send_paper_portfolio_digest_email(
-                        to=user.email,
-                        portfolio_name=p.name or f"Portfolio #{p.id}",
-                        total_return_pct=total_return_pct,
-                        total_pnl=total_pnl,
-                        open_count=len(open_trades),
-                        today_closed=today_closed_list,
-                        top_positions=top_positions,
-                        sharpe=risk.get("sharpe"),
-                    )
-                    if ok:
-                        sent += 1
+            errors = 0
+            if portfolios:
+                for user in users:
+                    if not user.email:
+                        continue
+                    for p in portfolios:
+                        redis_key = f"stockai:paper_portfolio_digest:{user.id}:{p.id}:{today_str}"
+                        try:
+                            if _rc and _rc.exists(redis_key):
+                                continue
+                        except Exception:
+                            pass
+                        try:
+                            from ..api.paper_portfolio import _portfolio_risk_metrics
+                            from ..db.models import PaperEquityCurve
+                            # Summary metrics
+                            curve_rows = session.execute(
+                                _sel(PaperEquityCurve).where(PaperEquityCurve.portfolio_id == p.id).order_by(PaperEquityCurve.date)
+                            ).scalars().all()
+                            risk = _portfolio_risk_metrics(curve_rows)
+                            open_trades = session.execute(
+                                _sel(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
+                            ).scalars().all()
+                            today_utc_start = datetime.combine(_date.today(), datetime.min.time())
+                            closed_today = session.execute(
+                                _sel(PaperTrade).where(
+                                    PaperTrade.portfolio_id == p.id,
+                                    PaperTrade.stage == "closed",
+                                    PaperTrade.exit_time >= today_utc_start,
+                                ).order_by(_desc(PaperTrade.exit_time))
+                            ).scalars().all()
+                            # Include market value of open positions (not just cash)
+                            positions_value = sum(
+                                float(t.current_price or t.entry_price) * float(t.shares)
+                                for t in open_trades if t.shares and t.shares > 0
+                            )
+                            equity = float(p.current_cash) + positions_value
+                            total_return_pct = round((equity / float(p.initial_capital) - 1) * 100, 2)
+                            total_pnl = round(equity - float(p.initial_capital), 2)
+                            today_closed_list = [
+                                {"symbol": t.symbol, "pnl": float(t.pnl or 0), "pnl_pct": float(t.pct_return or 0), "exit_reason": t.exit_reason or ""}
+                                for t in closed_today
+                            ]
+                            top_positions = sorted(
+                                [{"symbol": t.symbol, "unrealized_pct": round(((t.current_price or t.entry_price) / float(t.entry_price) - 1) * 100, 2) if t.entry_price else 0.0, "style": t.trading_style or ""} for t in open_trades],
+                                key=lambda x: abs(x["unrealized_pct"]), reverse=True
+                            )
+                            ok = send_paper_portfolio_digest_email(
+                                to=user.email,
+                                portfolio_name=p.name or f"Portfolio #{p.id}",
+                                total_return_pct=total_return_pct,
+                                total_pnl=total_pnl,
+                                open_count=len(open_trades),
+                                today_closed=today_closed_list,
+                                top_positions=top_positions,
+                                sharpe=risk.get("sharpe"),
+                            )
+                        except Exception as _send_exc:
+                            ok = False
+                            errors += 1
+                            log.warning("paper_portfolio_digest.recipient_send_error",
+                                        user=user.id, portfolio=p.id, error=str(_send_exc))
+                        if ok:
+                            sent += 1
+                            try:
+                                _rc and _rc.setex(redis_key, 20 * 3600, "1")  # 20h TTL — one digest/user/portfolio/day
+                            except Exception:
+                                pass
         _record_job_status("paper_portfolio_digest", "ok", time.monotonic() - _t0)
-        log.info("scheduler.paper_portfolio_digest_done", sent=sent)
+        log.info("scheduler.paper_portfolio_digest_done", sent=sent, errors=errors)
     except Exception as exc:
         _record_job_status("paper_portfolio_digest", "error", time.monotonic() - _t0, str(exc))
         log.error("scheduler.paper_portfolio_digest_failed", error=str(exc), exc_info=True)

@@ -289,13 +289,26 @@ def train_meta_model(db=None) -> dict:
     non_const = np.where(X_raw.std(axis=0) > 1e-8)[0]
     X = X_raw[:, non_const]
 
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    # 80/20 chronological split for AUC evaluation
-    split = int(len(X_scaled) * 0.8)
-    X_tr, X_val = X_scaled[:split], X_scaled[split:]
+    # 80/20 chronological split for AUC evaluation.
+    #
+    # AUD301-METASCALER-LEAKAGE: the scaler MUST be fit on the train slice only, then
+    # .transform() (never re-fit) on the validation slice — matching trainer.py's own
+    # train_model() convention exactly (fit on X_train, .transform() on X_es/X_cal/X_test,
+    # lines ~619-623 of that same sibling file). The original code fit StandardScaler on the
+    # FULL dataset (train+val combined) before splitting, so the validation slice's own
+    # mean/variance leaked into the normalization applied to both slices — the exact class of
+    # train/test contamination this codebase's own established convention already avoids
+    # everywhere else. Since `auc` (computed below on X_val) directly gates whether this
+    # retrained meta-model is promoted over the currently-deployed bundle
+    # (SELFIMPROVE-PROMOTION-GATES-INCOMPLETE, a few lines below), a leaked, optimistically-
+    # biased AUC could let a genuinely worse model pass the promotion gate.
+    split = int(len(X) * 0.8)
+    X_tr_raw, X_val_raw = X[:split], X[split:]
     y_tr, y_val = y[:split], y[split:]
+
+    scaler = StandardScaler()
+    X_tr = scaler.fit_transform(X_tr_raw)
+    X_val = scaler.transform(X_val_raw)
 
     pos_count = max((y_tr == 1).sum(), 1)
     neg_count = (y_tr == 0).sum()
