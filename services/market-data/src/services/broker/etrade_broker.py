@@ -296,12 +296,27 @@ class EtradeBroker(BrokerInterface):
             "CANCELLED": "cancelled", "REJECTED": "rejected",
             "PARTIAL": "partially_filled",
         }
-        raw_status = o.get("orderStatus", "OPEN")
+        # BUG-ETRADEORDERFIELDS (found 2026-08-25, ported from list_orders()'s own already-fixed
+        # copy of this exact bug below): E*Trade's real quantity field is "orderedQuantity", not
+        # "quantity" (which never exists on a real response, so this always silently defaulted
+        # to 0) — and order status lives on OrderDetail["status"], not a top-level "orderStatus"
+        # key on the order itself, which always fell through to the "OPEN" default regardless of
+        # the order's real state. This function's own copy of the bug was never fixed when
+        # list_orders() got its fix, despite this being the ONE call site
+        # paper_trading_engine.py's real fill-confirmation path (_place_broker_entry/
+        # _place_broker_exit's immediate-fill check, poll_broker_order_fills' scheduled re-poll)
+        # actually calls — every genuinely-filled order was silently misreported as still
+        # pending with qty=0, forever, never confirmed.
+        raw_status = detail.get("status", "OPEN")
+        # Same options-order side-detection fix as list_orders(): orderAction is "BUY"/"SELL"
+        # for equities but "BUY_OPEN"/"SELL_OPEN"/"BUY_CLOSE"/"SELL_CLOSE" for options — an
+        # exact `== "BUY"` match misclassifies every options order as SELL.
+        _action = (instr.get("orderAction") or "").upper()
         return BrokerOrder(
             order_id          = order_id,
             symbol            = instr.get("Product", {}).get("symbol", ""),
-            side              = OrderSide.BUY if instr.get("orderAction") == "BUY" else OrderSide.SELL,
-            qty               = float(instr.get("quantity", 0)),
+            side              = OrderSide.BUY if _action.startswith("BUY") else OrderSide.SELL,
+            qty               = float(instr.get("orderedQuantity", 0)),
             order_type        = OrderType.MARKET,
             status            = status_map.get(raw_status, raw_status.lower()),
             filled_qty        = float(instr.get("filledQuantity", 0)),

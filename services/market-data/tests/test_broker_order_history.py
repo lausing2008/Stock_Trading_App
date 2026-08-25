@@ -147,6 +147,83 @@ def test_list_orders_empty_response_returns_empty_list_not_none():
     assert orders == []
 
 
+def test_get_order_reads_ordered_quantity_not_quantity():
+    """BUG-ETRADEORDERFIELDS (2026-08-25): get_order() had the IDENTICAL bug list_orders() was
+    already fixed for, never ported over — it read Instrument["quantity"] (a field that never
+    exists in the real response) instead of "orderedQuantity", silently defaulting to 0. This
+    is the ONE call site paper_trading_engine.py's real fill-confirmation path actually uses
+    (_place_broker_entry/_place_broker_exit's immediate-fill check, poll_broker_order_fills'
+    scheduled re-poll) — a genuinely-filled order would never be recognized as filled."""
+    broker = _make_broker()
+    mock_resp = MagicMock(ok=True)
+    mock_resp.json.return_value = {"OrdersResponse": {"Order": [_order_json(qty=100)]}}
+    with patch("src.services.broker.etrade_broker.requests.get", return_value=mock_resp):
+        order = broker.get_order("123")
+    assert order.qty == 100.0
+
+
+def test_get_order_reads_status_from_order_detail_not_top_level():
+    """BUG-ETRADEORDERFIELDS: get_order() read a top-level order["orderStatus"] key that never
+    exists — the real status lives on OrderDetail["status"] — so every real order silently fell
+    through to the hardcoded "OPEN" default, regardless of whether it was actually filled."""
+    broker = _make_broker()
+    mock_resp = MagicMock(ok=True)
+    mock_resp.json.return_value = {"OrdersResponse": {"Order": [_order_json(status="EXECUTED")]}}
+    with patch("src.services.broker.etrade_broker.requests.get", return_value=mock_resp):
+        order = broker.get_order("123")
+    assert order.status == "filled"
+
+
+def test_get_order_classifies_options_buy_open_as_buy_not_sell():
+    """Same options-order side-detection bug already fixed in list_orders(): orderAction can be
+    "BUY_OPEN"/"SELL_CLOSE" for options, not just bare "BUY"/"SELL" — an exact `== "BUY"` match
+    misclassified every options order as SELL."""
+    broker = _make_broker()
+    mock_resp = MagicMock(ok=True)
+    mock_resp.json.return_value = {"OrdersResponse": {"Order": [_order_json(action="BUY_OPEN")]}}
+    with patch("src.services.broker.etrade_broker.requests.get", return_value=mock_resp):
+        order = broker.get_order("123")
+    assert order.side == OrderSide.BUY
+
+
+def test_get_order_classifies_options_sell_close_as_sell():
+    broker = _make_broker()
+    mock_resp = MagicMock(ok=True)
+    mock_resp.json.return_value = {"OrdersResponse": {"Order": [_order_json(action="SELL_CLOSE")]}}
+    with patch("src.services.broker.etrade_broker.requests.get", return_value=mock_resp):
+        order = broker.get_order("123")
+    assert order.side == OrderSide.SELL
+
+
+def test_get_order_raises_runtimeerror_on_http_failure():
+    broker = _make_broker()
+    mock_resp = MagicMock(ok=False, status_code=500, text="Internal Server Error")
+    with patch("src.services.broker.etrade_broker.requests.get", return_value=mock_resp):
+        with pytest.raises(RuntimeError):
+            broker.get_order("123")
+
+
+def test_get_order_raises_runtimeerror_when_order_not_found():
+    broker = _make_broker()
+    mock_resp = MagicMock(ok=True)
+    mock_resp.json.return_value = {"OrdersResponse": {"Order": []}}
+    with patch("src.services.broker.etrade_broker.requests.get", return_value=mock_resp):
+        with pytest.raises(RuntimeError):
+            broker.get_order("123")
+
+
+def test_get_order_reads_filled_avg_price_and_filled_qty():
+    broker = _make_broker()
+    mock_resp = MagicMock(ok=True)
+    mock_resp.json.return_value = {"OrdersResponse": {"Order": [
+        _order_json(status="EXECUTED", filled_qty=10, avg_price=150.25),
+    ]}}
+    with patch("src.services.broker.etrade_broker.requests.get", return_value=mock_resp):
+        order = broker.get_order("123")
+    assert order.filled_qty == 10.0
+    assert order.filled_avg_price == 150.25
+
+
 def test_manual_broker_does_not_override_list_orders_and_raises_not_implemented():
     """ManualBroker (fidelity_manual) has no real API at all — must inherit the base
     interface's NotImplementedError rather than silently returning an empty list, which

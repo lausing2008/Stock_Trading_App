@@ -3175,13 +3175,27 @@ def check_squeeze_ignition_alerts() -> None:
                 _record_job_status("check_squeeze_ignition_alerts", "ok", time.monotonic() - _t0)
                 return
 
-            # Reuses the SAME calibration cache key/bucket scheme as the classic short_squeeze
-            # alert (both gate on short_percent_of_float, same 15% floor, same band scheme) —
-            # a candidate's measured win rate is reported using whichever alert type's own
-            # resolved history is being asked about, via alert_type below.
+            # BUG-SQUEEZEIGNITION-CALIBRATION-CROSSCONTAMINATION (found 2026-08-25): this
+            # previously reused short_squeeze's own cache key AND alert_type ("short_squeeze"
+            # hardcoded below, plus at the win-rate lookup a few lines down) — but
+            # squeeze_ignition fires on a materially SMALLER move (1-3%, an earlier-warning
+            # tier per _SQUEEZE_IGNITION_MIN_MOVE_PCT/_MAX_MOVE_PCT) than short_squeeze (>=3%),
+            # and each records its own resolved outcomes under its own alert_type
+            # (_record_squeeze_alert_outcome(session, "squeeze_ignition", ...) below). The two
+            # alert types genuinely can, and likely do, have different real win rates — showing
+            # ignition alerts short_squeeze's own historical accuracy was silently mislabeling
+            # every "calibrated win rate" this alert has ever emailed. check_gamma_unwind_alerts
+            # (a few hundred lines below) already gets this right — its own _gamma_alert_type
+            # is threaded through as BOTH the buckets-dict key and the alert_type argument, the
+            # pattern this function should have followed from the start.
+            #
+            # squeeze_ignition still deliberately borrows short_squeeze's own BAND SCHEME (both
+            # gate on short_percent_of_float, same 15% floor, same thresholds — see
+            # _SQUEEZE_FAMILY_CAL_BANDS' own "squeeze_ignition" entry) — only the underlying
+            # resolved-outcome POPULATION being scored against is now correctly its own.
             _sqi_cal_buckets = _cached_calibration_buckets(
-                "stockai:cal:squeeze_family:short_squeeze",
-                lambda: _build_squeeze_family_calibration(session, "short_squeeze"),
+                "stockai:cal:squeeze_family:squeeze_ignition",
+                lambda: _build_squeeze_family_calibration(session, "squeeze_ignition"),
             )
 
             # Two-pass price/volume-then-fundamentals filter, same shape as check_short_squeeze_
@@ -3256,7 +3270,7 @@ def check_squeeze_ignition_alerts() -> None:
                     continue
                 _spf_pct = round(spf * 100, 2)
                 _sqi_win_rate, _sqi_win_count = _squeeze_family_calibration_for_alert_type(
-                    _sqi_cal_buckets, "short_squeeze", _spf_pct,
+                    _sqi_cal_buckets, "squeeze_ignition", _spf_pct,
                 )
                 candidates[sym] = {
                     "symbol": sym,
@@ -3349,6 +3363,11 @@ _GAMMA_UNWIND_CAL_BANDS: list[tuple[float, float, str]] = [
 ]
 _SQUEEZE_FAMILY_CAL_BANDS: dict[str, list[tuple[float, float, str]]] = {
     "short_squeeze": _PREBREAKOUT_CAL_BANDS,  # same metric/scale/floor as the pre-breakout alert
+    # squeeze_ignition gates on the SAME short_percent_of_float metric/scale/floor as
+    # short_squeeze (see check_squeeze_ignition_alerts' own comment) — genuinely shares the
+    # band SCHEME, unlike the resolved-outcome population it's scored against, which is now
+    # correctly its own (BUG-SQUEEZEIGNITION-CALIBRATION-CROSSCONTAMINATION, 2026-08-25).
+    "squeeze_ignition": _PREBREAKOUT_CAL_BANDS,
     "gamma_unwind_calls": _GAMMA_UNWIND_CAL_BANDS,
     "gamma_unwind_puts": _GAMMA_UNWIND_CAL_BANDS,
 }

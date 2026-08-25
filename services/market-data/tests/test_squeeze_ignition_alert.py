@@ -258,3 +258,44 @@ def test_fundamentals_cache_misses_are_counted_with_their_own_dedicated_counter(
     body = _check_squeeze_ignition_alerts_body()
     assert "_fundamentals_cache_misses += 1" in body
     assert "_incr_rolling_counter(_SQUEEZE_IGNITION_FUND_CACHE_MISS_COUNTER_KEY)" in body
+
+
+# ── BUG-SQUEEZEIGNITION-CALIBRATION-CROSSCONTAMINATION (2026-08-25) ────────────────────────
+#
+# check_squeeze_ignition_alerts() previously built its calibration buckets from
+# _build_squeeze_family_calibration(session, "short_squeeze") — a DIFFERENT alert type's own
+# resolved-outcome history — even though this same function records its OWN outcomes under
+# alert_type="squeeze_ignition" a few lines later. squeeze_ignition fires on a materially
+# smaller move (1-3%) than short_squeeze (>=3%), so the two can have genuinely different real
+# win rates; showing ignition alerts short_squeeze's own historical accuracy silently
+# mislabeled every "calibrated win rate" this alert has ever emailed. The pre-existing test
+# above (test_reuses_the_game_plan_and_calibration_helpers_not_a_reimplementation) only checked
+# that the HELPER NAME was called, never which alert_type string was actually passed to it —
+# which is exactly why this bug went unnoticed. These tests check the argument, not just the
+# call.
+
+def test_calibration_buckets_are_built_from_squeeze_ignitions_own_alert_type():
+    body = _check_squeeze_ignition_alerts_body()
+    assert '_build_squeeze_family_calibration(session, "squeeze_ignition")' in body
+    assert '_build_squeeze_family_calibration(session, "short_squeeze")' not in body
+
+
+def test_calibration_win_rate_lookup_uses_squeeze_ignitions_own_alert_type():
+    body = _check_squeeze_ignition_alerts_body()
+    lookup_idx = body.index("_squeeze_family_calibration_for_alert_type(")
+    lookup_call = body[lookup_idx:lookup_idx + 200]
+    assert '"squeeze_ignition"' in lookup_call
+    assert '"short_squeeze"' not in lookup_call
+
+
+def test_calibration_cache_key_is_distinct_from_short_squeezes_own_key():
+    """Sharing short_squeeze's own cache key would silently serve ITS buckets to
+    squeeze_ignition (or vice versa) regardless of which alert_type each builder call asks
+    for — the two must never collide."""
+    body = _check_squeeze_ignition_alerts_body()
+    assert '"stockai:cal:squeeze_family:squeeze_ignition"' in body
+    assert '"stockai:cal:squeeze_family:short_squeeze"' not in body
+
+
+def test_squeeze_ignition_has_its_own_band_scheme_entry():
+    assert '"squeeze_ignition": _PREBREAKOUT_CAL_BANDS' in _scheduler_source

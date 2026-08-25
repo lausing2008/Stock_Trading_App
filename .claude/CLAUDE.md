@@ -16981,3 +16981,119 @@ Events Today" section — *"scheduled release date — see Event Intelligence fo
 result once published"* — pointing at `intelligence.tsx`'s own "Latest Macro Reaction" card
 (confirmed it genuinely shows `actual_value` once a release's poll fills it in), so a future
 user isn't left wondering whether a listed macro event has already happened or not.
+
+---
+
+## Feature Reference: Next Improvement Batch — 2 Real Fixes From a Fresh Survey (Squeeze Alerts + Broker Integration) (2026-08-25)
+
+**Trigger**: after 3 prior survey angles this session (alerting send-loop gaps, ML/calibration
+validation-discipline gaps, frontend mobile-responsive grids) all came back genuinely clean —
+including one candidate finding (`calibrate_conviction_weights`) that turned out to already be
+fixed under `AUD263-CONVICTION-WEIGHTS-UNGATED`, a stale report from a survey agent — the user
+asked for a fresh area. Targeted 3 genuinely untouched angles: squeeze/gamma alert accuracy,
+broker integration edge cases, and the news-intelligence pipeline. News-intelligence came back
+clean (the original EPS/CEO/AI false-positive fix in `tickers.py` plus 2 follow-on fixes already
+cover the matching logic). 2 real findings survived independent verification.
+
+### 1. BUG-ETRADEORDERFIELDS-GETORDER — `get_order()` never received the fix `list_orders()`
+### already has, and it's the one function real broker trades' fill-confirmation depends on
+
+**Root cause**: `EtradeBroker.list_orders()` (`services/market-data/src/services/broker/
+etrade_broker.py`) already carries an inline comment tagged `BUG-ETRADEORDERFIELDS` documenting
+a real, already-fixed bug: E*Trade's real quantity field is `orderedQuantity`, not `quantity`
+(which never exists on a real response, silently defaulting to 0); order status lives on
+`OrderDetail["status"]`, not a top-level `orderStatus` key (which always fell through to the
+`"OPEN"` → `"pending"` default regardless of the order's real state). `get_order()` — a
+separate function a few lines above `list_orders()`, hitting the same E*Trade endpoint with an
+`orderId` filter — had **both original mistakes still present**, never touched when
+`list_orders()` was fixed. A third divergence found in the same pass: `get_order()` also still
+used an exact `== "BUY"` match for side detection, while `list_orders()` was already fixed to
+`.upper().startswith("BUY")` since E*Trade options orders carry values like `"BUY_OPEN"`/
+`"SELL_CLOSE"`, which the exact-match check misclassifies as `SELL`.
+
+**Why this matters more than `list_orders()`'s own bug did**: `get_order()` — not
+`list_orders()` — is the ONE function `paper_trading_engine.py`'s real order-fill-confirmation
+path actually calls: `_place_broker_entry()`/`_place_broker_exit()`'s immediate-fill check (both
+call `broker.get_order(order.order_id)` right after placing a real order) and the scheduled
+`poll_broker_order_fills()` re-poll job. With this bug live, a genuinely-filled E*Trade order
+would be silently misreported as `status="pending"`, `qty=0` — forever, on every poll — never
+recognized as filled by this app regardless of its real state on E*Trade's side.
+
+**Fix**: ported `list_orders()`'s exact corrected reads (`instr.get("orderedQuantity", 0)`,
+`detail.get("status", "OPEN")`, `.upper().startswith("BUY")`) into `get_order()`, with a comment
+cross-referencing `BUG-ETRADEORDERFIELDS` so both functions' fix history stays linked for anyone
+reading either one in the future.
+
+**Tests**: `services/market-data/tests/test_broker_order_history.py` gained 6 new cases — no
+dedicated `get_order()` tests existed before this at all (only `list_orders()` was tested).
+Mirrors `list_orders()`'s own established coverage: ordered-quantity field read,
+status-from-`OrderDetail` read, both options-side-detection directions (`BUY_OPEN`/
+`SELL_CLOSE`), HTTP-failure and order-not-found error paths, `filled_qty`/`filled_avg_price`
+parsing. Adversarially verified: reverted all 3 fixed properties back to the original bug and
+confirmed exactly the 3 dedicated tests failed with real, meaningful assertion diffs (`qty 0.0
+!= 100.0`, `status "pending" != "filled"`, `side SELL != BUY`) — restored and confirmed
+byte-identical via `diff`. Full 2015-test market-data suite green (up from 2004); pyflakes
+clean (all 5 remaining warnings confirmed via `git stash` to predate this change).
+
+### 2. BUG-SQUEEZEIGNITION-CALIBRATION-CROSSCONTAMINATION — `squeeze_ignition` alerts showed
+### `short_squeeze`'s own historical win rate, not its own
+
+**Root cause**: `check_squeeze_ignition_alerts()` (`services/market-data/src/services/
+scheduler.py`) built its calibration buckets via `_build_squeeze_family_calibration(session,
+"short_squeeze")` and looked up win rates via `_squeeze_family_calibration_for_alert_type
+(_sqi_cal_buckets, "short_squeeze", ...)` — both hardcoded to a DIFFERENT alert type than the
+one this function actually is. `squeeze_ignition` (a materially smaller-move, earlier-warning
+tier — fires on a 1-3% intraday move, per `_SQUEEZE_IGNITION_MIN_MOVE_PCT`/`_MAX_MOVE_PCT`) and
+`short_squeeze` (its own separate alert, firing later on a ≥3% move) are structurally different
+alert types with their own separate resolved-outcome tracking — this same function correctly
+records ITS OWN outcomes under `alert_type="squeeze_ignition"` a few lines later, via
+`_record_squeeze_alert_outcome(session, "squeeze_ignition", ...)`. So the calibration lookup and
+the outcome-recording were scoring/reading two genuinely different populations under one
+function.
+
+**A misleading comment made this easy to miss on a casual read**: the code's own comment
+claimed *"a candidate's measured win rate is reported using whichever alert type's own resolved
+history is being asked about, via alert_type below"* — as if a real variable carried the
+correct type through — but both call sites used a hardcoded `"short_squeeze"` string literal,
+not a variable. Confirmed the CORRECT pattern is well-established elsewhere in the SAME file:
+`check_gamma_unwind_alerts()` (a few hundred lines below) correctly threads its own
+`_gamma_alert_type` (`"gamma_unwind_calls"`/`"gamma_unwind_puts"`) through as BOTH the
+buckets-dict key and the `alert_type` argument to `_squeeze_family_calibration_for_alert_type()`
+— `check_squeeze_ignition_alerts()` never followed that same pattern. `_SQUEEZE_FAMILY_CAL_
+BANDS` (the dict resolving which threshold bands apply per alert type) had no `"squeeze_
+ignition"` entry at all, confirming this alert type was never actually wired into its own
+calibration in the first place — it was simply riding on `short_squeeze`'s.
+
+**Fix**: added a `"squeeze_ignition": _PREBREAKOUT_CAL_BANDS` entry to `_SQUEEZE_FAMILY_CAL_
+BANDS` — `squeeze_ignition` genuinely DOES share `short_squeeze`'s own band SCHEME (both gate
+on the identical `short_percent_of_float` metric/scale/floor per the pre-existing comment), so
+this part of the reuse was legitimate and correct to keep. Changed the calibration-buckets
+builder call AND its cache key to `"squeeze_ignition"` (a distinct Redis cache key from
+`short_squeeze`'s own — `"stockai:cal:squeeze_family:squeeze_ignition"` vs. `"...short_
+squeeze"` — so the two entries can never collide), and changed the win-rate lookup's `alert_
+type` argument from `"short_squeeze"` to `"squeeze_ignition"`. The RESOLVED-OUTCOME POPULATION
+being scored against is now correctly `squeeze_ignition`'s own, while the band thresholds stay
+legitimately shared with its sibling.
+
+**Tests**: 4 new source-text regression tests added to `services/market-data/tests/
+test_squeeze_ignition_alert.py`, checking the actual `alert_type` ARGUMENT passed at each call
+site — not just that the helper function was called by name. This distinction matters: the
+pre-existing `test_reuses_the_game_plan_and_calibration_helpers_not_a_reimplementation` test
+only asserted the helper name string appeared in the function body, never which argument it was
+called with — exactly why this bug went unnoticed for however long it's been live. Adversarially
+verified: reverted both call sites back to `"short_squeeze"` and confirmed 3 of 4 new tests
+failed with real, meaningful diffs (a 4th test, checking the band-scheme dict entry
+independently, correctly stayed green since that part of the sabotage wasn't touched) — restored
+and confirmed byte-identical via `diff`. Full 2015-test market-data suite green; pyflakes clean.
+
+**What to check if either looks wrong**:
+```bash
+# Confirm get_order()'s field reads:
+docker exec stockai-market-data-1 grep -n "orderedQuantity\|detail.get(\"status\"" /app/src/services/broker/etrade_broker.py
+
+# Confirm squeeze_ignition's own calibration wiring:
+docker exec stockai-market-data-1 grep -n '"squeeze_ignition"' /app/src/services/scheduler.py
+
+# Confirm the two calibration cache keys never collide:
+docker exec stockai-redis-1 redis-cli keys 'stockai:cal:squeeze_family:*'
+```
