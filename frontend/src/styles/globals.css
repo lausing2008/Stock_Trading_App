@@ -238,6 +238,8 @@ a { color: inherit; text-decoration: none; }
    folded directly into grid2/settings-grid2 rather than a new class) and this Export/Import
    card row (a distinct 12px-gap shape, genuinely its own class). */
 .settings-export-import-grid { grid-template-columns: 1fr 1fr; }
+/* market-pulse-dashboard.tsx's Macro Events / News Pulse side-by-side row. */
+.market-pulse-two-col { grid-template-columns: 1fr 1fr; }
 @media (max-width: 767px) {
   .insider-featured-grid,
   .congress-screeners-grid,
@@ -245,7 +247,8 @@ a { color: inherit; text-decoration: none; }
   .intelligence-topbuys-grid,
   .forecast-price-levels-grid,
   .settings-grid2,
-  .settings-export-import-grid {
+  .settings-export-import-grid,
+  .market-pulse-two-col {
     grid-template-columns: 1fr !important;
   }
 }

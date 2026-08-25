@@ -51,6 +51,7 @@ const NAV_GROUPS: NavGroupDef[] = [
     label: 'Markets',
     items: [
       { label: 'Dashboard',    href: '/' },
+      { label: 'Market Pulse Dashboard', href: '/market-pulse-dashboard', color: '#f59e0b', tag: 'new' },
       { label: 'Heatmap',      href: '/heatmap',      color: '#38bdf8', tag: 'live' },
       { label: 'Rankings',         href: '/rankings' },
       { label: 'Sector Rotation',  href: '/sector-rotation', color: '#38bdf8' },

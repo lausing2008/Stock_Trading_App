@@ -16843,3 +16843,91 @@ docker exec stockai-ml-prediction-1 grep -n "AUD301-METASCALER-LEAKAGE" /app/src
 docker exec stockai-redis-1 redis-cli keys 'stockai:post_open_digest:*'
 docker exec stockai-redis-1 redis-cli keys 'stockai:paper_portfolio_digest:*'
 ```
+
+---
+
+## Feature Reference: Market Pulse Dashboard — a Real "What's Happening Right Now" Page (Built 2026-08-25)
+
+**Closes §4.3 of `docs/recomm_or_audit/REALTIME_NEWS_EVENTS_INTELLIGENCE_2025-08-22.md`**
+(already reviewed once this session — Tier 299) — the doc's own proposed "Market Pulse
+Dashboard": a single page composing regime, macro events, top movers, sector heat map, news
+pulse, and active alerts, versus the previous state where getting this same picture required
+navigating 4-5 separate pages (`regime.tsx`, `reports.tsx`, `sector-rotation.tsx`,
+`intelligence.tsx`) and assembling it manually.
+
+**Verified this wasn't already built under a different name before starting**: `intelligence.
+tsx`'s existing `MarketPulseCard` (T249-MARKETMOVER-P4, 2026-07-18) is narrow — headlines +
+one sentiment score + 3 theme chips, nothing else. `index.tsx`'s "Dashboard" (the app's `/`
+route) is a watchlist-management console — add/remove stocks, per-stock rankings/signals,
+ingestion controls — not a market-wide overview. Neither covers the doc's 6-section ask.
+
+**A real, separate finding: the doc's companion §4.1 "FOMO Composite Score" proposal doesn't
+hold up, and was dropped rather than built on a false premise.** Its formula's first term,
+`squeeze_score * 0.30`, is presented as "all inputs exist" — traced directly into
+`services/market-data/src/services/scheduler.py` and found squeeze scoring only exists as a
+calibration-bucket lookup (`_build_squeeze_family_calibration()`) keyed to symbols that have
+ALREADY fired a real squeeze/gamma alert — there is no live, callable, per-symbol 0-100 score
+for an arbitrary symbol on demand the way the doc's formula assumes. Building a "FOMO score"
+for every symbol on the dashboard would have silently zeroed out (or crashed on) this term for
+the vast majority of symbols that have never fired an alert. Correctly abandoned rather than
+shipped with a broken input.
+
+**All 6 real sections, each independently verified against actual working endpoints before any
+UI was written — zero new backend work needed for any of them**:
+1. **Regime banner** — `api.regime(market)` (`RegimeStatus`: state/vix/spy_20d_ret/notes) +
+   `api.fearGreed()` (US only).
+2. **Macro events today** — `api.eventsCalendar(1)` filtered to the 11 real macro `type`s
+   (`fomc`/`cpi`/`nfp`/`pce`/`gdp`/`ppi`/`retail_sales`/`consumer_conf`/`housing_starts`/
+   `jobless_claims`/`fed_funds`), excluding `earnings`/`dividend`/`split`.
+3. **Top movers** and **4. Sector heat map** — both derived client-side from **one** existing
+   `api.sectorPerformance()` call. `SectorGroup[]`'s own `.stocks: SectorStock[]` already
+   carries per-stock `change_pct` (confirmed by reading the real type in `api.ts` before
+   assuming a new endpoint was needed) — flattened across every sector, sorted by
+   `|change_pct|` descending, top 10 → "Top Movers"; `SectorGroup.avg_change_pct` per sector,
+   sorted descending → the heat map. This is the same data source `reports.tsx`'s existing
+   Money Flow tab already reads, just recomposed for a different purpose.
+5. **News pulse** — reuses `api.marketPulse()` (the same endpoint `MarketPulseCard` already
+   uses) and the existing `NewsCard` component directly, rather than reimplementing headline
+   rendering a second time.
+6. **Active alerts** (admin-only bonus section, gated on `session.role === 'admin'`) —
+   `api.getSqueezeAlertPerformance({ days_back: 7 })`'s `recent_alerts` field. Narrower than
+   the doc's "all alert types fired in last 4h" framing (this only covers the squeeze/gamma
+   alert family, since that's the one real "recently fired alerts" feed that actually exists),
+   stated honestly in the section's own subtitle rather than silently implying broader
+   coverage.
+
+**HK scope note, stated explicitly in the UI rather than silently degrading**: macro events,
+news pulse, sector heat map, and active alerts are all US-only data sources today — switching
+the market toggle to HK shows regime status only, with a visible note explaining why, matching
+this app's established honesty convention for partial-coverage features (CAPE, options-flow
+sentiment, cross-asset signals all follow the same pattern).
+
+**Nav**: added to the `Markets` group in `_app.tsx`, right after "Dashboard" — a public,
+non-admin page (only the bonus alerts section is gated), matching every other non-admin
+Markets entry.
+
+**A pre-existing hooks-order concern noticed, not replicated**: `intelligence.tsx`'s own
+`IntelligencePage` component calls a conditional early `return null` (on missing session)
+BEFORE its own `useState` call further down — a real React hooks-order violation in existing
+code, out of scope for this task, but deliberately NOT copied into the new page. The new
+`MarketPulseDashboardPage` calls `useState` unconditionally at the top, before the session
+guard, matching the safer pattern already used in `etrade-transactions.tsx`.
+
+**Tests**: no dedicated test file — nothing imports this page directly (matching this
+codebase's own established precedent for standalone-page-only changes, e.g. `_app.tsx`/
+`PriceChart.tsx`-only fixes elsewhere in this file), so verification is `npx tsc --noEmit` +
+a full `next build` + a direct grep of the COMPILED output (not just source) confirming the
+real section headers landed in the compiled JS chunk, the new `.market-pulse-two-col` CSS
+class and its `@media (max-width: 767px)` override both compiled correctly, and the new nav
+label appears in the compiled `_app-*.js` chunk. Full 132-test frontend vitest suite
+unaffected (green, unchanged).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-frontend-1 sh -c "grep -o 'market-pulse-two-col[^}]*}' /app/.next/static/css/*.css"
+docker exec stockai-frontend-1 sh -c "grep -l 'MARKET REGIME\|TOP MOVERS' /app/.next/static/chunks/pages/market-pulse-dashboard-*.js"
+```
+If the Top Movers / Sector Heat Map sections look empty despite real market activity, check
+`GET /stocks/sector_performance` directly first — both sections are pure derivations of that
+one response; an empty response there means both sections are correctly showing nothing, not
+a bug in this new page's own composition logic.
