@@ -1824,6 +1824,31 @@ export default function PaperPortfolioPage() {
   const [reAuthPin, setReAuthPin] = useState('');
   const [reAuthLoading, setReAuthLoading] = useState(false);
   const [reAuthError, setReAuthError] = useState<string | null>(null);
+  // Broker link/unlink assignment state — the assign/unlink API calls previously had no
+  // error handling at all: a failed real-money E*Trade link, sandbox/manual link, or unlink
+  // would silently do nothing, leaving the badge showing the stale pre-mutation state with
+  // zero indication anything went wrong.
+  const [brokerAssignPending, setBrokerAssignPending] = useState(false);
+  const [brokerAssignError, setBrokerAssignError] = useState<string | null>(null);
+  // CSV export — previously a raw fetch() with no try/catch and no feedback on a non-2xx
+  // response (the button just did nothing).
+  const [csvExporting, setCsvExporting] = useState(false);
+  const [csvExportError, setCsvExportError] = useState('');
+
+  async function assignPortfolioBroker(brokerId: number | null) {
+    if (!selectedPortfolioId) return;
+    setBrokerAssignPending(true);
+    setBrokerAssignError(null);
+    try {
+      await api.brokerAssignPortfolio(selectedPortfolioId, brokerId);
+      const updated = await api.brokerGetPortfolioBroker(selectedPortfolioId);
+      setPortfolioBroker(updated);
+    } catch (e: any) {
+      setBrokerAssignError(e?.message || (brokerId === null ? 'Failed to unlink broker.' : 'Failed to link broker.'));
+    } finally {
+      setBrokerAssignPending(false);
+    }
+  }
 
   useEffect(() => {
     const session = getSession();
@@ -2021,9 +2046,10 @@ export default function PaperPortfolioPage() {
                     ? <span style={{ marginLeft: 6, color: '#4ade80' }}>✓ authorized</span>
                     : <span style={{ marginLeft: 6, color: '#fbbf24' }}>⚠ tokens expired</span>}
                 </span>
-                <button onClick={() => { if (selectedPortfolioId) api.brokerAssignPortfolio(selectedPortfolioId, null).then(() => api.brokerGetPortfolioBroker(selectedPortfolioId).then(setPortfolioBroker)); }}
-                  style={{ fontSize: 11, color: '#94a3b8', background: 'transparent', border: '1px solid #334155', borderRadius: 4, padding: '3px 8px', cursor: 'pointer' }}>
-                  Unlink
+                <button onClick={() => assignPortfolioBroker(null)}
+                  disabled={brokerAssignPending}
+                  style={{ fontSize: 11, color: '#94a3b8', background: 'transparent', border: '1px solid #334155', borderRadius: 4, padding: '3px 8px', cursor: brokerAssignPending ? 'not-allowed' : 'pointer' }}>
+                  {brokerAssignPending ? 'Unlinking…' : 'Unlink'}
                 </button>
                 {!portfolioBroker.broker.is_authorized && (
                   <button
@@ -2082,6 +2108,7 @@ export default function PaperPortfolioPage() {
                 {brokerConnections.length > 0 && (
                   <select
                     value=""
+                    disabled={brokerAssignPending}
                     onChange={e => {
                       const id = parseInt(e.target.value);
                       if (isNaN(id)) return;
@@ -2095,15 +2122,11 @@ export default function PaperPortfolioPage() {
                         setPendingRealBrokerAssign(picked);
                         return;
                       }
-                      if (!isNaN(id) && selectedPortfolioId) {
-                        api.brokerAssignPortfolio(selectedPortfolioId, id).then(() =>
-                          api.brokerGetPortfolioBroker(selectedPortfolioId).then(setPortfolioBroker)
-                        );
-                      }
+                      assignPortfolioBroker(id);
                     }}
-                    style={{ fontSize: 11, background: '#0f172a', border: '1px solid #1e293b', borderRadius: 5, padding: '4px 8px', color: '#94a3b8', cursor: 'pointer' }}
+                    style={{ fontSize: 11, background: '#0f172a', border: '1px solid #1e293b', borderRadius: 5, padding: '4px 8px', color: '#94a3b8', cursor: brokerAssignPending ? 'not-allowed' : 'pointer' }}
                   >
-                    <option value="">Link a broker…</option>
+                    <option value="">{brokerAssignPending ? 'Linking…' : 'Link a broker…'}</option>
                     {brokerConnections.map(b => (
                       <option key={b.id} value={b.id}>
                         {b.broker_type === 'etrade_sandbox' ? '🧪' : b.broker_type === 'etrade' ? '🚨' : ''}{' '}
@@ -2117,6 +2140,9 @@ export default function PaperPortfolioPage() {
                 )}
               </>
             )}
+            {brokerAssignError && (
+              <div style={{ fontSize: 11, color: '#f87171', marginTop: 4 }}>{brokerAssignError}</div>
+            )}
           </div>
         )}
 
@@ -2126,11 +2152,7 @@ export default function PaperPortfolioPage() {
             onConfirm={() => {
               const id = pendingRealBrokerAssign.id;
               setPendingRealBrokerAssign(null);
-              if (selectedPortfolioId) {
-                api.brokerAssignPortfolio(selectedPortfolioId, id).then(() =>
-                  api.brokerGetPortfolioBroker(selectedPortfolioId).then(setPortfolioBroker)
-                );
-              }
+              assignPortfolioBroker(id);
             }}
             onCancel={() => setPendingRealBrokerAssign(null)}
           />
@@ -2936,22 +2958,34 @@ export default function PaperPortfolioPage() {
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 10 }}>
               {trades?.items?.length ? (
                 <button
+                  disabled={csvExporting}
                   onClick={async () => {
-                    const url = api.paperTradesCsvUrl(selectedPortfolioId);
-                    const token = typeof window !== 'undefined' ? localStorage.getItem('stockai_jwt') : null;
-                    const r = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
-                    if (!r.ok) return;
-                    const blob = await r.blob();
-                    const a = document.createElement('a');
-                    a.href = URL.createObjectURL(blob);
-                    a.download = `paper-trades-${new Date().toISOString().slice(0, 10)}.csv`;
-                    a.click();
+                    setCsvExportError('');
+                    setCsvExporting(true);
+                    try {
+                      const url = api.paperTradesCsvUrl(selectedPortfolioId);
+                      const token = typeof window !== 'undefined' ? localStorage.getItem('stockai_jwt') : null;
+                      const r = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+                      if (!r.ok) { setCsvExportError('Export failed — try again.'); return; }
+                      const blob = await r.blob();
+                      const a = document.createElement('a');
+                      a.href = URL.createObjectURL(blob);
+                      a.download = `paper-trades-${new Date().toISOString().slice(0, 10)}.csv`;
+                      a.click();
+                    } catch {
+                      setCsvExportError('Export failed — try again.');
+                    } finally {
+                      setCsvExporting(false);
+                    }
                   }}
-                  style={{ padding: '6px 14px', borderRadius: 7, border: '1px solid #334155', background: '#0f172a', color: '#94a3b8', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
+                  style={{ padding: '6px 14px', borderRadius: 7, border: '1px solid #334155', background: '#0f172a', color: '#94a3b8', cursor: csvExporting ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 600 }}
                 >
-                  ↓ Export All CSV
+                  {csvExporting ? 'Exporting…' : '↓ Export All CSV'}
                 </button>
               ) : null}
+              {csvExportError && (
+                <span style={{ fontSize: 11, color: '#f87171', marginLeft: 8 }}>{csvExportError}</span>
+              )}
             </div>
             <div style={{ overflowX: 'auto' }}>
               {!trades?.items.length ? (

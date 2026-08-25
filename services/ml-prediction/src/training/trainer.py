@@ -995,16 +995,60 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5, style: str = "SWING")
         return {**xgb, "ensemble": False, "model": "xgboost"}
 
     # Prefer held-out test AUC (unbiased) over CV AUC for internal weighting.
-    xgb_auc = float((xgb.get("metrics") or {}).get("auc") or (xgb.get("metrics") or {}).get("cv_auc_mean") or 0.55)
-    rf_auc  = float((rf.get("metrics") or {}).get("auc") or (rf.get("metrics") or {}).get("cv_auc_mean") or 0.55)
-    total   = xgb_auc + rf_auc
+    # T237-ML1B: `or` treats a real, legitimate auc=0.0 (a perfectly rank-inverted model —
+    # rare but real) as falsy and silently substitutes 0.55, giving a degenerate model
+    # near-normal weight instead of the ~zero weight it deserves. `is not None` is the
+    # correct presence check here — the fallback to 0.55 should only fire when the metric
+    # is genuinely absent, not merely equal to 0.
+    def _cv_auc_mean(m: dict) -> float:
+        cv = (m.get("metrics") or {}).get("cv_auc_mean")
+        return float(cv) if cv is not None else 0.55
+
+    def _model_auc(m: dict) -> float:
+        metrics = m.get("metrics") or {}
+        auc = metrics.get("auc")
+        if auc is None:
+            auc = metrics.get("cv_auc_mean")
+        return float(auc) if auc is not None else 0.55
+
+    xgb_auc = _model_auc(xgb)
+    rf_auc  = _model_auc(rf)
+    # T237-ML1 (mirrored from predict_latest_ensemble_three): a model already flagged
+    # oos_suppressed by predict_latest() (CV-AUC < 0.52, coin-flip territory) still had its
+    # own real held-out AUC feed this weighting formula at full strength — the top-level
+    # oos_suppressed flag below only informed signal-engine's downstream compression AFTER
+    # the blend already happened. Zero out a suppressed model's weight here too, falling
+    # back to using it alone only if BOTH models are suppressed (never leave the ensemble
+    # with zero total weight).
+    if xgb.get("oos_suppressed"):
+        xgb_auc = 0.0
+    if rf.get("oos_suppressed"):
+        rf_auc = 0.0
+    total = xgb_auc + rf_auc
+    if total <= 0:
+        # Two ways to land here: (a) both models are suppressed — restore their own real
+        # AUCs so the ensemble isn't left with zero total weight; (b) neither is suppressed
+        # but both genuinely report a real auc=0.0 (a degenerate-but-real edge case) — in
+        # that case there is no meaningful AUC signal to weight by at all, so split evenly
+        # rather than dividing by zero or fabricating a preference between two equally
+        # uninformative models.
+        xgb_auc = _model_auc(xgb) if xgb.get("oos_suppressed") else xgb_auc
+        rf_auc  = _model_auc(rf) if rf.get("oos_suppressed") else rf_auc
+        total = xgb_auc + rf_auc
+        if total <= 0:
+            xgb_auc = rf_auc = 0.5
+            total = 1.0
     w_xgb, w_rf = xgb_auc / total, rf_auc / total
 
     prob = float(w_xgb * xgb["bullish_probability"] + w_rf * rf["bullish_probability"])
     # Weight-average each model's precision-optimised threshold by the same AUC weights
     # so the ensemble threshold reflects both models, not just XGBoost's.
-    xgb_thr = float((xgb.get("metrics") or {}).get("buy_threshold") or 0.5)
-    rf_thr  = float((rf.get("metrics") or {}).get("buy_threshold") or 0.5)
+    def _model_thr(m: dict) -> float:
+        thr = (m.get("metrics") or {}).get("buy_threshold")
+        return float(thr) if thr is not None else 0.5
+
+    xgb_thr = _model_thr(xgb)
+    rf_thr  = _model_thr(rf)
     buy_threshold = float(w_xgb * xgb_thr + w_rf * rf_thr)
 
     return {
@@ -1018,9 +1062,11 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5, style: str = "SWING")
         "weights": {"xgboost": round(w_xgb, 2), "random_forest": round(w_rf, 2)},
         "metrics": {
             "mean_model_test_auc": round((xgb_auc + rf_auc) / 2, 4),
+            # Report each model's OWN real cv_auc_mean here — xgb_auc/rf_auc above are the
+            # (possibly zeroed-for-suppression) WEIGHTING values, not the raw metric, so
+            # reusing them as a fallback would misreport a suppressed model's real CV AUC as 0.
             "cv_auc_mean": round(
-                (((xgb.get("metrics") or {}).get("cv_auc_mean") or xgb_auc) +
-                 ((rf.get("metrics") or {}).get("cv_auc_mean") or rf_auc)) / 2, 4
+                (_cv_auc_mean(xgb) + _cv_auc_mean(rf)) / 2, 4
             ),
             "buy_threshold": buy_threshold,
         },

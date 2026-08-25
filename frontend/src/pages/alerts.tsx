@@ -2,7 +2,6 @@ import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import useSWR from 'swr';
 import { api, type PriceAlert, type SignalAlertItem, type Stock, type SignalSummary, type WatchlistMeta, type WatchlistItem, type CompoundCondition } from '@/lib/api';
-import { getSignalStyle } from '@/lib/settings';
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -772,10 +771,20 @@ function PriceAlertsTab() {
 
 // ── Signal Alerts tab ──────────────────────────────────────────────────────
 
+// A signal subscription can be on any of the 4 real horizons, independent of the viewer's
+// own default UI style — reusing one style's signal map for every row showed the WRONG
+// horizon's signal/confidence next to a subscription's own horizon badge. Fetch all 4 so
+// each row can look up its own subscribed horizon's real signal.
+const SIGNAL_HORIZONS = ['SHORT', 'SWING', 'LONG', 'GROWTH'] as const;
+
 function SignalAlertsTab() {
   const { data: stocks } = useSWR<Stock[]>('stocks-all', () => api.listStocks());
   const { data: signalAlerts, mutate } = useSWR<SignalAlertItem[]>('signal-alerts', () => api.listSignalAlerts(), { refreshInterval: 30000 });
-  const { data: allSignals } = useSWR<SignalSummary[]>('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()), { refreshInterval: 120000 });
+  const { data: signalsByHorizon } = useSWR<[string, SignalSummary[]][]>(
+    'signals-all-horizons',
+    () => Promise.all(SIGNAL_HORIZONS.map(h => api.allSignals(h).then(sigs => [h, sigs] as [string, SignalSummary[]]))),
+    { refreshInterval: 120000 }
+  );
 
   const [addSymbol, setAddSymbol] = useState('');
   const [addHorizon, setAddHorizon] = useState('SWING');
@@ -804,9 +813,15 @@ function SignalAlertsTab() {
     if (s) setEmail(s);
   }, []);
 
-  // Build a symbol→signal lookup
+  // Build a "symbol|horizon"→signal lookup — keyed by BOTH so a row's own sub.horizon
+  // always resolves to that horizon's real signal, never a different horizon's.
   const sigMap: Record<string, SignalSummary> = {};
-  for (const s of allSignals ?? []) sigMap[s.symbol] = s;
+  for (const [horizon, sigs] of signalsByHorizon ?? []) {
+    for (const s of sigs) sigMap[`${s.symbol}|${horizon}`] = s;
+  }
+  function sigFor(sub: SignalAlertItem): SignalSummary | undefined {
+    return sigMap[`${sub.symbol}|${sub.horizon ?? 'SWING'}`];
+  }
 
   const available = stocks ?? [];
 
@@ -835,10 +850,10 @@ function SignalAlertsTab() {
   const subscriptions = signalAlerts ?? [];
 
   // Summary counts from live signals
-  const buys  = subscriptions.filter(a => sigMap[a.symbol]?.signal === 'BUY').length;
-  const holds = subscriptions.filter(a => sigMap[a.symbol]?.signal === 'HOLD').length;
-  const sells = subscriptions.filter(a => sigMap[a.symbol]?.signal === 'SELL').length;
-  const waits = subscriptions.filter(a => sigMap[a.symbol]?.signal === 'WAIT').length;
+  const buys  = subscriptions.filter(a => sigFor(a)?.signal === 'BUY').length;
+  const holds = subscriptions.filter(a => sigFor(a)?.signal === 'HOLD').length;
+  const sells = subscriptions.filter(a => sigFor(a)?.signal === 'SELL').length;
+  const waits = subscriptions.filter(a => sigFor(a)?.signal === 'WAIT').length;
 
   return (
     <div>
@@ -925,7 +940,7 @@ function SignalAlertsTab() {
           <div className="alerts-table-scroll">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {subscriptions.map(sub => {
-              const sig = sigMap[sub.symbol];
+              const sig = sigFor(sub);
               const signal = sig?.signal ?? '—';
               const conf   = sig?.confidence ?? 0;
               const color  = SIGNAL_COLOR[signal] ?? '#94a3b8';

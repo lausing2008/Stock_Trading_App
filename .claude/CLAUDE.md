@@ -17357,3 +17357,182 @@ If `earnings_consensus`/`revenue_history` are always `null`/`[]` for a symbol yo
 coverage on, check whether the SAME symbol's `ticker.earnings_estimate`/`quarterly_financials`
 return real data directly via yfinance first — a genuinely thin-coverage or newly-listed stock
 correctly has nothing here, which is not a bug in this wiring.
+
+---
+
+## Next-Improvement Batch (2026-08-25) — 4 Real Fixes From 3 Parallel Survey Angles
+
+**Trigger**: "next batch of improvements" — 3 background agents surveying frontend UX/error-
+handling, decision-engine dual-scorer parity, and ml-prediction/ranking-engine validation gaps.
+The dual-scorer parity survey came back genuinely clean (a real, exhaustive line-by-line
+cross-reference against `hard_rejects.py` — every gate in `_should_enter()` has a verified,
+correctly-implemented twin; the T232-DL-DUALSCORER-DEBT porting work is complete). The other
+two angles each surfaced real findings, personally re-verified against current code before
+building anything, matching this repo's own standing discipline that a background agent's
+report is a claim to check, not a fact to act on directly.
+
+### 1. AUD301-ML1B — `predict_latest_ensemble()`'s falsy-zero AUC coercion + missing oos_suppressed exclusion
+
+**Root cause**: `predict_latest_ensemble()` (`services/ml-prediction/src/training/trainer.py`,
+the 2-model XGBoost+RandomForest ensemble — the fallback `POST /ml/predict_ensemble` uses when
+the 3-model `/ml/predict_ensemble_three` fails/404s) had 2 real defects, both siblings of bugs
+already fixed once in `predict_latest_ensemble_three()` under `T237-ML1`:
+
+1. `xgb_auc = float((xgb.get("metrics") or {}).get("auc") or ... or 0.55)` — a real, legitimate
+   `auc=0.0` (a perfectly rank-inverted model — rare but real) is falsy in Python, so `or`
+   silently substituted `0.55` (a plausible-looking "coin flip + edge" default), giving a
+   degenerate model **near-normal ensemble weight** instead of the ~zero weight it deserves.
+2. A model already flagged `oos_suppressed=True` by `predict_latest()` (CV-AUC < 0.52, coin-flip
+   territory — `predict_latest()` already neutralizes its OWN `bullish_probability` to 0.5 in
+   this case) still had its own real held-out `auc` metric feed the weighting formula at full
+   strength. The top-level `oos_suppressed` flag on the RETURNED dict only informs
+   signal-engine's downstream SA-27 compression AFTER the blend already happened — it never
+   stopped a suppressed model's real AUC from pulling the blended probability toward its own
+   value with disproportionate weight.
+
+**Confirmed reachable in production**: `POST /ml/predict_ensemble`'s `mean_model_test_auc` is
+consumed again with the same `or` pattern at `services/signal-engine/src/generators/signals.py:402`,
+driving the ML/TA fusion weight — a corrupted ensemble weighting doesn't stay contained to this
+one function's own return value.
+
+**Fix applied**: `_model_auc()`/`_model_thr()` helpers use `is not None` (the correct presence
+check — the 0.55/0.5 fallback should only fire when the metric is genuinely absent, never
+merely equal to 0). A suppressed model's AUC is zeroed out for weighting purposes (mirroring
+`predict_latest_ensemble_three`'s own `T237-ML1` exclusion), with a rescue path for the
+genuinely-both-suppressed case (fall back to using both models' real AUCs) AND a further
+rescue for the edge case where NEITHER model is suppressed but both happen to report a real
+`auc=0.0` (no meaningful AUC signal to weight by at all — split evenly rather than divide by
+zero or fabricate a preference). The `metrics.cv_auc_mean` field on the returned dict is now
+computed via a separate `_cv_auc_mean()` reading each model's OWN real metric — reusing the
+(possibly-zeroed-for-suppression) weighting values here would have misreported a suppressed
+model's real CV AUC as 0.0 to any caller reading this diagnostic field.
+
+**Tests**: `services/ml-prediction/tests/test_predict_latest_ensemble_falsy_zero.py` (9 cases).
+`trainer.py` can't be imported directly in this test environment (its import chain pulls in
+`lightgbm`, not installed locally — the identical constraint already documented for
+`meta_trainer.py`'s own tests) — `predict_latest_ensemble()`'s real source is extracted via
+`exec()` with `predict_latest`/`_artifact_path` faked, and exercised BEHAVIORALLY with real
+dict inputs, not source-text regex checks. Covers: a real `auc=0.0` correctly gets near-zero
+weight (not the 0.55 fallback), both-real-zero-AUC falls back to an even split without a
+crash, a real nonzero-but-low AUC (0.52) isn't confused with "absent", the genuine
+metric-absent case still correctly falls back through `cv_auc_mean` → 0.55, a suppressed model
+with a nonzero reported AUC still gets zeroed weight, both-suppressed correctly restores real
+AUCs rather than crashing, the top-level `oos_suppressed` flag still propagates when only one
+model triggers it, `cv_auc_mean` reporting isn't corrupted by the zeroed weighting value, and
+the sibling `buy_threshold` falsy-zero fix.
+
+**Adversarial verification** — 3 sabotage/revert cycles, all caught correctly: reverting
+`_model_auc()`'s `is not None` check back to a bare `or` (caught with a real, concrete
+assertion showing a rank-inverted model getting `0.46` weight instead of `0.0`); removing the
+`oos_suppressed` weight-zeroing entirely (caught with a suppressed model wrongly getting `0.45`
+weight instead of `0.0` — and confirming the two fixes are independently tested, since the
+both-real-zero-AUC test correctly stayed green since neither model was suppressed in that
+case); reverting the `cv_auc_mean` reporting fix to reuse the zeroed weighting values (caught
+with `0.3` reported instead of the correct `0.565`). All 3 reverted and confirmed
+byte-identical via `md5sum` before moving on.
+
+Full 91-test ml-prediction suite green (up from 82); pyflakes clean (the 2 remaining warnings
+— unused `db.Signal`/`..features.SECTOR_COLUMNS` imports — confirmed via `git stash` to predate
+this change).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-ml-prediction-1 grep -n "_model_auc\|_cv_auc_mean\|oos_suppressed by predict_latest" /app/src/training/trainer.py
+```
+
+### 2. `alerts.tsx` — Signal Alert subscription rows showed the WRONG horizon's signal/confidence
+
+**Root cause**: `SignalAlertsTab`'s `sigMap` was built from a SINGLE `useSWR` fetch —
+`api.allSignals(getSignalStyle())` — using the viewer's own global default UI style, keyed
+ONLY by `symbol` (no horizon dimension at all). Every subscription row shows its own real
+`sub.horizon` badge (e.g. `GROWTH`, which uses deliberately relaxed thresholds per
+`_STYLE_PROFILES`) right next to a signal/confidence pulled from whatever the viewer's OWN
+default style happened to be — a user subscribed at `GROWTH` while their default UI style is
+`SWING` saw SWING's signal/confidence displayed on that row, potentially showing `HOLD` while
+the real GROWTH signal actually driving their email alert was `BUY` (or vice versa). The page's
+own summary counts (Buys/Holds/Sells/Waits totals) were wrong for the identical reason.
+
+**Fix applied**: replaced the single-style fetch with a parallel fetch across all 4 real
+horizons (`SHORT`/`SWING`/`LONG`/`GROWTH`) via one `useSWR` wrapping `Promise.all`, building
+`sigMap` keyed by `` `${symbol}|${horizon}` `` instead of `symbol` alone. New `sigFor(sub)`
+helper resolves each row's lookup against that row's OWN `sub.horizon` (falling back to
+`'SWING'` only when `sub.horizon` is itself null, matching the badge's own pre-existing
+`sub.horizon ?? 'SWING'` fallback). The now-unused `getSignalStyle` import was removed.
+
+**Verification**: `npx tsc --noEmit` clean, full 132-test frontend vitest suite unaffected
+(no test imports `alerts.tsx` directly), a full `next build` clean.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-frontend-1 sh -c "grep -o 'SIGNAL_HORIZONS\|sigFor' /app/.next/static/chunks/pages/alerts-*.js"
+```
+If a subscription row's displayed signal/confidence looks inconsistent with what
+`GET /signals/{symbol}?style={horizon}` reports directly for that symbol/horizon, that's the
+regression this fix closes — confirm `sigFor(sub)` is genuinely keyed by `sub.horizon`, not a
+global style.
+
+### 3. `paper-portfolio.tsx` — 3 broker-link/unlink actions had zero error handling (one real-money)
+
+**Root cause**: 3 separate call sites independently duplicated the same
+`api.brokerAssignPortfolio(...).then(() => api.brokerGetPortfolioBroker(...).then(setPortfolioBroker))`
+promise chain with **no `.catch()` anywhere** — a failed request (network blip, 403, a stale-
+but-locally-valid JWT returning "Unauthorized" per this app's own documented smart-401
+handling) became a silently-swallowed, unhandled rejection. The badge showing broker-link
+status is a plain `useState`, not SWR-polled, so on a failed mutation it stayed showing the
+STALE pre-mutation state indefinitely, with zero indication to the user that anything went
+wrong. The highest-severity of the three: the `RealMoneyConfirmDialog`'s `onConfirm` handler —
+the exact confirmation step for routing REAL MONEY through a live E*Trade account — had this
+same gap; a failed real-money link attempt gave the user no feedback at all, leaving them
+unable to tell whether their real-money broker was actually linked or not.
+
+**Fix applied**: factored all 3 call sites into one shared `assignPortfolioBroker(brokerId:
+number | null)` helper with real `try/catch/finally`, using the file's own already-established
+`reAuthError`-style inline error-text convention (a small `<span>`/`<div>` in
+`#f87171`/red next to the relevant control). Added `brokerAssignPending`/`brokerAssignError`
+state; the Unlink button, the sandbox/manual `<select>` dropdown, and the real-money confirm
+dialog's `onConfirm` now all route through this one helper — disabled/busy states and error
+text are consistent across all 3 rather than each site inventing (or omitting) its own.
+Also fixed the CSV export button (a raw `fetch()` with no try/catch and no feedback on a
+non-2xx response — the button previously just silently did nothing) with the same
+disabled/error-text pattern, matching this same batch's discipline of fixing the whole class
+of finding in one file rather than leaving a lower-severity sibling instance behind.
+
+**Verification**: `npx tsc --noEmit` clean, full 132-test frontend vitest suite unaffected, a
+full `next build` clean (`/paper-portfolio` compiled at 30.1 kB).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-frontend-1 sh -c "grep -o 'assignPortfolioBroker\|brokerAssignError' /app/.next/static/chunks/pages/paper-portfolio-*.js"
+```
+If a real-money broker link fails and shows no error, confirm the compiled bundle actually
+contains `assignPortfolioBroker` — a stale cached build would still show the old, silent
+failure mode.
+
+### 4. `stock/[symbol].tsx` — 3 mutation handlers had `try { ... } finally { ... }` with no `catch`
+
+**Root cause**: `toggleListItem()` (watchlist add/remove via the ★ Watch dropdown),
+`handleFundRefresh()` (Analyst Ratings force-refresh button), and `removeAlert()` (delete
+price-alert "×" button) all either used `try { ... } finally { ... }` with no `catch` clause,
+or (in `removeAlert`'s case) had no `try`/`catch` at all — a rejected `api.*()` call (this
+app's `request()` in `api.ts` always `throw`s on failure, never returns a falsy value) became
+an unhandled promise rejection with zero user-visible indication anything failed.
+`toggleListItem` is the highest-traffic of the three: clicking a watchlist row to add/remove a
+stock, on failure, silently reverted the star/list-membership UI to its pre-click state with
+no explanation — indistinguishable from "nothing happened because you didn't actually click
+anything."
+
+**Fix applied**: added `catch` clauses to all 3, each setting a new dedicated error-state
+string (`listError`, `fundRefreshError`, `deleteAlertError`) rendered as small inline
+`#f87171`-colored text next to the relevant control — matching the SAME established
+`alertMsg`-style convention `createAlert()` already uses elsewhere in this file. `removeAlert`
+additionally gained a `deletingAlertId`/busy-state guard (the delete "×" button now shows `…`
+and disables itself mid-request, matching every other busy-guarded button on this page) — it
+previously had no busy indicator of any kind.
+
+**Verification**: `npx tsc --noEmit` clean, full 132-test frontend vitest suite unaffected, a
+full `next build` clean (`/stock/[symbol]` compiled at 56.3 kB).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-frontend-1 sh -c "grep -o 'listError\|fundRefreshError\|deleteAlertError' /app/.next/static/chunks/pages/stock/\[symbol\]-*.js"
+```

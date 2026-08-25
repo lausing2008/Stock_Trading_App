@@ -430,10 +430,14 @@ export default function StockDetail() {
   const [watchMenuOpen, setWatchMenuOpen] = useState(false);
   const [listStates, setListStates] = useState<Record<number, boolean> | null>(null);
   const [listPending, setListPending] = useState<number | null>(null);
+  const [listError, setListError] = useState('');
   const watchMenuRef = useRef<HTMLDivElement>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [sigRefreshing, setSigRefreshing] = useState(false);
   const [fundRefreshing, setFundRefreshing] = useState(false);
+  const [fundRefreshError, setFundRefreshError] = useState('');
+  const [deletingAlertId, setDeletingAlertId] = useState<number | null>(null);
+  const [deleteAlertError, setDeleteAlertError] = useState('');
   const [fullRefreshing, setFullRefreshing] = useState(false);
   const [fullRefreshMsg, setFullRefreshMsg] = useState('');
   const [mlResult, setMlResult] = useState<Prediction | null>(null);
@@ -700,8 +704,16 @@ export default function StockDetail() {
   }
 
   async function removeAlert(id: number) {
-    await api.deleteAlert(id);
-    mutateAlerts();
+    setDeletingAlertId(id);
+    setDeleteAlertError('');
+    try {
+      await api.deleteAlert(id);
+      mutateAlerts();
+    } catch (e: unknown) {
+      setDeleteAlertError(e instanceof Error ? e.message : 'Failed to delete alert.');
+    } finally {
+      setDeletingAlertId(null);
+    }
   }
 
   useEffect(() => {
@@ -767,6 +779,7 @@ export default function StockDetail() {
   async function toggleListItem(listId: number) {
     if (!listStates) return;
     setListPending(listId);
+    setListError('');
     try {
       const inList = listStates[listId];
       if (inList) {
@@ -777,6 +790,8 @@ export default function StockDetail() {
       const newStates = { ...listStates, [listId]: !inList };
       setListStates(newStates);
       setWatched(Object.values(newStates).some(v => v));
+    } catch (e: unknown) {
+      setListError(e instanceof Error ? e.message : 'Failed to update watchlist.');
     } finally {
       setListPending(null);
     }
@@ -973,9 +988,12 @@ Return ONLY valid JSON — no markdown, no prose:
 
   async function handleFundRefresh() {
     setFundRefreshing(true);
+    setFundRefreshError('');
     try {
       await api.refreshFundamentals(symbol);
       await mutateOverview();
+    } catch (e: unknown) {
+      setFundRefreshError(e instanceof Error ? e.message : 'Failed to refresh.');
     } finally {
       setFundRefreshing(false);
     }
@@ -1454,6 +1472,9 @@ Return ONLY valid JSON — no markdown, no prose:
                     </button>
                   );
                 })}
+                {listError && (
+                  <div style={{ padding: '6px 8px 2px', fontSize: '11px', color: '#f87171' }}>{listError}</div>
+                )}
               </div>
             )}
           </div>
@@ -3502,6 +3523,9 @@ Return ONLY valid JSON — no markdown, no prose:
                           <span style={{ display: 'inline-block', animation: fundRefreshing ? 'spin 0.8s linear infinite' : 'none' }}>↻</span>
                           {fundRefreshing ? 'Refreshing…' : 'Refresh'}
                         </button>
+                        {fundRefreshError && (
+                          <span style={{ fontSize: '11px', color: '#f87171' }}>{fundRefreshError}</span>
+                        )}
                       </div>
                     </div>
 
@@ -4127,15 +4151,19 @@ Return ONLY valid JSON — no markdown, no prose:
                   )}
                   <button
                     onClick={() => removeAlert(a.id)}
-                    style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '16px', lineHeight: 1, padding: '2px 4px' }}
+                    disabled={deletingAlertId === a.id}
+                    style={{ background: 'none', border: 'none', color: deletingAlertId === a.id ? '#818cf8' : '#475569', cursor: deletingAlertId === a.id ? 'not-allowed' : 'pointer', fontSize: '16px', lineHeight: 1, padding: '2px 4px' }}
                     title="Delete alert"
-                  >×</button>
+                  >{deletingAlertId === a.id ? '…' : '×'}</button>
                 </div>
               );
             })}
           </div>
         ) : (
           <div style={{ fontSize: '12px', color: '#475569' }}>No alerts set for {symbol}. Click "+ New Alert" to get notified by email when the price hits your target.</div>
+        )}
+        {deleteAlertError && (
+          <div style={{ fontSize: '11px', color: '#f87171', marginTop: '6px' }}>{deleteAlertError}</div>
         )}
       </div>
 
