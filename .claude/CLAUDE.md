@@ -17144,3 +17144,93 @@ print('US gainers:', sorted(us, key=lambda x: -x[1])[:6])
 print('US losers:', sorted(us, key=lambda x: x[1])[:6])
 "
 ```
+
+---
+
+## Feature Reference: Earnings Calendar Now Shows Analyst Consensus + Beat-Rate History (Built 2026-08-25)
+
+**User ask, verbatim**: "Can we also provide what're the estimates from the market for the
+stock before earning reports like NVDA?" — the earnings calendar cards already showed
+`EPS est`/`Rev growth`/`EPS growth`/`Cap`, but nothing about what analysts currently expect the
+stock's PRICE to do, or how reliably this specific stock has beaten estimates historically.
+
+**Both were already computed elsewhere in this codebase, just never wired into this specific
+endpoint** — a pure composition task, no new data source needed:
+- `eps_beat_rate`/`eps_avg_surprise_pct` — already stored on the SAME cached fundamentals blob
+  `GET /stocks/events/calendar`'s earnings block already reads for `forward_eps`/etc. Zero new
+  fetch cost.
+- `analyst_price_target_mean`/`analyst_price_target_weighted`/`analyst_n_firms` — from
+  `_compute_weighted_analyst_consensus()` (the accuracy-weighted analyst price-target
+  consensus already built for the per-symbol `/analyst-consensus` endpoint, `wsz-analyst-
+  accuracy-weighting`). This IS a real DB query (2 queries per call) — so it's only invoked
+  for symbols that actually have a near-term earnings event within the requested window, never
+  for the full active-stock universe `events_calendar()` otherwise iterates over for macro
+  events.
+
+**A real unit-convention trap caught before shipping**: `eps_avg_surprise_pct` is stored
+ALREADY multiplied by 100 (`routes.py`'s own `data.eps_avg_surprise_pct = round(... * 100, 2)`
+at the fundamentals-refresh site) — a genuinely different convention from `revenue_growth`/
+`earnings_growth`, which are raw fractions the frontend's existing `fmtPct()` helper multiplies
+by 100 itself. Confirmed the correct display convention directly against
+`email_service.py`'s own existing consumer of this exact field (`f"{surprise:+.1f}%"`, no
+`*100`) before writing the frontend — using `fmtPct()` on this field would have silently
+100x'd every real value (e.g. a genuine `12.5` rendering as `+1250.0%`). Added a dedicated
+`fmtSurprise()` helper instead, with a comment explaining why it's a separate function from
+`fmtPct()`.
+
+**Frontend**: `CalendarEvent` type gained the 5 new optional fields; `earnings.tsx`'s
+`EventCard` gained a second row (only rendered when at least one of the new fields is
+non-null) showing "Analyst target: $X (N firms)" — using the accuracy-weighted mean when
+available, falling back to the simple mean — and "Beat history: N% (avg +X.X%)", color-coded
+green/red on whether the beat rate clears 50%.
+
+**Deliberately NOT added**: an upside/downside % versus the current price — `CalendarEvent`
+has no current-price field, and adding one would mean threading in yet another data source per
+calendar card just for this. A user can compare the shown analyst target against the real
+price elsewhere (the stock detail page). Scoped this addition to what's cheaply and honestly
+available rather than half-implementing a computed upside figure with a stale/missing price.
+
+**Tests**: `services/market-data/tests/test_earnings_calendar_market_estimates.py` (5 cases,
+source-text regression — `events_calendar()` can't be imported directly in this test
+environment, matching `test_fundamentals_cache_miss_logging.py`'s established pattern for this
+exact constraint). Covers: the 2 free fields read from the same cached blob (not a fresh
+fetch), the consensus function called exactly once and only INSIDE the earnings block (never
+once per stock in the outer per-active-stock loop, which would be a real, wasteful per-symbol
+DB-query cost on every calendar request), the call happening before the `events.append()` that
+reads its result, all 3 consensus fields read from the computed dict (not hardcoded), and the
+5 pre-existing fields confirmed still present (a refactor mistake here could have silently
+dropped one).
+
+**Adversarially verified** — 2 sabotage cycles, both caught and reverted: removing all 5 new
+fields entirely (caught by 2 dedicated tests); moving the consensus computation into the outer
+per-stock loop instead of the earnings-only block — the exact wasteful-relocation mistake this
+feature must avoid (caught by 2 dedicated tests, including a real `ValueError: substring not
+found` when the call no longer existed inside the scoped block at all). Both reverted and
+confirmed byte-identical via `diff` before moving on.
+
+**Live latency check before deploying**: baseline `GET /stocks/events/calendar?days_ahead=45`
+(63 events, 24 earnings) measured at 106ms before this change — re-measured after deploy to
+confirm the 24 new consensus-query calls didn't meaningfully regress it.
+
+Full 2020-test market-data suite green (up from 2015); pyflakes clean (all 6 remaining warnings
+confirmed via `git stash` to predate this change — only line numbers shifted). Full 132-test
+frontend vitest suite unaffected; `npx tsc --noEmit` and a full `next build` both clean.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n "_compute_weighted_analyst_consensus(session, stock.symbol)" /app/src/api/routes.py
+
+# Live-check a real symbol's earnings event includes the new fields:
+docker exec stockai-market-data-1 curl -s 'http://localhost:8001/stocks/events/calendar?days_ahead=45' \
+  -H "Authorization: Bearer <token>" | python3 -c "
+import json, sys
+events = json.load(sys.stdin)
+for e in events:
+    if e.get('type') == 'earnings' and e.get('symbol') == 'NVDA':
+        print(e)
+"
+```
+If the analyst-target fields are always `null` for a symbol you'd expect real coverage on,
+check `GET /stocks/{symbol}/analyst-consensus` directly first — a genuinely empty `firms` list
+there means no firm has issued a target for that symbol in the last 90 days, which is a real,
+correct "no data" state, not a bug in this wiring.

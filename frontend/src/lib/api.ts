@@ -1302,6 +1302,11 @@ export type CalendarEvent = {
   trailing_eps?: number | null;
   revenue_growth?: number | null;
   earnings_growth?: number | null;
+  eps_beat_rate?: number | null;               // 0.0-1.0, fraction of past quarters beating estimate
+  eps_avg_surprise_pct?: number | null;         // average % beat/miss across past quarters
+  analyst_price_target_mean?: number | null;    // simple mean of current analyst price targets
+  analyst_price_target_weighted?: number | null; // accuracy-weighted mean (same source as /analyst-consensus)
+  analyst_n_firms?: number | null;
   market_cap?: number | null;
 };
 

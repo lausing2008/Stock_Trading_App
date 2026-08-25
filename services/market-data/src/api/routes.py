@@ -2083,6 +2083,14 @@ def events_calendar(
                 try:
                     ned_date = _date.fromisoformat(ned)
                     if today <= ned_date <= cutoff:
+                        # AUD-EARNINGSCAL-MARKETESTIMATES: "what does the market estimate before
+                        # earnings" — eps_beat_rate/eps_avg_surprise_pct are already on the SAME
+                        # cached fundamentals blob this loop already reads (zero new cost).
+                        # analyst_price_target_* needs a real DB query
+                        # (_compute_weighted_analyst_consensus), so it's only computed for
+                        # symbols that actually have a near-term earnings event in this window —
+                        # never for the full active-stock universe this loop otherwise iterates.
+                        _consensus = _compute_weighted_analyst_consensus(session, stock.symbol)
                         events.append({
                             "type": "earnings",
                             "date": ned,
@@ -2099,6 +2107,11 @@ def events_calendar(
                             "revenue_growth": data.get("revenue_growth"),
                             "earnings_growth": data.get("earnings_growth"),
                             "market_cap": data.get("market_cap"),
+                            "eps_beat_rate": data.get("eps_beat_rate"),
+                            "eps_avg_surprise_pct": data.get("eps_avg_surprise_pct"),
+                            "analyst_price_target_mean": _consensus.get("simple_mean"),
+                            "analyst_price_target_weighted": _consensus.get("weighted_mean"),
+                            "analyst_n_firms": _consensus.get("n_firms"),
                         })
                 except Exception:
                     pass

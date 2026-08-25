@@ -59,6 +59,18 @@ function fmtYield(v: number | null | undefined) {
   if (v == null) return '—';
   return (v * 100).toFixed(2) + '%';
 }
+// eps_avg_surprise_pct arrives ALREADY scaled to a percent (routes.py's own
+// events_calendar() comment: "mean surprise % across available quarters") — unlike
+// revenue_growth/earnings_growth, which are raw fractions fmtPct() multiplies by 100.
+// Using fmtPct() here would silently 100x this value.
+function fmtSurprise(v: number | null | undefined) {
+  if (v == null) return '—';
+  return (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
+}
+function fmtMoney(v: number | null | undefined) {
+  if (v == null) return '—';
+  return `$${v.toFixed(2)}`;
+}
 function daysLabel(d: number) {
   if (d === 0) return 'Today';
   if (d === 1) return 'Tomorrow';
@@ -159,13 +171,39 @@ function EventCard({ ev, subs, onSubsChanged }: { ev: CalendarEvent; subs: Earni
 
       {/* Earnings details */}
       {ev.type === 'earnings' && (
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-          <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>EPS est: </span><span style={{ color: '#e2e8f0', fontWeight: 700 }}>{ev.eps_estimate != null ? `$${ev.eps_estimate.toFixed(2)}` : '—'}</span></span>
-          <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>Rev growth: </span><span style={{ color: (ev.revenue_growth ?? 0) >= 0 ? '#4ade80' : '#f87171', fontWeight: 700 }}>{fmtPct(ev.revenue_growth)}</span></span>
-          <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>EPS growth: </span><span style={{ color: (ev.earnings_growth ?? 0) >= 0 ? '#4ade80' : '#f87171', fontWeight: 700 }}>{fmtPct(ev.earnings_growth)}</span></span>
-          <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>Cap: </span><span style={{ color: '#94a3b8', fontWeight: 700 }}>{fmtCap(ev.market_cap)}</span></span>
-          {ev.symbol && <AlertMeButton symbol={ev.symbol} subs={subs} onChanged={onSubsChanged} />}
-        </div>
+        <>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>EPS est: </span><span style={{ color: '#e2e8f0', fontWeight: 700 }}>{ev.eps_estimate != null ? `$${ev.eps_estimate.toFixed(2)}` : '—'}</span></span>
+            <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>Rev growth: </span><span style={{ color: (ev.revenue_growth ?? 0) >= 0 ? '#4ade80' : '#f87171', fontWeight: 700 }}>{fmtPct(ev.revenue_growth)}</span></span>
+            <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>EPS growth: </span><span style={{ color: (ev.earnings_growth ?? 0) >= 0 ? '#4ade80' : '#f87171', fontWeight: 700 }}>{fmtPct(ev.earnings_growth)}</span></span>
+            <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>Cap: </span><span style={{ color: '#94a3b8', fontWeight: 700 }}>{fmtCap(ev.market_cap)}</span></span>
+            {ev.symbol && <AlertMeButton symbol={ev.symbol} subs={subs} onChanged={onSubsChanged} />}
+          </div>
+          {/* Market's own estimates ahead of the report: analyst price target consensus +
+              this stock's own history of beating/missing estimates. Both degrade to "—" when
+              no data exists yet (a thin firm-coverage/beat-history stock), never a fabricated
+              number. */}
+          {(ev.analyst_price_target_mean != null || ev.eps_beat_rate != null) && (
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', paddingTop: 2, borderTop: '1px solid #1e293b', marginTop: 2 }}>
+              {ev.analyst_price_target_mean != null && (
+                <span style={{ fontSize: 11 }}>
+                  <span style={{ color: '#475569' }}>Analyst target: </span>
+                  <span style={{ color: '#e2e8f0', fontWeight: 700 }}>{fmtMoney(ev.analyst_price_target_weighted ?? ev.analyst_price_target_mean)}</span>
+                  {ev.analyst_n_firms != null && <span style={{ color: '#475569' }}> ({ev.analyst_n_firms} firm{ev.analyst_n_firms === 1 ? '' : 's'})</span>}
+                </span>
+              )}
+              {ev.eps_beat_rate != null && (
+                <span style={{ fontSize: 11 }}>
+                  <span style={{ color: '#475569' }}>Beat history: </span>
+                  <span style={{ color: ev.eps_beat_rate >= 0.5 ? '#4ade80' : '#f87171', fontWeight: 700 }}>{Math.round(ev.eps_beat_rate * 100)}%</span>
+                  {ev.eps_avg_surprise_pct != null && (
+                    <span style={{ color: ev.eps_avg_surprise_pct >= 0 ? '#4ade80' : '#f87171' }}> (avg {fmtSurprise(ev.eps_avg_surprise_pct)})</span>
+                  )}
+                </span>
+              )}
+            </div>
+          )}
+        </>
       )}
 
       {/* Dividend details */}
