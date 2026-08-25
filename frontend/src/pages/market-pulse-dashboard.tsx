@@ -167,14 +167,20 @@ function MacroEventsCard() {
 
 // ── Top movers + sector heat map (both derived from one sectorPerformance() call) ────────────
 
-function MoversAndSectors() {
+function MoversAndSectors({ market }: { market: 'US' | 'HK' }) {
   const { data: sectors, isLoading } = useSWR('pulse-sector-performance', () => api.sectorPerformance(), { refreshInterval: 300_000 });
   if (isLoading) return <div style={card()}>Loading market movers…</div>;
   if (!sectors) return null;
 
+  // sector_performance() mixes US and HK stocks together in every sector with no market
+  // filter of its own (each sector's own avg_change_pct/stock_count is computed across BOTH
+  // markets) — this page shows this section only under the US toggle, so both the mover list
+  // AND the per-sector aggregates must be recomputed from a market-filtered stock list, not
+  // the backend's own mixed-market numbers.
   const allStocks: (SectorStock & { sector: string })[] = sectors.flatMap((s: SectorGroup) =>
     s.stocks.map(st => ({ ...st, sector: s.sector }))
-  );
+  ).filter(s => s.market === market);
+
   // A single sort-by-|change_pct| list can go entirely one-sided on a broadly up or down day
   // (e.g. a day with several large losers and only modest gainers would silently show 10
   // losers and zero gainers) — split into two explicit, independently-sorted lists instead so
@@ -182,7 +188,18 @@ function MoversAndSectors() {
   const withChange = allStocks.filter(s => s.change_pct != null);
   const topGainers = [...withChange].filter(s => s.change_pct! > 0).sort((a, b) => b.change_pct! - a.change_pct!).slice(0, 6);
   const topLosers = [...withChange].filter(s => s.change_pct! < 0).sort((a, b) => a.change_pct! - b.change_pct!).slice(0, 6);
-  const sortedSectors = [...sectors].sort((a, b) => (b.avg_change_pct ?? 0) - (a.avg_change_pct ?? 0));
+
+  const bySector = new Map<string, { symbol: string; change_pct: number | null }[]>();
+  for (const s of allStocks) {
+    if (!bySector.has(s.sector)) bySector.set(s.sector, []);
+    bySector.get(s.sector)!.push(s);
+  }
+  const marketSectors = [...bySector.entries()].map(([sector, stocks]) => {
+    const changes = stocks.map(s => s.change_pct).filter((c): c is number => c != null);
+    const avg_change_pct = changes.length ? changes.reduce((a, b) => a + b, 0) / changes.length : null;
+    return { sector, avg_change_pct, stock_count: stocks.length };
+  });
+  const sortedSectors = marketSectors.sort((a, b) => (b.avg_change_pct ?? 0) - (a.avg_change_pct ?? 0));
 
   function moverGrid(list: (SectorStock & { sector: string })[]) {
     return (
@@ -201,7 +218,7 @@ function MoversAndSectors() {
   return (
     <>
       <div style={card()}>
-        {sectionTitle('🔥 TOP MOVERS', <span style={{ fontSize: 11, color: '#6b7280' }}>gainers &amp; losers across all tracked sectors</span>)}
+        {sectionTitle('🔥 TOP MOVERS', <span style={{ fontSize: 11, color: '#6b7280' }}>gainers &amp; losers across all tracked {market} sectors</span>)}
         {topGainers.length === 0 && topLosers.length === 0 && <div style={{ color: '#4b5563', fontSize: 12 }}>No data yet.</div>}
         {topGainers.length > 0 && (
           <div style={{ marginBottom: topLosers.length > 0 ? 14 : 0 }}>
@@ -357,7 +374,7 @@ export default function MarketPulseDashboardPage() {
               <MacroEventsCard />
               <NewsPulseCard />
             </div>
-            <MoversAndSectors />
+            <MoversAndSectors market={market} />
             {session.role === 'admin' && <ActiveAlertsCard />}
           </>
         )}

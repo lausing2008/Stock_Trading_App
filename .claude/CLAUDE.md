@@ -17097,3 +17097,50 @@ docker exec stockai-market-data-1 grep -n '"squeeze_ignition"' /app/src/services
 # Confirm the two calibration cache keys never collide:
 docker exec stockai-redis-1 redis-cli keys 'stockai:cal:squeeze_family:*'
 ```
+
+---
+
+## Recurring Issue: Market Pulse Dashboard's Top Movers/Sector Heat Map Silently Mixed HK Stocks Into the US View (Fixed 2026-08-25)
+
+**Symptom**: user reported `.HK` symbols (`0117.HK`, `6951.HK`, `2513.HK`, `9868.HK`) appearing
+in the Top Movers and Sector Heat Map sections while the dashboard's own market toggle was set
+to **US**.
+
+**Root cause**: `GET /stocks/sector_performance` (`services/market-data/src/api/routes.py`) has
+**no market filter of its own at all** — every sector genuinely mixes US and HK stocks
+together, with `avg_change_pct`/`stock_count` computed across BOTH markets combined. `MoversAnd
+Sectors()` (`market-pulse-dashboard.tsx`) never filtered the flattened stock list by market
+before this fix — despite only ever being rendered inside the page's own `market === 'US'`
+branch — so it silently displayed both markets' movers/sectors regardless of which toggle
+state the user had selected. `RegimeBanner` (the sibling section on the same page) already
+correctly received `market` as a prop; `MoversAndSectors` simply never did.
+
+**Fix applied**: threaded the page's real `market` state into `MoversAndSectors` as a prop.
+Filters the flattened stock list to that market BEFORE computing gainers/losers, and
+recomputes each sector's own `avg_change_pct`/`stock_count` from the market-filtered list
+locally, rather than trusting the backend's mixed-market aggregate (the backend endpoint
+itself was NOT changed — no new query parameter was added there; this is a client-side-only
+fix, since the backend has no concept of a market-scoped sector performance response today).
+
+**Live-verified against real production data, before and after**: the mixed list showed
+`0117.HK +6.7%`/`6951.HK +3.2%`/`2513.HK +3.1%` among the "US" top gainers; the corrected,
+market-filtered list instead correctly shows `CLBT +3.98%`/`MNDY +3.88%`/`V +3.06%`/
+`WMT +2.69%`/`DIS +2.63%`/`UNH +2.22%` — every `.HK` symbol excluded, matching a direct
+`market == "US"` filter run against the same live endpoint response.
+
+**What to check if this recurs**:
+```bash
+# Confirm the backend still has no market param (a future backend change here would need the
+# frontend fix re-checked against it):
+docker exec stockai-market-data-1 grep -n "def sector_performance" -A2 /app/src/api/routes.py
+
+# Spot-check the real market-filtered top-gainer/loser list directly:
+docker exec stockai-market-data-1 curl -s 'http://localhost:8001/stocks/sector_performance' \
+  -H "Authorization: Bearer <token>" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+us = [(st['symbol'], st['change_pct']) for sec in data for st in sec['stocks'] if st.get('market') == 'US' and st.get('change_pct') is not None]
+print('US gainers:', sorted(us, key=lambda x: -x[1])[:6])
+print('US losers:', sorted(us, key=lambda x: x[1])[:6])
+"
+```
