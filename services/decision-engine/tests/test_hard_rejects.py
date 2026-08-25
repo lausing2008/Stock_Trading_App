@@ -1321,3 +1321,206 @@ def test_market_cluster_cap_zero_open_count_does_not_block():
     confirms the gate's real comparison, not merely that SOME low value passes."""
     result = hr.check_hard_rejects(**_base_kwargs(cfg={"market_open_count": 0}))
     assert result is None
+
+
+# ── Restricted/no-trade symbol check (T232-DL-DUALSCORER-DEBT / IF-12) ────────
+#
+# Queries `restricted_symbols` directly via `db.SessionLocal` — a real dependency this test
+# environment stubs as a bare MagicMock (see the module-level sys.modules.setdefault calls),
+# so `from db import SessionLocal` inside hard_rejects.py resolves to that stub unless we
+# register a real fake under sys.modules["db"] first, matching this file's own established
+# pattern for common.redis_client (patch the sys.modules entry directly, not a freshly
+# re-imported binding, since `common`/`db` are both stubbed parent packages here).
+
+class _FakeRestrictedRow:
+    def __init__(self, reason):
+        self._reason = reason
+
+    def __getitem__(self, idx):
+        assert idx == 0
+        return self._reason
+
+
+class _FakeRestrictedResult:
+    def __init__(self, row):
+        self._row = row
+
+    def fetchone(self):
+        return self._row
+
+
+class _FakeRestrictedSession:
+    def __init__(self, row, call_count):
+        self._row = row
+        self._call_count = call_count
+
+    def execute(self, *_args, **_kwargs):
+        self._call_count["n"] += 1
+        return _FakeRestrictedResult(self._row)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+def _mock_restricted_db(monkeypatch, *, restricted: bool, reason: str | None = None):
+    call_count = {"n": 0}
+    row = _FakeRestrictedRow(reason) if restricted else None
+    fake_session_local = lambda: _FakeRestrictedSession(row, call_count)  # noqa: E731
+    fake_db_module = type(sys)("db")
+    fake_db_module.SessionLocal = fake_session_local
+    monkeypatch.setitem(sys.modules, "db", fake_db_module)
+    return call_count
+
+
+def test_restricted_symbol_blocks_entry(monkeypatch):
+    _mock_restricted_db(monkeypatch, restricted=True, reason="confirmed 0% win rate over 47 trades")
+    result = hr.check_hard_rejects(**_base_kwargs(symbol="SNDK", style="SWING"))
+    assert result is not None
+    assert "restricted" in result.lower()
+    assert "SNDK" in result
+    assert "confirmed 0% win rate" in result
+
+
+def test_restricted_symbol_with_no_reason_on_file_still_blocks(monkeypatch):
+    _mock_restricted_db(monkeypatch, restricted=True, reason=None)
+    result = hr.check_hard_rejects(**_base_kwargs(symbol="SNDK", style="SWING"))
+    assert result is not None
+    assert "no reason on file" in result
+
+
+def test_non_restricted_symbol_does_not_block(monkeypatch):
+    _mock_restricted_db(monkeypatch, restricted=False)
+    result = hr.check_hard_rejects(**_base_kwargs(symbol="AAPL", style="SWING"))
+    assert result is None
+
+
+def test_restricted_symbol_check_skipped_when_symbol_missing(monkeypatch):
+    """Without a symbol (e.g. an older caller not yet sending one), the gate must not even
+    attempt the DB lookup — matching the conviction-gate's own call-counting-mock discipline
+    a few lines above in this same file, since a bare fail-open-on-exception path can't be
+    told apart from a deliberate skip without counting real calls.
+
+    Self-caught test-isolation gotcha: the fake `db` module this test installs is shared by
+    BOTH DB-backed gates in this file (macro-blackout and restricted-symbol) since both do
+    `from db import SessionLocal`. _base_kwargs' default `reasons={"macro_blackout": None}`
+    deliberately routes THAT gate to its own real ImportError fail-open path in every other
+    test — but once a fake `db` module is registered here, the macro-blackout gate's own
+    fallback query hits the SAME fake session and increments the SAME call counter, producing
+    a false failure that had nothing to do with the restricted-symbol check under test. Fixed
+    by supplying a real macro_blackout value so that gate's fast path short-circuits before
+    ever reaching its own DB fallback, isolating the counter to the restricted-symbol check
+    alone."""
+    call_count = _mock_restricted_db(monkeypatch, restricted=True, reason="should never be seen")
+    result = hr.check_hard_rejects(**_base_kwargs(
+        symbol=None, style=None,
+        reasons={"macro_blackout": False, "last_price": 100.0},
+    ))
+    assert result is None
+    assert call_count["n"] == 0, "restricted-symbol check must not query the DB without a symbol"
+
+
+def test_restricted_symbol_check_fails_open_on_db_error(monkeypatch):
+    """A genuine DB outage must never block a real entry — matches every other DB-backed gate
+    in this file (macro-blackout) failing open on exception."""
+    class _BrokenSessionLocal:
+        def __call__(self):
+            raise RuntimeError("connection refused")
+
+    fake_db_module = type(sys)("db")
+    fake_db_module.SessionLocal = _BrokenSessionLocal()
+    monkeypatch.setitem(sys.modules, "db", fake_db_module)
+    result = hr.check_hard_rejects(**_base_kwargs(symbol="AAPL", style="SWING"))
+    assert result is None
+
+
+def test_restricted_symbol_check_runs_before_market_hours_and_regime_checks(monkeypatch):
+    """Matches _scan_for_entries()'s own ordering, where the restricted-symbol check is
+    deliberately the FIRST check in the loop — a banned symbol must be rejected for THAT
+    reason even when other gates (e.g. bear regime) would also fire, so the returned message
+    is unambiguous about why entry was refused."""
+    _mock_restricted_db(monkeypatch, restricted=True, reason="banned")
+    result = hr.check_hard_rejects(**_base_kwargs(symbol="TSLA", style="SWING", regime_state="bear"))
+    assert result is not None
+    assert "restricted" in result.lower()
+    assert "Bear regime" not in result
+
+
+# ── Weekly loss/gain circuit breakers (T232-DL-DUALSCORER-DEBT) ───────────────
+
+def test_weekly_loss_beyond_limit_blocks_entry():
+    result = hr.check_hard_rejects(**_base_kwargs(
+        cfg={"weekly_net_pnl_pct": -9.0, "max_weekly_loss_pct": 0.08}
+    ))
+    assert result is not None and "Weekly loss" in result
+
+
+def test_weekly_loss_within_limit_does_not_block():
+    result = hr.check_hard_rejects(**_base_kwargs(
+        cfg={"weekly_net_pnl_pct": -5.0, "max_weekly_loss_pct": 0.08}
+    ))
+    assert result is None
+
+
+def test_weekly_gain_lock_beyond_threshold_blocks_entry():
+    result = hr.check_hard_rejects(**_base_kwargs(
+        cfg={"weekly_net_pnl_pct": 7.0, "max_weekly_gain_pct": 0.06}
+    ))
+    assert result is not None and "gain lock" in result.lower()
+
+
+def test_weekly_gain_within_threshold_does_not_block():
+    result = hr.check_hard_rejects(**_base_kwargs(
+        cfg={"weekly_net_pnl_pct": 3.0, "max_weekly_gain_pct": 0.06}
+    ))
+    assert result is None
+
+
+def test_weekly_pnl_gate_skipped_when_not_sent():
+    """An older caller not yet sending weekly_net_pnl_pct (e.g. decide.tsx, or the fallback
+    engine's own equity<=0/needs-weekly guard never firing) must not be blocked — this gate is
+    opt-in via the caller sending real data, matching every other optional gate in this file."""
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={}))
+    assert result is None
+
+
+def test_weekly_pnl_exactly_zero_does_not_block_either_side():
+    """A portfolio genuinely flat for the week (0.0%) must clear both the loss and gain checks
+    — confirms 0.0 is treated as a real, meaningful value (not a 'missing' sentinel that
+    happens to also mean 'no P&L'), since the gate is only skipped when the value is None."""
+    result = hr.check_hard_rejects(**_base_kwargs(
+        cfg={"weekly_net_pnl_pct": 0.0, "max_weekly_loss_pct": 0.08, "max_weekly_gain_pct": 0.06}
+    ))
+    assert result is None
+
+
+# ── Open-exposure cap (T232-DL-DUALSCORER-DEBT / T194) ────────────────────────
+
+def test_open_exposure_beyond_cap_blocks_entry():
+    result = hr.check_hard_rejects(**_base_kwargs(
+        cfg={"open_exposure_pct": 45.0, "max_open_exposure_pct": 0.40}
+    ))
+    assert result is not None and "Open exposure cap" in result
+
+
+def test_open_exposure_within_cap_does_not_block():
+    result = hr.check_hard_rejects(**_base_kwargs(
+        cfg={"open_exposure_pct": 30.0, "max_open_exposure_pct": 0.40}
+    ))
+    assert result is None
+
+
+def test_open_exposure_gate_skipped_when_not_sent():
+    result = hr.check_hard_rejects(**_base_kwargs(cfg={}))
+    assert result is None
+
+
+def test_open_exposure_respects_a_custom_threshold():
+    """The real default is 40%, but cfg can override it — a value that clears the default
+    must still be blocked under a tightened custom threshold."""
+    result = hr.check_hard_rejects(
+        **_base_kwargs(cfg={"open_exposure_pct": 25.0, "max_open_exposure_pct": 0.20})
+    )
+    assert result is not None and "Open exposure cap" in result

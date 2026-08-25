@@ -49,6 +49,33 @@ def check_hard_rejects(
     if signal_direction.upper() != "BUY":
         return f"Signal direction is {signal_direction} — only BUY signals evaluated for entry"
 
+    # T232-DL-DUALSCORER-DEBT / IF-12: restricted/no-trade symbol check — ported from
+    # _scan_for_entries(), which checks this table FIRST, before any other candidate-specific
+    # computation, so a user-banned symbol is never even considered. On the real production
+    # path this is already a free port (the caller skips a restricted symbol before
+    # _call_decision_engine() is ever invoked for it), but /decide/{symbol} called standalone
+    # (e.g. decide.tsx, which never runs _scan_for_entries' own pre-filter) had no way to know a
+    # symbol was banned — 8 real symbols with a confirmed 0% historical win rate were added to
+    # this exact table (Tier 297) and could still be silently approved on this path. Queried
+    # directly via DB rather than threaded through config_overrides (unlike open_sector_counts/
+    # short_signal/etc.) since `symbol` is already always sent and this needs no per-scan-cycle
+    # aggregate the caller would otherwise have to batch-compute — a plain per-symbol lookup,
+    # matching the macro-blackout check's own established "query DB directly, fail open on
+    # error" pattern a few lines below.
+    if symbol:
+        try:
+            from db import SessionLocal
+            from sqlalchemy import text as _restricted_text
+            with SessionLocal() as _rsess:
+                _rrow = _rsess.execute(_restricted_text(
+                    "SELECT reason FROM restricted_symbols WHERE symbol = :sym LIMIT 1"
+                ), {"sym": symbol}).fetchone()
+                if _rrow is not None:
+                    _rreason = _rrow[0] or "no reason on file"
+                    return f"Symbol {symbol} is on the restricted/no-trade list: {_rreason}"
+        except Exception:
+            pass  # DB unavailable or query error → allow entry (fail-open, matching macro-blackout)
+
     # T193: Market-closed guard — block entries when the exchange is not open for regular trading.
     # Complements T185 (session edge). Catches weekends, pre-market, after-hours, and HK lunch.
     try:
@@ -481,6 +508,41 @@ def check_hard_rejects(
             return (
                 f"Open-risk cap reached: portfolio would reach "
                 f"~{projected_open_risk_pct * 100:.1f}%/{max_open_risk_pct * 100:.0f}% aggregate risk"
+            )
+
+    # T232-DL-DUALSCORER-DEBT: weekly loss/gain circuit breakers — real, portfolio-wide gates
+    # in _scan_for_entries() with zero decision-engine equivalent before this. Both are pure
+    # portfolio state (not a per-candidate projection like the sector/open-risk caps above), so
+    # this is a direct comparison against the already-realized weekly P&L%, matching the
+    # equity_floor_pct/daily_pnl_pct checks' own shape rather than the "projected addition"
+    # pattern used for the two per-candidate-sized caps just above.
+    weekly_net_pnl_pct = cfg.get("weekly_net_pnl_pct")
+    if weekly_net_pnl_pct is not None:
+        max_weekly_loss_pct = float(cfg.get("max_weekly_loss_pct", 0.08))
+        max_weekly_gain_pct = float(cfg.get("max_weekly_gain_pct", 0.06))
+        _wk_pct = float(weekly_net_pnl_pct)
+        if max_weekly_loss_pct > 0 and _wk_pct < 0 and abs(_wk_pct) > max_weekly_loss_pct * 100:
+            return (
+                f"Weekly loss {abs(_wk_pct):.1f}% exceeds {max_weekly_loss_pct * 100:.0f}% "
+                f"limit — no entries until next week"
+            )
+        if max_weekly_gain_pct > 0 and _wk_pct > 0 and _wk_pct > max_weekly_gain_pct * 100:
+            return (
+                f"Weekly gain lock — up {_wk_pct:.1f}% this week; protecting profits "
+                f"until Monday (T191)"
+            )
+
+    # T232-DL-DUALSCORER-DEBT / T194: open-exposure cap — the one aggregate-exposure sibling
+    # of the sector-$ cap and open-risk cap above that was never ported. Also pure portfolio
+    # state (already includes every currently-open position's full value, not a per-candidate
+    # projection), matching the weekly-P&L checks' own direct-comparison shape.
+    open_exposure_pct = cfg.get("open_exposure_pct")
+    if open_exposure_pct is not None:
+        max_open_exposure_pct = float(cfg.get("max_open_exposure_pct", 0.40))
+        if max_open_exposure_pct > 0 and float(open_exposure_pct) > max_open_exposure_pct * 100:
+            return (
+                f"Open exposure cap reached: {float(open_exposure_pct):.1f}%/"
+                f"{max_open_exposure_pct * 100:.0f}% of equity deployed — no new entries (T194)"
             )
 
     # T185: Time-of-day gate — human traders avoid the first 30 min (price discovery, wide spreads)

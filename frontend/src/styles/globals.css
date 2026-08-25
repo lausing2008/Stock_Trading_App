@@ -233,13 +233,19 @@ a { color: inherit; text-decoration: none; }
 .intelligence-topbuys-grid { grid-template-columns: 1fr 1fr 1fr; }
 .forecast-price-levels-grid { grid-template-columns: repeat(3, 1fr); }
 .settings-grid2 { grid-template-columns: 1fr 1fr; }
+/* T230-UX-MOBILE-RESPONSIVE (settings.tsx pass 2) — 2 rigid grids missed by the original pass:
+   the Position Sizing panel (line ~948, byte-identical to grid2's own 1fr-1fr-16px shape, so
+   folded directly into grid2/settings-grid2 rather than a new class) and this Export/Import
+   card row (a distinct 12px-gap shape, genuinely its own class). */
+.settings-export-import-grid { grid-template-columns: 1fr 1fr; }
 @media (max-width: 767px) {
   .insider-featured-grid,
   .congress-screeners-grid,
   .sector-rotation-summary-grid,
   .intelligence-topbuys-grid,
   .forecast-price-levels-grid,
-  .settings-grid2 {
+  .settings-grid2,
+  .settings-export-import-grid {
     grid-template-columns: 1fr !important;
   }
 }

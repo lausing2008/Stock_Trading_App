@@ -3288,6 +3288,8 @@ def _call_decision_engine(
     market_open_count: int | None = None,
     open_sector_value: float | None = None,
     open_risk_total: float | None = None,
+    weekly_net_pnl_pct: float | None = None,
+    open_exposure_pct: float | None = None,
 ) -> tuple[bool, str, int, str | None] | None:
     """Call Decision Engine and return (should_enter, verdict, score, blocked_reason).
 
@@ -3354,6 +3356,25 @@ def _call_decision_engine(
                         if open_sector_value is not None else {} ),
                     **( {"open_risk_total": open_risk_total, "max_open_risk_pct": cfg.get("max_open_risk_pct", 0.12)}
                         if open_risk_total is not None else {} ),
+                    # T232-DL-DUALSCORER-DEBT: weekly loss/gain circuit breakers — real,
+                    # portfolio-wide gates in _scan_for_entries() with zero decision-engine
+                    # equivalent before this. Both derive from the SAME weekly_net_pnl_pct value
+                    # (a signed %, negative = loss, positive = gain), matching the fallback
+                    # gate's own single-query-serves-both-checks shape. None (not sent at all)
+                    # when the caller's own equity/needs-weekly guard never computed it —
+                    # matches every other optional gate's conditional-inclusion convention here.
+                    **( {"weekly_net_pnl_pct": weekly_net_pnl_pct,
+                         "max_weekly_loss_pct": cfg.get("max_weekly_loss_pct", 0.08),
+                         "max_weekly_gain_pct": cfg.get("max_weekly_gain_pct", 0.06)}
+                        if weekly_net_pnl_pct is not None else {} ),
+                    # T232-DL-DUALSCORER-DEBT / T194: open-exposure cap — the one aggregate-
+                    # exposure gate of the three siblings (sector-$ cap, open-risk cap, this
+                    # one) that was never ported. Reuses the SAME already-prefetched-open-book
+                    # aggregate _scan_for_entries() itself sums (via _open_sector_values), never
+                    # a second independent computation that could drift from it.
+                    **( {"open_exposure_pct": open_exposure_pct,
+                         "max_open_exposure_pct": cfg.get("max_open_exposure_pct", 0.40)}
+                        if open_exposure_pct is not None else {} ),
                     **( {"consec_losses": consec_losses} if consec_losses > 0 else {} ),
                     # AUD232-042: DE previously had zero K-Score/ranking-engine reference
                     # anywhere in its scoring — a LONG-horizon stock with kscore=25 (below the
@@ -4516,6 +4537,15 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         (max_weekly_loss and max_weekly_loss > 0) or
         (max_weekly_gain and max_weekly_gain > 0)
     )
+    # T232-DL-DUALSCORER-DEBT: weekly_net_pnl_pct threaded through to decision-engine so it can
+    # reconstruct the SAME two portfolio-wide circuit breakers below (weekly loss limit, T191
+    # gain lock) — DE previously had zero visibility into weekly realized P&L at all, so a bad
+    # (or a locked-in-good) week could be traded through entry-by-entry on the live DE-primary
+    # path as long as each candidate cleared DE's own per-candidate gates. None (not 0.0) when
+    # not computed below, matching every other optional gate's conditional-inclusion convention
+    # in _call_decision_engine() — a portfolio genuinely at 0% weekly P&L is a real, different
+    # value from "never computed."
+    _weekly_net_pnl_pct: float | None = None
     if _needs_weekly and equity > 0:
         from zoneinfo import ZoneInfo
         week_start = datetime.now(ZoneInfo("America/New_York")) - timedelta(days=7)
@@ -4527,6 +4557,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 PaperTrade.exit_time >= week_start,
             )
         ).scalar() or 0.0
+        _weekly_net_pnl_pct = weekly_net_pnl / equity * 100
         if max_weekly_loss and weekly_net_pnl < 0 and abs(weekly_net_pnl) / equity > max_weekly_loss and not _gates_override:
             log.warning("paper.weekly_loss_limit",
                         portfolio=portfolio.name,
@@ -4935,6 +4966,14 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     _open_risk_total = sum(
         abs(live_prices.get(_t.symbol, _t.entry_price) - _t.current_stop) * _t.shares
         for _t, _ in _prefetched_open
+    )
+    # T232-DL-DUALSCORER-DEBT / T194: open-exposure cap gate parity — the ONE aggregate-
+    # exposure sibling of the sector-$-cap and open-risk-$-cap above that was never ported.
+    # Deliberately reuses _open_sector_values (already summed with the SAME _best_price()
+    # convention) rather than re-summing entry_price*shares over _prefetched_open a second
+    # time — a portfolio-wide total is just the sum across every sector bucket already computed.
+    _open_exposure_pct = (
+        (sum(_open_sector_values.values()) / equity * 100) if equity > 0 else None
     )
 
     # T258-PORTFOLIO-CORRELATION-PREENTRY: bulk-fetch daily closes for the open book ONCE per
@@ -5560,6 +5599,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             short_signal=_short_signals.get(stock.id),  # T232-DL-DUALSCORER-DEBT: T215/T222-B gate parity
             open_sector_value=_open_sector_values.get(stock.sector or "unclassified", 0.0),  # T232-DL-DUALSCORER-DEBT: sector_cap (dollar) gate parity
             open_risk_total=_open_risk_total,           # T232-DL-DUALSCORER-DEBT: open_risk_cap gate parity
+            weekly_net_pnl_pct=_weekly_net_pnl_pct,      # T232-DL-DUALSCORER-DEBT: weekly loss/gain gate parity
+            open_exposure_pct=_open_exposure_pct,        # T232-DL-DUALSCORER-DEBT / T194: open-exposure cap gate parity
         )
         _max_corr = _max_correlation_with_open_positions(
             session, stock.id, _open_stock_ids, _open_closes_cache,

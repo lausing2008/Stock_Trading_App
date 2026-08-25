@@ -947,7 +947,7 @@ export default function SettingsPage() {
       <div style={section('#34d399')}>
         <div style={sectionBar('linear-gradient(90deg,#34d399,#6ee7b7,#34d399)')} />
         <div style={sectionHead}>Position Sizing — ATR-Based Risk Management</div>
-        <div style={{ padding: '16px 20px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+        <div className="settings-grid2" style={grid2}>
           <div>
             <label style={lbl}>Account Size (USD)</label>
             <input
@@ -1700,7 +1700,7 @@ export default function SettingsPage() {
             Export your watchlists, positions, and cash balances to a JSON file. Import the file on any account or system to restore your data.
           </p>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+          <div className="settings-export-import-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
             {/* Export */}
             <div style={{ borderRadius: '10px', border: '1px solid rgba(14,165,233,0.2)', background: 'rgba(14,165,233,0.04)', padding: '16px' }}>
               <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', marginBottom: '6px' }}>⬇ Export</div>

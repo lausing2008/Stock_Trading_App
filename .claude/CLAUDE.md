@@ -16535,3 +16535,193 @@ docker exec stockai-market-data-1 curl -s 'http://localhost:8001/admin/squeeze-a
 # Confirm current Unusual Whales pricing hasn't changed again before committing:
 # fetch https://unusualwhales.com/pricing?product=api directly rather than trusting this note.
 ```
+
+---
+
+## Next Improvement Batch: 3 Real Fixes From a Background Survey Interrupted by a Spend Limit
+## (2026-08-24)
+
+**User ask, verbatim**: "continue what was left from last time" — resuming a 5-part background
+survey (spawned via a parallel-agent fan-out looking for a genuinely-big improvement batch,
+per an earlier "one big batch" mid-turn instruction) where 2 of 5 sub-agents (scheduler.py
+alert-job audit, signal-engine/ml-prediction gap check) hit the org's monthly API spend limit
+mid-run and were terminated with only partial findings. Rather than wait for a limit reset or
+retry those 2, the 3 COMPLETED sub-agents' findings were personally re-verified against
+current code and built into 3 real, shipped fixes.
+
+**A real background-agent-orchestration gotcha hit and worked around this session**: the
+parent survey agent, once its 5 children were dispatched, twice ended its own turn reporting
+"I'll wait for background children" instead of a real answer — a documented red-flag pattern
+in this file's own history (see "Process Note: Background Agents Can Drift Scope" and
+"lesson reinforced" entries elsewhere) where an agent's own claim of deferring to background
+work is itself a non-answer, not progress. Resolved by bypassing the parent entirely — polling
+its 5 children directly via `ListAgents` and pulling each one's own completion report
+individually once ready, rather than relying on the parent's own (repeatedly non-)synthesis.
+
+### 1. T232-DL-DUALSCORER-RESTRICTEDSYMBOL — RestrictedSymbol blacklist never checked on decision-engine's live path
+
+**The gap**: `_scan_for_entries()` (`paper_trading_engine.py`) checks the operator-maintained
+`RestrictedSymbol` table FIRST in its candidate loop, before any other candidate-specific
+computation — its own comment states "a user-banned symbol should never even be considered."
+8 real symbols were added to this exact table under Tier 297, each with a confirmed 0%
+historical win rate (47/40/31/28/26/18/18/14 trades respectively: SNDK, AMKR, KMT, 6809.HK,
+3323.HK, SOXL, AAON, WMT). But `decision-engine`'s `hard_rejects.py` had zero equivalent check
+— since `decision_engine_mode="primary"` is the live default, any call to `/decide/{symbol}`
+for one of those 8 banned symbols could return an ENTER verdict with nothing to stop it.
+
+**Fix**: a direct DB query inside `check_hard_rejects()` — decision-engine already has real DB
+access (`from db import SessionLocal`, used identically by the pre-existing macro-blackout
+check a few lines below) — querying `restricted_symbols` by exact symbol match, placed
+first thing in the function right after the BUY-direction check, matching `_scan_for_entries()`'s
+own ordering exactly. Deliberately a per-symbol DB lookup rather than threading a whole
+restricted-symbols SET through `config_overrides` (unlike `open_sector_counts`/`short_signal`/
+etc.) — `symbol` is already always sent, and this needs no per-scan-cycle aggregate the caller
+would otherwise have to batch-compute for a value decision-engine can look up itself in one
+query. Fails open on any DB error, matching every other DB-backed gate in this file.
+
+**A real, self-caught test-isolation bug during development**: the first version of the
+"check is skipped when symbol is absent" test registered a fake `db` module globally in
+`sys.modules` and used a call-counting mock to prove zero DB calls happen without a symbol —
+but `_base_kwargs`' own default `reasons={"macro_blackout": None, ...}` ALSO routes through
+`from db import SessionLocal` (the pre-existing macro-blackout gate's own fallback path, which
+in every OTHER test harmlessly hits a real `ImportError` since `db` isn't stubbed there). Once
+a fake `db` module was registered for THIS test, it intercepted the macro-blackout gate's call
+too, inflating the counter for a reason unrelated to the restricted-symbol check under test —
+a real `1 == 0` assertion failure that had nothing to do with the code being tested. Fixed by
+giving that one test a real `macro_blackout=False` value so the macro-blackout gate's fast
+path short-circuits before ever reaching its own DB fallback, isolating the counter to the
+restricted-symbol check alone.
+
+**Tests**: `services/decision-engine/tests/test_hard_rejects.py` gained 6 cases — blocks with
+the real reason text, blocks even with no reason on file ("no reason on file" fallback), a
+non-restricted symbol passes clean, the check is skipped entirely (zero DB calls) when symbol
+is `None`, fails open on a genuine DB error, and — matching the conviction-gate's own
+established ordering-verification discipline — a dedicated test confirming the restricted
+check fires BEFORE the bear-regime check, not after (so a banned symbol's rejection reason is
+unambiguous even when other gates would also fire).
+
+**Adversarial verification** — 2 sabotage cycles, both caught and reverted: disabling the
+whole restricted-symbol block (`if symbol:` → `if False and symbol:`, caught by 3 tests); and
+moving the check to fire AFTER the bear-regime check instead of before (caught by exactly the
+dedicated ordering test, no others — confirming that test genuinely isolates the ordering
+property rather than overlapping with the block-existence tests). Full 134-test
+`hard_rejects.py` suite and 255-test decision-engine suite green; pyflakes clean.
+
+### 2. T232-DL-DUALSCORER-WEEKLYPNL-EXPOSURE — weekly loss/gain circuit breakers + open-exposure cap never ported
+
+**The gap**: 3 more real, portfolio-wide gates in `_scan_for_entries()` with zero
+decision-engine equivalent — `max_weekly_loss_pct` (default 8%), T191's `max_weekly_gain_pct`
+(default 6%, "protect a good week"), and T194's `max_open_exposure_pct` (default 40%, the one
+aggregate-exposure sibling of the already-ported sector-$ cap and open-risk cap that was never
+closed). A bad week — or a good week worth protecting — could be traded through entry-by-entry
+on the live DE-primary path, since each individual candidate only needed to clear DE's own
+per-candidate gates with no portfolio-wide weekly-P&L awareness at all.
+
+**Fix — weekly P&L**: `weekly_net_pnl_pct` (a signed % of equity, matching the fallback gate's
+own negative-for-loss/positive-for-gain convention) was hoisted OUT of its enclosing `if
+_needs_weekly and equity > 0:` block into a typed `float | None = None` local computed BEFORE
+that block — so it survives to the per-candidate `_call_decision_engine()` call site
+regardless of whether the earlier block ever early-returned or was even entered (the original
+`weekly_net_pnl` variable only ever existed INSIDE that conditional, which would have raised a
+`NameError` at the later call site whenever the block's own guard was false).
+
+**Fix — open exposure**: reuses the SAME already-summed `_open_sector_values` dict the
+sector-$ cap already computes (summing across every sector bucket gives the portfolio-wide
+total) rather than a second, independent `entry_price * shares` pass over the open book that
+could silently drift from the sector-cap's own number if either were ever changed without the
+other.
+
+Both threaded through `_call_decision_engine()`'s signature + `config_overrides` via the
+established conditional-inclusion pattern (`**( {...} if X is not None else {} )`). Both new
+`hard_rejects.py` checks are pure DIRECT-comparison gates (unlike the sector-$/open-risk caps,
+which project the candidate's own not-yet-sized worst-case contribution on top of the
+already-open aggregate) — weekly P&L and total open exposure are both already-realized
+portfolio state with nothing left for a single candidate to add before the comparison.
+
+**A real, self-caught test-writing mistake during development, not shipped**: the first
+version of both new write-side wiring tests' "is this key conditionally guarded" check
+searched BACKWARD from each dict key for the guard clause — copying
+`test_index_trend_config_wiring.py`'s own established pattern verbatim. That pattern only
+works when the guard sits on the SAME line as the first dict key (a single-line
+`**( {"key": val} if val is not None else {} )` form). The new code's guard trails AFTER a
+multi-line dict body (`**( {"key1": ..., "key2": ...,\n  ...}\n  if val is not None else {} )`),
+so the backward-lookback window never found it, and both tests failed against genuinely-
+correct code. Fixed by searching FORWARD from the first key to the closing guard clause
+instead — a check robust to either formatting, not tied to one specific code shape.
+
+**Tests**: `hard_rejects.py` gained 10 cases (weekly-loss-blocks, weekly-loss-within-limit,
+gain-lock-blocks, gain-within-threshold, gate-skipped-when-absent, exactly-0.0%-does-not-block-
+either-side, open-exposure-blocks, open-exposure-within-cap, gate-skipped-when-absent,
+custom-threshold-respected). New `services/market-data/tests/test_weekly_pnl_and_open_
+exposure_config_wiring.py` (11 cases, source-text extraction — `paper_trading_engine.py` can't
+be imported directly in this test environment) verifying the write-side wiring: both values
+are threaded, both are conditionally guarded (via the corrected forward-search technique
+above), the weekly threshold fallbacks match the real `cfg.get(...)` defaults exactly,
+`_weekly_net_pnl_pct` is hoisted with a typed `None` default BEFORE the conditional block, the
+sign convention is a signed percent (not an absolute dollar value), and `open_exposure_pct`
+reuses the sector-values sum rather than a second independent computation.
+
+**Adversarial verification** — 3 sabotage cycles, all caught and reverted: disabling the
+weekly-loss comparison specifically (caught by exactly 1 of 6 weekly-P&L tests); disabling the
+open-exposure comparison (caught by exactly 2 of 4 dedicated tests); and removing the
+write-side call-site argument entirely (caught by the dedicated call-site test). Full
+144-test `hard_rejects.py` suite, 255-test decision-engine suite, and 1993-test market-data
+suite green; pyflakes clean on both touched files (all 3 remaining `paper_trading_engine.py`
+warnings confirmed pre-existing via `git stash` — only line numbers shifted).
+
+### 3. T230-UX-MOBILE-RESPONSIVE-SETTINGS-PASS2 — settings.tsx's 2 missed grids + a stale CLAUDE.md tracker entry
+
+**The gap**: the same background survey batch, checking all 12 pages this file's own most
+recent `T230-UX-MOBILE-RESPONSIVE` entry (2026-08-02) names as "remaining deferred"
+(`journal.tsx`, `portfolio.tsx`, `board.tsx`, `strategies.tsx`, `decide.tsx`, `regime.tsx`,
+`insider.tsx`, `congress.tsx`, `sector-rotation.tsx`, `intelligence.tsx`, `forecast.tsx`,
+`settings.tsx`) — found ALL 12 already have real, dedicated responsive-grid classes in
+`globals.css` with matching `@media` overrides. This work simply never received its own
+CLAUDE.md entry, leaving the tracker's own "still deferred" list stale in the OPPOSITE
+direction from the more common failure mode documented elsewhere in this file (claiming
+something is fixed when it isn't) — here, claiming something is STILL BROKEN when it's
+actually fixed. Two genuine exceptions were found on `settings.tsx` specifically, missed by
+its own otherwise-thorough original fix pass: a Position Sizing grid (line ~948) and an
+Export/Import card-row grid (line ~1703), both with no `className`/matching CSS at all.
+
+**Also found, lower-confidence since never individually named by CLAUDE.md before, and
+deliberately left OUT of this pass's scope**: `admin-health.tsx`, `signal-accuracy.tsx`,
+`paper-portfolio.tsx`, `horizon-compare.tsx`, `watchlist-rotation-explainer.tsx`, and
+`improvements.tsx` itself all still have real unfixed rigid grids — a genuine future
+candidate, not silently dropped, just out of scope for this specific batch.
+
+**Fix**: the Position Sizing grid was byte-identical to the page's own pre-existing shared
+`grid2` style object (already reused at 8 other call sites via `className="settings-grid2"`)
+— folded directly into that existing pattern rather than inventing a redundant new class. The
+Export/Import grid uses a distinct 12px gap (not `grid2`'s 16px), so it got its own new
+`settings-export-import-grid` class + matching `@media (max-width: 767px)` override, following
+the exact same page-scoped-class convention every prior pass in this series established.
+
+**Verification**: a full `next build` (all 51 routes compile clean, `/settings` at 16.3 kB)
+plus a direct grep of the compiled output confirming BOTH the base CSS rule and the
+`!important` mobile override for `settings-export-import-grid`/`settings-grid2` are present in
+`.next/static/css/*.css`, and the class name is present in the compiled `settings-*.js` chunk
+— not just correct-looking source. No dedicated test file, matching this whole series'
+established precedent that CSS/JSX-only page fixes are verified via typecheck + a full
+production build rather than unit tests (nothing imports `settings.tsx` directly). Frontend
+typecheck and the full 132-test vitest suite unaffected.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-decision-engine-1 grep -n "restricted_symbols\|weekly_net_pnl_pct\|open_exposure_pct" /app/src/api/core/hard_rejects.py
+docker exec stockai-market-data-1 grep -n "_weekly_net_pnl_pct\|_open_exposure_pct" /app/src/services/paper_trading_engine.py
+
+# Confirm a real restricted symbol is actually blocked live (needs a valid service/admin JWT):
+docker exec stockai-decision-engine-1 curl -s -X POST 'http://localhost:8009/decide/SNDK' \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"style":"SWING","equity":100000,"open_positions":0,"max_positions":6,"live_price":10.0,"game_plan":{},"market":"US","daily_pnl_pct":0.0}'
+# Should return a BLOCKED verdict citing the restricted-symbol list.
+
+docker exec stockai-frontend-1 sh -c "grep -o 'settings-export-import-grid[^}]*}' /app/.next/static/css/*.css"
+```
+
+**Design invariant reinforced (the Nth recurrence of exactly this class in this file's own
+history)**: a tracker/CLAUDE.md entry claiming a page/feature is "still deferred" or "still
+open" needs the same re-verification against current code as one claiming something is
+"done" — this session's own finding #3 is the mirror image of every prior "stale tracker
+entry" incident documented elsewhere in this file, just caught from the opposite direction.
