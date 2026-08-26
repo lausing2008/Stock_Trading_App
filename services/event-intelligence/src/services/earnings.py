@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from common.config import get_settings
-from db import get_session, SessionLocal, EarningsEvent, Stock
+from db import get_session, SessionLocal, EarningsEvent, Stock, Price, TimeFrame
 
 log = structlog.get_logger()
 _settings = get_settings()
@@ -43,8 +43,10 @@ for a retail trading app, shown when a user clicks an upcoming earnings event. Y
 receive a company's ticker, sector, days until the report, the real analyst consensus (EPS/
 revenue estimate + range, analyst count, growth), a 7/30/90-day revision trend (are analysts
 raising or lowering estimates lately), this stock's own history of beating/missing estimates,
-and its projected growth vs. the broader market index. Respond ONLY with valid JSON (no
-markdown, no explanation outside JSON) in this exact format:
+its projected growth vs. the broader market index, and — when available — this stock's own
+REAL, MEASURED price reaction (1-day and 5-day % move) to its last few reports, alongside each
+report's own surprise %. Respond ONLY with valid JSON (no markdown, no explanation outside
+JSON) in this exact format:
 {"watching_for":"<2-3 sentences>","scenarios":[{"scenario":"Beat + Raise","interpretation":"...","typical_reaction":"..."},{"scenario":"In-Line","interpretation":"...","typical_reaction":"..."},{"scenario":"Miss or Cut","interpretation":"...","typical_reaction":"..."}],"bellwether_note":"<1-2 sentences or empty string>"}
 watching_for: 2-3 plain-English sentences on what the market is specifically watching for in
 THIS report, grounded in the real revision trend and beat history you were given (e.g. "analysts
@@ -54,11 +56,17 @@ padding with generic language.
 scenarios: EXACTLY 3 rows, always in this order: "Beat + Raise", "In-Line", "Miss or Cut".
 interpretation is one short clause on what that outcome would signal about the business (e.g.
 "demand still accelerating" / "growth cooling to expectations" / "guidance concerns validated").
-typical_reaction is a SHORT, GENERAL statement of how markets HISTORICALLY tend to react to that
-class of outcome (e.g. "often a strong rally, especially with elevated pre-print expectations" /
-"frequently a modest pullback as anticipation gets priced out" / "can trigger a sharp
-sector-wide selloff") — this is general market-pattern education, NEVER a prediction for this
-specific stock's next move. Do not claim certainty or give a percentage/target price.
+typical_reaction is a SHORT statement of how markets tend to react to that class of outcome.
+When this stock's own real past-reaction history is available AND genuinely fits the specific
+scenario row (e.g. a real prior beat's real 1-day move, for the "Beat + Raise" row), ground the
+language in that real, measured history instead of a generic claim (e.g. "in its last 2 beats
+this stock moved +6% and +9% the next day" rather than "often rallies"). If the real history
+does NOT support a given scenario (e.g. no real past misses to draw on for "Miss or Cut"), fall
+back to general, historically-grounded market-pattern education instead — this is ALWAYS a
+description of how this CLASS of outcome has played out before (for this stock specifically
+when the data supports it, or the market broadly otherwise), NEVER a prediction of what THIS
+upcoming report's own outcome or price move will be. Do not claim certainty or give a
+percentage/target price for the report that hasn't happened yet.
 bellwether_note: ONLY if this stock's growth estimate is genuinely a notable outlier vs. the
 index growth estimate you were given (meaningfully faster or slower), 1-2 sentences on the
 read-through risk to its sector/peers if the print confirms or breaks that trend. Empty string
@@ -210,6 +218,37 @@ def _fetch_fundamentals_sync(symbol: str) -> dict | None:
     return None
 
 
+def _fetch_past_reactions_sync(symbol: str, limit: int = 4) -> list[dict]:
+    """AUD-EARNINGSFORECAST-EXTEND: this stock's own real, MEASURED past-earnings reactions
+    (post_earnings_return_1d/_5d, populated by backfill_post_earnings_returns() below) — a
+    direct DB read (event-intelligence has direct access to the shared Price/Stock/
+    EarningsEvent models, a genuinely cheaper path than _fetch_fundamentals_sync()'s own HTTP
+    round-trip). A sync, blocking SQLAlchemy call — must run inside _executor exactly like
+    _fetch_fundamentals_sync() above (see generate_earnings_forecast's own call site)."""
+    try:
+        with SessionLocal() as s:
+            stock_id = s.execute(select(Stock.id).where(Stock.symbol == symbol)).scalar()
+            if stock_id is None:
+                return []
+            rows = s.execute(
+                select(EarningsEvent.report_date, EarningsEvent.surprise_pct,
+                       EarningsEvent.post_earnings_return_1d, EarningsEvent.post_earnings_return_5d)
+                .where(
+                    EarningsEvent.stock_id == stock_id,
+                    EarningsEvent.post_earnings_return_1d.isnot(None),
+                )
+                .order_by(EarningsEvent.report_date.desc())
+                .limit(limit)
+            ).all()
+            return [
+                {"report_date": rd.isoformat(), "surprise_pct": sp, "return_1d": r1, "return_5d": r5}
+                for rd, sp, r1, r5 in rows
+            ]
+    except Exception as exc:
+        log.warning("earnings_forecast.past_reactions_fetch_failed", symbol=symbol, error=str(exc))
+        return []
+
+
 async def generate_earnings_forecast(symbol: str, sector: str | None, days_to_event: int) -> dict | None:
     """PRE-report forecast — the genuinely on-demand (user-clicked, not scheduled-poll) sibling
     of generate_earnings_impact() above. Fail-open: returns None on any error (missing flag, no
@@ -250,6 +289,7 @@ async def generate_earnings_forecast(symbol: str, sector: str | None, days_to_ev
     _, consensus = consensus_period
     growth_period = _nearest_forecast_period(fundamentals.get("growth_vs_index"))
     growth = growth_period[1] if growth_period else {}
+    past_reactions = await loop.run_in_executor(_executor, _fetch_past_reactions_sync, symbol)
 
     def _fmt(v, suffix=""):
         return f"{v}{suffix}" if v is not None else "unavailable"
@@ -278,6 +318,16 @@ async def generate_earnings_forecast(symbol: str, sector: str | None, days_to_ev
         f"Projected growth — this stock: {_fmt_pct(growth.get('stock_growth'))} "
         f"vs. broader index: {_fmt_pct(growth.get('index_growth'))}\n"
     )
+    if past_reactions:
+        reactions_lines = "\n".join(
+            f"  {pr['report_date']}: surprise {_fmt_pct(pr['surprise_pct'])}, "
+            f"1-day move {_fmt_pct(pr['return_1d'])}, 5-day move {_fmt_pct(pr['return_5d'])}"
+            for pr in past_reactions
+        )
+        reactions_block = f"This stock's own real past-earnings reactions (most recent first):\n{reactions_lines}\n"
+    else:
+        reactions_block = "This stock's own past-earnings reaction history: unavailable\n"
+    prompt += reactions_block
     body = {
         "model": "claude-haiku-4-5-20251001",
         "max_tokens": 500,
@@ -307,6 +357,7 @@ async def generate_earnings_forecast(symbol: str, sector: str | None, days_to_ev
             "watching_for": watching_for,
             "scenarios": scenarios,
             "bellwether_note": (str(data.get("bellwether_note") or "").strip())[:400] or None,
+            "past_reactions": past_reactions,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
@@ -372,6 +423,83 @@ async def check_earnings_impact_poll() -> dict:
                 log.warning("earnings_impact.poll_error", symbol=sym, error=str(exc))
 
     return {"checked": checked, "generated": generated, "skipped": None}
+
+
+def _compute_post_earnings_returns(bars: list[tuple[date, float]], report_date: date) -> tuple[float | None, float | None]:
+    """AUD-EARNINGSFORECAST-EXTEND: pure, dependency-free bar-index math — given a symbol's own
+    sorted (date, close) daily bars, returns (return_1d, return_5d), the % change from the last
+    close STRICTLY BEFORE report_date to the close 1 and 5 TRADING DAYS after report_date's own
+    bar. Bar-index-based, never a calendar-day offset (matching gate_harness.py's own T196
+    convention — a fixed number of trading days correctly skips weekends/holidays, a calendar-
+    day offset does not). Baseline is the last close BEFORE report_date, not report_date's own
+    close, so the measurement is consistent regardless of whether the report was released
+    before market open (BMO) or after close (AMC). Returns (None, None) rather than a partial/
+    guessed value when there isn't enough real bar history on either side yet — never fabricate
+    a reaction from data that doesn't exist."""
+    before = [(d, c) for d, c in bars if d < report_date]
+    after = [(d, c) for d, c in bars if d >= report_date]
+    if not before or not after:
+        return None, None
+    baseline = before[-1][1]
+    if baseline == 0:
+        return None, None
+    ret_1d = (after[1][1] / baseline - 1) if len(after) >= 2 else None
+    ret_5d = (after[5][1] / baseline - 1) if len(after) >= 6 else None
+    return ret_1d, ret_5d
+
+
+async def backfill_post_earnings_returns() -> dict:
+    """Populates EarningsEvent.post_earnings_return_1d/_5d — real columns that have been
+    DEFINED but never written by any job in this codebase (confirmed via grep before deciding
+    to build this; see the CLAUDE.md entry this closes for the earlier, deliberate deferral).
+    A genuinely separate job from check_earnings_impact_poll() above: that one fires the moment
+    eps_actual lands (same day), but a 5-trading-day-later return can't be measured until 5
+    real trading days have actually elapsed — hence its own daily cron, not a tighter interval.
+
+    Reuses Price directly (a shared model this service's own DB connection already has access
+    to) rather than an HTTP round-trip to market-data — a genuinely cheaper path than
+    generate_earnings_forecast()'s own _fetch_fundamentals_sync(), since this data lives in the
+    SAME database this service is already connected to.
+    """
+    cutoff = date.today() - timedelta(days=45)  # bound the scan — older unbackfilled rows are
+    # a genuine, if rare, gap (e.g. this job didn't exist yet when they reported) rather than a
+    # target for indefinite reprocessing; a 45-day window comfortably covers the 5-trading-day
+    # minimum plus real-world scheduling slack.
+    filled = 0
+    with SessionLocal() as s:
+        rows = s.execute(
+            select(EarningsEvent, Stock.id)
+            .join(Stock, EarningsEvent.stock_id == Stock.id)
+            .where(
+                EarningsEvent.report_date >= cutoff,
+                EarningsEvent.eps_actual.isnot(None),
+                EarningsEvent.post_earnings_return_1d.is_(None),
+            )
+        ).all()
+        checked = len(rows)
+        for ev, stock_id in rows:
+            try:
+                price_rows = s.execute(
+                    select(Price.ts, Price.close)
+                    .where(
+                        Price.stock_id == stock_id,
+                        Price.timeframe == TimeFrame.D1,
+                        Price.ts >= datetime.combine(ev.report_date - timedelta(days=20), datetime.min.time()),
+                    )
+                    .order_by(Price.ts)
+                ).all()
+                bars = [(p.ts.date() if hasattr(p.ts, "date") else p.ts, float(p.close)) for p in price_rows]
+                ret_1d, ret_5d = _compute_post_earnings_returns(bars, ev.report_date)
+                if ret_1d is None and ret_5d is None:
+                    continue  # not enough real bars yet — leave NULL, try again next run
+                ev.post_earnings_return_1d = ret_1d
+                ev.post_earnings_return_5d = ret_5d
+                s.commit()
+                filled += 1
+            except Exception as exc:
+                log.warning("earnings_returns.backfill_error", stock_id=stock_id, error=str(exc))
+
+    return {"checked": checked, "filled": filled}
 
 
 def _match_report_dates_to_history(

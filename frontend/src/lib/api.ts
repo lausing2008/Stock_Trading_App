@@ -1349,10 +1349,17 @@ export type EarningsForecastScenario = {
   interpretation: string;
   typical_reaction: string;
 };
+export type EarningsPastReaction = {
+  report_date: string;
+  surprise_pct: number | null;
+  return_1d: number | null;
+  return_5d: number | null;
+};
 export type EarningsForecast = {
   watching_for: string;
   scenarios: EarningsForecastScenario[];
   bellwether_note: string | null;
+  past_reactions: EarningsPastReaction[];
   generated_at: string;
 };
 

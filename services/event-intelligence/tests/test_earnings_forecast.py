@@ -149,6 +149,71 @@ def test_fetch_fundamentals_sync_returns_none_on_exception(monkeypatch):
     assert _fetch_fundamentals_sync("AAPL") is None
 
 
+# ── _fetch_past_reactions_sync() ────────────────────────────────────────────────────────
+# Matches test_sync_todays_earnings.py's established fake-session convention exactly (a real
+# SQLAlchemy expression tree can't be built against the stubbed sqlalchemy module, so these
+# drive behavior via what SessionLocal().execute(...) returns, not by inspecting the built
+# query). Unlike that file's single s.execute(...).all() call, this function calls s.execute()
+# TWICE (a .scalar() stock_id lookup, then a .all() reactions-rows fetch) — side_effect is a
+# list so each call returns its own distinct fake result in order.
+
+def _install_fake_reactions_session(monkeypatch, stock_id, rows):
+    """stock_id: the value the first s.execute(...).scalar() call should return (None for a
+    genuinely unknown symbol). rows: the list of tuples the second s.execute(...).all() call
+    should return."""
+    import src.services.earnings as e
+    scalar_result = MagicMock()
+    scalar_result.scalar.return_value = stock_id
+    all_result = MagicMock()
+    all_result.all.return_value = rows
+    fake_session = MagicMock()
+    fake_session.execute.side_effect = [scalar_result, all_result]
+    fake_session.__enter__.return_value = fake_session
+    fake_session.__exit__.return_value = False
+    monkeypatch.setattr(e, "SessionLocal", lambda: fake_session)
+    return fake_session
+
+
+def test_fetch_past_reactions_sync_returns_empty_list_for_unknown_symbol(monkeypatch):
+    import src.services.earnings as e
+    _install_fake_reactions_session(monkeypatch, None, [])
+    assert e._fetch_past_reactions_sync("ZZZZ") == []
+
+
+def test_fetch_past_reactions_sync_returns_real_rows_shaped_correctly(monkeypatch):
+    import src.services.earnings as e
+    from datetime import date
+    rows = [
+        (date(2026, 8, 6), 45.2, -0.1153, 0.0826),
+        (date(2026, 5, 6), -12.0, -0.0421, -0.0198),
+    ]
+    _install_fake_reactions_session(monkeypatch, 42, rows)
+    result = e._fetch_past_reactions_sync("OSCR")
+    assert result == [
+        {"report_date": "2026-08-06", "surprise_pct": 45.2, "return_1d": -0.1153, "return_5d": 0.0826},
+        {"report_date": "2026-05-06", "surprise_pct": -12.0, "return_1d": -0.0421, "return_5d": -0.0198},
+    ]
+
+
+def test_fetch_past_reactions_sync_returns_empty_list_when_no_reactions_are_measured_yet(monkeypatch):
+    """A symbol with real EarningsEvent rows but none with a measured post_earnings_return_1d
+    yet (too recent, or the backfill job hasn't run) must return [] — never a partial/padded
+    result guessing at unmeasured values."""
+    import src.services.earnings as e
+    _install_fake_reactions_session(monkeypatch, 42, [])
+    assert e._fetch_past_reactions_sync("NVDA") == []
+
+
+def test_fetch_past_reactions_sync_fails_open_on_a_db_exception(monkeypatch):
+    import src.services.earnings as e
+
+    def _raise():
+        raise ConnectionError("db down")
+
+    monkeypatch.setattr(e, "SessionLocal", _raise)
+    assert e._fetch_past_reactions_sync("AAPL") == []
+
+
 # ── generate_earnings_forecast() ────────────────────────────────────────────────────────
 
 def _mock_anthropic_response(watching_for="Watch the guidance.", scenarios=None, bellwether_note=""):
@@ -197,6 +262,13 @@ def _patch_fundamentals(monkeypatch, fundamentals):
     calls it: by module-level name, so a monkeypatch on the module attribute takes effect."""
     import src.services.earnings as e
     monkeypatch.setattr(e, "_fetch_fundamentals_sync", lambda symbol: fundamentals)
+
+
+def _patch_past_reactions(monkeypatch, reactions):
+    """Same bypass shape as _patch_fundamentals above, for the sibling
+    _fetch_past_reactions_sync() executor call."""
+    import src.services.earnings as e
+    monkeypatch.setattr(e, "_fetch_past_reactions_sync", lambda symbol, limit=4: reactions)
 
 
 _REAL_FUNDAMENTALS = {
@@ -313,9 +385,66 @@ def test_returns_full_result_shape_on_success(monkeypatch):
     assert len(result["scenarios"]) == 3
     assert result["bellwether_note"] == "A strong print here would validate broader tech demand."
     assert "generated_at" in result
+    # A symbol with no real past-reaction history yet must report an empty list, not omit the
+    # key or fabricate placeholder rows.
+    assert result["past_reactions"] == []
     # A successful generation must write back to the cache for next time.
     fake_redis.setex.assert_called_once()
     assert fake_redis.setex.call_args[0][0] == "stockai:earnings_forecast:AAPL"
+
+
+def test_past_reactions_are_included_in_the_result_and_the_prompt(monkeypatch):
+    """AUD-EARNINGSFORECAST-EXTEND: this stock's own real, measured past-reaction history must
+    (a) be passed through verbatim into the final result (so the frontend can render it
+    directly, independent of how the LLM chose to reference it) and (b) actually reach the
+    Claude prompt (so the LLM's own typical_reaction framing can be grounded in it)."""
+    import src.services.earnings as e
+    monkeypatch.setattr("common.redis_client.get_redis", lambda: _fake_redis())
+    monkeypatch.setattr(e, "_api_key", lambda: "test-key")
+    _patch_fundamentals(monkeypatch, _REAL_FUNDAMENTALS)
+    reactions = [
+        {"report_date": "2026-08-06", "surprise_pct": 45.2, "return_1d": -0.1153, "return_5d": 0.0826},
+    ]
+    _patch_past_reactions(monkeypatch, reactions)
+
+    captured_prompts = []
+
+    class _CapturingClient(_FakeAsyncClient):
+        async def post(self, *a, **kw):
+            captured_prompts.append(kw["json"]["messages"][0]["content"])
+            return await super().post(*a, **kw)
+
+    monkeypatch.setattr(e.httpx, "AsyncClient", lambda **kw: _CapturingClient(_mock_anthropic_response()))
+
+    result = _run(generate_earnings_forecast("AAPL", "Healthcare", 3))
+    assert result is not None
+    assert result["past_reactions"] == reactions
+    assert len(captured_prompts) == 1
+    assert "2026-08-06" in captured_prompts[0]
+    assert "-11.5%" in captured_prompts[0]  # return_1d formatted as a percent
+    assert "8.3%" in captured_prompts[0]    # return_5d formatted as a percent
+
+
+def test_no_past_reactions_degrades_the_prompt_gracefully_not_a_crash(monkeypatch):
+    import src.services.earnings as e
+    monkeypatch.setattr("common.redis_client.get_redis", lambda: _fake_redis())
+    monkeypatch.setattr(e, "_api_key", lambda: "test-key")
+    _patch_fundamentals(monkeypatch, _REAL_FUNDAMENTALS)
+    _patch_past_reactions(monkeypatch, [])
+
+    captured_prompts = []
+
+    class _CapturingClient(_FakeAsyncClient):
+        async def post(self, *a, **kw):
+            captured_prompts.append(kw["json"]["messages"][0]["content"])
+            return await super().post(*a, **kw)
+
+    monkeypatch.setattr(e.httpx, "AsyncClient", lambda **kw: _CapturingClient(_mock_anthropic_response()))
+
+    result = _run(generate_earnings_forecast("AAPL", "Technology", 1))
+    assert result is not None
+    assert result["past_reactions"] == []
+    assert "unavailable" in captured_prompts[0]
 
 
 def test_empty_bellwether_note_becomes_none(monkeypatch):

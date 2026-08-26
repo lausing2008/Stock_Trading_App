@@ -61,6 +61,14 @@ async def job_check_earnings_impact_poll():
     await _run("check_earnings_impact_poll", earnings.check_earnings_impact_poll())
 
 
+async def job_backfill_post_earnings_returns():
+    # AUD-EARNINGSFORECAST-EXTEND: post_earnings_return_1d/_5d were real, DEFINED columns that
+    # had never been written by any job — closes that gap. A daily cron (not check_earnings_
+    # impact_poll's tighter 5-min interval) since a 5-trading-day-later return genuinely can't
+    # be measured any faster than real trading days elapse.
+    await _run("backfill_post_earnings_returns", earnings.backfill_post_earnings_returns())
+
+
 async def job_sync_insider():
     await _run("sync_insider", insider.sync_all_insider())
 
@@ -163,6 +171,13 @@ async def start_scheduler():
     # earnings_llm_impact_enabled admin flag before even querying the DB.
     _scheduler.add_job(
         job_check_earnings_impact_poll, "interval", minutes=5, id="check_earnings_impact_poll",
+    )
+    # AUD-EARNINGSFORECAST-EXTEND: once daily is plenty — a 5-trading-day-later return can't be
+    # measured any faster regardless of cadence. 06:40 UTC, right after sync_earnings (06:30)
+    # so any report synced that morning has its DB row available, though the real measurement
+    # for most rows won't be fillable until several days later regardless.
+    _scheduler.add_job(
+        job_backfill_post_earnings_returns, "cron", hour=6, minute=40, id="backfill_post_earnings_returns",
     )
     _scheduler.add_job(job_sync_insider,       "cron", hour=7,  minute=0,  id="sync_insider")
     _scheduler.add_job(job_sync_congress,      "cron", hour=7,  minute=30, id="sync_congress")

@@ -116,6 +116,45 @@ export default function EarningsForecastPanel({
         <>
           <div style={{ fontSize: 13, color: '#cbd5e1', lineHeight: 1.55 }}>{forecast.watching_for}</div>
 
+          {forecast.past_reactions.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#475569' }}>
+                Real Past Reactions
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
+                  <thead>
+                    <tr style={{ color: '#475569', textAlign: 'left' }}>
+                      <th style={{ padding: '3px 8px 3px 0', fontWeight: 600 }}>Report Date</th>
+                      <th style={{ padding: '3px 8px', fontWeight: 600 }}>Surprise</th>
+                      <th style={{ padding: '3px 8px', fontWeight: 600 }}>1-Day Move</th>
+                      <th style={{ padding: '3px 0', fontWeight: 600 }}>5-Day Move</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {forecast.past_reactions.map(pr => (
+                      <tr key={pr.report_date} style={{ borderTop: '1px solid #1e293b' }}>
+                        <td style={{ padding: '4px 8px 4px 0', color: '#94a3b8' }}>{pr.report_date}</td>
+                        <td style={{ padding: '4px 8px', color: (pr.surprise_pct ?? 0) >= 0 ? '#4ade80' : '#f87171' }}>
+                          {pr.surprise_pct != null ? `${pr.surprise_pct >= 0 ? '+' : ''}${pr.surprise_pct.toFixed(1)}%` : '—'}
+                        </td>
+                        <td style={{ padding: '4px 8px', color: (pr.return_1d ?? 0) >= 0 ? '#4ade80' : '#f87171' }}>
+                          {fmtPct(pr.return_1d)}
+                        </td>
+                        <td style={{ padding: '4px 0', color: (pr.return_5d ?? 0) >= 0 ? '#4ade80' : '#f87171' }}>
+                          {fmtPct(pr.return_5d)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ fontSize: 10, color: '#334155' }}>
+                Real, measured reactions — used above to ground the scenario read where relevant.
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#475569' }}>
               How to Interpret the Market Impact

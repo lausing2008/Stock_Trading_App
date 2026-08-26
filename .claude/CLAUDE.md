@@ -17958,3 +17958,103 @@ docker exec stockai-postgres-1 psql -U stockai -d stockai -c "SELECT symbol FROM
 docker exec stockai-postgres-1 psql -U stockai -d stockai -c "SELECT MIN(signal_date), MAX(signal_date), COUNT(*) FROM signal_outcomes WHERE is_correct_10d IS NOT NULL;"
 ```
 Worth re-running the same 6-sweep × 4-combo matrix again once the resolved-outcome count grows meaningfully further (e.g. another 4-6 weeks) — a promotion becoming viable is a real possibility this system is explicitly designed to surface once the data supports it, not something to force earlier.
+
+---
+
+## Feature Reference: AUD-EARNINGSFORECAST-EXTEND — Real Post-Earnings Reaction History Feeds the LLM Forecast (Built 2026-08-26)
+
+**Closes the gap this session's own AUD-EARNINGSFORECAST entry left open**: `EarningsEvent.
+post_earnings_return_1d`/`post_earnings_return_5d` were real, DEFINED columns that no job in
+this codebase ever wrote — confirmed via grep before building this. The PRE-earnings forecast
+feature's own `_FORECAST_SYSTEM` prompt previously had no way to ground `typical_reaction` in a
+stock's own real history, only generic market-pattern language.
+
+**`_compute_post_earnings_returns(bars, report_date)`** (`services/event-intelligence/src/
+services/earnings.py`) — pure, dependency-free bar-index math. Baseline is the LAST close
+STRICTLY BEFORE `report_date` (not `report_date`'s own close), so the measurement is consistent
+regardless of BMO/AMC timing. `ret_1d`/`ret_5d` each independently gated on having enough real
+after-bars (`len(after) >= 2` / `>= 6`) — never a calendar-day offset, matching `gate_harness.
+py`'s own T196 convention that a fixed number of TRADING days must be used, not calendar days.
+Returns `(None, None)` rather than a fabricated/partial value when there isn't enough real bar
+history on either side.
+
+**`backfill_post_earnings_returns()`** — new daily cron (06:40 UTC, right after `sync_earnings`
+at 06:30), genuinely separate from `check_earnings_impact_poll()`'s 5-min interval: a 5-trading-
+day-later return can't be measured any faster than real trading days elapse regardless of poll
+cadence. Reads `Price` DIRECTLY (event-intelligence already has DB access to the shared model)
+rather than an HTTP round-trip to market-data — cheaper than `generate_earnings_forecast()`'s
+own `_fetch_fundamentals_sync()`. Per-row `try/except` isolation (one symbol's price-fetch
+failure must never abort the whole batch), bounded to a 45-day lookback window.
+
+**`_fetch_past_reactions_sync(symbol, limit=4)`** — a sync, blocking DB read, wrapped in
+`_executor` exactly like `_fetch_fundamentals_sync()`'s own established fix
+(`AUD-EI-MACRO-REACTION-BLOCKING`'s pattern) — a bare sync call inside an `async def` would
+block the shared event loop for every other concurrent request this service serves. Returns up
+to 4 most-recent reports with a real, measured `return_1d`/`return_5d`, most-recent-first.
+
+**Prompt extension**: `_FORECAST_SYSTEM` now instructs the LLM to ground `typical_reaction` in
+a stock's own REAL history WHEN AVAILABLE AND GENUINELY RELEVANT to that specific scenario row
+(e.g. a real prior beat's real 1-day move for the "Beat + Raise" row), but to fall back to
+general market-pattern education when the real history doesn't support a given scenario (e.g.
+no real past misses to draw on for "Miss or Cut") — explicitly still never a prediction of the
+UPCOMING report's own outcome, matching this feature's original honesty discipline.
+
+**A real test-writing bug caught and fixed, not shipped**: `_FakePriceModel` (the query-plumbing
+stand-in in `test_post_earnings_returns.py`) originally defined only `stock_id`/`timeframe`/`ts`
+as class attributes — `select(Price.ts, Price.close)` in the real code raised `AttributeError:
+type object '_FakePriceModel' has no attribute 'close'` before ever reaching the fake session,
+silently producing `filled=0` for every test regardless of whether the real fill logic worked.
+Diagnosed by temporarily disabling the outer per-row `except` and printing the real caught
+exception directly — the fix was adding `close = _FakeColumn()` to the fake model. A second,
+separate test bug: `test_leaves_a_row_null_...` originally asserted `ev.post_earnings_return_1d
+is None` against a bare `MagicMock()` — whose default auto-vivified attribute is a `MagicMock`,
+never `None`, so this assertion was checking nothing real. Fixed by replacing the `MagicMock`
+fixture with a real `_FakeEvInstance` object whose fields genuinely start `None`.
+
+**Also, mid-session: an accidental `git checkout -- earnings.py`** (run during an md5sum-based
+adversarial-verification revert, before this feature's own commit existed) discarded the whole
+uncommitted extension from the working tree — recovered by re-applying every edit from the
+`sed`/`grep` reads already captured in the same turn, then confirmed via the full 334-test
+suite + pyflakes (only pre-existing warnings) that the reconstruction was functionally
+identical, not just checksum-matched.
+
+**Tests**: `services/event-intelligence/tests/test_post_earnings_returns.py` (10 cases) —
+`_compute_post_earnings_returns()`'s full boundary matrix (baseline-strictly-before, no-bar-
+before/after, zero baseline, independent 1d/5d resolution) plus `backfill_post_earnings_
+returns()`'s fill/skip/isolation behavior. `test_earnings_forecast.py` gained 6 new cases —
+`_fetch_past_reactions_sync()`'s fail-open matrix (unknown symbol, real rows, no measured
+reactions yet, DB exception) and 2 for the prompt-wiring (`past_reactions` reaches both the
+prompt text and the final result; an empty history degrades the prompt gracefully to
+"unavailable" rather than crashing).
+
+**Adversarial verification** — 3 sabotage/revert cycles, all caught and reverted (confirmed
+byte-identical via `md5sum` before moving on): the baseline-selection line (`before[-1][1]` →
+`after[0][1]`, the exact BMO/AMC bug this design avoids) — caught by 5 of 10 tests including the
+dedicated baseline test; the per-row `try/except` isolation removed entirely — caught by exactly
+the dedicated isolation test with a real, unguarded `ConnectionError`; the `past_reactions`
+fetch call removed from `generate_earnings_forecast()` (replaced with a hardcoded `[]`) — caught
+by the dedicated prompt-wiring test.
+
+Full 334-test event-intelligence suite green; `pyflakes` clean (all 4 remaining warnings
+confirmed via `git stash` to predate this change).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-event-intelligence-1 grep -n "def _compute_post_earnings_returns\|def backfill_post_earnings_returns\|def _fetch_past_reactions_sync" /app/src/services/earnings.py
+
+# Confirm the daily backfill job actually ran and populated real rows:
+docker logs stockai-event-intelligence-1 --since 24h | grep backfill_post_earnings_returns
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT s.symbol, e.report_date, e.post_earnings_return_1d, e.post_earnings_return_5d FROM earnings_events e JOIN stocks s ON s.id = e.stock_id WHERE e.post_earnings_return_1d IS NOT NULL ORDER BY e.report_date DESC LIMIT 10;"
+
+# Manually trigger the backfill job (safe — idempotent, only touches rows still missing the field):
+docker exec stockai-event-intelligence-1 python3 -c "
+import asyncio, sys; sys.path.insert(0, '/app')
+from src.services.earnings import backfill_post_earnings_returns
+print(asyncio.run(backfill_post_earnings_returns()))
+"
+```
+If `past_reactions` is always `[]` in a real forecast response despite a symbol having recent
+resolved reports, first confirm the backfill job has actually populated `post_earnings_return_
+1d` for that symbol's rows — `_fetch_past_reactions_sync()` only reads already-persisted values,
+it never computes on the fly.
