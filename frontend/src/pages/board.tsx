@@ -69,6 +69,7 @@ function AlertModal({ plan, priceAlerts, signalAlert, suggestions, onClose, onAl
   const [addingAlert, setAddingAlert] = useState(false);
   const [settingAll, setSettingAll] = useState(false);
   const [togglingSignal, setTogglingSignal] = useState(false);
+  const [alertModalError, setAlertModalError] = useState('');
   const [selected, setSelected] = useState<Set<number>>(() => new Set(suggestions.map((_, i) => i)));
 
   const existingThresholds = new Set(priceAlerts.map(a => `${a.condition}:${a.threshold}`));
@@ -85,10 +86,13 @@ function AlertModal({ plan, priceAlerts, signalAlert, suggestions, onClose, onAl
     const val = parseFloat(threshold);
     if (!val || isNaN(val)) return;
     setAddingAlert(true);
+    setAlertModalError('');
     try {
       await api.createAlert({ symbol: plan.symbol, condition, threshold: val });
       setThreshold('');
       onAlertsChange();
+    } catch (e: unknown) {
+      setAlertModalError(e instanceof Error ? e.message : 'Failed to add alert.');
     } finally { setAddingAlert(false); }
   }
 
@@ -96,14 +100,18 @@ function AlertModal({ plan, priceAlerts, signalAlert, suggestions, onClose, onAl
     const toCreate = suggestions.filter((_, i) => selected.has(i) && !existingThresholds.has(`${suggestions[i].condition}:${suggestions[i].price}`));
     if (!toCreate.length) return;
     setSettingAll(true);
+    setAlertModalError('');
     try {
       await Promise.all(toCreate.map(s => api.createAlert({ symbol: plan.symbol, condition: s.condition, threshold: s.price, note: s.label })));
       onAlertsChange();
+    } catch (e: unknown) {
+      setAlertModalError(e instanceof Error ? e.message : 'Failed to set alerts.');
     } finally { setSettingAll(false); }
   }
 
   async function handleToggleSignal() {
     setTogglingSignal(true);
+    setAlertModalError('');
     try {
       if (signalAlert) {
         await api.deleteSignalAlert(signalAlert.id);
@@ -112,6 +120,8 @@ function AlertModal({ plan, priceAlerts, signalAlert, suggestions, onClose, onAl
         await api.createSignalAlert(plan.symbol, email);
       }
       onAlertsChange();
+    } catch (e: unknown) {
+      setAlertModalError(e instanceof Error ? e.message : 'Failed to update signal alert.');
     } finally { setTogglingSignal(false); }
   }
 
@@ -136,6 +146,10 @@ function AlertModal({ plan, priceAlerts, signalAlert, suggestions, onClose, onAl
         </div>
 
         <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+
+          {alertModalError && (
+            <div style={{ fontSize: '12px', color: '#f87171', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '8px', padding: '8px 12px' }}>{alertModalError}</div>
+          )}
 
           {/* Signal alert */}
           <section>
@@ -894,7 +908,7 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
 }
 
 /* ── Add card form ─────────────────────────────────────── */
-function AddCardForm({ onAdd }: { onAdd: (symbol: string, notes: string) => Promise<void> }) {
+function AddCardForm({ onAdd }: { onAdd: (symbol: string, notes: string) => Promise<boolean> }) {
   const [symbol, setSymbol] = useState('');
   const [notes, setNotes] = useState('');
   const [adding, setAdding] = useState(false);
@@ -904,8 +918,12 @@ function AddCardForm({ onAdd }: { onAdd: (symbol: string, notes: string) => Prom
     e.preventDefault();
     if (!symbol.trim()) return;
     setAdding(true);
-    await onAdd(symbol.trim().toUpperCase(), notes.trim());
-    setSymbol(''); setNotes(''); setAdding(false); setOpen(false);
+    const ok = await onAdd(symbol.trim().toUpperCase(), notes.trim());
+    setAdding(false);
+    // onAdd already surfaced its own error via the page-level toast on failure — only clear
+    // the form and close it on a real success, so a failed add leaves the user's typed
+    // symbol/notes in place to retry rather than silently discarding them.
+    if (ok) { setSymbol(''); setNotes(''); setOpen(false); }
   }
 
   if (!open) return (
@@ -956,7 +974,14 @@ export default function BoardPage() {
   const [fillTarget, setFillTarget] = useState<FillTarget | null>(null);
   const [closeConfirmId, setCloseConfirmId] = useState<number | null>(null);
   const [closeExitInput, setCloseExitInput] = useState('');
-  const [fillSyncMsg, setFillSyncMsg] = useState('');
+  // Generalized from the fill-sync-only toast this used to be (fillSyncMsg) — every board
+  // mutation handler below can now surface a failure through the same bottom-center toast,
+  // rather than several of them silently swallowing errors with no user feedback at all.
+  const [boardMsg, setBoardMsg] = useState('');
+  function showBoardError(msg: string) {
+    setBoardMsg(`⚠ ${msg}`);
+    setTimeout(() => setBoardMsg(''), 6000);
+  }
 
   // Fetch live prices for board symbols only, refresh every 60 s
   const boardSymbols = useMemo(() => [...new Set((data ?? []).map(p => p.symbol))], [data]);
@@ -998,7 +1023,12 @@ export default function BoardPage() {
       setCloseConfirmId(id);
       return;
     }
-    await api.updateBoardPlan(id, { stage });
+    try {
+      await api.updateBoardPlan(id, { stage });
+    } catch (e: unknown) {
+      showBoardError(e instanceof Error ? e.message : 'Failed to move card — try again.');
+      return;
+    }
     mutate();
   }
 
@@ -1008,7 +1038,13 @@ export default function BoardPage() {
     const exitPrice = parseFloat(closeExitInput);
     const updates: Record<string, unknown> = { stage: 'closed' };
     if (!isNaN(exitPrice) && exitPrice > 0) updates.exit_price = exitPrice;
-    await api.updateBoardPlan(closeConfirmId, updates);
+    try {
+      await api.updateBoardPlan(closeConfirmId, updates);
+    } catch (e: unknown) {
+      showBoardError(e instanceof Error ? e.message : 'Failed to close trade — try again.');
+      return; // leave the confirm modal open (closeConfirmId still set) rather than silently
+      // discarding the user's exit-price entry and pretending the close happened.
+    }
     // Remove from Positions and credit cash proceeds if the card has a tracked position
     if (closePlan?.symbol) {
       try {
@@ -1042,12 +1078,18 @@ export default function BoardPage() {
   async function handleFillConfirm(fillPrice: number, shares: number | null) {
     if (!fillTarget) return;
     const activatingPlan = (data ?? []).find(p => p.id === fillTarget.id);
-    await api.updateBoardPlan(fillTarget.id, {
-      stage: 'active',
-      actual_entry_price: fillPrice,
-      trading_style: getSignalStyle(),
-      ...(shares != null ? { shares } : {}),
-    });
+    try {
+      await api.updateBoardPlan(fillTarget.id, {
+        stage: 'active',
+        actual_entry_price: fillPrice,
+        trading_style: getSignalStyle(),
+        ...(shares != null ? { shares } : {}),
+      });
+    } catch (e: unknown) {
+      showBoardError(e instanceof Error ? e.message : 'Failed to record fill — try again.');
+      return; // primary mutation failed — leave fillTarget set so the modal stays open, not
+      // silently closed as if the fill had actually been recorded.
+    }
     // Auto-sync to Positions page when shares + fill price are provided
     if (shares != null && activatingPlan) {
       try {
@@ -1068,14 +1110,14 @@ export default function BoardPage() {
             [currency]: Math.max(0, (currentCash[currency] ?? 0) - shares * fillPrice),
           });
         } catch { /* best-effort cash debit */ }
-        setFillSyncMsg(`✓ Added to Positions (${shares} shares @ ${fillPrice})`);
+        setBoardMsg(`✓ Added to Positions (${shares} shares @ ${fillPrice})`);
       } catch {
-        setFillSyncMsg('⚠ Position sync failed — add manually in Positions');
+        setBoardMsg('⚠ Position sync failed — add manually in Positions');
       }
-      setTimeout(() => setFillSyncMsg(''), 6000);
+      setTimeout(() => setBoardMsg(''), 6000);
     } else if (shares == null) {
-      setFillSyncMsg('No shares entered — open Positions to add manually');
-      setTimeout(() => setFillSyncMsg(''), 5000);
+      setBoardMsg('No shares entered — open Positions to add manually');
+      setTimeout(() => setBoardMsg(''), 5000);
     }
     setFillTarget(null);
     mutate();
@@ -1083,7 +1125,12 @@ export default function BoardPage() {
 
   async function handleFillSkip() {
     if (!fillTarget) return;
-    await api.updateBoardPlan(fillTarget.id, { stage: 'active', trading_style: getSignalStyle() });
+    try {
+      await api.updateBoardPlan(fillTarget.id, { stage: 'active', trading_style: getSignalStyle() });
+    } catch (e: unknown) {
+      showBoardError(e instanceof Error ? e.message : 'Failed to activate — try again.');
+      return;
+    }
     setFillTarget(null);
     mutate();
   }
@@ -1097,7 +1144,12 @@ export default function BoardPage() {
 
   async function handleDelete(id: number) {
     const plan = (data ?? []).find(p => p.id === id);
-    await api.deleteBoardPlan(id);
+    try {
+      await api.deleteBoardPlan(id);
+    } catch (e: unknown) {
+      showBoardError(e instanceof Error ? e.message : 'Failed to delete card — try again.');
+      return;
+    }
     // If active with fill price → also remove from Positions
     if (plan?.stage === 'active' && plan.actual_entry_price != null) {
       try {
@@ -1109,9 +1161,15 @@ export default function BoardPage() {
     mutate();
   }
 
-  async function handleAdd(symbol: string, notes: string) {
-    await api.createBoardPlan({ symbol, stage: 'watch', notes: notes || null, source: 'manual', trading_style: getSignalStyle() });
+  async function handleAdd(symbol: string, notes: string): Promise<boolean> {
+    try {
+      await api.createBoardPlan({ symbol, stage: 'watch', notes: notes || null, source: 'manual', trading_style: getSignalStyle() });
+    } catch (e: unknown) {
+      showBoardError(e instanceof Error ? e.message : 'Failed to add card — try again.');
+      return false;
+    }
     mutate();
+    return true;
   }
 
   const total = filtered.length;
@@ -1346,10 +1404,11 @@ export default function BoardPage() {
         />
       )}
 
-      {/* fill sync status toast */}
-      {fillSyncMsg && (
-        <div style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 2000, background: '#0f172a', border: `1px solid ${fillSyncMsg.startsWith('✓') ? 'rgba(74,222,128,0.4)' : 'rgba(251,191,36,0.4)'}`, borderRadius: 8, padding: '8px 18px', fontSize: 12, color: fillSyncMsg.startsWith('✓') ? '#4ade80' : '#fbbf24', fontWeight: 600, boxShadow: '0 4px 20px rgba(0,0,0,0.5)' }}>
-          {fillSyncMsg}
+      {/* board status toast — shared by fill-sync notices, position-sync warnings, and now
+          every mutation handler's own real-failure error */}
+      {boardMsg && (
+        <div style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 2000, background: '#0f172a', border: `1px solid ${boardMsg.startsWith('✓') ? 'rgba(74,222,128,0.4)' : 'rgba(239,68,68,0.4)'}`, borderRadius: 8, padding: '8px 18px', fontSize: 12, color: boardMsg.startsWith('✓') ? '#4ade80' : '#f87171', fontWeight: 600, boxShadow: '0 4px 20px rgba(0,0,0,0.5)' }}>
+          {boardMsg}
         </div>
       )}
 

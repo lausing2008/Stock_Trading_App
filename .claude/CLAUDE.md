@@ -17643,3 +17643,80 @@ If `revenue_actual` is still `NULL` for a symbol you'd expect real coverage on, 
 `ticker.quarterly_financials` genuinely has a `"Total Revenue"` row for that symbol's own real
 period-end dates first — a thin/newly-listed/foreign-filer symbol can legitimately lack this,
 which is a correct "no data" state, not a bug in this join.
+
+---
+
+## Next-Improvement Batch (2026-08-25c) — board.tsx's 9 Silent Mutation Handlers + journal.tsx's 2 (Real-Money-Adjacent Actions Included)
+
+**Trigger**: continuing "next batch of improvements" — a frontend-pages survey agent (run solo,
+after the prior batch's parallel 3-agent run hit the org's spend limit) audited 9 previously-
+unchecked pages (`journal.tsx`, `portfolio.tsx`, `board.tsx`, `decide.tsx`, `insider.tsx`,
+`congress.tsx`, `strategies.tsx`, `regime.tsx`, `sector-rotation.tsx`) for the same silent-
+mutation-failure bug class already fixed this session in `alerts.tsx`/`paper-portfolio.tsx`/
+`stock/[symbol].tsx`. `board.tsx` was the standout — 9 total unguarded handlers across the
+page (6 primary trade-board mutations + 3 alert-modal actions), several touching irreversible
+or financially-consequential actions (position close, real fill recording, permanent delete).
+
+**All findings personally re-verified against current source before fixing** — confirmed
+`portfolio.tsx`/`decide.tsx`/`insider.tsx`/`congress.tsx`/`regime.tsx`/`sector-rotation.tsx`
+are genuinely clean (either proper existing try/catch, or read-only pages with no mutations at
+all).
+
+### `board.tsx` — 9 handlers fixed, plus a real structural finding
+
+Confirmed a nuance the survey summary understated: `handleCloseConfirmed()` and
+`handleFillConfirm()` DID already have `try/catch` — but only around their SECONDARY sync-to-
+Positions/cash-update side effects (both explicitly commented `/* best-effort */`). The
+PRIMARY mutation (`await api.updateBoardPlan(...)` — the actual close/fill/stage-change itself)
+had **zero** error handling in every one of the 6 trade-board handlers
+(`handleStageChange`/`handleCloseConfirmed`/`handleFillConfirm`/`handleFillSkip`/
+`handleDelete`/`handleAdd`). A failed primary call threw before reaching any of the function's
+own cleanup (`setCloseConfirmId(null)`, `setFillTarget(null)`, etc.), leaving modals stuck open
+indefinitely with zero indication anything failed — worst for `handleCloseConfirmed`, whose own
+pre-existing comment already flags it as "confirm before marking a trade closed (irreversible
+PnL record)."
+
+**Fix**: generalized the page's pre-existing `fillSyncMsg` toast (a bottom-center, auto-
+dismissing notification only `handleFillConfirm` used) into a shared `boardMsg`/`showBoardError`
+mechanism every handler now uses — a genuinely reusable pattern already half-built on this page,
+extended rather than a 3rd notification convention invented from scratch. Every primary mutation
+now wraps in `try/catch`, calling `showBoardError()` and `return`ing early on failure so the
+confirm-modal/fill-target state stays exactly as it was (never silently cleared as if the action
+had succeeded). `handleAdd()` changed its return type to `Promise<boolean>` so `AddCardForm`'s
+own `submit()` only clears/closes the add-card form on a REAL success — a failed add now leaves
+the user's typed symbol/notes in place to retry, instead of silently discarding them. The 3
+`AlertModal` handlers (`handleAddPriceAlert`/`handleSetAll`/`handleToggleSignal`, all pre-
+existing `try { } finally { }` with no `catch`) gained a new local `alertModalError` state
+rendered as an inline banner near the modal header.
+
+### `journal.tsx` — 2 handlers fixed
+
+`handleDelete()` had **no try/catch at all** (a bare `await api.deleteJournalTrade(id)`) — a
+real unhandled promise rejection on failure left the inline "Yes/No" delete-confirm buttons
+stuck showing "Yes/No" forever with no error shown. `handleSave()` used `try { } finally { }`
+with no `catch` — the exact same shape already fixed for `stock/[symbol].tsx`'s `toggleListItem`/
+`handleFundRefresh` earlier this session. Fixed both with dedicated error states (`saveError`
+rendered inside the add/edit modal; `deleteError` + a `deletingId` busy-state guard rendered
+inline next to the Yes/No buttons, matching the busy-state convention already established
+elsewhere on this page).
+
+**Not fixed, deliberately**: `strategies.tsx`'s `toggleCompare()`'s silent `catch {}` — real,
+but the survey's own weakest finding (a read-only backtest-comparison fetch, spinner correctly
+clears via `finally` regardless, no data mutation at stake). Left as a documented, low-priority
+item rather than padding this batch with a fix whose severity doesn't warrant the added
+complexity.
+
+**Verification**: no test file imports either `board.tsx` or `journal.tsx` directly (confirmed
+via grep) — matching this codebase's established precedent for large, stateful, untested pages
+(`PriceChart.tsx`/`_app.tsx`-only changes elsewhere in this file). Verified via `npx tsc
+--noEmit` (clean), the full 132-test frontend vitest suite (unaffected, unchanged), and a full
+`next build` (`/board` compiled at 15 kB, `/journal` at 8.35 kB, all 51 routes clean).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-frontend-1 sh -c "grep -o 'showBoardError\|boardMsg' /app/.next/static/chunks/pages/board-*.js"
+docker exec stockai-frontend-1 sh -c "grep -o 'saveError\|deleteError' /app/.next/static/chunks/pages/journal-*.js"
+```
+If a close/fill/delete/add action fails on `board.tsx` and the modal silently closes anyway
+(rather than staying open with a visible red-error toast), that's the exact regression this fix
+closes — confirm the compiled bundle actually contains the fix, not a stale cached build.

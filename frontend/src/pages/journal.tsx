@@ -444,6 +444,9 @@ function ManualLogTab() {
   const [sortBy, setSortBy] = useState<'date' | 'pnl' | 'symbol'>('date');
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [deleteError, setDeleteError] = useState('');
 
   function openAdd() {
     setEditingId(null);
@@ -464,17 +467,28 @@ function ManualLogTab() {
   async function handleSave() {
     if (!form.symbol || form.entry_price <= 0 || form.shares <= 0) return;
     setSaving(true);
+    setSaveError('');
     try {
       if (editingId != null) { await api.updateJournalTrade(editingId, form); }
       else { await api.createJournalTrade(form); }
       await mutate();
       setShowForm(false);
+    } catch (e: unknown) {
+      setSaveError(e instanceof Error ? e.message : 'Failed to save trade.');
     } finally { setSaving(false); }
   }
   async function handleDelete(id: number) {
-    await api.deleteJournalTrade(id);
-    await mutate();
-    setDeleteConfirm(null);
+    setDeletingId(id);
+    setDeleteError('');
+    try {
+      await api.deleteJournalTrade(id);
+      await mutate();
+      setDeleteConfirm(null);
+    } catch (e: unknown) {
+      setDeleteError(e instanceof Error ? e.message : 'Failed to delete trade.');
+    } finally {
+      setDeletingId(null);
+    }
   }
 
   const closed  = trades.filter(t => t.exit_price != null);
@@ -630,14 +644,17 @@ function ManualLogTab() {
                         </button>
                         {deleteConfirm === t.id ? (
                           <>
-                            <button onClick={() => handleDelete(t.id)}
-                              style={{ padding: '3px 7px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid #991b1b', background: 'rgba(153,27,27,0.2)', color: '#f87171' }}>
-                              Yes
+                            <button onClick={() => handleDelete(t.id)} disabled={deletingId === t.id}
+                              style={{ padding: '3px 7px', borderRadius: 4, fontSize: 11, cursor: deletingId === t.id ? 'not-allowed' : 'pointer', border: '1px solid #991b1b', background: 'rgba(153,27,27,0.2)', color: '#f87171' }}>
+                              {deletingId === t.id ? '…' : 'Yes'}
                             </button>
-                            <button onClick={() => setDeleteConfirm(null)}
+                            <button onClick={() => { setDeleteConfirm(null); setDeleteError(''); }} disabled={deletingId === t.id}
                               style={{ padding: '3px 7px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid #1e293b', background: 'transparent', color: '#64748b' }}>
                               No
                             </button>
+                            {deleteError && deleteConfirm === t.id && (
+                              <span style={{ fontSize: 10, color: '#f87171', marginLeft: 4, whiteSpace: 'nowrap' }}>{deleteError}</span>
+                            )}
                           </>
                         ) : (
                           <button onClick={() => setDeleteConfirm(t.id)}
@@ -719,6 +736,9 @@ function ManualLogTab() {
                   style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #1e293b', background: '#020617', color: '#e2e8f0', fontSize: 13, resize: 'vertical' }} />
               </div>
             </div>
+            {saveError && (
+              <div style={{ fontSize: 12, color: '#f87171', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, padding: '8px 12px', marginTop: 16 }}>{saveError}</div>
+            )}
             <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
               <button onClick={handleSave} disabled={saving || !form.symbol || form.entry_price <= 0 || form.shares <= 0}
                 style={{ flex: 1, padding: '9px 0', borderRadius: 8, background: '#6366f1', color: '#fff', fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer', opacity: (saving || !form.symbol || form.entry_price <= 0 || form.shares <= 0) ? 0.5 : 1 }}>
