@@ -257,15 +257,36 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
                 except Exception as exc:
                     log.debug("earnings.earnings_dates_join_skip", symbol=symbol, error=str(exc))
 
+                # AUD-EARNINGS-REVENUEACTUAL: revenue_actual/revenue_surprise_pct are real
+                # columns on EarningsEvent, read by generate_earnings_impact()'s LLM prompt and
+                # returned to the frontend via _row_to_dict()'s actual_revenue field — but until
+                # this fix, NOTHING in this file ever wrote either one. ticker.earnings_history
+                # (the loop below) only carries EPS fields; ticker.calendar's "Revenue Estimate"
+                # (written elsewhere in this function) is a forward-looking, pre-report figure
+                # that can never carry an actual by construction. Real historical revenue lives
+                # in ticker.quarterly_financials's own "Total Revenue" row, indexed by the SAME
+                # period-end dates ticker.earnings_history uses (confirmed directly against a
+                # real yfinance response before writing this) — one extra fetch, best-effort,
+                # same fail-open convention as the earnings_dates join right above.
+                revenue_actual_by_period_end: dict[str, float] = {}
+                try:
+                    qf = ticker.quarterly_financials
+                    if qf is not None and not qf.empty and "Total Revenue" in qf.index:
+                        for col, val in qf.loc["Total Revenue"].items():
+                            if pd.notna(val):
+                                pe = col.date() if hasattr(col, "date") else date.fromisoformat(str(col)[:10])
+                                revenue_actual_by_period_end[pe.isoformat()] = float(val)
+                except Exception as exc:
+                    log.debug("earnings.revenue_actual_join_skip", symbol=symbol, error=str(exc))
+
                 with SessionLocal() as s:
                     for idx, row in hist.iterrows():
                         try:
                             period_end = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
                             eps_est = row.get("epsEstimate") if pd.notna(row.get("epsEstimate")) else None
                             eps_act = row.get("epsActual") if pd.notna(row.get("epsActual")) else None
-                            surprise = None
-                            if eps_est is not None and eps_act is not None and eps_est != 0:
-                                surprise = round((eps_act - eps_est) / abs(eps_est) * 100, 2)
+                            surprise = _compute_surprise_pct(eps_est, eps_act)
+                            rev_act = revenue_actual_by_period_end.get(period_end.isoformat())
                             # AUD264: prefer the real, joined announcement date; fall back to the
                             # period-end date (the pre-fix value) only when no match was found —
                             # still better than nothing, and matches this function's own existing
@@ -305,6 +326,15 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
                                 )
                             ).scalars().first()
                             if existing_pending is not None:
+                                # revenue_estimate was already set by the earlier calendar-path
+                                # write that created this pending row (see the calendar block
+                                # below) — reuse it here to compute the surprise, matching the
+                                # EPS surprise computation above exactly. A row that was never
+                                # seen by the calendar path first (rare — a report syncing before
+                                # its own pending calendar entry ever ran) has revenue_estimate
+                                # still None, so rev_surprise correctly stays None too, same as
+                                # the pre-existing eps `surprise is None` fallback above.
+                                rev_surprise = _compute_surprise_pct(existing_pending.revenue_estimate, rev_act)
                                 existing_pending.report_date = report_date
                                 existing_pending.period = f"Q{fq} {fy}"
                                 existing_pending.fiscal_year = fy
@@ -312,11 +342,17 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
                                 existing_pending.eps_estimate = eps_est
                                 existing_pending.eps_actual = eps_act
                                 existing_pending.surprise_pct = surprise
+                                existing_pending.revenue_actual = rev_act
+                                existing_pending.revenue_surprise_pct = rev_surprise
                                 existing_pending.earnings_strength_score = strength
                                 existing_pending.fetched_at = _now
                                 s.flush()
                                 upserted += 1
                             else:
+                                # No prior pending row (and therefore no revenue_estimate ever
+                                # captured for this event) — revenue_surprise_pct correctly
+                                # stays unset, matching eps `surprise`'s own identical
+                                # both-sides-required convention immediately above.
                                 stmt = (
                                     pg_insert(EarningsEvent)
                                     .values(
@@ -328,6 +364,7 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
                                         eps_estimate=eps_est,
                                         eps_actual=eps_act,
                                         surprise_pct=surprise,
+                                        revenue_actual=rev_act,
                                         earnings_strength_score=strength,
                                         fetched_at=_now,
                                     )
@@ -337,6 +374,7 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
                                             eps_estimate=eps_est,
                                             eps_actual=eps_act,
                                             surprise_pct=surprise,
+                                            revenue_actual=rev_act,
                                             earnings_strength_score=strength,
                                             fetched_at=_now,
                                         ),
@@ -553,6 +591,15 @@ async def backfill_report_dates() -> dict:
         await asyncio.sleep(0.2)  # gentle rate limiting, matching sync_all_earnings()
 
     return {"symbols_processed": len(stocks), "rows_corrected": total}
+
+
+def _compute_surprise_pct(estimate: float | None, actual: float | None) -> float | None:
+    """% beat/miss of `actual` over `estimate`. Shared by both eps_surprise (unchanged formula,
+    extracted here under AUD-EARNINGS-REVENUEACTUAL) and revenue_surprise_pct (new) — same
+    both-sides-required, divide-by-abs(estimate) convention either way."""
+    if estimate is None or actual is None or estimate == 0:
+        return None
+    return round((actual - estimate) / abs(estimate) * 100, 2)
 
 
 def _compute_strength(eps_est: float | None, eps_act: float | None, surprise_pct: float | None) -> float | None:

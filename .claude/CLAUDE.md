@@ -17536,3 +17536,110 @@ full `next build` clean (`/stock/[symbol]` compiled at 56.3 kB).
 ```bash
 docker exec stockai-frontend-1 sh -c "grep -o 'listError\|fundRefreshError\|deleteAlertError' /app/.next/static/chunks/pages/stock/\[symbol\]-*.js"
 ```
+
+---
+
+## Next-Improvement Batch (2026-08-25b) — Squeeze/Gamma Alert Family Re-Audited Clean + Real Revenue-Actual Gap Found and Fixed in event-intelligence
+
+**Trigger**: "next batch of improvements" — 3 background survey agents launched (squeeze/gamma
+alert family, research-engine/event-intelligence, remaining frontend pages), then a user
+mid-turn message asked to run them one at a time instead, after all 3 hit the org's monthly API
+spend limit simultaneously (the same class of interruption already documented twice this
+session — Tier 301/302's own "interrupted survey" incidents).
+
+### Squeeze/gamma alert family — personally re-audited, confirmed genuinely clean
+
+The squeeze-alert survey agent got partway through (confirming `AUD292-SQUEEZEWATCH-REVERT-
+NOTOLERANCE` already correctly fixed) before being cut off by the spend limit. Rather than
+re-launch it, personally read the 3 functions its own final note said it hadn't reached yet:
+`check_squeeze_watch_reverts()`, `evaluate_squeeze_alert_outcomes()`, `evaluate_prebreakout_
+alert_outcomes()`. All 3 confirmed clean on direct read — careful, well-guarded logic
+throughout: `check_squeeze_watch_reverts()`'s `_GAMMA_UNWIND_MIN_OI_CONCENTRATION * 100`
+comparison specifically checked and confirmed correctly unit-matched (both `_GAMMA_UNWIND_MIN_
+OI_CONCENTRATION`, a 0-1 fraction, and `concentration_pct`, written on a 0-100 scale at its
+one real write site in `check_gamma_unwind_alerts()`, are properly converted before comparison
+— NOT a sign/unit bug, despite this being exactly the class of bug the survey was tasked to
+find); the absence-of-evidence-is-not-evidence-of-fade discipline (`_bearish_cache_fresh`
+gating) is correctly applied; both `evaluate_*_outcomes()` functions have correct T+1 entry
+discipline, per-window independence (never re-evaluates a closed window), and direction-aware
+win hurdles matching `SignalOutcome`'s own established convention exactly.
+
+### Real finding — `EarningsEvent.revenue_actual`/`revenue_surprise_pct` were real columns,
+### read by the LLM prompt and the frontend, but NEVER WRITTEN anywhere in this codebase
+
+**Root cause**: `generate_earnings_impact()` (`services/event-intelligence/src/services/
+earnings.py`) reads and prompts the LLM with `revenue_actual`/`revenue_surprise_pct`;
+`check_earnings_impact_poll()` passes both straight from the DB row; `_row_to_dict()` returns
+`actual_revenue` to the frontend. But `_fetch_earnings_for_symbol()` — the ONLY function that
+writes `EarningsEvent` rows — only ever wrote `revenue_estimate` (from `ticker.calendar`'s
+forward-looking, pre-report "Revenue Estimate" field). `ticker.earnings_history` (the
+historical-actuals loop this function's own EPS logic already iterates) has NO revenue column
+at all — confirmed directly against a real live yfinance response before writing any code, not
+assumed from the DataFrame's schema alone. This meant every single earnings-impact LLM prompt
+always said `"Revenue actual: unavailable"` / `"Revenue surprise: unavailable"` regardless of
+the real print — a permanent, silent half-feature gap, not a crash. The closest documented
+precedent for this exact bug class is `EconomicEvent.expected_value` ("column exists but never
+populated," already investigated and left unfixed pending a real data source) — this one had
+simply never been noticed for `EarningsEvent`.
+
+**Fix**: real historical revenue lives in `ticker.quarterly_financials`'s own `"Total Revenue"`
+row — verified directly (not assumed) that its column dates align EXACTLY with `ticker.
+earnings_history`'s own index (both are real period-end dates), so a simple period-end-keyed
+dict join works with zero date-matching logic needed. Added a best-effort fetch/join
+(`revenue_actual_by_period_end`), wrapped in its own isolated try/except matching the
+pre-existing `earnings_dates` join's established fail-open convention right above it (a
+failure here degrades to an empty dict, never aborts the whole historical sync for that
+symbol). `revenue_surprise_pct` is computed from the row's own ALREADY-SET `revenue_estimate`
+— confirmed via re-reading the `existing_pending` matching logic that a pending row's
+`revenue_estimate` (written earlier by the separate calendar-path write, when the report
+hadn't happened yet) survives untouched when the historical path later fills in the actual on
+that same row, exactly the same 2-phase write pattern `eps_estimate`/`eps_actual`/`surprise_
+pct` already use. Extracted a new `_compute_surprise_pct(estimate, actual)` pure helper
+(matching `_compute_strength()`'s own established precedent for pure, separately-testable
+scoring logic) and refactored the pre-existing EPS surprise formula to use it too — deduplicating
+what would otherwise have been a second, near-identical inline copy of the same divide-by-abs
+formula.
+
+**Tests**: `services/event-intelligence/tests/test_earnings_revenue_actual.py` (14 cases) —
+`_compute_surprise_pct()` is pure and dependency-free, tested directly via source-text `exec()`
+extraction (a genuine beat, a genuine miss, both-None-degrades-safely, a zero-estimate
+divide-by-zero guard, and — a real edge case worth its own test — a NEGATIVE estimate, e.g. a
+loss-making quarter, correctly reports a POSITIVE surprise when the loss shrinks, since the
+formula divides by `abs(estimate)` specifically to avoid the sign flip a naive `estimate`
+divisor would produce). The join/wiring inside `_fetch_earnings_for_symbol()` makes real
+yfinance + DB calls end-to-end, so it's covered via source-text regression checks, matching
+`test_earnings_report_date_wiring.py`'s own already-established pattern for this exact
+function. A real, self-caught test-writing trap during development, matching this repo's own
+documented history of the identical mistake elsewhere: the first version of the try/except
+isolation test anchored on the bare substring `"ticker.quarterly_financials"`, which matched
+this SAME fix's own explanatory comment ABOVE the real code line before it ever reached the
+actual `qf = ticker.quarterly_financials` call — fixed by anchoring on the real assignment
+line specifically, the identical class of "matched the docstring, not the call" trap already
+documented multiple times elsewhere in this file's history.
+
+**Adversarial verification** — 3 sabotage/revert cycles, all caught correctly and reverted
+(confirmed byte-identical via `md5sum` before moving on): removing the try/except isolation
+around the `quarterly_financials` join (caught by the dedicated isolation test); removing
+`revenue_actual`/`revenue_surprise_pct` from the `existing_pending` update branch (caught by
+the dedicated both-fields-set test); removing `revenue_actual` from the fresh-insert path's
+`on_conflict_do_update` `set_=` clause specifically — the "silently drops on re-run" regression
+class this test exists to guard against (caught by the dedicated values-and-conflict-clause
+test).
+
+Full 284-test event-intelligence suite green (up from 270); pyflakes clean (the sole remaining
+warning, an unused `db.get_session` import, confirmed pre-existing via `git stash`).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-event-intelligence-1 grep -n "def _compute_surprise_pct\|revenue_actual_by_period_end" /app/src/services/earnings.py
+
+# Live-check a real symbol's earnings row now carries revenue_actual (needs a real, already-
+# reported EarningsEvent row for that symbol — won't backfill rows synced before this deploy
+# until their next daily re-sync):
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT s.symbol, e.report_date, e.eps_actual, e.revenue_actual, e.revenue_estimate, e.revenue_surprise_pct FROM earnings_events e JOIN stocks s ON s.id = e.stock_id WHERE e.eps_actual IS NOT NULL ORDER BY e.report_date DESC LIMIT 10;"
+```
+If `revenue_actual` is still `NULL` for a symbol you'd expect real coverage on, check whether
+`ticker.quarterly_financials` genuinely has a `"Total Revenue"` row for that symbol's own real
+period-end dates first — a thin/newly-listed/foreign-filer symbol can legitimately lack this,
+which is a correct "no data" state, not a bug in this join.
