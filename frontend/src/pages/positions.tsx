@@ -123,9 +123,13 @@ export default function Positions() {
   const watchedSet = useMemo(() => new Set(watchlistData?.map(w => w.symbol) ?? []), [watchlistData]);
 
   async function toggleWatch(symbol: string) {
-    if (watchedSet.has(symbol)) await api.removeFromWatchlist(symbol);
-    else await api.addToWatchlist(symbol);
-    mutateWatchlist(); globalMutate('watchlist');
+    try {
+      if (watchedSet.has(symbol)) await api.removeFromWatchlist(symbol);
+      else await api.addToWatchlist(symbol);
+      mutateWatchlist(); globalMutate('watchlist');
+    } catch (e) {
+      showToast(`Failed to update watchlist for ${symbol}: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
   }
 
   const handleRefresh = useCallback(async () => {

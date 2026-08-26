@@ -653,21 +653,33 @@ export default function Watchlist() {
 
   async function remove(symbol: string) {
     setRemoving(symbol);
-    await api.removeFromWatchlist(symbol, resolvedListId ?? undefined);
-    mutateWatchlist();
-    mutateLists();
-    setRemoving(null);
+    try {
+      await api.removeFromWatchlist(symbol, resolvedListId ?? undefined);
+      mutateWatchlist();
+      mutateLists();
+    } catch {
+      setAlertToast({ msg: `Failed to remove ${symbol} — please try again.`, ok: false });
+      setTimeout(() => setAlertToast(null), 4000);
+    } finally {
+      setRemoving(null);
+    }
   }
 
   async function moveToList(symbol: string, targetId: number) {
     setMoveMenu(null);
     setMoving(symbol);
-    await api.addToWatchlist(symbol, targetId);
-    await api.removeFromWatchlist(symbol, resolvedListId ?? undefined);
-    mutateWatchlist();
-    mutateLists();
-    globalMutate(['watchlist', targetId]);
-    setMoving(null);
+    try {
+      await api.addToWatchlist(symbol, targetId);
+      await api.removeFromWatchlist(symbol, resolvedListId ?? undefined);
+      mutateWatchlist();
+      mutateLists();
+      globalMutate(['watchlist', targetId]);
+    } catch {
+      setAlertToast({ msg: `Failed to move ${symbol} — please try again.`, ok: false });
+      setTimeout(() => setAlertToast(null), 4000);
+    } finally {
+      setMoving(null);
+    }
   }
 
   useEffect(() => {

@@ -17914,3 +17914,47 @@ If the modal/section always shows "No AI forecast available" despite a real upco
 first confirm `earnings_llm_forecast_enabled` is actually `1` in Redis — this feature is
 off by default on every fresh deploy, matching every other opt-in Claude feature's own
 convention.
+
+---
+
+## Recurring Sweep: Silent-Mutation-Handler Bug Class — 3 More Real Instances Found + Fixed, 4 False Positives Rejected (2026-08-26)
+
+**Continues this session's own established sweep** (already fixed in `alerts.tsx`, `paper-portfolio.tsx`, `stock/[symbol].tsx`, `board.tsx`'s 9 handlers, `journal.tsx`'s 2) — a survey agent checked the remaining pages and reported 6 candidates. **Every single one was personally re-verified against the real source before touching anything** — 4 turned out to be fabricated or wrong, only 2 were fully real, and a 5th was real-but-overstated (already had a `catch`, just a silent one).
+
+**Rejected, confirmed false via direct grep**:
+- `settings.tsx`'s claimed `revokeApiKey()`/`api.revokeUserApiKey` — no such function or API call exists anywhere in the file. Fabricated.
+- `insider.tsx`/`congress.tsx`'s claimed `handleAddToWatchlist()`/`api.addToWatchlist` — both files have exactly ONE `api.` call each (`eventsCongressRecent`, a pure read-only fetch). No mutation of any kind exists in either file. Fabricated.
+- `settings.tsx`'s `handleDeleteBroker()` — real function, but already has a genuine `catch` block (line 302) setting a real `brokerMsg` error state. Already correctly fixed; the agent's claim was simply wrong.
+
+**Real, confirmed, and fixed**:
+1. **`watchlist.tsx`'s `remove()`/`moveToList()`** — both had ZERO try/catch around real `api.removeFromWatchlist`/`api.addToWatchlist` calls. Worse than the usual shape: since the busy-state-clearing lines (`setRemoving(null)`/`setMoving(null)`) ran only AFTER the awaited call with no `finally`, a failed request left the busy spinner stuck forever, not just silently reverted. `moveToList()` also has a real, honestly-flagged partial-failure edge case: if `addToWatchlist` succeeds but the subsequent `removeFromWatchlist` fails, the symbol ends up on BOTH lists — the new catch surfaces this rather than hiding it. Fixed using the page's own pre-existing `alertToast` mechanism (already used by 6 other handlers on this same page, e.g. the signal-alert toggle at line ~735) rather than inventing a new one.
+2. **`positions.tsx`'s `toggleWatch()`** — same zero-try/catch shape. Fixed using the page's own pre-existing `showToast()` helper, matching the exact `.catch(e => showToast(...))` convention already used by 4 sibling handlers on the same page (`handleModalConfirm`, `removePosition`).
+3. **`conditional-orders.tsx`'s `handleCancel()`** — DID have a `catch`, but a fully silent one (`catch { /* swallow — a stale row on next poll is harmless */ }`) with no user-visible feedback at all. Re-examined the comment's own reasoning and found it doesn't hold: `mutate()` is never called on the failure path either, so nothing refreshes until the next 15s poll regardless — a user has zero way to tell whether their cancel of a live, financially-consequential conditional order actually worked. Added a `cancelError` state (matching the sibling `CreateOrderForm` component's own existing error-styling convention, `color: '#f87171'`, reused rather than invented) rendered above the orders table, auto-clearing after 5s.
+
+**Verification**: `npx tsc --noEmit` clean, full 132-test frontend vitest suite unaffected (no test imports any of these 3 pages directly), a full `next build` clean across all 51 routes — confirmed via direct grep that all 3 fixes' distinctive error strings reached the actual compiled chunks (`positions-*.js`, `watchlist-*.js`, `conditional-orders-*.js`), not just source.
+
+**Design invariant reinforced (the Nth recurrence of this exact discipline in this session's own history)**: a background survey agent's report is a claim to verify, not a fact to act on — this pass alone had a 33% outright-fabrication rate (2 of 6 findings referenced functions/API calls that don't exist anywhere in the named files) and a further 17% wrong-verdict rate (1 of 6 claimed "no catch" for a handler that already has one). Every finding was checked with a direct `grep`/`Read` against the real current file before any code was touched — this is not optional diligence, it's the only thing that prevented 3 of 6 "fixes" from being pure hallucination.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-frontend-1 sh -c "grep -o 'Failed to update watchlist for' /app/.next/static/chunks/pages/positions-*.js"
+docker exec stockai-frontend-1 sh -c "grep -o 'Failed to remove\|Failed to move' /app/.next/static/chunks/pages/watchlist-*.js"
+docker exec stockai-frontend-1 sh -c "grep -o 'Failed to cancel order' /app/.next/static/chunks/pages/conditional-orders-*.js"
+```
+
+---
+
+## Live Data Check: RestrictedSymbol Refresh + Walk-Forward Sweep Re-Run Against Larger Dataset (2026-08-26)
+
+**Continues Tier 297's own restricted-symbol population and every prior walk-forward-sweep entry documented at length elsewhere in this file.** A decision-engine/paper-trading survey found `hard_rejects.py`/`_should_enter()` genuinely have NO remaining divergence (the T232-DL-DUALSCORER-DEBT porting series is confirmed complete — every gate cross-checked line-by-line, all present on both sides) — but flagged 2 real, non-code, live-data action items instead of a code bug.
+
+**1. RestrictedSymbol list refresh** — re-ran the exact same query that produced the original 8-symbol AUD297 list (`n>=10` resolved BUY `signal_outcomes`, 0% win rate, all-time). A 9th symbol now clears the floor: **`6088.HK`** (FIT Hon Teng Limited) — 10 real resolved outcomes, all 10 losses, ranging -3.2% to -18.8%, spanning 3 genuinely distinct signal dates (not one clustered bad day). Added via the real admin API (`POST /paper-portfolio/restricted-symbols`), confirmed live in production Postgres — `restricted_symbols` now has 9 rows. No scheduled job exists to auto-refresh this list (confirmed by the survey — a real, if low-urgency, maintenance gap worth a periodic manual re-check rather than a one-time population).
+
+**2. Walk-forward sweep re-run against a larger dataset** — `signal_outcomes` grew from the ~thin dataset available at the last sweep run (2026-08-22, data starting 2026-05-25) to **12,595 resolved rows spanning 2026-05-25 to 2026-08-13** by 2026-08-26. Re-ran all 6 real walk-forward sweep endpoints (`min-entry-score`, `calibration-feedback`, `blocked-entry-scores`, `risk-per-trade-sweep`, `drawdown-breaker-sweep` — 5 endpoints × the 4 real style/market combos from the app's own 4 real portfolios, `blocked-entry-scores` making it 6 distinct endpoint names but effectively the same 4-combo matrix) directly against production. **Zero promotions across all 24 runs** — every single one correctly reports either "no candidate cleared the sample floor," "did not beat the OFF baseline on the train slice," or "no candidate produced any admitted trades on the train slice." This is a genuine, useful confirmation, not a null result to shrug off: with 3x the data now available, every mechanism is STILL correctly declining to promote an unvalidated candidate — the system's own conservative-by-design promotion-margin gates (`_passes_return_promotion_margin()`, `_MIN_PROMOTION_EV_LIFT_PCT`/`_MIN_PROMOTION_LIFT_SD_RATIO`) are working as intended, not silently under-triggering from a code bug.
+
+**What to check if this needs re-verifying**:
+```bash
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c "SELECT symbol FROM restricted_symbols ORDER BY symbol;"
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c "SELECT MIN(signal_date), MAX(signal_date), COUNT(*) FROM signal_outcomes WHERE is_correct_10d IS NOT NULL;"
+```
+Worth re-running the same 6-sweep × 4-combo matrix again once the resolved-outcome count grows meaningfully further (e.g. another 4-6 weeks) — a promotion becoming viable is a real possibility this system is explicitly designed to surface once the data supports it, not something to force earlier.

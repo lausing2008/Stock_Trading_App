@@ -250,6 +250,7 @@ export default function ConditionalOrdersPage() {
   const router = useRouter();
   const [authed, setAuthed] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string>('');
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   useEffect(() => {
     const session = getSession();
@@ -269,11 +270,17 @@ export default function ConditionalOrdersPage() {
   const orders = data?.orders ?? [];
 
   const handleCancel = async (id: number) => {
+    setCancelError(null);
     try {
       await api.cancelConditionalOrder(id);
       mutate();
-    } catch {
-      /* swallow — a stale row on next poll is harmless */
+    } catch (e) {
+      // A cancel can genuinely fail (the order already fired, a network blip, etc.) — the
+      // order is financially consequential enough that silently swallowing this (the prior
+      // "a stale row on next poll is harmless" reasoning) isn't right: mutate() is never
+      // called on failure either, so nothing refreshes until the next 15s poll regardless.
+      setCancelError(e instanceof Error ? e.message : 'Failed to cancel order — please try again.');
+      setTimeout(() => setCancelError(null), 5000);
     }
   };
 
@@ -289,6 +296,8 @@ export default function ConditionalOrdersPage() {
       </div>
 
       <CreateOrderForm portfolios={portfolios ?? []} onCreated={() => mutate()} />
+
+      {cancelError && <div style={{ color: '#f87171', fontSize: '12.5px', marginBottom: 10 }}>{cancelError}</div>}
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <h3 style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>Your Orders</h3>
