@@ -932,6 +932,11 @@ class FundamentalsOut(BaseModel):
     # matching "what was estimated at the time" figure the way earnings_history does for EPS,
     # so this is real-values-only, not an actual-vs-estimate comparison like eps_history).
     revenue_history: list[dict] = []            # [{quarter, revenue}], oldest first
+    # AUD-EARNINGSFORECAST: this stock's own projected growth vs. the broader index's — a real,
+    # comparable "is this a bellwether outpacing/lagging the market" read (yfinance's
+    # growth_estimates DataFrame, same period keys as earnings_consensus above). None when
+    # yfinance has no comparison data for this symbol, never a fabricated pair.
+    growth_vs_index: dict | None = None
     # Data freshness
     fetched_at: str | None = None               # ISO datetime when yfinance data was last fetched
 
@@ -1264,6 +1269,37 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
             data.earnings_consensus = consensus
     except Exception as exc:
         log.warning("fundamentals.earnings_consensus_fetch_failed", symbol=symbol, error=str(exc))
+
+    try:
+        def _growth_num(v):
+            # Independent copy of earnings_consensus's own _consensus_num() NaN guard above —
+            # deliberately NOT shared, since that one is defined inside a SIBLING try block and
+            # would be undefined here if that earlier block raised before reaching its own def.
+            if v is None:
+                return None
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                return None
+            return None if fv != fv else fv
+
+        gr = ticker.growth_estimates
+        if gr is not None and not gr.empty:
+            growth: dict[str, dict] = {}
+            for period, r in gr.iterrows():
+                row: dict = {}
+                st = _growth_num(r.get("stockTrend"))
+                ix = _growth_num(r.get("indexTrend"))
+                if st is not None:
+                    row["stock_growth"] = st
+                if ix is not None:
+                    row["index_growth"] = ix
+                if row:
+                    growth[str(period)] = row
+            if growth:
+                data.growth_vs_index = growth
+    except Exception as exc:
+        log.warning("fundamentals.growth_vs_index_fetch_failed", symbol=symbol, error=str(exc))
 
     # Fetch earnings surprise history (last 8 quarters)
     try:

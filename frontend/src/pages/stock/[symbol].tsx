@@ -49,6 +49,7 @@ import { activeNewsSources, loadSettings } from '@/lib/settings';
 import { getUsername } from '@/lib/auth';
 import ResearchPage from '@/pages/research/[symbol]';
 import StockGoalsPanel from '@/components/StockGoalsPanel';
+import EarningsForecastPanel from '@/components/EarningsForecastPanel';
 
 function RefreshButton({ onClick, loading }: { onClick: () => void; loading: boolean }) {
   return (
@@ -217,10 +218,13 @@ const CONSENSUS_PERIOD_LABEL: Record<string, string> = {
 // market consensus (earnings_consensus, next quarter/year EPS+revenue range/analyst count/
 // revision trend) in one section, per the user's own explicit request to see both together
 // rather than scattered across the page.
-function EarningsHistoryAndEstimates({ f }: { f: Fundamentals }) {
+function EarningsHistoryAndEstimates({ f, symbol, sector }: { f: Fundamentals; symbol: string; sector?: string }) {
   const hasHistory = (f.eps_history?.length ?? 0) > 0 || (f.revenue_history?.length ?? 0) > 0;
   const hasConsensus = f.earnings_consensus != null && Object.keys(f.earnings_consensus).length > 0;
-  if (!hasHistory && !hasConsensus) return null;
+  // AUD-EARNINGSFORECAST: only surface the forecast once a real upcoming report is actually
+  // known — a stock with no near-term earnings date has nothing to forecast.
+  const hasUpcomingReport = f.days_to_earnings != null && f.days_to_earnings >= 0;
+  if (!hasHistory && !hasConsensus && !hasUpcomingReport) return null;
 
   // ── Small hand-rolled bar chart, matching this page's existing SVG-chart convention
   // (ConfidenceTrend above) rather than pulling in a charting library ──────────────────────
@@ -394,6 +398,19 @@ function EarningsHistoryAndEstimates({ f }: { f: Fundamentals }) {
               </div>
             ) : null;
           })()}
+        </div>
+      )}
+
+      {hasUpcomingReport && (
+        <div style={{ marginTop: hasHistory || hasConsensus ? '16px' : 0, paddingTop: hasHistory || hasConsensus ? '14px' : 0, borderTop: hasHistory || hasConsensus ? '1px solid rgba(148,163,184,0.1)' : 'none' }}>
+          <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600, marginBottom: '8px' }}>
+            🔮 AI Forecast — {f.days_to_earnings === 0 ? "Today's Report" : f.days_to_earnings === 1 ? "Tomorrow's Report" : `Report in ${f.days_to_earnings}d`}
+          </div>
+          <EarningsForecastPanel
+            symbol={symbol}
+            sector={sector}
+            daysToEvent={f.days_to_earnings ?? 0}
+          />
         </div>
       )}
     </div>
@@ -3436,7 +3453,7 @@ Return ONLY valid JSON — no markdown, no prose:
                 </div>
               )}
 
-              <EarningsHistoryAndEstimates f={f} />
+              <EarningsHistoryAndEstimates f={f} symbol={symbol} sector={data.price?.sector} />
 
               {/* Row 6 — Analyst Ratings & Price Targets */}
               {(() => {

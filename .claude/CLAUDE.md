@@ -17720,3 +17720,197 @@ docker exec stockai-frontend-1 sh -c "grep -o 'saveError\|deleteError' /app/.nex
 If a close/fill/delete/add action fails on `board.tsx` and the modal silently closes anyway
 (rather than staying open with a visible red-error toast), that's the exact regression this fix
 closes — confirm the compiled bundle actually contains the fix, not a stale cached build.
+
+---
+
+## Feature Reference: AUD-EARNINGSFORECAST — On-Demand Pre-Earnings LLM Forecast (Built 2026-08-26)
+
+**User ask, verbatim**: "Can we do a forecast on the upcoming earnings report like NVDA
+tomorrow. What's the 'Whisper Number' and forward guidance. And how to interpret the market
+impact like [an attached scenario table]. And the Broad Macro Impact: The Tech Bellwether
+Effect. Can you show me the a Modal or popup with these information when I clicked on the
+stock with Earnings in the events calendar. Or where would you recommend" — followed by an
+explicit cost-minimization instruction ("we can use LLM for assistance but how to minimal the
+cost?... make one call for both") and a placement choice ("Both" — modal AND a stock-detail
+section).
+
+**Verified before designing anything, not assumed**: a live yfinance query confirmed NO
+"whisper number" or forward-guidance TEXT field exists anywhere in this data source — both are
+Wall-Street-analyst-community concepts (a whisper number is an informal, crowd-sourced
+estimate distinct from the published consensus; forward guidance is management's own verbal/
+written commentary) that no free data provider in this app's stack captures. Rather than
+fabricate either, the feature uses an LLM to interpret the REAL data this app already has
+(analyst consensus, revision trend, beat-rate history, growth-vs-index) into the requested
+scenario-table format — an honest substitute, not a synthetic "whisper number."
+
+### Cost-minimal, on-demand design — the FIRST click-triggered (not scheduled-poll) LLM
+### feature in this codebase
+
+Every prior Claude-calling feature in this session's own history (macro reaction, earnings
+impact, weekly theme signals, weekly trade coach) is either a scheduled poll or fires on a
+data-sync event. This one is genuinely different: `generate_earnings_forecast()`
+(`services/event-intelligence/src/services/earnings.py`) only ever runs when a user actually
+clicks into a stock's upcoming earnings event — never a background job. **One combined Claude
+call** produces the narrative (`watching_for`) AND the fixed 3-row scenario table
+(`scenarios`) AND an optional bellwether note (`bellwether_note`) together, per the user's own
+explicit "make one call for both" instruction — never 2-3 separate calls. Cached 24h per
+symbol (`_FORECAST_CACHE_TTL_S`), so repeat clicks on the same symbol within a day cost
+nothing extra. Gated behind a new, default-OFF admin flag
+(`earnings_llm_forecast_enabled`), matching every other opt-in Claude feature's own convention
+since the `CLAUDE-API-COST-AUDIT` incident.
+
+### Data sources — all real, all already computed by this session's own earlier work
+
+- `earnings_consensus`/`growth_vs_index` — both already fetched by `GET /stocks/{symbol}/
+  fundamentals` (`AUD-EARNINGSCONSENSUS`, `AUD-EARNINGSFORECAST`'s own new
+  `growth_vs_index` field). `_fetch_fundamentals_sync()` reuses this SAME 24h-cached blob via
+  a sync `httpx.get()` to market-data — no second yfinance fetch, no new data pipeline.
+- `growth_vs_index` (new): `ticker.growth_estimates` (yfinance), `stockTrend`/`indexTrend`
+  columns, same period-key structure (`"0q"`/`"+1q"`/`"0y"`/`"+1y"`) as `earnings_consensus` —
+  this stock's own projected growth vs. the broader market index's, the real data behind the
+  requested "Tech Bellwether Effect" read. A dedicated `_growth_num()` NaN-guard, deliberately
+  an INDEPENDENT copy of the sibling `earnings_consensus` block's own `_consensus_num()` — a
+  real scoping bug was caught and avoided during development: `_consensus_num` is defined
+  INSIDE a sibling `try:` block a few lines above, and referencing it from a separate `try:`
+  block would risk a real `NameError` if that earlier block's own try raised before ever
+  reaching its `def` line.
+
+### Executor-wrapped blocking I/O
+
+`_fetch_fundamentals_sync()` is a genuinely blocking sync call — reused via `earnings.py`'s
+pre-existing `_executor = ThreadPoolExecutor(max_workers=4)` (already built for a different
+purpose, `T249-EARNINGS-LLM-IMPACT`'s own docstring explains why the httpx.AsyncClient calls
+elsewhere in this file DON'T need it) + `loop.run_in_executor(...)`, matching this file's own
+established `AUD-EI-MACRO-REACTION-BLOCKING` fix pattern exactly — never a bare synchronous
+call inside an `async def` that would block the shared event loop for every other concurrent
+request this service is serving.
+
+### A real bug caught and fixed during development, before shipping
+
+The lazy `from common.redis_client import get_redis` import originally sat ONE LINE ABOVE its
+own enclosing `try:` block (unlike the sibling `check_earnings_impact_poll()`, whose identical
+import sits INSIDE its own try) — meaning a genuinely broken/missing `common.redis_client`
+module in production would raise a raw, uncaught `ModuleNotFoundError` past this whole
+function's fail-open contract, crashing the caller instead of degrading gracefully. Fixed by
+moving the import inside the try, matching the sibling function's shape exactly. A dedicated
+regression test (`test_the_lazy_redis_client_import_lives_inside_the_flag_check_try_block`)
+locks this in — adversarially verified by reverting the import's position and confirming the
+test fails with a real, meaningful line-order assertion.
+
+### A second real bug found in the TEST HARNESS itself, distinct from the production bug above
+
+Writing tests for this feature surfaced a genuine, previously-undiscovered gap in `event-
+intelligence/tests/conftest.py`: `sys.modules.setdefault("common.redis_client", MagicMock())`
+registers the submodule under its OWN dotted key, but does NOT link it as an attribute on the
+parent `common` MagicMock — Python's real import machinery normally does this bookkeeping
+itself for a genuine package, but a bare MagicMock parent has no such behavior. Without an
+explicit link, `from common.redis_client import get_redis` (the exact statement `earnings.py`
+uses) resolves via `getattr(sys.modules["common"], "redis_client")` — which auto-vivifies a
+**completely different, unlinked** child mock, not the one registered in
+`sys.modules["common.redis_client"]`. A test patching either the `sys.modules` entry directly,
+OR pytest's own dotted-string `monkeypatch.setattr("common.redis_client.get_redis", ...)` form
+(which resolves via the IDENTICAL `getattr` path internally — confirmed by reading
+`_pytest.monkeypatch.resolve()`'s own source), would silently observe a mock the real
+production import never reaches. This ALSO retroactively explains why the pre-existing sibling
+tests for `check_earnings_impact_poll()` had been passing for the wrong reason the whole time:
+that function's own `from common.redis_client import get_redis` line sits inside a bare
+`try: ... except Exception: return {"skipped": "feature_disabled"}` — so the `ModuleNotFoundError`
+this gap produces was ALWAYS being silently swallowed, coincidentally landing on the exact
+return value those tests expect, regardless of whether Redis was ever genuinely reached.
+
+**Fix applied**: `conftest.py` now explicitly links each submodule onto the parent mock after
+registration (`for _m in ("config", "logging", "redis_client"): setattr(sys.modules["common"],
+_m, sys.modules[f"common.{_m}"])`), mirroring the identical explicit-link fix already
+established for `common.indicators` in `market-data/tests/conftest.py`. This is a genuinely
+shared, cross-service test-infrastructure gap — `market-data/tests/conftest.py`'s own
+`_cfg.get_settings = MagicMock(...)` line has the SAME underlying issue (confirmed directly:
+`get_settings() is _cfg.get_settings` returns `False` there too) — left undocumented/unfixed
+in that service since it doesn't block anything there today (no test in that service currently
+depends on 2 separate references to the same mocked attribute actually being identical), but
+worth knowing if a similarly-shaped test failure appears there in the future.
+
+### Frontend — modal AND stock-detail section, per the user's own "Both" answer
+
+New `frontend/src/components/EarningsForecastPanel.tsx` — the shared content renderer (real
+consensus context always shown; the LLM narrative/scenario-table/bellwether-note section shown
+when available, a clear "no forecast yet" state when the admin flag is off or the call fails).
+Deliberately factored out as its OWN component (not duplicated) so both placements can never
+silently drift apart from each other.
+
+- **Modal placement**: `frontend/src/components/EarningsForecastModal.tsx` (the fixed-overlay
+  shell, matching `positions.tsx`'s established modal pattern exactly), triggered by a new
+  "🔮 Forecast" button on `frontend/src/pages/earnings.tsx`'s `EventCard`, next to the existing
+  "🔔 Alert me" button.
+- **Stock detail placement**: folded into the existing `EarningsHistoryAndEstimates`
+  component (`frontend/src/pages/stock/[symbol].tsx`, `AUD-EARNINGSCONSENSUS`'s own section) —
+  renders below the "Market Consensus (Forward)" table whenever `f.days_to_earnings != null`,
+  using the page's own already-fetched `symbol`/`data.price?.sector`/`f.days_to_earnings`, no
+  new network round-trip beyond the forecast call itself.
+
+**Route**: `GET /events/earnings/forecast` (event-intelligence) — always returns a real 200
+with a `{"forecast": ... | null}` shape, never a 404/403 when the admin flag is off, so the
+frontend can render its own real consensus data unconditionally and simply omit the LLM
+section when null (matching this codebase's established "an optional LLM addition must never
+block a real data display" convention).
+
+**Admin toggle**: `earnings_llm_forecast_enabled`, added to `admin-ai-features.tsx`'s Global
+card right after "Earnings Impact Analysis" — 6-touch-point wiring in `market-data/src/api/
+admin.py` (`_REDIS_EARNINGS_FORECAST_ENABLED` constant, `ConfigRequest` field, both
+`get_feature_flags`/`get_feature_flags_public` reads, the `update_config` write-guard, the
+write branch, the audit log line), matching every other flag's established pattern exactly.
+
+### Tests
+
+`services/event-intelligence/tests/test_earnings_forecast.py` (34 cases) — `_clean_scenarios()`'s
+whole-result-degrades-to-None contract (deliberately stricter than the sibling
+`_clean_sector_list()`'s partial-degrade convention, since this feature's entire value IS the
+tailored table), `_nearest_forecast_period()`'s `"0q"`-key resolution, `_fetch_fundamentals_
+sync()`'s real HTTP fail-open matrix, and `generate_earnings_forecast()`'s full pipeline
+(flag gate, API-key gate, cache hit/corrupted-cache-fallthrough/write-failure, fundamentals
+fetch failure, missing `"0q"` consensus, malformed/fenced JSON, truncation, and the try-block-
+ordering regression guard). `services/market-data/tests/test_earnings_consensus_and_revenue_
+history.py` gained 15 new cases for the `growth_vs_index` fetch block, extending the file's own
+established source-text-extraction convention — including a dedicated regression test
+(`test_growth_num_is_an_independent_copy_not_a_reference_to_consensus_num`) that directly
+EXERCISES the extracted `_growth_num()` function in isolation (proving it never calls the
+sibling `_consensus_num`, rather than a fragile substring check that would false-positive on
+the function's own explanatory comment — a real test-writing mistake caught and fixed during
+development).
+
+**Adversarial verification** — every real guard sabotaged and confirmed to fail correctly,
+then restored and confirmed byte-identical via `md5sum`: `event-intelligence/tests/
+conftest.py`'s explicit parent-mock link (removing it reproduces all 7 of the original,
+real-cause-identified test failures exactly); the try-block-import-ordering fix in
+`generate_earnings_forecast()`; `_growth_num()`'s NaN self-inequality guard; and the
+`growth_vs_index` block's own try/except isolation (removing it correctly broke the dedicated
+isolation test with a real substring-not-found failure).
+
+Full 318-test event-intelligence suite (up from 284) and 2043-test market-data suite (up from
+2028) green; `pyflakes` clean on every touched backend file (confirmed via `git stash` that
+every remaining warning predates this change). Frontend: `npx tsc --noEmit` clean, full
+132-test vitest suite unaffected, a full `next build` clean (all 51 routes;
+`/earnings`/`/stock/[symbol]`/`/admin-ai-features` all confirmed via direct grep to contain the
+new content in their actual compiled chunks, not just correct-looking source).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-event-intelligence-1 grep -n "generate_earnings_forecast\|_REDIS_EARNINGS_FORECAST_ENABLED" /app/src/services/earnings.py
+docker exec stockai-market-data-1 grep -n "growth_vs_index" /app/src/api/routes.py
+
+# Confirm the admin flag's current state:
+docker exec stockai-redis-1 redis-cli get stockai:admin:feature:earnings_llm_forecast_enabled
+
+# Live-check the forecast endpoint for a real symbol with an upcoming report (needs the flag ON):
+docker exec stockai-event-intelligence-1 curl -s 'http://localhost:8010/events/earnings/forecast?symbol=NVDA&sector=Technology&days_to_event=1' \
+  -H "Authorization: Bearer <token>" | python3 -m json.tool
+
+# Check the per-symbol forecast cache directly:
+docker exec stockai-redis-1 redis-cli get 'stockai:earnings_forecast:NVDA'
+
+# Confirm the compiled frontend bundles contain the new UI:
+docker exec stockai-frontend-1 sh -c "grep -o 'Broad Macro Impact' /app/.next/static/chunks/pages/earnings-*.js /app/.next/static/chunks/pages/stock/\[symbol\]-*.js"
+```
+If the modal/section always shows "No AI forecast available" despite a real upcoming report,
+first confirm `earnings_llm_forecast_enabled` is actually `1` in Redis — this feature is
+off by default on every fresh deploy, matching every other opt-in Claude feature's own
+convention.

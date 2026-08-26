@@ -76,6 +76,12 @@ _REDIS_THEME_FORECAST_ENABLED = "stockai:admin:feature:theme_forecast_email_enab
 # literal exactly, same not-cross-imported convention and default-OFF semantics as
 # theme_forecast_email_enabled above.
 _REDIS_TRADE_COACH_ENABLED = "stockai:admin:feature:trade_coach_email_enabled"
+# AUD-EARNINGSFORECAST: matches event-intelligence's earnings.py own hardcoded
+# _REDIS_EARNINGS_FORECAST_ENABLED literal exactly, same not-cross-imported convention and
+# default-OFF semantics as every other new opt-in feature above — an on-demand, user-clicked
+# LLM call (not a scheduled poll), but still gets the same admin-controlled kill switch as
+# every other Claude-calling feature in this app.
+_REDIS_EARNINGS_FORECAST_ENABLED = "stockai:admin:feature:earnings_llm_forecast_enabled"
 # T258-NEWS-INTELLIGENCE: same admin-configured-credential pattern as the Claude/DeepSeek keys
 # above — matches shared/common/ai_keys.py's own _ALPACA_KEY_REDIS/_ALPACA_SECRET_REDIS
 # constants exactly (kept as two separate literals here rather than importing them, matching
@@ -144,6 +150,9 @@ class ConfigRequest(BaseModel):
     # T286-TRADE-PATTERN-COACH: gates the new weekly cross-trade behavioral-pattern digest
     # (default OFF, same new-opt-in-Claude-feature convention as theme_forecast_email_enabled).
     trade_coach_email_enabled: bool | None = None
+    # AUD-EARNINGSFORECAST: gates the new on-demand PRE-report forecast (default OFF, same
+    # new-opt-in-Claude-feature convention as every other flag above).
+    earnings_llm_forecast_enabled: bool | None = None
     # Unshare: deletes the shared server-side key so other users' AI features fall back to
     # their own personal key (or "no AI" if they don't have one) — the inverse of pushing
     # claude_api_key/deepseek_api_key above. Bool, not a key value, since "clear this" is a
@@ -171,6 +180,7 @@ def get_feature_flags(_: User = Depends(get_admin_user)):
         "earnings_llm_impact_enabled": r.get(_REDIS_EARNINGS_LLM_ENABLED) == "1",
         "theme_forecast_email_enabled": r.get(_REDIS_THEME_FORECAST_ENABLED) == "1",
         "trade_coach_email_enabled": r.get(_REDIS_TRADE_COACH_ENABLED) == "1",
+        "earnings_llm_forecast_enabled": r.get(_REDIS_EARNINGS_FORECAST_ENABLED) == "1",
     }
 
 
@@ -185,6 +195,7 @@ def get_feature_flags_public():
         "earnings_llm_impact_enabled": r.get(_REDIS_EARNINGS_LLM_ENABLED) == "1",
         "theme_forecast_email_enabled": r.get(_REDIS_THEME_FORECAST_ENABLED) == "1",
         "trade_coach_email_enabled": r.get(_REDIS_TRADE_COACH_ENABLED) == "1",
+        "earnings_llm_forecast_enabled": r.get(_REDIS_EARNINGS_FORECAST_ENABLED) == "1",
     }
 
 
@@ -201,7 +212,7 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
        req.alpaca_api_key is not None or req.alpaca_secret_key is not None or req.unshare_alpaca_key or \
        req.auto_research_enabled is not None or req.macro_llm_reaction_enabled is not None or \
        req.earnings_llm_impact_enabled is not None or req.theme_forecast_email_enabled is not None or \
-       req.trade_coach_email_enabled is not None:
+       req.trade_coach_email_enabled is not None or req.earnings_llm_forecast_enabled is not None:
         r = _get_redis()
     if req.claude_api_key is not None:
         r.set(_REDIS_CLAUDE_KEY, req.claude_api_key)
@@ -223,6 +234,8 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
         r.set(_REDIS_THEME_FORECAST_ENABLED, "1" if req.theme_forecast_email_enabled else "0")
     if req.trade_coach_email_enabled is not None:
         r.set(_REDIS_TRADE_COACH_ENABLED, "1" if req.trade_coach_email_enabled else "0")
+    if req.earnings_llm_forecast_enabled is not None:
+        r.set(_REDIS_EARNINGS_FORECAST_ENABLED, "1" if req.earnings_llm_forecast_enabled else "0")
     if req.unshare_claude_key:
         r.delete(_REDIS_CLAUDE_KEY)
     if req.unshare_deepseek_key:
@@ -240,6 +253,7 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
               earnings_llm_impact_enabled=req.earnings_llm_impact_enabled,
               theme_forecast_email_enabled=req.theme_forecast_email_enabled,
               trade_coach_email_enabled=req.trade_coach_email_enabled,
+              earnings_llm_forecast_enabled=req.earnings_llm_forecast_enabled,
               unshared_claude=bool(req.unshare_claude_key), unshared_deepseek=bool(req.unshare_deepseek_key),
               alpaca_key_set=req.alpaca_api_key is not None, unshared_alpaca=bool(req.unshare_alpaca_key))
     return {"status": "ok"}

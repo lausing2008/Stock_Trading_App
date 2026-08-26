@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { api, type CalendarEvent, type EarningsAlertSub } from '@/lib/api';
+import EarningsForecastModal from '@/components/EarningsForecastModal';
 
 type EventType = 'all' | 'earnings' | 'dividend' | 'macro';
 // AUD264-MACRO-CALENDAR-TYPE-MAP-COVERS-4-OF-10: extended alongside the backend's own
@@ -139,7 +140,7 @@ function AlertMeButton({
   );
 }
 
-function EventCard({ ev, subs, onSubsChanged }: { ev: CalendarEvent; subs: EarningsAlertSub[]; onSubsChanged: () => void }) {
+function EventCard({ ev, subs, onSubsChanged, onOpenForecast }: { ev: CalendarEvent; subs: EarningsAlertSub[]; onSubsChanged: () => void; onOpenForecast: (ev: CalendarEvent) => void }) {
   const isMacro = MACRO_SUBTYPES.has(ev.type);
   const meta = EVENT_META[ev.type] ?? { color: '#94a3b8', bg: 'rgba(148,163,184,0.1)', dot: '#94a3b8' };
 
@@ -178,6 +179,13 @@ function EventCard({ ev, subs, onSubsChanged }: { ev: CalendarEvent; subs: Earni
             <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>EPS growth: </span><span style={{ color: (ev.earnings_growth ?? 0) >= 0 ? '#4ade80' : '#f87171', fontWeight: 700 }}>{fmtPct(ev.earnings_growth)}</span></span>
             <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>Cap: </span><span style={{ color: '#94a3b8', fontWeight: 700 }}>{fmtCap(ev.market_cap)}</span></span>
             {ev.symbol && <AlertMeButton symbol={ev.symbol} subs={subs} onChanged={onSubsChanged} />}
+            {ev.symbol && (
+              <button
+                onClick={() => onOpenForecast(ev)}
+                title="AI-generated forecast: what the market is watching for, and how different outcomes typically play out"
+                style={{ padding: '3px 9px', borderRadius: 5, fontSize: 10.5, fontWeight: 700, cursor: 'pointer', border: '1px solid rgba(129,140,248,0.4)', background: 'rgba(129,140,248,0.12)', color: '#818cf8', whiteSpace: 'nowrap' }}
+              >🔮 Forecast</button>
+            )}
           </div>
           {/* Market's own estimates ahead of the report: analyst price target consensus +
               this stock's own history of beating/missing estimates. Both degrade to "—" when
@@ -257,6 +265,7 @@ export default function EventsCalendarPage() {
   const [tab, setTab] = useState<EventType>('all');
   const [market, setMarket] = useState<'All' | 'US' | 'HK'>('All');
   const [search, setSearch] = useState('');
+  const [forecastEv, setForecastEv] = useState<CalendarEvent | null>(null);
 
   const { data, error, isLoading } = useSWR<CalendarEvent[]>(
     `events-cal-${daysAhead}`,
@@ -389,6 +398,7 @@ export default function EventsCalendarPage() {
                 ev={ev}
                 subs={subs}
                 onSubsChanged={() => mutateSubs()}
+                onOpenForecast={setForecastEv}
               />
             ))}
           </div>
@@ -396,6 +406,8 @@ export default function EventsCalendarPage() {
       ))}
 
       <MyEarningsAlertsPanel subs={subs} onChanged={() => mutateSubs()} />
+
+      {forecastEv && <EarningsForecastModal ev={forecastEv} onClose={() => setForecastEv(null)} />}
     </div>
   );
 }

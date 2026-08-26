@@ -26,6 +26,68 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="yf_earnings")
 # shared event loop — no ThreadPoolExecutor needed here.
 _REDIS_EARNINGS_LLM_ENABLED = "stockai:admin:feature:earnings_llm_impact_enabled"
 
+# AUD-EARNINGSFORECAST: PRE-report forecast (generate_earnings_impact above is POST-report —
+# a genuinely different feature, triggered on-demand by a user click rather than a scheduled
+# poll). Cost-minimal by design (the user explicitly asked to keep this cheap): one combined
+# Claude call produces the narrative AND the tailored scenario table together (no second call),
+# cached per (symbol, report_date) until the report itself happens — a forecast for a report
+# 3 days out doesn't need to be regenerated on every page view. Default OFF, matching every
+# other opt-in Claude feature added since the CLAUDE-API-COST-AUDIT incident.
+_REDIS_EARNINGS_FORECAST_ENABLED = "stockai:admin:feature:earnings_llm_forecast_enabled"
+_FORECAST_CACHE_TTL_S = 24 * 3600  # one real regen per symbol per day at most, even if a user
+# reopens the modal repeatedly — the underlying consensus data itself only meaningfully shifts
+# on this cadence (analyst revisions are tracked in 7/30/90-day windows, never intraday).
+
+_FORECAST_SYSTEM = """You are an equity analyst producing a brief PRE-earnings forecast read
+for a retail trading app, shown when a user clicks an upcoming earnings event. You will
+receive a company's ticker, sector, days until the report, the real analyst consensus (EPS/
+revenue estimate + range, analyst count, growth), a 7/30/90-day revision trend (are analysts
+raising or lowering estimates lately), this stock's own history of beating/missing estimates,
+and its projected growth vs. the broader market index. Respond ONLY with valid JSON (no
+markdown, no explanation outside JSON) in this exact format:
+{"watching_for":"<2-3 sentences>","scenarios":[{"scenario":"Beat + Raise","interpretation":"...","typical_reaction":"..."},{"scenario":"In-Line","interpretation":"...","typical_reaction":"..."},{"scenario":"Miss or Cut","interpretation":"...","typical_reaction":"..."}],"bellwether_note":"<1-2 sentences or empty string>"}
+watching_for: 2-3 plain-English sentences on what the market is specifically watching for in
+THIS report, grounded in the real revision trend and beat history you were given (e.g. "analysts
+have raised estimates 5 times in the last 30 days with zero cuts — the bar is already set high").
+Never invent a number you were not given; if the data is thin, say so plainly instead of
+padding with generic language.
+scenarios: EXACTLY 3 rows, always in this order: "Beat + Raise", "In-Line", "Miss or Cut".
+interpretation is one short clause on what that outcome would signal about the business (e.g.
+"demand still accelerating" / "growth cooling to expectations" / "guidance concerns validated").
+typical_reaction is a SHORT, GENERAL statement of how markets HISTORICALLY tend to react to that
+class of outcome (e.g. "often a strong rally, especially with elevated pre-print expectations" /
+"frequently a modest pullback as anticipation gets priced out" / "can trigger a sharp
+sector-wide selloff") — this is general market-pattern education, NEVER a prediction for this
+specific stock's next move. Do not claim certainty or give a percentage/target price.
+bellwether_note: ONLY if this stock's growth estimate is genuinely a notable outlier vs. the
+index growth estimate you were given (meaningfully faster or slower), 1-2 sentences on the
+read-through risk to its sector/peers if the print confirms or breaks that trend. Empty string
+if the comparison isn't notable — never fabricate a read-through that isn't there."""
+
+
+def _clean_scenarios(raw: object) -> list[dict] | None:
+    """A malformed/incomplete scenario list must never take down the whole forecast — this
+    feature's entire value is the tailored table, so an invalid one degrades the WHOLE
+    forecast to None (unlike _clean_sector_list's partial-degrade convention) rather than
+    silently showing a broken or incomplete table."""
+    if not isinstance(raw, list) or len(raw) != 3:
+        return None
+    cleaned = []
+    for row in raw:
+        if not isinstance(row, dict):
+            return None
+        scenario = str(row.get("scenario") or "").strip()
+        interpretation = str(row.get("interpretation") or "").strip()
+        typical_reaction = str(row.get("typical_reaction") or "").strip()
+        if not (scenario and interpretation and typical_reaction):
+            return None
+        cleaned.append({
+            "scenario": scenario[:40],
+            "interpretation": interpretation[:200],
+            "typical_reaction": typical_reaction[:300],
+        })
+    return cleaned
+
 _IMPACT_SYSTEM = """You are an equity analyst producing a brief post-earnings impact read for a
 retail trading app. You will receive a company's ticker, sector, EPS actual vs. estimate,
 revenue actual vs. estimate, surprise percentages, and a computed earnings strength score
@@ -120,6 +182,140 @@ async def generate_earnings_impact(
         }
     except Exception as exc:
         log.warning("earnings_impact.call_failed", symbol=symbol, error=str(exc))
+        return None
+
+
+def _nearest_forecast_period(consensus: dict | None) -> tuple[str, dict] | None:
+    """The consensus/growth blobs are keyed by relative period ("0q"/"+1q"/"0y"/"+1y") — the
+    upcoming report this forecast is FOR is always the current-quarter figure, "0q". A thin-
+    coverage symbol missing that specific period has no real basis for a forecast at all."""
+    if not consensus or "0q" not in consensus:
+        return None
+    return "0q", consensus["0q"]
+
+
+def _fetch_fundamentals_sync(symbol: str) -> dict | None:
+    """Sync (blocking) fetch of market-data's already-24h-cached fundamentals blob — reuses
+    the SAME earnings_consensus/growth_vs_index data the stock detail page already shows,
+    rather than a second yfinance fetch. Must run inside _executor (see generate_earnings_
+    forecast's own call site) — a bare sync httpx.get() here would block the shared event
+    loop for every other concurrent request this service is serving, the exact class of bug
+    already fixed once in macro_reaction.py under AUD-EI-MACRO-REACTION-BLOCKING."""
+    try:
+        r = httpx.get(f"{_settings.market_data_url}/stocks/{symbol}/fundamentals", timeout=15)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as exc:
+        log.warning("earnings_forecast.fundamentals_fetch_failed", symbol=symbol, error=str(exc))
+    return None
+
+
+async def generate_earnings_forecast(symbol: str, sector: str | None, days_to_event: int) -> dict | None:
+    """PRE-report forecast — the genuinely on-demand (user-clicked, not scheduled-poll) sibling
+    of generate_earnings_impact() above. Fail-open: returns None on any error (missing flag, no
+    API key, thin data, a failed Claude call) — the frontend modal shows the real consensus
+    data it already has either way, this is purely an LLM-generated ADDITION on top of it, never
+    a blocking dependency."""
+    # AUD-EARNINGSFORECAST: the lazy import itself must live INSIDE the try — matching
+    # check_earnings_impact_poll()'s own established shape exactly, not just its "lazy import"
+    # comment. A genuinely broken/missing common.redis_client module must fail open the same
+    # way a real Redis connection error does, not crash this whole function.
+    try:
+        from common.redis_client import get_redis
+        if get_redis().get(_REDIS_EARNINGS_FORECAST_ENABLED) != "1":
+            return None
+    except Exception:
+        return None
+
+    api_key = _api_key()
+    if not api_key:
+        return None
+
+    cache_key = f"stockai:earnings_forecast:{symbol.upper()}"
+    try:
+        cached = get_redis().get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass  # a corrupted/unparseable cache entry must never block a fresh regeneration
+
+    loop = asyncio.get_running_loop()
+    fundamentals = await loop.run_in_executor(_executor, _fetch_fundamentals_sync, symbol)
+    if not fundamentals:
+        return None
+
+    consensus_period = _nearest_forecast_period(fundamentals.get("earnings_consensus"))
+    if consensus_period is None:
+        return None  # no real basis for a forecast — never fabricate one from nothing
+    _, consensus = consensus_period
+    growth_period = _nearest_forecast_period(fundamentals.get("growth_vs_index"))
+    growth = growth_period[1] if growth_period else {}
+
+    def _fmt(v, suffix=""):
+        return f"{v}{suffix}" if v is not None else "unavailable"
+
+    def _fmt_pct(v):
+        return f"{v * 100:+.1f}%" if v is not None else "unavailable"
+
+    prompt = (
+        f"Ticker: {symbol}\n"
+        f"Sector: {sector or 'unknown'}\n"
+        f"Days until report: {days_to_event}\n"
+        f"EPS consensus estimate: {_fmt(consensus.get('eps_avg'))} "
+        f"(range {_fmt(consensus.get('eps_low'))}-{_fmt(consensus.get('eps_high'))}, "
+        f"{_fmt(consensus.get('number_of_analysts'))} analysts)\n"
+        f"Revenue consensus estimate: {_fmt(consensus.get('revenue_avg'))} "
+        f"(range {_fmt(consensus.get('revenue_low'))}-{_fmt(consensus.get('revenue_high'))})\n"
+        f"EPS revision trend (current vs. 7/30/90 days ago): "
+        f"{_fmt(consensus.get('eps_trend_current'))} vs. "
+        f"{_fmt(consensus.get('eps_trend_7d_ago'))} / {_fmt(consensus.get('eps_trend_30d_ago'))} / "
+        f"{_fmt(consensus.get('eps_trend_90d_ago'))}\n"
+        f"Analyst revisions last 30 days: {_fmt(consensus.get('revisions_up_30d'))} up, "
+        f"{_fmt(consensus.get('revisions_down_30d'))} down\n"
+        f"This stock's own beat-rate history: "
+        f"{_fmt_pct(fundamentals.get('eps_beat_rate'))} beat rate, "
+        f"avg surprise {_fmt_pct(fundamentals.get('eps_avg_surprise_pct'))}\n"
+        f"Projected growth — this stock: {_fmt_pct(growth.get('stock_growth'))} "
+        f"vs. broader index: {_fmt_pct(growth.get('index_growth'))}\n"
+    )
+    body = {
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 500,
+        "temperature": 0.2,
+        "system": _FORECAST_SYSTEM,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=body)
+        if r.status_code != 200:
+            log.warning("earnings_forecast.api_error", symbol=symbol, status=r.status_code, body=r.text[:200])
+            return None
+        raw = r.json()["content"][0]["text"].strip()
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
+        data = json.loads(raw)
+        watching_for = (data.get("watching_for") or "")[:500] or None
+        scenarios = _clean_scenarios(data.get("scenarios"))
+        if watching_for is None or scenarios is None:
+            return None
+        result = {
+            "watching_for": watching_for,
+            "scenarios": scenarios,
+            "bellwether_note": (str(data.get("bellwether_note") or "").strip())[:400] or None,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            get_redis().setex(cache_key, _FORECAST_CACHE_TTL_S, json.dumps(result))
+        except Exception:
+            pass  # cache-write failure must never block returning the real, already-computed result
+        return result
+    except Exception as exc:
+        log.warning("earnings_forecast.call_failed", symbol=symbol, error=str(exc))
         return None
 
 

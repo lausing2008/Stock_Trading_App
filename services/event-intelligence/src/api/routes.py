@@ -119,6 +119,20 @@ def get_earnings_by_symbol(symbol: str = Query(...), _: str = Depends(get_curren
     return earnings.get_earnings_for_symbol(stock_id)
 
 
+@router.get("/events/earnings/forecast")
+async def get_earnings_forecast(
+    symbol: str = Query(...), sector: str | None = Query(None), days_to_event: int = Query(0),
+    _: str = Depends(get_current_username),
+):
+    """AUD-EARNINGSFORECAST: on-demand PRE-report forecast, gated behind the
+    earnings_llm_forecast_enabled admin flag (default OFF) inside generate_earnings_forecast()
+    itself — this route always returns 200 with a real, possibly-null `forecast` field rather
+    than a 404/403 when the flag is off, so the frontend modal can render its own real
+    consensus data unconditionally and simply omit the LLM section when unavailable."""
+    forecast = await earnings.generate_earnings_forecast(symbol, sector, days_to_event)
+    return {"forecast": forecast}
+
+
 @router.post("/events/sync/earnings")
 async def sync_earnings(_: str = Depends(get_current_username)):
     result = await earnings.sync_all_earnings()

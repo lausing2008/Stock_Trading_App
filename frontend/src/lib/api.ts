@@ -196,6 +196,7 @@ export const api = {
     auto_research_enabled?: boolean;
     macro_llm_reaction_enabled?: boolean;
     earnings_llm_impact_enabled?: boolean;
+    earnings_llm_forecast_enabled?: boolean;
     theme_forecast_email_enabled?: boolean;
     trade_coach_email_enabled?: boolean;
     unshare_claude_key?: boolean; unshare_deepseek_key?: boolean;
@@ -204,6 +205,7 @@ export const api = {
   getFeatureFlags: () => request<{
     broker_enabled: boolean; auto_research_enabled: boolean;
     macro_llm_reaction_enabled: boolean; earnings_llm_impact_enabled: boolean;
+    earnings_llm_forecast_enabled: boolean;
     theme_forecast_email_enabled: boolean; trade_coach_email_enabled: boolean;
   }>(`/admin/feature-flags/public`),
 
@@ -685,6 +687,15 @@ export const api = {
   eventsCape: (months = 24) => request<CapeResponse>(`/events/valuation/cape?months=${months}`),
   eventsEarningsCalendar: (days = 14) => request<EarningsEvent[]>(`/events/earnings/calendar?days=${days}`),
   eventsEarningsSymbol: (symbol: string) => request<EarningsEvent[]>(`/events/earnings?symbol=${symbol}`),
+  // AUD-EARNINGSFORECAST: on-demand PRE-report forecast — always returns 200 with a possibly-
+  // null `forecast` field (the LLM call itself is gated server-side behind the
+  // earnings_llm_forecast_enabled admin flag), so a caller renders whatever real consensus/
+  // beat-rate data it already has and simply omits the forecast section when null.
+  eventsEarningsForecast: (symbol: string, sector: string | null, daysToEvent: number) => {
+    const params = new URLSearchParams({ symbol, days_to_event: String(daysToEvent) });
+    if (sector) params.set('sector', sector);
+    return request<{ forecast: EarningsForecast | null }>(`/events/earnings/forecast?${params}`);
+  },
   eventsInsider: (symbol: string, days = 90) => request<InsiderResponse>(`/events/insider/${symbol}?days=${days}`),
   eventsInsiderLeaderboard: (days = 30) => request<InsiderLeaderItem[]>(`/events/insider/leaderboard?days=${days}`),
   eventsCongress: (symbol: string, days = 90) => request<CongressResponse>(`/events/congress/${symbol}?days=${days}`),
@@ -1201,6 +1212,10 @@ export type Fundamentals = {
   // eps_history above (which is actual-vs-estimate), since yfinance's quarterly_financials
   // has no "what was estimated at the time" figure for revenue the way earnings_history does.
   revenue_history: { quarter: string; revenue: number }[];
+  // AUD-EARNINGSFORECAST: this stock's own projected growth vs. the broader index's, same
+  // period keys as earnings_consensus above — feeds generate_earnings_forecast()'s "bellwether
+  // effect" read. None when yfinance has no comparison data for this symbol.
+  growth_vs_index: Record<string, { stock_growth?: number | null; index_growth?: number | null }> | null;
   // Data freshness
   fetched_at: string | null;
 };
@@ -1323,6 +1338,22 @@ export type CalendarEvent = {
   analyst_price_target_weighted?: number | null; // accuracy-weighted mean (same source as /analyst-consensus)
   analyst_n_firms?: number | null;
   market_cap?: number | null;
+};
+
+// AUD-EARNINGSFORECAST: on-demand, LLM-generated PRE-report forecast — one combined Claude
+// call per (symbol, cached 24h) producing a narrative + a fixed 3-row scenario table, never a
+// prediction of the outcome itself (see watching_for's own backend docstring for the exact
+// honesty framing).
+export type EarningsForecastScenario = {
+  scenario: string;
+  interpretation: string;
+  typical_reaction: string;
+};
+export type EarningsForecast = {
+  watching_for: string;
+  scenarios: EarningsForecastScenario[];
+  bellwether_note: string | null;
+  generated_at: string;
 };
 
 export type AnalystRating = {

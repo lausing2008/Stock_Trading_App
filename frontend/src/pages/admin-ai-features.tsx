@@ -110,6 +110,7 @@ export default function AdminAiFeaturesPage() {
   const [autoResearchEnabled, setAutoResearchEnabled] = useState(false);
   const [macroLlmReactionEnabled, setMacroLlmReactionEnabled] = useState(true);
   const [earningsLlmImpactEnabled, setEarningsLlmImpactEnabled] = useState(false);
+  const [earningsLlmForecastEnabled, setEarningsLlmForecastEnabled] = useState(false);
   const [themeForecastEnabled, setThemeForecastEnabled] = useState(false);
   const [tradeCoachEnabled, setTradeCoachEnabled] = useState(false);
   const [globalSaving, setGlobalSaving] = useState<string | null>(null);
@@ -120,6 +121,7 @@ export default function AdminAiFeaturesPage() {
       setAutoResearchEnabled(f.auto_research_enabled);
       setMacroLlmReactionEnabled(f.macro_llm_reaction_enabled);
       setEarningsLlmImpactEnabled(f.earnings_llm_impact_enabled);
+      setEarningsLlmForecastEnabled(f.earnings_llm_forecast_enabled);
       setThemeForecastEnabled(f.theme_forecast_email_enabled);
       setTradeCoachEnabled(f.trade_coach_email_enabled);
     }).catch(() => {});
@@ -150,6 +152,16 @@ export default function AdminAiFeaturesPage() {
     try {
       await api.pushConfig({ earnings_llm_impact_enabled: val });
       setEarningsLlmImpactEnabled(val);
+    } catch { /* ignore */ } finally {
+      setGlobalSaving(null);
+    }
+  }
+
+  async function handleToggleEarningsLlmForecast(val: boolean) {
+    setGlobalSaving('earnings_llm_forecast');
+    try {
+      await api.pushConfig({ earnings_llm_forecast_enabled: val });
+      setEarningsLlmForecastEnabled(val);
     } catch { /* ignore */ } finally {
       setGlobalSaving(null);
     }
@@ -270,6 +282,15 @@ export default function AdminAiFeaturesPage() {
               on={earningsLlmImpactEnabled}
               onChange={handleToggleEarningsLlmImpact}
               disabled={globalSaving === 'earnings_llm_impact'}
+            />
+            <ToggleRow
+              title="Earnings Forecast (Pre-Report)"
+              desc="The PRE-report sibling of Earnings Impact Analysis above: on-demand, triggered only when you click a stock's upcoming earnings event (the calendar page's 🔮 Forecast button, or the stock detail page's Earnings History &amp; Estimates section). One combined Claude call produces a short 'what the market is watching for' narrative, a 3-row scenario table (Beat + Raise / In-Line / Miss or Cut, each with a general historical-market-reaction pattern — never a prediction for this specific stock), and an optional bellwether/read-through note. Cached 24h per symbol, so repeat clicks cost nothing extra. Off by default — a brand-new feature."
+              model="Haiku"
+              cadence="Purely on-demand — one call per symbol per 24h, only when you actually click into it. Never a scheduled poll."
+              on={earningsLlmForecastEnabled}
+              onChange={handleToggleEarningsLlmForecast}
+              disabled={globalSaving === 'earnings_llm_forecast'}
             />
             <ToggleRow
               title="Weekly Theme Signals"

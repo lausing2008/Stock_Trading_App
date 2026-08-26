@@ -163,3 +163,95 @@ def test_revenue_history_fetch_is_isolated_in_its_own_try_except():
     block = body[start:end]
     assert "except Exception as exc:" in block
     assert 'log.warning("fundamentals.revenue_history_fetch_failed"' in block
+
+
+# ── AUD-EARNINGSFORECAST: growth_vs_index — feeds generate_earnings_forecast()'s own
+# "bellwether effect" read (this stock's projected growth vs. the broader index's) ────────────
+
+def _extract_growth_num():
+    body = _get_fundamentals_body()
+    start = body.index("def _growth_num(v):")
+    end = body.index("\n\n        gr = ticker.growth_estimates", start)
+    func_source = body[start:end]
+    namespace: dict = {}
+    exec(func_source, namespace)  # noqa: S102 — isolated eval of one pure function's real source
+    return namespace["_growth_num"]
+
+
+def test_growth_num_real_number_passes_through_unchanged():
+    fn = _extract_growth_num()
+    assert fn(0.245) == 0.245
+    assert fn(3) == 3.0
+
+
+def test_growth_num_none_stays_none():
+    fn = _extract_growth_num()
+    assert fn(None) is None
+
+
+def test_growth_num_real_nan_degrades_to_none():
+    """yfinance's own growth_estimates DataFrame can carry a real NaN (confirmed live: the
+    "LTG" row has no matching stockTrend/indexTrend comparison for many symbols) — must degrade
+    to None, matching _consensus_num()'s own sibling guard for the identical hazard class."""
+    fn = _extract_growth_num()
+    assert fn(float("nan")) is None
+
+
+def test_growth_num_non_numeric_degrades_to_none_not_a_crash():
+    fn = _extract_growth_num()
+    assert fn("N/A") is None
+
+
+def test_growth_num_is_an_independent_copy_not_a_reference_to_consensus_num():
+    """A regression guard for the exact scoping bug caught and avoided during development:
+    _growth_num's own EXECUTABLE body (not its explanatory comment, which legitimately names
+    _consensus_num while explaining why it's deliberately not reused) must never actually CALL
+    _consensus_num — that function is defined inside a SIBLING try block a few lines above and
+    would risk a real NameError if that earlier block's own try raised before ever reaching its
+    def line. A bare substring check would false-positive on the comment itself, so this checks
+    for a real call form specifically."""
+    fn = _extract_growth_num()
+    # If _growth_num's real, executable body called _consensus_num(...), exec()-ing just this
+    # function's own source (with no _consensus_num in its namespace) would raise NameError the
+    # moment it's actually invoked — not merely because the string appears in a comment.
+    assert fn(0.5) == 0.5
+    assert fn(None) is None
+
+
+def test_growth_vs_index_reads_from_growth_estimates():
+    body = _get_fundamentals_body()
+    assert "ticker.growth_estimates" in body
+
+
+def test_growth_vs_index_reads_both_stock_and_index_trend_columns():
+    body = _get_fundamentals_body()
+    assert 'r.get("stockTrend")' in body
+    assert 'r.get("indexTrend")' in body
+
+
+def test_growth_vs_index_field_defaults_to_none_not_an_empty_dict():
+    """Same 'never fabricate presence of data that doesn't exist' convention as
+    earnings_consensus above — a symbol yfinance has no growth-estimate comparison for must
+    report None."""
+    body = _get_fundamentals_body()
+    assert "if growth:" in body
+    assert "data.growth_vs_index = growth" in body
+
+
+def test_growth_vs_index_fetch_is_isolated_in_its_own_try_except():
+    """A failure fetching growth_estimates must never prevent the SIBLING earnings_consensus
+    block above it (or eps_history/revenue_history below it) from running — each of this
+    function's yfinance fetches is independently fail-open."""
+    body = _get_fundamentals_body()
+    consensus_start = body.index("ticker.earnings_estimate")
+    growth_start = body.index("ticker.growth_estimates")
+    assert consensus_start < growth_start
+    between = body[consensus_start:growth_start]
+    assert "except Exception as exc:" in between
+    assert 'log.warning("fundamentals.earnings_consensus_fetch_failed"' in between
+
+    eps_history_start = body.index("ticker.earnings_history")
+    assert growth_start < eps_history_start
+    between2 = body[growth_start:eps_history_start]
+    assert "except Exception as exc:" in between2
+    assert 'log.warning("fundamentals.growth_vs_index_fetch_failed"' in between2

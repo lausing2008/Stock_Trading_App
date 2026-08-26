@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 
 _stubs = [
     "structlog",
-    "common", "common.config", "common.logging",
+    "common", "common.config", "common.logging", "common.redis_client",
     "db", "db.session",
     "sqlalchemy", "sqlalchemy.orm", "sqlalchemy.dialects",
     "sqlalchemy.dialects.postgresql",
@@ -22,6 +22,20 @@ _stubs = [
 ]
 for _m in _stubs:
     sys.modules.setdefault(_m, MagicMock())
+
+# AUD-EARNINGSFORECAST: sys.modules.setdefault(...) alone registers each submodule under its
+# dotted key but does NOT link it as an attribute on the parent `common` mock — Python's real
+# import machinery normally does this bookkeeping itself for a genuine package, but a bare
+# MagicMock parent has no such behavior. Without this explicit link, `from common.redis_client
+# import get_redis` (the exact statement earnings.py's own lazy imports use) resolves via
+# getattr(sys.modules["common"], "redis_client") — which auto-vivifies a DIFFERENT, unlinked
+# child mock, not the one registered in sys.modules["common.redis_client"] above. A test
+# patching the sys.modules entry (or the dotted-string form pytest's monkeypatch.setattr()
+# resolves via the identical getattr path) would then silently observe a mock the real import
+# never reaches. Mirrors the identical explicit-link fix already applied for common.indicators
+# in market-data/tests/conftest.py.
+for _m in ("config", "logging", "redis_client"):
+    setattr(sys.modules["common"], _m, sys.modules[f"common.{_m}"])
 
 import common.config as _cfg  # noqa: E402
 _cfg.get_settings = MagicMock(return_value=MagicMock())
