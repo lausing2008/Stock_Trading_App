@@ -18058,3 +18058,68 @@ If `past_reactions` is always `[]` in a real forecast response despite a symbol 
 resolved reports, first confirm the backfill job has actually populated `post_earnings_return_
 1d` for that symbol's rows — `_fetch_past_reactions_sync()` only reads already-persisted values,
 it never computes on the fly.
+
+---
+
+## Feature Reference: AUD-EPSTRENDROW-DEADFIELDS — A Fabricated Survey Finding Hid a Real One (2026-08-26)
+
+**Context**: after AUD-EARNINGSFORECAST-EXTEND shipped, 2 parallel survey agents were launched
+for the next improvement batch — one covering `paper_trading_engine.py`/`hard_rejects.py`/
+`gate_harness.py` parity, one covering real-money/data-integrity frontend pages. Both results
+were personally re-verified against the real current source before any code was touched,
+matching this session's own repeatedly-demonstrated discipline that a background survey
+agent's report is a claim to check, never a fact to act on.
+
+**Survey 1 (paper trading engine/decision-engine parity) came back genuinely clean** — a
+well-disciplined "nothing found" after cross-checking every candidate against CLAUDE.md's own
+extensive dated fix history for those exact files, including confirming the T232-DL-
+DUALSCORER-DEBT gate-porting series really is complete (every gate in `_should_enter()` has a
+verified twin in `hard_rejects.py`). No action taken — an honest negative result, not padded
+with a manufactured finding.
+
+**Survey 2 (frontend real-money pages) reported one specific finding with quoted code and a
+named failure mechanism**: a claimed `period.eps_trend?.[k]` nested-object read (keyed by
+`'current'`/`'7daysAgo'`/`'30daysAgo'`/`'90daysAgo'`) in `EarningsHistoryAndEstimates`
+(`frontend/src/pages/stock/[symbol].tsx`), described as silently dropping the "Est. Now" row
+whenever yfinance omits the `current` field.
+
+**Verified directly and found the quoted code does not exist anywhere in this codebase** — a
+`grep -n "eps_trend"` against the real file returned zero matches for any nested-object access
+pattern. The real field shape (confirmed in `frontend/src/lib/api.ts`) is 4 FLAT fields:
+`eps_trend_current`/`eps_trend_7d_ago`/`eps_trend_30d_ago`/`eps_trend_90d_ago` on each
+`earnings_consensus` period row — never a nested object indexed by a string-key array. The
+described "silent mislabeling" mechanism was entirely fabricated, matching the exact class of
+false-positive this session has already hit multiple times with other survey agents.
+
+**Rather than simply dropping the disproven finding, checked one level further** (per this
+session's own standing discipline that a fabricated CLAIM doesn't rule out a real, adjacent
+GAP existing underneath it) — and found one: `eps_trend_current`/`_7d_ago`/`_30d_ago`/
+`_90d_ago` ARE real, correctly-fetched, correctly-typed fields (confirmed present on the API
+response and already CONSUMED by the earnings-forecast LLM prompt itself, per
+`AUD-EARNINGSFORECAST`'s own "EPS revision trend" prompt line), but were never rendered
+anywhere in the stock detail page's "Market Consensus (Forward)" table — a real, previously-
+undocumented, low-severity gap (unused-but-real backend data, not a display bug affecting an
+already-shown number).
+
+**Fix**: added an "Est. trend (30d ago→now)" row to the existing consensus table, directly
+below the pre-existing "Revisions (30d)" row — `eps_trend_30d_ago → eps_trend_current` per
+period, reusing the table's own established green-up/red-down color convention (matching every
+other row in the same table, not a new style). Zero backend changes needed — purely an
+additive frontend rendering fix using data already fetched.
+
+**Verification**: `npx tsc --noEmit` clean, full 132-test frontend vitest suite unaffected
+(no test imports `stock/[symbol].tsx` directly), a full `next build` clean (`/stock/[symbol]`
+56.5kB → 56.6kB), confirmed via direct grep that "Est. trend" reached the actual compiled
+`stock/[symbol]` chunk, not just source.
+
+**Design invariant reinforced**: a survey finding that turns out to be fabricated on close
+inspection is not automatically a dead end — checking the SAME area of code the fabricated
+claim pointed at, with fresh eyes rather than trusting either "the finding is real" or "the
+finding is fake, move on," is what surfaced this real gap. Both directions of skepticism
+(don't trust an agent's claim; don't over-correct into ignoring the area entirely once a claim
+in that area is disproven) matter.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-frontend-1 sh -c "grep -o 'Est. trend' /app/.next/static/chunks/pages/stock/\[symbol\]-*.js"
+```

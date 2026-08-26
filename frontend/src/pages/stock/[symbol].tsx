@@ -386,6 +386,24 @@ function EarningsHistoryAndEstimates({ f, symbol, sector }: { f: Fundamentals; s
                     );
                   })}
                 </tr>
+                <tr>
+                  <td style={{ padding: '2px 6px', color: '#64748b' }}>Est. trend (30d ago→now)</td>
+                  {Object.values(f.earnings_consensus ?? {}).map((row, i) => {
+                    const now = row.eps_trend_current;
+                    const then = row.eps_trend_30d_ago;
+                    const hasTrend = now != null && then != null;
+                    const delta = hasTrend ? now - then : null;
+                    return (
+                      <td key={i} style={{ padding: '2px 6px', textAlign: 'center' as const }}>
+                        {hasTrend ? (
+                          <span style={{ color: (delta ?? 0) > 0 ? '#4ade80' : (delta ?? 0) < 0 ? '#f87171' : '#94a3b8' }}>
+                            ${then!.toFixed(2)}→${now!.toFixed(2)}
+                          </span>
+                        ) : '—'}
+                      </td>
+                    );
+                  })}
+                </tr>
               </tbody>
             </table>
           </div>
