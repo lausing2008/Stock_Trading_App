@@ -18213,3 +18213,59 @@ docker exec stockai-signal-engine-1 grep -n "analytics_router" /app/src/main.py
 docker exec stockai-signal-engine-1 curl -s -o /dev/null -w '%{http_code}\n' 'http://localhost:8005/signals/accuracy' -H "Authorization: Bearer <token>"
 docker exec stockai-signal-engine-1 curl -s -o /dev/null -w '%{http_code}\n' 'http://localhost:8005/signals/outcomes/evaluate' -X POST -H "Authorization: Bearer <token>"
 ```
+
+---
+
+## T234-CONFIG-UNJUSTIFIED-THRESHOLDS — Full Triage Completed (2026-08-26)
+
+**Closes the original item's own deliverable**: the 2026-07-04 audit found 27 numeric
+thresholds/weights across decision-engine (`scorer.py`/`sizer.py`/`hard_rejects.py`),
+`kscore.py`'s `_WEIGHTS`, and `paper_trading_engine.py`'s `_DEFAULT_CONFIG` with no empirical
+citation. This session re-verified every item's CURRENT status against real code (not the
+2026-07-04 snapshot) before triaging, per this file's own repeatedly-demonstrated discipline
+that a tracker item's status text can drift stale in either direction.
+
+**6 of 27 items already resolved**, none previously cross-referenced back to this tracker item:
+- #1 `min_confidence` cross-file mismatch — `T234-CONFIG-DECIDE-DEFAULT-MISMATCH` (2026-07-23).
+- #2 `regime_min_rr_ratio` fallback — now calibration-aware via `_default_min_rr_ratio()`.
+- #13 4h/18h vs 72h staleness — investigated 2026-07-20, found NOT a real conflict (different
+  mechanisms: a hard reject vs. a soft score nudge on the same already-agreeing 4h/18h values).
+- #16 `kscore.py` `_WEIGHTS` — `T288-KSCORE-WEIGHT-SWEEP`, real walk-forward-validated.
+- #22 `max_portfolio_drawdown_pct` — `AUD293`'s `sweep_max_portfolio_drawdown_pct()`.
+
+**21 items remain genuinely open**, now explicitly triaged into 3 groups rather than a flat
+undifferentiated list — full reasoning in `docs/AUDIT_TRIAGE_TIER234_2026-08-26.md`:
+
+- **Group A (12 items)** — decision-engine `scorer.py`/`sizer.py` soft-score/sizing nudges
+  (#3-12, #14-15). Judged lower-priority to sweep individually: each is an additive ±1/±2 score
+  layer or a sizing multiplier feeding a downstream threshold (`min_entry_score`) that's ALREADY
+  been walk-forward validated — a single-parameter sweep of any one constant in isolation would
+  capture only a fraction of the real effect, since these constants interact with each other.
+  A meaningful validation needs a joint multi-parameter sweep (like `tune_style_profiles`'s own
+  approach in signal-engine), a materially larger project than this codebase's existing
+  single-parameter `walk_forward_*` harness pattern.
+- **Group B (5 items)** — `kscore.py`'s internal piecewise curve-shape constants (#17-21: RSI
+  breakpoints/slopes, ADX-boost normalization, volatility/value/growth scale factors). Untouched
+  by the T288 sweep, which only validated the 6 top-level `_WEIGHTS`. These are curve-shape
+  parameters, not gate thresholds — validating them needs a genuinely different methodology
+  (comparing K-Score's own predictive power against outcome data under alternative curve
+  shapes) that doesn't fit the existing sweep harness without real new engineering.
+- **Group C (4 items)** — standalone `paper_trading_engine.py` gates (#23 `max_open_risk_pct`,
+  #24 `hold_stall_days`/`hold_stall_max_gain`, #26 HK `regime_suspension_days`, #27
+  `min_stop_dist` floor). None currently swept. `max_open_risk_pct` is the closest candidate to
+  the already-completed drawdown sweep (same "portfolio-wide circuit breaker" class) and is the
+  recommended first target if this triage is ever revisited.
+
+**Design invariant reinforced**: none of the 21 open items were touched by this triage — per
+this codebase's own standing discipline against unvalidated changes to live-decision-affecting
+parameters, "explicitly documented as intentionally arbitrary" is itself the correct, honest
+disposition for a constant that hasn't (yet) earned a real walk-forward validation, distinct
+from silently leaving it unaddressed.
+
+**What to check if this needs revisiting**:
+```bash
+cat docs/AUDIT_TRIAGE_TIER234_2026-08-26.md   # full per-item reasoning
+grep -n "^def sweep_\|^def walk_forward_" services/market-data/src/backtest/gate_harness.py services/market-data/src/backtest/portfolio_backtest.py
+# 8 functions today — any NEW one appearing here means a Group A/B/C item has since been swept;
+# cross-reference it back to this list before assuming it's still open.
+```
