@@ -127,10 +127,28 @@ the live `decision_engine_mode="primary"` trading path, not an illustrative prev
    construction), each caught correctly and each restore confirmed byte-identical via
    `md5sum`/`diff`.
 
-**Not yet run against real production data as of this write-up** — the sweep is deployed but
-has not yet been triggered live for any style/market combo. Per this codebase's own established
-promotion discipline, `promoted: true` from this endpoint is a research signal only; it never
-changes any live decision-engine config on its own.
+**Live-verified end-to-end against real production data after deploy.** First deploy surfaced a
+real bug: `POST /decide/score-replay` was registered AFTER the pre-existing
+`POST /decide/{symbol}` catch-all, so a real request silently matched the catch-all instead
+(the exact `BUG233-ROUTERORDER` class already hit once in signal-engine) — returned a 422
+instead of ever reaching the new endpoint. Fixed by moving the registration before the
+catch-all, with a new source-text regression test guarding it (see `.claude/CLAUDE.md`'s own
+Group A section for the full write-up). This bug was invisible to every existing test in
+`test_score_replay.py`, since each one calls `score_replay()` directly as a Python function,
+bypassing FastAPI's real route dispatch — the exact class of gap this codebase's own
+"tests all pass ≠ works in production" discipline exists to catch.
+
+After the fix, `GET /backtest/scorer-sweep?style=SWING&market=US&window_days=90` (a 365-day
+window returned an honest zero-signal `skipped_reason`, since real resolved
+`signal_outcomes` data only spans 2026-05-25 → 2026-08-11 today) produced a genuine, complete
+result: 1,126 real train-slice signals, a real winning train candidate
+(`rr_excellent_threshold: 3.0`, beating baseline's `-1.34%` avg return with `-1.26%`), correctly
+re-measured against the held-out validation slice where it scored `0.4539%` vs. baseline's
+`0.4662%` — a real loss on validation, so `promoted: false` — exactly the honest, correct
+outcome the promotion-margin discipline exists to produce when a train-slice edge doesn't
+generalize. Per this codebase's own established promotion discipline, `promoted: true` from
+this endpoint is a research signal only; it never changes any live decision-engine config on
+its own.
 
 ### Group B — kscore.py internal piecewise constants (items 17,18,19,20,21)
 

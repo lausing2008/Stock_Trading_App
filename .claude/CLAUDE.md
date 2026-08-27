@@ -18605,21 +18605,53 @@ A's own 4 non-sweepable items (3 with zero outcome linkage, 1 — item #4 — de
 own real, scoped `as_of`-injection prerequisite). Full updated per-item reasoning in
 `docs/AUDIT_TRIAGE_TIER234_2026-08-26.md`'s "Group A Scorer Sweep" section.
 
-**Not yet run against real production data as of this write-up** — the sweep is deployed but
-has not yet been triggered live for any real style/market combo. Per this codebase's own
-established promotion discipline, `promoted: true` from this endpoint is a research signal
-only; it never changes any live decision-engine config on its own — applying a winning
-candidate to real trading requires a separate, explicit config change.
+**A real router-ordering bug found on FIRST live deploy verification, not caught by any test**
+(a mistake worth its own entry): `POST /decide/score-replay` was originally registered AFTER the
+pre-existing `POST /decide/{symbol}` catch-all — a real POST silently matched the catch-all
+instead (`symbol="score-replay"`), returning a 422 instead of ever reaching the new endpoint.
+Exactly the `BUG233-ROUTERORDER` class already hit once in signal-engine, and invisible to every
+test in `test_score_replay.py` for the same reason it was invisible there: every test calls
+`score_replay()` directly as a Python function, bypassing FastAPI's real route dispatch entirely
+— registration order simply never enters the picture when a function is called directly. Fixed
+by moving `score_replay`'s registration to sit alongside the pre-existing `/decide/batch` route,
+before `/decide/{symbol}`, with a new `TestScoreReplayRouterOrdering` source-text regression
+test (comparing decorator source-POSITION, the only thing that can actually catch this class of
+bug without driving a real FastAPI `TestClient`) — adversarially verified by reverting the
+registration order and confirming it fails with a real, meaningful assertion. 276-test
+decision-engine suite green after the fix.
+
+**Live-verified end-to-end against real production data after the fix.**
+`GET /backtest/scorer-sweep?style=SWING&market=US&window_days=365` correctly returned an honest
+`skipped_reason` (real resolved `signal_outcomes` data only spans 2026-05-25 → 2026-08-11 today
+— a 365-day window's computed train slice genuinely contains zero real rows, confirmed via a
+direct SQL cross-check before trusting the endpoint's own answer). At a realistic `window_days=90`
+matching the app's actual data span, the sweep produced a genuine, complete result: 1,126 real
+train-slice signals, a real winning train-slice candidate (`rr_excellent_threshold: 3.0`,
+beating baseline's `-1.34%` avg return with `-1.26%`), correctly re-measured against the held-out
+validation slice where it scored `0.4539%` vs. baseline's `0.4662%` — a real LOSS on validation,
+so `promoted: false`, exactly the honest outcome the promotion-margin discipline exists to
+produce when a train-slice edge doesn't generalize. Per this codebase's own established
+promotion discipline, `promoted: true` from this endpoint is a research signal only; it never
+changes any live decision-engine config on its own — applying a winning candidate to real
+trading requires a separate, explicit config change.
 
 **What to check if this looks wrong**:
 ```bash
 docker exec stockai-decision-engine-1 grep -n "def score_replay\|chase_ceiling_pct\|rr_excellent_threshold" /app/src/api/routes.py /app/src/api/core/scorer.py
 docker exec stockai-market-data-1 grep -n "def walk_forward_scorer_sweep\|_SCORER_SWEEP_STEP" /app/src/backtest/gate_harness.py
 
+# Confirm score-replay is registered BEFORE the /decide/{symbol} catch-all (the exact bug
+# above) — the decorator for /decide/score-replay must appear earlier in the file:
+docker exec stockai-decision-engine-1 grep -n '@router.post("/decide' /app/src/api/routes.py
+
 # Run the sweep live for a real style/market combo (needs an admin JWT — safe, read-only
-# research call, never writes to any portfolio's live config):
+# research call, never writes to any portfolio's live config). window_days should roughly
+# match how far back real resolved signal_outcomes data actually goes — check that first if
+# the sweep always returns skipped_reason:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT MIN(signal_date), MAX(signal_date) FROM signal_outcomes WHERE is_correct_10d IS NOT NULL;"
 docker exec stockai-market-data-1 curl -s \
-  'http://localhost:8001/paper-portfolio/backtest/scorer-sweep?style=SWING&market=US&window_days=365' \
+  'http://localhost:8001/paper-portfolio/backtest/scorer-sweep?style=SWING&market=US&window_days=90' \
   -H "Authorization: Bearer <admin token>" | python3 -m json.tool
 ```
 If the sweep always returns `skipped_reason`, check the real resolved-BUY-signal count for that
