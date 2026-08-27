@@ -168,7 +168,9 @@ def test_cross_sectional_ev_picks_the_top_decile_by_recomputed_score_not_by_stoc
     }
     forward_returns = {i: 0.01 for i in range(1, 10)}
     forward_returns[10] = 0.50  # the top-scoring stock's own distinct, much larger return
-    stats = _kscore_cross_sectional_ev(rows_by_date, _BASE_WEIGHTS, forward_returns)
+    stats = _kscore_cross_sectional_ev(
+        rows_by_date, forward_returns, lambda row: _kscore_recompute(_BASE_WEIGHTS, row),
+    )
     assert stats is not None
     assert abs(stats["ev_pct"] - 50.0) < 0.01  # 0.50 * 100, exactly the top stock's own return
 
@@ -179,7 +181,9 @@ def test_cross_sectional_ev_returns_none_when_no_day_has_enough_stocks():
     spurious EV from too few underlying data points."""
     rows_by_date = {date(2026, 1, 1): [_row(rid=1), _row(rid=2)]}
     forward_returns = {1: 0.05, 2: 0.05}
-    assert _kscore_cross_sectional_ev(rows_by_date, _BASE_WEIGHTS, forward_returns) is None
+    assert _kscore_cross_sectional_ev(
+        rows_by_date, forward_returns, lambda row: _kscore_recompute(_BASE_WEIGHTS, row),
+    ) is None
 
 
 def test_cross_sectional_ev_skips_rows_with_no_resolvable_forward_return():
@@ -189,7 +193,9 @@ def test_cross_sectional_ev_skips_rows_with_no_resolvable_forward_return():
         date(2026, 1, 1): [_row(rid=i) for i in range(1, 5)],
     }
     forward_returns = {1: 0.10, 2: 0.10, 3: 0.10}  # rid=4 deliberately has no forward return
-    stats = _kscore_cross_sectional_ev(rows_by_date, _BASE_WEIGHTS, forward_returns)
+    stats = _kscore_cross_sectional_ev(
+        rows_by_date, forward_returns, lambda row: _kscore_recompute(_BASE_WEIGHTS, row),
+    )
     assert stats is not None
     assert stats["n_scored"] <= 3  # never counts the unresolvable 4th row
 
@@ -200,7 +206,9 @@ def test_cross_sectional_ev_averages_across_multiple_days_not_just_the_last_one(
         date(2026, 1, 2): [_row(rid=i) for i in range(5, 9)],
     }
     forward_returns = {**{i: 0.10 for i in range(1, 5)}, **{i: 0.30 for i in range(5, 9)}}
-    stats = _kscore_cross_sectional_ev(rows_by_date, _BASE_WEIGHTS, forward_returns)
+    stats = _kscore_cross_sectional_ev(
+        rows_by_date, forward_returns, lambda row: _kscore_recompute(_BASE_WEIGHTS, row),
+    )
     assert stats is not None
     assert stats["n_days"] == 2
 
@@ -233,11 +241,20 @@ def test_tune_endpoint_treats_an_unmeasurable_baseline_as_a_skip_not_an_assumed_
 def test_tune_endpoint_records_tune_history_on_every_branch_including_rejections():
     """One TuneHistory row per attempt (promoted or not) — matching every sibling mechanism's
     own audit-trail discipline. Count every _record_kscore_tune_history( call site inside
-    tune_kscore_weights()'s own body."""
+    tune_kscore_weights()'s own body.
+
+    Bound is EXACT (== 6), not >= 6: T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group B added
+    tune_kscore_curve() right after this function (also inside routes.py, also ending right
+    before def refresh()) — its own body ALSO makes 6 _record_kscore_tune_history( calls.
+    A loose >= bound would silently pass even if the end-boundary regressed back to the old
+    "def refresh(" marker, since sweeping BOTH functions' calls together gives 12, which still
+    clears >= 6 — verified directly (12 != 6) before tightening this to catch that exact class
+    of boundary regression. Bound to the next @router.post decorator, which is exactly where
+    tune_kscore_weights()'s own body actually ends."""
     start = _ROUTES_SOURCE.index("def tune_kscore_weights(")
-    end = _ROUTES_SOURCE.index("def refresh(", start)
+    end = _ROUTES_SOURCE.index('@router.post("/tune_kscore_curve")', start)
     body = _ROUTES_SOURCE[start:end]
-    assert body.count("_record_kscore_tune_history(") >= 6  # every skip branch + the promoted branch
+    assert body.count("_record_kscore_tune_history(") == 6  # every skip branch + the promoted branch
 
 
 def test_tune_endpoint_only_writes_to_redis_after_all_validation_gates_pass():

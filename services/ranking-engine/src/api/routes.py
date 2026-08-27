@@ -629,6 +629,20 @@ def kscore_weights_status():
     }
 
 
+@router.get("/kscore_curve_status")
+def kscore_curve_status():
+    """T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group B status: mirrors kscore_weights_status()'s
+    own shape/placement exactly — registered ABOVE /{symbol} below for the same
+    BUG233-ROUTERORDER reasoning that entry's own comment documents."""
+    from ..scoring.kscore import _CURVE_DEFAULTS, _load_active_curve_params
+    effective = _load_active_curve_params()
+    return {
+        "effective_curve_params": effective,
+        "hardcoded_default_curve_params": _CURVE_DEFAULTS,
+        "is_tuned": effective != _CURVE_DEFAULTS,
+    }
+
+
 @router.get("/{symbol}")
 def rank_symbol(symbol: str, session: Session = Depends(get_session)):
     stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
@@ -885,14 +899,23 @@ def _record_kscore_tune_history(
     validation_n: int | None,
     promoted: bool,
     gate_failures: list[str],
+    parameter_class: str = "kscore_weights",
+    parameter_name: str = "factor_weights",
 ) -> None:
     """Local tune_history writer, matching ml-prediction's tuner.py and signal-engine's
     signals_shared.py — each service keeps its OWN copy rather than a cross-service import,
     per this repo's established per-service-duplication convention (docker cp deploys one
     service's code at a time; a shared import would create a cross-service coupling this
-    app's deployment model doesn't otherwise have)."""
+    app's deployment model doesn't otherwise have).
+
+    parameter_class/parameter_name default to the ORIGINAL kscore-weights-sweep values so
+    every one of tune_kscore_weights()'s 6 existing call sites needs zero changes — the new
+    T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group B curve sweep (tune_kscore_curve()) explicitly
+    overrides both at each of its own 6 call sites so its TuneHistory rows are distinguishable
+    in the audit trail from the weights sweep's rows, rather than silently sharing the same
+    tag for two genuinely different sweep types."""
     session.add(TuneHistory(
-        run_id=run_id, parameter_class="kscore_weights", parameter_name="factor_weights",
+        run_id=run_id, parameter_class=parameter_class, parameter_name=parameter_name,
         style="ALL", market="ALL", old_value=old_value, new_value=new_value,
         train_window_start=train_window[0], train_window_end=train_window[1],
         validation_window_start=validation_window[0], validation_window_end=validation_window[1],
@@ -953,13 +976,22 @@ def _kscore_candidate_weight_sets(base_weights: dict) -> list[dict]:
 
 
 def _kscore_cross_sectional_ev(
-    rows_by_date: dict, weights: dict, forward_return_by_id: dict,
+    rows_by_date: dict, forward_return_by_id: dict, composite_fn,
 ) -> dict | None:
     """The EV metric: per as_of date, rank all stocks that day by their (recomputed) composite
     score, take the top decile, average their forward returns — then average that daily figure
     across every date in the slice. A cross-sectional ranking metric, not a per-stock
     buy/no-buy threshold, matching what K-Score is actually used for (ranking stocks against
-    each other on a given day), not a binary entry signal the way buy_threshold is."""
+    each other on a given day), not a binary entry signal the way buy_threshold is.
+
+    composite_fn(row) -> float | None recomputes ONE row's composite score under whatever is
+    being swept — genuinely different logic per sweep (tune_kscore_weights passes a closure
+    over _kscore_recompute(candidate_weights, row); tune_kscore_curve passes one that combines
+    the row's already-cached raw #17/#18/#19 inputs with a candidate curve cfg) — pulled out
+    as a parameter here (T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group B) rather than duplicating
+    this whole day-grouping/top-decile/mean-of-means EV machinery a second time, the exact
+    'duplicate business logic that can silently drift' anti-pattern this codebase's own prior
+    audits have repeatedly found and fixed elsewhere."""
     daily_evs: list[float] = []
     n_scored = 0
     for _as_of, day_rows in rows_by_date.items():
@@ -968,7 +1000,7 @@ def _kscore_cross_sectional_ev(
             fwd = forward_return_by_id.get(row.id)
             if fwd is None:
                 continue
-            composite = _kscore_recompute(weights, row)
+            composite = composite_fn(row)
             if composite is None:
                 continue
             scored.append((composite, fwd))
@@ -1086,7 +1118,9 @@ def tune_kscore_weights(
     best_ev = -999.0
     best_weights: dict | None = None
     for cand in candidates:
-        stats = _kscore_cross_sectional_ev(train_by_date, cand, forward_return_by_id)
+        stats = _kscore_cross_sectional_ev(
+            train_by_date, forward_return_by_id, lambda row, w=cand: _kscore_recompute(w, row),
+        )
         if stats is not None and stats["ev_pct"] > best_ev:
             best_ev = stats["ev_pct"]
             best_weights = cand
@@ -1100,8 +1134,12 @@ def tune_kscore_weights(
         )
         return {"applied": False, "reason": "no candidate weight set met the train-slice criteria"}
 
-    candidate_stats = _kscore_cross_sectional_ev(val_by_date, best_weights, forward_return_by_id)
-    baseline_stats = _kscore_cross_sectional_ev(val_by_date, current_weights, forward_return_by_id)
+    candidate_stats = _kscore_cross_sectional_ev(
+        val_by_date, forward_return_by_id, lambda row: _kscore_recompute(best_weights, row),
+    )
+    baseline_stats = _kscore_cross_sectional_ev(
+        val_by_date, forward_return_by_id, lambda row: _kscore_recompute(current_weights, row),
+    )
 
     if candidate_stats is None:
         _record_kscore_tune_history(
@@ -1177,6 +1215,326 @@ def tune_kscore_weights(
         "applied": True,
         "previous_weights": current_weights,
         "new_weights": best_weights,
+        "train_ev_pct": best_ev,
+        "validation_ev_pct": candidate_stats["ev_pct"],
+        "validation_baseline_ev_pct": baseline_stats["ev_pct"],
+        "ev_lift_pct": ev_lift,
+        "validation_n_days": candidate_stats["n_days"],
+    }
+
+
+# ── T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group B: walk-forward sweep of K-Score's curve-shape
+# constants (#17 RSI-to-score piecewise mapping, #18 ADX-boost normalization, #19 volatility
+# scale factor) — kscore.py's _CURVE_DEFAULTS. Unlike tune_kscore_weights() above, these
+# constants determine HOW technical/volatility get computed from raw Price history in the
+# first place, not just how already-computed sub-scores get weighted together — so they
+# cannot be recomputed from Ranking's own already-persisted technical/volatility columns
+# (those columns already bake in whatever curve params were live when that row was written).
+# This sweep bulk-fetches each stock's real historical daily Price bars ONCE, then reconstructs
+# each Ranking row's point-in-time raw indicator inputs (RSI/ADX/SMA-booleans/realized-vol) via
+# kscore.py's own _technical_raw_inputs()/_volatility_raw_input() — the same functions the live
+# ranking-refresh path uses, never a second, independently-drifting reimplementation.
+#
+# Point-in-time correctness: a row's own as_of date bounds which Price bars are visible to it
+# (ts.date() <= as_of) — mirrors gate_harness.py's own _historical_atr() discipline exactly, so
+# a historical recompute can never leak a future bar into a past day's score.
+#
+# Compute-cost note (profiled directly before choosing this design): RSI/ADX are the dominant
+# cost (~6ms/row, ~68s for a SINGLE full-window candidate, ~800s for a naive one-parameter-at-
+# a-time sweep pool of 12). Splitting raw-indicator computation (once per row) from the cheap
+# curve-remapping step (many times per row, one per candidate — ~0.1ms) brings a full sweep
+# down to ~60s total, independent of how many candidates are swept.
+
+_KSCORE_CURVE_SWEEP_DELTA = {
+    # (relative step size as a fraction of the current value) — a percentage nudge rather than
+    # a fixed absolute delta, since the 11 curve constants span wildly different real scales
+    # (rsi_low=30 vs volatility_scale=1500).
+    "rsi_low": 0.10, "rsi_mid": 0.10, "rsi_high": 0.10,
+    "score_at_low": 0.10, "score_at_mid": 0.05, "score_at_high": 0.05,
+    "rsi_overbought_decay_per_point": 0.20,
+    "adx_center": 0.20, "adx_divisor": 0.20, "adx_boost_scale": 0.20,
+    "volatility_scale": 0.20,
+}
+
+
+def _kscore_curve_candidate_sets(base_params: dict) -> list[dict]:
+    """One-parameter-perturbed-at-a-time candidates, matching _kscore_candidate_weight_sets()'s
+    own established 'search a tractable neighborhood, not the full 11-dimensional grid'
+    judgment. Each candidate is a single-key override dict (e.g. {"rsi_low": 27.0}) — the
+    OTHER 10 constants stay at whatever is currently active (resolved later via _curve_params'
+    own live-override-then-candidate-layering), never independently perturbed in the same
+    candidate."""
+    candidates: list[dict] = []
+    for key, pct in _KSCORE_CURVE_SWEEP_DELTA.items():
+        base_val = base_params[key]
+        step = abs(base_val) * pct
+        if step == 0:
+            continue  # a genuinely zero-valued base constant has no meaningful relative step
+        for sign in (1, -1):
+            candidates.append({key: round(base_val + sign * step, 4)})
+    return candidates
+
+
+def _kscore_curve_raw_cache(
+    session: Session, rankings: list, price_by_stock: dict,
+) -> dict:
+    """Compute _technical_raw_inputs()/_volatility_raw_input() ONCE per Ranking row, keyed by
+    row id — the expensive step every candidate in the sweep pool reuses via the cheap
+    curve-remap functions instead of recomputing RSI/ADX/realized-vol from scratch per
+    candidate. Point-in-time correct: only Price bars with ts.date() <= the row's own as_of are
+    visible."""
+    from ..scoring.kscore import _technical_raw_inputs, _volatility_raw_input
+    import bisect
+
+    cache: dict[int, dict] = {}
+    for r in rankings:
+        closes = price_by_stock.get(r.stock_id)
+        if not closes:
+            continue
+        dates = [d for d, _row in closes]
+        idx = bisect.bisect_right(dates, r.as_of)  # last bar with ts.date() <= as_of
+        if idx == 0:
+            continue  # no price history at or before this row's own date
+        window = [row for _d, row in closes[:idx]]
+        if len(window) < 15:  # need at least enough bars for _adx_value()'s own 14-period floor
+            continue
+        df = pd.DataFrame(window)
+        try:
+            cache[r.id] = {
+                "technical": _technical_raw_inputs(df),
+                "volatility": _volatility_raw_input(df),
+            }
+        except Exception as _row_exc:
+            log.warning("ranking.kscore_curve_raw_input_failed", ranking_id=r.id, error=str(_row_exc))
+    return cache
+
+
+def _kscore_curve_composite_fn(base_weights: dict, curve_cfg: dict, raw_cache: dict):
+    """Builds the composite_fn closure _kscore_cross_sectional_ev() expects — recomputes a
+    row's technical/volatility sub-scores from its CACHED raw inputs under the candidate
+    curve_cfg, reuses the row's already-persisted momentum/value/growth/rs_score unchanged
+    (only #17/#18/#19 affect technical/volatility — this sweep never touches the weights sweep's
+    own domain), then applies the row's own None-aware active-weight redistribution exactly as
+    compute_kscore() would."""
+    from ..scoring.kscore import _technical_score_from_raw, _volatility_score_from_raw
+
+    def _fn(row):
+        raw = raw_cache.get(row.id)
+        if raw is None:
+            return None
+        tech = _technical_score_from_raw(raw["technical"], curve_cfg)
+        vol = _volatility_score_from_raw(raw["volatility"], curve_cfg)
+        active = _kscore_active_weights_for_row(base_weights, row)
+        w_sum = sum(active.values())
+        if w_sum <= 0:
+            return None
+        values = {
+            "technical": tech, "momentum": row.momentum, "volatility": vol,
+            "value": row.value, "growth": row.growth, "relative_strength": row.rs_score,
+        }
+        return sum((w / w_sum) * values[f] for f, w in active.items())
+
+    return _fn
+
+
+@router.post("/tune_kscore_curve")
+def tune_kscore_curve(
+    days: int = Query(365, description="Look-back window in calendar days"),
+    _: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
+    """Walk-forward validated sweep of K-Score's curve-shape constants (T234-CONFIG-
+    UNJUSTIFIED-THRESHOLDS Group B, items #17/#18/#19 — kscore.py's _CURVE_DEFAULTS).
+
+    Unlike tune_kscore_weights() (which only re-weights already-persisted sub-scores), this
+    recomputes technical/volatility from real historical Price bars under a candidate curve
+    (see the module-level comment above this function for the full point-in-time and
+    compute-cost design rationale). Chronological 70/30 train/validation split. For each of the
+    ~20 one-constant-perturbed candidates, measures cross-sectional top-decile EV on train; the
+    single best candidate only gets applied if it ALSO beats the CURRENT LIVE curve params' own
+    EV on the validation slice the search never saw — matching tune_kscore_weights()'s own
+    beat-the-live-baseline discipline exactly.
+    """
+    from ..scoring.kscore import (
+        _KSCORE_CURVE_REDIS_KEY,
+        _load_active_curve_params,
+        _load_active_weights,
+    )
+
+    current_weights = _load_active_weights()
+    current_curve = _load_active_curve_params()
+    cutoff = date.today() - timedelta(days=days)
+
+    all_rankings = list(session.execute(
+        select(Ranking).where(Ranking.as_of >= cutoff).order_by(Ranking.as_of)
+    ).scalars())
+
+    stock_ids = sorted({r.stock_id for r in all_rankings})
+    if not stock_ids or len(all_rankings) < _KSCORE_SWEEP_MIN_ROWS * 2:
+        return {
+            "applied": False,
+            "reason": f"only {len(all_rankings)} ranking rows in the window (need {_KSCORE_SWEEP_MIN_ROWS * 2} for a valid train/validation split)",
+        }
+
+    # One bulk daily-OHLC fetch per stock (not per ranking row) — same convention as
+    # tune_kscore_weights()'s own price fetch, but carrying high/low too (technical_raw_inputs
+    # needs them for the ADX computation, unlike the plain-close forward-return lookup above).
+    price_rows = session.execute(
+        select(Price.stock_id, Price.ts, Price.close, Price.high, Price.low)
+        .where(Price.stock_id.in_(stock_ids), Price.timeframe == TimeFrame.D1)
+        .order_by(Price.stock_id, Price.ts)
+    ).all()
+    price_by_stock: dict[int, list[tuple]] = defaultdict(list)
+    for sid, ts, close, high, low in price_rows:
+        price_by_stock[sid].append((ts.date(), {"close": close, "high": high, "low": low}))
+
+    import bisect
+    forward_return_by_id: dict[int, float] = {}
+    for r in all_rankings:
+        closes = price_by_stock.get(r.stock_id)
+        if not closes:
+            continue
+        dates = [d for d, _row in closes]
+        idx = bisect.bisect_left(dates, r.as_of)
+        if idx >= len(closes) or dates[idx] != r.as_of:
+            continue
+        fwd_idx = idx + _KSCORE_SWEEP_FORWARD_BARS
+        if fwd_idx >= len(closes):
+            continue
+        entry_close = closes[idx][1]["close"]
+        exit_close = closes[fwd_idx][1]["close"]
+        if entry_close and entry_close > 0:
+            forward_return_by_id[r.id] = (exit_close - entry_close) / entry_close
+
+    resolvable = [r for r in all_rankings if r.id in forward_return_by_id]
+    if len(resolvable) < _KSCORE_SWEEP_MIN_ROWS * 2:
+        return {
+            "applied": False,
+            "reason": f"only {len(resolvable)} ranking rows have a resolvable {_KSCORE_SWEEP_FORWARD_BARS}-bar forward return (need {_KSCORE_SWEEP_MIN_ROWS * 2})",
+        }
+
+    split = max(1, int(len(resolvable) * 0.7))
+    train_rows = resolvable[:split]
+    val_rows = resolvable[split:]
+    if len(train_rows) < _KSCORE_SWEEP_MIN_ROWS or len(val_rows) < _KSCORE_SWEEP_MIN_ROWS:
+        return {
+            "applied": False,
+            "reason": f"train/validation split too lopsided ({len(train_rows)}/{len(val_rows)}, need >= {_KSCORE_SWEEP_MIN_ROWS} each)",
+        }
+
+    train_window = (train_rows[0].as_of, train_rows[-1].as_of)
+    val_window = (val_rows[0].as_of, val_rows[-1].as_of)
+
+    train_by_date: dict = defaultdict(list)
+    for r in train_rows:
+        train_by_date[r.as_of].append(r)
+    val_by_date: dict = defaultdict(list)
+    for r in val_rows:
+        val_by_date[r.as_of].append(r)
+
+    # The expensive step, run ONCE for the whole resolvable set (not per candidate) — see the
+    # module-level comment above this function for the compute-cost rationale.
+    raw_cache = _kscore_curve_raw_cache(session, resolvable, price_by_stock)
+
+    run_id = __import__("uuid").uuid4().hex
+    candidates = _kscore_curve_candidate_sets(current_curve)
+
+    best_ev = -999.0
+    best_curve: dict | None = None
+    for cand in candidates:
+        fn = _kscore_curve_composite_fn(current_weights, cand, raw_cache)
+        stats = _kscore_cross_sectional_ev(train_by_date, forward_return_by_id, fn)
+        if stats is not None and stats["ev_pct"] > best_ev:
+            best_ev = stats["ev_pct"]
+            best_curve = cand
+
+    if best_curve is None:
+        _record_kscore_tune_history(
+            session, run_id, old_value=current_curve, new_value={},
+            train_window=train_window, validation_window=val_window,
+            train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+            validation_n=None, promoted=False, gate_failures=["no_candidate_met_train_criteria"],
+            parameter_class="kscore_curve", parameter_name="curve_shape",
+        )
+        return {"applied": False, "reason": "no candidate curve param met the train-slice criteria"}
+
+    baseline_fn = _kscore_curve_composite_fn(current_weights, {}, raw_cache)
+    candidate_fn = _kscore_curve_composite_fn(current_weights, best_curve, raw_cache)
+    candidate_stats = _kscore_cross_sectional_ev(val_by_date, forward_return_by_id, candidate_fn)
+    baseline_stats = _kscore_cross_sectional_ev(val_by_date, forward_return_by_id, baseline_fn)
+
+    if candidate_stats is None:
+        _record_kscore_tune_history(
+            session, run_id, old_value=current_curve, new_value=best_curve,
+            train_window=train_window, validation_window=val_window,
+            train_ev_pct=best_ev, validation_ev_pct=None, baseline_validation_ev_pct=None,
+            validation_n=None, promoted=False, gate_failures=["candidate_unmeasurable_on_validation"],
+            parameter_class="kscore_curve", parameter_name="curve_shape",
+        )
+        return {"applied": False, "reason": "candidate curve params unmeasurable on the validation slice"}
+
+    if baseline_stats is None:
+        _record_kscore_tune_history(
+            session, run_id, old_value=current_curve, new_value=best_curve,
+            train_window=train_window, validation_window=val_window,
+            train_ev_pct=best_ev, validation_ev_pct=candidate_stats["ev_pct"],
+            baseline_validation_ev_pct=None, validation_n=candidate_stats["n_scored"],
+            promoted=False, gate_failures=["baseline_unmeasurable_on_validation"],
+            parameter_class="kscore_curve", parameter_name="curve_shape",
+        )
+        return {"applied": False, "reason": "current live curve params unmeasurable on the validation slice"}
+
+    ev_lift = round(candidate_stats["ev_pct"] - baseline_stats["ev_pct"], 3)
+    # Unconditional rejection of a non-positive lift — matching every other sweep in this
+    # codebase's own established discipline (see tune_kscore_weights()'s own identical comment
+    # for the full reasoning).
+    if ev_lift <= 0:
+        _record_kscore_tune_history(
+            session, run_id, old_value=current_curve, new_value=best_curve,
+            train_window=train_window, validation_window=val_window,
+            train_ev_pct=best_ev, validation_ev_pct=candidate_stats["ev_pct"],
+            baseline_validation_ev_pct=baseline_stats["ev_pct"], validation_n=candidate_stats["n_scored"],
+            promoted=False, gate_failures=[f"ev_lift_not_positive:{ev_lift}"],
+            parameter_class="kscore_curve", parameter_name="curve_shape",
+        )
+        return {
+            "applied": False,
+            "reason": f"validation-slice EV lift {ev_lift}pp is not positive",
+            "candidate": best_curve, "current": current_curve,
+        }
+
+    new_curve = {**current_curve, **best_curve}
+    redis_client = None
+    try:
+        from common.redis_client import get_redis
+        import json
+        redis_client = get_redis()
+        redis_client.setex(_KSCORE_CURVE_REDIS_KEY, 30 * 86400, json.dumps(new_curve))
+    except Exception as _redis_exc:
+        log.warning("ranking.kscore_curve_redis_write_failed", error=str(_redis_exc))
+        _record_kscore_tune_history(
+            session, run_id, old_value=current_curve, new_value=best_curve,
+            train_window=train_window, validation_window=val_window,
+            train_ev_pct=best_ev, validation_ev_pct=candidate_stats["ev_pct"],
+            baseline_validation_ev_pct=baseline_stats["ev_pct"], validation_n=candidate_stats["n_scored"],
+            promoted=False, gate_failures=["redis_write_failed"],
+            parameter_class="kscore_curve", parameter_name="curve_shape",
+        )
+        return {"applied": False, "reason": "validated but Redis write failed — not applied"}
+
+    _record_kscore_tune_history(
+        session, run_id, old_value=current_curve, new_value=best_curve,
+        train_window=train_window, validation_window=val_window,
+        train_ev_pct=best_ev, validation_ev_pct=candidate_stats["ev_pct"],
+        baseline_validation_ev_pct=baseline_stats["ev_pct"], validation_n=candidate_stats["n_scored"],
+        promoted=True, gate_failures=[],
+        parameter_class="kscore_curve", parameter_name="curve_shape",
+    )
+    return {
+        "applied": True,
+        "previous_curve": current_curve,
+        "new_curve": new_curve,
+        "candidate_delta": best_curve,
         "train_ev_pct": best_ev,
         "validation_ev_pct": candidate_stats["ev_pct"],
         "validation_baseline_ev_pct": baseline_stats["ev_pct"],

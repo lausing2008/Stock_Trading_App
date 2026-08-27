@@ -39,6 +39,78 @@ _WEIGHTS = {
 
 _KSCORE_WEIGHTS_REDIS_KEY = "stockai:kscore_weights"
 
+# T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group B: the 3 curve-shape constants #17 (RSI-to-score
+# piecewise mapping), #18 (ADX-boost normalization), #19 (volatility scale factor) — each has a
+# hardcoded default matching the ORIGINAL literal, read via a `cfg` dict so a future walk-forward
+# sweep (POST /tune_kscore_curve, see routes.py) can vary them against real historical Price
+# data, exactly mirroring how compute_score()'s own constants were made cfg-driven for Group A.
+# Every existing caller (compute_kscore() with no cfg, the default {} below) is byte-identical
+# to before this change.
+_CURVE_DEFAULTS = {
+    # #17: RSI-to-score piecewise mapping. rsi_low/rsi_mid/rsi_high are the 3 breakpoints
+    # (30/50/70); score_at_low/score_at_mid/score_at_high are the score anchors at those exact
+    # breakpoints (50/90/100) — the piecewise SLOPES between them are always DERIVED from these
+    # 6 values (never swept independently), so a candidate can never produce a discontinuous
+    # function. score_ceiling (100.0) and the >rsi_high decay rate (2.5) stay linked to
+    # score_at_high the same way the original hardcoded formula did.
+    "rsi_low": 30.0, "rsi_mid": 50.0, "rsi_high": 70.0,
+    "score_at_low": 50.0, "score_at_mid": 90.0, "score_at_high": 100.0,
+    "rsi_overbought_decay_per_point": 2.5,  # how fast score falls off above rsi_high
+    # #18: ADX-boost normalization — original literal formula is
+    # clip((adx - adx_center) / adx_divisor, -1, 1) * adx_boost_scale. adx_divisor is NOT the
+    # same thing as "the ceiling where the boost saturates" (a real distinction caught during
+    # implementation: at the hardcoded defaults, adx=40 is where the clip actually saturates at
+    # +10, not adx=25 — the comment's own "strong trend >25" prose is a loose description, not
+    # the literal saturation point). Keep the true 3 independent knobs the original math uses.
+    "adx_center": 15.0, "adx_divisor": 25.0, "adx_boost_scale": 10.0,
+    # #19: volatility scale factor (higher = harsher penalty per unit of realized vol).
+    "volatility_scale": 1500.0,
+}
+
+
+_KSCORE_CURVE_REDIS_KEY = "stockai:kscore_curve"
+
+
+def _load_active_curve_params() -> dict:
+    """T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group B: read a validated curve-shape override
+    written by POST /rankings/tune_kscore_curve, falling back to _CURVE_DEFAULTS on any
+    absence/parse/connection failure — mirrors _load_active_weights()'s exact fail-open
+    convention. A partial override (only some of the 11 keys present) is allowed here, unlike
+    the weights override — each of #17/#18/#19's own constants is independently meaningful
+    (unlike weights, which only mean something as a complete set summing to 1.0), so a
+    real, promoted single-parameter override should apply on its own without requiring every
+    other curve constant to be re-specified too.
+    """
+    try:
+        from common.redis_client import get_redis
+        raw = get_redis().get(_KSCORE_CURVE_REDIS_KEY)
+        if not raw:
+            return dict(_CURVE_DEFAULTS)
+        import json
+        override = json.loads(raw)
+        if not isinstance(override, dict):
+            return dict(_CURVE_DEFAULTS)
+        return {
+            **_CURVE_DEFAULTS,
+            **{k: float(v) for k, v in override.items() if k in _CURVE_DEFAULTS},
+        }
+    except Exception:
+        return dict(_CURVE_DEFAULTS)
+
+
+def _curve_params(cfg: dict | None) -> dict:
+    """Merge cfg overrides onto the CURRENTLY ACTIVE curve params (the live Redis override if
+    tune_kscore_curve has ever promoted one, else the hardcoded _CURVE_DEFAULTS — matching
+    _load_active_weights()'s own "None means live, not hardcoded" semantics exactly). cfg=None
+    or {} (the real ranking-refresh path) resolves to whatever is currently live. A sweep
+    wanting the PURE hardcoded defaults as its own baseline (never the live override, which may
+    already differ from the defaults) should pass _CURVE_DEFAULTS explicitly rather than None —
+    see tune_kscore_curve()'s own current_params variable for exactly this distinction."""
+    active = _load_active_curve_params()
+    if not cfg:
+        return active
+    return {**active, **{k: v for k, v in cfg.items() if k in _CURVE_DEFAULTS}}
+
 
 def _load_active_weights() -> dict:
     """T288-KSCORE-WEIGHT-SWEEP: read a validated weight override written by
@@ -120,7 +192,16 @@ def _adx_value(df: pd.DataFrame, period: int = 14) -> float | None:
     return float(adx) if not pd.isna(adx) else None
 
 
-def _technical_score(df: pd.DataFrame) -> float:
+def _technical_raw_inputs(df: pd.DataFrame) -> dict:
+    """The RAW indicator values _technical_score() combines — split out specifically so a
+    walk-forward sweep (POST /tune_kscore_curve) can compute these ONCE per (stock, as_of) and
+    cheaply re-apply many candidate curve-shape parameters to the SAME raw values, instead of
+    re-running the expensive RSI/ADX EWM computations (the dominant cost, profiled directly
+    before this split — ~6ms/call, ~68s for a single full-window candidate, ~800s for a full
+    one-parameter-at-a-time sweep pool) once per candidate per row. Curve-shape parameters
+    (#17/#18/#19) only change how these raw values are MAPPED to a 0-100 score, never what the
+    raw values themselves are — so this split changes zero behavior, only where the cfg-
+    dependent step begins."""
     close = df["close"]
     sma50  = close.rolling(50).mean().iloc[-1]
     sma200 = close.rolling(200).mean().iloc[-1]
@@ -132,39 +213,74 @@ def _technical_score(df: pd.DataFrame) -> float:
     above_sma50        = (1 if close.iloc[-1] > sma50  else 0) if _s50_ok               else 0.5
     above_sma200       = (1 if close.iloc[-1] > sma200 else 0) if _s200_ok              else 0.5
     sma50_above_sma200 = (1 if sma50 > sma200           else 0) if (_s50_ok and _s200_ok) else 0.5
-
     r = _rsi(close).iloc[-1]
+    adx = _adx_value(df)
+    return {
+        "above_sma50": above_sma50, "above_sma200": above_sma200,
+        "sma50_above_sma200": sma50_above_sma200,
+        "rsi": None if pd.isna(r) else float(r),
+        "adx": adx,
+    }
+
+
+def _technical_score_from_raw(raw: dict, cfg: dict | None = None) -> float:
+    """Apply the #17 (RSI-to-score piecewise mapping) / #18 (ADX-boost normalization)
+    curve-shape parameters to already-computed raw indicator values. See
+    _technical_raw_inputs()'s own docstring for why this split exists."""
+    p = _curve_params(cfg)
+    r = raw["rsi"]
     # T233-KSCORE-RSI1: canonical rsi() correctly returns NaN during the 14-bar warmup window
     # (a stock with <14 bars of real history) instead of a fabricated real-looking value.
-    # Use 75.0 — the midpoint of this function's own output range (50-100, see below) — as the
-    # neutral fallback, matching the same intent as the SMA neutral-fallback above: don't treat
-    # "we don't have enough data yet" as either bullish or bearish.
-    if pd.isna(r):
-        rsi_score = 75.0
-    # Asymmetric: optimal zone is 50-70 (bullish momentum). Oversold (<30) and
-    # very overbought (>80) penalised. A trending RSI=70 scores higher than RSI=40.
-    elif r <= 30:
-        rsi_score = 50.0
-    elif r <= 50:
-        rsi_score = 50.0 + (r - 30) * 2.0       # 50→90 as RSI 30→50
-    elif r <= 70:
-        rsi_score = 90.0 + (r - 50) * 0.5        # 90→100 as RSI 50→70
+    # T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group B item #17: the piecewise mapping's 3 breakpoints
+    # and score anchors are now cfg-driven (see _CURVE_DEFAULTS) — the SLOPES between segments
+    # are always DERIVED from the breakpoint/anchor pairs below, never swept independently, so a
+    # candidate can never produce a discontinuous function. At the hardcoded defaults
+    # (30/50/70 breakpoints, 50/90/100 anchors, 2.5 overbought decay) this reproduces the
+    # ORIGINAL literal formula (50→90 as RSI 30→50, slope 2.0; 90→100 as RSI 50→70, slope 0.5;
+    # 100→62.5 as RSI 70→85+, decay 2.5) byte-for-byte.
+    _neutral_fallback = (p["score_at_low"] + p["score_at_high"]) / 2  # 75.0 at defaults
+    if r is None:
+        rsi_score = _neutral_fallback
+    # Asymmetric: optimal zone is rsi_low-rsi_high (bullish momentum). Oversold (<rsi_low) and
+    # very overbought (>rsi_high) penalised. A trending RSI=70 scores higher than RSI=40.
+    elif r <= p["rsi_low"]:
+        rsi_score = p["score_at_low"]
+    elif r <= p["rsi_mid"]:
+        _slope_lo_mid = (p["score_at_mid"] - p["score_at_low"]) / (p["rsi_mid"] - p["rsi_low"])
+        rsi_score = p["score_at_low"] + (r - p["rsi_low"]) * _slope_lo_mid
+    elif r <= p["rsi_high"]:
+        _slope_mid_hi = (p["score_at_high"] - p["score_at_mid"]) / (p["rsi_high"] - p["rsi_mid"])
+        rsi_score = p["score_at_mid"] + (r - p["rsi_mid"]) * _slope_mid_hi
     else:
-        rsi_score = 100.0 - (r - 70) * 2.5       # 100→62.5 as RSI 70→85+
+        rsi_score = p["score_at_high"] - (r - p["rsi_high"]) * p["rsi_overbought_decay_per_point"]
 
-    adx = _adx_value(df)
-    # ADX boost: strong trend (>25) lifts score; very weak trend (<15) drags it.
+    adx = raw["adx"]
+    # ADX boost: trend strength above adx_center lifts score; below it drags it, ramping via
+    # adx_divisor and capped at +-adx_boost_scale.
     # AUD232-014: skip entirely (no boost, positive or negative) when ADX is unknown
     # (insufficient history) rather than treating "unknown" as a real, non-neutral value.
     # T247-RANKINGENGINE-ADXBOOST-FLOOR: `np.clip(..., 0, 1)` floored the boost at 0, so a
-    # weak/choppy trend (ADX<15) only ever contributed a NEUTRAL 0, never the penalty the
-    # comment above describes ("very weak trend drags it") — an ADX=5 stock scored
-    # identically to an ADX=15 stock. Clip to [-1, 1] so ADX<15 genuinely drags the score
-    # below neutral, symmetric with the >25 boost.
-    adx_boost = np.clip((adx - 15) / 25, -1, 1) * 10 if adx is not None else 0.0  # -10..+10
+    # weak/choppy trend only ever contributed a NEUTRAL 0, never the penalty a "very weak trend
+    # drags it" framing implies — an ADX=5 stock scored identically to an ADX=15 stock. Clip to
+    # [-1, 1] so a below-center ADX genuinely drags the score below neutral, symmetric with the
+    # above-center boost.
+    # T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group B item #18: adx_center/adx_divisor/
+    # adx_boost_scale are now cfg-driven — reproduces the original (adx - 15) / 25 * 10 formula
+    # byte-for-byte at the hardcoded defaults (the clip only actually saturates at +-10 when
+    # |adx - 15| >= 25, i.e. adx<=-10 or adx>=40 — NOT at adx=25, despite the original comment's
+    # "strong trend >25" framing; caught and corrected during this parameterization, see
+    # _CURVE_DEFAULTS' own comment for the full explanation).
+    adx_boost = (
+        np.clip((adx - p["adx_center"]) / p["adx_divisor"], -1, 1) * p["adx_boost_scale"]
+        if adx is not None else 0.0
+    )  # -adx_boost_scale..+adx_boost_scale
 
-    base = (above_sma50 + above_sma200 + sma50_above_sma200) / 3 * 60 + rsi_score * 0.4
+    base = (raw["above_sma50"] + raw["above_sma200"] + raw["sma50_above_sma200"]) / 3 * 60 + rsi_score * 0.4
     return float(np.clip(base + adx_boost, 0, 100))
+
+
+def _technical_score(df: pd.DataFrame, cfg: dict | None = None) -> float:
+    return _technical_score_from_raw(_technical_raw_inputs(df), cfg)
 
 
 def _momentum_score(df: pd.DataFrame) -> float:
@@ -178,13 +294,31 @@ def _momentum_score(df: pd.DataFrame) -> float:
     return float(np.clip(50 + raw * 150, 0, 100))
 
 
-def _volatility_score(df: pd.DataFrame) -> float:
-    """Lower realized vol → higher score."""
+def _volatility_raw_input(df: pd.DataFrame) -> float | None:
+    """The raw realized-vol value _volatility_score() scales — split out for the same reason as
+    _technical_raw_inputs() (see its own docstring): a walk-forward sweep can compute this ONCE
+    per (stock, as_of) and cheaply re-scale it under many candidate volatility_scale values."""
     ret = df["close"].pct_change()
     vol = ret.rolling(60).std().iloc[-1]
-    if pd.isna(vol):
+    return None if pd.isna(vol) else float(vol)
+
+
+def _volatility_score_from_raw(vol: float | None, cfg: dict | None = None) -> float:
+    """Apply the #19 (volatility scale factor) curve-shape parameter to an already-computed
+    raw realized-vol value."""
+    if vol is None:
         return 50.0
-    return float(np.clip(100 - vol * 1500, 0, 100))
+    p = _curve_params(cfg)
+    return float(np.clip(100 - vol * p["volatility_scale"], 0, 100))
+
+
+def _volatility_score(df: pd.DataFrame, cfg: dict | None = None) -> float:
+    """Lower realized vol → higher score.
+
+    T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group B item #19: volatility_scale is now cfg-driven,
+    defaulting to the original hardcoded 1500 literal.
+    """
+    return _volatility_score_from_raw(_volatility_raw_input(df), cfg)
 
 
 def compute_kscore(
@@ -192,6 +326,7 @@ def compute_kscore(
     rs_score: float | None = None,
     value_score: float | None = None,
     growth_score: float | None = None,
+    curve_cfg: dict | None = None,
 ) -> KScoreComponents:
     """Compute K-Score composite.
 
@@ -200,10 +335,18 @@ def compute_kscore(
     ROE, etc.) and are returned as-is. When None, the composite score uses price
     proxies internally but value/growth are returned as None (displayed as "—") so
     the UI does not mislead traders with price data labeled as fundamental quality.
+
+    curve_cfg: optional override for the #17/#18/#19 curve-shape constants (see
+    _CURVE_DEFAULTS). The live ranking-refresh path passes None — matching _load_active_
+    weights()'s own "None means whatever is currently live" convention, this resolves to a
+    validated Redis override if POST /tune_kscore_curve has ever promoted one, else the
+    hardcoded defaults (see _curve_params()/_load_active_curve_params()). A sweep candidate
+    passes a real, non-empty curve_cfg to layer its own candidate ON TOP of whatever is
+    already live, to recompute _technical_score()/_volatility_score() under that candidate.
     """
-    tech = _technical_score(df)
+    tech = _technical_score(df, curve_cfg)
     mom  = _momentum_score(df)
-    vol  = _volatility_score(df)
+    vol  = _volatility_score(df, curve_cfg)
 
     # T234-RANK-KSCORE-PROXY-MIXING: value_score/growth_score used to silently fall back to
     # _value_proxy(df)/_growth_proxy(df) (both monotonic transforms of trailing price return,

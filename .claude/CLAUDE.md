@@ -18658,3 +18658,224 @@ If the sweep always returns `skipped_reason`, check the real resolved-BUY-signal
 style/market/window first — `walk_forward_scorer_sweep()` needs at least `MIN_SAMPLES_PER_SPLIT`
 (15) resolved signals in BOTH the train and validation slices before it can produce a real
 result, matching every sibling walk-forward function's own sample floor.
+
+---
+
+## T234-CONFIG-UNJUSTIFIED-THRESHOLDS — Group B Fully Closed: Real Walk-Forward Sweep Over
+## K-Score's Curve-Shape Constants; #20/#21 Found Already Moot by an Uncross-Referenced 2026-07-04
+## Deletion (2026-08-26/27)
+
+**Continues Group A's own closure the same session.** Group B's original triage
+(`docs/AUDIT_TRIAGE_TIER234_2026-08-26.md`) deferred all 5 items (#17-21, `kscore.py`'s
+RSI-to-score piecewise mapping, ADX-boost normalization, volatility scale factor, value-proxy
+discount scale, growth-proxy CAGR scale) as needing "a genuinely different methodology" than
+the existing `walk_forward_*` threshold-sweep harness, "real new engineering." Investigated
+each of the 5 individually rather than accepting that bulk framing wholesale — 2 turned out to
+be already moot, and the remaining 3 were genuinely buildable with new-but-tractable
+infrastructure.
+
+### #20/#21 — already moot, never cross-referenced back to this tracker
+
+`_value_proxy()`/`_growth_proxy()` — the two functions #20/#21's own scale-factor constants
+belonged to — no longer exist anywhere in `kscore.py`. Confirmed via `git show 354f665`
+(2026-07-04, `T234-RANK-KSCORE-PROXY-MIXING`) — **the SAME commit that also fixed Group A's own
+item #15** (`scorer.py`'s Layer 3h double-count), with the identical "resolved by deletion,
+never cross-referenced back to the tracker" gap already documented for #15 in Group A's own
+closure. `value_score`/`growth_score` are now excluded entirely (weight redistributed to the
+remaining factors) whenever a real fundamental is unavailable — there is no curve-shape formula
+left for #20/#21 to sweep. This is the Nth recurrence of this exact staleness pattern in this
+codebase's own tracker history: a fix under one tracker id resolves an item filed under a
+completely different, unrelated id, with no cross-reference ever added — the fix looks
+"unrelated" to the item it actually closes unless someone re-reads the real code directly.
+
+### #17/#18/#19 — swept, real new infrastructure
+
+These constants sit one level BELOW the already-persisted `Ranking.technical`/`.volatility`
+values `T288-KSCORE-WEIGHT-SWEEP`'s own `_kscore_recompute()` operates on — validating them
+needs recomputing `_technical_score()`/`_volatility_score()` from real historical `Price` bars
+under a candidate curve, not just re-weighting already-stored numbers. `T288` genuinely could
+not be reused as-is; this required real, new infrastructure, matching the triage's own original
+assessment on this specific point.
+
+**Live-override resolution mirrors `_load_active_weights()`'s own established convention
+exactly** — new `_load_active_curve_params()`/`_curve_params(cfg)` in
+`services/ranking-engine/src/scoring/kscore.py`, a 3-layer resolution (hardcoded
+`_CURVE_DEFAULTS` → a live Redis override at `stockai:kscore_curve` if `POST /rankings/
+tune_kscore_curve` has ever promoted one → an explicit `cfg` override layered on top).
+`curve_cfg=None` means "whatever is currently live," never silently the hardcoded default — a
+future re-sweep must build on top of an earlier promotion, not re-search from the original
+values every time. Deliberately **allows a partial override**, unlike the weights override's
+all-or-nothing rule — each of the 11 curve constants is independently meaningful (unlike
+weights, which only mean something as a complete set summing to 1.0), so a single promoted
+parameter should apply on its own.
+
+**Raw-input/curve-mapping split for tractable compute cost.** Profiled with `cProfile` before
+committing to any design: RSI/ADX EWM computation dominates the cost (~6ms/call) vs. the cheap
+curve-shape remap (~0.1ms/call). Split `_technical_score()` into `_technical_raw_inputs(df)`
+(expensive: `above_sma50`/`above_sma200`/`sma50_above_sma200`/`rsi`/`adx`) and
+`_technical_score_from_raw(raw, cfg)` (cheap: the parameterized piecewise RSI mapping + the
+ADX-boost formula), with `_technical_score(df, cfg=None)` as a thin composition of both —
+mirrored identically for `_volatility_score()`. `_kscore_curve_raw_cache()`
+(`services/ranking-engine/src/api/routes.py`) computes the expensive step ONCE per historical
+`Ranking` row (point-in-time correct via `bisect`, mirroring `gate_harness.py`'s own
+`_historical_atr()` discipline exactly — only `Price` bars with `ts.date() <= r.as_of` are
+visible), and the ~20-candidate sweep pool only pays the cheap remap cost per candidate.
+Brought an estimated ~800s full sweep down to ~63s.
+
+**A real formula bug caught via byte-identical-at-defaults verification, before shipping —
+not a hypothetical worry.** The original code's own comment for the ADX-boost formula
+(`np.clip((adx - 15) / 25, -1, 1) * 10`) loosely implied "strong trend >25" reads as
+`adx_ceiling=25` with a 10-point ramp width from a `adx_floor=15`. A first parameterization
+attempt built on exactly that assumption and failed a 200-randomized-seed comparison against
+an INDEPENDENTLY hand-reimplemented copy of the ORIGINAL formula (never importing from the
+module under test): `tech_new: 38.50` vs `tech_old: 34.96` — genuinely different functions.
+Direct comparison at sample ADX values (5/10/15/20/25/30/40) confirmed the real math uses TWO
+independent constants — `adx_center: 15.0` and `adx_divisor: 25.0` — where the clip only
+actually saturates at `adx=40` (`center+divisor`), never at `adx=25` as the comment's own
+prose loosely implied. Fixed as `np.clip((adx - p["adx_center"]) / p["adx_divisor"], -1, 1) *
+p["adx_boost_scale"]`; re-verified to 0 mismatches across 200 seeds. Adversarially confirmed by
+reverting `adx_divisor` back to the original bug and watching the dedicated tests
+(`test_technical_score_matches_the_original_formula_at_defaults_across_many_seeds`,
+`test_adx_boost_saturates_only_when_the_true_divisor_bound_is_reached_not_at_the_old_ceiling_
+name`) fail with a real, meaningful diagnostic, then restoring and confirming byte-identical
+via `md5sum`.
+
+**`_kscore_cross_sectional_ev()` generalized to accept a `composite_fn` callable** instead of
+hardcoding `_kscore_recompute(weights, row)` internally — the weights sweep's 3 call sites now
+pass `lambda row: _kscore_recompute(_BASE_WEIGHTS, row)`, and the curve sweep passes its own
+`_kscore_curve_composite_fn(base_weights, curve_cfg, raw_cache)` closure. Avoids writing a
+second, parallel EV-measurement function that could silently drift from the weights sweep's
+own already-proven one — the exact "duplicate business logic that can silently drift" anti-
+pattern this codebase's own prior audits (the Redis-connection-pooling series, the duplicated-
+business-logic audit) have repeatedly found and fixed elsewhere, avoided here proactively
+rather than discovered later.
+
+**A real, previously-unresolved audit-trail gap found and fixed while wiring this up, not left
+for a future session.** `_record_kscore_tune_history()` (the shared `TuneHistory`-writing
+helper both sweeps call) had `parameter_class="kscore_weights"`/`parameter_name="factor_
+weights"` as HARDCODED LITERALS with no way to vary per-caller — every one of the new curve
+sweep's own 6 `TuneHistory` rows would have been silently mistagged `"kscore_weights"`,
+indistinguishable in the audit trail from the sibling weights sweep's own real attempts.
+Fixed by adding both as keyword-only parameters defaulting to the ORIGINAL weights-sweep
+values (`parameter_class: str = "kscore_weights", parameter_name: str = "factor_weights"`) —
+`tune_kscore_weights()`'s own 6 existing call sites needed zero changes — with
+`tune_kscore_curve()` explicitly passing `parameter_class="kscore_curve",
+parameter_name="curve_shape"` at each of its own 6 call sites. Adversarially verified: removing
+the override from even 1 of the 6 sites is caught by a dedicated test
+(`test_tune_curve_endpoint_tags_every_tune_history_call_with_the_curve_parameter_class`, plus a
+mirrored `..._never_leaves_a_call_site_on_the_weights_default` guard against the inverse
+mistake), reverted and confirmed byte-identical via `md5sum` before moving on.
+
+**New `POST /rankings/tune_kscore_curve`** — same chronological 70/30 split + unconditional
+non-positive-EV-lift rejection (`if ev_lift <= 0:`, no shift-size escape hatch, matching
+`T232-OC3`'s established discipline) + unmeasurable-baseline-is-a-skip-never-an-assumed-zero
+(the same T232-OC3 convention) + one `TuneHistory` row per attempt regardless of outcome, as
+`tune_kscore_weights()`'s own established discipline. `_kscore_curve_candidate_sets()`
+generates one-parameter-perturbed-at-a-time candidates (`_KSCORE_CURVE_SWEEP_DELTA`, a
+relative-percentage step per constant — 5-20% depending on the constant's own scale, since the
+11 constants span wildly different magnitudes, e.g. `rsi_low=30` vs `volatility_scale=1500`),
+matching `_kscore_candidate_weight_sets()`'s own "tractable neighborhood, not the full
+N-dimensional grid" judgment exactly — never a combinatorial full-grid search. A base constant
+that's exactly `0.0` produces no candidates for that key (a relative step of a zero value has
+no meaningful magnitude), correctly skipping rather than fabricating a spurious perturbation.
+
+**New `GET /rankings/kscore_curve_status`** — the currently-effective curve params (Redis
+override if any, else the hardcoded defaults) alongside the hardcoded defaults themselves,
+matching `kscore_weights_status()`'s own established shape. **Registered proactively BEFORE
+the `GET /{symbol}` catch-all** — the exact `BUG233-ROUTERORDER` bug class already hit once
+live in decision-engine's own `score_replay` deploy earlier this same session — caught this
+time by checking route-registration order directly via `grep` before ever deploying, not
+discovered via a live 422/404 after the fact.
+
+### Tests and verification
+
+`test_kscore_curve_params.py` (15 cases) — pure curve-function behavior, including the byte-
+identical-at-defaults check across 200 randomized seeds (technical) and 50 seeds (volatility)
+that caught the ADX bug above, plus the ADX-saturation-boundary proof test, per-item override
+tests (deliberately hand-built raw-input fixtures rather than relying on a generated price
+series that might not land inside the target curve segment — a real test-writing mistake was
+self-caught and fixed here: an earlier draft's `rsi_low` override test used a synthetic price
+series whose real computed RSI already fell past `rsi_mid`, making the override genuinely
+inert and producing a failure for the WRONG reason — fixed by hand-constructing a deterministic
+raw dict with `rsi=35.0` explicitly inside the target segment).
+
+`test_kscore_curve_override.py` (11 cases) — the Redis live-override read side, reusing
+`test_kscore_weight_override.py`'s own exact `_patched_get_redis()` `sys.modules`-registration
+technique (`kscore.py` does `from common.redis_client import get_redis` INSIDE the function
+body against a `common` package `conftest.py` stubs as a bare `MagicMock()` — `unittest.mock
+.patch` does not reach a fresh in-function import against a mocked parent, the same documented
+gotcha this codebase's Redis-pooling audit already established).
+
+`test_kscore_curve_sweep.py` (15 cases) — the 5 pure `_kscore_curve_candidate_sets()` tests
+plus 10 source-text regression checks for `tune_kscore_curve()`'s own wiring (router-order,
+unconditional EV-lift rejection, unmeasurable-baseline-is-a-skip, exact `== 6` `TuneHistory`
+call count scoped strictly to the function's own body, the `parameter_class` tagging
+double-check pair described above, Redis-write-after-all-gates-pass ordering, the shared bar-
+index forward-return offset, and — a genuinely meaningful invariant, not a rubber-stamp check —
+the expensive raw-cache computation happening EXACTLY ONCE, strictly BEFORE the candidate
+loop, never once per candidate).
+
+**A real, self-caught pre-existing test-quality gap found while sabotaging the `TuneHistory`
+call-count test**: the original `test_kscore_weight_sweep.py` boundary test (re-anchored to
+`'@router.post("/tune_kscore_curve")'` when the curve sweep was first inserted, per this
+session's own earlier fix) used a `>= 6` bound. Sabotaging the boundary marker back to the OLD
+`"def refresh("` end-point — which would silently sweep `tune_kscore_curve()`'s own 6 calls
+into the SAME count, giving 12 — still passed the `>= 6` assertion (`12 >= 6` is True), a real
+"still passes after sabotage" red flag this repo's own testing discipline treats as a finding
+in its own right, not a coincidence to shrug off. Investigated, confirmed the exact count
+(`12 != 6`) directly, and tightened the bound to `== 6` — re-verified the same sabotage now
+correctly fails (`12 == 6` is False). This is the same class of "a loose comparison operator
+silently accepts more than it should" lesson already documented multiple times elsewhere in
+this file (e.g. `BUG233-BACKTESTHARNESS-COINFLIP`'s own bare `>` vs. a real promotion margin),
+just recurring in a test's own assertion this time, not in production code.
+
+**Full suite verification**: 101 tests pass (up from 86 pre-Group-B — 15 new curve-shape tests
++ the tightened boundary check), the sole remaining failure
+(`test_kscore.py::test_kscore_in_range`) confirmed via `git stash` on clean `prod` HEAD to be
+genuinely pre-existing and unrelated (a fixture supplying no fundamentals legitimately produces
+`value=None`/`growth=None`, which the test's own `0 <= v <= 100` assertion can't handle —
+predates this entire session's work). `pyflakes` clean on both touched files — the 2 remaining
+warnings (`db.SignalType` imported but unused in `routes.py`; `kscore.py`'s local `tr`
+variable) both confirmed pre-existing via `git stash`, only the `kscore.py` warning's line
+number shifted (101→173, exactly reflecting the ~72 lines of new curve-shape code added above
+it).
+
+### T234-CONFIG-UNJUSTIFIED-THRESHOLDS is now COMPLETE across all 3 groups
+
+Group A: 12 items, all closed (7 swept via `walk_forward_scorer_sweep`, 3 zero-outcome-linkage,
+1 already-moot-by-deletion, 1 deferred behind a real, scoped `as_of`-injection prerequisite).
+Group B: 5 items, all closed (3 swept via `tune_kscore_curve`, 2 already-moot-by-deletion).
+Group C: 4 items, all closed (1 swept via `sweep_max_open_risk_pct`, 3 individually confirmed
+structurally unsweepable for distinct, recorded reasons). Combined with the 6 items already
+resolved by prior sessions (never cross-referenced back to this tracker before this session's
+own re-verification pass) and item #23 swept the same day as the original triage: **20 of the
+original 27 items have an explicit, checkable disposition; 7 remain genuinely open**, each with
+a specific, individually-investigated reason recorded in `docs/
+AUDIT_TRIAGE_TIER234_2026-08-26.md` — no blanket "lower priority" labels anywhere in the
+final disposition.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-ranking-engine-1 grep -n "def tune_kscore_curve\|def _load_active_curve_params\|adx_divisor" /app/src/api/routes.py /app/src/scoring/kscore.py
+
+# Confirm kscore_curve_status is registered BEFORE the /{symbol} catch-all:
+docker exec stockai-ranking-engine-1 grep -n '@router.get("/kscore_curve_status")\|@router.get("/{symbol}")' /app/src/api/routes.py
+
+# Confirm current curve params (live override if any promoted, else hardcoded defaults):
+docker exec stockai-ranking-engine-1 curl -s 'http://localhost:8004/rankings/kscore_curve_status' \
+  -H "Authorization: Bearer <token>" | python3 -m json.tool
+
+# Run the sweep live for real production data (safe — read-only until/unless it promotes;
+# needs enough real historical Ranking + Price rows to clear the sample floor on both slices):
+docker exec stockai-ranking-engine-1 curl -s -X POST \
+  'http://localhost:8004/rankings/tune_kscore_curve?days=365' \
+  -H "Authorization: Bearer <token>" | python3 -m json.tool
+
+# Confirm TuneHistory rows from the curve sweep are correctly tagged (never "kscore_weights"):
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT ts, parameter_class, parameter_name, promoted, gate_failures FROM tune_history WHERE parameter_class='kscore_curve' ORDER BY ts DESC LIMIT 10;"
+```
+If `tune_kscore_curve` always returns `skipped_reason`, check the real resolved-`Ranking`-row
+count for the requested window first — the sweep needs at least `_KSCORE_SWEEP_MIN_ROWS * 2`
+rows with a resolvable forward return in BOTH the train and validation slices, matching every
+sibling walk-forward function's own sample floor.

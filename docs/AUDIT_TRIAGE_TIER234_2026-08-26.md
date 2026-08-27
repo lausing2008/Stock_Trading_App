@@ -1,11 +1,12 @@
-# T234 Threshold Triage — 2026-08-26 (updated same day: Group C closed, Group A scorer sweep built)
+# T234 Threshold Triage — 2026-08-26 (updated same day: Group C closed, Group A scorer sweep built, Group B curve sweep built)
 
 Re-verified all 27 items from `AUDIT_REPORT_TIER242_2026-07-04.md` Part 2 against current code
-before deciding disposition. 15 resolved (6 by prior sessions, never previously cross-referenced
+before deciding disposition. 20 resolved (6 by prior sessions, never previously cross-referenced
 back to this list — the same recurring "stale tracker in the fixed direction" pattern documented
-throughout `.claude/CLAUDE.md` — plus #23, and 7 more this same day via the new Group A scorer
-sweep: #3, #8, #9, #10, #11, #12, #14). The remaining 12 are genuinely open, each with a specific,
-checkable reason recorded below.
+throughout `.claude/CLAUDE.md` — plus #23, 7 more via the Group A scorer sweep: #3, #8, #9, #10,
+#11, #12, #14, and 5 more via Group B: #17/#18/#19 swept with real infrastructure, #20/#21 found
+already moot by deletion). The remaining 7 are genuinely open, each with a specific, checkable
+reason recorded below.
 
 ## Already resolved (verified against current code, not assumed)
 
@@ -25,16 +26,26 @@ checkable reason recorded below.
 | 11 | `scorer.py` `bull_prob` thresholds (0.70/0.58) | same sweep |
 | 12 | `scorer.py` confidence-delta threshold (±8) | same sweep |
 | 14 | `scorer.py` insider/congress catalyst thresholds (60/-30/50) | same sweep |
+| 17 | `kscore.py` RSI-to-score breakpoints/slopes | `tune_kscore_curve()` (Group B, this session) — see below |
+| 18 | `kscore.py` ADX-boost normalization constants | same sweep |
+| 19 | `kscore.py` volatility scale factor | same sweep |
+| 20 | `kscore.py` value-proxy discount scale | Already moot by deletion — `_value_proxy()` no longer exists (`354f665`, `T234-RANK-KSCORE-PROXY-MIXING`, 2026-07-04) |
+| 21 | `kscore.py` growth-proxy CAGR scale | Already moot by deletion — `_growth_proxy()` no longer exists (same commit) |
 
-## Still genuinely open — 12 items
+## Still genuinely open — 7 items
 
-Confirmed via a full listing of every `sweep_*`/`walk_forward_*` function in
-`services/market-data/src/backtest/` — 10 functions exist total (up from 8 pre-session), covering
-exactly the 14 items above plus `min_entry_score`, `min_kscore`/`min_ta_score`/`min_volume_z`,
-`min_pillars_for_sell`/blocked-score-sets, and calibration-feedback-on/off. The remaining 12
-constants below either have no sweep (5 items in Group B) or were individually investigated and
-found structurally unsweepable with this codebase's current tooling (3 remaining items in Group C,
-1 in Group A — item #4 — plus 3 items in Group A with zero tradeable-outcome linkage at all).
+Confirmed via a listing of every real T234-relevant sweep mechanism: in
+`services/market-data/src/backtest/`, `sweep_max_portfolio_drawdown_pct`, `sweep_risk_per_
+trade_pct`, `sweep_max_open_risk_pct`, `walk_forward_extended_gate`, `walk_forward_min_entry_
+score`, `walk_forward_blocked_entry_scores`, `walk_forward_calibration_feedback`, `walk_
+forward_scorer_sweep` (8, up from 5 pre-session — 3 new this same day, 2 for Group A/C's own
+work, 1 pre-existing); in `services/ranking-engine/src/api/routes.py`, `tune_kscore_weights`
+and the new `tune_kscore_curve` (2, up from 1). `walk_forward_train`/`walk_forward_report` in
+`position_scaling_gate.py` are a pre-existing, unrelated ML-training mechanism (T241), not a
+T234 threshold sweep — deliberately excluded from this count. The remaining 7 constants below
+were individually investigated and found structurally unsweepable with this codebase's current
+tooling (3 remaining items in Group C, 1 in Group A — item #4 — plus 3 items in Group A with
+zero tradeable-outcome linkage at all). Group B is fully closed — no open items remain in it.
 
 ### Group A — decision-engine scoring/sizing constants (items 3,4,5,6,7,8,9,10,11,12,14,15) — FULLY CLOSED 2026-08-26
 
@@ -150,21 +161,86 @@ generalize. Per this codebase's own established promotion discipline, `promoted:
 this endpoint is a research signal only; it never changes any live decision-engine config on
 its own.
 
-### Group B — kscore.py internal piecewise constants (items 17,18,19,20,21)
+### Group B — kscore.py internal piecewise constants (items 17,18,19,20,21) — CLOSED 2026-08-26
 
 RSI-to-score breakpoints/slopes (#17), ADX-boost normalization (#18), volatility scale factor
-(#19), value-proxy discount scale (#20), growth-proxy CAGR scale (#21). All 5 are UNTOUCHED by
+(#19), value-proxy discount scale (#20), growth-proxy CAGR scale (#21). All 5 were UNTOUCHED by
 `T288-KSCORE-WEIGHT-SWEEP`, which only validated the 6 top-level `_WEIGHTS` values, never the
 internal formulas each sub-score is computed from.
 
-**Disposition: documented as intentionally arbitrary.** These are curve-shape parameters
-(piecewise slopes, scale factors converting a raw indicator into a 0-100 sub-score) rather than
-gate thresholds — validating them needs a genuinely different methodology (comparing K-Score's
-OWN predictive power against `signal_outcomes`/`squeeze_alert_outcomes` under alternative curve
-shapes, not a simple threshold sweep) that doesn't fit the existing `walk_forward_*` harness
-pattern without real new engineering. Lower priority than Group A since K-Score is already one
-layer removed from `_should_enter()`'s own gates (it flows through `min_kscore`, which HAS
-already been swept via `walk_forward_extended_gate`).
+**#20/#21 — already moot by deletion, never previously cross-referenced.** Re-verified before
+building anything: `_value_proxy()`/`_growth_proxy()` (the two functions #20/#21's own scale
+constants belonged to) no longer exist anywhere in `kscore.py` — confirmed via `git show
+354f665` (2026-07-04, `T234-RANK-KSCORE-PROXY-MIXING`), the SAME commit that also fixed Group
+A's own item #15 (`scorer.py`'s Layer 3h double-count), with the same "resolved by deletion,
+never cross-referenced" gap. `value_score`/`growth_score` are now excluded entirely (weight
+redistributed to the remaining factors) whenever a real fundamental is unavailable — there is
+no curve-shape formula left for #20/#21 to sweep. Matches Group A's own established treatment
+for the identical situation exactly, rather than inventing a new disposition category.
+
+**#17/#18/#19 — swept, real walk-forward result.** Built genuinely new infrastructure rather
+than reusing `T288`'s weight-sweep as-is, since these constants sit one level BELOW the
+already-persisted `Ranking.technical`/`.volatility` values `_kscore_recompute()` operates on —
+validating them requires recomputing `_technical_score()`/`_volatility_score()` from real
+historical `Price` bars under a candidate curve, not just re-weighting already-stored numbers.
+
+Design decisions, in order:
+- **Live-override resolution mirrors `_load_active_weights()`'s own convention exactly**: a new
+  `_load_active_curve_params()`/`_curve_params(cfg)` 3-layer resolution (hardcoded defaults →
+  live Redis override if `tune_kscore_curve` has ever promoted one → an explicit `cfg`
+  override layered on top) — `curve_cfg=None` means "whatever is currently live," never
+  silently the hardcoded default, matching how a future re-sweep must build on top of an
+  earlier promotion rather than re-searching from the original values every time. Deliberately
+  ALLOWS a partial override (unlike the weights override's all-or-nothing rule) since each of
+  the 11 curve constants is independently meaningful, not constrained to sum to 1.0.
+- **Raw-input/curve-mapping split for tractable compute cost.** Profiling found RSI/ADX
+  EWM computation dominates the cost (~6ms/call vs. ~0.1ms/call for the cheap curve remap) —
+  `_technical_raw_inputs()`/`_volatility_raw_input()` compute the expensive indicators ONCE per
+  historical row (`_kscore_curve_raw_cache()`), and the ~20-candidate sweep pool only pays the
+  cheap remap cost per candidate. Brought an estimated ~800s full sweep down to ~63s.
+- **A real formula bug caught via byte-identical-at-defaults verification, before shipping.**
+  The original ADX-boost comment ("strong trend >25") implied `adx_ceiling=25` with a 10-point
+  ramp width — a first attempt built the parameterization on that assumption and failed a
+  200-seed randomized comparison against a hand-reimplemented copy of the ORIGINAL formula
+  (`tech_new: 38.50` vs `tech_old: 34.96`). The real math uses `adx_center: 15.0` and
+  `adx_divisor: 25.0` as two independent constants (the clip only actually saturates at
+  `adx=40`, not `25`) — fixed and re-verified to 0 mismatches across 200 seeds. Adversarially
+  confirmed by reverting `adx_divisor` back to the original bug and watching the dedicated
+  tests fail with a real, meaningful diff before restoring.
+- **`_kscore_cross_sectional_ev()` generalized to accept a `composite_fn` callable** instead of
+  hardcoding `_kscore_recompute(weights, row)` — avoids writing a second, parallel EV-
+  measurement function that could silently drift from the weights sweep's own already-proven
+  one (the "duplicate business logic" anti-pattern this codebase's own prior audits have
+  repeatedly found and fixed elsewhere).
+- **A real, previously-unresolved audit-trail gap found and fixed while wiring this up**:
+  `_record_kscore_tune_history()`'s `parameter_class`/`parameter_name` were hardcoded literals
+  with no way to vary per-caller — every one of `tune_kscore_curve()`'s own 6 `TuneHistory`
+  rows would have been silently mistagged `"kscore_weights"`/`"factor_weights"`, indistinguishable
+  from the sibling weights sweep's own real attempts. Fixed by adding both as keyword-only
+  parameters defaulting to the ORIGINAL weights-sweep values (so `tune_kscore_weights()`'s own
+  6 call sites needed zero changes), with `tune_kscore_curve()` explicitly overriding both to
+  `"kscore_curve"`/`"curve_shape"` at each of its own 6 call sites. Adversarially verified: an
+  override forgotten at even 1 of 6 sites is caught by a dedicated test
+  (`test_tune_curve_endpoint_tags_every_tune_history_call_with_the_curve_parameter_class`).
+
+New `POST /rankings/tune_kscore_curve` and `GET /rankings/kscore_curve_status` endpoints
+(the latter correctly registered before the `GET /{symbol}` catch-all, per the already-
+documented `BUG233-ROUTERORDER` discipline — checked proactively this time, not discovered via
+a live deploy failure). Same chronological 70/30 split + unconditional non-positive-EV-lift
+rejection + unmeasurable-baseline-is-a-skip + one `TuneHistory` row per attempt regardless of
+outcome, matching `tune_kscore_weights()`'s own established discipline exactly. One-parameter-
+perturbed-at-a-time candidate generation (`_kscore_curve_candidate_sets()`, ~20 candidates
+across the 11 real constants) rather than a full joint grid, matching `_kscore_candidate_
+weight_sets()`'s own "tractable neighborhood, not the full N-dimensional space" precedent.
+
+26 new tests across `test_kscore_curve_params.py` (15, pure curve-function behavior including
+the byte-identical-at-defaults check across 200/50 randomized seeds), `test_kscore_curve_
+override.py` (11, Redis live-override read-side), and `test_kscore_curve_sweep.py` (15, the new
+endpoint's own wiring + the 3 new helper functions) — full suite green (101 passed, the 1
+pre-existing unrelated `test_kscore.py::test_kscore_in_range` failure confirmed via `git stash`
+to predate this work). Every real guard (the ADX formula, the EV-lift rejection, the parameter_
+class tagging, the raw-cache-computed-once-not-per-candidate ordering) adversarially sabotaged
+and confirmed to fail correctly, then restored and confirmed byte-identical via `md5sum`.
 
 ### Group C — paper_trading_engine.py standalone constants (items 23,24,26,27) — CLOSED 2026-08-26
 
@@ -234,20 +310,26 @@ assumption that one simply hasn't been built yet.
 
 ## Summary
 
-Of the original 27 items: **15 resolved** (verified against current code — 6 by prior sessions
-never previously cross-referenced back to this list, #23 swept the same day as this triage, and
-7 more — #3, #8, #9, #10, #11, #12, #14 — via this session's own new Group A scorer sweep),
-**Group C fully closed** (all 4 of its items now have a specific, individually-investigated
-disposition — 1 swept, 3 found structurally unsweepable for distinct, recorded reasons rather
-than merely deprioritized), **Group A fully closed** (7 items swept, 3 found to have zero
-tradeable-outcome linkage at all, 1 already moot by deletion, 1 deferred behind a real,
-documented code prerequisite — every one of the original 12 items has an explicit, checkable
-disposition, not a blanket "lower priority" label). **12 items remain genuinely open**: Group B's
-5 curve-shape constants (need a genuinely different validation methodology than the existing
-threshold-sweep harness — a future project, not attempted here), Group C's 3 structurally-
-unsweepable items, and Group A's own 4 non-sweepable items (3 with zero outcome linkage, 1 —
-item #4's time-of-day `as_of`-injection prerequisite — deferred as a real, scoped follow-up). All
-12 are explicitly documented as intentionally-arbitrary starting values rather than silently-
-unaddressed gaps. If this work is picked up again: item #4's `as_of`-injection fix is the
-cheapest remaining lever (mirrors an already-proven pattern, would unlock a Layer-3e-freshness
-extension of the same scorer sweep); Group B needs new methodology design first.
+Of the original 27 items: **20 resolved** (verified against current code — 6 by prior sessions
+never previously cross-referenced back to this list, #23 swept the same day as this triage,
+7 more — #3, #8, #9, #10, #11, #12, #14 — via the Group A scorer sweep, and 5 more — #17/#18/#19
+swept with real new curve-recompute infrastructure, #20/#21 found already moot by a 2026-07-04
+deletion never cross-referenced — via the Group B curve sweep, all three groups built and
+closed the same day as this triage), **Group C fully closed** (all 4 of its items now have a
+specific, individually-investigated disposition — 1 swept, 3 found structurally unsweepable for
+distinct, recorded reasons rather than merely deprioritized), **Group A fully closed** (7 items
+swept, 3 found to have zero tradeable-outcome linkage at all, 1 already moot by deletion, 1
+deferred behind a real, documented code prerequisite), **Group B fully closed** (3 items swept
+with genuinely new recompute infrastructure — a chronological 70/30 split + unconditional
+non-positive-EV-lift rejection + one `TuneHistory` row per attempt, matching every sibling
+sweep's own discipline — 2 already moot by deletion; every one of the original 27 items now has
+an explicit, checkable disposition, not a blanket "lower priority" label). **7 items remain
+genuinely open**: Group C's 3 structurally-unsweepable items, and Group A's own 4 non-sweepable
+items (3 with zero outcome linkage, 1 — item #4's time-of-day `as_of`-injection prerequisite —
+deferred as a real, scoped follow-up). All 7 are explicitly documented as intentionally-
+arbitrary starting values rather than silently-unaddressed gaps. If this work is picked up
+again: item #4's `as_of`-injection fix is the cheapest remaining lever (mirrors an already-
+proven pattern, would unlock a Layer-3e-freshness extension of the scorer sweep) — the other 6
+items are each structurally blocked (no historical-persistence table, no tradeable-outcome
+linkage, or a genuine day-by-day position-monitoring replay this codebase doesn't yet have),
+not merely unattempted.
