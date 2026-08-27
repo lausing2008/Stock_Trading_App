@@ -89,6 +89,13 @@ _DEFAULT_CFG = {
     # (a post-hoc filter can't know which entries the breaker would ACTUALLY have blocked,
     # since blocking an early entry changes every later day's cash/position state too).
     "max_portfolio_drawdown_pct": 0.20,
+    # T234-CONFIG-UNJUSTIFIED-THRESHOLDS item #23: mirrors _open_paper_trade()'s real PT-B5
+    # aggregate-open-risk check (paper_trading_engine.py) — sum((entry_price - stop) * shares)
+    # across every currently-open position, plus this candidate's own not-yet-opened risk
+    # contribution, must not exceed this fraction of equity. Same "must be a real, state-
+    # dependent gate inside the loop, not a post-hoc filter" reasoning as the drawdown breaker
+    # above — blocking one entry changes every later day's open-risk total too.
+    "max_open_risk_pct": 0.12,
 }
 
 
@@ -119,6 +126,7 @@ class PortfolioBacktestResult:
     n_entered: int                # how many actually got a position sized and opened
     n_skipped_no_room: int        # blocked by max_positions/sector_cap/cash — real candidates, not admitted
     n_skipped_drawdown_breaker: int = 0  # blocked specifically by the drawdown circuit breaker
+    n_skipped_open_risk_cap: int = 0     # blocked specifically by the aggregate open-risk cap
     win_rate: float | None = None
     avg_return_pct: float | None = None
     sharpe_ratio: float | None = None      # daily-equity-curve Sharpe, annualized (252 trading days)
@@ -252,6 +260,7 @@ def run_portfolio_backtest(
     n_entered = 0
     n_skipped_no_room = 0
     n_skipped_drawdown_breaker = 0
+    n_skipped_open_risk_cap = 0
     running_peak = cfg["initial_capital"]  # PA-D2: peak = max(curve peak, current equity), updated every day
 
     def _mark_to_market() -> float:
@@ -316,6 +325,19 @@ def run_portfolio_backtest(
             if position_value > cash * 0.98:
                 n_skipped_no_room += 1
                 continue
+            # T234-CONFIG-UNJUSTIFIED-THRESHOLDS item #23: mirrors _open_paper_trade()'s real
+            # PT-B5 aggregate-open-risk check exactly — sum((entry - stop) * shares) across
+            # every still-open position (open_positions already reflects today's exits, since
+            # step 1 above processed them first), plus this candidate's own new_trade_risk.
+            max_open_risk = cfg.get("max_open_risk_pct")
+            if max_open_risk and equity > 0:
+                open_risk = sum(
+                    p["stop_distance"] * p["shares"] for p in open_positions
+                )
+                new_trade_risk = stop_distance * shares
+                if (open_risk + new_trade_risk) / equity > max_open_risk:
+                    n_skipped_open_risk_cap += 1
+                    continue
             sector = stock.sector
             sector_value = sum(
                 p["shares"] * p["entry_price"] for p in open_positions
@@ -340,6 +362,7 @@ def run_portfolio_backtest(
     result.n_entered = n_entered
     result.n_skipped_no_room = n_skipped_no_room
     result.n_skipped_drawdown_breaker = n_skipped_drawdown_breaker
+    result.n_skipped_open_risk_cap = n_skipped_open_risk_cap
     result.trades = trades
     result.equity_curve = [(d.isoformat(), e) for d, e in equity_curve]
 
@@ -671,5 +694,134 @@ def sweep_risk_per_trade_pct(
             "as an automatic config change. This is a research signal, NOT an automatic capital-"
             "sizing change — see this module's own top-of-file docstring for what run_portfolio_"
             "backtest() does and does not model."
+        ),
+    }
+
+
+# T234-CONFIG-UNJUSTIFIED-THRESHOLDS item #23: max_open_risk_pct (0.12, PT-B5 in
+# paper_trading_engine.py) — "the aggregate open-risk cap across all positions," never
+# empirically validated, same class of portfolio-wide circuit breaker as
+# max_portfolio_drawdown_pct above (now already swept). Reuses the identical walk-forward
+# machinery — chronological 70/30 split, EXACT SAME promotion-margin constants, same
+# total_return_pct promotion metric with max_drawdown_pct reported alongside for the
+# risk/return trade-off this is fundamentally about.
+_OPEN_RISK_SWEEP_CANDIDATES = [0.06, 0.08, 0.12, 0.16, 0.20]
+
+
+def sweep_max_open_risk_pct(
+    session: Session,
+    symbols: list[str],
+    style: str,
+    market: str,
+    window_start: date,
+    window_end: date,
+    candidates: list[float] | None = None,
+    base_cfg_overrides: dict | None = None,
+) -> dict:
+    """Walk-forward search over candidate max_open_risk_pct values — same chronological 70/30
+    train/validation split and promotion-margin discipline as sweep_max_portfolio_drawdown_pct()/
+    sweep_risk_per_trade_pct() above, reusing the EXACT SAME promotion margin constants (not a
+    third, independently-tuned threshold).
+
+    Promotion metric is total_return_pct, same reasoning as the sibling sweeps: a cap tuned
+    purely to minimize open risk trivially wins by admitting almost nothing; the real trade-off
+    is return bought per unit of aggregate risk carried, so max_drawdown_pct is reported
+    alongside for context on what a promoted return cost in risk, never hidden.
+    """
+    style = style.upper()
+    base_cfg = {**_DEFAULT_CFG, **(base_cfg_overrides or {})}
+    current_value = base_cfg.get("max_open_risk_pct", 0.12)
+    candidates = candidates if candidates is not None else sorted(set(_OPEN_RISK_SWEEP_CANDIDATES + [current_value]))
+
+    resolvable_end = _drawdown_sweep_resolvable_window_end(window_end, style)
+    if resolvable_end <= window_start:
+        return {
+            "style": style, "market": market.upper(),
+            "skipped_reason": (
+                f"window too short to leave any resolvable validation slice after accounting "
+                f"for {style}'s {_HORIZON_RESOLUTION_LAG_DAYS.get(style, 14)}-day outcome "
+                f"resolution lag (requested window ends {window_end}, resolvable end is "
+                f"{resolvable_end}, window starts {window_start})"
+            ),
+        }
+
+    total_days = (resolvable_end - window_start).days
+    split_days = max(1, int(total_days * 0.7))
+    train_end = window_start + timedelta(days=split_days)
+    val_start = train_end + timedelta(days=1)
+
+    if val_start > resolvable_end:
+        return {
+            "style": style, "market": market.upper(),
+            "skipped_reason": f"window too short to split ({total_days} resolvable days)",
+        }
+
+    baseline_val = run_portfolio_backtest(
+        session, symbols, style, market, val_start, resolvable_end,
+        cfg_overrides={**base_cfg, "max_open_risk_pct": current_value},
+    )
+
+    train_results = []
+    for cand in candidates:
+        cand_result = run_portfolio_backtest(
+            session, symbols, style, market, window_start, train_end,
+            cfg_overrides={**base_cfg, "max_open_risk_pct": cand},
+        )
+        train_results.append((cand, cand_result))
+
+    best_cand, best_train = None, None
+    for cand, res in train_results:
+        if res.skipped_reason is not None or res.total_return_pct is None:
+            continue
+        if best_train is None or res.total_return_pct > best_train.total_return_pct:
+            best_cand, best_train = cand, res
+
+    if best_cand is None:
+        return {
+            "style": style, "market": market.upper(), "param": "max_open_risk_pct",
+            "current_value": current_value,
+            "skipped_reason": "no candidate produced any admitted trades on the train slice",
+            "baseline_validation": asdict(baseline_val),
+        }
+
+    best_val = run_portfolio_backtest(
+        session, symbols, style, market, val_start, resolvable_end,
+        cfg_overrides={**base_cfg, "max_open_risk_pct": best_cand},
+    )
+
+    promoted = False
+    if best_val.skipped_reason is None and baseline_val.skipped_reason is None:
+        combined_returns = [t.pct_return for t in best_val.trades] + [t.pct_return for t in baseline_val.trades]
+        promoted = _passes_return_promotion_margin(
+            best_val.total_return_pct, baseline_val.total_return_pct, combined_returns,
+        )
+
+    return {
+        "style": style, "market": market.upper(), "param": "max_open_risk_pct",
+        "current_value": current_value,
+        "candidate_value": best_cand,
+        "train_window": [str(window_start), str(train_end)],
+        "validation_window": [str(val_start), str(resolvable_end)],
+        "train_result": asdict(best_train),
+        "candidate_validation": asdict(best_val),
+        "baseline_validation": asdict(baseline_val),
+        "promoted": promoted,
+        "note": (
+            "promoted=True means the candidate's total_return_pct beat the CURRENT LIVE "
+            f"max_open_risk_pct's own validation-slice return by at least "
+            f"{_MIN_PROMOTION_EV_LIFT_PCT}pp AND by at least {_MIN_PROMOTION_LIFT_SD_RATIO}x "
+            "the combined slices' own trade-return dispersion (same margin discipline as "
+            "gate_harness.py's BUG233-BACKTESTHARNESS-COINFLIP fix). Compare candidate_"
+            "validation.max_drawdown_pct against baseline_validation.max_drawdown_pct to see "
+            "what risk change bought that return — a promoted candidate with materially WORSE "
+            "max_drawdown_pct is trading safety for return and should be reviewed by a human "
+            "before ever being applied, not auto-applied. This is a research signal, NOT an "
+            "automatic config change — see this module's own top-of-file docstring for what "
+            "run_portfolio_backtest() does and does not model (in particular: the open-risk "
+            "computation here uses each position's own fixed stop_distance from entry-time "
+            "sizing, since this simulator has no trailing-stop mechanism or intraday live-price "
+            "series — the real live PT-B5 check uses the CURRENT live price minus the CURRENT, "
+            "possibly-trailed stop, which can differ from this approximation once a real "
+            "position's stop has moved)."
         ),
     }

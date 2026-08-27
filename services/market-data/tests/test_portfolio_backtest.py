@@ -136,6 +136,7 @@ _annualized_sharpe = _ns["_annualized_sharpe"]
 run_portfolio_backtest = _ns["run_portfolio_backtest"]
 sweep_max_portfolio_drawdown_pct = _ns["sweep_max_portfolio_drawdown_pct"]
 sweep_risk_per_trade_pct = _ns["sweep_risk_per_trade_pct"]
+sweep_max_open_risk_pct = _ns["sweep_max_open_risk_pct"]
 _passes_return_promotion_margin = _ns["_passes_return_promotion_margin"]
 _DEFAULT_CFG = _ns["_DEFAULT_CFG"]
 
@@ -549,6 +550,123 @@ class TestDrawdownCircuitBreaker:
         session.close()
 
 
+# T234-CONFIG-UNJUSTIFIED-THRESHOLDS item #23: max_open_risk_pct — mirrors _open_paper_trade()'s
+# real PT-B5 aggregate-open-risk check.
+class TestOpenRiskCircuitBreaker:
+    def _open_risk_scenario(self, session, open_risk_pct_cfg, symbol_prefix):
+        """Two symbols, entries on different days so BOTH are open simultaneously by the time
+        the second one's entry is sized. entry_price=20.0 with the fixture's own high=c+1/
+        low=c-1 real OHLC range (true range ~2.0/bar -> ATR~2.0 -> stop_distance = 2.0*
+        stop_atr_mult(2.0) = 4.0) and risk_per_trade_pct=0.04 makes EACH position's own open-
+        risk contribution exactly 4% of equity (risk_dollar = equity*risk_per_trade_pct =
+        stop_distance*shares = the exact quantity max_open_risk_pct gates on), while
+        position_value stays a modest 20% of equity so cash never binds for 2 positions. A
+        tight open_risk_pct_cfg (0.06) must admit the FIRST entry (4% <= 6%) but block the
+        SECOND (4%+4%=8% > 6%); a loose one (0.30) must admit both."""
+        sym_a, sym_b = f"{symbol_prefix}A", f"{symbol_prefix}B"
+        sid_a = _insert_stock(session, sym_a, sector="Technology")
+        sid_b = _insert_stock(session, sym_b, sector="Technology")
+        _insert_daily_prices(session, sid_a, date(2026, 1, 1), [20.0 for _ in range(60)])
+        _insert_daily_prices(session, sid_b, date(2026, 1, 1), [20.0 for _ in range(60)])
+        # Both entries land on DIFFERENT days but neither has EXITED before the second enters —
+        # exit dates are pushed well past both entry dates so both are genuinely open at once.
+        _insert_buy_signal_with_outcome(
+            session, sid_a, sym_a, "SWING",
+            signal_date=date(2026, 2, 1), entry_date=date(2026, 2, 2), exit_date=date(2026, 2, 28),
+            entry_price=20.0, exit_price=22.0, pct_return=0.10,
+        )
+        _insert_buy_signal_with_outcome(
+            session, sid_b, sym_b, "SWING",
+            signal_date=date(2026, 2, 3), entry_date=date(2026, 2, 4), exit_date=date(2026, 2, 28),
+            entry_price=20.0, exit_price=21.0, pct_return=0.05,
+        )
+        result = run_portfolio_backtest(
+            session, [sym_a, sym_b], "SWING", "US", date(2026, 1, 1), date(2026, 3, 5),
+            cfg_overrides={
+                "initial_capital": 10_000.0, "max_position_pct": 1.0, "risk_per_trade_pct": 0.04,
+                "max_loss_per_trade_pct": 1.0, "max_sector_pct": 1.0,
+                "max_open_risk_pct": open_risk_pct_cfg,
+            },
+        )
+        return result, sym_a
+
+    def test_a_tight_open_risk_cap_blocks_the_second_simultaneous_entry(self):
+        session = _make_session()
+        result, sym_a = self._open_risk_scenario(session, open_risk_pct_cfg=0.06, symbol_prefix="ORTIGHT")
+        assert result.n_entered == 1  # only the first (4% <= 6%) got in
+        assert result.n_skipped_open_risk_cap >= 1
+        assert all(t.symbol == sym_a for t in result.trades)
+        session.close()
+
+    def test_a_loose_open_risk_cap_admits_both_simultaneous_entries(self):
+        session = _make_session()
+        result, _ = self._open_risk_scenario(session, open_risk_pct_cfg=0.30, symbol_prefix="ORLOOSE")
+        assert result.n_entered == 2  # both (4%+4%=8% <= 30%) got in
+        assert result.n_skipped_open_risk_cap == 0
+        session.close()
+
+    def test_default_config_still_has_the_real_012_cap_value(self):
+        """Confirms the module's own _DEFAULT_CFG carries the real, currently-live 0.12 value —
+        not a value this test file silently duplicated and could drift from."""
+        assert _DEFAULT_CFG["max_open_risk_pct"] == 0.12
+
+    def test_n_skipped_open_risk_cap_defaults_to_zero_when_never_tripped(self):
+        session = _make_session()
+        sid = _insert_stock(session, "NORISK")
+        _insert_daily_prices(session, sid, date(2026, 1, 1), [100.0 for _ in range(40)])
+        _insert_buy_signal_with_outcome(
+            session, sid, "NORISK", "SWING",
+            signal_date=date(2026, 2, 1), entry_date=date(2026, 2, 2), exit_date=date(2026, 2, 12),
+            entry_price=100.0, exit_price=105.0, pct_return=0.05,
+        )
+        result = run_portfolio_backtest(session, ["NORISK"], "SWING", "US", date(2026, 1, 1), date(2026, 3, 1))
+        assert result.n_skipped_open_risk_cap == 0
+        session.close()
+
+    def test_open_risk_accounts_for_exits_processed_before_todays_entries(self):
+        """A position that exits on THE SAME DAY a new one enters must not count toward that
+        day's open-risk total — mirrors run_portfolio_backtest()'s own exit-before-entry
+        day-stepping order (step 1 processes exits before step 2 sizes today's entries, so
+        open_positions must already reflect A's departure by the time B's open-risk check
+        runs). Genuinely exercises the same-calendar-day ordering, not just 'a position closed
+        on an earlier day' (which open_positions would trivially already omit regardless of
+        ordering) — adversarially confirmed: a sabotaged version of this test using DIFFERENT
+        days for A's exit and B's entry passed even when the open-risk sum was fed a stale,
+        pre-exit snapshot, since open_positions is naturally already empty of A by B's later
+        day either way; only same-day placement actually exercises the ordering fix."""
+        session = _make_session()
+        sid_a = _insert_stock(session, "OREXA", sector="Technology")
+        sid_b = _insert_stock(session, "OREXB", sector="Technology")
+        _insert_daily_prices(session, sid_a, date(2026, 1, 1), [20.0 for _ in range(60)])
+        _insert_daily_prices(session, sid_b, date(2026, 1, 1), [20.0 for _ in range(60)])
+        same_day = date(2026, 2, 15)
+        _insert_buy_signal_with_outcome(
+            session, sid_a, "OREXA", "SWING",
+            signal_date=date(2026, 2, 1), entry_date=date(2026, 2, 2), exit_date=same_day,
+            entry_price=20.0, exit_price=22.0, pct_return=0.10,
+        )
+        _insert_buy_signal_with_outcome(
+            session, sid_b, "OREXB", "SWING",
+            signal_date=date(2026, 2, 5), entry_date=same_day, exit_date=date(2026, 2, 28),
+            entry_price=20.0, exit_price=21.0, pct_return=0.05,
+        )
+        result = run_portfolio_backtest(
+            session, ["OREXA", "OREXB"], "SWING", "US", date(2026, 1, 1), date(2026, 3, 5),
+            cfg_overrides={
+                "initial_capital": 10_000.0, "max_position_pct": 1.0, "risk_per_trade_pct": 0.04,
+                "max_loss_per_trade_pct": 1.0, "max_sector_pct": 1.0,
+                "max_open_risk_pct": 0.06,  # tight enough to block a SECOND concurrent 4% position
+            },
+        )
+        # A exits on the exact SAME day B enters — B must be admitted (sees 0% prior open risk,
+        # since step 1 already removed A from open_positions before step 2 runs), even though
+        # the cap is tight enough to have blocked a genuinely-concurrent second entry (per the
+        # test above).
+        assert result.n_entered == 2
+        assert result.n_skipped_open_risk_cap == 0
+        session.close()
+
+
 # ── _passes_return_promotion_margin() — the two independent promotion guards, tested directly
 
 class TestPassesReturnPromotionMargin:
@@ -842,5 +960,124 @@ class TestSweepRiskPerTradePct:
         )
         lift = result["candidate_validation"]["total_return_pct"] - result["baseline_validation"]["total_return_pct"]
         assert lift > 0.5  # clears the absolute floor
+        assert result["promoted"] is False  # ...but the SD-ratio guard still correctly rejects it
+        session.close()
+
+
+class TestSweepMaxOpenRiskPct:
+    """T234-CONFIG-UNJUSTIFIED-THRESHOLDS item #23: sweep_max_open_risk_pct() reuses the SAME
+    walk-forward machinery as TestSweepMaxPortfolioDrawdownPct above — these tests focus on
+    what's genuinely different (the candidate grid, and the concurrent-position scenario shape
+    open risk needs vs. drawdown's single-large-loss shape) rather than re-testing the shared
+    promotion-margin logic already covered above."""
+
+    def _insert_open_risk_pair(self, session, prefix, base, offset_days, first_pct_return, second_pct_return):
+        """Two entries on consecutive days, both still open by the time the second is sized —
+        entry_price=20.0 with the fixture's real high=c+1/low=c-1 OHLC range gives a ~2.0 true
+        range/bar -> ATR~2.0 -> stop_distance=4.0 (stop_atr_mult=2.0), and
+        risk_per_trade_pct=0.05 makes each position's own open-risk contribution exactly 5% of
+        equity (close to, but distinct from, TestOpenRiskCircuitBreaker's own 4% — sized so
+        the real live baseline cap of 0.12 admits BOTH positions [5%+5%=10% <= 12%], letting
+        the sweep's own promotion tests compare a tighter candidate against that real baseline
+        rather than an independently-guessed one)."""
+        sym_a, sym_b = f"{prefix}A", f"{prefix}B"
+        sid_a = _insert_stock(session, sym_a, sector="Technology")
+        sid_b = _insert_stock(session, sym_b, sector="Technology")
+        _insert_daily_prices(session, sid_a, base, [20.0 for _ in range(60)])
+        _insert_daily_prices(session, sid_b, base, [20.0 for _ in range(60)])
+        _insert_buy_signal_with_outcome(
+            session, sid_a, sym_a, "SWING",
+            signal_date=base + timedelta(days=offset_days), entry_date=base + timedelta(days=offset_days + 1),
+            exit_date=base + timedelta(days=offset_days + 25),
+            entry_price=20.0, exit_price=20.0 * (1 + first_pct_return), pct_return=first_pct_return,
+        )
+        _insert_buy_signal_with_outcome(
+            session, sid_b, sym_b, "SWING",
+            signal_date=base + timedelta(days=offset_days + 2), entry_date=base + timedelta(days=offset_days + 3),
+            exit_date=base + timedelta(days=offset_days + 25),
+            entry_price=20.0, exit_price=20.0 * (1 + second_pct_return), pct_return=second_pct_return,
+        )
+        return sym_a, sym_b
+
+    _OPEN_RISK_SWEEP_CFG = {
+        "initial_capital": 10_000.0, "max_position_pct": 1.0, "risk_per_trade_pct": 0.05,
+        "max_loss_per_trade_pct": 1.0, "max_sector_pct": 1.0,
+    }
+
+    def test_window_too_short_for_a_resolvable_validation_slice_skips_cleanly(self):
+        session = _make_session()
+        result = sweep_max_open_risk_pct(
+            session, ["ANY"], "SWING", "US", date(2026, 6, 20), date(2026, 6, 25),
+        )
+        assert result["skipped_reason"] is not None
+        session.close()
+
+    def test_no_admitted_trades_on_the_train_slice_skips_with_a_clear_reason(self):
+        session = _make_session()
+        result = sweep_max_open_risk_pct(
+            session, ["NOSUCHSYM"], "SWING", "US", date(2026, 1, 1), date(2026, 6, 1),
+        )
+        assert result["skipped_reason"] is not None
+        assert "baseline_validation" in result
+
+    def test_current_value_reflects_the_real_default_when_no_override_is_passed(self):
+        session = _make_session()
+        result = sweep_max_open_risk_pct(
+            session, ["NOSUCHSYM"], "SWING", "US", date(2026, 1, 1), date(2026, 6, 1),
+        )
+        assert result.get("current_value", _DEFAULT_CFG["max_open_risk_pct"]) == 0.12
+
+    def test_a_genuinely_better_candidate_gets_promoted_on_the_validation_slice(self):
+        """Constructs a scenario where a TIGHTER open-risk cap materially improves
+        total_return_pct on BOTH the train slice (so it's selected as best_cand) AND the
+        validation slice (so it clears the promotion margin) — the real live baseline (0.12)
+        admits BOTH concurrent 5%-open-risk positions (10% <= 12%), including a second, DEEPER
+        loss (-40%) than the first (-10%); a tighter candidate (0.06) blocks that second, worse
+        loss (5%+5%=10% > 6%) while still admitting the first (5% <= 6%) — mirroring
+        TestSweepMaxPortfolioDrawdownPct's own equivalent test's "both trades lose, tight cap
+        blocks the deeper one" shape, which this parameter needs too since (unlike a lone-
+        winner-vs-loser shape) it reliably clears the SD-ratio promotion guard at a realistic
+        sample size."""
+        session = _make_session()
+        base = date(2026, 1, 1)
+        self._insert_open_risk_pair(session, "ORSWTR", base, 30, first_pct_return=-0.10, second_pct_return=-0.40)
+        self._insert_open_risk_pair(session, "ORSWVL", base, 200, first_pct_return=-0.10, second_pct_return=-0.40)
+        result = sweep_max_open_risk_pct(
+            session, ["ORSWTRA", "ORSWTRB", "ORSWVLA", "ORSWVLB"], "SWING", "US",
+            base, base + timedelta(days=280),
+            candidates=[0.06, 0.90],
+            base_cfg_overrides=self._OPEN_RISK_SWEEP_CFG,
+        )
+        assert result["candidate_value"] == 0.06  # the tight cap wins on the train slice
+        assert result["promoted"] is True
+        assert result["candidate_validation"]["total_return_pct"] > result["baseline_validation"]["total_return_pct"]
+        session.close()
+
+    def test_a_positive_lift_that_clears_the_floor_but_fails_the_sd_ratio_still_does_not_promote(self):
+        """Same independent-guards property as the drawdown/risk-per-trade sweeps' own
+        equivalent tests — isolated the same way: a huge (+95%) win admitted IDENTICALLY under
+        both candidate and baseline (a lone entry, unaffected by the open-risk cap since
+        nothing else is concurrently open) inflates the combined return pool's SD without
+        touching the lift itself."""
+        session = _make_session()
+        base = date(2026, 1, 1)
+        self._insert_open_risk_pair(session, "ORSDTR", base, 30, first_pct_return=0.10, second_pct_return=-0.60)
+        sid_c = _insert_stock(session, "ORSDVLC", sector="Technology")
+        _insert_daily_prices(session, sid_c, base, [20.0 for _ in range(400)])
+        _insert_buy_signal_with_outcome(
+            session, sid_c, "ORSDVLC", "SWING",
+            signal_date=base + timedelta(days=195), entry_date=base + timedelta(days=196),
+            exit_date=base + timedelta(days=198),
+            entry_price=20.0, exit_price=39.0, pct_return=0.95,
+        )
+        self._insert_open_risk_pair(session, "ORSDVL", base, 200, first_pct_return=0.10, second_pct_return=-0.60)
+        result = sweep_max_open_risk_pct(
+            session, ["ORSDTRA", "ORSDTRB", "ORSDVLA", "ORSDVLB", "ORSDVLC"], "SWING", "US",
+            base, base + timedelta(days=280),
+            candidates=[0.06, 0.90],
+            base_cfg_overrides=self._OPEN_RISK_SWEEP_CFG,
+        )
+        lift = result["candidate_validation"]["total_return_pct"] - result["baseline_validation"]["total_return_pct"]
+        assert lift > 0.5  # clears the absolute floor by a wide margin
         assert result["promoted"] is False  # ...but the SD-ratio guard still correctly rejects it
         session.close()

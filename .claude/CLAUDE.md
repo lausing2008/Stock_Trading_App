@@ -18333,3 +18333,68 @@ docker exec stockai-ml-prediction-1 grep -n "else np.nan for v in r\[0\]" /app/s
 # Confirm the next scheduled retrain's AUC (compare against previous_auc in the log line):
 docker logs stockai-ml-prediction-1 --since 24h | grep "meta_trainer.trained\|meta_trainer.promot"
 ```
+
+---
+
+## T234-CONFIG-UNJUSTIFIED-THRESHOLDS item #23 — max_open_risk_pct Walk-Forward Sweep (2026-08-26)
+
+**Continues the T234 triage's own recommended next step** — the triage doc
+(`docs/AUDIT_TRIAGE_TIER234_2026-08-26.md`) named `max_open_risk_pct` as the highest-leverage
+Group C candidate since it's the closest fit to the already-proven `max_portfolio_drawdown_pct`
+sweep template. Built the same day.
+
+**Mirrors `_open_paper_trade()`'s real PT-B5 aggregate-open-risk check exactly**: sums
+`stop_distance * shares` across every open position, gates a new entry once
+`(open_risk + new_trade_risk) / equity > max_open_risk_pct`. Reuses the SAME `stop_distance`
+already stored on each open position dict from entry-time sizing — no new field needed. The
+real live check uses the CURRENT live price minus the CURRENT (possibly-trailed) stop; this
+simulator has neither a trailing-stop mechanism nor an intraday live-price series, so it uses
+the fixed entry-time `stop_distance` instead — disclosed explicitly in the sweep's own `note`
+field, matching this module's own established honesty convention for every other
+disclosed simplification.
+
+**Wired into `run_portfolio_backtest()`'s entry loop** right after the position-cap check,
+matching the real function's own PT-B5 ordering. New `n_skipped_open_risk_cap` counter.
+`sweep_max_open_risk_pct()` reuses the SAME chronological 70/30 walk-forward split and
+promotion-margin machinery (`_passes_return_promotion_margin()`, `_MIN_PROMOTION_EV_LIFT_PCT`/
+`_MIN_PROMOTION_LIFT_SD_RATIO`) as `sweep_max_portfolio_drawdown_pct()`/
+`sweep_risk_per_trade_pct()` — a third sibling, not a fourth independently-tuned margin. New
+`GET /paper-portfolio/backtest/open-risk-cap-sweep` endpoint (admin-only, read-only research
+signal, never an automatic config change).
+
+**Two real test-design lessons hit during development**:
+1. The first version of the same-day exit-before-entry-ordering test placed the exit and next
+   entry on DIFFERENT days — adversarial sabotage (feeding the open-risk sum a stale, pre-exit
+   snapshot) still passed, since `open_positions` was naturally already empty of the exited
+   symbol by the later day regardless of intra-day ordering, so the test wasn't actually
+   exercising the property its own docstring claimed. Fixed by moving both events to the exact
+   SAME calendar day — re-verified the same sabotage now correctly fails.
+2. The promotion-margin test's own trade-return scenario needed real trial-and-error: an
+   initial one-winner/one-loser shape at -60% cleared the absolute lift floor comfortably but
+   consistently failed the SD-ratio guard (the single deep loss dominated the combined pool's
+   own dispersion faster than the lift grew). Resolved by mirroring the ALREADY-PROVEN "both
+   trades lose, tight cap blocks the deeper one" shape the drawdown sweep's own equivalent test
+   already uses, rather than inventing a new scenario shape from scratch.
+
+**Tests**: 18 new cases — `TestOpenRiskCircuitBreaker` (5, in `test_portfolio_backtest.py`) and
+`TestSweepMaxOpenRiskPct` (5, same file) covering the gate/sweep behavior directly against a
+real in-memory SQLite session via this file's own established `exec()`-extraction technique;
+8 source-text route-wiring tests in `test_backtest_open_risk_cap_sweep_route.py`, matching
+`test_backtest_drawdown_sweep_route.py`'s established pattern exactly.
+
+**Adversarial verification** — 3 sabotage/revert cycles, all caught and reverted (confirmed
+byte-identical via `md5sum` before moving on): disabling the gate entirely (`if False and
+max_open_risk...`); the route delegating to the WRONG sweep function
+(`sweep_max_portfolio_drawdown_pct` aliased as `sweep_max_open_risk_pct`); the same-day-ordering
+fix reverted back to different-day placement (masking a stale-snapshot regression).
+
+Full 2,061-test market-data suite green (up from 2,043); `pyflakes` clean (all 4 remaining
+warnings confirmed pre-existing via `git stash`).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n "max_open_risk_pct\|n_skipped_open_risk_cap" /app/src/backtest/portfolio_backtest.py
+docker exec stockai-market-data-1 curl -s \
+  'http://localhost:8001/paper-portfolio/backtest/open-risk-cap-sweep?symbols=AAPL,MSFT,NVDA,GOOG&style=SWING&market=US&window_days=365' \
+  -H "Authorization: Bearer <admin token>" | python3 -m json.tool
+```
