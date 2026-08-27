@@ -18398,3 +18398,44 @@ docker exec stockai-market-data-1 curl -s \
   'http://localhost:8001/paper-portfolio/backtest/open-risk-cap-sweep?symbols=AAPL,MSFT,NVDA,GOOG&style=SWING&market=US&window_days=365' \
   -H "Authorization: Bearer <admin token>" | python3 -m json.tool
 ```
+
+---
+
+## T234-CONFIG-UNJUSTIFIED-THRESHOLDS — Group C Closed (2026-08-26, same day)
+
+**Closes Group C entirely** — after sweeping `max_open_risk_pct` (#23, documented in the
+section immediately above), the remaining 3 Group C items were each individually investigated
+rather than deprioritized in bulk, and found structurally NOT sweepable with the current
+simulator, each for a distinct, checkable reason:
+
+- **#24 (`hold_stall_days`/`hold_stall_max_gain`)** — `_monitor_positions()`'s "HOLD stall"
+  exit only fires when the CURRENT LIVE signal for a symbol is HOLD, re-evaluated fresh on
+  every intermediate day of a hold. `portfolio_backtest.py`'s own module docstring already
+  discloses this exact gap — no decision-engine/`_should_enter()` gate is replayed at all
+  mid-hold, exits use only the outcome's own resolved hold-window exit_date/exit_price. Testing
+  this parameter needs the design doc's own still-unbuilt Phase 2b (a genuine day-by-day
+  `_monitor_positions()` replay) — not something this triage's smaller sweeps can extend into.
+- **#26 (HK `regime_suspension_days`)** — T210's circuit breaker reads `live_regime` fresh on
+  every check. `gate_harness.py`'s own module docstring already discloses this as a PERMANENT
+  limitation across the whole codebase: no historical regime-persistence table exists anywhere
+  to reconstruct "what was the regime on date X." This is a standing, already-documented gap,
+  not a scoping decision unique to this one parameter.
+- **#27 (`min_stop_dist` floor, `max(price*0.005, 0.05)`)** — re-read both call sites
+  (`hard_rejects.py`, `paper_trading_engine.py`) directly; their own comments state the purpose
+  explicitly — "prevent infinite/backward R:R." This is a numerical-sanity guard against a
+  degenerate divide-by-near-zero computation, not a strategy parameter with a real risk/return
+  trade-off. A real, properly-sized stop (2x ATR, several percent of price) never approaches
+  this floor in practice — there's no "tighter vs. looser" question a sweep could answer here.
+
+**Result**: 7 of the original 27 items now resolved (up from 6). Group C is closed — 1 item
+swept, 3 individually confirmed structurally unsweepable, none silently left open. The
+remaining 20 open items are entirely Group A (12, decision-engine scorer/sizer nudges — needs a
+joint multi-parameter sweep, a materially larger project than any single-parameter sweep built
+so far) and Group B (5, K-Score curve-shape constants — needs a genuinely different validation
+methodology than the existing threshold-sweep harness). Full updated reasoning in
+`docs/AUDIT_TRIAGE_TIER234_2026-08-26.md`.
+
+**Design invariant reinforced**: "not currently swept" and "cannot be meaningfully swept with
+today's tooling" are different claims — this pass distinguished them explicitly for each of the
+3 remaining Group C items rather than lumping them into a single "lower priority" bucket the
+way the original triage draft did.

@@ -1,9 +1,10 @@
-# T234 Threshold Triage — 2026-08-26
+# T234 Threshold Triage — 2026-08-26 (updated same day: Group C closed)
 
 Re-verified all 27 items from `AUDIT_REPORT_TIER234_2026-07-04.md` Part 2 against current code
-before deciding disposition. 6 already resolved by prior sessions (not previously cross-referenced
+before deciding disposition. 7 resolved (6 by prior sessions, never previously cross-referenced
 back to this list — the same recurring "stale tracker in the fixed direction" pattern documented
-throughout `.claude/CLAUDE.md`). The remaining 21 are genuinely still open.
+throughout `.claude/CLAUDE.md` — plus #23, swept same-day as this triage). The remaining 20 are
+genuinely open, each with a specific, checkable reason recorded below.
 
 ## Already resolved (verified against current code, not assumed)
 
@@ -14,15 +15,18 @@ throughout `.claude/CLAUDE.md`). The remaining 21 are genuinely still open.
 | 13 | Signal freshness 4h/18h vs 72h order-of-magnitude mismatch | Investigated and found NOT actually a conflict: 72h is a hard reject (`max_signal_age_hours`), 4h/18h is a *soft ±1 score nudge* on a completely different axis — confirmed via the T232-DL series' own re-verification, documented in CLAUDE.md |
 | 16 | `kscore.py` `_WEIGHTS` (the 6 top-level factor weights) | `T288-KSCORE-WEIGHT-SWEEP` — real walk-forward-validated, held-out-tested weight search with a promotion gate; ships a validated override via Redis when the sweep finds a real edge |
 | 22 | `max_portfolio_drawdown_pct` = 0.20 | `AUD293`'s `sweep_max_portfolio_drawdown_pct()` — real walk-forward sweep with the standard chronological train/validation split + promotion-margin gate |
+| 23 | `max_open_risk_pct` = 0.12 | `sweep_max_open_risk_pct()` (same session, see Group C below) — same walk-forward discipline |
 | — | `risk_per_trade_pct` (not itemized individually in the original list but same class) | `sweep_risk_per_trade_pct()` — same walk-forward discipline |
 
-## Still genuinely open — 21 items, none have any sweep infrastructure
+## Still genuinely open — 20 items
 
 Confirmed via a full listing of every `sweep_*`/`walk_forward_*` function in
-`services/market-data/src/backtest/` — only 8 functions exist total, covering exactly the 6
-items above plus `min_entry_score`, `min_kscore`/`min_ta_score`/`min_volume_z`,
-`min_pillars_for_sell`/blocked-score-sets, and calibration-feedback-on/off. None of the
-remaining 21 constants below have ever been swept.
+`services/market-data/src/backtest/` — 9 functions exist total (up from 8 with #23's addition),
+covering exactly the 7 items above plus `min_entry_score`, `min_kscore`/`min_ta_score`/
+`min_volume_z`, `min_pillars_for_sell`/blocked-score-sets, and calibration-feedback-on/off.
+The remaining 20 constants below either have no sweep (Groups A/B) or were individually
+investigated and found structurally unsweepable with this codebase's current tooling
+(Group C's 3 remaining items).
 
 ### Group A — decision-engine scoring/sizing constants (items 3,4,5,6,7,8,9,10,11,12,14,15)
 
@@ -68,18 +72,54 @@ pattern without real new engineering. Lower priority than Group A since K-Score 
 layer removed from `_should_enter()`'s own gates (it flows through `min_kscore`, which HAS
 already been swept via `walk_forward_extended_gate`).
 
-### Group C — paper_trading_engine.py standalone constants (items 23,24,26,27)
+### Group C — paper_trading_engine.py standalone constants (items 23,24,26,27) — CLOSED 2026-08-26
 
 `max_open_risk_pct` = 0.12 (#23), `hold_stall_days`/`hold_stall_max_gain` = 30d/5% (#24),
 HK `regime_suspension_days` = 7 (#26), `min_stop_dist` floor (#27).
 
-**Disposition: documented as intentionally arbitrary, individually lower-leverage than Group A.**
-None of these 4 currently has sweep infrastructure. `max_open_risk_pct` is the closest candidate
-to warrant a future sweep (it's a real portfolio-wide circuit breaker, same class as the
-already-swept `max_portfolio_drawdown_pct`) — worth prioritizing FIRST if this triage is
-revisited, using `sweep_max_portfolio_drawdown_pct()` as the direct template. The other 3 are
-narrower single-purpose gates (a stall-exit timer, an HK-specific suspension window, a stop-
-distance floor) with less capital at stake per occurrence.
+**#23 — swept, real walk-forward result.** `sweep_max_open_risk_pct()` (`portfolio_backtest.py`,
+same session) — same chronological 70/30 split + promotion-margin discipline as
+`sweep_max_portfolio_drawdown_pct()`. New `GET /paper-portfolio/backtest/open-risk-cap-sweep`
+endpoint, live-verified against real production data (a 20-symbol SWING/US run showed 32 real
+entries, `n_skipped_open_risk_cap: 0` — honestly reporting that 0.12 isn't currently the binding
+constraint for this app's real position-sizing defaults, not a bug in the sweep itself).
+
+**#24, #26, #27 — investigated individually and found structurally NOT sweepable with the
+current simulator, each for a distinct, real reason (not simply deprioritized):**
+
+- **#24 (`hold_stall_days`/`hold_stall_max_gain`)** — `_monitor_positions()`'s "HOLD stall" exit
+  only fires when the CURRENT LIVE signal for a symbol is HOLD, evaluated fresh on every
+  intermediate day of a hold — not a one-time entry-time check. `portfolio_backtest.py`'s own
+  module docstring already discloses it deliberately does NOT replay a mid-hold signal at all
+  ("exits use the outcome's own resolved hold-window exit_date/exit_price... NOT a simulated
+  stop/trailing-stop/target exit"). Sweeping this needs the design doc's own still-unbuilt
+  Phase 2b (a genuine day-by-day `_monitor_positions()` replay) — the same gap the module's
+  entire "honest MVP" framing already names as out of scope, not something this triage's own
+  smaller sweeps can extend into.
+- **#26 (HK `regime_suspension_days`)** — T210's circuit breaker reads `live_regime` (bull/
+  neutral/choppy/risk_off/bear) fresh on every check. `gate_harness.py`'s own module docstring
+  already discloses this as a PERMANENT limitation across this whole codebase: no historical
+  regime-persistence table exists anywhere to reconstruct "what was the regime on date X" from
+  — this is not a scoping choice for THIS sweep, it's a standing, disclosed gap that would need
+  a separate, dedicated regime-history project before ANY sweep involving regime state could
+  exist, for any parameter.
+- **#27 (`min_stop_dist` floor, `max(price*0.005, 0.05)`)** — re-read both call sites
+  (`hard_rejects.py`, `paper_trading_engine.py`) directly: the comment states its purpose
+  explicitly — "prevent infinite/backward R:R." This is a numerical-sanity guard against a
+  degenerate `reward / near-zero-stop-distance` computation, not a strategy parameter with a
+  real risk/return trade-off to search over. A real, properly-sized stop (typically 2x ATR, a
+  meaningful percent of price) never approaches this floor in practice, so there's no
+  "tighter vs. looser" question a walk-forward sweep could meaningfully answer here — loosening
+  it only risks admitting a genuinely nonsensical setup; tightening it changes essentially
+  nothing since real stops already clear it by a wide margin.
+
+**Group C disposition: CLOSED, not merely deprioritized.** 1 of 4 items got a real sweep; the
+other 3 were each individually investigated and found to require either a separate, larger
+build (a full mid-hold signal replay, #24) or a standing infrastructure gap this codebase has
+already disclosed elsewhere (regime history, #26), or don't fit the "sweep a value" framing at
+all (#27 is a sanity floor, not a tunable parameter). None were left silently unaddressed —
+each has a specific, checkable reason recorded here for why a sweep is the wrong tool, not an
+assumption that one simply hasn't been built yet.
 
 ### Cross-file consistency risks (from the original report's own closing section)
 
@@ -95,12 +135,16 @@ distance floor) with less capital at stake per occurrence.
 
 ## Summary
 
-Of the original 27 items: **6 resolved** (verified against current code), **21 remain
-genuinely open**, all now explicitly documented as intentionally-arbitrary starting values
-rather than silently-unaddressed gaps. None were changed in this triage — per this session's
-own established discipline, no live-decision-affecting parameter gets touched without a real
-walk-forward validation, and building that validation for all 21 remaining items in one pass
-was judged disproportionate to the task (most are low-leverage soft-score nudges, not hard
-gates). The single highest-leverage NEXT candidate, if this work is picked up again, is
-`max_open_risk_pct` (#23) — same class and template as the already-completed
-`max_portfolio_drawdown_pct` sweep.
+Of the original 27 items: **7 resolved** (verified against current code, one — #23 — swept the
+same day as this triage), **Group C fully closed** (all 4 of its items now have a specific,
+individually-investigated disposition — 1 swept, 3 found structurally unsweepable for distinct,
+recorded reasons rather than merely deprioritized), **17 items remain genuinely open** across
+Groups A (12) and B (5). All 17 are explicitly documented as intentionally-arbitrary starting
+values rather than silently-unaddressed gaps. None were changed in this pass — per this
+session's own established discipline, no live-decision-affecting parameter gets touched without
+a real walk-forward validation, and building that validation for Group A/B in one pass was
+judged disproportionate (Group A needs a joint multi-parameter sweep across `scorer.py`, a
+materially larger project than any single-parameter sweep this codebase has built so far; Group
+B needs a genuinely different validation methodology than the existing threshold-sweep harness).
+If this work is picked up again, Group A's joint scorer sweep is the next real candidate — Group
+C has no more low-hanging items left, and Group B needs new methodology design first.
