@@ -3069,6 +3069,37 @@ def backtest_open_risk_cap_sweep(
         )
 
 
+@router.get("/backtest/scorer-sweep")
+def backtest_scorer_sweep(
+    style: str = Query(..., description="SHORT | SWING | LONG | GROWTH"),
+    market: str = Query("US", description="US | HK"),
+    window_days: int = Query(365, ge=30, le=730, description="Lookback window in calendar days"),
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group A: walk-forward sweep over decision-engine's
+    compute_score()/min_score_for_regime() threshold constants (items #3, #8, #9, #10, #11,
+    #12, #14) — calls the REAL decision-engine scoring path (POST /decide/score-replay), not a
+    re-implementation. See gate_harness.py's walk_forward_scorer_sweep() for exactly what this
+    does and does not model — a research signal only, never an automatic config change.
+    """
+    from ..backtest.gate_harness import walk_forward_scorer_sweep
+    from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+
+    style = style.upper()
+    if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
+        raise HTTPException(status_code=400, detail=f"Unknown style: {style}")
+    market = market.upper()
+    if market not in ("US", "HK"):
+        raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
+
+    base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    window_end = date.today()
+    window_start = window_end - timedelta(days=window_days)
+
+    with SessionLocal() as session:
+        return walk_forward_scorer_sweep(session, style, market, base_cfg, window_start, window_end)
+
+
 # ── T233-SELFIMPROVE-PHASE3: promotion gate + tune history ─────────────────────
 # See docs/DESIGN_PROMOTION_GATE_PHASE3_2026-07-05.md for full scope/rationale.
 # Still manually-triggered and does NOT write to portfolio.config — records every

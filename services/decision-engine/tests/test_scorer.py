@@ -278,3 +278,85 @@ def test_min_score_win_rate_exactly_at_30_percent_boundary_not_penalized():
     """cfg["recent_win_rate"] < 0.30 triggers the penalty — exactly 0.30 must NOT."""
     at_boundary = min_score_for_regime("neutral", {"min_entry_score": 4, "recent_win_rate": 0.30})
     assert at_boundary == 4
+
+
+# ── T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group A: 6 constants made cfg-driven ───────────────
+#
+# Each test proves the SAME pair used by the default-cfg tests above still applies for {} —
+# no behavioral change for any existing caller — and that a non-default cfg value genuinely
+# moves the score, confirming the value is truly read from cfg rather than a hardcoded literal
+# hiding behind an unused-looking default parameter.
+
+def test_chase_ceiling_item8_default_matches_original_3pct_and_is_overridable():
+    live_price = 103.0  # breakout=103.5 (via _game_plan(100)); 100*1.035=103.5, so 103 <= breakout
+    # Use a price strictly between breakout and breakout*1.03 to hit the "slight chase" branch.
+    plan = _game_plan(100.0)
+    price = plan["breakout"] * 1.02  # 2% above breakout, within the default 3% ceiling
+    _, breakdown = compute_score(price, plan, _signal_data(), None, None, "neutral", {})
+    assert _layer_pts(breakdown, "price_zone") == 1  # "slight chase" branch, not the -3 penalty
+
+    # Tightening the ceiling to 1% pushes this exact same price into the -3 "chasing" branch.
+    _, breakdown2 = compute_score(price, plan, _signal_data(), None, None, "neutral", {"chase_ceiling_pct": 1.0})
+    assert _layer_pts(breakdown2, "price_zone") == -3
+
+
+def test_rr_tiers_item9_default_matches_original_and_is_overridable():
+    plan = _game_plan(100.0)  # rr = (135-100)/(100-88) = 2.9166 -> "good" tier under the default 2.5
+    _, breakdown = compute_score(100.0, plan, _signal_data(), None, None, "neutral", {})
+    assert _layer_pts(breakdown, "rr_quality") == 1
+
+    # Raising the "good" floor above the real rr (2.9166) demotes it to the 0-point tier.
+    _, breakdown2 = compute_score(100.0, plan, _signal_data(), None, None, "neutral", {"rr_good_threshold": 3.0})
+    assert _layer_pts(breakdown2, "rr_quality") == 0
+
+
+def test_volume_z_bands_item10_default_matches_original_and_is_overridable():
+    reasons = {"volume_z": 0.8}  # between the default -0.5/1.0 bounds -> neutral (0)
+    _, breakdown = compute_score(100.0, _game_plan(), _signal_data(reasons), None, None, "neutral", {})
+    assert _layer_pts(breakdown, "volume") == 0
+
+    # Lowering the "strong" threshold to 0.5 makes this same 0.8 clear it -> +1.
+    _, breakdown2 = compute_score(
+        100.0, _game_plan(), _signal_data(reasons), None, None, "neutral",
+        {"volume_z_strong_threshold": 0.5},
+    )
+    assert _layer_pts(breakdown2, "volume") == 1
+
+
+def test_bull_prob_thresholds_item11_default_matches_original_and_is_overridable():
+    _, breakdown = compute_score(
+        100.0, _game_plan(), _signal_data(bullish_probability=0.65), None, None, "neutral", {}
+    )
+    assert _layer_pts(breakdown, "ml_signal") == 0  # between the default 0.58/0.70 -> moderate
+
+    _, breakdown2 = compute_score(
+        100.0, _game_plan(), _signal_data(bullish_probability=0.65), None, None, "neutral",
+        {"ml_bull_prob_strong_threshold": 0.60},
+    )
+    assert _layer_pts(breakdown2, "ml_signal") == 1
+
+
+def test_confidence_delta_threshold_item12_default_matches_original_and_is_overridable():
+    reasons = {"confidence_delta": 6.0}  # under the default +-8 -> "stable" (0)
+    _, breakdown = compute_score(100.0, _game_plan(), _signal_data(reasons), None, None, "neutral", {})
+    assert _layer_pts(breakdown, "conf_delta") == 0
+
+    _, breakdown2 = compute_score(
+        100.0, _game_plan(), _signal_data(reasons), None, None, "neutral",
+        {"confidence_delta_threshold": 5.0},
+    )
+    assert _layer_pts(breakdown2, "conf_delta") == 1
+
+
+def test_catalyst_thresholds_item14_default_matches_original_and_is_overridable():
+    reasons = {"insider_score": 55, "congress_score": 45}  # under the default 60/50 -> both 0
+    _, breakdown = compute_score(100.0, _game_plan(), _signal_data(reasons), None, None, "neutral", {})
+    assert _layer_pts(breakdown, "catalyst_insider") == 0
+    assert _layer_pts(breakdown, "catalyst_congress") == 0
+
+    _, breakdown2 = compute_score(
+        100.0, _game_plan(), _signal_data(reasons), None, None, "neutral",
+        {"insider_score_strong_threshold": 50.0, "congress_score_threshold": 40.0},
+    )
+    assert _layer_pts(breakdown2, "catalyst_insider") == 1
+    assert _layer_pts(breakdown2, "catalyst_congress") == 1

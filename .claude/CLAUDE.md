@@ -18439,3 +18439,190 @@ methodology than the existing threshold-sweep harness). Full updated reasoning i
 today's tooling" are different claims — this pass distinguished them explicitly for each of the
 3 remaining Group C items rather than lumping them into a single "lower priority" bucket the
 way the original triage draft did.
+
+---
+
+## T234-CONFIG-UNJUSTIFIED-THRESHOLDS — Group A Fully Closed: Real Walk-Forward Sweep Over
+## decision-engine's compute_score() Threshold Constants (2026-08-26)
+
+**Re-investigated all 12 Group A items individually** rather than trusting the earlier same-day
+triage's own bulk "needs a joint multi-parameter sweep, deferred" framing — the same "verify a
+grouping claim, don't inherit it" discipline this file already applies repeatedly elsewhere.
+Found the group is far more heterogeneous than that framing implied:
+
+- **3 items have ZERO tradeable-outcome linkage** — `#5`/`#6`/`#7`, all in `sizer.py`
+  (research-score tiers, confidence-mult breakpoints, earnings-DTE size reduction). Confirmed
+  via grep: `paper_trading_engine.py` never imports `sizer.py`/`compute_position` at all —
+  `sizer.py`'s own module docstring already states it's a preview/scoring-only module whose
+  output only ever reaches `/decide`'s response JSON for `decide.tsx`'s illustrative display.
+  No `PaperTrade`/`pct_return` outcome can ever be attributed to one of these constants, so
+  there's no backtest to build — same class as Group C's already-closed `min_stop_dist`
+  finding (a value with no tradeable-outcome linkage, not a sweep waiting to happen).
+- **1 item is already moot** — `#15` (`scorer.py`'s old Layer 3h "entry-zone drift" 4-way
+  tiering). The CURRENT code's own `T234-DE-SCORER-DOUBLECOUNT-ENTRYZONE` comment confirms this
+  was already deleted (it double-scored the same static `entry2`/`breakout` comparison Layer 1
+  already covers) — nothing left to sweep.
+- **1 item needs a real code prerequisite first** — `#4` (`hard_rejects.py`'s time-of-day gate,
+  lines ~548-566). Reads real wall-clock `datetime.now(timezone.utc)` directly with no `as_of`
+  injection parameter, mirroring the identical bug class already fixed once in
+  `_should_enter()`'s own time-of-day gate under `T232-DL-GATEHARNESS-INPUTGAP`/
+  `BUG233-BACKTESTHARNESS-EMPTYVALIDATION`. A walk-forward replay against a historical
+  `signal_date`/`entry_date` is structurally impossible until this function accepts an
+  injectable "as of when" — a small, real, non-controversial fix mirroring an already-proven
+  pattern, but a genuine prerequisite, deferred rather than rushed into this pass.
+- **The remaining 7 items genuinely gate the REAL live entry decision** — `#3`
+  (`hard_rejects.py`'s `max_breakout_extension_pct`, a HARD reject, confirmed pure with no
+  wall-clock dependency of its own despite sitting textually adjacent to the time-of-day gate)
+  and 6 inside `scorer.py`'s `compute_score()`: `#8` (chase-ceiling %), `#9` (R:R quality
+  tiers), `#10` (volume_z bands), `#11` (bull_prob thresholds), `#12` (confidence-delta
+  threshold), `#14` (insider/congress catalyst thresholds). Confirmed via grep: `routes.py`
+  imports and calls `compute_score()`/`min_score_for_regime()` directly — this IS the real
+  ENTER/BLOCKED verdict on the live `decision_engine_mode="primary"` trading path, not an
+  illustrative preview like `sizer.py`. **Built and swept this session.**
+
+### What was built
+
+**1. `compute_score()`'s 6 constants made cfg-driven** (`services/decision-engine/src/api/core/
+scorer.py`) — each new `cfg.get(key, <original literal>)` read defaults to the exact value the
+function already hardcoded, so every existing caller that never sets these keys gets
+byte-identical behavior. This is what makes the values sweepable at all — before this, nothing
+short of editing the source could vary any of them. Full 274-test decision-engine suite green
+before and after; `test_scorer.py` gained 6 new tests confirming both the default-matches-
+original property AND that a non-default cfg value genuinely moves the score (not just an
+unused-looking default parameter).
+
+**2. New `POST /decide/score-replay`** (`services/decision-engine/src/api/routes.py`) — a
+batched endpoint: N already-resolved historical BUY signals + ONE candidate `cfg`, scored in a
+SINGLE request (never one call per signal — avoids an N×M round-trip cost across the
+~2,000-2,900 resolved BUY outcomes typical per style). Calls the REAL `compute_score()`/
+`min_score_for_regime()` directly — never a re-implementation of the scoring formula in a
+second service, the exact anti-pattern this codebase's own repeated prior audits have found and
+fixed elsewhere (duplicate business logic that can silently drift). Also applies item #3's
+`max_breakout_extension_pct` as a pure, inlined pre-score hard reject that forces
+`entered=False` regardless of score — deliberately NOT routed through the full
+`check_hard_rejects()` (whose OTHER checks — market-hours, the time-of-day gate — read the real
+wall-clock with no `as_of` injection, the exact problem this endpoint's own Layer-3e-freshness
+omission already works around; reusing the whole function would reintroduce that same problem
+for a check that doesn't actually need it).
+
+`ScoreReplayInput` deliberately omits `ts`/`is_pre_choppy`/`is_pre_risk_off`/`recent_win_rate`
+— the SAME disclosed, permanent scope limitation `replay_should_enter()` already carries.
+Layer 3e (signal freshness) reads `signal_data["ts"]` against the real wall-clock with no
+`as_of` injection; never sending `ts` at all correctly makes `compute_score()`'s own
+`if sig_ts is not None:` guard skip that layer entirely (contributes 0, not a penalty) rather
+than penalizing every replayed row as maximally stale. `is_pre_choppy`/`is_pre_risk_off`/
+`recent_win_rate`/`live_regime` are never reconstructible for a historical replay — no
+historical regime-persistence table exists anywhere in this codebase (the same permanent gap
+`gate_harness.py`'s own module docstring already discloses for `replay_should_enter()`).
+
+**A genuine, previously-undocumented test-isolation bug found and fixed while writing the new
+tests**: `test_entry_gate_params.py`/`test_entry_weights.py` (collected alphabetically before
+`test_score_replay.py` in the same pytest process) do
+`sys.modules.setdefault("fastapi", MagicMock())` for their own unrelated purpose. Since pytest
+imports every test file into one shared process, a later `from src.api.routes import
+score_replay` reused the already-cached module object built against the FAKE fastapi — making
+the `@router.post(...)`-decorated `score_replay` function a `MagicMock` instead of the real
+code, silently discarding it from every assertion. Confirmed via direct bisection
+(`pytest fileA.py fileB.py` in both orders). Fixed by forcing a reload:
+```python
+if isinstance(sys.modules.get("fastapi"), MagicMock):
+    del sys.modules["fastapi"]
+importlib.import_module("fastapi")  # forces the real package back into sys.modules
+if "src.api.routes" in sys.modules:
+    importlib.reload(sys.modules["src.api.routes"])
+from src.api.routes import score_replay
+```
+Verified robust to both collection orders. 13 new tests in `test_score_replay.py` (9 basic +
+4 for the item #3 hard reject, including a dedicated test confirming the threshold itself is
+genuinely read from `cfg`, not a fixed 6.0 literal).
+
+**3. New `walk_forward_scorer_sweep()`** (`services/market-data/src/backtest/gate_harness.py`)
+— reuses the SAME point-in-time-safe reconstruction machinery `replay_should_enter()` already
+has proven correct (`_fetch_matched_signals()`, `_historical_atr()`,
+`_build_game_plan_for_style()`, `_historical_confidence_delta()`, `_historical_kscore()`) to
+build `ScoreReplayInput`-shaped dicts, then batches them into `POST /decide/score-replay` calls
+via a new `_score_replay_via_http()` helper (authenticated via the established `_svc_token()`
+service-to-service JWT pattern, chunking at the endpoint's own 5000-input cap, returning `None`
+— never raising — on any failure, matching `_call_decision_engine()`'s own never-raise
+contract). Applies the SAME chronological 70/30 split + `_passes_promotion_margin()`
+(`BUG233-BACKTESTHARNESS-COINFLIP`'s dual absolute-lift-AND-SD-ratio guard) promotion
+discipline every sibling walk-forward function in this module already uses.
+
+**Candidate generation is one-parameter-perturbed-at-a-time**, not a full joint grid — matching
+ranking-engine's own `_kscore_candidate_weight_sets()` "search a tractable neighborhood, not
+the full N-dimensional space" precedent for the identical reason (a full grid across 12
+independent thresholds is combinatorially intractable at any reasonable step size). Each of the
+12 candidates varies exactly ONE key from its default (2 candidates per constant, ± a fixed
+step, clamped where the underlying quantity has a natural bound — a probability in [0,1], a
+percent that can't go negative). Only the single best train-slice winner across the whole pool
+is re-measured against the held-out validation slice — avoiding both a wasteful re-score of
+every candidate on validation and (partially) the multiple-comparisons risk of validating many
+candidates independently.
+
+**A real "still passes after sabotage" finding, self-caught during adversarial verification**
+(matching this repo's own standing discipline of treating that exact outcome as a finding, not
+a shrug): the first version of the "a clamp that collapses a candidate onto its own default is
+dropped, not emitted" test used the REAL production `_SCORER_SWEEP_STEP` table — sabotaging the
+guard away (`if val == default: continue` removed) did NOT make the test fail, because checking
+every real configured `(default, step, lo, hi)` tuple directly confirmed NONE of them actually
+trigger a clamp collapse today (every `default ± step` already lands within its own bound).
+Fixed by constructing a synthetic step table specifically engineered to exercise the clamp path
+(`default=1.0, step=5.0, hi=1.0` — `1.0+5.0=6.0` clamps to exactly `1.0`, colliding with the
+default) inside the test itself, temporarily swapping it into the function's own `__globals__`
+and restoring afterward. Re-verified the sabotage is now correctly caught. 22 new tests in
+`test_walk_forward_scorer_sweep.py` — a mix of real, direct `exec()`-extracted behavioral tests
+for the pure `_scorer_sweep_candidates()` function and source-text structural checks for the
+DB/HTTP-dependent functions (matching `test_walk_forward_calibration_feedback.py`'s established
+convention for this exact Docker-only-dependency constraint).
+
+**4. New `GET /backtest/scorer-sweep`** admin route (`services/market-data/src/api/
+paper_portfolio.py`), matching the established `/backtest/*-sweep` route shape exactly
+(style/market validation, 365-day default window — a walk-forward sweep needs enough history
+for a real 70/30 split on top of the outcome-resolution lag, not the plain `/backtest/
+portfolio` route's shorter 180-day default — `base_cfg` built from `_DEFAULT_CONFIG`/
+`_STYLE_OVERRIDES`, admin-only). Unlike its portfolio-scoped siblings (`drawdown-breaker-sweep`,
+`open-risk-cap-sweep`), this route takes no `symbols` param — `walk_forward_scorer_sweep()`
+operates on ALL resolved BUY signals for a style/market, matching `replay_should_enter()`'s own
+signature. 9 new tests in `test_backtest_scorer_sweep_route.py`.
+
+**Adversarial verification across both services** — 6 sabotage/restore cycles total, all caught
+correctly, each restore confirmed byte-identical via `md5sum`/`diff` before moving on: one
+`compute_score()` constant reverted to a hardcoded literal (caught with a real assertion diff);
+the `score_replay()` breakout-extension threshold reverted to a hardcoded 6.0 (caught); the
+candidate-collapse-onto-default guard (the finding above, fixed and re-verified); the
+`_passes_promotion_margin()` call swapped for a bare `>` comparison — the exact
+`BUG233-BACKTESTHARNESS-COINFLIP` regression class this margin exists to prevent (caught); and
+the new route's `base_cfg` construction hardcoded to `{}` instead of the real
+`_DEFAULT_CONFIG`/`_STYLE_OVERRIDES` merge (caught). Full 274-test decision-engine suite and
+2092-test market-data suite green throughout; `pyflakes` clean on every touched file (all
+pre-existing warnings confirmed unchanged via `git stash` before this pass began).
+
+**Net result**: 15 of the original 27 T234 items now resolved (up from 7 earlier the same day,
+6 from prior sessions). Only 12 items remain genuinely open — Group B's 5 curve-shape constants
+(still need a genuinely different validation methodology than the existing threshold-sweep
+harness), Group C's 3 already-investigated-and-found-structurally-unsweepable items, and Group
+A's own 4 non-sweepable items (3 with zero outcome linkage, 1 — item #4 — deferred behind its
+own real, scoped `as_of`-injection prerequisite). Full updated per-item reasoning in
+`docs/AUDIT_TRIAGE_TIER234_2026-08-26.md`'s "Group A Scorer Sweep" section.
+
+**Not yet run against real production data as of this write-up** — the sweep is deployed but
+has not yet been triggered live for any real style/market combo. Per this codebase's own
+established promotion discipline, `promoted: true` from this endpoint is a research signal
+only; it never changes any live decision-engine config on its own — applying a winning
+candidate to real trading requires a separate, explicit config change.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-decision-engine-1 grep -n "def score_replay\|chase_ceiling_pct\|rr_excellent_threshold" /app/src/api/routes.py /app/src/api/core/scorer.py
+docker exec stockai-market-data-1 grep -n "def walk_forward_scorer_sweep\|_SCORER_SWEEP_STEP" /app/src/backtest/gate_harness.py
+
+# Run the sweep live for a real style/market combo (needs an admin JWT — safe, read-only
+# research call, never writes to any portfolio's live config):
+docker exec stockai-market-data-1 curl -s \
+  'http://localhost:8001/paper-portfolio/backtest/scorer-sweep?style=SWING&market=US&window_days=365' \
+  -H "Authorization: Bearer <admin token>" | python3 -m json.tool
+```
+If the sweep always returns `skipped_reason`, check the real resolved-BUY-signal count for that
+style/market/window first — `walk_forward_scorer_sweep()` needs at least `MIN_SAMPLES_PER_SPLIT`
+(15) resolved signals in BOTH the train and validation slices before it can produce a real
+result, matching every sibling walk-forward function's own sample floor.

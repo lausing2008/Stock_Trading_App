@@ -27,6 +27,9 @@ from .core.models import (
     PositionPlan,
     RiskFlag,
     ScoreItem,
+    ScoreReplayRequest,
+    ScoreReplayResponse,
+    ScoreReplayResult,
 )
 from .core.regime import aget_regime, get_regime
 from .core.scorer import compute_score, min_score_for_regime
@@ -531,3 +534,73 @@ async def explain(
 def regime_status(market: str = "US", _: str = Depends(get_current_username)):
     """Return current market regime for US or HK."""
     return get_regime(market.upper())
+
+
+@router.post("/decide/score-replay", response_model=ScoreReplayResponse)
+def score_replay(req: ScoreReplayRequest, _: str = Depends(get_current_username)) -> ScoreReplayResponse:
+    """T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group A scorer sweep: batch-scores N already-
+    resolved historical BUY signals against ONE candidate cfg, calling the REAL compute_score()
+    / min_score_for_regime() directly — never a re-implementation of the scoring formula in a
+    second service. Called by market-data's own walk-forward sweep, which owns all the DATA
+    reconstruction (game_plan/confidence_delta point-in-time replay, matching
+    gate_harness.py's already-proven replay_should_enter() approach) — this endpoint's only job
+    is to run the caller-assembled inputs through the actual live scoring code.
+
+    Deliberately scored WITHOUT is_pre_choppy/is_pre_risk_off/recent_win_rate (matching
+    replay_should_enter()'s own documented live_regime omission — no historical regime-
+    persistence table exists to reconstruct those from) and WITHOUT signal_data["ts"] (Layer 3e
+    freshness reads the real wall-clock with no as_of injection — see ScoreReplayInput's own
+    field-level comment for why omitting it entirely, not sending a stale value, is the correct
+    fix). Both are real, disclosed simplifications, not silent gaps — this endpoint only ever
+    exercises the score layers that are genuinely point-in-time reconstructible today.
+
+    Also applies the item #3 max_breakout_extension_pct HARD reject (hard_rejects.py's own
+    hardcoded 6.0% breakout-extension check) as a pre-score gate — deliberately NOT calling the
+    full check_hard_rejects() here, since most of that function's OTHER checks (time-of-day,
+    market-hours) read the real wall-clock with no as_of injection, the exact problem this
+    endpoint's own freshness-layer omission above already works around. This one specific check
+    is pure (only live_price/game_plan/cfg), so it's inlined directly rather than dragging in
+    the rest of that function's wall-clock-dependent machinery.
+    """
+    results: list[ScoreReplayResult] = []
+    for item in req.inputs:
+        breakout = (item.game_plan or {}).get("breakout")
+        if breakout and float(breakout) > 0:
+            ext_pct = (item.live_price / float(breakout) - 1) * 100
+            threshold = req.cfg.get("max_breakout_extension_pct", 6.0)
+            if ext_pct > threshold:
+                results.append(ScoreReplayResult(
+                    signal_id=item.signal_id,
+                    score=0,
+                    min_score=0,
+                    entered=False,
+                    pct_return=item.pct_return,
+                ))
+                continue
+
+        signal_data = {
+            "reasons": item.reasons,
+            "bullish_probability": item.bullish_probability,
+            # ts deliberately omitted — see ScoreReplayInput's own comment.
+        }
+        score, _breakdown = compute_score(
+            live_price=item.live_price,
+            game_plan=item.game_plan,
+            signal_data=signal_data,
+            research_rec=item.research_rec,
+            research_score_val=item.research_score_val,
+            regime_state=item.regime_state,
+            cfg={**req.cfg, "kscore": item.kscore},
+            is_pre_choppy=False,
+            is_pre_risk_off=False,
+            recent_win_rate=None,
+        )
+        min_score = min_score_for_regime(item.regime_state, req.cfg)
+        results.append(ScoreReplayResult(
+            signal_id=item.signal_id,
+            score=score,
+            min_score=min_score,
+            entered=score >= min_score,
+            pct_return=item.pct_return,
+        ))
+    return ScoreReplayResponse(results=results)

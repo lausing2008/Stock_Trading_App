@@ -50,7 +50,17 @@ def compute_score(
     is_pre_risk_off: bool = False,
     recent_win_rate: float | None = None,
 ) -> tuple[int, list[ScoreItem]]:
-    """Return (total_score, breakdown_list)."""
+    """Return (total_score, breakdown_list).
+
+    T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group A: every layer's own threshold constants below
+    (chasing-extension %, R:R quality tiers, volume_z bands, bull_prob thresholds,
+    confidence-delta thresholds, catalyst-score thresholds) are read from `cfg` with the
+    ORIGINAL hardcoded value as the default — so every existing caller that never sets these
+    keys gets byte-identical behavior to before. This is what makes the values sweepable at
+    all: market-data's own walk-forward sweep (POST /decide/score-replay) varies exactly these
+    cfg keys against real resolved outcomes; nothing else in this function's control flow
+    changed.
+    """
     reasons  = signal_data.get("reasons") or {}
     breakdown: list[ScoreItem] = []
     score = 0
@@ -64,13 +74,18 @@ def compute_score(
     rr = (take_profit - live_price) / max(stop_dist, 0.0001)
 
     # ── Layer 1: Price zone ───────────────────────────────────────────────────
+    # item #8: the "slight chase still OK" ceiling (originally a hardcoded 1.03, i.e. 3% above
+    # breakout) is now cfg-driven — expressed as a fraction (0.03), not a percent, matching how
+    # every OTHER cfg-driven pct threshold in this codebase (max_breakout_extension_pct etc.)
+    # is a plain fraction/percent-points value rather than a multiplier.
+    _chase_ceiling_pct = float(cfg.get("chase_ceiling_pct", 3.0))
     if live_price < entry2:
         pts = 2
         note = f"Price ${live_price:.2f} below entry2 ${entry2:.2f} — deep pullback, excellent R:R"
     elif live_price <= breakout:
         pts = 2
         note = f"Price ${live_price:.2f} in optimal zone (${entry2:.2f}–${breakout:.2f})"
-    elif live_price <= breakout * 1.03:
+    elif live_price <= breakout * (1 + _chase_ceiling_pct / 100.0):
         pts = 1
         note = f"Price just above breakout (${breakout:.2f}) — momentum confirmed, slight chase"
     else:
@@ -81,9 +96,12 @@ def compute_score(
     breakdown.append(ScoreItem(layer="price_zone", pts=pts, note=note))
 
     # ── Layer 2: R:R quality ──────────────────────────────────────────────────
-    if rr >= 3.5:
+    # item #9: the two tier boundaries are now cfg-driven, defaulting to the original 3.5/2.5.
+    _rr_excellent = float(cfg.get("rr_excellent_threshold", 3.5))
+    _rr_good = float(cfg.get("rr_good_threshold", 2.5))
+    if rr >= _rr_excellent:
         pts, note = 2, f"Excellent R:R {rr:.1f}:1"
-    elif rr >= 2.5:
+    elif rr >= _rr_good:
         pts, note = 1, f"Good R:R {rr:.1f}:1"
     else:
         pts, note = 0, f"Acceptable R:R {rr:.1f}:1"
@@ -91,12 +109,15 @@ def compute_score(
     breakdown.append(ScoreItem(layer="rr_quality", pts=pts, note=note))
 
     # ── Layer 3a: Volume z-score ──────────────────────────────────────────────
+    # item #10: the two band boundaries are now cfg-driven, defaulting to the original 1.0/-0.5.
     volume_z = reasons.get("volume_z")
     if volume_z is not None:
         vz = float(volume_z)
-        if vz > 1.0:
+        _vz_strong = float(cfg.get("volume_z_strong_threshold", 1.0))
+        _vz_weak = float(cfg.get("volume_z_weak_threshold", -0.5))
+        if vz > _vz_strong:
             pts, note = 1, f"Above-average volume (z={vz:.1f}) — conviction confirmation"
-        elif vz < -0.5:
+        elif vz < _vz_weak:
             pts, note = -1, f"Below-average volume (z={vz:.1f}) — breakout less reliable"
         else:
             pts, note = 0, f"Average volume (z={vz:.1f})"
@@ -113,10 +134,13 @@ def compute_score(
             breakdown.append(ScoreItem(layer="earnings", pts=pts, note=note))
 
     # ── Layer 3c: Fused ML+TA probability ────────────────────────────────────
+    # item #11: the two thresholds are now cfg-driven, defaulting to the original 0.70/0.58.
     bull_prob = float(signal_data.get("bullish_probability") or 0.0)
-    if bull_prob >= 0.70:
+    _bull_strong = float(cfg.get("ml_bull_prob_strong_threshold", 0.70))
+    _bull_weak = float(cfg.get("ml_bull_prob_weak_threshold", 0.58))
+    if bull_prob >= _bull_strong:
         pts, note = 1, f"Strong conviction {bull_prob*100:.0f}% fused probability"
-    elif bull_prob < 0.58:
+    elif bull_prob < _bull_weak:
         pts, note = -1, f"Weak conviction {bull_prob*100:.0f}% fused probability"
     else:
         pts, note = 0, f"Moderate conviction {bull_prob*100:.0f}% fused probability"
@@ -131,12 +155,15 @@ def compute_score(
     # other reasons-sourced field in this function (volume_z, days_to_earnings, catalyst_score)
     # already correctly reads from `reasons`; this one was an isolated miss, making layer 3d
     # permanently dead code — accelerating/decelerating signals never got their ±1 adjustment.
+    # item #12: the +-8 threshold is now cfg-driven (a single symmetric magnitude, matching the
+    # original symmetric +8/-8 shape rather than two independent knobs).
     conf_delta = reasons.get("confidence_delta")
     if conf_delta is not None:
         cd = float(conf_delta)
-        if cd > 8:
+        _cd_threshold = float(cfg.get("confidence_delta_threshold", 8.0))
+        if cd > _cd_threshold:
             pts, note = 1, f"Signal accelerating (+{cd:.0f} confidence trend)"
-        elif cd < -8:
+        elif cd < -_cd_threshold:
             pts, note = -1, f"Signal decelerating ({cd:.0f} confidence trend)"
         else:
             pts = 0
@@ -172,13 +199,16 @@ def compute_score(
     # of the -1 the fallback _should_enter() applies for the same signal). Fixed to read
     # the two separate, genuinely-signed fields (insider_score, congress_score) signal-engine
     # already writes into reasons, matching _should_enter()'s two-layer scoring exactly.
+    # item #14: all 3 catalyst thresholds are now cfg-driven, defaulting to the original 60/-30/50.
     _insider_score  = reasons.get("insider_score")
     _congress_score = reasons.get("congress_score")
     if _insider_score is not None:
         ins = float(_insider_score)
-        if ins >= 60:
+        _ins_strong = float(cfg.get("insider_score_strong_threshold", 60.0))
+        _ins_weak = float(cfg.get("insider_score_weak_threshold", -30.0))
+        if ins >= _ins_strong:
             pts, note = 1, f"Strong insider buying (score={ins:.0f}) — real-money conviction"
-        elif ins < -30:
+        elif ins < _ins_weak:
             pts, note = -1, f"Significant insider selling (score={ins:.0f}) — management caution"
         else:
             pts, note = 0, f"Neutral insider signal (score={ins:.0f})"
@@ -186,7 +216,8 @@ def compute_score(
         breakdown.append(ScoreItem(layer="catalyst_insider", pts=pts, note=note))
     if _congress_score is not None:
         cong = float(_congress_score)
-        if cong > 50:
+        _cong_threshold = float(cfg.get("congress_score_threshold", 50.0))
+        if cong > _cong_threshold:
             pts, note = 1, f"Congress net buying (score={cong:.0f}) — informed capital inflow"
         else:
             pts, note = 0, f"Neutral congress signal (score={cong:.0f})"

@@ -130,6 +130,74 @@ class DecisionResult(BaseModel):
     risks: list[RiskFlag] | None = None
 
 
+class ScoreReplayInput(BaseModel):
+    """T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group A scorer sweep: one already-resolved historical
+    BUY signal's inputs to compute_score()/min_score_for_regime(), reconstructed by
+    market-data's own sweep (game_plan via _build_game_plan_for_style(), confidence_delta via
+    _historical_confidence_delta() — the SAME point-in-time-safe reconstruction
+    gate_harness.py's already-proven replay_should_enter() uses) — this endpoint never fetches
+    its own data, it only re-scores what the caller already assembled.
+
+    is_pre_choppy/is_pre_risk_off/recent_win_rate are deliberately NOT included — same
+    permanent, disclosed gap as replay_should_enter()'s own live_regime omission (no historical
+    regime-persistence table exists anywhere in this codebase to reconstruct past regime-
+    forecast state from)."""
+    signal_id: int                       # for correlating results back to the caller's own rows
+    live_price: float
+    game_plan: dict
+    confidence: float                    # 0-100, Signal.confidence
+    bullish_probability: float | None = None
+    reasons: dict = Field(default_factory=dict)  # volume_z, days_to_earnings, confidence_delta, insider_score, congress_score, cross_style_buys
+    # DELIBERATELY no sig_ts/ts field: compute_score()'s Layer 3e (freshness) reads
+    # signal_data["ts"] against the REAL current wall-clock (datetime.now(timezone.utc)), with
+    # no as_of injection — for a historical replay this would always show an enormous,
+    # meaningless age (weeks/months), landing every single row in the "-1, stale" branch
+    # regardless of the real freshness at signal time. compute_score()'s own
+    # `if sig_ts is not None:` guard means simply never sending "ts" at all correctly skips
+    # Layer 3e entirely (contributes 0, not a penalty) — the item #13 freshness thresholds
+    # (4h/18h) are consequently NOT swept by this endpoint; sweeping them needs the same
+    # as_of-injection fix already applied to _should_enter()'s own time-of-day gate, not yet
+    # ported to compute_score() (tracked as item #4's own prerequisite in the T234 triage doc).
+    research_rec: str | None = None
+    research_score_val: float | None = None
+    regime_state: str = "neutral"
+    kscore: float | None = None
+    # The actual, realized outcome — carried straight through to the response so the caller
+    # never has to re-join signal_id back to its own SignalOutcome rows.
+    pct_return: float
+
+
+class ScoreReplayResult(BaseModel):
+    signal_id: int
+    score: int
+    min_score: int
+    entered: bool                        # score >= min_score
+    pct_return: float
+
+
+class ScoreReplayRequest(BaseModel):
+    """Batched: N historical signals x 1 candidate cfg, scored in ONE request — avoids an
+    N-round-trip-per-candidate cost when sweeping thousands of resolved outcomes per style.
+    cfg carries ONLY the scorer.py constants under sweep (e.g. bull_prob thresholds) — every
+    other real cfg key compute_score()/min_score_for_regime() reads (min_entry_score,
+    regime_risk_off_min_score, etc.) must still be supplied here explicitly by the caller, this
+    endpoint applies zero implicit defaults of its own beyond what compute_score() itself
+    already falls back to."""
+    inputs: list[ScoreReplayInput]
+    cfg: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("inputs")
+    @classmethod
+    def _check_inputs_len(cls, v: list[ScoreReplayInput]) -> list[ScoreReplayInput]:
+        if len(v) > 5000:
+            raise ValueError("score-replay accepts at most 5000 inputs per request")
+        return v
+
+
+class ScoreReplayResponse(BaseModel):
+    results: list[ScoreReplayResult]
+
+
 class BatchDecisionRequest(BaseModel):
     symbols: list[str]
     style: str = "SWING"

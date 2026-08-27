@@ -1088,3 +1088,295 @@ def _result_dict(r: BacktestResult) -> dict:
         "avg_return_pct": r.avg_return_pct,
         "skipped_reason": r.skipped_reason,
     }
+
+
+# ── Phase 2c: decision-engine's compute_score()/min_score_for_regime() ──────────────────────
+# T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group A: 7 previously-unvalidated constants gating the
+# REAL live decision_engine_mode="primary" entry path (unlike everything above, which only
+# ever replays _should_enter(), the DE-OUTAGE fallback) — item #3 (hard_rejects.py's
+# max_breakout_extension_pct) and 6 inside scorer.py's compute_score()
+# (chase_ceiling_pct/rr_*_threshold/volume_z_*_threshold/ml_bull_prob_*_threshold/
+# confidence_delta_threshold/insider_score_*_threshold/congress_score_threshold — see
+# scorer.py's own item #3/#8/#9/#10/#11/#12/#14 comments for exactly which literal each one
+# replaced). compute_score() itself lives in decision-engine, a SEPARATE service/container —
+# rather than duplicate its scoring formula here (the exact anti-pattern this codebase's own
+# repeated prior audits have found and fixed elsewhere), this sweep calls decision-engine's own
+# real POST /decide/score-replay endpoint, batched (all N resolved signals for one candidate
+# cfg in ONE request) to avoid an N x M round-trip cost across ~2,000-2,900 resolved BUY
+# outcomes per style.
+#
+# Deliberately does NOT replay is_pre_choppy/is_pre_risk_off/recent_win_rate/live_regime (same
+# permanent gap as replay_should_enter() above) or signal freshness (Layer 3e reads the real
+# wall-clock with no as_of injection — never sending "ts" at all correctly skips that layer
+# rather than penalizing every row as maximally stale; item #4's own as_of-injection fix is a
+# separate, not-yet-built prerequisite, tracked in the T234 triage doc, not silently folded in
+# here).
+
+_SCORER_SWEEP_STEP = {
+    # (cfg_key, default, step) — one candidate tries default+step, one tries default-step,
+    # floored/ceilinged where the underlying quantity has a natural bound (a probability in
+    # [0, 1], a percent that can't go negative).
+    "chase_ceiling_pct":              (3.0, 1.5, 0.0, None),
+    "rr_excellent_threshold":         (3.5, 0.5, 0.0, None),
+    "rr_good_threshold":              (2.5, 0.5, 0.0, None),
+    "volume_z_strong_threshold":      (1.0, 0.5, None, None),
+    "volume_z_weak_threshold":        (-0.5, 0.5, None, None),
+    "ml_bull_prob_strong_threshold":  (0.70, 0.05, 0.0, 1.0),
+    "ml_bull_prob_weak_threshold":    (0.58, 0.05, 0.0, 1.0),
+    "confidence_delta_threshold":     (8.0, 2.0, 0.0, None),
+    "insider_score_strong_threshold": (60.0, 10.0, None, None),
+    "insider_score_weak_threshold":   (-30.0, 10.0, None, None),
+    "congress_score_threshold":       (50.0, 10.0, None, None),
+    "max_breakout_extension_pct":     (6.0, 2.0, 0.0, None),
+}
+
+
+def _scorer_sweep_candidates() -> list[dict]:
+    """One-parameter-perturbed-at-a-time candidates (matches ranking-engine's own
+    _kscore_candidate_weight_sets() "search a tractable neighborhood, not the full 12-dimensional
+    space" judgment for the identical reason — a full joint grid across 12 independent
+    thresholds is combinatorially intractable at any reasonable step size). Each candidate
+    dict varies exactly ONE key from its default; every other key is simply absent, so
+    score_replay's own cfg.get(key, <original literal>) fallback applies for the rest — a
+    candidate is never a full 12-key dict, only the one delta under test."""
+    candidates = []
+    for key, (default, step, lo, hi) in _SCORER_SWEEP_STEP.items():
+        for sign in (1, -1):
+            val = default + sign * step
+            if lo is not None:
+                val = max(lo, val)
+            if hi is not None:
+                val = min(hi, val)
+            if val == default:
+                continue  # a clamp collapsed this candidate onto the baseline — not a real test
+            candidates.append({key: round(val, 4)})
+    return candidates
+
+
+def _fetch_score_replay_inputs(
+    session: Session, style: str, market: str, window_start: date, window_end: date,
+) -> list[dict]:
+    """Reconstruct ScoreReplayInput-shaped dicts for every resolved BUY signal in the window —
+    reuses the SAME point-in-time-safe machinery replay_should_enter() already relies on
+    (_historical_atr, _build_game_plan_for_style, _historical_confidence_delta) rather than a
+    second, independently-drifting reconstruction. Returns plain dicts (not pydantic objects —
+    this service has no dependency on decision-engine's own models module), one per resolvable
+    signal; a signal with no usable entry_price is silently skipped, matching
+    replay_should_enter()'s own `if not live_price or live_price <= 0: continue`."""
+    style = style.upper()
+    bucket = _HORIZON_BUCKET[style]
+    matched = _fetch_matched_signals(session, style, market, window_start, window_end)
+    out: list[dict] = []
+    for sig, outcome, stock in matched:
+        live_price = outcome.entry_price
+        if not live_price or live_price <= 0:
+            continue
+        atr = _historical_atr(session, stock.id, outcome.signal_date)
+        game_plan = _build_game_plan_for_style(stock.symbol, style, live_price, sig.reasons or {}, atr)
+        confidence_delta = _historical_confidence_delta(
+            session, stock.id, style, outcome.signal_date, sig.confidence,
+        )
+        reasons = dict(sig.reasons or {})
+        if confidence_delta is not None:
+            reasons["confidence_delta"] = confidence_delta
+        out.append({
+            "signal_id": sig.id,
+            "live_price": float(live_price),
+            "game_plan": game_plan,
+            "confidence": float(sig.confidence) if sig.confidence is not None else 0.0,
+            "bullish_probability": sig.bullish_probability,
+            "reasons": reasons,
+            "research_rec": None,   # not point-in-time reconstructible here (no historical
+            "research_score_val": None,  # research-report table to replay against — same
+                                          # honest omission as every other unavailable input.
+            "regime_state": "neutral",   # live_regime is a permanent gap — see module docstring.
+            "kscore": _historical_kscore(session, stock.id, outcome.signal_date),
+            "pct_return": float(getattr(outcome, f"return_{bucket}")),
+        })
+    return out
+
+
+def _score_replay_via_http(inputs: list[dict], cfg: dict) -> list[dict] | None:
+    """One POST to decision-engine's /decide/score-replay per candidate cfg, batching every
+    input for that cfg into a single request (never one call per signal). Returns None (never
+    raises) on any network/HTTP failure — the caller must treat that candidate as unmeasurable,
+    matching _call_decision_engine()'s own never-raise/return-None-on-DE-unreachable contract."""
+    try:
+        import httpx
+        from common.config import get_settings
+
+        from ..services.paper_trading_engine import _svc_token
+        de_url = get_settings().decision_engine_url
+        # ScoreReplayRequest caps a single request at 5000 inputs — chunk if the window's own
+        # resolved-signal count exceeds that (a real possibility at a wide window/style with
+        # thousands of resolved BUY outcomes).
+        results: list[dict] = []
+        for i in range(0, len(inputs), 5000):
+            chunk = inputs[i:i + 5000]
+            r = httpx.post(
+                f"{de_url}/decide/score-replay",
+                json={"inputs": chunk, "cfg": cfg},
+                headers={"Authorization": f"Bearer {_svc_token()}"},
+                timeout=60.0,
+            )
+            r.raise_for_status()
+            results.extend(r.json()["results"])
+        return results
+    except Exception:
+        return None
+
+
+def _scorer_backtest_result(
+    style: str, market: str, cfg_label: str, window_start: date, window_end: date,
+    replay_results: list[dict] | None, n_signals_seen: int,
+) -> BacktestResult:
+    """Fold a /decide/score-replay response into the SAME BacktestResult shape every other
+    walk-forward function in this module produces, so _passes_promotion_margin()/_result_dict()
+    apply unchanged — a candidate that failed the HTTP call at all is scored identically to one
+    that returned zero entries below the sample floor (skipped_reason set either way)."""
+    result = BacktestResult(
+        style=style, market=market, cfg_label=cfg_label,
+        window_start=window_start, window_end=window_end,
+        n_signals_seen=n_signals_seen, n_entered=0,
+    )
+    if replay_results is None:
+        result.skipped_reason = "decision-engine unreachable for this candidate"
+        return result
+    entered = [r for r in replay_results if r["entered"]]
+    result.n_entered = len(entered)
+    result.entered_signal_ids = [r["signal_id"] for r in entered]
+    result.returns = [float(r["pct_return"]) for r in entered]
+    if result.n_entered < MIN_SAMPLES_PER_SPLIT:
+        result.skipped_reason = (
+            f"only {result.n_entered} signals passed the gate (need {MIN_SAMPLES_PER_SPLIT})"
+        )
+        return result
+    wins = sum(1 for r in result.returns if r > 0)
+    result.win_rate = round(wins / result.n_entered, 4)
+    result.avg_return_pct = round(sum(result.returns) / len(result.returns) * 100, 4)
+    return result
+
+
+def walk_forward_scorer_sweep(
+    session: Session, style: str, market: str, base_cfg: dict,
+    window_start: date, window_end: date,
+) -> dict:
+    """Walk-forward sweep over decision-engine's compute_score()/min_score_for_regime()
+    threshold constants (T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group A items #3, #8, #9, #10, #11,
+    #12, #14) — same chronological 70/30 split + _passes_promotion_margin() discipline as every
+    sibling walk-forward function in this module, applied against the REAL decision-engine
+    scoring path via /decide/score-replay rather than a re-implementation.
+
+    Only ever tunes ONE constant at a time per candidate (see _scorer_sweep_candidates()) — the
+    winning train-slice candidate across the WHOLE pool is then re-measured on the held-out
+    validation slice against the unmodified baseline (base_cfg with no override at all)."""
+    style = style.upper()
+    resolvable_end = _resolvable_window_end(window_end, style)
+    if resolvable_end <= window_start:
+        return {
+            "style": style, "market": market,
+            "skipped_reason": (
+                f"window too short to leave any resolvable validation slice after accounting "
+                f"for {style}'s {_HORIZON_RESOLUTION_LAG_DAYS.get(style, 14)}-day outcome "
+                f"resolution lag (requested window ends {window_end}, resolvable end is "
+                f"{resolvable_end}, window starts {window_start})"
+            ),
+        }
+
+    total_days = (resolvable_end - window_start).days
+    split_days = max(1, int(total_days * 0.7))
+    train_end = window_start + timedelta(days=split_days)
+    val_start = train_end + timedelta(days=1)
+    if val_start > resolvable_end:
+        return {
+            "style": style, "market": market,
+            "skipped_reason": f"window too short to split ({total_days} resolvable days)",
+        }
+
+    train_inputs = _fetch_score_replay_inputs(session, style, market, window_start, train_end)
+    if len(train_inputs) < MIN_SAMPLES_PER_SPLIT:
+        return {
+            "style": style, "market": market,
+            "skipped_reason": (
+                f"only {len(train_inputs)} resolved BUY signals in the train slice "
+                f"(need {MIN_SAMPLES_PER_SPLIT})"
+            ),
+        }
+
+    baseline_train_results = _score_replay_via_http(train_inputs, base_cfg)
+    baseline_train = _scorer_backtest_result(
+        style, market, "baseline (train)", window_start, train_end,
+        baseline_train_results, len(train_inputs),
+    )
+    if baseline_train.skipped_reason is not None or baseline_train.avg_return_pct is None:
+        return {
+            "style": style, "market": market,
+            "skipped_reason": "baseline itself did not produce a measurable train-slice result",
+            "baseline_train": _result_dict(baseline_train),
+        }
+
+    best_candidate: dict | None = None
+    best_train: BacktestResult | None = None
+    for candidate in _scorer_sweep_candidates():
+        cfg = {**base_cfg, **candidate}
+        cand_results = _score_replay_via_http(train_inputs, cfg)
+        cand_train = _scorer_backtest_result(
+            style, market, f"candidate {candidate} (train)", window_start, train_end,
+            cand_results, len(train_inputs),
+        )
+        if cand_train.skipped_reason is not None or cand_train.avg_return_pct is None:
+            continue
+        if cand_train.avg_return_pct <= baseline_train.avg_return_pct:
+            continue
+        if best_train is None or cand_train.avg_return_pct > best_train.avg_return_pct:
+            best_candidate, best_train = candidate, cand_train
+
+    if best_candidate is None:
+        return {
+            "style": style, "market": market,
+            "promoted": False,
+            "train_window": [str(window_start), str(train_end)],
+            "baseline_train": _result_dict(baseline_train),
+            "note": "no candidate beat the baseline on the train slice — nothing to validate.",
+        }
+
+    val_inputs = _fetch_score_replay_inputs(session, style, market, val_start, resolvable_end)
+    baseline_val_results = _score_replay_via_http(val_inputs, base_cfg)
+    baseline_val = _scorer_backtest_result(
+        style, market, "baseline (validation)", val_start, resolvable_end,
+        baseline_val_results, len(val_inputs),
+    )
+    cand_cfg = {**base_cfg, **best_candidate}
+    cand_val_results = _score_replay_via_http(val_inputs, cand_cfg)
+    cand_val = _scorer_backtest_result(
+        style, market, f"candidate {best_candidate} (validation)", val_start, resolvable_end,
+        cand_val_results, len(val_inputs),
+    )
+    promoted = _passes_promotion_margin(cand_val, baseline_val)
+
+    return {
+        "style": style, "market": market,
+        "train_window": [str(window_start), str(train_end)],
+        "validation_window": [str(val_start), str(resolvable_end)],
+        "best_candidate": best_candidate,
+        "baseline_train": _result_dict(baseline_train),
+        "best_candidate_train": _result_dict(best_train),
+        "baseline_validation": _result_dict(baseline_val),
+        "candidate_validation": _result_dict(cand_val),
+        "promoted": promoted,
+        "note": (
+            "promoted=True means best_candidate beat the unmodified baseline on the held-out "
+            f"validation slice by at least {_MIN_PROMOTION_EV_LIFT_PCT}pp AND by at least "
+            f"{_MIN_PROMOTION_LIFT_SD_RATIO}x the validation slice's own return dispersion "
+            "(same BUG233-BACKTESTHARNESS-COINFLIP margin every other walk-forward function in "
+            "this module enforces). This is a research signal only — promoting a candidate here "
+            "does NOT change any live decision-engine config; applying it to real trading "
+            "requires a separate, explicit config change. Scope caveats: only the ONE "
+            "highest-train-EV candidate across the whole one-at-a-time sweep pool was validated "
+            "(not every candidate independently), no multiple-comparisons correction across "
+            "that pool, is_pre_choppy/is_pre_risk_off/recent_win_rate/live_regime are never "
+            "replayed (same permanent gap as every other function in this module), and Layer 3e "
+            "signal freshness is never scored at all (item #4's own as_of-injection fix is a "
+            "separate, not-yet-built prerequisite)."
+        ),
+    }
