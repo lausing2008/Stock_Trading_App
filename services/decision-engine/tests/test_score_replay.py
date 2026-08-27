@@ -9,6 +9,18 @@ the actual live scoring code, not a mock of it.
 routes.py imports cleanly in this test environment once common/common.config/common.jwt_auth/
 common.redis_client/common.ai_keys are stubbed (matching test_entry_gate_params.py's own
 established convention) — confirmed no FastAPI app/DB/network access happens at import time.
+
+REAL BUG FOUND ON FIRST LIVE DEPLOY (2026-08-26), not caught by any test in this file: every
+test below calls score_replay() directly as a Python function, bypassing FastAPI's real
+route-dispatch entirely — so route REGISTRATION ORDER was invisible to every one of them.
+score-replay was originally registered AFTER the pre-existing `@router.post("/decide/{symbol}")`
+catch-all, so a real POST to /decide/score-replay silently matched THAT route instead
+(symbol="score-replay"), returning a 422 "Cannot resolve live price for SCORE-REPLAY" instead
+of ever reaching score_replay() at all — the exact BUG233-ROUTERORDER bug class this codebase
+has already hit once before in signal-engine (see test_main_router_order.py there). Fixed by
+moving score_replay()'s registration to sit alongside the pre-existing /decide/batch route,
+BEFORE /decide/{symbol} — TestScoreReplayRouterOrdering below is the regression guard neither
+this file's original test suite nor a passing pytest run alone would have caught.
 """
 import importlib
 import sys
@@ -219,3 +231,31 @@ class TestScoreReplayBreakoutExtensionHardReject:
         )
         resp = score_replay(req, _="dummy")
         assert resp.results[0].entered is True
+
+
+class TestScoreReplayRouterOrdering:
+    """Regression guard for the real 2026-08-26 bug described at the top of this file — a
+    source-text check on decorator ORDER, since a direct function call (every other test in
+    this file) can never detect a route-registration-order problem the way a real POST through
+    FastAPI's actual dispatch would."""
+
+    _ROUTES_SOURCE = __import__("pathlib").Path(
+        __import__("pathlib").Path(__file__).resolve().parents[1] / "src" / "api" / "routes.py"
+    ).read_text()
+
+    def test_score_replay_is_registered_before_the_decide_symbol_catch_all(self):
+        """Within a single routes.py file (one APIRouter, unlike signal-engine's multi-router
+        split), decorator source-text order IS registration order. /decide/score-replay must
+        appear strictly before /decide/{symbol} or Starlette's real route matcher will treat
+        "score-replay" as a symbol and never reach score_replay() at all."""
+        score_replay_idx = self._ROUTES_SOURCE.index('@router.post("/decide/score-replay"')
+        catch_all_idx = self._ROUTES_SOURCE.index('@router.post("/decide/{symbol}"')
+        assert score_replay_idx < catch_all_idx, (
+            "score-replay must be registered BEFORE /decide/{symbol} — the exact "
+            "BUG233-ROUTERORDER bug class already hit once in signal-engine"
+        )
+
+    def test_decide_symbol_catch_all_still_exists(self):
+        """Sanity check the hazard this test guards against still exists — if /decide/{symbol}
+        is ever removed, this test's premise no longer applies."""
+        assert '@router.post("/decide/{symbol}"' in self._ROUTES_SOURCE

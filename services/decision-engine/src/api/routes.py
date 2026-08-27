@@ -471,71 +471,6 @@ async def decide_batch(
     return sorted(output, key=lambda r: r.score, reverse=True)
 
 
-@router.post("/decide/{symbol}", response_model=DecisionResult)
-async def decide(
-    symbol: str,
-    req: DecisionRequest,
-    _: str = Depends(get_current_username),
-):
-    """Evaluate whether to enter a position in {symbol} right now.
-
-    Aggregates signal engine, ML probability, research recommendation, and market
-    regime into a single verdict (BUY / HOLD / SKIP / BLOCKED) with an illustrative
-    position sizing preview and per-layer score breakdown.
-
-    T234-DE-SIZER-DISCARDED: the `position` field is ILLUSTRATIVE ONLY. The live
-    (paper) trading path never calls this endpoint for sizing — paper_trading_engine.py's
-    _call_decision_engine() reads only verdict/score/blocked_reason from this response
-    and computes real share counts independently via its own formula. sizer.py's
-    multiplier bands are also deliberately different in places (see sizer.py's module
-    docstring) — do not assume `position` matches what the trading engine would
-    actually do for this symbol right now.
-    """
-    symbol = symbol.upper()
-    return await _decide(symbol, req)
-
-
-@router.get("/decide/{symbol}/explain")
-async def explain(
-    symbol: str,
-    style: str = "SWING",
-    _: str = Depends(get_current_username),
-):
-    """Human-readable explanation of the current decision for a symbol."""
-    symbol = symbol.upper()
-    req = DecisionRequest(style=style)
-    result = await _decide(symbol, req)
-
-    lines = [
-        f"Decision for {symbol} ({style}): **{result.verdict}**",
-        f"Score: {result.score} / min {result.min_score}",
-        "",
-        "Score breakdown:",
-    ]
-    for item in result.score_breakdown:
-        lines.append(f"  [{item.pts:+d}] {item.layer}: {item.note}")
-
-    if result.blocked_reason:
-        lines.append(f"\nBlocked: {result.blocked_reason}")
-
-    if result.position:
-        p = result.position
-        lines += [
-            "",
-            f"Position: {p.shares} shares @ ${p.entry_price:.2f}",
-            f"Stop: ${p.stop_price:.2f} | Target 1: ${p.target_1:.2f} | Target 2: ${p.target_2:.2f}",
-            f"R:R: {p.rr_ratio:.1f}:1 | Dollar risk: ${p.dollar_risk:.0f}",
-        ]
-
-    return {"symbol": symbol, "style": style, "explanation": "\n".join(lines), "result": result}
-
-
-@router.get("/decide/regime")
-def regime_status(market: str = "US", _: str = Depends(get_current_username)):
-    """Return current market regime for US or HK."""
-    return get_regime(market.upper())
-
-
 @router.post("/decide/score-replay", response_model=ScoreReplayResponse)
 def score_replay(req: ScoreReplayRequest, _: str = Depends(get_current_username)) -> ScoreReplayResponse:
     """T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group A scorer sweep: batch-scores N already-
@@ -604,3 +539,70 @@ def score_replay(req: ScoreReplayRequest, _: str = Depends(get_current_username)
             pct_return=item.pct_return,
         ))
     return ScoreReplayResponse(results=results)
+
+
+@router.post("/decide/{symbol}", response_model=DecisionResult)
+async def decide(
+    symbol: str,
+    req: DecisionRequest,
+    _: str = Depends(get_current_username),
+):
+    """Evaluate whether to enter a position in {symbol} right now.
+
+    Aggregates signal engine, ML probability, research recommendation, and market
+    regime into a single verdict (BUY / HOLD / SKIP / BLOCKED) with an illustrative
+    position sizing preview and per-layer score breakdown.
+
+    T234-DE-SIZER-DISCARDED: the `position` field is ILLUSTRATIVE ONLY. The live
+    (paper) trading path never calls this endpoint for sizing — paper_trading_engine.py's
+    _call_decision_engine() reads only verdict/score/blocked_reason from this response
+    and computes real share counts independently via its own formula. sizer.py's
+    multiplier bands are also deliberately different in places (see sizer.py's module
+    docstring) — do not assume `position` matches what the trading engine would
+    actually do for this symbol right now.
+    """
+    symbol = symbol.upper()
+    return await _decide(symbol, req)
+
+
+@router.get("/decide/{symbol}/explain")
+async def explain(
+    symbol: str,
+    style: str = "SWING",
+    _: str = Depends(get_current_username),
+):
+    """Human-readable explanation of the current decision for a symbol."""
+    symbol = symbol.upper()
+    req = DecisionRequest(style=style)
+    result = await _decide(symbol, req)
+
+    lines = [
+        f"Decision for {symbol} ({style}): **{result.verdict}**",
+        f"Score: {result.score} / min {result.min_score}",
+        "",
+        "Score breakdown:",
+    ]
+    for item in result.score_breakdown:
+        lines.append(f"  [{item.pts:+d}] {item.layer}: {item.note}")
+
+    if result.blocked_reason:
+        lines.append(f"\nBlocked: {result.blocked_reason}")
+
+    if result.position:
+        p = result.position
+        lines += [
+            "",
+            f"Position: {p.shares} shares @ ${p.entry_price:.2f}",
+            f"Stop: ${p.stop_price:.2f} | Target 1: ${p.target_1:.2f} | Target 2: ${p.target_2:.2f}",
+            f"R:R: {p.rr_ratio:.1f}:1 | Dollar risk: ${p.dollar_risk:.0f}",
+        ]
+
+    return {"symbol": symbol, "style": style, "explanation": "\n".join(lines), "result": result}
+
+
+@router.get("/decide/regime")
+def regime_status(market: str = "US", _: str = Depends(get_current_username)):
+    """Return current market regime for US or HK."""
+    return get_regime(market.upper())
+
+
