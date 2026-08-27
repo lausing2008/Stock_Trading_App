@@ -210,7 +210,8 @@ def _load_fund_snapshots(symbol: str) -> list[dict]:
             }
             for r in rows
         ]
-    except Exception:
+    except Exception as exc:
+        log.warning("trainer.fund_snapshots_load_failed", symbol=symbol, error=str(exc))
         return []
 
 
@@ -405,7 +406,8 @@ def _load_outcome_features(symbol: str, style: str = "SWING", lookback_days: int
         # with the rest of the file's training pipeline if a horizon is ever retuned.
         _outcome_horizon = _HORIZON_BY_STYLE.get(style.upper(), 10)
         X_full, y_dir, _ = build_features(df, horizon=_outcome_horizon, macro_df=None)
-    except Exception:
+    except Exception as exc:
+        log.warning("trainer.outcome_features_build_failed", symbol=symbol, style=style, error=str(exc))
         return pd.DataFrame(), pd.Series(dtype=int)
 
     if X_full.empty:
@@ -453,7 +455,8 @@ def train_model(
         start_date = pd.to_datetime(df["ts"]).min().date()
         end_date = date.today() + timedelta(days=1)
         macro_df = fetch_macro_features(start_date, end_date, symbol=symbol)
-    except Exception:
+    except Exception as exc:
+        log.warning("train.macro_features_failed", symbol=symbol, error=str(exc))
         macro_df = None
 
     # TIER90: sector relative strength vs SPY from DB prices
@@ -472,8 +475,8 @@ def train_model(
     fund_data: dict = {}
     try:
         fund_data = _load_fundamentals(symbol) or {}
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("train.fundamentals_load_failed", symbol=symbol, error=str(exc))
     # T220-F: store symbol so build_features can look up earnings revision direction
     fund_data["_symbol"] = symbol
 
@@ -481,8 +484,8 @@ def train_model(
     fund_snapshots: list[dict] = []
     try:
         fund_snapshots = _load_fund_snapshots(symbol)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("train.fund_snapshots_load_failed", symbol=symbol, error=str(exc))
 
     X, y_dir, y_ret = build_features(
         df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold,
@@ -859,8 +862,9 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
             if model_age_days > _MODEL_STALE_DAYS:
                 _log.warning("model.stale", symbol=symbol, model=model_name,
                              trained_at=trained_at_str, age_days=model_age_days)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.warning("predict_latest.stale_check_failed", symbol=symbol, model=model_name,
+                         trained_at=trained_at_str, error=str(exc))
 
     df = _load_prices(symbol, lookback_days=400)
 
@@ -870,8 +874,8 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
     try:
         infer_start = pd.to_datetime(df["ts"]).min().date()
         macro_df = fetch_macro_features(infer_start, date.today() + timedelta(days=1), symbol=symbol)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.warning("predict_latest.macro_features_failed", symbol=symbol, error=str(exc))
 
     # TIER90: sector RS for inference
     _infer_start = infer_start or (date.today() - timedelta(days=400))
@@ -883,8 +887,8 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
     infer_fund_data: dict = {}
     try:
         infer_fund_data = _load_fundamentals(symbol) or {}
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.warning("predict_latest.fundamentals_load_failed", symbol=symbol, error=str(exc))
     infer_fund_data["_symbol"] = symbol
 
     # T237-ML2b: eps_revision_direction needs the same fund_snapshots history at inference
@@ -894,8 +898,8 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
     infer_fund_snapshots: list[dict] = []
     try:
         infer_fund_snapshots = _load_fund_snapshots(symbol)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.warning("predict_latest.fund_snapshots_load_failed", symbol=symbol, error=str(exc))
 
     # inference_mode=True: keeps the latest bar even without a known future return
     X, _, _ = build_features(
@@ -959,8 +963,8 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
             # Return top 5 by absolute contribution
             top5 = sorted(feature_attributions.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
             feature_attributions = dict(top5)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.warning("predict_latest.feature_attribution_failed", symbol=symbol, error=str(exc))
 
     return {
         "symbol": symbol,
@@ -991,7 +995,8 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5, style: str = "SWING")
 
     try:
         rf = predict_latest(symbol, "random_forest", horizon, style=style)
-    except Exception:
+    except Exception as exc:
+        log.warning("predict_latest_ensemble.rf_predict_failed", symbol=symbol, error=str(exc))
         return {**xgb, "ensemble": False, "model": "xgboost"}
 
     # Prefer held-out test AUC (unbiased) over CV AUC for internal weighting.
@@ -1097,14 +1102,16 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
     if lgb_path.exists():
         try:
             lgb_res = predict_latest(symbol, "lightgbm", horizon, style=style)
-        except Exception:
+        except Exception as exc:
+            log.warning("predict_latest_ensemble_three.lgb_predict_failed", symbol=symbol, error=str(exc))
             lgb_res = None
 
     rf_res = None
     if rf_path.exists():
         try:
             rf_res = predict_latest(symbol, "random_forest", horizon, style=style)
-        except Exception:
+        except Exception as exc:
+            log.warning("predict_latest_ensemble_three.rf_predict_failed", symbol=symbol, error=str(exc))
             rf_res = None
 
     # Determine which models are available and blend accordingly
@@ -1175,7 +1182,14 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
             sector=_sector,
             market_cap=_market_cap,
         )
-    except Exception:
+    except Exception as exc:
+        # AUD291-SILENT-EXCEPTIONS-MLPRED: this exact except block's own comment above
+        # (T237-ML-META3) documents a real, previously-undiscovered bug that hid here
+        # completely silently for a long time — a bare, unimported name that raised
+        # ModuleNotFoundError on every single call. Logging here is specifically to make
+        # sure a regression of that class (or any other meta-model call failure) is never
+        # invisible again — a missing log line is exactly what let it go unnoticed before.
+        log.warning("predict_latest_ensemble_three.meta_predict_failed", symbol=symbol, error=str(exc))
         _meta_prob = None
 
     if _meta_prob is not None:
@@ -1290,7 +1304,8 @@ def validate_walkforward(
     start_d = pd.to_datetime(df_all["ts"]).min().date()
     try:
         macro_df = fetch_macro_features(start_d, today, symbol=symbol)
-    except Exception:
+    except Exception as exc:
+        log.warning("validate_walkforward.macro_features_failed", symbol=symbol, error=str(exc))
         macro_df = None
 
     wf_sector_df = fetch_sector_features(symbol, start_d, today)
@@ -1298,8 +1313,8 @@ def validate_walkforward(
     fund_data: dict = {}
     try:
         fund_data = _load_fundamentals(symbol) or {}
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("validate_walkforward.fundamentals_load_failed", symbol=symbol, error=str(exc))
     # T220-F: store symbol so build_features can look up earnings revision direction
     fund_data["_symbol"] = symbol
 
@@ -1327,7 +1342,9 @@ def validate_walkforward(
                 label_threshold=label_threshold, fund_data={},
                 sector_df=wf_sector_df,
             )
-        except Exception:
+        except Exception as exc:
+            log.debug("validate_walkforward.window_build_features_failed", symbol=symbol,
+                      window_start=pos, error=str(exc))
             pos += test_days
             continue
 
@@ -1347,7 +1364,9 @@ def validate_walkforward(
             m.fit(X_tr_s, y_tr.values, sample_weight=sw)
             probs = m.predict_proba(X_te_s)
             raw = probs[:, 1] if probs.ndim == 2 else probs
-        except Exception:
+        except Exception as exc:
+            log.debug("validate_walkforward.window_fit_predict_failed", symbol=symbol,
+                      window_start=pos, model=model_name, error=str(exc))
             pos += test_days
             continue
 

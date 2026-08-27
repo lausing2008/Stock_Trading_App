@@ -16,7 +16,7 @@ repo's established convention for functions of this shape and size.
 """
 import pathlib
 
-_ROUTES_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "outcomes.py"
+_ROUTES_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "analytics.py"
 _ROUTES_SOURCE = _ROUTES_PATH.read_text()
 
 

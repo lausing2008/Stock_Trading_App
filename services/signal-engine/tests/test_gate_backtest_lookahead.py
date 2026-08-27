@@ -18,7 +18,7 @@ actual mechanism the fix uses rather than a hand-copied reimplementation that co
 import pathlib
 from datetime import date, timedelta
 
-_OUTCOMES_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "outcomes.py"
+_OUTCOMES_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "analytics.py"
 _OUTCOMES_SOURCE = _OUTCOMES_PATH.read_text()
 
 

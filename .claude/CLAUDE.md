@@ -18123,3 +18123,93 @@ in that area is disproven) matter.
 ```bash
 docker exec stockai-frontend-1 sh -c "grep -o 'Est. trend' /app/.next/static/chunks/pages/stock/\[symbol\]-*.js"
 ```
+
+---
+
+## Feature Reference: AUD291-SILENT-EXCEPTIONS-MLPRED — All ~29 Genuinely-Silent Exception Blocks in ml-prediction Now Log (2026-08-26)
+
+**Continues this session's own tracker-review discipline** — the user asked to check tiers
+217/232/234/241/242/288/291 and, after establishing most `todo`/`in-progress` items in those
+tiers are DELIBERATE architecture/business decisions (not forgotten bugs), 2 genuinely
+buildable AUD291 items were confirmed and built.
+
+**The fix**: went through every `except Exception` block in `trainer.py`/`tuner.py`/
+`meta_trainer.py` individually (matching this repo's own established discipline — never a
+blanket find-and-replace) — 6 already logged, 2 (both model-save atomic-write blocks, RACE-001)
+already correctly `raise`, and ~29 were genuinely silent. Fixed all 29 with a per-site judgment
+call: symbol-scoped `log.warning` for real per-symbol enrichment-fetch failures (fundamentals/
+macro/sector/outcome-feature loads, in both train and inference paths), `log.debug` for
+per-window skips inside `validate_walkforward()`'s potentially-long loop (matching this file's
+own convention of not spamming warning-level logs for expected-frequency events).
+
+**The single highest-value fix**: `predict_latest_ensemble_three()`'s meta-model prediction
+call in `trainer.py` — its OWN pre-existing comment already documents a real bug
+(`T237-ML-META3`: a bare, unimported module name that raised `ModuleNotFoundError` on EVERY
+call, completely silently, for a long time) that this exact except block's silence is what hid
+in the first place. The fix adds a dedicated log line specifically so a regression of that
+class can never go unnoticed again.
+
+**Verification**: full 91-test ml-prediction suite green (zero regressions); pyflakes clean
+(all 3 remaining warnings confirmed pre-existing via `git stash`).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-ml-prediction-1 grep -c "log.warning\|log.debug" /app/src/training/trainer.py /app/src/training/tuner.py /app/src/training/meta_trainer.py
+```
+
+---
+
+## Feature Reference: AUD291-SIGNALENGINE-GODFILES-UNEVALUATED — outcomes.py Split Write-vs-Read; signals.py Correctly Left Unsplit (2026-08-26)
+
+**Evaluated both files individually, per the tracker item's own real question** ("do these
+files have a natural fault line the way `routes.py`'s split did"), rather than reflexively
+splitting either just because they're large.
+
+**`signals.py` (2,921 lines) — correctly LEFT UNSPLIT.** Traced its 43 functions' real
+coupling: `_ta_score()`/`_apply_style_signal()` alone are referenced 31 times across the file,
+and every helper ultimately feeds one of the two central entry points
+(`generate_all_signals()`/`generate_signal()`). No clean "this half is unrelated to that half"
+boundary exists — every candidate split point is a forced cut through a genuinely single,
+cohesive computational pipeline. This matches the exact reasoning
+`T233-ARCH-MARKETDATA-GODSERVICE` already established for `scheduler.py`/
+`paper_trading_engine.py`: tight shared state, splitting adds complexity for no benefit.
+
+**`outcomes.py` (3,040 lines, 15 routes) — split into `outcomes.py` (3 WRITE routes:
+`/backfill_realized_ev`, `/outcomes/evaluate`, `/backfill_bearish_pillars`) + a new
+`analytics.py` (12 READ-only reporting routes: `/accuracy`, `/rolling_accuracy`,
+`/factor-exposure`, `/trade_performance`, `/filter_audit`, `/walkforward`, `/outcomes/summary`,
+`/alpha_decay`, `/signal_age_decay`, `/information_coefficient`, `/factor_attribution`,
+`/gate_backtest`).** A genuinely clean fault line, confirmed via grep that every module-level
+constant/helper (`_RETRO_MIN_SAMPLES`, `_DECAY_DAYS`, `_BACKFILL_MIN_BARS`, etc.) is file-local
+to exactly one route — no cross-boundary shared state. `main.py` now mounts a third
+`analytics_router` alongside `calibration_router`/`outcomes_router`, all 3 still registered
+BEFORE `routes.py`'s own catch-all `GET /{symbol}` (confirmed neither new/kept file contains a
+catch-all of its own — `routes.py` owns the only one, so the existing ordering rule already
+covers this with zero additional risk, matching the `BUG233-ROUTERORDER` lesson).
+
+**Verified genuinely verbatim via AST comparison, not a visual diff** — extracted every
+top-level function's full AST dump from the original file and the combined new pair: all 45
+functions present, zero missing, zero extra, zero mismatched bodies, both before AND after a
+post-split pyflakes import trim (confirming the trim only touched import lines).
+
+**Test-file fallout**: 11 test files using the established source-text-extraction technique
+needed their target path repointed from `outcomes.py` to `analytics.py` (mechanical, preserving
+each file's own variable-naming convention). 3 more broke on end-marker strings that assumed
+adjacency now broken by the split (e.g. a test using `@router.get("/gate_backtest")` as its own
+end-of-function marker, when `gate_backtest` moved to a different file) — fixed with the real,
+still-adjacent marker in the new layout. `test_main_router_order.py` extended to assert
+`analytics_router`'s presence/ordering too.
+
+**Verification**: full 349-test signal-engine suite green (up from 346) modulo the 2
+pre-existing, unrelated failure groups already documented elsewhere in this file
+(`test_signal_generator.py`'s `_decide` import-collection error, 4 `test_analyst_momentum.py`
+failures) — confirmed via `git stash` that both predate this change. pyflakes clean; the sole
+remaining warning (a local `httpx` import inside `gate_backtest()`) confirmed pre-existing and
+correctly relocated to `analytics.py`, the file that now actually contains `gate_backtest()`.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-signal-engine-1 grep -n "analytics_router" /app/src/main.py
+docker exec stockai-signal-engine-1 curl -s -o /dev/null -w '%{http_code}\n' 'http://localhost:8005/signals/accuracy' -H "Authorization: Bearer <token>"
+docker exec stockai-signal-engine-1 curl -s -o /dev/null -w '%{http_code}\n' 'http://localhost:8005/signals/outcomes/evaluate' -X POST -H "Authorization: Bearer <token>"
+```

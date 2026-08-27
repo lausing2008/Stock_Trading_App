@@ -7,6 +7,10 @@ all 3 via create_app(routers=[...]) — FastAPI/Starlette matches routes in regi
 so if the router containing GET /{symbol} is registered before the routers containing literal
 paths like /confidence-calibration or /tune_status, the catch-all silently shadows them.
 
+T233-ARCH-INSERVICE-SPLITS-2 (2026-08-26) split outcomes.py further into outcomes.py (3
+WRITE routes) + analytics.py (12 READ-only routes) — analytics_router must follow the exact
+same "before the catch-all" rule.
+
 This is exactly what happened on first deploy: GET /signals/confidence-calibration resolved to
 routes.py's signal_for("confidence-calibration") instead of calibration.py's dedicated route,
 crashing with a 404 from market-data (fetching prices for the "symbol" confidence-calibration).
@@ -41,8 +45,8 @@ def test_routes_py_still_contains_the_catch_all_symbol_route():
 def test_router_containing_catch_all_is_registered_last():
     """The router bound to the name `router` (routes.py's, containing GET /{symbol}) must be
     the LAST element in create_app's routers=[...] list — every literal-path router
-    (calibration_router, outcomes_router) must register before it, so their literal paths are
-    matched before the catch-all ever gets a chance to shadow them."""
+    (calibration_router, outcomes_router, analytics_router) must register before it, so their
+    literal paths are matched before the catch-all ever gets a chance to shadow them."""
     order = _routers_list_order()
     assert order[-1] == "router", (
         f"expected `router` (routes.py, contains catch-all /{{symbol}}) to be last in "
@@ -50,10 +54,12 @@ def test_router_containing_catch_all_is_registered_last():
     )
     assert "calibration_router" in order[:-1]
     assert "outcomes_router" in order[:-1]
+    assert "analytics_router" in order[:-1]
 
 
-def test_calibration_and_outcomes_routers_are_imported():
-    """Confirms main.py still imports both non-catch-all routers under the exact names this
+def test_calibration_outcomes_and_analytics_routers_are_imported():
+    """Confirms main.py still imports all 3 non-catch-all routers under the exact names this
     test's ordering check depends on."""
     assert "from .api.calibration import router as calibration_router" in _MAIN_SOURCE
     assert "from .api.outcomes import router as outcomes_router" in _MAIN_SOURCE
+    assert "from .api.analytics import router as analytics_router" in _MAIN_SOURCE

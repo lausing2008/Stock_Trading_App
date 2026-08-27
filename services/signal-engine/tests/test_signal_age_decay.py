@@ -33,7 +33,7 @@ SignalOutcome = _models.SignalOutcome
 SignalHorizon = _models.SignalHorizon
 Base = _models.Base
 
-_OUTCOMES_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "outcomes.py"
+_OUTCOMES_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "analytics.py"
 _OUTCOMES_SOURCE = _OUTCOMES_PATH.read_text()
 
 _SIGNAL_AGE_LAG_DAYS = [0, 1, 2, 3, 4]

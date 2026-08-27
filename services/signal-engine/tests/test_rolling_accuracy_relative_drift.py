@@ -17,7 +17,7 @@ established technique for pure sub-logic inside a DB-heavy function.
 import pathlib
 import textwrap
 
-_outcomes_path = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "outcomes.py"
+_outcomes_path = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "analytics.py"
 _outcomes_source = _outcomes_path.read_text()
 
 

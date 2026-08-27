@@ -155,7 +155,8 @@ def tune_symbol(
         start_date = pd.to_datetime(df["ts"]).min().date()
         end_date = date.today() + timedelta(days=1)
         macro_df = fetch_macro_features(start_date, end_date, symbol=symbol)
-    except Exception:
+    except Exception as exc:
+        log.warning("tune.macro_features_failed", symbol=symbol, error=str(exc))
         end_date = date.today() + timedelta(days=1)
 
     # TIER90: sector relative strength vs SPY (same as train_model)
@@ -163,16 +164,16 @@ def tune_symbol(
     if start_date is not None:
         try:
             sector_df = fetch_sector_features(symbol, start_date, end_date)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("tune.sector_features_failed", symbol=symbol, error=str(exc))
 
     # T206: rolling signal accuracy features (same as train_model)
     outcome_df = None
     if start_date is not None:
         try:
             outcome_df = fetch_signal_outcome_features(symbol, start_date, end_date)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("tune.outcome_features_failed", symbol=symbol, error=str(exc))
 
     # Use only the first 70% of data to compute the label threshold,
     # matching the training split and preventing test-set leakage.
@@ -183,8 +184,8 @@ def tune_symbol(
     fund_data: dict = {}
     try:
         fund_data = _load_fundamentals(symbol) or {}
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("tune.fundamentals_load_failed", symbol=symbol, error=str(exc))
     # T220-F: store symbol so build_features can look up earnings revision direction
     fund_data["_symbol"] = symbol
 
@@ -197,8 +198,8 @@ def tune_symbol(
     fund_snapshots: list[dict] = []
     try:
         fund_snapshots = _load_fund_snapshots(symbol)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("tune.fund_snapshots_load_failed", symbol=symbol, error=str(exc))
 
     X, y_dir, y_ret = build_features(
         df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold,

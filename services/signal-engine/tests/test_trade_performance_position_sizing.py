@@ -22,7 +22,7 @@ test_evaluate_outcomes_nested_savepoint.py's established technique for this exac
 """
 import pathlib
 
-_OUTCOMES_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "outcomes.py"
+_OUTCOMES_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "analytics.py"
 _OUTCOMES_SOURCE = _OUTCOMES_PATH.read_text()
 
 

@@ -63,7 +63,10 @@ def test_evaluate_signal_outcomes_wraps_each_add_in_begin_nested():
     rely on the periodic/end-of-loop commit — the exact fix for the bug this test file is
     named after."""
     start = _ROUTES_SOURCE.index("def evaluate_signal_outcomes(")
-    end = _ROUTES_SOURCE.index('@router.get("/gate_backtest")', start)
+    # T233-ARCH-INSERVICE-SPLITS-2: evaluate_signal_outcomes() and gate_backtest() no longer
+    # sit adjacent in outcomes.py (gate_backtest moved to analytics.py) — the T232-SIG10-SELLGATE
+    # comment header is the real, stable marker for where evaluate_signal_outcomes() ends today.
+    end = _ROUTES_SOURCE.index("# ── T232-SIG10-SELLGATE", start)
     body = _ROUTES_SOURCE[start:end]
     assert body.count("with session.begin_nested():") == 2, (
         "expected exactly 2 begin_nested() blocks (censored branch + normal branch)"

@@ -96,10 +96,10 @@ def test_backfill_only_touches_promoted_rows_with_null_realized_ev():
     be considered a candidate once (promoted=True AND realized_ev_pct_after IS NULL) — an
     already-checked row should never be silently re-touched with a different verdict."""
     start = _ROUTES_SOURCE.index("def backfill_realized_ev(")
-    # T233-ARCH-INSERVICE-SPLITS: this function now lives in outcomes.py, where it's
-    # immediately followed by the next route's decorator rather than the "T223" confidence-
-    # calibration comment block (that block moved to signals_shared.py in the same split).
-    end = _ROUTES_SOURCE.index('@router.get("/accuracy")', start)
+    # T233-ARCH-INSERVICE-SPLITS-2: outcomes.py now holds only the 3 WRITE routes (analytics.py
+    # has the read-only reporting routes) — backfill_realized_ev() is immediately followed by
+    # /outcomes/evaluate's own decorator, not /accuracy (which moved to analytics.py).
+    end = _ROUTES_SOURCE.index('@router.post("/outcomes/evaluate")', start)
     body = _ROUTES_SOURCE[start:end]
     assert "TuneHistory.promoted.is_(True)" in body
     assert "TuneHistory.realized_ev_pct_after.is_(None)" in body

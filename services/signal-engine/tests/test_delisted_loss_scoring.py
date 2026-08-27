@@ -51,10 +51,19 @@ Base = _models.Base
 _ROUTES_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "outcomes.py"
 _ROUTES_SOURCE = _ROUTES_PATH.read_text()
 
+# T233-ARCH-INSERVICE-SPLITS-2: outcomes_summary() (read-only) moved to analytics.py while
+# evaluate_signal_outcomes() (a write route) stayed in outcomes.py — this file's tests need
+# both sources.
+_ANALYTICS_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "analytics.py"
+_ANALYTICS_SOURCE = _ANALYTICS_PATH.read_text()
+
 
 def _function_body():
     start = _ROUTES_SOURCE.index("def evaluate_signal_outcomes(")
-    end = _ROUTES_SOURCE.index('@router.get("/gate_backtest")', start)
+    # T233-ARCH-INSERVICE-SPLITS-2: evaluate_signal_outcomes() and gate_backtest() no longer
+    # sit adjacent in outcomes.py (gate_backtest moved to analytics.py) — the T232-SIG10-SELLGATE
+    # comment header is the real, stable marker for where evaluate_signal_outcomes() ends today.
+    end = _ROUTES_SOURCE.index("# ── T232-SIG10-SELLGATE", start)
     return _ROUTES_SOURCE[start:end]
 
 
@@ -97,9 +106,9 @@ def test_outcomes_summary_censored_count_excludes_delisted_loss_rows():
     """The censored-count query in outcomes_summary() must filter skip_reason == "no_exit_price"
     specifically, NOT skip_reason.is_not(None) — otherwise a delisted_loss row (now correctly
     scored, not excluded from win-rate math) would be double-reported as also "censored"."""
-    start = _ROUTES_SOURCE.index("censored_q = select(func.count())")
-    end = _ROUTES_SOURCE.index("\n    )", start)
-    censored_block = _ROUTES_SOURCE[start:end]
+    start = _ANALYTICS_SOURCE.index("censored_q = select(func.count())")
+    end = _ANALYTICS_SOURCE.index("\n    )", start)
+    censored_block = _ANALYTICS_SOURCE[start:end]
     assert 'SignalOutcome.skip_reason == "no_exit_price"' in censored_block
     assert "skip_reason.is_not(None)" not in censored_block
 

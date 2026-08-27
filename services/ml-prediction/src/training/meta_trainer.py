@@ -201,7 +201,8 @@ def train_meta_model(db=None) -> dict:
             start_date = df["ts"].min().date()
             end_date = date.today() + timedelta(days=1)
             macro_df = fetch_macro_features(start_date, end_date)
-        except Exception:
+        except Exception as exc:
+            log.warning("meta_trainer.macro_features_failed symbol=%s err=%s", symbol, exc)
             macro_df = None
 
         # AUD232-059: previously called build_features() (and compute_label_threshold())
@@ -232,7 +233,8 @@ def train_meta_model(db=None) -> dict:
                 macro_df=macro_df,
                 inference_mode=True,  # include latest bar without requiring future label
             )
-        except Exception:
+        except Exception as exc:
+            log.warning("meta_trainer.build_features_failed symbol=%s err=%s", symbol, exc)
             continue
         if X_feat_full.empty:
             continue
@@ -545,7 +547,8 @@ def predict_meta(
         try:
             start_date = df["ts"].min().date()
             macro_df = fetch_macro_features(start_date, date.today() + timedelta(days=1))
-        except Exception:
+        except Exception as exc:
+            log.warning("predict_meta.macro_features_failed symbol=%s err=%s", symbol, exc)
             macro_df = None
 
         horizon_days = _HORIZON_DAYS.get(horizon.upper(), 10)
