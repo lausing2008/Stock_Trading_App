@@ -205,3 +205,58 @@ def test_predict_meta_meta_feature_suffix_matches_training_order(monkeypatch):
     assert confidence_v == pytest.approx(72.0)
     assert fused_prob_v == pytest.approx(0.65)
     assert ta_score_v == pytest.approx(0.58)
+
+
+# T242-METAMODEL-NANFILL — a missing fundamental/weekly feature must stay real NaN in the
+# vector predict_meta() hands to scaler.transform(), never a fabricated 0.0. predict_meta()
+# never supplies fund_data/sector_df/outcome_df to build_features(), so FUNDAMENTAL_COLUMNS
+# (indices 46-61 of the real, current FEATURE_COLUMNS) genuinely come back NaN from the real
+# build_features() call in this test's fixture — this is the real, reachable production shape,
+# not a contrived one.
+
+def test_predict_meta_leaves_missing_fundamental_columns_as_real_nan_not_zero(monkeypatch):
+    vec = _run_predict_meta_and_capture_scaled_vector(monkeypatch, direction="BUY")
+    from src.features.builder import FUNDAMENTAL_COLUMNS
+    fund_idx = [FEATURE_COLUMNS.index(c) for c in FUNDAMENTAL_COLUMNS if c in FEATURE_COLUMNS]
+    assert fund_idx, "FUNDAMENTAL_COLUMNS must actually be a subset of FEATURE_COLUMNS for this test to mean anything"
+    fund_slice = [vec[i] for i in fund_idx]
+    assert all(np.isnan(v) for v in fund_slice), (
+        f"expected every FUNDAMENTAL_COLUMNS slot to be real NaN (no fund_data supplied to "
+        f"build_features by predict_meta), got {fund_slice}"
+    )
+    # Regression guard against the exact pre-fix behavior: a naive re-fix that swaps NaN for
+    # 0.0 anywhere in this pipeline would make this assertion fail with 0.0 values instead.
+    assert not any(v == 0.0 for v in fund_slice), (
+        "a genuinely-missing fundamental value must never silently read as 0.0"
+    )
+
+
+def test_train_meta_model_source_preserves_nan_instead_of_zero_filling():
+    """train_meta_model() can't be exercised end-to-end here (needs a real Postgres LATERAL
+    join — see test_meta_trainer_feature_dedup.py's own docstring for why), so this is a
+    source-text regression check on the exact fix, matching that file's established
+    convention for this function."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[1] / "src" / "training" / "meta_trainer.py").read_text()
+    start = src.index("X_raw = np.array(")
+    end = src.index("\n    y = np.array(", start)
+    body = src[start:end]
+    # The old zero-fill ternary must be gone...
+    assert "else 0.0 for v in r[0]" not in body
+    # ...replaced with a real NaN pass-through.
+    assert "else np.nan for v in r[0]" in body
+
+
+def test_train_meta_model_source_uses_nanstd_not_plain_std_for_the_constant_column_filter():
+    """A bare X_raw.std(axis=0) returns NaN (not a real number) for ANY column containing even
+    one NaN value once the zero-fill above is removed — and `NaN > 1e-8` is always False,
+    silently dropping every sparse fundamental/weekly column from the model. Must use
+    np.nanstd() instead. Verified this exact failure mode directly against a live numpy array
+    before writing this fix — see the source comment at this exact line for the reproduction."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[1] / "src" / "training" / "meta_trainer.py").read_text()
+    start = src.index("non_const = np.where(")
+    end = src.index(")[0]", start)
+    line = src[start:end]
+    assert "np.nanstd(X_raw, axis=0)" in line
+    assert "X_raw.std(axis=0)" not in line

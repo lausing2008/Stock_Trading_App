@@ -280,15 +280,35 @@ def train_meta_model(db=None) -> dict:
         log.warning("meta_trainer.insufficient_feature_records n=%d", len(records))
         return {"trained": False, "n_samples": len(records), "auc": 0.0}
 
+    # T242-METAMODEL-NANFILL: previously zero-filled every NaN here (including the genuinely
+    # NaN-allowed-by-design FUNDAMENTAL_COLUMNS/WEEKLY_COLUMNS — see builder.py's own "NaN-
+    # allowed — XGBoost handles natively" comment), making "we don't know this stock's
+    # revenue_growth" indistinguishable from "revenue_growth is exactly 0.0" to the model. The
+    # original deferral reasoning (AUD232-057/058, 2026-07-11) claimed this was unavoidable
+    # because "sklearn's StandardScaler cannot accept NaN input" — empirically verified this is
+    # FALSE: StandardScaler.fit_transform() on NaN input does not raise; it computes mean/std
+    # ignoring NaN and propagates NaN through in the output (confirmed against a live sklearn
+    # instance before writing this fix). XGBoost's own fit()/predict_proba() also both accept
+    # NaN directly (confirmed the same way) — this exactly matches trainer.py's own base-model
+    # pipeline, which ALSO feeds StandardScaler (then XGBoost) real NaN from the sparse
+    # fundamental/weekly columns builder.py's own feature function returns (trainer.py:622-625)
+    # — meta_trainer.py's zero-fill was a genuine divergence from that convention, not a
+    # technical necessity.
     X_raw = np.array(
-        [[v if (v is not None and not (isinstance(v, float) and np.isnan(v))) else 0.0 for v in r[0]]
+        [[v if (v is not None) else np.nan for v in r[0]]
          for r in records],
         dtype=np.float32,
     )
     y = np.array([r[1] for r in records], dtype=np.int32)
 
-    # Remove constant columns (avoids numerical issues in StandardScaler / XGBoost)
-    non_const = np.where(X_raw.std(axis=0) > 1e-8)[0]
+    # Remove constant columns (avoids numerical issues in StandardScaler / XGBoost).
+    # T242-METAMODEL-NANFILL: must use np.nanstd(), not the plain .std() this replaced — with
+    # real NaN now present in X_raw, a bare `.std(axis=0)` returns NaN (not a real number) for
+    # ANY column containing even one NaN value, and `NaN > 1e-8` is always False — silently
+    # dropping every sparse-but-informative fundamental/weekly column from the model entirely,
+    # the exact opposite of this fix's own goal. Verified this exact failure mode directly
+    # against a real NaN-bearing numpy array before writing the fix, not assumed.
+    non_const = np.where(np.nanstd(X_raw, axis=0) > 1e-8)[0]
     X = X_raw[:, non_const]
 
     # 80/20 chronological split for AUC evaluation.
@@ -564,11 +584,12 @@ def predict_meta(
         if X_feat.empty:
             return None
 
+        # T242-METAMODEL-NANFILL: mirrors the train-side fix above — a missing fundamental/
+        # weekly value must stay NaN (matching how the model was actually trained), not get
+        # zero-filled into a fabricated "this value is exactly 0" reading.
         latest = X_feat.iloc[-1]
         vec: list[float] = [
-            float(latest.get(col, 0.0)) if not (
-                isinstance(latest.get(col), float) and np.isnan(latest.get(col))
-            ) else 0.0
+            float(latest[col]) if col in latest.index else np.nan
             for col in feature_columns_for_vec
         ]
 
