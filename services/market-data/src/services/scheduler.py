@@ -6358,6 +6358,28 @@ def _weekly_full_refresh() -> None:
     _post(f"{_settings.signal_engine_url}/signals/tune_strategy")
     _record_job_status("tune_strategy_sent", "ok", 0.0)
 
+    # T288-KSCORE-WEIGHT-SWEEP / T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group B: K-Score's own
+    # walk-forward sweeps (factor weights, then the curve-shape constants underneath them) —
+    # built, live-verified, and self-applying via Redis, but had never had a cron
+    # registration, the same SELFIMPROVE-MISSING-SCHEDULE-REGISTRATIONS gap class as
+    # calibrate_ml_weight/tune_strategy above. Curve runs after weights (its own real
+    # dependency: the curve sweep recomputes technical/volatility sub-scores using whatever
+    # weight set is CURRENTLY live, via _kscore_curve_composite_fn(current_weights, ...) — so
+    # a same-cycle weights promotion should be visible to that same cycle's curve sweep,
+    # not stale by a week). Each promotion re-validates against whatever was promoted last
+    # time (never re-searches from the original hardcoded defaults), so this is also the
+    # re-check mechanism for the curve override already live in production (rsi_mid/
+    # volatility_scale, promoted 2026-08-27 off a thin 13-day validation sample) — next
+    # Sunday's run re-measures it against a materially larger dataset and can only keep it
+    # if it still beats the (by-then-larger) validation-slice bar.
+    log.info("scheduler.tune_kscore_weights_start")
+    _post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_weights")
+    _record_job_status("tune_kscore_weights_sent", "ok", 0.0)
+
+    log.info("scheduler.tune_kscore_curve_start")
+    _post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_curve")
+    _record_job_status("tune_kscore_curve_sent", "ok", 0.0)
+
     # T232-SIG10-SELLGATE: backfill bearish_pillars_active onto resolved SELL outcomes, then
     # sweep min_pillars_for_sell against that backfilled history — the symmetric SELL-side
     # counterpart to the BUY-side min_pillars gate. Backfill must run first (the sweep only

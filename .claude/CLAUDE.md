@@ -18879,3 +18879,81 @@ If `tune_kscore_curve` always returns `skipped_reason`, check the real resolved-
 count for the requested window first — the sweep needs at least `_KSCORE_SWEEP_MIN_ROWS * 2`
 rows with a resolvable forward return in BOTH the train and validation slices, matching every
 sibling walk-forward function's own sample floor.
+
+---
+
+## T288-KSCORE-WEIGHT-SWEEP / Group B — Scheduled Weekly + Fixed a Pre-Existing Test Bug in the
+## Same File the Fix Involved (2026-08-27)
+
+**Two closely-related follow-ups from the Group B work above, done together.**
+
+### 1. `tune_kscore_weights`/`tune_kscore_curve` had never been scheduled
+
+Both sweeps were built, live-verified, and self-apply their promotion via Redis — but neither
+had a cron registration anywhere. The only way either ever ran was a manual HTTP call,
+including the one real promotion currently live in production (`rsi_mid: 50→45`,
+`volatility_scale: 1500→1200`, promoted 2026-08-27 off a thin 13-day validation sample) — it
+had no scheduled path to ever be re-checked against a larger dataset. Same
+`SELFIMPROVE-MISSING-SCHEDULE-REGISTRATIONS` gap class already fixed once for
+`calibrate_ml_weight` and once for `tune_strategy`.
+
+**Fix**: added both calls to `_weekly_full_refresh()` (`services/market-data/src/services/
+scheduler.py`, Sunday 14:00 PST), right after `tune_strategy` — matching every sibling
+calibration job's own `_post()` + `_record_job_status()` pattern exactly. **Ordering is
+genuinely load-bearing here**, unlike most siblings in this sequence: `tune_kscore_curve`'s
+own composite function recomputes the score using WHATEVER weight set is currently live
+(`_kscore_curve_composite_fn(current_weights, ...)`), so weights must run first — a
+same-cycle weights promotion should be visible to that same cycle's curve sweep, not stale by
+a week. This IS the re-check mechanism for the live promotion: each run re-validates against
+whatever was promoted last time (never re-searches from the original hardcoded defaults, per
+`_load_active_curve_params()`'s own live-override resolution), so next Sunday's run
+re-measures the current `rsi_mid`/`volatility_scale` override against a materially larger
+dataset and can only keep it if it still beats the (by-then-larger) validation-slice bar.
+
+**Tests**: `services/market-data/tests/test_kscore_sweep_scheduling.py` (7 cases), mirroring
+`test_tune_strategy_scheduling.py`'s established pattern exactly — source-text regression
+checks (`scheduler.py` can't be imported directly in this test environment). Adversarially
+verified: swapped the two calls' order and confirmed the dedicated ordering test failed with
+a real, meaningful assertion (`7148 < 6963`), then restored and confirmed byte-identical via
+`diff`.
+
+### 2. `test_kscore.py::test_kscore_in_range` — a real, pre-existing test bug, not a code bug
+
+The failure (confirmed via `git stash` multiple times across this whole session to predate
+every bit of Group B work) traced to the test's own outdated premise: it range-checked
+`c.value`/`c.growth` alongside every other field, but `T234-RANK-KSCORE-PROXY-MIXING`
+(2026-07-04) already made those two fields correctly `None` whenever no real fundamentals are
+supplied — exactly the case this test's own fixture exercises (no `value_score`/`growth_score`
+ever passed). `KScoreComponents`' own dataclass typing (`value: float | None`) already
+documents this. The code was correct the whole time; the test simply predated the fix that
+made `None` the right answer and was never updated.
+
+**Fix**: split into 3 tests — `test_kscore_in_range_without_fundamentals()` (confirms `value`/
+`growth` are correctly `None`, range-checks only the always-real fields), `test_kscore_in_
+range_with_fundamentals()` (the original intent, now with real `value_score`/`growth_score`
+supplied), and a new `test_value_and_growth_genuinely_participate_in_the_weighted_composite()`
+— added after a real, self-caught "still passes after sabotage" gap: the with-fundamentals
+test alone doesn't prove `value`/`growth` actually influence `c.score`, since
+`KScoreComponents.value`/`.growth` are a pure pass-through of the caller's own input,
+independent of the weighting logic. Sabotaging the weighting exclusion logic (`if value_score
+is None:` → `if True:`) passed the with-fundamentals test cleanly, since it only checks that
+`c.value` echoes back what was supplied — the new third test (varying only `value_score` and
+confirming `c.score` changes) correctly catches this class of regression.
+
+**Verification**: full 104-test ranking-engine suite green (up from 101), pyflakes clean. Full
+2099-test market-data suite green (up from 2092). Both adversarial sabotage cycles reverted
+and confirmed byte-identical via `diff`/`md5sum` before moving on.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n "tune_kscore_weights\|tune_kscore_curve" /app/src/services/scheduler.py
+
+# Confirm the weekly job actually fires (next Sunday 14:00 PST) and re-checks the live promotion:
+docker logs stockai-market-data-1 --since 24h | grep 'tune_kscore_weights\|tune_kscore_curve'
+
+# Check whether the live rsi_mid/volatility_scale promotion has been re-confirmed or changed
+# by a later weekly run:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT ts, parameter_class, old_value, new_value, promoted FROM tune_history WHERE parameter_class IN ('kscore_weights', 'kscore_curve') ORDER BY ts DESC LIMIT 5;"
+docker exec stockai-ranking-engine-1 curl -s http://localhost:8004/rankings/kscore_curve_status
+```
