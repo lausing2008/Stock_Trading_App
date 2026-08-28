@@ -50,6 +50,7 @@ import { getUsername } from '@/lib/auth';
 import ResearchPage from '@/pages/research/[symbol]';
 import StockGoalsPanel from '@/components/StockGoalsPanel';
 import EarningsForecastPanel from '@/components/EarningsForecastPanel';
+import SrWatchButton from '@/components/SrWatchButton';
 
 function RefreshButton({ onClick, loading }: { onClick: () => void; loading: boolean }) {
   return (
@@ -2262,6 +2263,7 @@ Return ONLY valid JSON — no markdown, no prose:
                     ))}
                   </div>
                   <div className="mt-2 pt-2 border-t border-slate-800 text-xs text-slate-600">Touches = bounces off this level</div>
+                  <SrWatchButton symbol={symbol} />
                 </div>
               )}
 

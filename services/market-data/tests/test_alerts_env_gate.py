@@ -176,6 +176,7 @@ _ALERT_JOB_IDS = {
     "short_squeeze_alert_check",
     "squeeze_ignition_alert_check",
     "squeeze_watch_revert_check",
+    "sr_watch_check",
     "value_area_breakdown_check",
     "portfolio_drawdown_alert_check",
     "top3_conviction_check",

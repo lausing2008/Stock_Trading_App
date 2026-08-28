@@ -1795,6 +1795,69 @@ def send_squeeze_watch_revert_email(
     return send_email(to, subject, body_html, body_text)
 
 
+def send_sr_watch_alert_email(
+    to: str, symbol: str, level_kind: str, level_price: float,
+    current_price: float, atr: float, atr_multiplier: float,
+) -> bool:
+    """SR-WATCH-PROXIMITY-ALERT: fires once when price first enters an ATR-scaled band around
+    the nearest support or resistance level for a symbol the user is watching — "come look and
+    decide whether to buy/sell yourself," never an automated trade signal. Fires again only
+    after price moves back out of the band and re-enters (state tracked via SrWatch.
+    currently_near in scheduler.py's check_sr_watch_reverts(), not a Redis dedup key — see that
+    model's own docstring for why this needs a persistent True/False state rather than
+    SqueezeWatch's permanent one-shot flag).
+
+    level_kind is "support" or "resistance" — the copy and framing differ (support: a
+    potential bounce/buy zone; resistance: a potential rejection/sell zone), matching how the
+    "How to Trade It" guidance for support/resistance already frames these two cases elsewhere
+    in this app (see the Volume Profile design docs).
+    """
+    is_support = level_kind == "support"
+    verb = "approaching support" if is_support else "approaching resistance"
+    color = "#22c55e" if is_support else "#ef4444"
+    distance_pct = abs(current_price - level_price) / current_price * 100 if current_price else 0.0
+    framing = (
+        "a level where buyers have historically stepped in — some traders watch for a bounce "
+        "here, others for a breakdown if it fails to hold."
+        if is_support else
+        "a level where sellers have historically stepped in — some traders watch for a "
+        "rejection here, others for a breakout if price clears it."
+    )
+    subject = f"📍 {symbol} {verb} — ${level_price:.2f}"
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:{color}">📍 {symbol} is {verb}</h2>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">
+      Price is within {atr_multiplier:.1f}x its own ATR of a computed {level_kind} level — {framing}
+    </p>
+    <div style="background:#f1f5f9;border-radius:8px;padding:16px;margin:16px 0">
+      <div style="font-size:13px;color:#1e293b">
+        <strong>{level_kind.capitalize()} level:</strong> ${level_price:.2f}<br>
+        <strong>Current price:</strong> ${current_price:.2f} ({distance_pct:.2f}% away)<br>
+        <strong>ATR(14):</strong> ${atr:.2f}
+      </div>
+    </div>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      This is a measured price fact, not a prediction of what happens next — a level can hold,
+      break, or get retested several times. Check the stock's own AI Signal, Confluence Score,
+      and the chart's own S/R lines before deciding to buy or sell. This watch will alert again
+      once price moves away from this level and returns. Not financial advice.
+    </p>
+  </div>
+</body></html>"""
+    body_text = (
+        f"{symbol} is {verb} — ${level_price:.2f}\n\n"
+        f"{level_kind.capitalize()} level: ${level_price:.2f}\n"
+        f"Current price: ${current_price:.2f} ({distance_pct:.2f}% away)\n"
+        f"ATR(14): ${atr:.2f}\n\n"
+        "A measured price fact, not a prediction — a level can hold, break, or get retested. "
+        "Check the stock's own AI Signal/Confluence Score before deciding. This watch fires "
+        "again once price moves away and returns. Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_sector_rotation_email(to: str, candidates: list[dict]) -> bool:
     """AUD-SECTOR-EMERGING-ALERT: fires when a sector NEWLY becomes an "Emerging Leader" this
     week (its K-Score rank among sectors is climbing into the top half) — an OPPORTUNITY-finding

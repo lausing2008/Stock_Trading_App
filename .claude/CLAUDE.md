@@ -18957,3 +18957,100 @@ docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
   "SELECT ts, parameter_class, old_value, new_value, promoted FROM tune_history WHERE parameter_class IN ('kscore_weights', 'kscore_curve') ORDER BY ts DESC LIMIT 5;"
 docker exec stockai-ranking-engine-1 curl -s http://localhost:8004/rankings/kscore_curve_status
 ```
+
+---
+
+## Feature Reference: SR-WATCH-PROXIMITY-ALERT — Support/Resistance Proximity Watch (Built 2026-08-26/27)
+
+**User ask, verbatim**: "Can I get alert when stock gets close to the support and resistance
+level, so that I can watch and see if I buy or sell the stock? Does AI Signal has this
+feature?" — answered directly first: AI Signal only reacts once price is AT a level (baked
+invisibly into the fused BUY/SELL probability, no distance dimension, no separate user-visible
+signal), and no alert mechanism anywhere proximity-checks a computed S/R level. User confirmed
+("yes go ahead") and made 3 explicit design choices via `AskUserQuestion`: threshold **scales
+with volatility (ATR-based)**, not a fixed %; fires **once per approach, then resets** once
+price moves away (not a permanent one-shot, not a daily cadence); lives as a **separate,
+dedicated "S/R Watch" alert type**, not a new metric bolted onto the existing compound-condition
+`PriceAlert` engine.
+
+**Mirrors `SqueezeWatch`'s (`T260-BEARISH-PUTS-WATCHLIST`) whole architecture** — a dedicated
+per-user watch table, CRUD API (GET list / POST create-or-rearm / DELETE, no separate reset
+endpoint), a 1-minute scheduler job with a Redis non-blocking lock, per-watch market-hours
+gating for mixed US/HK lists, reading only already-cached Redis state (never a fresh yfinance
+call in the fast-alert loop), and a dedicated email function — but with one genuinely different
+lifecycle piece, built specifically because the user asked for it: `SrWatch.currently_near` is
+a **transitional** `True`/`False` state (fires on the False→True transition, resets to `False`
+once price moves back out of the band, can fire multiple times over the watch's life), not
+`SqueezeWatch`'s permanent one-shot `reverted` flag.
+
+**New table** — `SrWatch` (`shared/db/models.py`), `(user_id, symbol)` unique, `atr_multiplier`
+(default 1.0), `currently_near`, `last_alert_at`/`last_alert_level_kind`/`last_alert_level_price`
+(display/audit only — NOT the dedup mechanism, `currently_near` is). Brand new table,
+`create_all()`-friendly — no manual migration needed.
+
+**Detection** — `check_sr_watch_reverts()` (`services/market-data/src/services/scheduler.py`,
+1-minute interval, registered inside the existing `if _is_alerting_enabled():` gate matching
+every other alert job). Reads live price from `stockai:live_prices` (never a fresh fetch per
+watch). ATR(14) is Redis-cached per symbol (`stockai:sr_watch_atr:{sym}`, 4h TTL, matching
+`stockai:avg_volume`'s own established cadence for this class of slow-moving indicator) — cache
+misses are batch-computed ONCE via `_batch_compute_atr()` for the whole watch list, never once
+per watch. Nearest support/resistance comes from a real, per-symbol
+`GET /ta/{symbol}/levels` call to technical-analysis (`sr_context.sr_nearest_support`/
+`sr_nearest_resistance` — deliberately NOT `sr_cleared_*`, which are the already-broken levels
+from breakout-quality assessment, the wrong field pair for a proximity watch). `band = atr *
+atr_multiplier`; `is_near` is true if price is within `band` of EITHER level (an OR, not an
+AND). Whichever level is closer wins when both qualify. `currently_near` is set to `True` only
+**after** a confirmed successful send (never before — a failed send must not silently mark the
+watch as alerted, or a real approach hitting a delivery failure would go unnoticed and the
+watch would incorrectly stay silent next cycle too).
+
+**Email** — `send_sr_watch_alert_email()` (`email_service.py`), framed by level kind (support:
+green, bounce-zone framing; resistance: red, rejection-zone framing, matching the "How to Trade
+It" language already established for Volume Profile elsewhere in this app), reports the level
+price/current price/distance %/ATR(14), and states explicitly this is a measured fact, not a
+prediction — a level can hold, break, or get retested — and that the watch **fires again** once
+price moves away and returns (worded slightly differently between the HTML body, "will alert
+again," and the text body, "fires again" — both correct, just not identically phrased).
+
+**API** — `GET/POST/DELETE /stocks/sr-watch` (`services/market-data/src/api/routes.py`).
+Re-adding an existing watch updates its settings (atr_multiplier/note) rather than 409-ing,
+matching `SqueezeWatch`'s own re-arm convention — and deliberately resets `currently_near` to
+`False` on re-add, so a symbol removed-then-re-added while already near a level fires fresh
+rather than silently inheriting a stale "already alerted" state.
+
+**Frontend** — a compact `SrWatchButton` component (self-contained, its own fetch — matching
+`StockGoalsPanel`'s established precedent for keeping `stock/[symbol].tsx`, already 4000+
+lines, from growing further), embedded directly inside the page's existing Support &
+Resistance card. Shows "🔕 Watch this level" → an inline ATR-multiplier input + Save → "🔔
+Watching (Nx ATR)", plus a small "● currently near {level kind}" indicator when
+`currently_near` is true.
+
+**Tests**: `services/market-data/tests/test_sr_watch_alert.py` (30 cases) and
+`test_sr_watch_routes.py` (8 cases) — `send_sr_watch_alert_email()` tested directly (pure
+composition), `check_sr_watch_reverts()`/route wiring covered via source-text regression checks
+matching `test_squeeze_watch_revert_alert.py`/`test_squeeze_watch_routes.py`'s own established
+pattern for functions with heavy DB/apscheduler dependencies. Adversarially verified 3 sabotage/
+restore cycles, all caught correctly and reverted (confirmed byte-identical via `diff`/`md5sum`
+before moving on): removing the `currently_near = False` reset on move-away (caught by the
+dedicated reset test); removing one leg of the per-watch HK market-hours gate (caught by the
+dedicated per-watch gate test); marking `currently_near = True` before, not after, the send call
+(caught by the dedicated send-ordering test).
+
+Full 2129-test market-data suite green (up from 2099); `pyflakes` clean on all 3 touched
+backend files (confirmed via `git stash` that every warning predates this change — only line
+numbers shifted). Frontend: `npx tsc --noEmit` clean, full 132-test vitest suite unaffected, a
+full `next build` clean (`/stock/[symbol]` 56.5kB → 57.2kB) — confirmed via direct grep that
+"Watch this level" reached the actual compiled `stock/[symbol]` chunk, not just source.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n "def check_sr_watch_reverts\|sr_watch_check" /app/src/services/scheduler.py
+docker logs stockai-market-data-1 --since 1h | grep 'sr_watch.done\|sr_watch.symbol_error'
+
+# Confirm a real watch's currently_near state directly:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT symbol, atr_multiplier, currently_near, last_alert_at, last_alert_level_kind FROM sr_watches ORDER BY added_at DESC LIMIT 10;"
+
+# Spot-check the Redis-cached ATR for a specific symbol:
+docker exec stockai-redis-1 redis-cli get 'stockai:sr_watch_atr:AAPL'
+```

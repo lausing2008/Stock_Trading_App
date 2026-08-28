@@ -101,6 +101,7 @@ class User(Base):
     cash_balances: Mapped[list["UserCash"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     app_notifications: Mapped[list["AppNotification"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     squeeze_watches: Mapped[list["SqueezeWatch"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    sr_watches: Mapped[list["SrWatch"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     earnings_alert_subscriptions: Mapped[list["EarningsAlertSubscription"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     push_subscriptions: Mapped[list["PushSubscription"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     stock_goals: Mapped[list["StockGoal"]] = relationship(back_populates="user", cascade="all, delete-orphan")
@@ -469,6 +470,43 @@ class SqueezeWatch(Base):
 
     __table_args__ = (
         UniqueConstraint("user_id", "symbol", "watch_type", name="uq_squeeze_watch_user_symbol_type"),
+    )
+
+
+class SrWatch(Base):
+    """SR-WATCH-PROXIMITY-ALERT: a user picks a stock and gets a one-shot email the moment
+    price gets close (within an ATR-scaled band) to its nearest support or resistance level —
+    "watch and decide whether to buy/sell yourself" rather than an automated trade signal.
+    Deliberately a NEW table, not a PriceAlert/SignalAlert row, for the same reason
+    SqueezeWatch is its own table: neither existing alert type is aware of computed S/R levels
+    or ATR, both of which need to be captured/recomputed by check_sr_watch_reverts()
+    (scheduler.py) against live technical-analysis data, not a single fixed target price.
+
+    Genuinely different lifecycle from SqueezeWatch's permanent one-shot `reverted` flag: the
+    user explicitly asked for "fire once per approach, then reset once price moves away and
+    comes back" — so `currently_near` tracks the CURRENT state (True while price sits inside
+    the ATR band, False once it moves back out), and an alert only sends on the False->True
+    transition, never on every cycle price stays inside the band. `last_alert_at`/
+    `last_alert_level_kind`/`last_alert_level_price` record the most recent firing purely for
+    display/audit — they are NOT the dedup mechanism itself (`currently_near` is).
+    """
+    __tablename__ = "sr_watches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    added_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    atr_multiplier: Mapped[float] = mapped_column(Float, default=1.0)  # "close" = within N x ATR(14) of a level
+    currently_near: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_alert_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_alert_level_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)  # "support" | "resistance"
+    last_alert_level_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    note: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    user: Mapped["User"] = relationship(back_populates="sr_watches")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "symbol", name="uq_sr_watch_user_symbol"),
     )
 
 

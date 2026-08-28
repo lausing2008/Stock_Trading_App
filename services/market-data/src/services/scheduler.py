@@ -4339,6 +4339,180 @@ def check_squeeze_watch_reverts() -> None:
             pass
 
 
+_SR_WATCH_LOCK_KEY = "stockai:lock:check_sr_watch_reverts"
+_SR_WATCH_LOCK_TTL = 55  # runs every 1 min, matching check_squeeze_watch_reverts' own cadence
+_SR_WATCH_ATR_CACHE_TTL = 4 * 3600  # ATR(14) moves slowly — no need to recompute every cycle,
+# matching stockai:avg_volume's own 4h refresh cadence for exactly this class of slow indicator.
+
+
+def check_sr_watch_reverts() -> None:
+    """SR-WATCH-PROXIMITY-ALERT: checks every SrWatch row and emails the owner once, the
+    moment price gets close (within atr_multiplier x ATR(14)) to its nearest support or
+    resistance level — the "watch and decide whether to buy/sell yourself" alert, never an
+    automated trade signal.
+
+    Genuinely different dedup shape from check_squeeze_watch_reverts()'s permanent one-shot
+    `reverted` flag: the user explicitly asked for "fire once per approach, then reset once
+    price moves away and comes back" — so this tracks CURRENT state via SrWatch.
+    currently_near, only sending an email on the False->True transition (price just entered
+    the band), and resetting to False once price moves back outside the band on a later
+    cycle. A watch can therefore alert multiple times over its lifetime, unlike SqueezeWatch.
+
+    Reads stockai:live_prices for price (no fresh yfinance call in this 1-minute loop,
+    matching every other fast alert in this file) and a per-symbol Redis-cached ATR(14)
+    (4h TTL — ATR moves slowly, a fresh yfinance call per watched symbol every single minute
+    would be real, avoidable rate-limit risk). Nearest S/R levels come from ONE HTTP call per
+    watched symbol to technical-analysis's GET /ta/{symbol}/levels — cheap at the realistic
+    scale of a user's own manually-curated watch list (never the whole universe), matching
+    check_volume_anomalies()'s own established "one call per relevant symbol, never in a
+    universe-wide loop" discipline.
+
+    Market-hours gated per-watch (not a whole-function skip), mirroring
+    check_squeeze_watch_reverts()' own AUD265-REVERT-CHECKER-NO-MARKET-HOURS-GATE fix — a
+    mixed US/HK watch list shouldn't have one market's closure silently stall the other's.
+    """
+    try:
+        acquired = _get_redis().set(_SR_WATCH_LOCK_KEY, "1", nx=True, ex=_SR_WATCH_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    _t0 = time.monotonic()
+    try:
+        import json as _json
+        from urllib.parse import quote
+        from db import SrWatch
+        from .paper_trading_engine import _is_market_hours, _batch_compute_atr
+
+        _us_market_open = _is_market_hours("US")
+        _hk_market_open = _is_market_hours("HK")
+        if not _us_market_open and not _hk_market_open:
+            _record_job_status("check_sr_watch_reverts", "ok", time.monotonic() - _t0)
+            return
+
+        with SessionLocal() as session:
+            watches = session.execute(select(SrWatch)).scalars().all()
+            if not watches:
+                _record_job_status("check_sr_watch_reverts", "ok", time.monotonic() - _t0)
+                return
+
+            _rc = _get_redis()
+            try:
+                _live_by_symbol = {
+                    row["symbol"]: row for row in _json.loads(_rc.get("stockai:live_prices") or "[]")
+                }
+            except Exception:
+                _live_by_symbol = {}
+
+            # ATR — one Redis-cached lookup per symbol, batch-computing whatever is missing
+            # from cache in a single yfinance call rather than once per watch.
+            _watched_symbols = sorted({w.symbol for w in watches})
+            _atr_by_symbol: dict[str, float | None] = {}
+            _atr_cache_misses: list[str] = []
+            for sym in _watched_symbols:
+                try:
+                    cached = _rc.get(f"stockai:sr_watch_atr:{sym}")
+                except Exception:
+                    cached = None
+                if cached is not None:
+                    _atr_by_symbol[sym] = float(cached)
+                else:
+                    _atr_cache_misses.append(sym)
+            if _atr_cache_misses:
+                fresh = _batch_compute_atr(_atr_cache_misses)
+                for sym, atr_val in fresh.items():
+                    _atr_by_symbol[sym] = atr_val
+                    if atr_val is not None:
+                        try:
+                            _rc.setex(f"stockai:sr_watch_atr:{sym}", _SR_WATCH_ATR_CACHE_TTL, str(atr_val))
+                        except Exception:
+                            pass
+
+            from .email_service import send_sr_watch_alert_email
+            alerted_count = 0
+            for w in watches:
+                try:
+                    _is_hk_watch = w.symbol.upper().endswith(".HK")
+                    if _is_hk_watch and not _hk_market_open:
+                        continue
+                    if not _is_hk_watch and not _us_market_open:
+                        continue
+
+                    live = _live_by_symbol.get(w.symbol)
+                    current_price = live.get("price") if live else None
+                    atr = _atr_by_symbol.get(w.symbol)
+                    if current_price is None or not atr or atr <= 0:
+                        continue
+
+                    tok = _service_token()
+                    r = httpx.get(
+                        f"{_settings.technical_analysis_url}/ta/{quote(w.symbol)}/levels",
+                        headers={"Authorization": f"Bearer {tok}"} if tok else {},
+                        timeout=4,
+                    )
+                    if r.status_code != 200:
+                        continue
+                    sr = r.json().get("sr_context") or {}
+                    nearest_support = sr.get("sr_nearest_support")
+                    nearest_resistance = sr.get("sr_nearest_resistance")
+
+                    band = float(atr) * float(w.atr_multiplier)
+                    dist_support = abs(current_price - nearest_support) if nearest_support is not None else None
+                    dist_resistance = abs(current_price - nearest_resistance) if nearest_resistance is not None else None
+
+                    is_near = (
+                        (dist_support is not None and dist_support <= band)
+                        or (dist_resistance is not None and dist_resistance <= band)
+                    )
+
+                    if not is_near:
+                        # Price moved away from every level within the band — reset so the
+                        # NEXT approach (of this level or a different one) can fire again.
+                        if w.currently_near:
+                            w.currently_near = False
+                        continue
+
+                    if w.currently_near:
+                        # Already alerted for this approach — no repeat email until it
+                        # leaves the band and comes back (the transition-only dedup).
+                        continue
+
+                    # Pick whichever level is actually closer when both are within the band.
+                    if dist_support is not None and (dist_resistance is None or dist_support <= dist_resistance):
+                        level_kind, level_price = "support", nearest_support
+                    else:
+                        level_kind, level_price = "resistance", nearest_resistance
+
+                    user = session.get(User, w.user_id)
+                    if user is None or not user.email:
+                        continue
+                    sent_ok = send_sr_watch_alert_email(
+                        user.email, w.symbol, level_kind, float(level_price),
+                        float(current_price), float(atr), float(w.atr_multiplier),
+                    )
+                    if sent_ok:
+                        w.currently_near = True
+                        w.last_alert_at = datetime.now(timezone.utc)
+                        w.last_alert_level_kind = level_kind
+                        w.last_alert_level_price = float(level_price)
+                        alerted_count += 1
+                except Exception as exc:
+                    log.warning("sr_watch.symbol_error", symbol=w.symbol, error=str(exc))
+                    continue
+
+            session.commit()
+            _record_job_status("check_sr_watch_reverts", "ok", time.monotonic() - _t0)
+            log.info("sr_watch.done", checked=len(watches), alerted=alerted_count)
+    except Exception as exc:
+        log.error("sr_watch.failed", error=str(exc), exc_info=True)
+        _record_job_status("check_sr_watch_reverts", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        try:
+            _get_redis().delete(_SR_WATCH_LOCK_KEY)
+        except Exception:
+            pass
+
+
 _SQUEEZE_OUTCOME_EVAL_LOCK_KEY = "stockai:lock:evaluate_squeeze_alert_outcomes"
 _SQUEEZE_OUTCOME_EVAL_LOCK_TTL = 3600  # generous — daily job, only needs to prevent true overlap
 _SQUEEZE_OUTCOME_CENSOR_GRACE_DAYS = 10  # matches signal-engine's own _OUTCOME_CENSOR_GRACE_DAYS
@@ -9886,6 +10060,19 @@ def start_scheduler() -> None:
             "interval",
             minutes=1,
             id="squeeze_watch_revert_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
+
+        # ── SR-WATCH-PROXIMITY-ALERT: support/resistance proximity checker — every minute ───────
+        # Reads stockai:live_prices + a Redis-cached ATR(14) (4h TTL) + one technical-analysis
+        # HTTP call per watched symbol — see check_sr_watch_reverts()'s own docstring for the
+        # full proximity/dedup logic.
+        _scheduler.add_job(
+            check_sr_watch_reverts,
+            "interval",
+            minutes=1,
+            id="sr_watch_check",
             replace_existing=True,
             max_instances=1, coalesce=True,
         )

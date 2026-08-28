@@ -446,6 +446,15 @@ export const api = {
   removeSqueezeWatch: (id: number) => request(`/stocks/squeeze-watch/${id}`, { method: 'DELETE' }),
   marketScreener: () => request<MarketScreenerResponse>('/stocks/market-screener'),
 
+  // SR-WATCH-PROXIMITY-ALERT: one-shot email once price gets close (within an ATR-scaled band)
+  // to a stock's nearest support/resistance level — "watch and decide whether to buy/sell
+  // yourself," never an automated trade signal. Re-arms once price moves out of the band and
+  // approaches again (unlike SqueezeWatch's permanent one-shot revert).
+  listSrWatches: () => request<SrWatchItem[]>('/stocks/sr-watch'),
+  addSrWatch: (req: SrWatchCreateRequest) =>
+    request<SrWatchItem>('/stocks/sr-watch', { method: 'POST', body: JSON.stringify(req) }),
+  removeSrWatch: (id: number) => request(`/stocks/sr-watch/${id}`, { method: 'DELETE' }),
+
   // Earnings alert subscriptions — durable per-symbol opt-in, independent of PriceAlert's
   // one-shot trigger (BUG-EARNINGS-IMPACT-UNSCOPED follow-up)
   listEarningsAlertSubscriptions: () => request<EarningsAlertSub[]>('/stocks/earnings-alert-subscriptions'),
@@ -1450,6 +1459,24 @@ export type SqueezeWatchCreateRequest = {
   watch_type: 'short_squeeze' | 'bearish_puts';
   price_at_add?: number | null;
   metric_at_add?: number | null;
+  note?: string | null;
+};
+
+export type SrWatchItem = {
+  id: number;
+  symbol: string;
+  added_at: string;
+  atr_multiplier: number;
+  currently_near: boolean;
+  last_alert_at: string | null;
+  last_alert_level_kind: 'support' | 'resistance' | null;
+  last_alert_level_price: number | null;
+  note: string | null;
+};
+
+export type SrWatchCreateRequest = {
+  symbol: string;
+  atr_multiplier?: number;
   note?: string | null;
 };
 

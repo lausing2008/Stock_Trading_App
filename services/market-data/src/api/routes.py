@@ -41,7 +41,7 @@ import yfinance as yf
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AnalystPriceTarget, EarningsAlertSubscription, Fundamental, Price, SqueezeWatch, Stock, StockGoal, TimeFrame, get_session
+from db import AnalystPriceTarget, EarningsAlertSubscription, Fundamental, Price, SqueezeWatch, SrWatch, Stock, StockGoal, TimeFrame, get_session
 from .auth import get_current_user
 from ..services.ingestion import _classify_session
 
@@ -2620,6 +2620,105 @@ def remove_squeeze_watch(
 ):
     w = session.execute(
         select(SqueezeWatch).where(SqueezeWatch.id == watch_id, SqueezeWatch.user_id == _user.id)
+    ).scalar_one_or_none()
+    if w is None:
+        raise HTTPException(status_code=404, detail="Watch not found")
+    session.delete(w)
+    session.commit()
+    return {"status": "removed"}
+
+
+# ── Support/Resistance Proximity Watch (SR-WATCH-PROXIMITY-ALERT) ─────────────
+# Track a stock and get a one-shot email the moment price gets close (within an
+# ATR-scaled band) to its nearest support or resistance level — "watch and decide whether
+# to buy/sell yourself," never an automated trade signal. See SrWatch in shared/db/models.py
+# for the full design rationale and check_sr_watch_reverts() in scheduler.py for the
+# proximity-detection logic.
+
+class SrWatchCreate(BaseModel):
+    symbol: str
+    atr_multiplier: float = 1.0
+    note: str | None = None
+
+
+class SrWatchOut(BaseModel):
+    id: int
+    symbol: str
+    added_at: str
+    atr_multiplier: float
+    currently_near: bool
+    last_alert_at: str | None = None
+    last_alert_level_kind: str | None = None
+    last_alert_level_price: float | None = None
+    note: str | None = None
+
+
+def _sr_watch_out(w: SrWatch) -> SrWatchOut:
+    return SrWatchOut(
+        id=w.id, symbol=w.symbol, added_at=w.added_at.isoformat(),
+        atr_multiplier=w.atr_multiplier, currently_near=w.currently_near,
+        last_alert_at=w.last_alert_at.isoformat() if w.last_alert_at else None,
+        last_alert_level_kind=w.last_alert_level_kind,
+        last_alert_level_price=w.last_alert_level_price, note=w.note,
+    )
+
+
+@router.get("/sr-watch", response_model=list[SrWatchOut])
+def list_sr_watches(
+    session: Session = Depends(get_session),
+    _user=Depends(get_current_user),
+):
+    rows = session.execute(
+        select(SrWatch)
+        .where(SrWatch.user_id == _user.id)
+        .order_by(SrWatch.added_at.desc())
+    ).scalars().all()
+    return [_sr_watch_out(w) for w in rows]
+
+
+@router.post("/sr-watch", response_model=SrWatchOut)
+def add_sr_watch(
+    req: SrWatchCreate,
+    session: Session = Depends(get_session),
+    _user=Depends(get_current_user),
+):
+    if req.atr_multiplier <= 0:
+        raise HTTPException(status_code=400, detail="atr_multiplier must be positive")
+    existing = session.execute(
+        select(SrWatch).where(
+            SrWatch.user_id == _user.id,
+            SrWatch.symbol == req.symbol,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        # Re-adding an existing watch updates its settings rather than 409-ing — matching
+        # SqueezeWatch's own re-arm convention. currently_near is intentionally reset to False
+        # so a symbol re-added while already near a level fires fresh, rather than silently
+        # inheriting a stale "already alerted" state from before it was removed/re-added.
+        existing.atr_multiplier = req.atr_multiplier
+        existing.note = req.note
+        existing.currently_near = False
+        session.commit()
+        session.refresh(existing)
+        return _sr_watch_out(existing)
+    w = SrWatch(
+        user_id=_user.id, symbol=req.symbol,
+        atr_multiplier=req.atr_multiplier, note=req.note,
+    )
+    session.add(w)
+    session.commit()
+    session.refresh(w)
+    return _sr_watch_out(w)
+
+
+@router.delete("/sr-watch/{watch_id}")
+def remove_sr_watch(
+    watch_id: int,
+    session: Session = Depends(get_session),
+    _user=Depends(get_current_user),
+):
+    w = session.execute(
+        select(SrWatch).where(SrWatch.id == watch_id, SrWatch.user_id == _user.id)
     ).scalar_one_or_none()
     if w is None:
         raise HTTPException(status_code=404, detail="Watch not found")
