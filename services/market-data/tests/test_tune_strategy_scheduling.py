@@ -29,7 +29,7 @@ def _weekly_full_refresh_body() -> str:
 
 def test_tune_strategy_is_posted_inside_weekly_full_refresh():
     body = _weekly_full_refresh_body()
-    assert '_post(f"{_settings.signal_engine_url}/signals/tune_strategy")' in body
+    assert '_post(f"{_settings.signal_engine_url}/signals/tune_strategy"' in body
 
 
 def test_tune_strategy_records_job_status():
@@ -42,8 +42,8 @@ def test_tune_strategy_runs_after_tune_style_profiles():
     bearing for correctness (both are fire-and-forget, no real ordering dependency), but a
     real regression guard that the call wasn't accidentally inserted somewhere unrelated."""
     body = _weekly_full_refresh_body()
-    tune_style_idx = body.index('_post(f"{_settings.signal_engine_url}/signals/tune_style_profiles")')
-    tune_strategy_idx = body.index('_post(f"{_settings.signal_engine_url}/signals/tune_strategy")')
+    tune_style_idx = body.index('_post(f"{_settings.signal_engine_url}/signals/tune_style_profiles"')
+    tune_strategy_idx = body.index('_post(f"{_settings.signal_engine_url}/signals/tune_strategy"')
     assert tune_style_idx < tune_strategy_idx
 
 
@@ -55,8 +55,8 @@ def test_tune_strategy_call_is_inside_weekly_full_refresh_not_a_different_functi
     end = _SOURCE.index("\ndef ", start + 1)
     before = _SOURCE[:start]
     after = _SOURCE[end:]
-    assert '_post(f"{_settings.signal_engine_url}/signals/tune_strategy")' not in before
-    assert '_post(f"{_settings.signal_engine_url}/signals/tune_strategy")' not in after
+    assert '_post(f"{_settings.signal_engine_url}/signals/tune_strategy"' not in before
+    assert '_post(f"{_settings.signal_engine_url}/signals/tune_strategy"' not in after
 
 
 def test_every_sibling_calibration_job_is_still_present():
@@ -72,3 +72,32 @@ def test_every_sibling_calibration_job_is_still_present():
     ]
     for path in siblings:
         assert path in body, f"expected sibling call missing: {path!r}"
+
+
+def test_the_three_heaviest_sweeps_use_the_heavy_sweep_timeout_not_the_default():
+    """BUG-WEEKLYREFRESH-HEAVYSWEEP-TIMEOUT (2026-08-31): the default _post() timeout=15/
+    retries=3 pair is both too short AND actively harmful for these 3 genuinely heavy,
+    synchronous, non-idempotent-cost DB sweeps — confirmed live across 3 consecutive Sundays
+    (2026-08-16/23/30) that outcomes/calibrate/apply and tune_style_profiles reliably exhaust
+    all 3 retries and time out client-side even though they DO eventually complete server-side
+    (confirmed via real TuneHistory rows written minutes after the client gave up), while
+    tune_strategy — the heaviest of the three (a 403-cell grid x 4 horizons per its own module
+    docs) — hung on 2026-08-30 specifically with ZERO joint_strategy TuneHistory rows ever
+    written that week, silently truncating the entire rest of that Sunday's tuning chain
+    (tune_kscore_weights/_curve, backfill_bearish_pillars, tune_sell_pillars,
+    calibrate_entry_weights, calibrate_min_rr_ratio, rl_agent_train never ran). A client retry
+    after a timeout does NOT cancel the still-running server-side request — it queues a SECOND
+    overlapping heavy query against the same bounded DB connection pool (pool_size=5 +
+    max_overflow=10 = 15 total on signal-engine), compounding the load rather than recovering
+    from it. A single long-budget attempt, never a retry storm."""
+    body = _weekly_full_refresh_body()
+    for call_prefix in (
+        '_post(f"{_settings.signal_engine_url}/signals/outcomes/calibrate/apply"',
+        '_post(f"{_settings.signal_engine_url}/signals/tune_style_profiles"',
+        '_post(f"{_settings.signal_engine_url}/signals/tune_strategy"',
+    ):
+        idx = body.index(call_prefix)
+        call_end = body.index(")", idx)
+        call_text = body[idx:call_end + 1]
+        assert "timeout=180" in call_text, f"missing heavy-sweep timeout: {call_text!r}"
+        assert "retries=1" in call_text, f"missing retries=1 (no retry storm): {call_text!r}"

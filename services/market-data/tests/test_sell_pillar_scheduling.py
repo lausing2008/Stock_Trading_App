@@ -24,8 +24,9 @@ _SCHEDULER_PATH = (
 )
 _SOURCE = _SCHEDULER_PATH.read_text()
 
-_BACKFILL_CALL = '_post(f"{_settings.signal_engine_url}/signals/backfill_bearish_pillars")'
-_TUNE_CALL = '_post(f"{_settings.signal_engine_url}/signals/tune_sell_pillars")'
+_BACKFILL_CALL = '_post(f"{_settings.signal_engine_url}/signals/backfill_bearish_pillars"'
+_TUNE_CALL = '_post(f"{_settings.signal_engine_url}/signals/tune_sell_pillars"'
+_TUNE_STRATEGY_CALL = '_post(f"{_settings.signal_engine_url}/signals/tune_strategy"'
 
 
 def _weekly_full_refresh_body() -> str:
@@ -69,10 +70,26 @@ def test_both_calls_run_after_tune_strategy():
     sibling in the per-style gate-parameter-sweep family) — a real regression guard that the
     calls weren't accidentally inserted somewhere unrelated."""
     body = _weekly_full_refresh_body()
-    tune_strategy_idx = body.index('_post(f"{_settings.signal_engine_url}/signals/tune_strategy")')
+    tune_strategy_idx = body.index(_TUNE_STRATEGY_CALL)
     backfill_idx = body.index(_BACKFILL_CALL)
     tune_sell_idx = body.index(_TUNE_CALL)
     assert tune_strategy_idx < backfill_idx < tune_sell_idx
+
+
+def test_backfill_and_tune_sell_use_the_heavy_sweep_timeout_not_the_default():
+    """BUG-WEEKLYREFRESH-HEAVYSWEEP-TIMEOUT: both are genuinely heavy synchronous DB sweeps
+    over the full resolved-SELL-outcome history — same fix as tune_strategy/tune_style_profiles/
+    outcomes_calibrate_apply. Confirmed live across 3 consecutive Sundays that this class of
+    call either times out on every retry (completing minutes later regardless, wasting a real
+    DB-connection-pool slot on the resulting overlap) or hangs long enough to silently truncate
+    the rest of the weekly tuning chain."""
+    body = _weekly_full_refresh_body()
+    for call_prefix in (_BACKFILL_CALL, _TUNE_CALL):
+        idx = body.index(call_prefix)
+        call_end = body.index(")", idx)
+        call_text = body[idx:call_end + 1]
+        assert "timeout=180" in call_text, f"missing heavy-sweep timeout: {call_text!r}"
+        assert "retries=1" in call_text, f"missing retries=1 (no retry storm): {call_text!r}"
 
 
 def test_calls_are_inside_weekly_full_refresh_not_a_different_function():

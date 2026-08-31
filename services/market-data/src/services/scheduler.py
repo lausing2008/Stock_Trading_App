@@ -409,14 +409,34 @@ def _symbols_for(market: str) -> list[str]:
 
 _REDIS_REFRESH_FAILED_KEY = "market:refresh_failed"
 
-def _post(url: str, **kwargs) -> None:
+def _post(url: str, *, timeout: float = 15, retries: int = 3, **kwargs) -> None:
     """Fire-and-forget POST to an internal service.
 
-    DP-4: Retries up to 3 times with exponential backoff (5s / 15s / 45s).
+    DP-4: Retries up to `retries` times with exponential backoff (3s / 8s / 20s).
     After all retries fail, logs at ERROR.
     (BUG-8: no longer sets market:refresh_failed — stale data is handled per-symbol via price freshness check.)
+
+    BUG-WEEKLYREFRESH-HEAVYSWEEP-TIMEOUT (2026-08-31): the default timeout=15/retries=3 pair is
+    correct for cheap, idempotent-cost calls, but is actively HARMFUL for a genuinely heavy,
+    synchronous, non-idempotent-cost route (a multi-minute grid sweep over signal_outcomes) —
+    the target route's own DB session/thread keeps running to completion even after the client
+    gives up, so retrying doesn't recover anything, it just piles a SECOND overlapping heavy
+    query on top of the first, competing for the same bounded DB connection pool
+    (pool_size=5 + max_overflow=10 = 15 total). Confirmed live: 3 consecutive Sundays
+    (2026-08-16/23/30) all show outcomes/calibrate/apply, tune_style_profiles, tune_strategy,
+    backfill_bearish_pillars, and tune_sell_pillars either timing out on every retry (yet
+    completing server-side minutes later, confirmed via real TuneHistory rows) or — on
+    2026-08-30 specifically — tune_strategy never completing at all (zero joint_strategy
+    TuneHistory rows after 21:00 that Sunday), silently truncating the rest of the weekly
+    tuning chain (tune_kscore_weights/_curve, backfill_bearish_pillars, tune_sell_pillars,
+    calibrate_entry_weights, calibrate_min_rr_ratio, rl_agent_train never ran that week).
+    Callers of a known-heavy sweep endpoint should pass timeout=<realistic worst-case seconds>
+    and retries=1 — a single long-budget attempt, never a retry storm.
     """
-    delays = [3, 8, 20]  # kept short — scheduler thread pool has limited slots
+    # `retries` is TOTAL attempts (matching the original hardcoded 3-attempt behavior when the
+    # caller doesn't override it) — delays[i] is the backoff AFTER attempt i+1 fails.
+    all_delays = [3, 8, 20]
+    delays = all_delays[: max(0, retries - 1)]
     # Inject service-to-service auth token so endpoints protected by get_current_username work.
     headers = kwargs.pop("headers", {})
     tok = _service_token()
@@ -428,18 +448,19 @@ def _post(url: str, **kwargs) -> None:
         headers["X-Request-ID"] = str(_uuid.uuid4())
     kwargs["headers"] = headers
     last_exc: Exception | None = None
-    for attempt, delay in enumerate(delays, start=1):
+    total_attempts = len(delays) + 1
+    for attempt in range(1, total_attempts + 1):
         try:
-            with httpx.Client(timeout=15) as client:
+            with httpx.Client(timeout=timeout) as client:
                 client.post(url, **kwargs)
             return  # success
         except Exception as exc:
             last_exc = exc
-            if attempt < len(delays):
+            if attempt < total_attempts:
                 log.warning("scheduler.http_retry", url=url, attempt=attempt, error=str(exc))
-                time.sleep(delay)
+                time.sleep(delays[attempt - 1])
 
-    log.error("scheduler.http_failed", url=url, attempts=len(delays), error=str(last_exc))
+    log.error("scheduler.http_failed", url=url, attempts=total_attempts, error=str(last_exc))
 
 
 _AUTO_RESEARCH_TOP_N = 5        # max BUY signals to trigger per refresh cycle
@@ -6511,15 +6532,21 @@ def _weekly_full_refresh() -> None:
 
     # Tier 79: auto-apply empirically-optimal buy thresholds from live outcomes data.
     # Writes per-horizon thresholds to Redis; signal generator reads them live.
+    # BUG-WEEKLYREFRESH-HEAVYSWEEP-TIMEOUT: a genuinely heavy, synchronous DB sweep (confirmed
+    # live to take 60-90s+ server-side) — the default 15s/3-retry _post() timeout was both too
+    # short AND actively harmful here (a retry after a client timeout doesn't cancel the
+    # still-running server-side request, it queues a SECOND overlapping heavy query against the
+    # same bounded DB pool). A single long-budget attempt, never a retry storm.
     log.info("scheduler.calibrate_signal_thresholds_start")
-    _post(f"{_settings.signal_engine_url}/signals/outcomes/calibrate/apply")
+    _post(f"{_settings.signal_engine_url}/signals/outcomes/calibrate/apply", timeout=180, retries=1)
     _record_job_status("calibrate_signal_thresholds_sent", "ok", 0.0)
 
     # Tier 85: sweep style-specific gate params (ml_weight_cap, adx_min, breadth_compression)
     # against live outcomes data. Writes optimal values to Redis per-style; signal generator
     # reads them via _get_style_tuned_param() — falls back to hardcoded defaults when absent.
+    # BUG-WEEKLYREFRESH-HEAVYSWEEP-TIMEOUT: same heavy-sweep timeout fix as the call above.
     log.info("scheduler.tune_style_profiles_start")
-    _post(f"{_settings.signal_engine_url}/signals/tune_style_profiles")
+    _post(f"{_settings.signal_engine_url}/signals/tune_style_profiles", timeout=180, retries=1)
     _record_job_status("tune_style_profiles_sent", "ok", 0.0)
 
     # T255-STRATEGY-TUNER-PER-HORIZON: joint (buy_threshold x ml_weight_cap) grid sweep — built
@@ -6528,8 +6555,13 @@ def _weekly_full_refresh() -> None:
     # the SAME Redis keys outcomes_calibrate_apply/tune_style_profiles already write, so this
     # is purely additive — no read-side changes needed. Run after tune_style_profiles
     # (its closest sibling) since both are per-style gate-parameter sweeps.
+    # BUG-WEEKLYREFRESH-HEAVYSWEEP-TIMEOUT: the heaviest of these 5 sweeps (a 403-cell grid x 4
+    # horizons per its own module docs) — confirmed live to silently hang past the old 15s/3-
+    # retry budget with zero joint_strategy TuneHistory rows ever written that week, truncating
+    # the ENTIRE rest of the weekly tuning chain (everything scheduled after it never ran).
+    # Same heavy-sweep timeout fix as the 2 calls above.
     log.info("scheduler.tune_strategy_start")
-    _post(f"{_settings.signal_engine_url}/signals/tune_strategy")
+    _post(f"{_settings.signal_engine_url}/signals/tune_strategy", timeout=180, retries=1)
     _record_job_status("tune_strategy_sent", "ok", 0.0)
 
     # T288-KSCORE-WEIGHT-SWEEP / T234-CONFIG-UNJUSTIFIED-THRESHOLDS Group B: K-Score's own
@@ -6546,12 +6578,14 @@ def _weekly_full_refresh() -> None:
     # volatility_scale, promoted 2026-08-27 off a thin 13-day validation sample) — next
     # Sunday's run re-measures it against a materially larger dataset and can only keep it
     # if it still beats the (by-then-larger) validation-slice bar.
+    # BUG-WEEKLYREFRESH-HEAVYSWEEP-TIMEOUT: same heavy-sweep timeout fix as the signal-engine
+    # sweeps above — a per-symbol weighted-composite recompute across the full ranking history.
     log.info("scheduler.tune_kscore_weights_start")
-    _post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_weights")
+    _post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_weights", timeout=180, retries=1)
     _record_job_status("tune_kscore_weights_sent", "ok", 0.0)
 
     log.info("scheduler.tune_kscore_curve_start")
-    _post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_curve")
+    _post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_curve", timeout=180, retries=1)
     _record_job_status("tune_kscore_curve_sent", "ok", 0.0)
 
     # T232-SIG10-SELLGATE: backfill bearish_pillars_active onto resolved SELL outcomes, then
@@ -6562,12 +6596,14 @@ def _weekly_full_refresh() -> None:
     # class as calibrate_ml_weight/tune_strategy above. Applies through the SAME generic
     # stockai:style_tune:{H}:min_pillars_for_sell Redis key _get_style_tuned_param() already
     # knows how to read — purely additive, no read-side changes needed.
+    # BUG-WEEKLYREFRESH-HEAVYSWEEP-TIMEOUT: same heavy-sweep timeout fix as the sweeps above —
+    # a full-history backfill over resolved SELL outcomes.
     log.info("scheduler.backfill_bearish_pillars_start")
-    _post(f"{_settings.signal_engine_url}/signals/backfill_bearish_pillars")
+    _post(f"{_settings.signal_engine_url}/signals/backfill_bearish_pillars", timeout=180, retries=1)
     _record_job_status("backfill_bearish_pillars_sent", "ok", 0.0)
 
     log.info("scheduler.tune_sell_pillars_start")
-    _post(f"{_settings.signal_engine_url}/signals/tune_sell_pillars")
+    _post(f"{_settings.signal_engine_url}/signals/tune_sell_pillars", timeout=180, retries=1)
     _record_job_status("tune_sell_pillars_sent", "ok", 0.0)
 
     # PT-3: calibrate entry factor weights from closed paper trades.

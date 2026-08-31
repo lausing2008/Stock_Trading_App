@@ -33,7 +33,7 @@ def _weekly_full_refresh_body() -> str:
 
 def test_tune_kscore_weights_is_posted_inside_weekly_full_refresh():
     body = _weekly_full_refresh_body()
-    assert '_post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_weights")' in body
+    assert '_post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_weights"' in body
 
 
 def test_tune_kscore_weights_records_job_status():
@@ -43,7 +43,7 @@ def test_tune_kscore_weights_records_job_status():
 
 def test_tune_kscore_curve_is_posted_inside_weekly_full_refresh():
     body = _weekly_full_refresh_body()
-    assert '_post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_curve")' in body
+    assert '_post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_curve"' in body
 
 
 def test_tune_kscore_curve_records_job_status():
@@ -59,9 +59,9 @@ def test_tune_kscore_weights_runs_before_tune_kscore_curve():
     reflected until the following week's curve sweep instead."""
     body = _weekly_full_refresh_body()
     weights_idx = body.index(
-        '_post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_weights")'
+        '_post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_weights"'
     )
-    curve_idx = body.index('_post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_curve")')
+    curve_idx = body.index('_post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_curve"')
     assert weights_idx < curve_idx
 
 
@@ -74,11 +74,31 @@ def test_kscore_sweep_calls_are_inside_weekly_full_refresh_not_a_different_funct
     before = _SOURCE[:start]
     after = _SOURCE[end:]
     for call in (
-        '_post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_weights")',
-        '_post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_curve")',
+        '_post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_weights"',
+        '_post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_curve"',
     ):
         assert call not in before
         assert call not in after
+
+
+def test_tune_kscore_sweeps_use_the_heavy_sweep_timeout_not_the_default():
+    """BUG-WEEKLYREFRESH-HEAVYSWEEP-TIMEOUT: these are genuinely heavy synchronous DB sweeps —
+    the default _post() timeout=15/retries=3 is both too short AND actively harmful for a
+    non-idempotent-cost route (a client retry after a timeout doesn't cancel the still-running
+    server-side request, it queues a SECOND overlapping heavy query). Confirmed live across 3
+    consecutive Sundays (2026-08-16/23/30) that this exact class of sweep call either times out
+    on every retry (completing minutes later regardless) or, on 2026-08-30, hangs long enough
+    to silently truncate the rest of the weekly tuning chain entirely."""
+    body = _weekly_full_refresh_body()
+    for call_prefix in (
+        '_post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_weights"',
+        '_post(f"{_settings.ranking_engine_url}/rankings/tune_kscore_curve"',
+    ):
+        idx = body.index(call_prefix)
+        call_end = body.index(")", idx)
+        call_text = body[idx:call_end + 1]
+        assert "timeout=180" in call_text, f"missing heavy-sweep timeout: {call_text!r}"
+        assert "retries=1" in call_text, f"missing retries=1 (no retry storm): {call_text!r}"
 
 
 def test_every_sibling_calibration_job_is_still_present():
