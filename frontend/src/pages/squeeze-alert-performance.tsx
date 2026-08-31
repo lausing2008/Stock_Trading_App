@@ -17,6 +17,19 @@ function fmtPct(v: number | null): string {
   return (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
 }
 
+// AUD-SQUEEZE-IGNITION-DASHBOARD-OMITTED: recent_alerts has NO alert_type filter on the
+// backend, so a squeeze_ignition row always appeared here — but this row-label lookup was a
+// hardcoded 3-way ternary (short_squeeze / gamma_unwind_calls / else "Gamma (Puts)") that
+// silently mislabeled every squeeze_ignition row as "Gamma (Puts)" since it matched neither
+// of the first two branches. A real, explicit map avoids this "any 4th type falls into the
+// last branch by accident" trap for any future 5th alert type too.
+const ALERT_TYPE_ROW_LABELS: Record<string, string> = {
+  short_squeeze: 'Short Squeeze',
+  squeeze_ignition: 'Ignition',
+  gamma_unwind_calls: 'Gamma (Calls)',
+  gamma_unwind_puts: 'Gamma (Puts)',
+};
+
 function winRateColor(wr: number | null): string {
   if (wr == null) return '#475569';
   if (wr >= 0.55) return '#22c55e';
@@ -237,7 +250,7 @@ export default function SqueezeAlertPerformancePage() {
                     <tr key={`${row.alert_type}-${row.symbol}-${row.fired_date}-${i}`} style={{ borderBottom: '1px solid #1e293b' }}>
                       <td style={{ padding: '8px 12px', color: '#64748b' }}>{row.fired_date}</td>
                       <td style={{ padding: '8px 12px', color: '#94a3b8' }}>
-                        {row.alert_type === 'short_squeeze' ? 'Short Squeeze' : row.alert_type === 'gamma_unwind_calls' ? 'Gamma (Calls)' : 'Gamma (Puts)'}
+                        {ALERT_TYPE_ROW_LABELS[row.alert_type] ?? row.alert_type}
                       </td>
                       <td style={{ padding: '8px 12px', fontWeight: 700, color: '#e2e8f0' }}>{row.symbol}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: '#64748b' }}>{row.alert_price.toFixed(2)}</td>

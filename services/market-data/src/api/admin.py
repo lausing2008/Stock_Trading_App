@@ -584,6 +584,17 @@ def watchlist_performance(
 
 _SQUEEZE_ALERT_TYPE_LABELS = {
     "short_squeeze": "Short Squeeze (BUY)",
+    # AUD-SQUEEZE-IGNITION-DASHBOARD-OMITTED (2026-08-31): squeeze_ignition is a real, actively-
+    # firing 4th alert type (T260, check_squeeze_ignition_alerts()) whose outcomes are recorded
+    # into this same SqueezeAlertOutcome table via the identical _record_squeeze_alert_outcome()
+    # helper every other type uses — but this dict, and the by_alert_type loop below, were both
+    # hardcoded to exactly 3 names since the endpoint's own creation, silently omitting it from
+    # the admin performance dashboard entirely. There was never a comment anywhere explaining
+    # this as intentional (unlike squeeze_alert_backtest(), which DOES correctly and explicitly
+    # document why ignition/gamma are out of scope for backtesting specifically — a genuinely
+    # different, honest limitation that doesn't apply to this performance-dashboard endpoint,
+    # since it only reads already-collected real outcome rows, never a historical replay).
+    "squeeze_ignition": "Squeeze Ignition (Early Warning)",
     "gamma_unwind_calls": "Gamma Unwind — Calls Dominant",
     "gamma_unwind_puts": "Gamma Unwind — Puts Dominant (\"Option Sell\")",
 }
@@ -658,7 +669,7 @@ def squeeze_alert_performance(
     ).all())
 
     by_alert_type = []
-    for alert_type in ("short_squeeze", "gamma_unwind_calls", "gamma_unwind_puts"):
+    for alert_type in ("short_squeeze", "squeeze_ignition", "gamma_unwind_calls", "gamma_unwind_puts"):
         by_alert_type.append({
             "alert_type": alert_type,
             "label": _SQUEEZE_ALERT_TYPE_LABELS[alert_type],

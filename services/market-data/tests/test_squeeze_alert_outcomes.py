@@ -543,12 +543,36 @@ def test_squeeze_alert_performance_endpoint_is_admin_gated():
     assert "get_admin_user" in signature
 
 
-def test_squeeze_alert_performance_reports_all_three_alert_types():
+def test_squeeze_alert_performance_reports_all_four_alert_types():
+    """AUD-SQUEEZE-IGNITION-DASHBOARD-OMITTED (2026-08-31): squeeze_ignition is a real,
+    actively-firing 4th alert type (T260) that writes into the SAME SqueezeAlertOutcome table
+    via the identical _record_squeeze_alert_outcome() helper every other type uses, but was
+    silently omitted from both _SQUEEZE_ALERT_TYPE_LABELS and the by_alert_type loop since the
+    endpoint's own creation — its win rate/avg return/fired-count were never surfaced anywhere
+    in the admin UI. Must now be present alongside the original 3."""
     start = _ADMIN_SOURCE.index("def squeeze_alert_performance(")
     end = _ADMIN_SOURCE.index("\n\n\n@router.get(\"/watchlist-rotation-history\")", start)
     body = _ADMIN_SOURCE[start:end]
-    for t in ("short_squeeze", "gamma_unwind_calls", "gamma_unwind_puts"):
+    for t in ("short_squeeze", "squeeze_ignition", "gamma_unwind_calls", "gamma_unwind_puts"):
         assert f'"{t}"' in body
+
+
+def test_squeeze_alert_performance_by_alert_type_loop_specifically_includes_ignition():
+    """Narrower than the whole-function check above — confirms squeeze_ignition is genuinely
+    in the by_alert_type FOR-LOOP itself (the actual bug site), not merely present somewhere
+    else in the function (e.g. only in the _SQUEEZE_ALERT_TYPE_LABELS dict, which alone would
+    still leave the loop's own hardcoded tuple silently omitting it)."""
+    start = _ADMIN_SOURCE.index("for alert_type in (", _ADMIN_SOURCE.index("by_alert_type = []"))
+    end = _ADMIN_SOURCE.index("\n", start)
+    line = _ADMIN_SOURCE[start:end]
+    assert '"squeeze_ignition"' in line, f"squeeze_ignition missing from the loop tuple: {line}"
+
+
+def test_squeeze_alert_type_labels_dict_includes_ignition():
+    start = _ADMIN_SOURCE.index("_SQUEEZE_ALERT_TYPE_LABELS = {")
+    end = _ADMIN_SOURCE.index("\n}", start)
+    body = _ADMIN_SOURCE[start:end]
+    assert '"squeeze_ignition"' in body
 
 
 def test_squeeze_alert_performance_gamma_unwind_puts_is_never_merged_with_calls():
