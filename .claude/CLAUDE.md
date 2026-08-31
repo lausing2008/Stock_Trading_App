@@ -19326,6 +19326,201 @@ documentation and the current code. AI Signal is considered complete for this au
 
 ---
 
+## Deep Audit Series (2026-08-31): Short Squeeze / Gamma / Prebreakout alerts — 2 of 5
+
+### AUD-SQUEEZE-HKLUNCHBREAK — `_session_elapsed_rvol_thresholds()`'s HK computation never subtracted the real 12:00-13:00 lunch break (Fixed 2026-08-31)
+
+**Symptom:** none live-reported — found via the audit's own dedicated investigation.
+
+**Root cause:** `_session_elapsed_rvol_thresholds()` (`services/market-data/src/services/
+scheduler.py`), the shared session-elapsed RVOL-threshold-scaling helper used by
+`check_short_squeeze_alerts()`, `check_squeeze_ignition_alerts()`, and
+`check_volume_anomalies()`, computed HK's "elapsed session minutes" as pure wall-clock time
+since the 9:30 HKT open, with no lunch-break subtraction:
+```python
+_hk_elapsed_min = max(0.0, (_now_hkt.hour * 60 + _now_hkt.minute) - (9 * 60 + 30))
+_hk_frac = min(1.0, _hk_elapsed_min / 330.0)
+```
+HK's real regular session is TWO windows (09:30-12:00 and 13:00-16:00, 330 real trading
+minutes total — the divisor this formula already correctly used) with a 60-minute lunch break
+in between that the numerator never excluded. `_is_market_hours("HK")`
+(`paper_trading_engine.py`) already models this correctly, with a real, working two-window
+check — this helper was a verbatim carry-over of `check_volume_anomalies()`'s own pre-existing
+inline calculation (extracted as-is under `AUD288-SQUEEZE-NO-VOLUME-CONFIRM`), never updated
+to match the more careful pattern already established elsewhere in the same file.
+
+**Concrete failure scenario:** at 13:30 HKT (30 minutes into the afternoon session reopening),
+the buggy formula computed `elapsed = 240 min` (13:30 - 09:30) → `frac = 0.727`, when the real
+trading-session-elapsed fraction is `180/330 = 0.545` (150 morning minutes + 30 afternoon
+minutes). This inflated the RVOL threshold by ~33% for roughly the first hour after lunch
+resumes — a real, silent under-triggering of genuine HK squeeze/ignition candidates
+specifically during the post-lunch reopening window, a period of real volume/price action.
+
+**Fix applied:** computes elapsed minutes against HK's two real trading windows, freezing at
+the morning close during the lunch break itself:
+```python
+_hk_now_min = _now_hkt.hour * 60 + _now_hkt.minute
+_hk_morning_open, _hk_morning_close = 9 * 60 + 30, 12 * 60
+_hk_aftnoon_open, _hk_aftnoon_close = 13 * 60, 16 * 60
+if _hk_now_min < _hk_morning_open:
+    _hk_elapsed_min = 0.0
+elif _hk_now_min < _hk_morning_close:
+    _hk_elapsed_min = float(_hk_now_min - _hk_morning_open)
+elif _hk_now_min < _hk_aftnoon_open:
+    _hk_elapsed_min = float(_hk_morning_close - _hk_morning_open)  # frozen during lunch
+else:
+    _morning_total = _hk_morning_close - _hk_morning_open
+    _aftnoon_elapsed = min(_hk_now_min, _hk_aftnoon_close) - _hk_aftnoon_open
+    _hk_elapsed_min = float(_morning_total + _aftnoon_elapsed)
+```
+Verified via direct computation across every boundary before writing tests: before-open→0,
+mid-morning→partial, exact morning close/afternoon open→both correctly equal 150 (no trading
+happens between them), mid-lunch→frozen at 150, 13:30→180 (matching the real scenario above),
+15:00→270, exact close→330 (matching the divisor exactly).
+
+**Tests**: `services/market-data/tests/test_session_elapsed_rvol_thresholds.py` gained 5 new
+cases plus one pre-existing test corrected: `test_hk_session_uses_its_own_330_minute_length_
+not_the_us_390` originally asserted "a full HK session" at 15:00 HKT under the assumption that
+330 WALL-CLOCK minutes = a full session — this was the exact bug's own premise baked into a
+test; corrected to assert at the REAL close (16:00 HKT). New tests cover: lunch freezes
+elapsed time at the morning close, the exact 13:30 scenario from the bug report (with an
+explicit assertion that the fixed value is genuinely different from what the old buggy
+wall-clock-only formula would have produced — not just a coincidentally-similar number),
+afternoon-elapsed correctly adds onto the morning total, and morning-close/afternoon-open
+report identical elapsed times.
+
+**Adversarial verification**: reverted to the exact original wall-clock-only 6-line block and
+confirmed 4 of the 5 new tests failed with real, meaningful diffs (e.g. `assert 0.5999... <
+0.01` — the ~33% inflation directly visible in the failure); the 5th (the corrected "full
+session" test, now anchored at the real close where wall-clock time and trading-elapsed time
+happen to coincide) correctly stayed green, since this specific instant isn't where the bug's
+effect shows up. Restored and confirmed byte-identical via `md5sum`. Full 2144-test market-
+data suite green (up from 2138); `pyflakes` clean (all 6 remaining warnings confirmed
+pre-existing via `git stash`, only line numbers shifted).
+
+**What to check if this looks wrong:**
+```bash
+docker exec stockai-market-data-1 grep -n "AUD-SQUEEZE-HKLUNCHBREAK\|_hk_aftnoon_open" /app/src/services/scheduler.py
+
+# Live-check the current HK elapsed fraction directly during real HK trading hours:
+docker exec stockai-market-data-1 python3 -c "
+import sys; sys.path.insert(0, '/app'); sys.path.insert(0, '/app/src')
+from src.services.scheduler import _session_elapsed_rvol_thresholds
+us, hk = _session_elapsed_rvol_thresholds(3.3, 1.0)
+print('HK threshold right now:', hk)
+"
+```
+
+### AUD-SQUEEZE-IGNITION-DASHBOARD-OMITTED — `squeeze_ignition` was silently missing from the admin performance dashboard entirely (Fixed 2026-08-31)
+
+**Symptom:** none live-reported — found via the audit's own dedicated investigation.
+
+**Root cause:** `_SQUEEZE_ALERT_TYPE_LABELS` and the `by_alert_type` summary loop in
+`squeeze_alert_performance()` (`services/market-data/src/api/admin.py`) were both hardcoded
+to exactly 3 alert-type names (`short_squeeze`, `gamma_unwind_calls`, `gamma_unwind_puts`)
+since the endpoint's own creation. `squeeze_ignition` (T260, `check_squeeze_ignition_alerts()`)
+is a real, actively-firing 4th alert type whose outcomes are recorded into the SAME
+`SqueezeAlertOutcome` table via the identical `_record_squeeze_alert_outcome()` helper every
+other type uses, and which has its own real calibration bucket
+(`_SQUEEZE_FAMILY_CAL_BANDS["squeeze_ignition"]`, whose own calibration cross-contamination
+bug was fixed just 6 days before this audit) — but its win rate, average return, and
+fired-count were never surfaced anywhere in the admin UI, silently. There was never a comment
+anywhere explaining this as an intentional exclusion — unlike `squeeze_alert_backtest()`
+(a genuinely different endpoint), which DOES correctly and explicitly document why ignition/
+gamma are out of scope for BACKTESTING specifically (no historical options open-interest data
+exists to replay against) — a real, honest limitation that does NOT apply to this performance
+dashboard endpoint, since it only reads already-collected real outcome rows, never a
+historical replay.
+
+**A related, second bug found in the same investigation**: `frontend/src/pages/squeeze-alert-
+performance.tsx`'s `recent_alerts` row-label renderer had NO type filter matching this same
+omission — a hardcoded 3-way ternary (`short_squeeze` ? ... : `gamma_unwind_calls` ? ... :
+`'Gamma (Puts)'`) that silently mislabeled every `squeeze_ignition` row as "Gamma (Puts)"
+since it matched neither of the first two branches and fell through to the `else`. This was
+a REAL, already-live mislabeling bug (not merely a summary omission) — `recent_alerts` itself
+has no alert-type filter on the backend, so a `squeeze_ignition` row already appeared in that
+table before this fix, just under the wrong label.
+
+**Fix applied:** added `squeeze_ignition` to both `_SQUEEZE_ALERT_TYPE_LABELS` and the
+`by_alert_type` loop tuple in `admin.py`. Replaced the frontend's hardcoded ternary with an
+explicit `Record<string, string>` lookup map covering all 4 types, avoiding the "any future
+5th type silently falls into the last branch" trap the ternary shape invites.
+
+**Tests**: `services/market-data/tests/test_squeeze_alert_outcomes.py` — renamed and
+extended `test_squeeze_alert_performance_reports_all_three_alert_types` to
+`..._all_four_alert_types`, added a dedicated `test_squeeze_alert_performance_by_alert_type_
+loop_specifically_includes_ignition` (narrower than the whole-function check — confirms
+`squeeze_ignition` is genuinely in the FOR-LOOP tuple itself, the actual bug site, not merely
+present somewhere else in the function like the label dict alone) and
+`test_squeeze_alert_type_labels_dict_includes_ignition`.
+
+**A real self-caught test bug during development**: the first version of the loop-specific
+test extracted the wrong line (`by_alert_type = []`, the assignment statement itself, not the
+following `for alert_type in (...)` line where the bug actually lives) — caught immediately
+when the test failed against the ALREADY-CORRECT fixed code (a "still fails when it shouldn't"
+signal, the inverse of this repo's own "still passes after sabotage" red flag, equally worth
+investigating rather than dismissing). Fixed the extraction boundary to anchor on the real
+`for alert_type in (` substring.
+
+**Adversarial verification** — 2 independent sabotage cycles, each targeting one of the two
+fixed sites in isolation to confirm each has its OWN dedicated test coverage, not just
+overlapping coincidental coverage: (1) reverted only the loop tuple (left the label dict
+fixed) — caught by 2 of the loop-specific tests, while the dict-specific test correctly
+stayed green; (2) reverted only the label dict (left the loop fixed) — caught by exactly the
+dict-specific test, while the loop-specific test correctly stayed green. Both reverted and
+confirmed byte-identical via `md5sum` before restoring the real fix. Full 2144-test
+market-data suite green; `pyflakes` clean. Frontend: `npx tsc --noEmit` clean, full 132-test
+vitest suite unaffected.
+
+**Live-verified against real production data** post-deploy: `GET /admin/squeeze-alert-
+performance?days_back=180` now returns all 4 alert types (`short_squeeze: 11 fired,
+squeeze_ignition: 0 fired, gamma_unwind_calls: 77 fired, gamma_unwind_puts: 138 fired`) —
+confirmed the real `0` count for `squeeze_ignition` is genuine (a direct
+`SELECT alert_type, COUNT(*) FROM squeeze_alert_outcomes GROUP BY alert_type` against
+production Postgres shows zero rows for that type currently), and confirmed via a live log
+check that `check_squeeze_ignition_alerts()` IS running successfully every minute with no
+errors — a real, honest "hasn't fired recently" state (matching this repo's own established
+"most cycles qualify zero picks" framing for narrow-filter alerts), not a broken job.
+
+**What to check if this looks wrong:**
+```bash
+docker exec stockai-market-data-1 grep -n "squeeze_ignition" /app/src/api/admin.py
+
+docker exec stockai-market-data-1 python3 -c "
+import sys, uuid, time; sys.path.insert(0,'/app'); sys.path.insert(0,'/app/src')
+from common.config import get_settings; from jose import jwt as _jwt; import httpx
+s = get_settings()
+tok = _jwt.encode({'sub':'<admin_username>','jti':str(uuid.uuid4()),'exp':int(time.time())+86400}, s.jwt_secret, algorithm='HS256')
+r = httpx.get('http://localhost:8001/admin/squeeze-alert-performance?days_back=180', headers={'Authorization': f'Bearer {tok}'}, timeout=15)
+print([row['alert_type'] for row in r.json()['by_alert_type']])
+"
+# Should list all 4 types, not 3.
+```
+
+### Short Squeeze / Gamma / Prebreakout audit — remaining findings after these 2 fixes: NONE
+
+The dispatched investigation agent, after reading this file's own extensive prior squeeze/
+gamma/prebreakout history (Deep Audit #5, the `AUD-SQUEEZE250725-BATCH` 7-fix pass,
+`AUD288-SQUEEZE-NO-VOLUME-CONFIRM`, `AUD292-SQUEEZEWATCH-REVERT-NOTOLERANCE`, the
+`BUG-SQUEEZEIGNITION-CALIBRATION-CROSSCONTAMINATION` fix, the 1d/2d/3d window extension, both
+external-audit-doc reviews, and the most recent personal re-audit which explicitly confirmed
+`check_squeeze_watch_reverts()` and both `evaluate_*_outcomes()` functions clean) and the full
+current code of all 5 alert-emitting functions, both outcome evaluators, all calibration
+helpers, all 5 `send_*_email()` functions, both admin endpoints, and the 3 relevant DB table
+definitions, reported exactly two genuinely new, verified findings — both confirmed via direct
+re-reading of the exact cited lines and, for Finding 1, via `git log -S` confirming the
+function was never modified since its introduction. Every other candidate the agent traced
+(the mass-auto-revert-on-outage bug, the revert-tolerance gap, the calibration cross-
+contamination bug, unit consistency across `short_percent_of_float`/`short_ratio`/
+`concentration_pct`, sign/direction conventions in both outcome evaluators,
+`check_gamma_unwind_alerts()`'s own market-hours exposure — investigated in depth and
+correctly judged NOT a strong, reportable finding given the tight 90s Redis TTL bounding its
+real exposure window, `RestrictedSymbol`/`SqueezeWatch`/`SrWatch` scoping and dedup discipline)
+matched its documented, already-fixed, or genuinely-not-a-bug status exactly. Short Squeeze /
+Gamma / Prebreakout alerts are considered complete for this audit pass.
+
+---
+
 ## Recurring Issue: BUG-KSCORECURVE-UNBOUNDEDWINDOW — tune_kscore_curve's Raw-Input Cache Had Unbounded Per-Row Window Growth (Fixed 2026-08-31)
 
 **Found while investigating BUG-WEEKLYREFRESH-HEAVYSWEEP-TIMEOUT** (above) — raising
