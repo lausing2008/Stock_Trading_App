@@ -1203,10 +1203,23 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
     n_models = len(probs)
 
     # Collect per-model AUCs for nudge gate (use test AUC when available, fallback to cv_auc_mean)
+    # AUD-ML1B-NUDGEGATE (2026-08-31): a third, previously-undiscovered instance of the same
+    # falsy-zero bug already fixed twice in this same function (predict_latest_ensemble()'s own
+    # T237-ML1B fix, and this function's own separate AUD-ML1B-3MODEL fix for the REPORTED
+    # mean_auc metric below) — `or` treats a real, legitimate auc=0.0 (a perfectly rank-inverted
+    # model, oos_suppressed=False since its own cv_auc_mean can independently be >= 0.52) as
+    # falsy and silently substitutes cv_auc_mean instead, wrongly clearing the `_min_auc > 0.57`
+    # unanimous-agreement confidence-boost gate below even though one contributing model is
+    # genuinely unreliable. `is not None` is the correct presence check — the gate's own 0.0
+    # absent-fallback (deliberately conservative: a missing AUC should never look "reliable")
+    # is unchanged, only the falsy-zero coercion is fixed.
     _auc_vals_for_gate = []
     for _m, _ in available:
         _m_metrics = _m.get("metrics") or {}
-        _m_auc = float(_m_metrics.get("auc") or _m_metrics.get("cv_auc_mean") or 0.0)
+        _m_auc_raw = _m_metrics.get("auc")
+        if _m_auc_raw is None:
+            _m_auc_raw = _m_metrics.get("cv_auc_mean")
+        _m_auc = float(_m_auc_raw) if _m_auc_raw is not None else 0.0
         _auc_vals_for_gate.append(_m_auc)
     _min_auc = min(_auc_vals_for_gate) if _auc_vals_for_gate else 0.0
 

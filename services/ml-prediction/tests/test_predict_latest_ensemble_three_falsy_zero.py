@@ -212,3 +212,79 @@ def test_two_model_ensemble_lgb_absent_still_applies_the_falsy_zero_fix():
 
     expected = round((0.0 + 0.60) / 2, 4)
     assert result["metrics"]["mean_model_test_auc"] == expected
+
+
+# ── AUD-ML1B-NUDGEGATE: a THIRD, independently-computed falsy-zero AUC bug in the same
+#    function -- the unanimous-agreement confidence-boost gate (_min_auc), a separate loop from
+#    both the blend-weight `available` list (already correctly excludes oos_suppressed models)
+#    and the REPORTED mean_auc metric fixed above. `min(_auc_vals_for_gate)` decides whether to
+#    apply a +-0.05 nudge to the final blended probability when all 3 models agree on direction
+#    -- a real auc=0.0 model wrongly falling through to its own cv_auc_mean via the pre-fix `or`
+#    chain could silently clear this gate even though one contributing model is genuinely
+#    unreliable ─────────────────────────────────────────────────────────────────────────────
+
+def test_unanimous_nudge_gate_is_blocked_by_a_real_zero_auc_model_not_falsely_cleared():
+    """All 3 models agree bullish (prob > 0.5) -- pre-fix, xgb's real auc=0.0 would fall through
+    to its own cv_auc_mean=0.62 (since `0.0 or 0.62` is falsy-truthy-coerced), making
+    _min_auc=min(0.62, 0.58, 0.60)=0.58 > 0.57 -- wrongly clearing the nudge gate. Post-fix,
+    xgb's real 0.0 correctly survives, making _min_auc=0.0 -- the gate must NOT clear, so the
+    final prob must be the plain weighted blend with NO +0.05 nudge applied."""
+    xgb = _model(auc=0.0, cv_auc_mean=0.62, bullish_probability=0.7)
+    lgb = _model(auc=0.58, bullish_probability=0.65)
+    rf = _model(auc=0.60, bullish_probability=0.68)
+    fn = _make_ensemble_three(xgb, lgb, rf)
+    result = fn("TEST", horizon=5, style="SWING")
+
+    assert result["ensemble_agreement"] == "unanimous_bull"
+    # Weighted blend (no meta model in this test -- faked to fail): 0.30*0.7 + 0.45*0.65 + 0.25*0.68
+    unnudged_prob = round(0.30 * 0.7 + 0.45 * 0.65 + 0.25 * 0.68, 4)
+    assert round(result["bullish_probability"], 4) == unnudged_prob
+    # Confirm this is genuinely different from what the pre-fix bug would have produced (the
+    # nudge applied, min(0.95, unnudged_prob + 0.05)) -- proving the fix changes real behavior.
+    buggy_nudged_prob = round(min(0.95, unnudged_prob + 0.05), 4)
+    assert round(result["bullish_probability"], 4) != buggy_nudged_prob
+
+
+def test_unanimous_nudge_gate_still_clears_when_every_model_is_genuinely_reliable():
+    """The gate must still correctly APPLY the nudge when every model's real AUC (not coerced
+    from anything) is above 0.57 -- confirms the fix didn't just always block the nudge."""
+    xgb = _model(auc=0.60, bullish_probability=0.7)
+    lgb = _model(auc=0.65, bullish_probability=0.65)
+    rf = _model(auc=0.62, bullish_probability=0.68)
+    fn = _make_ensemble_three(xgb, lgb, rf)
+    result = fn("TEST", horizon=5, style="SWING")
+
+    assert result["ensemble_agreement"] == "unanimous_bull"
+    unnudged_prob = round(0.30 * 0.7 + 0.45 * 0.65 + 0.25 * 0.68, 4)
+    expected_nudged = round(min(0.95, unnudged_prob + 0.05), 4)
+    assert round(result["bullish_probability"], 4) == expected_nudged
+
+
+def test_unanimous_bear_nudge_gate_also_respects_a_real_zero_auc_model():
+    """The mirror of the bullish case -- a real auc=0.0 model must also correctly block the
+    bearish -0.05 nudge, not just the bullish +0.05 one."""
+    xgb = _model(auc=0.0, cv_auc_mean=0.62, bullish_probability=0.3)
+    lgb = _model(auc=0.58, bullish_probability=0.25)
+    rf = _model(auc=0.60, bullish_probability=0.28)
+    fn = _make_ensemble_three(xgb, lgb, rf)
+    result = fn("TEST", horizon=5, style="SWING")
+
+    assert result["ensemble_agreement"] == "unanimous_bear"
+    unnudged_prob = round(0.30 * 0.3 + 0.45 * 0.25 + 0.25 * 0.28, 4)
+    assert round(result["bullish_probability"], 4) == unnudged_prob
+
+
+def test_nudge_gate_absent_auc_correctly_falls_back_to_cv_auc_mean():
+    """The genuine 'metric is missing entirely' case must still work for the gate too -- this
+    is the only scenario cv_auc_mean should ever be used as the gate's own input."""
+    xgb = _model(cv_auc_mean=0.60, bullish_probability=0.7)  # no `auc` key at all
+    lgb = _model(auc=0.65, bullish_probability=0.65)
+    rf = _model(auc=0.62, bullish_probability=0.68)
+    fn = _make_ensemble_three(xgb, lgb, rf)
+    result = fn("TEST", horizon=5, style="SWING")
+
+    # xgb's cv_auc_mean=0.60 correctly used as its gate AUC (all 3 > 0.57) -- nudge clears.
+    assert result["ensemble_agreement"] == "unanimous_bull"
+    unnudged_prob = round(0.30 * 0.7 + 0.45 * 0.65 + 0.25 * 0.68, 4)
+    expected_nudged = round(min(0.95, unnudged_prob + 0.05), 4)
+    assert round(result["bullish_probability"], 4) == expected_nudged
