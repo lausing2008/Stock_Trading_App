@@ -2428,13 +2428,37 @@ def _session_elapsed_rvol_thresholds(base: float, floor: float) -> tuple[float, 
     call this rather than re-deriving the same session-elapsed math a third/fourth time with
     its own copy-pasted literals that could silently drift out of sync with each other.
 
+    AUD-SQUEEZE-HKLUNCHBREAK (2026-08-31): the original HK computation was a pure wall-clock-
+    since-open calculation (`now - 09:30`, divided by 330 real trading minutes) that never
+    subtracted HK's real 12:00-13:00 lunch break — unlike _is_market_hours("HK")
+    (paper_trading_engine.py), which correctly models HK's two separate trading windows. This
+    silently inflated the RVOL bar by up to ~33% for roughly the first hour after the afternoon
+    session reopens (e.g. at 13:30 HKT, wall-clock-elapsed=240min -> frac=0.727, but real
+    trading-session-elapsed is only 180min -> frac=0.545) — under-triggering genuine HK squeeze/
+    ignition candidates specifically during the post-lunch reopening window, a period of real
+    volume/price action. Fixed by computing elapsed minutes against the two real HK windows.
+
     Returns (us_threshold, hk_threshold) for the CURRENT moment — must be called fresh each
     scan cycle (not cached), since elapsed-session-fraction changes every minute.
     """
     _now_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
     _now_hkt = datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Hong_Kong"))
     _us_elapsed_min = max(0.0, (_now_et.hour * 60 + _now_et.minute) - (9 * 60 + 30))
-    _hk_elapsed_min = max(0.0, (_now_hkt.hour * 60 + _now_hkt.minute) - (9 * 60 + 30))
+    _hk_now_min = _now_hkt.hour * 60 + _now_hkt.minute
+    _hk_morning_open, _hk_morning_close = 9 * 60 + 30, 12 * 60
+    _hk_aftnoon_open, _hk_aftnoon_close = 13 * 60, 16 * 60
+    if _hk_now_min < _hk_morning_open:
+        _hk_elapsed_min = 0.0
+    elif _hk_now_min < _hk_morning_close:
+        _hk_elapsed_min = float(_hk_now_min - _hk_morning_open)
+    elif _hk_now_min < _hk_aftnoon_open:
+        # Lunch break — session-elapsed time is frozen at the morning close, matching how a
+        # RESUMED session at 13:00 should read exactly 150min elapsed, not 210.
+        _hk_elapsed_min = float(_hk_morning_close - _hk_morning_open)
+    else:
+        _morning_total = _hk_morning_close - _hk_morning_open
+        _aftnoon_elapsed = min(_hk_now_min, _hk_aftnoon_close) - _hk_aftnoon_open
+        _hk_elapsed_min = float(_morning_total + _aftnoon_elapsed)
     _us_frac = min(1.0, _us_elapsed_min / 390.0)
     _hk_frac = min(1.0, _hk_elapsed_min / 330.0)
     return max(floor, base * _us_frac), max(floor, base * _hk_frac)
