@@ -19521,6 +19521,120 @@ Gamma / Prebreakout alerts are considered complete for this audit pass.
 
 ---
 
+## Deep Audit Series (2026-08-31): Model Training — 3 of 5
+
+### AUD-ML1B-NUDGEGATE — a THIRD, independently-computed falsy-zero AUC bug in `predict_latest_ensemble_three()`, this time in its unanimous-agreement confidence-boost nudge gate (Fixed 2026-08-31)
+
+**Symptom:** none live-reported — found via the audit's own dedicated investigation into
+`trainer.py`, the same file today's earlier `AUD-ML1B-3MODEL` fix already touched once.
+
+**Root cause:** `predict_latest_ensemble_three()` has TWO earlier fixes for the same falsy-
+zero AUC bug class in this exact function (T237-ML1, which correctly excludes
+`oos_suppressed` models from the blend-weight `available` list; `AUD-ML1B-3MODEL`, fixed
+earlier this same session, which fixed the separately-computed, separately-REPORTED
+`mean_model_test_auc`/`cv_auc_mean` metrics block) — but a THIRD, completely independent loop
+in the same function, feeding the unanimous-agreement confidence-boost `_min_auc` gate, had
+the identical bug, untouched by either prior fix:
+```python
+_auc_vals_for_gate = []
+for _m, _ in available:
+    _m_metrics = _m.get("metrics") or {}
+    _m_auc = float(_m_metrics.get("auc") or _m_metrics.get("cv_auc_mean") or 0.0)
+    _auc_vals_for_gate.append(_m_auc)
+_min_auc = min(_auc_vals_for_gate) if _auc_vals_for_gate else 0.0
+```
+Confirmed via `git log -S'_auc_vals_for_gate'` that this line was introduced once, in commit
+`60bd54d` (2026-06-30, "SA-38 Tier 228"), and never modified since — including by both of
+today's own earlier fixes, verified via `git show`/direct diff that neither touched this line
+range (1205-1211).
+
+**Concrete failure scenario:** if a model in the ensemble has a real, legitimate `auc=0.0`
+(a perfectly rank-inverted model on its own held-out test slice) while `oos_suppressed=False`
+(its separate `cv_auc_mean` is ≥0.52, so it wasn't excluded from `available` upstream), the
+bare `or` chain treats the real `0.0` as falsy and silently substitutes that model's own
+`cv_auc_mean` instead. Verified with a direct repro: `xgb_auc=0.0, cv_auc_mean=0.62` alongside
+2 healthy models (`0.58`, `0.60`) produces a buggy `_min_auc=0.58` (clears the `> 0.57` gate)
+instead of the correct `_min_auc=0.0` (correctly blocks it). This wrongly applies a `+-0.05`
+"all models agree" confidence-boost nudge to the final blended `prob` even though one
+contributing model is genuinely unreliable — a direct corruption of a live trading
+probability, not a downstream reporting artifact.
+
+**Fix applied:** the gate's own `is not None` presence check, matching the pattern already
+established twice in this same function — but deliberately keeping the gate's own original
+`0.0` absent-fallback unchanged (a genuinely different, more conservative default than the
+reporting block's `0.55` — a missing AUC should never look "reliable" for a gate deciding
+whether to trust unanimous agreement, whereas the display-only reported metric's own
+"coin-flip-plus-a-bit" fallback is a different concern). This is NOT the same helper as
+`_model_auc_3` (the reporting-block fix) — that helper's `0.55` absent-default would have been
+semantically wrong here, so a small, dedicated inline fix was written instead of forcing an
+ill-fitting shared helper:
+```python
+_auc_vals_for_gate = []
+for _m, _ in available:
+    _m_metrics = _m.get("metrics") or {}
+    _m_auc_raw = _m_metrics.get("auc")
+    if _m_auc_raw is None:
+        _m_auc_raw = _m_metrics.get("cv_auc_mean")
+    _m_auc = float(_m_auc_raw) if _m_auc_raw is not None else 0.0
+    _auc_vals_for_gate.append(_m_auc)
+_min_auc = min(_auc_vals_for_gate) if _auc_vals_for_gate else 0.0
+```
+
+**Tests**: `services/ml-prediction/tests/test_predict_latest_ensemble_three_falsy_zero.py`
+gained 4 new cases — a real `auc=0.0` correctly BLOCKS the unanimous-bull nudge (confirming
+the final `bullish_probability` is the plain weighted blend, with an explicit assertion that
+this genuinely differs from what the buggy nudged value would have been, not just a
+coincidentally-similar number), the mirror bearish case, the nudge still correctly APPLIES
+when every model's real AUC is genuinely above 0.57 (confirming the fix doesn't just always
+block it), and the genuine absent-metric case still correctly falls back to `cv_auc_mean`.
+
+**Adversarial verification**: reverted to the exact original buggy 5-line block and confirmed
+2 of the 4 new tests failed with real, meaningful diffs (`0.7225 == 0.6725` for the bull case,
+`0.2225 == 0.2725` for the bear case — the nudge visibly, wrongly applied in both directions);
+the 2 that stayed green correctly test properties unrelated to the falsy-zero coercion itself.
+Restored and confirmed byte-identical via `md5sum`. Full 105-test ml-prediction suite green
+(up from 101); `pyflakes` clean (2 pre-existing warnings confirmed via `git stash`).
+
+**Live-verified against real production data** post-deploy: confirmed clean startup logs with
+real `predict_ensemble_three` calls returning 200 OK, no crash from the fix; deployed file
+checksum confirmed byte-identical to the local fixed source.
+
+**What to check if this looks wrong:**
+```bash
+docker exec stockai-ml-prediction-1 grep -n "AUD-ML1B-NUDGEGATE" /app/src/training/trainer.py
+```
+
+**Design invariant reinforced (a third recurrence within one session, in the same function)**:
+when a bug class is found in one function, exhaustively grep the SAME function for every OTHER
+occurrence of the identical pattern before considering the fix complete — this function alone
+had the falsy-zero-AUC bug independently duplicated across 3 separate, unrelated loops (the
+blend-weight list, the reported-metric computation, the nudge-gate computation), each
+introduced at a different time and each requiring its own separate fix. "I fixed the bug in
+this function" and "I fixed every instance of this bug pattern in this function" are different
+claims — only an exhaustive grep across the whole function body proves the second one.
+
+### Model Training audit — remaining findings after this fix: NONE
+
+The dispatched investigation agent, after reading this file's own extensive prior ML-training
+history (the full T237-ML tag family, `predict_latest`/`predict_latest_ensemble`/
+`predict_meta`, `AUD301-METASCALER-LEAKAGE`, `AUD232-METAMODEL`, `tune_symbol`/Optuna,
+`SELFIMPROVE-PROMOTION-GATES`, `eps_revision_direction`/T237-ML2b, `oos_suppressed`, and
+today's own earlier `AUD-ML1B-3MODEL` fix — explicitly instructed not to re-report that one)
+and the full current code of `trainer.py`, `tuner.py`, `meta_trainer.py`, `ev_gate.py`,
+`builder.py`, and `routes.py` (~4,200 lines total), reported exactly one genuinely new,
+verified finding (the `AUD-ML1B-NUDGEGATE` bug above — a third, independently-computed
+instance of the SAME bug class this session had already fixed twice in the same function).
+Every other candidate the agent traced and correctly ruled out as a false positive (a
+`reindex(fill_value=0)` call provably unreachable given an earlier column-narrowing step, a
+`buy_threshold or 0.5` fallback that can never legitimately hit a real `0.0` given its sole
+source function's own range, a `pct_return or 0` call whose delisted-loss-scenario concern is
+already excluded by an earlier query filter, and 4 other already-fixed findings from a prior
+audit pass all re-confirmed still fixed via direct code/`git log` checks) matched its
+documented, already-fixed, or provably-unreachable status exactly. Model Training is
+considered complete for this audit pass.
+
+---
+
 ## Recurring Issue: BUG-KSCORECURVE-UNBOUNDEDWINDOW — tune_kscore_curve's Raw-Input Cache Had Unbounded Per-Row Window Growth (Fixed 2026-08-31)
 
 **Found while investigating BUG-WEEKLYREFRESH-HEAVYSWEEP-TIMEOUT** (above) — raising
