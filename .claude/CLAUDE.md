@@ -19157,6 +19157,175 @@ default 15s/3-retry pair, which is correct only for cheap calls.
 
 ---
 
+## Deep Audit Series (2026-08-31): AI Signal — 1 of 5
+
+**Context**: user requested a sequential (one area at a time, never parallel), full deep
+audit across AI Signal, Short Squeeze alerts, Model Training, Decision Making, and Paper
+Trading, following the two weekly-job-timeout bug fixes documented above. Each area gets one
+dedicated background Agent investigation, cross-referenced against this file's own already-
+extensive prior fix history, then personal verification of any reported finding before
+building — this repo's own history (documented multiple times elsewhere in this file) shows
+background agents can fabricate findings or misread already-fixed code as still broken.
+
+### AUD-ML1B-3MODEL — predict_latest_ensemble_three()'s own separate AUC-reporting block never received the T237-ML1/AUD301-ML1B falsy-zero fix (Fixed 2026-08-31)
+
+**Symptom:** none live-reported — found via the audit's own dedicated investigation, not a
+user bug report.
+
+**Root cause:** `AUD301-ML1B` (2026-08-25, documented earlier in this file) fixed a real
+falsy-zero coercion bug in `predict_latest_ensemble()` (the 2-model XGBoost+RandomForest
+fallback ensemble): `xgb_auc = float((xgb.get("metrics") or {}).get("auc") or ... or 0.55)`
+treats a real, legitimate `auc=0.0` (a perfectly rank-inverted model) as falsy and silently
+substitutes `0.55` — giving a degenerate model near-normal weight in the reported
+`mean_model_test_auc` instead of the ~zero it deserves. That fix's own commit message
+explicitly states it was itself porting a DIFFERENT, earlier `T237-ML1` fix that had gone the
+OTHER direction (3-model → 2-model) for the probability BLEND weights (which already
+correctly exclude `oos_suppressed` models via `predict_latest_ensemble_three()`'s own
+`available` list, built at line 1132) — but neither fix ever touched
+`predict_latest_ensemble_three()`'s own, SEPARATE `mean_model_test_auc`/`cv_auc_mean`
+computation (lines 1246-1252), which had the identical falsy-zero bug independently:
+```python
+xgb_auc = float((xgb.get("metrics") or {}).get("auc") or (xgb.get("metrics") or {}).get("cv_auc_mean") or 0.55)
+auc_vals = [xgb_auc]
+if lgb_res:
+    auc_vals.append(float((lgb_res.get("metrics") or {}).get("auc") or 0.55))
+if rf_res:
+    auc_vals.append(float((rf_res.get("metrics") or {}).get("auc") or 0.55))
+mean_auc = sum(auc_vals) / len(auc_vals)
+```
+This block also never excluded `oos_suppressed` models from the reported average at all —
+unlike the blend-weight `available` list a few lines earlier in the same function, which does.
+**Verified via `git show --stat 27f91df` (the AUD301-ML1B commit) and `git show 27f91df --
+trainer.py` that the diff is entirely scoped to `predict_latest_ensemble()`** (the `@@ -995,16
++995,60 @@` hunk) — `predict_latest_ensemble_three()`, a completely separate function starting
+at line 1084, was never in that diff. The fix's own inline comment even says "T237-ML1
+(**mirrored from** predict_latest_ensemble_three)" for the `oos_suppressed`-exclusion half —
+acknowledging the sibling function's blend-weight pattern existed, but never porting the
+corresponding fix into either the 3-model function's OWN metrics block or into signal-engine's
+own consumption site.
+
+**Why this matters**: `predict_ensemble_three` is genuinely the FIRST endpoint
+`_fetch_ml_data()` (`services/signal-engine/src/generators/signals.py:387-389`) tries in its
+3-endpoint cascade (`/ml/predict_ensemble_three` → `/ml/predict_ensemble` → `/ml/predict`) —
+confirmed directly, this is the primary path for every signal generation that has a trained
+3-model ensemble available, not a fallback. `signals.py:402` consumes the reported
+`mean_model_test_auc` with its own `or 0.55` chain (a separate, already-real falsy-zero risk
+on the CONSUMER side too — but a `0.0` genuinely returned by the fixed producer now correctly
+survives, since `0.0 or 0.55` still evaluates to `0.55` ONLY if the producer sends a falsy
+value; the producer-side fix is what prevents that from happening for a real `auc=0.0` in the
+first place). That value then drives `_apply_style_signal()`'s ML/TA fusion-weight formula
+(`signals.py:1926-1936`):
+```python
+if ml_test_auc < 0.50:
+    raw_w = 0.0        # truly random or inverse model — zero weight
+elif ml_test_auc < 0.55:
+    raw_w = float((ml_test_auc - 0.50) / 0.05 * 0.20)
+else:
+    raw_w = float(np.clip(0.20 + (ml_test_auc - 0.55) / 0.15 * 0.55, 0.20, 0.75))
+```
+A corrupted `0.55` lands exactly on the `else`-branch boundary, producing `raw_w = 0.20` — a
+known-bad (rank-inverted or coin-flip-suppressed) model gets **20% weight** in the fused
+BUY/SELL probability instead of the ~0% it should get, for every signal using the 3-model
+ensemble path.
+
+**Fix applied:** ported the exact `_model_auc()` pattern from `predict_latest_ensemble()`'s
+own T237-ML1B fix into `predict_latest_ensemble_three()`'s separate metrics block —
+`is not None` as the presence check (never a bare `or`), plus zeroing a suppressed model's
+contribution to the reported mean AUC (not just the blend weight), plus a real rescue path for
+the "every model reports a genuine auc=0.0" degenerate-but-real edge case:
+```python
+def _model_auc_3(m: dict) -> float:
+    metrics = m.get("metrics") or {}
+    auc = metrics.get("auc")
+    if auc is None:
+        auc = metrics.get("cv_auc_mean")
+    return float(auc) if auc is not None else 0.55
+
+_auc_weighted = [(_model_auc_3(xgb), bool(xgb.get("oos_suppressed")))]
+if lgb_res:
+    _auc_weighted.append((_model_auc_3(lgb_res), bool(lgb_res.get("oos_suppressed"))))
+if rf_res:
+    _auc_weighted.append((_model_auc_3(rf_res), bool(rf_res.get("oos_suppressed"))))
+
+auc_vals = [0.0 if suppressed else auc for auc, suppressed in _auc_weighted]
+if sum(auc_vals) <= 0:
+    auc_vals = [auc for auc, _ in _auc_weighted]  # restore real AUCs rather than a misleading zero
+mean_auc = sum(auc_vals) / len(auc_vals)
+```
+
+**Tests**: `services/ml-prediction/tests/test_predict_latest_ensemble_three_falsy_zero.py`
+(new, 7 cases) — matches `test_predict_latest_ensemble_falsy_zero.py`'s established
+`exec()`-extraction technique for this file (can't be imported directly locally, its import
+chain pulls in `lightgbm`, not installed here). Covers: a real `auc=0.0` correctly pulls the
+reported mean down meaningfully (not coerced to 0.55), all-3-models-genuinely-zero degrades to
+a real `0.0` mean rather than crashing or fabricating 0.55, a real nonzero-but-low AUC isn't
+confused with "absent," the genuine metric-absent case still correctly falls back through
+`cv_auc_mean` → 0.55, a suppressed model is excluded from the reported mean even with a
+real-looking point-estimate AUC, all-models-suppressed restores real AUCs rather than
+reporting a misleadingly-uniform zero, and the fix applies correctly when the ensemble
+degrades to only 2 real models (an artifact absent).
+
+**Adversarial verification**: reverted the fix back to the exact original 6-line buggy block
+and confirmed 5 of 7 tests failed with real, meaningful assertion diffs (e.g. `0.6333 ==
+0.4667`, `0.575 == 0.3` — the falsy-zero coercion visibly pulling the reported mean AUC up);
+the 2 that stayed green correctly test properties unrelated to the falsy-zero coercion itself
+(a genuine nonzero-low-AUC case, and the all-suppressed rescue path, whose own arithmetic is
+identical whether or not the falsy-zero fix is present). Restored and confirmed byte-identical
+via `md5sum` before redeploying. Full 101-test ml-prediction suite green (up from 94);
+`pyflakes` clean (the 2 remaining warnings — `db.Signal`/`..features.SECTOR_COLUMNS` imported
+but unused — confirmed pre-existing via `git stash`).
+
+**Live-verified against real production data** post-deploy: called
+`predict_latest_ensemble_three('AAPL', horizon=5, style='SWING')` directly inside the running
+container and confirmed a real, non-`0.55`-adjacent `mean_model_test_auc: 0.0941` (a genuinely
+low, meaningful value) survived through to the reported metric, alongside real per-model
+probabilities (`xgboost: 0.5, lightgbm: 0.3333, random_forest: 0.1429, meta: 0.6521`) —
+confirming the fix engages correctly against a real model ensemble, not just synthetic test
+fixtures.
+
+**What to check if this looks wrong:**
+```bash
+docker exec stockai-ml-prediction-1 grep -n "_model_auc_3\|AUD-ML1B-3MODEL" /app/src/training/trainer.py
+
+# Spot-check a real symbol's reported AUC directly — should never land suspiciously close to
+# 0.55 when a model has a genuinely different real AUC or is oos_suppressed:
+docker exec stockai-ml-prediction-1 python3 -c "
+import sys; sys.path.insert(0, '/app')
+from src.training.trainer import predict_latest_ensemble_three
+r = predict_latest_ensemble_three('<SYMBOL>', horizon=5, style='SWING')
+print(r['metrics'], r['oos_suppressed'])
+"
+```
+
+**Design invariant reinforced**: when a bug is found and fixed in one function, always check
+whether a SIBLING function (especially one sharing a near-identical name, e.g.
+`predict_latest_ensemble` vs. `predict_latest_ensemble_three`) has the identical bug
+independently, rather than assuming a fix's own inline comment describing what it "mirrored
+from" means the mirroring was ever completed in BOTH directions. This is the same lesson
+already documented multiple times elsewhere in this file for other bug classes (the
+`shared/db/` staleness sweeps, the delisted-stock-generation-blind sweeps, the Redis-
+connection-pooling audit) — a fix's own docstring naming a sibling pattern is evidence the
+author was AWARE of the sibling, not proof the sibling itself was ever actually touched.
+
+### AI Signal audit — remaining findings after this fix: NONE
+
+The dispatched investigation agent, after reading this file's own extensive prior AI-signal
+history (SA-19/SA-26/SA-30/SA-32/SA-33 pillar architecture, T220-tagged decision logic,
+confidence calibration, the bearish pillar mirror, the 2026-08-05 "Deep Audit #1 of 6" AI
+Signal Performance section, the 2026-07-31 signal-testing-framework review, the 2026-08-26
+`outcomes.py` split) and the full current code of `signals.py`, `outcomes.py`,
+`calibration.py`, and `signals_shared.py`, reported exactly one genuinely new, verified
+finding (the AUD-ML1B-3MODEL bug above, personally re-verified against the real current code
+and the real git history of the earlier related fix before being trusted). Every other
+candidate the agent traced (the pillar architecture itself, the SA-33 entry-timing fix, the
+SELLGATE bearish-pillar gate, the confidence-calibration feedback wiring in `_bulk_persist`,
+`evaluate_signal_outcomes`'s T+1/censoring/delisted-loss logic, `calibrate_ta_weights`'s
+validation gate, `tune_sell_pillars`'s sign convention) matched its documented, already-fixed,
+or deliberately-accepted-limitation status in this file exactly, with no drift between the
+documentation and the current code. AI Signal is considered complete for this audit pass.
+
+---
+
 ## Recurring Issue: BUG-KSCORECURVE-UNBOUNDEDWINDOW — tune_kscore_curve's Raw-Input Cache Had Unbounded Per-Row Window Growth (Fixed 2026-08-31)
 
 **Found while investigating BUG-WEEKLYREFRESH-HEAVYSWEEP-TIMEOUT** (above) — raising
