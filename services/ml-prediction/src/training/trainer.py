@@ -1243,12 +1243,39 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
         for m, w in available
     )
 
-    xgb_auc = float((xgb.get("metrics") or {}).get("auc") or (xgb.get("metrics") or {}).get("cv_auc_mean") or 0.55)
-    auc_vals = [xgb_auc]
+    # AUD-ML1B-3MODEL: sibling of predict_latest_ensemble()'s own T237-ML1B fix (see that
+    # function's docstring for the full rationale) — `or` treats a real, legitimate auc=0.0
+    # (a perfectly rank-inverted model) as falsy and silently substitutes 0.55, giving a
+    # degenerate model near-normal reported AUC instead of the ~0 it deserves. That reported
+    # mean_model_test_auc is what signal-engine's _fetch_ml_data() (signals.py) reads to set
+    # this model's fusion weight against TA — a corrupted 0.55 here lands squarely on the
+    # else-branch boundary of that formula, giving a known-bad model 20% weight instead of 0%.
+    # This block was NEVER covered by the earlier T237-ML1/predict_latest_ensemble() fix —
+    # that fix only touched the 2-model sibling function; this 3-model function's own separate
+    # mean_auc computation (used only for the *reported* metric, not the probability blend
+    # weights above, which already correctly exclude oos_suppressed models) was untouched.
+    def _model_auc_3(m: dict) -> float:
+        metrics = m.get("metrics") or {}
+        auc = metrics.get("auc")
+        if auc is None:
+            auc = metrics.get("cv_auc_mean")
+        return float(auc) if auc is not None else 0.55
+
+    # Also zero out a suppressed model's contribution to the REPORTED mean AUC — a model
+    # already known to be coin-flip-quality (oos_suppressed=True) should not inflate the
+    # metric a downstream fusion-weight formula trusts, even if its own point-estimate `auc`
+    # happens to look like a real, non-degenerate number.
+    _auc_weighted = [(_model_auc_3(xgb), bool(xgb.get("oos_suppressed")))]
     if lgb_res:
-        auc_vals.append(float((lgb_res.get("metrics") or {}).get("auc") or 0.55))
+        _auc_weighted.append((_model_auc_3(lgb_res), bool(lgb_res.get("oos_suppressed"))))
     if rf_res:
-        auc_vals.append(float((rf_res.get("metrics") or {}).get("auc") or 0.55))
+        _auc_weighted.append((_model_auc_3(rf_res), bool(rf_res.get("oos_suppressed"))))
+
+    auc_vals = [0.0 if suppressed else auc for auc, suppressed in _auc_weighted]
+    if sum(auc_vals) <= 0:
+        # Every contributing model is suppressed (or genuinely all report a real auc=0.0) —
+        # restore real AUCs rather than reporting a misleading, uniformly-zeroed mean.
+        auc_vals = [auc for auc, _ in _auc_weighted]
     mean_auc = sum(auc_vals) / len(auc_vals)
 
     return {
