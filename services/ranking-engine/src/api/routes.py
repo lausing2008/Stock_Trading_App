@@ -1275,6 +1275,8 @@ def _kscore_curve_candidate_sets(base_params: dict) -> list[dict]:
     return candidates
 
 
+_KSCORE_CURVE_RAW_CACHE_MAX_WINDOW = 300  # see the docstring below for why 300 is safe
+
 def _kscore_curve_raw_cache(
     session: Session, rankings: list, price_by_stock: dict,
 ) -> dict:
@@ -1282,20 +1284,52 @@ def _kscore_curve_raw_cache(
     row id — the expensive step every candidate in the sweep pool reuses via the cheap
     curve-remap functions instead of recomputing RSI/ADX/realized-vol from scratch per
     candidate. Point-in-time correct: only Price bars with ts.date() <= the row's own as_of are
-    visible."""
+    visible.
+
+    BUG-KSCORECURVE-UNBOUNDEDWINDOW (2026-08-31): the original version passed the FULL
+    "all history up to this row's own as_of date" slice into pd.DataFrame() + rolling/ewm
+    computations for every single ranking row — a real, unbounded, O(n^2)-ish cost as `idx`
+    (and therefore the per-row DataFrame size) grows across a sweep window. Confirmed live: a
+    real 365-day/11,746-row sweep against production data (166 stocks, up to 767 bars of
+    history each) did not complete _kscore_curve_raw_cache() alone within 250s, silently
+    hanging POST /rankings/tune_kscore_curve well past every reasonable client timeout and
+    repeatedly leaving orphaned idle-in-transaction Postgres connections behind (each aborted
+    client retry abandoning the still-running server-side request, which never got the chance
+    to close its own session cleanly).
+
+    Only the trailing _KSCORE_CURVE_RAW_CACHE_MAX_WINDOW bars are actually needed:
+    _technical_raw_inputs() computes at most a 200-bar SMA (its own longest rolling window),
+    and _rsi()/_adx_value()'s EWM computations converge geometrically — verified directly
+    against real production data (stock_id=1, 752 bars of real history) that a 300-bar window
+    produces results differing from the full-history version by <4e-9 (RSI) / <1.2e-7 (ADX),
+    many orders of magnitude below any threshold that could change which curve-shape candidate
+    the sweep selects. 300 gives sma200 a 100-bar warmup margin beyond its own 200-bar
+    requirement — comfortably enough for RSI/ADX's own EWM to have converged too.
+
+    Also fixes a second, independent real inefficiency: `dates` was rebuilt from scratch (a
+    full O(len(closes)) list comprehension) on EVERY ranking row, even though multiple rows
+    for the same stock_id share the identical, unchanged `closes` list — now cached once per
+    stock via `_dates_cache`, computed on first use rather than for every one of that stock's
+    ~70-row average share of the sweep window.
+    """
     from ..scoring.kscore import _technical_raw_inputs, _volatility_raw_input
     import bisect
 
     cache: dict[int, dict] = {}
+    _dates_cache: dict[int, list] = {}
     for r in rankings:
         closes = price_by_stock.get(r.stock_id)
         if not closes:
             continue
-        dates = [d for d, _row in closes]
+        dates = _dates_cache.get(r.stock_id)
+        if dates is None:
+            dates = [d for d, _row in closes]
+            _dates_cache[r.stock_id] = dates
         idx = bisect.bisect_right(dates, r.as_of)  # last bar with ts.date() <= as_of
         if idx == 0:
             continue  # no price history at or before this row's own date
-        window = [row for _d, row in closes[:idx]]
+        window_start = max(0, idx - _KSCORE_CURVE_RAW_CACHE_MAX_WINDOW)
+        window = [row for _d, row in closes[window_start:idx]]
         if len(window) < 15:  # need at least enough bars for _adx_value()'s own 14-period floor
             continue
         df = pd.DataFrame(window)

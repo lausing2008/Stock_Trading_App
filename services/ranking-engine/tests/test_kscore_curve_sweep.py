@@ -4,16 +4,27 @@ normalization, #19 volatility scale factor). POST /rankings/tune_kscore_curve,
 GET /rankings/kscore_curve_status.
 
 The pure candidate-generation function (_kscore_curve_candidate_sets) takes plain data with
-zero DB/session dependency, so it's imported and exercised directly.
+zero DB/session dependency, so it's imported and exercised directly. _kscore_curve_raw_cache()
+also takes only plain data (its own `session` parameter is unused in the function body — a
+type-hint holdover, confirmed by grepping the body for the word "session" — real production
+callers pass it, but nothing inside actually needs it), so it's exercised directly too, with a
+SimpleNamespace-based Ranking stand-in rather than a real ORM row.
 
-_kscore_curve_raw_cache()/_kscore_curve_composite_fn() and tune_kscore_curve() itself all have
-real DB/Session dependencies disproportionate to a full functional exercise — matching
-test_kscore_weight_sweep.py's own established proportionate-testing convention for this exact
-service, their wiring is instead covered by source-text regression checks.
+tune_kscore_curve() itself has real DB/Session dependencies disproportionate to a full
+functional exercise — matching test_kscore_weight_sweep.py's own established proportionate-
+testing convention for this exact service, its wiring is instead covered by source-text
+regression checks.
 """
 import pathlib
+from datetime import date, timedelta
+from types import SimpleNamespace
 
-from src.api.routes import _kscore_curve_candidate_sets, _KSCORE_CURVE_SWEEP_DELTA
+from src.api.routes import (
+    _kscore_curve_candidate_sets,
+    _kscore_curve_raw_cache,
+    _KSCORE_CURVE_RAW_CACHE_MAX_WINDOW,
+    _KSCORE_CURVE_SWEEP_DELTA,
+)
 
 _ROUTES_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "routes.py"
 _ROUTES_SOURCE = _ROUTES_PATH.read_text()
@@ -63,6 +74,141 @@ def test_every_real_delta_key_is_represented_in_the_generated_candidates():
     candidates = _kscore_curve_candidate_sets(_BASE_CURVE)
     touched_keys = {k for c in candidates for k in c}
     assert touched_keys == set(_KSCORE_CURVE_SWEEP_DELTA.keys())
+
+
+# ── _kscore_curve_raw_cache — BUG-KSCORECURVE-UNBOUNDEDWINDOW ──────────────────────────────
+
+def _fake_ranking(id_, stock_id, as_of):
+    return SimpleNamespace(id=id_, stock_id=stock_id, as_of=as_of)
+
+
+def _synthetic_closes(n_bars, start=date(2024, 1, 1)):
+    """A deterministic, gently-trending OHLC series — enough real variance for RSI/ADX to
+    produce a genuine, non-degenerate value (a flat series starves both indicators, per this
+    codebase's own documented lesson from the T230-BACKTESTING-MULTISYMBOL fixture-construction
+    mistake — never repeat that here)."""
+    closes = []
+    price = 100.0
+    for i in range(n_bars):
+        price += (0.15 if i % 3 != 0 else -0.05)  # deterministic, non-flat drift
+        d = start + timedelta(days=i)
+        closes.append((d, {"close": price, "high": price + 0.5, "low": price - 0.5}))
+    return closes
+
+
+def test_raw_cache_is_callable_with_session_as_none_it_is_genuinely_unused():
+    """Confirms the docstring's own claim: session is a real, harmless no-op parameter here —
+    a caller passing None must work exactly the same as passing a real Session."""
+    closes = _synthetic_closes(320)
+    rankings = [_fake_ranking(1, 10, closes[-1][0])]
+    cache = _kscore_curve_raw_cache(None, rankings, {10: closes})
+    assert 1 in cache
+    assert cache[1]["technical"]["rsi"] is not None
+
+
+def test_rows_with_fewer_than_15_bars_of_history_are_skipped_not_fabricated():
+    closes = _synthetic_closes(10)
+    rankings = [_fake_ranking(1, 10, closes[-1][0])]
+    cache = _kscore_curve_raw_cache(None, rankings, {10: closes})
+    assert 1 not in cache
+
+
+def test_a_row_with_no_price_history_for_its_stock_is_skipped():
+    rankings = [_fake_ranking(1, 999, date(2024, 6, 1))]
+    cache = _kscore_curve_raw_cache(None, rankings, {})
+    assert 1 not in cache
+
+
+def test_bounding_the_window_to_300_bars_produces_a_real_non_none_result_matching_the_full_history_shape():
+    """Not a numeric-equality check against the unbounded version (that would require keeping
+    the O(n^2) code path alive just to test against it) — confirms the bounded window still
+    produces a real, complete, well-formed result with all 5 technical keys and a real
+    volatility value, for a stock with MORE history than the bound."""
+    closes = _synthetic_closes(_KSCORE_CURVE_RAW_CACHE_MAX_WINDOW + 200)
+    rankings = [_fake_ranking(1, 10, closes[-1][0])]
+    cache = _kscore_curve_raw_cache(None, rankings, {10: closes})
+    assert 1 in cache
+    tech = cache[1]["technical"]
+    for key in ("above_sma50", "above_sma200", "sma50_above_sma200", "rsi", "adx"):
+        assert key in tech
+    assert tech["rsi"] is not None
+    assert cache[1]["volatility"] is not None
+
+
+def test_the_window_passed_downstream_is_capped_at_the_configured_max_not_the_full_history():
+    """The core regression guard for BUG-KSCORECURVE-UNBOUNDEDWINDOW: monkeypatches
+    _technical_raw_inputs to record the actual DataFrame length it receives, and confirms it
+    never exceeds _KSCORE_CURVE_RAW_CACHE_MAX_WINDOW even when far more history is available —
+    this is what an unbounded regression would violate.
+
+    _kscore_curve_raw_cache() imports _technical_raw_inputs via a LOCAL
+    `from ..scoring.kscore import ...` inside the function body, so patching it means patching
+    the real source module (src.scoring.kscore) it's imported FROM, not a name on routes.py
+    itself — routes.py never has its own module-level reference to patch."""
+    import src.scoring.kscore as kscore_module
+
+    seen_lengths = []
+    real_fn = kscore_module._technical_raw_inputs
+
+    def _spy(df):
+        seen_lengths.append(len(df))
+        return real_fn(df)
+
+    closes = _synthetic_closes(_KSCORE_CURVE_RAW_CACHE_MAX_WINDOW * 3)
+    rankings = [_fake_ranking(1, 10, closes[-1][0])]
+
+    kscore_module._technical_raw_inputs = _spy
+    try:
+        _kscore_curve_raw_cache(None, rankings, {10: closes})
+    finally:
+        kscore_module._technical_raw_inputs = real_fn
+
+    assert seen_lengths, "the spy was never called — test itself is broken"
+    assert max(seen_lengths) <= _KSCORE_CURVE_RAW_CACHE_MAX_WINDOW
+
+
+def test_multiple_rows_for_the_same_stock_reuse_the_cached_dates_list_not_rebuild_it():
+    """The second real inefficiency this fix closes: `dates` must be computed once per stock,
+    not once per ranking row that shares the same stock_id. A pure black-box behavioral test
+    genuinely cannot distinguish "cached and reused" from "correctly recomputed every time" —
+    both produce identical OUTPUT, only the performance differs — so this is a source-text
+    regression check, matching this file's own established convention for exactly this class
+    of un-black-box-testable property (see the endpoint-wiring checks below).
+
+    A first version of this test tried to verify the same property purely behaviorally
+    (multiple same-stock rows resolving to correct, distinct RSI values) — caught via
+    adversarial sabotage that this passed even with the caching removed entirely, since
+    correctness and the presence of the optimization are two different properties. This
+    source-text check is the fix for that gap, not a replacement for the behavioral coverage
+    above (which still guards that the caching, if present, doesn't corrupt results across
+    different stock_ids)."""
+    import pathlib
+    routes_path = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "routes.py"
+    src = routes_path.read_text()
+    start = src.index("def _kscore_curve_raw_cache(")
+    end = src.index("\n\n\n", start)
+    body = src[start:end]
+    assert "_dates_cache" in body
+    assert "_dates_cache.get(r.stock_id)" in body
+    assert "_dates_cache[r.stock_id] = dates" in body
+
+
+def test_multiple_rows_for_the_same_stock_still_resolve_to_correct_distinct_values():
+    """The behavioral half of the dates-cache coverage: confirms the caching (verified present
+    by the source-text check above) doesn't silently corrupt results — different as_of dates
+    on the SAME stock must still produce genuinely different RSI values, and a different
+    stock_id entirely must never accidentally share the first stock's cached dates."""
+    closes_a = _synthetic_closes(320, start=date(2024, 1, 1))
+    closes_b = _synthetic_closes(320, start=date(2023, 1, 1))  # different stock, different dates
+    price_by_stock = {10: closes_a, 20: closes_b}
+    rankings = [
+        _fake_ranking(1, 10, closes_a[100][0]),
+        _fake_ranking(2, 10, closes_a[250][0]),  # same stock, later date
+        _fake_ranking(3, 20, closes_b[150][0]),  # different stock entirely
+    ]
+    cache = _kscore_curve_raw_cache(None, rankings, price_by_stock)
+    assert set(cache.keys()) == {1, 2, 3}
+    assert cache[1]["technical"]["rsi"] != cache[2]["technical"]["rsi"]
 
 
 # ── Source-text regression checks on tune_kscore_curve()'s wiring ──────────────────────────
