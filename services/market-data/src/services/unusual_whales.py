@@ -1,6 +1,8 @@
-"""MPE-06/MPE-07: a real Unusual Whales API client — genuine dealer gamma exposure (GEX) and
-real short-interest data (borrow fee, shares available, days-to-cover), replacing this app's own
-free-data proxies where a subscription is active.
+"""MPE-06/MPE-07/MPE-OPTIONS-FLOW-ALERT: a real Unusual Whales API client — genuine dealer gamma
+exposure (GEX), real short-interest data (borrow fee, shares available, days-to-cover), and
+real-time unusual-options-activity flow alerts (rule-based, with a genuine ask-side/bid-side
+directional split UW itself computes), replacing this app's own free-data proxies where a
+subscription is active.
 
 Not a `DataAdapter` (services/market-data/src/adapters/base.py) — that ABC's whole contract is
 strictly OHLCV bars (`fetch_ohlcv(symbol, timeframe, start, end) -> OHLCV`); Unusual Whales'
@@ -23,6 +25,12 @@ https://api.unusualwhales.com/api/openapi spec (not guessed/assumed) before bein
   - /api/shorts/{ticker}/interest-float/v2 — days_to_cover, fee_rate, rebate_rate,
     short_interest, short_shares_available, si_float, total_float
   - /api/shorts/{ticker}/data           — fee_rate, rebate_rate, short_shares_available
+  - /api/option-trades/flow-alerts     — ticker, option_chain, type, strike, expiry,
+    total_ask_side_prem/total_bid_side_prem, has_sweep, volume_oi_ratio, alert_rule (the
+    non-deprecated replacement for /api/stock/{ticker}/flow-alerts). Real-time WebSocket
+    streaming of this same feed (wss://api.unusualwhales.com/socket, channel "flow-alerts")
+    requires UW's paid Advanced tier — this app polls the REST endpoint instead, which the
+    trial tier's 30,000 req/day budget comfortably supports for a bounded symbol set.
 """
 from __future__ import annotations
 
@@ -77,6 +85,32 @@ class ShortInterestData:
     market_date: str | None
 
 
+@dataclass
+class FlowAlert:
+    """One row from UW's real /api/option-trades/flow-alerts — a rule-based aggregation over
+    the full options tape (repeated same-contract trades within milliseconds, often a single
+    large order sweeping across multiple market makers). Field shapes verified directly against
+    the live OpenAPI spec's own real example payload, not guessed."""
+    ticker: str
+    option_chain: str  # UW's own per-contract symbol, e.g. "MSFT231222C00375000" — the real
+                       # per-CONTRACT identity this module's own dedup keys off of, not `ticker`
+    option_type: str  # "call" | "put"
+    strike: float | None
+    expiry: str | None  # ISO date string, e.g. "2023-12-22"
+    price: float | None  # fill price of the contract
+    underlying_price: float | None
+    total_premium: float | None
+    total_ask_side_prem: float | None  # aggressive BUYING at the ask
+    total_bid_side_prem: float | None  # aggressive SELLING at the bid
+    total_size: int | None
+    volume: int | None
+    open_interest: int | None
+    volume_oi_ratio: float | None  # how unusual this volume is relative to existing OI
+    has_sweep: bool
+    alert_rule: str | None
+    created_at: str | None
+
+
 def _get_redis():
     from common.redis_client import get_redis as _get_pool_redis
     return _get_pool_redis()
@@ -95,13 +129,17 @@ def is_available() -> bool:
     reraise=True,
     retry=retry_if_not_exception_type((UnusualWhalesRateLimitError, UnusualWhalesAuthError)),
 )
-def _get(path: str) -> dict | None:
+def _get(path: str, params: dict | None = None) -> dict | None:
     """A single authenticated GET against the real Unusual Whales API. Returns the parsed
     `data` field of the response (UW's own real response envelope, confirmed live), or `None`
     on any real absence of data. Raises UnusualWhalesRateLimitError/UnusualWhalesAuthError for
     the two error classes that must never be blindly retried — every other transient failure
     (timeout, 5xx, connection error) retries up to 3x with exponential backoff via tenacity,
     matching polygon_adapter.py's own established retry convention exactly.
+
+    `params` is passed straight through to httpx's own query-string encoding (real percent-
+    encoding, not manual string interpolation) — every caller with real query parameters
+    (get_flow_alerts) uses this rather than building a query string by hand.
     """
     key = get_unusual_whales_key()
     if not key:
@@ -109,6 +147,7 @@ def _get(path: str) -> dict | None:
     with httpx.Client(timeout=15) as client:
         r = client.get(
             f"{_BASE_URL}{path}",
+            params=params,
             headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
         )
         if r.status_code == 429:
@@ -235,6 +274,87 @@ def get_short_interest(symbol: str) -> ShortInterestData | None:
     except Exception:
         pass
     return result
+
+
+def get_flow_alerts(
+    symbol: str,
+    *,
+    min_premium: float = 50_000,
+    min_volume_oi_ratio: float = 1.0,
+    is_sweep: bool = True,
+    max_dte: int = 45,
+) -> list[FlowAlert]:
+    """Real, rule-based unusual-options-activity alerts for `symbol` from UW's own full-tape
+    scanner (`/api/option-trades/flow-alerts` — the non-deprecated replacement for the older
+    per-ticker `/api/stock/{ticker}/flow-alerts` endpoint). Each row is a contract UW's own
+    scanner already flagged as having repeated, rapid same-contract hits — often a single large
+    order sweeping across market makers, a real "urgency" signal UW computes for us, not
+    something this app derives itself.
+
+    Deliberately NOT cached — unlike GEX/short-interest (slow-moving, real-world data that only
+    changes a few times a day at most), flow alerts are inherently a fast-moving, minute-to-
+    minute feed; caching this would defeat the entire point of an "alert on fresh activity"
+    check. Safe at the trial tier's 30,000 req/day budget as long as the caller stays scoped to
+    a bounded symbol set (see check_options_flow_alerts()'s own docstring in scheduler.py) —
+    never called for the whole tracked universe.
+
+    Filter thresholds are real UW query params (confirmed against the live OpenAPI spec, not
+    guessed) — min_premium/min_volume_oi_ratio/is_sweep/max_dte are all genuine server-side
+    filters, so UW itself does the filtering rather than this app fetching everything and
+    discarding most of it. Defaults are deliberately a high-conviction floor (a real sweep, real
+    size, genuinely unusual relative to existing open interest, expiring soon enough to matter)
+    — every caller can override them, but the defaults alone already exclude routine, low-
+    signal trades.
+
+    Returns an empty list (never raises) on any failure — the disabled/unconfigured/rate-limited/
+    no-alerts-for-this-symbol cases are all indistinguishable to a caller by design, matching
+    get_gex_levels()/get_short_interest()'s own fail-open contract.
+    """
+    if not is_available():
+        return []
+    sym = symbol.upper()
+    try:
+        data = _get(
+            "/api/option-trades/flow-alerts",
+            params={
+                "ticker_symbol": sym,
+                "min_premium": min_premium,
+                "min_volume_oi_ratio": min_volume_oi_ratio,
+                "is_sweep": "true" if is_sweep else "false",
+                "max_dte": max_dte,
+                "limit": 50,
+            },
+        )
+    except Exception as exc:
+        log.warning("unusual_whales.flow_alerts_failed", symbol=sym, error=str(exc))
+        return []
+    if not data or not isinstance(data, list):
+        return []
+    alerts: list[FlowAlert] = []
+    for row in data:
+        try:
+            alerts.append(FlowAlert(
+                ticker=row.get("ticker", sym),
+                option_chain=row.get("option_chain", ""),
+                option_type=row.get("type", ""),
+                strike=_to_float(row.get("strike")),
+                expiry=row.get("expiry"),
+                price=_to_float(row.get("price")),
+                underlying_price=_to_float(row.get("underlying_price")),
+                total_premium=_to_float(row.get("total_premium")),
+                total_ask_side_prem=_to_float(row.get("total_ask_side_prem")),
+                total_bid_side_prem=_to_float(row.get("total_bid_side_prem")),
+                total_size=int(row["total_size"]) if row.get("total_size") is not None else None,
+                volume=int(row["volume"]) if row.get("volume") is not None else None,
+                open_interest=int(row["open_interest"]) if row.get("open_interest") is not None else None,
+                volume_oi_ratio=_to_float(row.get("volume_oi_ratio")),
+                has_sweep=bool(row.get("has_sweep")),
+                alert_rule=row.get("alert_rule"),
+                created_at=row.get("created_at"),
+            ))
+        except Exception:
+            continue  # one malformed row must never drop the rest of a real response
+    return alerts
 
 
 def _to_float(v) -> float | None:

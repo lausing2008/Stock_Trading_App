@@ -1622,6 +1622,102 @@ def send_gamma_unwind_email(to: str, candidates: list[dict]) -> bool:
     return send_email(to, subject, body_html, body_text)
 
 
+def send_options_flow_alert_email(to: str, candidates: list[dict]) -> bool:
+    """MPE-OPTIONS-FLOW-ALERT: real Unusual Whales unusual-options-activity alert. Each dict:
+    {symbol, option_chain, option_type ("call"/"put"), direction ("bullish"/"bearish"), strike,
+    expiry, price, total_premium, ask_side_dominant, volume_oi_ratio, has_sweep, alert_rule,
+    calibrated_win_rate/_count (optional)}.
+
+    Unlike send_gamma_unwind_email()'s hedged "watch, not a call" framing (which is honest about
+    NOT knowing dealer positioning), this alert reports a genuinely MEASURED direction — UW's
+    own real ask-side/bid-side premium split, not a proxy — so it's framed with the same
+    confidence as send_short_squeeze_email()'s BUY-thesis framing, just direction-aware (both
+    bullish and bearish rows in the same email, color-coded). Still explicitly a MEASURED-FACT
+    report, never a claim the stock will actually move — see check_options_flow_alerts()'s own
+    docstring for the full honesty framing this mirrors.
+    """
+    n = len(candidates)
+    n_bullish = sum(1 for c in candidates if c["direction"] == "bullish")
+    n_bearish = n - n_bullish
+    subject = (
+        f"🎯 Unusual Options Activity — {n} alert{'s' if n != 1 else ''} "
+        f"({n_bullish} bullish, {n_bearish} bearish)"
+    )
+
+    rows_html = ""
+    rows_text = ""
+    for c in candidates:
+        sym = c["symbol"]
+        direction = c["direction"]
+        dir_color = "#22c55e" if direction == "bullish" else "#ef4444"
+        opt_type = c["option_type"]
+        strike = c.get("strike")
+        expiry = c.get("expiry")
+        price = c.get("price")
+        premium = c.get("total_premium")
+        ask_dominant = c.get("ask_side_dominant")
+        side_str = "aggressive BUYING (ask-side)" if ask_dominant else "aggressive SELLING (bid-side)"
+        strike_str = f"${strike:.2f}" if strike is not None else "—"
+        price_str = f"${price:.2f}" if price else "—"
+        premium_str = f"${premium:,.0f}" if premium is not None else "—"
+        expiry_str = expiry or "—"
+        has_sweep = c.get("has_sweep")
+        sweep_str = " · SWEEP" if has_sweep else ""
+        vol_oi = c.get("volume_oi_ratio")
+        vol_oi_str = f" · {vol_oi:.1f}x existing OI" if vol_oi is not None else ""
+        cal_win_rate = c.get("calibrated_win_rate")
+        cal_count = c.get("calibrated_win_rate_count")
+        cal_html = ""
+        cal_text = ""
+        if cal_win_rate is not None and cal_count is not None:
+            cal_html = (
+                f'<div style="font-size:11px;color:#475569;margin-top:4px">'
+                f'Measured historical win rate ({direction}): {cal_win_rate * 100:.0f}% '
+                f'<span style="color:#94a3b8">(n={cal_count})</span></div>'
+            )
+            cal_text = f"    Measured historical win rate ({direction}): {cal_win_rate * 100:.0f}% (n={cal_count})\n"
+        else:
+            cal_html = '<div style="font-size:11px;color:#94a3b8;margin-top:4px">Not enough resolved history yet for a measured win rate</div>'
+            cal_text = "    Not enough resolved history yet for a measured win rate\n"
+        rows_html += (
+            f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
+            f'<strong style="font-size:14px">{sym}</strong>'
+            f'<span style="font-size:13px;color:{dir_color};font-weight:700">{direction.upper()} · {opt_type.upper()}</span>'
+            f'</div>'
+            f'<div style="font-size:12px;color:#64748b;margin-top:2px">'
+            f'{price_str} underlying · {strike_str} strike, exp {expiry_str} · {premium_str} premium, {side_str}{sweep_str}{vol_oi_str}'
+            f'</div>'
+            f'{cal_html}'
+            f'</div>'
+        )
+        rows_text += (
+            f"  {sym}: {direction.upper()} {opt_type.upper()}, {price_str} underlying, "
+            f"{strike_str} strike exp {expiry_str}, {premium_str} premium, {side_str}{sweep_str}{vol_oi_str}\n"
+            + cal_text
+        )
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:#6d28d9">🎯 Unusual Options Activity</h2>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} real Unusual Whales flow alert{'s' if n != 1 else ''} — large, urgent options positioning detected right now.</p>
+    <div style="margin-top:12px">{rows_html}</div>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      This reports a MEASURED fact — real, unusual options activity (a rule-based sweep/repeated-
+      hits detection over the full options tape) with a real ask-side/bid-side directional
+      split — not a prediction that the stock will actually move, or by how much. Not financial
+      advice.
+    </p>
+  </div>
+</body></html>"""
+    body_text = (
+        f"Unusual Options Activity — {n} alert{'s' if n != 1 else ''} ({n_bullish} bullish, {n_bearish} bearish)\n\n"
+        + rows_text
+        + "\nMeasured fact (real options flow), not a prediction. Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_prebreakout_email(to: str, candidates: list[dict]) -> bool:
     """T264-SHORTSQUEEZE-PREBREAKOUT: "coiling" alert — the pre-move counterpart to
     send_short_squeeze_email() above, direct user request: "predict the short sell not able to

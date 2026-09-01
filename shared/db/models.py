@@ -1885,6 +1885,86 @@ class PreBreakoutAlertOutcome(Base):
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class OptionsFlowAlertOutcome(Base):
+    """MPE-OPTIONS-FLOW-ALERT: forward-return tracking for check_options_flow_alerts() — a real
+    Unusual Whales unusual-options-activity alert (rule-based repeated-hits/sweep detection over
+    the full options tape, GET /api/option-trades/flow-alerts), direct follow-up to the user's
+    own request: "an alert for options call or sell, predict the expiration date and the
+    direction."
+
+    Deliberately a SEPARATE table from SqueezeAlertOutcome, not a reuse — that table's rows are
+    keyed per (alert_type, stock_id, fired_date), one row per UNDERLYING symbol per day, which
+    fits short_squeeze/gamma_unwind_* (both symbol-level phenomena) but not this alert: a single
+    underlying can legitimately have multiple, genuinely distinct flow alerts fire the same day
+    (a bullish call sweep on one expiry AND a bearish put sweep on a different expiry are two
+    real, separate signals, not the same event twice) — this table is keyed per CONTRACT
+    (option_chain), not per underlying, matching PreBreakoutAlertOutcome's own "a genuinely
+    different mechanism needs its own table" precedent rather than forcing a shape mismatch.
+
+    direction is derived from BOTH option_type (call/put) AND which side of the market was
+    aggressive (ask-side buying vs. bid-side selling) — the real signal UW's own ask/bid premium
+    split provides, not merely "call = bullish": a large ask-side-heavy CALL sweep is bullish
+    (aggressive buying of upside), a large ask-side-heavy PUT sweep is bearish (aggressive buying
+    of downside protection/a bet on a drop), a large BID-side-heavy sweep on either side is the
+    mirror (aggressive SELLING of that contract, the "option sell" half of the user's own
+    request) — four real, distinct reads, not a naive two-way call/put split. See
+    check_options_flow_alerts()'s own docstring in scheduler.py for the exact derivation.
+
+    Forward returns scored the same is_correct_Nd convention as SqueezeAlertOutcome — win means
+    price moved in the DIRECTION this alert implied (up for bullish, down for bearish), using
+    the same T+1-entry / bisect-nearest-bar-with-grace-window discipline as every other outcome
+    table in this app, filled by a dedicated evaluator loop over _SQUEEZE_OUTCOME_WINDOWS.
+    """
+    __tablename__ = "options_flow_alert_outcomes"
+    __table_args__ = (
+        UniqueConstraint(
+            "option_chain", "fired_date",
+            name="uq_options_flow_alert_outcome_contract_date",
+        ),
+        Index("ix_options_flow_alert_outcomes_stock_date", "stock_id", "fired_date"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    option_chain: Mapped[str] = mapped_column(String(64), index=True)  # UW's own per-contract symbol
+    option_type: Mapped[str] = mapped_column(String(8))  # "call" | "put"
+    direction: Mapped[str] = mapped_column(String(8))  # "bullish" | "bearish" — see class docstring
+    strike: Mapped[float | None] = mapped_column(Float, nullable=True)
+    expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
+    fired_date: Mapped[date] = mapped_column(Date, index=True)
+    fired_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    alert_price: Mapped[float] = mapped_column(Float)  # underlying's live price at the moment this alert first fired
+    total_premium: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ask_side_dominant: Mapped[bool] = mapped_column(Boolean)  # True = aggressive buying, False = aggressive selling
+    volume_oi_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    has_sweep: Mapped[bool] = mapped_column(Boolean, default=False)
+    alert_rule: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    calibrated_win_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    calibrated_win_rate_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    entry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price_1d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_1d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_1d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_2d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_2d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_2d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_3d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_3d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_3d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_5d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_10d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_10d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_10d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_20d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class PortfolioRiskMetric(Base):
     """IF-01: persisted VaR/CVaR snapshot for a user's real position book, closing the gap this
     tracker item's own review found — portfolio-optimizer's GET /portfolio-risk/risk was

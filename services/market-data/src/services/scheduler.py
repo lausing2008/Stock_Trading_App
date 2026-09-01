@@ -85,7 +85,7 @@ from sqlalchemy.orm import selectinload, Session
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, AnalystPriceTarget, EarningsEvent, EconomicEvent, FundamentalsSnapshot, Market, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
+from db import AlertCondition, AnalystPriceTarget, EarningsEvent, EconomicEvent, FundamentalsSnapshot, Market, OptionsFlowAlertOutcome, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -4120,6 +4120,269 @@ def check_gamma_unwind_alerts() -> None:
             pass
 
 
+_OPTIONS_FLOW_ALERT_LOCK_KEY = "stockai:lock:check_options_flow_alerts"
+_OPTIONS_FLOW_ALERT_LOCK_TTL = 55  # every 60s — Unusual Whales' REST flow-alerts feed is cheap
+# (not rate-limit-fragile like yfinance's options-chain endpoint check_gamma_unwind_alerts()
+# above has to ration itself around), so this can run on the same fast intraday cadence as
+# check_short_squeeze_alerts() rather than the gamma job's few-times-a-day cadence.
+
+# Real UW query-param thresholds (see unusual_whales.get_flow_alerts()'s own docstring for why
+# these specific defaults) — kept as named module constants here too so a future retune has one
+# place to look, matching every other alert's own _MIN_*/_MAX_* constant convention.
+_OPTIONS_FLOW_ALERT_MIN_PREMIUM = 50_000
+_OPTIONS_FLOW_ALERT_MIN_VOLUME_OI_RATIO = 1.0
+_OPTIONS_FLOW_ALERT_MAX_DTE = 45
+
+
+def _options_flow_alert_direction(option_type: str, ask_side_dominant: bool) -> str:
+    """MPE-OPTIONS-FLOW-ALERT: the real directional read UW's own ask-side/bid-side split
+    provides, not a naive "call=bullish, put=bearish" — see OptionsFlowAlertOutcome's own
+    docstring for the full reasoning:
+      - call + ask-side dominant  -> bullish (aggressive buying of upside)
+      - put  + ask-side dominant  -> bearish (aggressive buying of downside protection/a drop bet)
+      - put  + bid-side dominant  -> bullish (aggressive SELLING of puts — a bet the stock will
+        NOT fall, the "option sell" half of the user's own request)
+      - call + bid-side dominant  -> bearish (aggressive SELLING of calls — a bet the stock will
+        NOT rise; covered-call/short-call positioning)
+    """
+    if option_type == "call":
+        return "bullish" if ask_side_dominant else "bearish"
+    return "bearish" if ask_side_dominant else "bullish"
+
+
+def _record_options_flow_alert_outcome(
+    session, stock_id: int, symbol: str, price: float, candidate: dict,
+) -> None:
+    """Same fail-open, existence-check-first persistence discipline as
+    _record_squeeze_alert_outcome() — a persistence hiccup here must never block the actual
+    email send. Keyed on (option_chain, fired_date), not (symbol, fired_date) — see
+    OptionsFlowAlertOutcome's own docstring for why a single underlying can legitimately fire
+    more than once on the same day."""
+    try:
+        expiry_str = candidate.get("expiry")
+        expiry_date = date.fromisoformat(expiry_str) if expiry_str else None
+        today = date.today()
+        existing = session.execute(
+            select(OptionsFlowAlertOutcome).where(
+                OptionsFlowAlertOutcome.option_chain == candidate["option_chain"],
+                OptionsFlowAlertOutcome.fired_date == today,
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return
+        session.add(OptionsFlowAlertOutcome(
+            stock_id=stock_id, symbol=symbol, option_chain=candidate["option_chain"],
+            option_type=candidate["option_type"], direction=candidate["direction"],
+            strike=candidate.get("strike"), expiry=expiry_date, fired_date=today,
+            alert_price=float(price), total_premium=candidate.get("total_premium"),
+            ask_side_dominant=candidate["ask_side_dominant"],
+            volume_oi_ratio=candidate.get("volume_oi_ratio"), has_sweep=candidate.get("has_sweep", False),
+            alert_rule=candidate.get("alert_rule"),
+        ))
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        log.warning("options_flow_alert_outcome.record_failed", symbol=symbol, error=str(exc))
+
+
+_OPTIONS_FLOW_ALERT_CAL_MIN_COUNT = 30  # matches _SQUEEZE_FAMILY_CAL_MIN_COUNT exactly
+
+
+def _build_options_flow_alert_calibration(session, direction: str) -> dict | None:
+    """A MEASURED historical win rate for THIS alert's own resolved outcomes, split by direction
+    (bullish/bearish) — the direct sibling of _build_squeeze_family_calibration()/_build_
+    prebreakout_calibration(), just against OptionsFlowAlertOutcome's own table and its own
+    simpler single-bucket-per-direction shape (no metric-band scheme needed here, since
+    direction alone — not a continuous metric like short-float% or OI-concentration% — is what
+    this alert's own qualifying condition already is). None (not a fabricated 0.0) below the
+    30-resolved-outcomes floor, matching every other calibration function in this file.
+    """
+    rows = session.execute(
+        select(OptionsFlowAlertOutcome.is_correct_10d)
+        .where(OptionsFlowAlertOutcome.direction == direction, OptionsFlowAlertOutcome.is_correct_10d.is_not(None))
+    ).all()
+    outcomes = [r[0] for r in rows]
+    if len(outcomes) < _OPTIONS_FLOW_ALERT_CAL_MIN_COUNT:
+        return None
+    return {"win_rate": round(sum(outcomes) / len(outcomes), 3), "count": len(outcomes)}
+
+
+def check_options_flow_alerts() -> None:
+    """MPE-OPTIONS-FLOW-ALERT: real Unusual Whales unusual-options-activity alert — direct user
+    request: "an alert for options call or sell, predict the expiration date and the direction."
+
+    Genuinely different mechanism from BOTH squeeze alerts above: check_short_squeeze_alerts()
+    infers pressure from stock-side short interest + price action; check_gamma_unwind_alerts()
+    infers pressure from a free OI-CONCENTRATION PROXY with an explicitly-disclaimed "not real
+    GEX" caveat. This alert reports a MEASURED, REAL signal UW's own rule-based scanner already
+    computes over the full options tape — repeated same-contract trades within milliseconds
+    (often one large order sweeping across market makers), with a genuine ask-side/bid-side
+    premium split telling us whether that activity was aggressive BUYING or aggressive SELLING.
+    See _options_flow_alert_direction()'s own docstring for the exact 4-way direction derivation
+    (this is NOT a naive "call=bullish, put=bearish" — selling puts is bullish, selling calls is
+    bearish, matching what a real options trader would call it).
+
+    HONEST FRAMING, matching this app's own established alert-honesty discipline (T257-VOLUME-
+    ANOMALY-ALERT, every squeeze alert already shipped): this reports a MEASURED fact — "large,
+    urgent options positioning was just detected, here's the contract/expiry/direction/size" —
+    never a claim that the stock will actually move, or by how much. The calibrated_win_rate
+    field (once >=30 resolved outcomes exist per direction) tells you how THIS specific
+    direction has performed historically; it does not resolve the underlying uncertainty that
+    options flow, however large, is not a guarantee.
+
+    Gated entirely behind unusual_whales.is_available() — this alert simply never fires with no
+    key configured or the feature toggled off, no free-proxy fallback exists for it (unlike GEX/
+    short-interest, which have established free-proxy equivalents elsewhere in this app; this is
+    the one genuinely NEW capability UW unlocks, not a more-accurate version of something already
+    built). Scoped to _bounded_options_flow_symbols() (US-only, PriceAlert-subscribed + top-K by
+    K-Score) — never the whole universe, matching every other options-chain-touching job's own
+    rate/cost discipline, even though UW's own REST endpoint is far cheaper per-call than
+    yfinance's options-chain fetch.
+
+    Deduped per (user, option_chain) — a contract that's already been alerted on today for a
+    given user is skipped, using the same 20h-TTL Redis-set resync pattern check_short_squeeze_
+    alerts() established (a stock can re-alert tomorrow, or today on a genuinely DIFFERENT
+    contract, but not the identical contract twice in one day).
+    """
+    from . import unusual_whales as _uw
+    if not _uw.is_available():
+        return
+    try:
+        acquired = _get_redis().set(_OPTIONS_FLOW_ALERT_LOCK_KEY, "1", nx=True, ex=_OPTIONS_FLOW_ALERT_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    _t0 = time.monotonic()
+    try:
+        import json as _json
+
+        with SessionLocal() as session:
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            if not alerts:
+                _record_job_status("check_options_flow_alerts", "ok", time.monotonic() - _t0)
+                return
+            recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            if not recipients:
+                _record_job_status("check_options_flow_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            symbols = _bounded_options_flow_symbols(session)
+            if not symbols:
+                _record_job_status("check_options_flow_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            _rc = _get_redis()
+            try:
+                _live_raw = {row["symbol"]: row for row in _json.loads(_rc.get("stockai:live_prices") or "[]")}
+            except Exception:
+                _live_raw = {}
+
+            _cal_buckets = {
+                "bullish": _build_options_flow_alert_calibration(session, "bullish"),
+                "bearish": _build_options_flow_alert_calibration(session, "bearish"),
+            }
+
+            # Keyed by option_chain (per-contract), not symbol — see OptionsFlowAlertOutcome's
+            # own docstring for why a single underlying can legitimately fire more than once.
+            candidates: dict[str, dict] = {}
+            id_by_symbol: dict[str, int] = {}
+            for stock_id, symbol in symbols:
+                try:
+                    live = _live_raw.get(symbol)
+                    price = live.get("price") if live else None
+                    if not price:
+                        continue
+                    id_by_symbol[symbol] = stock_id
+                    rows = _uw.get_flow_alerts(
+                        symbol,
+                        min_premium=_OPTIONS_FLOW_ALERT_MIN_PREMIUM,
+                        min_volume_oi_ratio=_OPTIONS_FLOW_ALERT_MIN_VOLUME_OI_RATIO,
+                        is_sweep=True,
+                        max_dte=_OPTIONS_FLOW_ALERT_MAX_DTE,
+                    )
+                    for row in rows:
+                        if not row.option_chain or row.option_type not in ("call", "put"):
+                            continue
+                        ask = row.total_ask_side_prem or 0.0
+                        bid = row.total_bid_side_prem or 0.0
+                        if ask == 0.0 and bid == 0.0:
+                            continue  # no real premium split to derive a direction from
+                        ask_side_dominant = ask >= bid
+                        direction = _options_flow_alert_direction(row.option_type, ask_side_dominant)
+                        cal = _cal_buckets.get(direction)
+                        candidates[row.option_chain] = {
+                            "symbol": symbol,
+                            "option_chain": row.option_chain,
+                            "option_type": row.option_type,
+                            "direction": direction,
+                            "strike": row.strike,
+                            "expiry": row.expiry,
+                            "price": price,
+                            "total_premium": row.total_premium,
+                            "ask_side_dominant": ask_side_dominant,
+                            "volume_oi_ratio": row.volume_oi_ratio,
+                            "has_sweep": row.has_sweep,
+                            "alert_rule": row.alert_rule,
+                            "calibrated_win_rate": cal["win_rate"] if cal else None,
+                            "calibrated_win_rate_count": cal["count"] if cal else None,
+                        }
+                except Exception as exc:
+                    log.warning("options_flow_alert.symbol_error", symbol=symbol, error=str(exc))
+                    continue
+
+            if not candidates:
+                _record_job_status("check_options_flow_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            for chain, cand in candidates.items():
+                _record_options_flow_alert_outcome(
+                    session, id_by_symbol[cand["symbol"]], cand["symbol"], float(cand["price"]), cand,
+                )
+
+            from .email_service import send_options_flow_alert_email
+            sent = 0
+            for uid, user in recipients.items():
+                state_key = f"stockai:options_flow_alert_seen:{uid}"
+                try:
+                    prev_seen = set(_rc.smembers(state_key) or set())
+                except Exception:
+                    prev_seen = set()
+                current_chains = set(candidates.keys())
+                newly_seen = sorted(current_chains - prev_seen)
+                send_ok = True
+                if newly_seen:
+                    payload = [candidates[chain] for chain in newly_seen]
+                    try:
+                        send_ok = send_options_flow_alert_email(user.email, payload)
+                    except Exception as _send_exc:
+                        send_ok = False
+                        log.warning("options_flow_alert.recipient_send_error", user=uid, error=str(_send_exc))
+                    if send_ok:
+                        sent += 1
+                resync_set = current_chains if send_ok else (current_chains - set(newly_seen))
+                try:
+                    _rc.delete(state_key)
+                    if resync_set:
+                        _rc.sadd(state_key, *resync_set)
+                    _rc.expire(state_key, 20 * 3600)
+                except Exception:
+                    pass
+
+            _record_job_status("check_options_flow_alerts", "ok", time.monotonic() - _t0)
+            log.info("options_flow_alert.done", candidates=len(candidates), sent=sent, recipients=len(recipients))
+    except Exception as exc:
+        log.error("options_flow_alert.failed", error=str(exc), exc_info=True)
+        _record_job_status("check_options_flow_alerts", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        try:
+            _get_redis().delete(_OPTIONS_FLOW_ALERT_LOCK_KEY)
+        except Exception:
+            pass
+
+
 _BEARISH_WATCH_MIN_DAYS_TO_EXPIRY = 3  # the puts-heavy scan the user asked for is 3-5 days out,
 _BEARISH_WATCH_MAX_DAYS_TO_EXPIRY = 5  # a NARROWER window than the shared 0-5 gamma-unwind scan
 _BEARISH_WATCH_MIN_AGREEING_SIGNALS = 2  # of 3 real signals below — needed for "high conviction"
@@ -4787,6 +5050,110 @@ def evaluate_prebreakout_alert_outcomes() -> None:
     finally:
         try:
             _get_redis().delete(_PREBREAKOUT_OUTCOME_EVAL_LOCK_KEY)
+        except Exception:
+            pass
+
+
+_OPTIONS_FLOW_ALERT_OUTCOME_EVAL_LOCK_KEY = "stockai:lock:evaluate_options_flow_alert_outcomes"
+_OPTIONS_FLOW_ALERT_OUTCOME_EVAL_LOCK_TTL = 3600
+
+
+def evaluate_options_flow_alert_outcomes() -> None:
+    """MPE-OPTIONS-FLOW-ALERT: fills entry_price + 1d/2d/3d/5d/10d/20d forward returns for every
+    OptionsFlowAlertOutcome row whose windows haven't closed yet — the sibling evaluator to
+    evaluate_squeeze_alert_outcomes()/evaluate_prebreakout_alert_outcomes() above, reusing the
+    SAME _squeeze_outcome_lookup_price() helper and _SQUEEZE_OUTCOME_WINDOWS/_SQUEEZE_OUTCOME_
+    WIN_HURDLE_PCT constants (a genuinely shared T+1-entry / bisect-nearest-bar-with-grace-
+    window discipline, not a re-derived copy).
+
+    Direction convention: win means price moved in the direction THIS row's own `direction`
+    column implied at fire time (bullish = price rose past the hurdle, bearish = price fell past
+    the negative hurdle) — matching SqueezeAlertOutcome's own bearish-thesis scoring exactly,
+    just keyed on this table's own per-row direction field instead of a fixed per-alert_type
+    convention (since a single OptionsFlowAlertOutcome table legitimately holds BOTH directions).
+    """
+    try:
+        acquired = _get_redis().set(
+            _OPTIONS_FLOW_ALERT_OUTCOME_EVAL_LOCK_KEY, "1", nx=True, ex=_OPTIONS_FLOW_ALERT_OUTCOME_EVAL_LOCK_TTL,
+        )
+        if not acquired:
+            return
+    except Exception:
+        pass
+    _t0 = time.monotonic()
+    try:
+        today = date.today()
+        with SessionLocal() as session:
+            pending = session.execute(
+                select(OptionsFlowAlertOutcome).where(
+                    (OptionsFlowAlertOutcome.entry_price.is_(None))
+                    | (OptionsFlowAlertOutcome.return_20d.is_(None))
+                )
+            ).scalars().all()
+            if not pending:
+                _record_job_status("evaluate_options_flow_alert_outcomes", "ok", time.monotonic() - _t0)
+                return
+
+            stock_ids = {row.stock_id for row in pending}
+            min_fired = min(row.fired_date for row in pending)
+            bulk_prices = session.execute(
+                select(Price.stock_id, Price.ts, Price.close).where(
+                    Price.stock_id.in_(stock_ids),
+                    Price.timeframe == TimeFrame.D1,
+                    Price.ts >= datetime.combine(min_fired, datetime.min.time()),
+                )
+                .order_by(Price.stock_id, Price.ts)
+            ).all()
+            price_map: dict[int, list[tuple]] = {}
+            for stock_id, ts, close in bulk_prices:
+                pr_date = ts.date() if hasattr(ts, "date") else ts
+                price_map.setdefault(stock_id, []).append((pr_date, float(close)))
+
+            evaluated = 0
+            for row in pending:
+                try:
+                    bucket = price_map.get(row.stock_id, [])
+                    if row.entry_price is None:
+                        entry_result = _squeeze_outcome_lookup_price(bucket, row.fired_date + timedelta(days=1))
+                        if entry_result is None:
+                            continue
+                        row.entry_date, row.entry_price = entry_result
+
+                    is_bearish_thesis = row.direction == "bearish"
+                    for window in _SQUEEZE_OUTCOME_WINDOWS:
+                        price_field, ret_field, correct_field = f"price_{window}d", f"return_{window}d", f"is_correct_{window}d"
+                        if getattr(row, price_field) is not None:
+                            continue
+                        target = row.entry_date + timedelta(days=window)
+                        if target > today:
+                            continue
+                        result = _squeeze_outcome_lookup_price(bucket, target)
+                        if result is None:
+                            continue
+                        _, price = result
+                        ret = (price - row.entry_price) / row.entry_price
+                        is_correct = (
+                            ret < -_SQUEEZE_OUTCOME_WIN_HURDLE_PCT if is_bearish_thesis
+                            else ret > _SQUEEZE_OUTCOME_WIN_HURDLE_PCT
+                        )
+                        setattr(row, price_field, price)
+                        setattr(row, ret_field, ret)
+                        setattr(row, correct_field, is_correct)
+                    row.evaluated_at = datetime.now(timezone.utc)
+                    evaluated += 1
+                except Exception as exc:
+                    log.warning("options_flow_alert_outcome.eval_row_failed", symbol=row.symbol, error=str(exc))
+                    continue
+
+            session.commit()
+            _record_job_status("evaluate_options_flow_alert_outcomes", "ok", time.monotonic() - _t0)
+            log.info("options_flow_alert_outcome.eval_done", pending=len(pending), evaluated=evaluated)
+    except Exception as exc:
+        log.error("options_flow_alert_outcome.eval_failed", error=str(exc), exc_info=True)
+        _record_job_status("evaluate_options_flow_alert_outcomes", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        try:
+            _get_redis().delete(_OPTIONS_FLOW_ALERT_OUTCOME_EVAL_LOCK_KEY)
         except Exception:
             pass
 
@@ -10019,6 +10386,16 @@ def start_scheduler() -> None:
         id="prebreakout_alert_outcome_eval_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
 
+    # ── MPE-OPTIONS-FLOW-ALERT: options-flow alert outcome evaluator — 18:25 ET ──
+    # Pure data computation, no email sent — not gated behind _is_alerting_enabled(). Runs
+    # right after its two sibling evaluators above (same reasoning: after the day's own D1
+    # bars have settled).
+    _scheduler.add_job(
+        evaluate_options_flow_alert_outcomes,
+        CronTrigger(hour=18, minute=25, timezone="America/New_York"),
+        id="options_flow_alert_outcome_eval_daily", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
     # BUG-LOCALDEV-ALERTS-UNGATED: every 1-minute-interval checker below sends real alert
     # emails when it fires — gated behind _is_alerting_enabled() as a block (they're all
     # alert-emitting, no data-only jobs interleaved in this contiguous stretch).
@@ -10120,6 +10497,22 @@ def start_scheduler() -> None:
             "interval",
             minutes=1,
             id="squeeze_watch_revert_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
+
+        # ── MPE-OPTIONS-FLOW-ALERT: real Unusual Whales unusual-options-activity alert —
+        # every minute ──────────────────────────────────────────────────────────────────────
+        # Gated entirely behind unusual_whales.is_available() (a no-op when no key is
+        # configured/enabled) — see check_options_flow_alerts()'s own docstring for the full
+        # mechanism, the direction derivation, and why this can safely run on the same fast
+        # cadence as the other minute-interval alerts (UW's own REST endpoint is far cheaper
+        # per-call than yfinance's options-chain fetch).
+        _scheduler.add_job(
+            check_options_flow_alerts,
+            "interval",
+            minutes=1,
+            id="options_flow_alert_check",
             replace_existing=True,
             max_instances=1, coalesce=True,
         )

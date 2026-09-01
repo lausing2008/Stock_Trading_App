@@ -226,6 +226,124 @@ def test_short_interest_uses_the_6h_ttl_not_the_gex_15min_ttl():
     assert spy.setex_calls[0][1] != uw._GEX_TTL
 
 
+# ── get_flow_alerts() ─────────────────────────────────────────────────────────────────────
+
+def test_flow_alerts_returns_empty_list_when_not_available():
+    with patch.object(uw, "is_available", return_value=False):
+        assert uw.get_flow_alerts("AAPL") == []
+
+
+def test_flow_alerts_parses_a_real_response():
+    fake_row = {
+        "ticker": "MSFT", "option_chain": "MSFT231222C00375000", "type": "call",
+        "strike": "375", "expiry": "2023-12-22", "price": "4.05",
+        "underlying_price": "372.99", "total_premium": "186705",
+        "total_ask_side_prem": "151875", "total_bid_side_prem": "405",
+        "total_size": 461, "volume": 2442, "open_interest": 7913,
+        "volume_oi_ratio": "0.30860609124226", "has_sweep": True,
+        "alert_rule": "RepeatedHits", "created_at": "2023-12-12T16:35:52Z",
+    }
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", return_value=[fake_row]):
+        result = uw.get_flow_alerts("MSFT")
+    assert len(result) == 1
+    a = result[0]
+    assert a.ticker == "MSFT"
+    assert a.option_chain == "MSFT231222C00375000"
+    assert a.option_type == "call"
+    assert a.strike == 375.0
+    assert a.expiry == "2023-12-22"
+    assert a.total_ask_side_prem == 151875.0
+    assert a.total_bid_side_prem == 405.0
+    assert a.total_size == 461
+    assert a.volume == 2442
+    assert a.open_interest == 7913
+    assert a.has_sweep is True
+    assert a.alert_rule == "RepeatedHits"
+
+
+def test_flow_alerts_returns_empty_list_for_no_alerts():
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", return_value=[]):
+        assert uw.get_flow_alerts("XYZ") == []
+
+
+def test_flow_alerts_returns_empty_list_on_a_non_list_response():
+    """A malformed/unexpected response shape must degrade to [], never crash or fabricate
+    a partial result."""
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", return_value={"unexpected": "shape"}):
+        assert uw.get_flow_alerts("XYZ") == []
+
+
+def test_flow_alerts_returns_empty_list_on_a_fetch_exception():
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=RuntimeError("boom")):
+        assert uw.get_flow_alerts("AAPL") == []
+
+
+def test_flow_alerts_one_malformed_row_does_not_drop_the_rest():
+    """A single bad row (e.g. a genuinely unparseable total_size) must not take down the
+    whole response — every other, well-formed row in the same batch should still come back."""
+    good_row = {
+        "ticker": "AAPL", "option_chain": "AAPL240101C00200000", "type": "call",
+        "strike": "200", "expiry": "2024-01-01", "total_size": 100, "has_sweep": False,
+    }
+    bad_row = {
+        "ticker": "AAPL", "option_chain": "AAPL240101P00190000", "type": "put",
+        "total_size": "not-a-number", "has_sweep": False,
+    }
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", return_value=[bad_row, good_row]):
+        result = uw.get_flow_alerts("AAPL")
+    assert len(result) == 1
+    assert result[0].option_chain == "AAPL240101C00200000"
+
+
+def test_flow_alerts_is_never_cached_unlike_gex_and_short_interest():
+    """Flow alerts are inherently a fast-moving, minute-to-minute feed — unlike GEX/short-
+    interest, _get_redis() must never be touched by this function at all."""
+    class _ExplodingRedis:
+        def get(self, *a, **kw):
+            raise AssertionError("get_flow_alerts must never read from Redis")
+        def setex(self, *a, **kw):
+            raise AssertionError("get_flow_alerts must never write to Redis")
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=_ExplodingRedis()), \
+         patch.object(uw, "_get", return_value=[]):
+        uw.get_flow_alerts("AAPL")  # must not raise
+
+
+def test_flow_alerts_passes_real_filter_params_to_get():
+    """The whole point of the default thresholds — confirms they actually reach _get()'s own
+    params dict, not silently dropped/ignored."""
+    captured = {}
+    def _fake_get(path, params=None):
+        captured["path"] = path
+        captured["params"] = params
+        return []
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=_fake_get):
+        uw.get_flow_alerts("AAPL", min_premium=100_000, min_volume_oi_ratio=2.0, is_sweep=True, max_dte=30)
+    assert captured["path"] == "/api/option-trades/flow-alerts"
+    assert captured["params"]["ticker_symbol"] == "AAPL"
+    assert captured["params"]["min_premium"] == 100_000
+    assert captured["params"]["min_volume_oi_ratio"] == 2.0
+    assert captured["params"]["is_sweep"] == "true"
+    assert captured["params"]["max_dte"] == 30
+
+
+def test_flow_alerts_uppercases_the_symbol():
+    captured = {}
+    def _fake_get(path, params=None):
+        captured["params"] = params
+        return []
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=_fake_get):
+        uw.get_flow_alerts("aapl")
+    assert captured["params"]["ticker_symbol"] == "AAPL"
+
+
 # ── _get() real retry/error-classification behavior ─────────────────────────────────────
 
 class TestGetFunctionRealHttpBehavior:

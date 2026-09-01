@@ -12,8 +12,8 @@ from common.config import get_settings
 from common.logging import get_logger
 from db import (
     Exchange, Market, SessionLocal, Stock, Signal, SignalOutcome, SignalHorizon,
-    FundamentalsSnapshot, Price, SqueezeAlertOutcome, TimeFrame, Watchlist, WatchlistItem,
-    Ranking, init_db, get_session,
+    FundamentalsSnapshot, OptionsFlowAlertOutcome, Price, SqueezeAlertOutcome, TimeFrame,
+    Watchlist, WatchlistItem, Ranking, init_db, get_session,
 )
 
 from ..adapters.registry import set_runtime_key
@@ -742,6 +742,112 @@ def squeeze_alert_performance(
     return {
         "days_back": days_back,
         "by_alert_type": by_alert_type,
+        "recent_alerts": recent_alerts,
+    }
+
+
+@router.get("/options-flow-alert-performance")
+def options_flow_alert_performance(
+    days_back: int = Query(180, ge=1, le=730),
+    limit: int = Query(50, ge=1, le=500, description="How many most-recent rows to return in recent_alerts"),
+    _: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+):
+    """MPE-OPTIONS-FLOW-ALERT: win rate + avg return for check_options_flow_alerts(), split by
+    direction (bullish/bearish) — a genuinely SEPARATE endpoint from squeeze_alert_performance()
+    above rather than a retrofit into it, since OptionsFlowAlertOutcome is keyed per-CONTRACT
+    (option_chain), not per-(alert_type, symbol, date) the way SqueezeAlertOutcome is — forcing
+    this table's rows into that endpoint's own grouping/shape would be the exact "genuinely
+    different mechanism forced into an ill-fitting shape" mistake this app's own history already
+    warns against (see OptionsFlowAlertOutcome's own model docstring). Admin-only.
+
+    is_correct_10d is the primary win-rate metric, matching squeeze_alert_performance()'s own
+    choice of window for the same reason (a real middle ground between this alert's typical
+    few-day resolution horizon and SignalOutcome's own established window set).
+    """
+    from datetime import date, timedelta
+
+    cutoff = date.today() - timedelta(days=days_back)
+
+    def _summary_for_window(window: int) -> dict[str, dict]:
+        ret_col = getattr(OptionsFlowAlertOutcome, f"return_{window}d")
+        correct_col = getattr(OptionsFlowAlertOutcome, f"is_correct_{window}d")
+        rows = session.execute(
+            select(
+                OptionsFlowAlertOutcome.direction,
+                func.count().label("n"),
+                func.sum(case((correct_col.is_(True), 1), else_=0)).label("wins"),
+                func.avg(ret_col).label("avg_return"),
+            )
+            .where(OptionsFlowAlertOutcome.fired_date >= cutoff, correct_col.is_not(None))
+            .group_by(OptionsFlowAlertOutcome.direction)
+        ).all()
+        return {
+            row.direction: {
+                "n": row.n, "wins": row.wins,
+                "win_rate": round(row.wins / row.n, 3) if row.n else None,
+                "avg_return_pct": round(row.avg_return * 100, 2) if row.avg_return is not None else None,
+            }
+            for row in rows
+        }
+
+    by_window = {w: _summary_for_window(w) for w in (1, 2, 3, 5, 10, 20)}
+
+    fired_counts = dict(session.execute(
+        select(OptionsFlowAlertOutcome.direction, func.count())
+        .where(OptionsFlowAlertOutcome.fired_date >= cutoff)
+        .group_by(OptionsFlowAlertOutcome.direction)
+    ).all())
+
+    by_direction = []
+    for direction in ("bullish", "bearish"):
+        by_direction.append({
+            "direction": direction,
+            "fired_count": fired_counts.get(direction, 0),
+            "window_10d": by_window[10].get(direction),
+            "window_1d": by_window[1].get(direction),
+            "window_2d": by_window[2].get(direction),
+            "window_3d": by_window[3].get(direction),
+            "window_5d": by_window[5].get(direction),
+            "window_20d": by_window[20].get(direction),
+        })
+
+    recent_rows = session.execute(
+        select(OptionsFlowAlertOutcome, Stock.symbol)
+        .join(Stock, OptionsFlowAlertOutcome.stock_id == Stock.id)
+        .where(OptionsFlowAlertOutcome.fired_date >= cutoff)
+        .order_by(desc(OptionsFlowAlertOutcome.fired_date), desc(OptionsFlowAlertOutcome.fired_at))
+        .limit(limit)
+    ).all()
+    recent_alerts = [
+        {
+            "symbol": symbol,
+            "option_chain": row.option_chain,
+            "option_type": row.option_type,
+            "direction": row.direction,
+            "strike": row.strike,
+            "expiry": row.expiry.isoformat() if row.expiry else None,
+            "fired_date": row.fired_date.isoformat(),
+            "alert_price": row.alert_price,
+            "total_premium": row.total_premium,
+            "ask_side_dominant": row.ask_side_dominant,
+            "has_sweep": row.has_sweep,
+            "entry_date": row.entry_date.isoformat() if row.entry_date else None,
+            "entry_price": row.entry_price,
+            "return_1d": round(row.return_1d * 100, 2) if row.return_1d is not None else None,
+            "return_2d": round(row.return_2d * 100, 2) if row.return_2d is not None else None,
+            "return_3d": round(row.return_3d * 100, 2) if row.return_3d is not None else None,
+            "return_5d": round(row.return_5d * 100, 2) if row.return_5d is not None else None,
+            "return_10d": round(row.return_10d * 100, 2) if row.return_10d is not None else None,
+            "return_20d": round(row.return_20d * 100, 2) if row.return_20d is not None else None,
+            "is_correct_10d": row.is_correct_10d,
+        }
+        for row, symbol in recent_rows
+    ]
+
+    return {
+        "days_back": days_back,
+        "by_direction": by_direction,
         "recent_alerts": recent_alerts,
     }
 
