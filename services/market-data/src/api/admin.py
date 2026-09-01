@@ -832,6 +832,8 @@ def options_flow_alert_performance(
             "total_premium": row.total_premium,
             "ask_side_dominant": row.ask_side_dominant,
             "has_sweep": row.has_sweep,
+            "volume_oi_ratio": row.volume_oi_ratio,
+            "alert_rule": row.alert_rule,
             "entry_date": row.entry_date.isoformat() if row.entry_date else None,
             "entry_price": row.entry_price,
             "return_1d": round(row.return_1d * 100, 2) if row.return_1d is not None else None,

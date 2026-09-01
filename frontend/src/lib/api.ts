@@ -253,6 +253,15 @@ export const api = {
     return request<SqueezeAlertBacktestResponse>(`/admin/squeeze-alert-backtest${qs ? `?${qs}` : ''}`);
   },
 
+  // MPE-OPTIONS-FLOW-ALERT — real Unusual Whales flow-alerts performance/recent-list
+  getOptionsFlowAlertPerformance: (params?: { days_back?: number; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.days_back != null) p.set('days_back', String(params.days_back));
+    if (params?.limit != null) p.set('limit', String(params.limit));
+    const qs = p.toString();
+    return request<OptionsFlowAlertPerformanceResponse>(`/admin/options-flow-alert-performance${qs ? `?${qs}` : ''}`);
+  },
+
   // WATCHLIST-AUTO-ROTATION history/revert
   getWatchlistRotationHistory: (params?: { watchlist_id?: number; style?: string; limit?: number }) => {
     const p = new URLSearchParams();
@@ -1886,6 +1895,51 @@ export type SqueezeAlertPerformanceResponse = {
   days_back: number;
   by_alert_type: SqueezeAlertTypeSummary[];
   recent_alerts: SqueezeAlertOutcomeRow[];
+};
+
+// MPE-OPTIONS-FLOW-ALERT — a genuinely separate endpoint from squeeze/gamma performance above,
+// since OptionsFlowAlertOutcome is keyed per-CONTRACT (option_chain), grouped by direction
+// (bullish/bearish), not alert_type — see options_flow_alert_performance()'s own docstring.
+export type OptionsFlowAlertDirectionSummary = {
+  direction: 'bullish' | 'bearish';
+  fired_count: number;
+  window_10d: SqueezeAlertWindowStat;
+  window_1d: SqueezeAlertWindowStat;
+  window_2d: SqueezeAlertWindowStat;
+  window_3d: SqueezeAlertWindowStat;
+  window_5d: SqueezeAlertWindowStat;
+  window_20d: SqueezeAlertWindowStat;
+};
+
+export type OptionsFlowAlertRow = {
+  symbol: string;
+  option_chain: string;
+  option_type: 'call' | 'put';
+  direction: 'bullish' | 'bearish';
+  strike: number | null;
+  expiry: string | null;
+  fired_date: string;
+  alert_price: number;
+  total_premium: number | null;
+  ask_side_dominant: boolean;
+  has_sweep: boolean;
+  volume_oi_ratio: number | null;
+  alert_rule: string | null;
+  entry_date: string | null;
+  entry_price: number | null;
+  return_1d: number | null;
+  return_2d: number | null;
+  return_3d: number | null;
+  return_5d: number | null;
+  return_10d: number | null;
+  return_20d: number | null;
+  is_correct_10d: boolean | null;
+};
+
+export type OptionsFlowAlertPerformanceResponse = {
+  days_back: number;
+  by_direction: OptionsFlowAlertDirectionSummary[];
+  recent_alerts: OptionsFlowAlertRow[];
 };
 
 // T264-SQUEEZEALERT-PERFORMANCE backtest follow-up

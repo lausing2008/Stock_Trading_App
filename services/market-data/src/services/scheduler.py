@@ -4129,9 +4129,33 @@ _OPTIONS_FLOW_ALERT_LOCK_TTL = 55  # every 60s — Unusual Whales' REST flow-ale
 # Real UW query-param thresholds (see unusual_whales.get_flow_alerts()'s own docstring for why
 # these specific defaults) — kept as named module constants here too so a future retune has one
 # place to look, matching every other alert's own _MIN_*/_MAX_* constant convention.
-_OPTIONS_FLOW_ALERT_MIN_PREMIUM = 50_000
-_OPTIONS_FLOW_ALERT_MIN_VOLUME_OI_RATIO = 1.0
+#
+# AUD-OPTIONSFLOW-FLOODED (fixed 2026-09-01): the original $50,000/1.0x defaults were far too
+# loose — a live production run scanning 20 top-K symbols returned 857 candidates in a single
+# minute, because $50k premium and a 1.0x volume/OI ratio are genuinely ROUTINE trade sizes in
+# any liquid large-cap, not "unusual" activity by any reasonable read. Raised both by 5x to a
+# bar that actually matches what "unusual, urgent options positioning" should mean.
+_OPTIONS_FLOW_ALERT_MIN_PREMIUM = 250_000
+_OPTIONS_FLOW_ALERT_MIN_VOLUME_OI_RATIO = 3.0
 _OPTIONS_FLOW_ALERT_MAX_DTE = 45
+
+# AUD-OPTIONSFLOW-FLOODED: even with the tighter thresholds above, a genuinely busy symbol can
+# still legitimately produce several qualifying contracts — this caps how many actually go into
+# ONE email (sorted by premium size, largest first) so a user never again receives an
+# unreadable hundreds-of-rows message. Every candidate is STILL recorded into
+# OptionsFlowAlertOutcome regardless of this cap (see check_options_flow_alerts()'s own
+# candidate-recording loop, which runs before this cap is ever applied) — the new options-flow
+# dashboard page reads that full, uncapped table directly.
+_OPTIONS_FLOW_ALERT_EMAIL_CAP = 12
+
+# AUD-OPTIONSFLOW-FLOODED: the per-(user, option_chain) dedup alone let a user get re-alerted
+# every ~2-3 minutes in production, because UW's own flow-alerts feed naturally reshuffles which
+# specific option_chain ids are currently "hot" — a chain dropping out of the top pool for one
+# poll and reappearing the next looked like a brand-new candidate to that dedup key alone. This
+# adds a SECOND, coarser dedup layer — one email per (user, symbol, direction) per cooldown
+# window — so the same underlying+direction pairing can't re-fire faster than this, regardless
+# of how much the underlying contract-id churn looks like "new" activity.
+_OPTIONS_FLOW_ALERT_COOLDOWN_MINUTES = 30
 
 
 def _options_flow_alert_direction(option_type: str, ask_side_dominant: bool) -> str:
@@ -4353,10 +4377,35 @@ def check_options_flow_alerts() -> None:
                 current_chains = set(candidates.keys())
                 newly_seen = sorted(current_chains - prev_seen)
                 send_ok = True
-                if newly_seen:
-                    payload = [candidates[chain] for chain in newly_seen]
+                # AUD-OPTIONSFLOW-FLOODED: a second, coarser dedup on top of the per-chain one
+                # above — a (symbol, direction) pairing that already emailed this user inside the
+                # cooldown window is skipped, regardless of whether its specific option_chain id
+                # looks "new" to the set-diff above (UW's own feed reshuffles which contract ids
+                # are currently hot far faster than a real trading decision should be re-alerted).
+                cooldown_ok_chains = []
+                for chain in newly_seen:
+                    cand = candidates[chain]
+                    cd_key = f"stockai:options_flow_alert_cooldown:{uid}:{cand['symbol']}:{cand['direction']}"
                     try:
-                        send_ok = send_options_flow_alert_email(user.email, payload)
+                        if _rc.set(cd_key, "1", nx=True, ex=_OPTIONS_FLOW_ALERT_COOLDOWN_MINUTES * 60):
+                            cooldown_ok_chains.append(chain)
+                    except Exception:
+                        cooldown_ok_chains.append(chain)  # fail open — a Redis hiccup must not silently drop a real alert
+
+                if cooldown_ok_chains:
+                    # Largest premium first — the cap below keeps only the most genuinely
+                    # "unusual" activity in the actual email; everything else still landed in
+                    # OptionsFlowAlertOutcome above and is visible on the options-flow dashboard.
+                    ranked = sorted(
+                        cooldown_ok_chains,
+                        key=lambda c: candidates[c].get("total_premium") or 0.0,
+                        reverse=True,
+                    )
+                    capped = ranked[:_OPTIONS_FLOW_ALERT_EMAIL_CAP]
+                    omitted = len(ranked) - len(capped)
+                    payload = [candidates[chain] for chain in capped]
+                    try:
+                        send_ok = send_options_flow_alert_email(user.email, payload, omitted_count=omitted)
                     except Exception as _send_exc:
                         send_ok = False
                         log.warning("options_flow_alert.recipient_send_error", user=uid, error=str(_send_exc))

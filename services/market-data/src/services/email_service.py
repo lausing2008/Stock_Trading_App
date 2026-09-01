@@ -1622,7 +1622,7 @@ def send_gamma_unwind_email(to: str, candidates: list[dict]) -> bool:
     return send_email(to, subject, body_html, body_text)
 
 
-def send_options_flow_alert_email(to: str, candidates: list[dict]) -> bool:
+def send_options_flow_alert_email(to: str, candidates: list[dict], omitted_count: int = 0) -> bool:
     """MPE-OPTIONS-FLOW-ALERT: real Unusual Whales unusual-options-activity alert. Each dict:
     {symbol, option_chain, option_type ("call"/"put"), direction ("bullish"/"bearish"), strike,
     expiry, price, total_premium, ask_side_dominant, volume_oi_ratio, has_sweep, alert_rule,
@@ -1635,6 +1635,11 @@ def send_options_flow_alert_email(to: str, candidates: list[dict]) -> bool:
     bullish and bearish rows in the same email, color-coded). Still explicitly a MEASURED-FACT
     report, never a claim the stock will actually move — see check_options_flow_alerts()'s own
     docstring for the full honesty framing this mirrors.
+
+    AUD-OPTIONSFLOW-FLOODED: `candidates` is already capped by the caller (largest premium
+    first) to keep this email readable — `omitted_count` is how many additional, real,
+    genuinely-recorded candidates didn't make the cap (still visible on the options-flow
+    dashboard page, never silently dropped from anywhere but this one email).
     """
     n = len(candidates)
     n_bullish = sum(1 for c in candidates if c["direction"] == "bullish")
@@ -1697,11 +1702,22 @@ def send_options_flow_alert_email(to: str, candidates: list[dict]) -> bool:
             + cal_text
         )
 
+    omitted_html = (
+        f'<p style="font-size:12px;color:#7c3aed;margin-top:8px">+ {omitted_count} more alert'
+        f'{"s" if omitted_count != 1 else ""} today (smaller premium) — see the Options Flow '
+        f'dashboard for the full list.</p>'
+    ) if omitted_count > 0 else ""
+    omitted_text = (
+        f"\n+ {omitted_count} more alert{'s' if omitted_count != 1 else ''} today (smaller "
+        f"premium) — see the Options Flow dashboard for the full list.\n"
+    ) if omitted_count > 0 else ""
+
     body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
   <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
     <h2 style="margin-top:0;color:#6d28d9">🎯 Unusual Options Activity</h2>
     <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} real Unusual Whales flow alert{'s' if n != 1 else ''} — large, urgent options positioning detected right now.</p>
     <div style="margin-top:12px">{rows_html}</div>
+    {omitted_html}
     <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
       This reports a MEASURED fact — real, unusual options activity (a rule-based sweep/repeated-
       hits detection over the full options tape) with a real ask-side/bid-side directional
@@ -1713,6 +1729,7 @@ def send_options_flow_alert_email(to: str, candidates: list[dict]) -> bool:
     body_text = (
         f"Unusual Options Activity — {n} alert{'s' if n != 1 else ''} ({n_bullish} bullish, {n_bearish} bearish)\n\n"
         + rows_text
+        + omitted_text
         + "\nMeasured fact (real options flow), not a prediction. Not financial advice.\n"
     )
     return send_email(to, subject, body_html, body_text)

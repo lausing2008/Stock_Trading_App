@@ -185,6 +185,34 @@ def test_calibrated_win_rate_renders_when_present_and_honest_placeholder_when_ab
     assert "Not enough resolved history yet" in calls2[0]["html"]
 
 
+def test_omitted_count_renders_a_dashboard_pointer_when_positive():
+    """AUD-OPTIONSFLOW-FLOODED: the caller already caps `candidates` before this function ever
+    sees them — omitted_count says how many additional, real candidates didn't make the email
+    cut, pointing the user at the dashboard rather than silently vanishing them."""
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_options_flow_alert_email("user@example.com", [
+            {"symbol": "AAA", "option_chain": "AAA1", "option_type": "call", "direction": "bullish",
+             "strike": 100.0, "expiry": "2026-09-05", "price": 98.0, "total_premium": 600000.0,
+             "ask_side_dominant": True, "volume_oi_ratio": 3.5, "has_sweep": True, "alert_rule": "RepeatedHits"},
+        ], omitted_count=845)
+    html, text = calls[0]["html"], calls[0]["text"]
+    assert "845" in html and "Options Flow" in html
+    assert "845" in text
+
+
+def test_omitted_count_zero_renders_no_dashboard_pointer():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_options_flow_alert_email("user@example.com", [
+            {"symbol": "AAA", "option_chain": "AAA1", "option_type": "call", "direction": "bullish",
+             "strike": 100.0, "expiry": "2026-09-05", "price": 98.0, "total_premium": 60000.0,
+             "ask_side_dominant": True, "volume_oi_ratio": 1.5, "has_sweep": True, "alert_rule": "RepeatedHits"},
+        ])
+    html = calls[0]["html"]
+    assert "more alert" not in html
+
+
 def test_missing_strike_or_price_degrades_gracefully_not_crash():
     calls, fake = _capture_send()
     with patch("src.services.email_service.send_email", fake):
@@ -258,6 +286,74 @@ def test_dedup_is_per_recipient_and_per_contract():
     body = _func_body("check_options_flow_alerts")
     assert "stockai:options_flow_alert_seen:" in body
     assert "current_chains - prev_seen" in body
+
+
+# ── AUD-OPTIONSFLOW-FLOODED: cooldown + email cap ───────────────────────────────────────────
+# Direct fix for a real production incident — 857 candidates fired in one email, and the same
+# underlying re-alerted only ~2.5 minutes later because the per-chain dedup alone let UW's own
+# feed churn (an option_chain id dropping out and back into the "currently hot" pool) look like
+# genuinely new activity to that one dedup layer.
+
+def test_cooldown_is_per_recipient_per_symbol_per_direction_not_just_per_contract():
+    """The per-chain dedup above is NOT enough on its own (a chain id churning in/out of UW's
+    own feed defeats it) — this second, coarser layer must key on (uid, symbol, direction), not
+    on option_chain, so the same underlying+direction pairing can't re-fire within the cooldown
+    window regardless of which specific contract id UW is currently reporting."""
+    body = _func_body("check_options_flow_alerts")
+    assert "stockai:options_flow_alert_cooldown:" in body
+    idx = body.index("stockai:options_flow_alert_cooldown:")
+    key_line = body[idx:idx + 120]
+    assert "{uid}" in key_line
+    assert "cand['symbol']" in key_line or 'cand["symbol"]' in key_line
+    assert "cand['direction']" in key_line or 'cand["direction"]' in key_line
+
+
+def test_cooldown_uses_the_real_named_minutes_constant_and_set_nx():
+    body = _func_body("check_options_flow_alerts")
+    assert "_OPTIONS_FLOW_ALERT_COOLDOWN_MINUTES" in body
+    idx = body.index("_rc.set(cd_key")
+    assert "nx=True" in body[idx:idx + 120]
+
+
+def test_cooldown_fails_open_on_a_redis_exception_never_silently_drops_a_real_alert():
+    """A Redis hiccup on the cooldown check must never silently SUPPRESS a real, otherwise-
+    qualifying alert — the except branch must still append the chain, not swallow it."""
+    body = _func_body("check_options_flow_alerts")
+    idx = body.index("for chain in newly_seen:")
+    cooldown_block = body[idx:idx + 700]
+    except_idx = cooldown_block.index("except Exception:")
+    assert "cooldown_ok_chains.append(chain)" in cooldown_block[except_idx:except_idx + 80]
+
+
+def test_email_payload_is_ranked_by_premium_size_descending_and_capped():
+    body = _func_body("check_options_flow_alerts")
+    assert "_OPTIONS_FLOW_ALERT_EMAIL_CAP" in body
+    idx = body.index("ranked = sorted(")
+    ranked_block = body[idx:idx + 300]
+    assert 'candidates[c].get("total_premium")' in ranked_block
+    assert "reverse=True" in ranked_block
+    assert "ranked[:_OPTIONS_FLOW_ALERT_EMAIL_CAP]" in body
+
+
+def test_omitted_count_is_threaded_into_the_email_call():
+    """Every candidate is still recorded into OptionsFlowAlertOutcome regardless of the email
+    cap (that recording loop runs BEFORE this per-recipient send loop) — omitted_count only
+    tells the email how many additional real, already-recorded candidates didn't make the cut,
+    never a claim that they were dropped from anywhere but this one email."""
+    body = _func_body("check_options_flow_alerts")
+    assert "omitted = len(ranked) - len(capped)" in body
+    idx = body.index("send_options_flow_alert_email(user.email, payload")
+    assert "omitted_count=omitted" in body[idx:idx + 80]
+
+
+def test_email_recording_loop_runs_before_the_per_recipient_send_loop():
+    """The full, uncapped candidate set must already be persisted before any per-recipient
+    ranking/cap/cooldown filtering happens — the options-flow dashboard reads that persisted
+    table directly and must see every candidate, not just whatever survived the email cap."""
+    body = _func_body("check_options_flow_alerts")
+    record_idx = body.index("_record_options_flow_alert_outcome(")
+    cooldown_idx = body.index("for uid, user in recipients.items():")
+    assert record_idx < cooldown_idx
 
 
 def test_per_recipient_send_isolation():
