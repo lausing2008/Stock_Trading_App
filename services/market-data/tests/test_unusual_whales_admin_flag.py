@@ -31,6 +31,9 @@ class _FakeRedis:
     def delete(self, key):
         self._store.pop(key, None)
 
+    def exists(self, key):
+        return 1 if key in self._store else 0
+
 
 def _admin_user():
     return MagicMock()
@@ -49,6 +52,44 @@ def test_get_feature_flags_admin_also_reports_the_flag(monkeypatch):
     monkeypatch.setattr(admin, "_get_redis", lambda: fake)
     result = admin.get_feature_flags(_admin_user())
     assert result["unusual_whales_enabled"] is True
+
+
+def test_key_set_is_false_when_no_key_has_ever_been_saved(monkeypatch):
+    """The Settings page needs a presence-only signal to show 'already configured' without
+    ever re-displaying (or losing, on a page refresh) the real saved secret."""
+    fake = _FakeRedis()
+    monkeypatch.setattr(admin, "_get_redis", lambda: fake)
+    assert admin.get_feature_flags_public()["unusual_whales_key_set"] is False
+    assert admin.get_feature_flags(_admin_user())["unusual_whales_key_set"] is False
+
+
+def test_key_set_is_true_once_a_key_has_been_saved(monkeypatch):
+    fake = _FakeRedis()
+    fake.set(admin._REDIS_UW_KEY, "real-secret-value-never-returned")
+    monkeypatch.setattr(admin, "_get_redis", lambda: fake)
+    assert admin.get_feature_flags_public()["unusual_whales_key_set"] is True
+    assert admin.get_feature_flags(_admin_user())["unusual_whales_key_set"] is True
+
+
+def test_key_set_never_leaks_the_real_secret_value(monkeypatch):
+    """The whole point of this field — a presence boolean, never the value itself. Confirms
+    the real returned dict never contains the actual saved secret anywhere in its values."""
+    fake = _FakeRedis()
+    secret = "sk-real-secret-do-not-leak"
+    fake.set(admin._REDIS_UW_KEY, secret)
+    monkeypatch.setattr(admin, "_get_redis", lambda: fake)
+    result = admin.get_feature_flags_public()
+    assert result["unusual_whales_key_set"] is True
+    assert secret not in result.values()
+
+
+def test_key_set_becomes_false_again_after_unshare(monkeypatch):
+    fake = _FakeRedis()
+    fake.set(admin._REDIS_UW_KEY, "real-secret-value")
+    monkeypatch.setattr(admin, "_get_redis", lambda: fake)
+    req = admin.ConfigRequest(unshare_unusual_whales_key=True)
+    admin.update_config(req, _admin_user())
+    assert admin.get_feature_flags_public()["unusual_whales_key_set"] is False
 
 
 def test_update_config_writes_unusual_whales_enabled_true(monkeypatch):

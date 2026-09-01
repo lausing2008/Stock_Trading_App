@@ -195,6 +195,9 @@ def get_feature_flags(_: User = Depends(get_admin_user)):
         "trade_coach_email_enabled": r.get(_REDIS_TRADE_COACH_ENABLED) == "1",
         "earnings_llm_forecast_enabled": r.get(_REDIS_EARNINGS_FORECAST_ENABLED) == "1",
         "unusual_whales_enabled": r.get(_REDIS_UW_ENABLED) == "1",
+        # presence-only signal — never the real secret value — so the Settings page can show
+        # "already configured" without re-displaying (or losing on refresh) a saved key.
+        "unusual_whales_key_set": bool(r.exists(_REDIS_UW_KEY)),
     }
 
 
@@ -211,6 +214,7 @@ def get_feature_flags_public():
         "trade_coach_email_enabled": r.get(_REDIS_TRADE_COACH_ENABLED) == "1",
         "earnings_llm_forecast_enabled": r.get(_REDIS_EARNINGS_FORECAST_ENABLED) == "1",
         "unusual_whales_enabled": r.get(_REDIS_UW_ENABLED) == "1",
+        "unusual_whales_key_set": bool(r.exists(_REDIS_UW_KEY)),
     }
 
 

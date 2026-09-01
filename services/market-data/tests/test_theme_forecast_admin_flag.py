@@ -26,6 +26,9 @@ class _FakeRedis:
     def delete(self, key):
         self._store.pop(key, None)
 
+    def exists(self, key):
+        return 1 if key in self._store else 0
+
 
 def _admin_user():
     return MagicMock()

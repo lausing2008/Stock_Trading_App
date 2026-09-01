@@ -209,6 +209,7 @@ export const api = {
     earnings_llm_forecast_enabled: boolean;
     theme_forecast_email_enabled: boolean; trade_coach_email_enabled: boolean;
     unusual_whales_enabled: boolean;
+    unusual_whales_key_set: boolean;
   }>(`/admin/feature-flags/public`),
 
   getAdminSignalLog: (params?: {

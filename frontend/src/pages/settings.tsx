@@ -437,10 +437,17 @@ export default function SettingsPage() {
   const [uwSaving, setUwSaving] = useState(false);
   const [uwEnabled, setUwEnabled] = useState(false);
   const [uwEnabledSaving, setUwEnabledSaving] = useState(false);
+  // Never populated with the real secret (the backend deliberately never returns it) — a
+  // presence-only signal so a saved-but-not-yet-re-entered key shows as "already configured"
+  // instead of the input silently looking empty/broken after a page refresh.
+  const [uwKeySet, setUwKeySet] = useState(false);
 
   useEffect(() => {
     if (!isAdmin) return;
-    api.getFeatureFlags().then(f => setUwEnabled(f.unusual_whales_enabled)).catch(() => {});
+    api.getFeatureFlags().then(f => {
+      setUwEnabled(f.unusual_whales_enabled);
+      setUwKeySet(f.unusual_whales_key_set);
+    }).catch(() => {});
   }, [isAdmin]);
 
   async function handleSaveUwKey() {
@@ -454,6 +461,7 @@ export default function SettingsPage() {
       await api.pushConfig({ unusual_whales_api_key: uwApiKey.trim() });
       setUwMsg({ ok: true, text: 'Unusual Whales key saved.' });
       setUwApiKey('');
+      setUwKeySet(true);
       setTimeout(() => setUwMsg(null), 5000);
     } catch {
       setUwMsg({ ok: false, text: 'Failed to save the Unusual Whales key.' });
@@ -468,6 +476,7 @@ export default function SettingsPage() {
     try {
       await api.pushConfig({ unshare_unusual_whales_key: true });
       setUwMsg({ ok: true, text: 'Unusual Whales key removed — real short-interest/GEX data falls back to the free yfinance-only figures.' });
+      setUwKeySet(false);
       setTimeout(() => setUwMsg(null), 5000);
     } catch {
       setUwMsg({ ok: false, text: 'Failed to remove the Unusual Whales key.' });
@@ -1306,11 +1315,18 @@ export default function SettingsPage() {
             </div>
             <div className="settings-grid2" style={grid2}>
               <div>
-                <label style={lbl}>Unusual Whales API Key</label>
+                <label style={{ ...lbl, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  Unusual Whales API Key
+                  {uwKeySet && (
+                    <span style={{ fontSize: '10px', color: '#4ade80', fontWeight: 600, textTransform: 'none', letterSpacing: 0 }}>
+                      ✓ configured
+                    </span>
+                  )}
+                </label>
                 <KeyInput
                   value={uwApiKey}
                   onChange={setUwApiKey}
-                  placeholder="Enter your Unusual Whales API key"
+                  placeholder={uwKeySet ? 'Key already saved — enter a new one to replace it' : 'Enter your Unusual Whales API key'}
                   showKey={!!showKeys.uw_key}
                   onToggleShow={() => toggleKeyVisible('uw_key')}
                 />
@@ -1319,7 +1335,9 @@ export default function SettingsPage() {
             <div style={{ ...hint, padding: '0 20px 4px' }}>
               Get a key at <span style={{ color: '#c4b5fd' }}>unusualwhales.com</span>. This is a
               single, server-wide credential shared by market-data for every user, not a
-              per-browser key — it is stored in Redis on the server, never in this browser.
+              per-browser key — it is stored in Redis on the server, never in this browser. For
+              your security, a saved key is never sent back to the browser to display — the
+              field always starts empty; the "✓ configured" label above confirms one is on file.
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 20px 0' }}>
               <button
