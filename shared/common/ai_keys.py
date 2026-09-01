@@ -61,3 +61,35 @@ def get_alpaca_credentials() -> tuple[str, str]:
         return key, secret
     except Exception:
         return "", ""
+
+
+# MPE-06/MPE-07: Unusual Whales — a single bearer token (confirmed live against the real
+# https://api.unusualwhales.com/api/openapi spec: securitySchemes.authorization = {scheme:
+# bearer, type: http}), matching get_admin_ai_key()'s single-string shape, not Alpaca's
+# key+secret pair.
+_UW_KEY_REDIS = "stockai:admin:unusual_whales_api_key"
+_UW_ENABLED_REDIS = "stockai:admin:feature:unusual_whales_enabled"
+
+
+def get_unusual_whales_key() -> str:
+    """Return the admin-configured Unusual Whales API key from Redis, or "" if unset/unavailable.
+
+    Fail-open, matching get_admin_ai_key()'s exact contract. Callers must ALSO check
+    is_unusual_whales_enabled() separately — a key being present does not by itself mean the
+    feature is turned on (matches every other opt-in-flag-gated integration in this codebase,
+    e.g. auto_research_enabled/risk_check_enabled — a real credential existing is not the same
+    as the admin having actually enabled the feature it powers)."""
+    try:
+        return (get_redis().get(_UW_KEY_REDIS) or "").strip()
+    except Exception:
+        return ""
+
+
+def is_unusual_whales_enabled() -> bool:
+    """Default OFF, matching every other opt-in paid/external-data feature in this codebase
+    (auto_research_enabled, risk_check_enabled, earnings_llm_forecast_enabled) — a real,
+    metered, per-request-cost API must never be silently on by default."""
+    try:
+        return get_redis().get(_UW_ENABLED_REDIS) == "1"
+    except Exception:
+        return False

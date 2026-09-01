@@ -328,6 +328,35 @@ def compute_score(
             score += pts
             breakdown.append(ScoreItem(layer="calibration_feedback", pts=pts, note=note))
 
+    # ── Layer 9: Market Pressure — composite short-squeeze / options-pressure score (MPE-05) ──
+    # Sent via config_overrides (the same generic passthrough this codebase already uses for
+    # every optional gate-parity field — index_return_pct, sig_ref_price, etc.) since these are
+    # symbol-level, universe-scoped composite scores computed by market-data's own
+    # compute_short_squeeze_score()/compute_options_pressure_score() (MPE-01/MPE-02), never a
+    # per-signal reasons["..."] value the way calibrated_win_rate above is — there is no
+    # equivalent "already forwarded wholesale" free port here, a caller must explicitly send
+    # these. Both default to None (a pure no-op for any caller that never sets them, including
+    # every existing test and the real trading path until a future session wires the real
+    # market-data fetch into _call_decision_engine()). Bounded contribution (+-1 point each, at
+    # most +-2 total) — this is informational corroboration for an ALREADY-qualifying BUY/SELL
+    # candidate, never a primary signal on its own; a stock scoring high on squeeze/pressure
+    # with no other real signal behind it should never dominate the total score.
+    _squeeze_score = cfg.get("squeeze_score")
+    if _squeeze_score is not None:
+        _squeeze_score = float(_squeeze_score)
+        if _squeeze_score >= 65.0:
+            pts, note = 1, f"Short-squeeze score {_squeeze_score:.0f}/100 — real short-interest/momentum pressure corroborates this entry"
+            score += pts
+            breakdown.append(ScoreItem(layer="market_pressure_squeeze", pts=pts, note=note))
+
+    _pressure_score = cfg.get("pressure_score")
+    if _pressure_score is not None:
+        _pressure_score = float(_pressure_score)
+        if _pressure_score >= 60.0:
+            pts, note = 1, f"Options-pressure score {_pressure_score:.0f}/100 — real options conviction/intensity corroborates this entry"
+            score += pts
+            breakdown.append(ScoreItem(layer="market_pressure_options", pts=pts, note=note))
+
     return score, breakdown
 
 

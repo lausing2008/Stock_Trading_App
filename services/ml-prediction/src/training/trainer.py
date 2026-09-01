@@ -215,6 +215,43 @@ def _load_fund_snapshots(symbol: str) -> list[dict]:
         return []
 
 
+def _load_options_snapshots(symbol: str) -> list[dict]:
+    """MPE-04: load all options_flow_snapshots rows for a symbol — the real, dated
+    (stock_id, as_of) time series already built for T257-OVERNIGHT-FLOW-BRIEF Phase 2 (see
+    shared/db/models.py's OptionsFlowSnapshot). Mirrors _load_fund_snapshots()'s exact shape
+    (a list of dicts keyed by "snapshot_date" + time-varying columns) so builder.py's
+    merge_asof-based PIT join can treat both the same way.
+
+    Deliberately scoped to the SAME 2 fields the feature-ablation harness (MPE-04) actually
+    tests — cp_ratio and whale_count — not every column OptionsFlowSnapshot carries (e.g.
+    call_premium/put_premium/sentiment), since this table is only ever populated for a bounded
+    symbol set (PriceAlert-subscribed + top-K by K-Score, not the whole universe — see that
+    table's own docstring), so most training symbols will have zero rows here and this must
+    stay a cheap, narrowly-scoped query, not a wide one.
+    """
+    from sqlalchemy import text as _text
+    try:
+        with SessionLocal() as session:
+            rows = session.execute(_text("""
+                SELECT ofs.as_of AS snapshot_date, ofs.cp_ratio, ofs.whale_count
+                FROM options_flow_snapshots ofs
+                JOIN stocks s ON s.id = ofs.stock_id
+                WHERE s.symbol = :sym
+                ORDER BY ofs.as_of
+            """), {"sym": symbol.upper()}).fetchall()
+        return [
+            {
+                "snapshot_date": str(r.snapshot_date),
+                "opt_cp_ratio": r.cp_ratio,
+                "opt_whale_count": r.whale_count,
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        log.warning("trainer.options_snapshots_load_failed", symbol=symbol, error=str(exc))
+        return []
+
+
 def _artifact_path(symbol: str, model_name: str, style: str = "SWING") -> Path:
     """Return the model artifact path for the given symbol, model type, and training style.
 
@@ -487,10 +524,19 @@ def train_model(
     except Exception as exc:
         log.warning("train.fund_snapshots_load_failed", symbol=symbol, error=str(exc))
 
+    # MPE-04: real options-flow snapshot history for the feature-ablation harness's +OPTIONS
+    # group — see _load_options_snapshots()'s own docstring for why this is usually empty
+    # (most symbols were never in the bounded set this table is populated for).
+    options_snapshots: list[dict] = []
+    try:
+        options_snapshots = _load_options_snapshots(symbol)
+    except Exception as exc:
+        log.warning("train.options_snapshots_load_failed", symbol=symbol, error=str(exc))
+
     X, y_dir, y_ret = build_features(
         df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold,
         fund_data=fund_data, sector_df=sector_df, outcome_df=outcome_df,
-        fund_snapshots=fund_snapshots,
+        fund_snapshots=fund_snapshots, options_snapshots=options_snapshots,
     )
     if len(X) < 200:
         log.warning("train.skipped", symbol=symbol, reason=f"only {len(X)} clean samples")
@@ -901,12 +947,20 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
     except Exception as exc:
         _log.warning("predict_latest.fund_snapshots_load_failed", symbol=symbol, error=str(exc))
 
+    # MPE-04: same real options-flow snapshot history as at training time — usually empty
+    # (see _load_options_snapshots()'s own docstring on this table's bounded coverage).
+    infer_options_snapshots: list[dict] = []
+    try:
+        infer_options_snapshots = _load_options_snapshots(symbol)
+    except Exception as exc:
+        _log.warning("predict_latest.options_snapshots_load_failed", symbol=symbol, error=str(exc))
+
     # inference_mode=True: keeps the latest bar even without a known future return
     X, _, _ = build_features(
         df, horizon=horizon, macro_df=macro_df,
         label_threshold=0.0, inference_mode=True,
         fund_data=infer_fund_data, sector_df=sector_df, outcome_df=outcome_df,
-        fund_snapshots=infer_fund_snapshots,
+        fund_snapshots=infer_fund_snapshots, options_snapshots=infer_options_snapshots,
     )
     if X.empty:
         return {"symbol": symbol, "bullish_probability": 0.5, "confidence": 0}

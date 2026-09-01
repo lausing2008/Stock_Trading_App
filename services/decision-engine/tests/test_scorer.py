@@ -431,3 +431,80 @@ def test_calibration_feedback_does_not_assume_higher_confidence_means_higher_sco
         None, None, "neutral", {"calibration_feedback_enabled": True},
     )
     assert _layer_pts(breakdown, "calibration_feedback") == 1
+
+
+# ── MPE-05: Market Pressure — composite short-squeeze / options-pressure score ──────────────
+# Sent via config_overrides (a generic passthrough), not signal_data["reasons"] — unlike
+# calibration_feedback above, there is no "already forwarded wholesale" free port for these;
+# a caller must explicitly set squeeze_score/pressure_score for either layer to ever fire.
+
+def test_market_pressure_squeeze_absent_by_default_produces_no_layer():
+    _, breakdown = compute_score(100.0, _game_plan(), _signal_data(), None, None, "neutral", {})
+    assert "market_pressure_squeeze" not in _layer_names(breakdown)
+
+
+def test_market_pressure_options_absent_by_default_produces_no_layer():
+    _, breakdown = compute_score(100.0, _game_plan(), _signal_data(), None, None, "neutral", {})
+    assert "market_pressure_options" not in _layer_names(breakdown)
+
+
+def test_market_pressure_squeeze_high_score_adds_one_point():
+    _, breakdown = compute_score(
+        100.0, _game_plan(), _signal_data(), None, None, "neutral", {"squeeze_score": 70.0},
+    )
+    assert _layer_pts(breakdown, "market_pressure_squeeze") == 1
+
+
+def test_market_pressure_squeeze_below_threshold_produces_no_layer():
+    _, breakdown = compute_score(
+        100.0, _game_plan(), _signal_data(), None, None, "neutral", {"squeeze_score": 40.0},
+    )
+    assert "market_pressure_squeeze" not in _layer_names(breakdown)
+
+
+def test_market_pressure_squeeze_at_exactly_the_boundary_fires():
+    _, breakdown = compute_score(
+        100.0, _game_plan(), _signal_data(), None, None, "neutral", {"squeeze_score": 65.0},
+    )
+    assert _layer_pts(breakdown, "market_pressure_squeeze") == 1
+
+
+def test_market_pressure_options_high_score_adds_one_point():
+    _, breakdown = compute_score(
+        100.0, _game_plan(), _signal_data(), None, None, "neutral", {"pressure_score": 75.0},
+    )
+    assert _layer_pts(breakdown, "market_pressure_options") == 1
+
+
+def test_market_pressure_options_below_threshold_produces_no_layer():
+    _, breakdown = compute_score(
+        100.0, _game_plan(), _signal_data(), None, None, "neutral", {"pressure_score": 30.0},
+    )
+    assert "market_pressure_options" not in _layer_names(breakdown)
+
+
+def test_market_pressure_options_at_exactly_the_boundary_fires():
+    _, breakdown = compute_score(
+        100.0, _game_plan(), _signal_data(), None, None, "neutral", {"pressure_score": 60.0},
+    )
+    assert _layer_pts(breakdown, "market_pressure_options") == 1
+
+
+def test_both_market_pressure_layers_can_fire_together_capped_at_2_total_points():
+    _, breakdown = compute_score(
+        100.0, _game_plan(), _signal_data(), None, None, "neutral",
+        {"squeeze_score": 90.0, "pressure_score": 90.0},
+    )
+    assert _layer_pts(breakdown, "market_pressure_squeeze") == 1
+    assert _layer_pts(breakdown, "market_pressure_options") == 1
+
+
+def test_market_pressure_layers_never_penalize_a_low_score_only_corroborate_a_high_one():
+    """This is corroborating evidence for an already-qualifying entry, not a bidirectional
+    signal — a LOW squeeze/pressure score must never subtract points, only a high one adds."""
+    _, breakdown = compute_score(
+        100.0, _game_plan(), _signal_data(), None, None, "neutral",
+        {"squeeze_score": 5.0, "pressure_score": 2.0},
+    )
+    assert "market_pressure_squeeze" not in _layer_names(breakdown)
+    assert "market_pressure_options" not in _layer_names(breakdown)

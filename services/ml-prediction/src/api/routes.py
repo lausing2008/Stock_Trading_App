@@ -113,6 +113,23 @@ def tune(req: TuneRequest, tasks: BackgroundTasks, _: str = Depends(get_current_
     return {"status": "scheduled", "symbol": req.symbol, "n_trials": req.n_trials, "style": req.style, "horizon": horizon}
 
 
+@router.get("/feature_ablation")
+def feature_ablation(
+    symbol: str, style: str = "SWING", _: str = Depends(get_current_username),
+):
+    """MPE-04: does the SHORT-interest feature group (short_ratio/short_ratio_delta/
+    short_percent_of_float — T204) or the newer OPTIONS-flow group (opt_cp_ratio/
+    opt_whale_count) actually pull their weight for this symbol, or could they be dropped with
+    no real loss? Synchronous (not a background task) — this is a real-time research/
+    diagnostic read, matching market-data's own GET /paper-portfolio/backtest/* convention,
+    never a long-running training job. Never writes to any model file or Redis key — see
+    feature_ablation.py's own module docstring for the full design/scoping rationale.
+    """
+    from ..training.feature_ablation import run_feature_ablation
+    horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
+    return run_feature_ablation(symbol, horizon=horizon, style=style)
+
+
 @router.post("/tune_all")
 def tune_all(
     tasks: BackgroundTasks, n_trials: int = 60, style: str = "SWING",

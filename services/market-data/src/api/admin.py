@@ -89,6 +89,14 @@ _REDIS_EARNINGS_FORECAST_ENABLED = "stockai:admin:feature:earnings_llm_forecast_
 # importing another module's private constants).
 _REDIS_ALPACA_KEY       = "stockai:admin:alpaca_api_key"
 _REDIS_ALPACA_SECRET    = "stockai:admin:alpaca_secret_key"
+# MPE-06/MPE-07: same admin-configured-credential pattern as the Claude/DeepSeek/Alpaca keys
+# above — matches shared/common/ai_keys.py's own _UW_KEY_REDIS/_UW_ENABLED_REDIS constants
+# exactly, kept as separate literals here rather than importing them, matching this file's
+# existing convention. A real, metered, per-request-cost API — default OFF like every other
+# new opt-in feature (auto_research/earnings_llm_impact/theme_forecast/trade_coach), never
+# the "unset=on" semantics macro_llm_reaction_enabled uses.
+_REDIS_UW_KEY           = "stockai:admin:unusual_whales_api_key"
+_REDIS_UW_ENABLED       = "stockai:admin:feature:unusual_whales_enabled"
 
 def _get_redis():
     from common.redis_client import get_redis as _get_pool_redis
@@ -167,6 +175,11 @@ class ConfigRequest(BaseModel):
     alpaca_api_key: str | None = None
     alpaca_secret_key: str | None = None
     unshare_alpaca_key: bool | None = None
+    # MPE-06/MPE-07: a single bearer token (unlike Alpaca's key+secret pair) — a real, metered,
+    # per-request-cost API (Unusual Whales), default OFF like every other new opt-in feature.
+    unusual_whales_api_key: str | None = None
+    unshare_unusual_whales_key: bool | None = None
+    unusual_whales_enabled: bool | None = None
 
 
 @router.get("/feature-flags")
@@ -181,6 +194,7 @@ def get_feature_flags(_: User = Depends(get_admin_user)):
         "theme_forecast_email_enabled": r.get(_REDIS_THEME_FORECAST_ENABLED) == "1",
         "trade_coach_email_enabled": r.get(_REDIS_TRADE_COACH_ENABLED) == "1",
         "earnings_llm_forecast_enabled": r.get(_REDIS_EARNINGS_FORECAST_ENABLED) == "1",
+        "unusual_whales_enabled": r.get(_REDIS_UW_ENABLED) == "1",
     }
 
 
@@ -196,6 +210,7 @@ def get_feature_flags_public():
         "theme_forecast_email_enabled": r.get(_REDIS_THEME_FORECAST_ENABLED) == "1",
         "trade_coach_email_enabled": r.get(_REDIS_TRADE_COACH_ENABLED) == "1",
         "earnings_llm_forecast_enabled": r.get(_REDIS_EARNINGS_FORECAST_ENABLED) == "1",
+        "unusual_whales_enabled": r.get(_REDIS_UW_ENABLED) == "1",
     }
 
 
@@ -212,7 +227,9 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
        req.alpaca_api_key is not None or req.alpaca_secret_key is not None or req.unshare_alpaca_key or \
        req.auto_research_enabled is not None or req.macro_llm_reaction_enabled is not None or \
        req.earnings_llm_impact_enabled is not None or req.theme_forecast_email_enabled is not None or \
-       req.trade_coach_email_enabled is not None or req.earnings_llm_forecast_enabled is not None:
+       req.trade_coach_email_enabled is not None or req.earnings_llm_forecast_enabled is not None or \
+       req.unusual_whales_api_key is not None or req.unshare_unusual_whales_key or \
+       req.unusual_whales_enabled is not None:
         r = _get_redis()
     if req.claude_api_key is not None:
         r.set(_REDIS_CLAUDE_KEY, req.claude_api_key)
@@ -247,6 +264,12 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
     if req.unshare_alpaca_key:
         r.delete(_REDIS_ALPACA_KEY)
         r.delete(_REDIS_ALPACA_SECRET)
+    if req.unusual_whales_api_key is not None:
+        r.set(_REDIS_UW_KEY, req.unusual_whales_api_key)
+    if req.unshare_unusual_whales_key:
+        r.delete(_REDIS_UW_KEY)
+    if req.unusual_whales_enabled is not None:
+        r.set(_REDIS_UW_ENABLED, "1" if req.unusual_whales_enabled else "0")
     log.info("admin.config_updated", broker_enabled=req.broker_enabled,
               auto_research_enabled=req.auto_research_enabled,
               macro_llm_reaction_enabled=req.macro_llm_reaction_enabled,
@@ -255,7 +278,10 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
               trade_coach_email_enabled=req.trade_coach_email_enabled,
               earnings_llm_forecast_enabled=req.earnings_llm_forecast_enabled,
               unshared_claude=bool(req.unshare_claude_key), unshared_deepseek=bool(req.unshare_deepseek_key),
-              alpaca_key_set=req.alpaca_api_key is not None, unshared_alpaca=bool(req.unshare_alpaca_key))
+              alpaca_key_set=req.alpaca_api_key is not None, unshared_alpaca=bool(req.unshare_alpaca_key),
+              unusual_whales_key_set=req.unusual_whales_api_key is not None,
+              unshared_unusual_whales=bool(req.unshare_unusual_whales_key),
+              unusual_whales_enabled=req.unusual_whales_enabled)
     return {"status": "ok"}
 
 

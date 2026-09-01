@@ -51,6 +51,7 @@ import ResearchPage from '@/pages/research/[symbol]';
 import StockGoalsPanel from '@/components/StockGoalsPanel';
 import EarningsForecastPanel from '@/components/EarningsForecastPanel';
 import SrWatchButton from '@/components/SrWatchButton';
+import MarketPressurePanel from '@/components/MarketPressurePanel';
 
 function RefreshButton({ onClick, loading }: { onClick: () => void; loading: boolean }) {
   return (
@@ -4363,11 +4364,24 @@ Return ONLY valid JSON — no markdown, no prose:
       {/* Options Flow */}
       {optionsFlow && optionsFlow.available && (
         <div style={{ marginBottom: 24 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
             <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Options Flow</h2>
             {(optionsFlow.whale_count ?? 0) > 0 && (
               <span style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b', background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 5, padding: '2px 8px' }}>
                 🐋 {optionsFlow.whale_count} whale {(optionsFlow.whale_count ?? 0) === 1 ? 'trade' : 'trades'}
+              </span>
+            )}
+            {optionsFlow.pressure_score != null && (
+              <span
+                title={`Conviction/intensity, not direction (see sentiment badge for direction) — cp_ratio: ${optionsFlow.pressure_score.components.cp_ratio_pts}/40 · whales: ${optionsFlow.pressure_score.components.whale_pts}/30 · volume: ${optionsFlow.pressure_score.components.volume_pts}/10${optionsFlow.pressure_score.components.uw_gex_proximity_pts != null ? ` · GEX proximity (UW): ${optionsFlow.pressure_score.components.uw_gex_proximity_pts}/20` : ''}`}
+                style={{
+                  fontSize: 11, fontWeight: 700, cursor: 'help', borderRadius: 5, padding: '2px 8px',
+                  color: optionsFlow.pressure_score.score >= 60 ? '#a78bfa' : optionsFlow.pressure_score.score >= 35 ? '#818cf8' : '#64748b',
+                  background: optionsFlow.pressure_score.score >= 60 ? 'rgba(167,139,250,0.12)' : 'rgba(100,116,139,0.1)',
+                  border: `1px solid ${optionsFlow.pressure_score.score >= 60 ? 'rgba(167,139,250,0.3)' : 'rgba(100,116,139,0.25)'}`,
+                }}
+              >
+                Pressure {optionsFlow.pressure_score.score.toFixed(0)}
               </span>
             )}
           </div>
@@ -4470,6 +4484,10 @@ Return ONLY valid JSON — no markdown, no prose:
           </div>
         </div>
       )}
+
+      {/* MPE-06/MPE-03: real Unusual Whales GEX + per-expiration OI concentration rollup —
+          self-contained, renders nothing when neither is available. */}
+      <MarketPressurePanel symbol={symbol} />
 
       {/* T230-DATA-OPTIONS-CHAIN: full strike/expiry matrix, opt-in expand (heavier fetch
           than the Options Flow summary above) */}

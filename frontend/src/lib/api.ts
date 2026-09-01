@@ -201,12 +201,14 @@ export const api = {
     trade_coach_email_enabled?: boolean;
     unshare_claude_key?: boolean; unshare_deepseek_key?: boolean;
     alpaca_api_key?: string; alpaca_secret_key?: string; unshare_alpaca_key?: boolean;
+    unusual_whales_api_key?: string; unshare_unusual_whales_key?: boolean; unusual_whales_enabled?: boolean;
   }) => request<{ status: string }>(`/admin/config`, { method: 'POST', body: JSON.stringify(keys) }),
   getFeatureFlags: () => request<{
     broker_enabled: boolean; auto_research_enabled: boolean;
     macro_llm_reaction_enabled: boolean; earnings_llm_impact_enabled: boolean;
     earnings_llm_forecast_enabled: boolean;
     theme_forecast_email_enabled: boolean; trade_coach_email_enabled: boolean;
+    unusual_whales_enabled: boolean;
   }>(`/admin/feature-flags/public`),
 
   getAdminSignalLog: (params?: {
@@ -494,6 +496,8 @@ export const api = {
   getOptionsFlow: (symbol: string) => request<OptionsFlow>(`/stocks/${symbol}/options-flow`),
   getOptionsChain: (symbol: string, expiry?: string) =>
     request<OptionsChain>(`/stocks/${symbol}/options-chain${expiry ? `?expiry=${expiry}` : ''}`),
+  getGammaExposure: (symbol: string) => request<GammaExposure>(`/stocks/${symbol}/gamma-exposure`),
+  getOptionsExpirations: (symbol: string) => request<OptionsExpirationsResponse>(`/stocks/${symbol}/options-expirations`),
   getDividends: (symbol: string) => request<DividendData>(`/stocks/${symbol}/dividends`),
 
   // Institutional holders
@@ -1076,12 +1080,56 @@ export type WalkForwardReport = {
 };
 export type MLWeightValidation = { lookback_days: number; signal_count: number; optimal_weight: number | null; optimal_accuracy: number | null; current_formula_range: [number, number]; curve: MLWeightCurvePoint[] };
 export type OptionsFlowContract = { expiry: string; side: 'call' | 'put'; strike: number; volume: number; oi: number; vol_oi: number; iv: number; itm: boolean; premium: number; is_whale: boolean };
-export type OptionsFlow = { symbol: string; available: boolean; reason?: string; call_volume?: number; put_volume?: number; cp_ratio?: number; sentiment?: string; unusual_count?: number; unusual?: OptionsFlowContract[]; expiries_used?: string[]; whale_count?: number; top_whale_premium?: number };
+// MPE-02: composite 0-100 options-pressure (conviction/intensity, not direction — read
+// `sentiment` alongside this for direction) score. See compute_options_pressure_score()'s own
+// docstring in routes.py for the full weighting rationale.
+export type OptionsPressureScore = {
+  score: number;
+  components: {
+    cp_ratio_pts: number;
+    whale_pts: number;
+    volume_pts: number;
+    uw_gex_proximity_pts?: number;
+  };
+  sentiment: string | null;
+};
+export type OptionsFlow = { symbol: string; available: boolean; reason?: string; call_volume?: number; put_volume?: number; cp_ratio?: number; sentiment?: string; unusual_count?: number; unusual?: OptionsFlowContract[]; expiries_used?: string[]; whale_count?: number; top_whale_premium?: number; pressure_score?: OptionsPressureScore | null };
 export type OptionsChainRow = { strike: number; bid: number; ask: number; last_price: number; volume: number; oi: number; iv: number; itm: boolean };
 // IF-05: max pain — needs only strike + open interest, no IV/Black-Scholes/dealer-positioning
 // assumption. null when there's zero open interest to compute against for this expiry.
 export type MaxPain = { max_pain_strike: number; total_call_oi: number; total_put_oi: number; put_call_oi_ratio: number | null };
 export type OptionsChain = { symbol: string; available: boolean; reason?: string; expiry?: string; expiries?: string[]; calls?: OptionsChainRow[]; puts?: OptionsChainRow[]; max_pain?: MaxPain | null };
+
+// MPE-06: real, calculated dealer gamma exposure via Unusual Whales. `source` distinguishes a
+// real GEX read ("unusual_whales") from the free-tier's own OI-concentration proxy elsewhere
+// in this app — never silently presented as the same thing.
+export type GammaExposure = {
+  symbol: string;
+  available: boolean;
+  source: 'unusual_whales' | 'none';
+  reason?: string;
+  call_wall?: number | null;
+  put_wall?: number | null;
+  gamma_flip?: number | null;
+  gamma_magnet?: number | null;
+  as_of_date?: string | null;
+};
+
+// MPE-03: per-expiration OI/volume rollup, NORMAL/ELEVATED/HIGH/EXTREME relative to the other
+// expiries fetched in the same call (no historical per-expiration OI baseline exists anywhere
+// in this app — see compute_expiration_rollup()'s own docstring in routes.py).
+export type OptionsExpirationRow = {
+  expiry: string;
+  call_oi: number;
+  put_oi: number;
+  total_oi: number;
+  call_volume: number;
+  put_volume: number;
+  put_call_oi_ratio: number | null;
+  concentration_pct: number;
+  level: 'normal' | 'elevated' | 'high' | 'extreme';
+};
+export type OptionsExpirationsResponse = { symbol: string; available: boolean; reason?: string; expirations?: OptionsExpirationRow[] };
 export type QuickScanResult = { symbol: string; price: number; change_pct: number | null; change_5d: number | null; rsi: number | null; sma20: number | null; sma50: number | null; above_sma20: boolean | null; above_sma50: boolean | null; vol_ratio: number | null; range_pos_20d: number | null };
 export type FearGreed = { score: number; rating: string; previous_close: number | null; previous_1_week: number | null; previous_1_month: number | null; previous_1_year: number | null; sp500_regime?: 'bull' | 'bear'; sp500_vs_ma200_pct?: number | null; components?: { vix: number; sp500_vs_ma: number; momentum: number; vix_spike: number } };
 export type MarketBreadth = { breadth_pct: number | null; above_200ma: number; below_200ma: number; total: number; label: string; color: string; updated_at: string };
@@ -1403,6 +1451,19 @@ export type AnalystConsensus = {
   firms: AnalystConsensusFirm[];
 };
 
+// MPE-01: composite 0-100 short-squeeze score — see compute_short_squeeze_score()'s own
+// docstring in routes.py for the full weighting rationale.
+export type SqueezeScore = {
+  score: number;
+  components: {
+    short_float_pts: number;
+    days_to_cover_pts: number;
+    momentum_pts: number;
+    change_pct_pts: number;
+    uw_borrow_fee_pts?: number;
+  };
+};
+
 export type SqueezeCandidate = {
   symbol: string;
   name: string;
@@ -1423,6 +1484,10 @@ export type SqueezeCandidate = {
   ranking_as_of: string | null;
   ranking_is_stale: boolean;
   volume: number | null;
+  // MPE-01/MPE-07
+  squeeze_score: SqueezeScore | null;
+  uw_short_shares_available: number | null;
+  uw_fee_rate: number | null;
 };
 
 // T260-BEARISH-PUTS-WATCHLIST

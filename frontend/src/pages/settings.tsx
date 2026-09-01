@@ -401,6 +401,67 @@ export default function SettingsPage() {
     }
   }
 
+  // Admin: Unusual Whales API key (MPE-06/MPE-07 — real GEX, borrow-fee/utilization short
+  // data). Same server-only-credential convention as Alpaca above — a single, server-wide
+  // token stored in Redis and read directly by market-data's own Unusual Whales client, never
+  // part of AppSettings/localStorage. Unlike Alpaca (key+secret PAIR), Unusual Whales uses a
+  // single bearer token — matching Claude/DeepSeek's own single-key shape more closely.
+  const [uwApiKey, setUwApiKey] = useState('');
+  const [uwMsg, setUwMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [uwSaving, setUwSaving] = useState(false);
+  const [uwEnabled, setUwEnabled] = useState(false);
+  const [uwEnabledSaving, setUwEnabledSaving] = useState(false);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    api.getFeatureFlags().then(f => setUwEnabled(f.unusual_whales_enabled)).catch(() => {});
+  }, [isAdmin]);
+
+  async function handleSaveUwKey() {
+    if (!uwApiKey.trim()) {
+      setUwMsg({ ok: false, text: 'An API key is required.' });
+      return;
+    }
+    setUwSaving(true);
+    setUwMsg(null);
+    try {
+      await api.pushConfig({ unusual_whales_api_key: uwApiKey.trim() });
+      setUwMsg({ ok: true, text: 'Unusual Whales key saved.' });
+      setUwApiKey('');
+      setTimeout(() => setUwMsg(null), 5000);
+    } catch {
+      setUwMsg({ ok: false, text: 'Failed to save the Unusual Whales key.' });
+    } finally {
+      setUwSaving(false);
+    }
+  }
+
+  async function handleRemoveUwKey() {
+    setUwSaving(true);
+    setUwMsg(null);
+    try {
+      await api.pushConfig({ unshare_unusual_whales_key: true });
+      setUwMsg({ ok: true, text: 'Unusual Whales key removed — real short-interest/GEX data falls back to the free yfinance-only figures.' });
+      setTimeout(() => setUwMsg(null), 5000);
+    } catch {
+      setUwMsg({ ok: false, text: 'Failed to remove the Unusual Whales key.' });
+    } finally {
+      setUwSaving(false);
+    }
+  }
+
+  async function handleToggleUwEnabled(val: boolean) {
+    setUwEnabledSaving(true);
+    try {
+      await api.pushConfig({ unusual_whales_enabled: val });
+      setUwEnabled(val);
+    } catch {
+      setUwMsg({ ok: false, text: 'Failed to update the enable/disable toggle.' });
+    } finally {
+      setUwEnabledSaving(false);
+    }
+  }
+
   async function handlePushSharedKey() {
     if (s.aiProvider === 'none') return;
     setSharedKeyLoading(true);
@@ -1213,6 +1274,86 @@ export default function SettingsPage() {
                   {alpacaMsg.text}
                 </span>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Market Pressure Data — Unusual Whales (MPE-06/MPE-07) ──────── */}
+      {isAdmin && (
+        <div style={section('#a78bfa')}>
+          <div style={sectionBar('linear-gradient(90deg,#a78bfa,#c4b5fd,#a78bfa)')} />
+          <div style={sectionHead}>
+            Market Pressure Data — Unusual Whales
+            <span style={{ fontSize: '10px', color: '#a78bfa', fontWeight: 400, marginLeft: '8px', padding: '2px 8px', border: '1px solid rgba(167,139,250,0.3)', borderRadius: '4px', background: 'rgba(167,139,250,0.1)', textTransform: 'none', letterSpacing: 'normal' }}>Admin only</span>
+          </div>
+          <div style={{ padding: '16px 20px' }}>
+            <div style={{ fontSize: '12px', color: '#475569', marginBottom: '12px', lineHeight: 1.6 }}>
+              Powers real, calculated gamma exposure (GEX call/put walls, zero-gamma flip level)
+              and real short-interest data (borrow fee, shares available, days-to-cover) on the
+              Squeeze/Options screens, replacing the free open-interest-concentration proxy this
+              app otherwise uses. Optional, real-money-metered — those existing free proxies
+              keep working with the toggle off; this is a paid, per-request-cost API.
+            </div>
+            <div className="settings-grid2" style={grid2}>
+              <div>
+                <label style={lbl}>Unusual Whales API Key</label>
+                <KeyInput
+                  id="uw_key"
+                  value={uwApiKey}
+                  onChange={setUwApiKey}
+                  placeholder="Enter your Unusual Whales API key"
+                />
+              </div>
+            </div>
+            <div style={{ ...hint, padding: '0 20px 4px' }}>
+              Get a key at <span style={{ color: '#c4b5fd' }}>unusualwhales.com</span>. This is a
+              single, server-wide credential shared by market-data for every user, not a
+              per-browser key — it is stored in Redis on the server, never in this browser.
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 20px 0' }}>
+              <button
+                onClick={handleSaveUwKey}
+                disabled={uwSaving}
+                style={{
+                  padding: '8px 18px', borderRadius: '8px', fontSize: '13px', fontWeight: 600,
+                  cursor: uwSaving ? 'not-allowed' : 'pointer',
+                  background: 'rgba(167,139,250,0.15)', border: '1px solid rgba(167,139,250,0.4)',
+                  color: '#c4b5fd', transition: 'all 0.15s',
+                }}
+              >
+                {uwSaving ? '⟳ Saving…' : 'Save Unusual Whales key'}
+              </button>
+              <button
+                onClick={handleRemoveUwKey}
+                disabled={uwSaving}
+                style={{
+                  padding: '8px 18px', borderRadius: '8px', fontSize: '13px', fontWeight: 600,
+                  cursor: uwSaving ? 'not-allowed' : 'pointer',
+                  background: 'transparent', border: '1px solid rgba(248,113,113,0.35)',
+                  color: '#f87171', transition: 'all 0.15s',
+                }}
+              >
+                Remove
+              </button>
+              {uwMsg && (
+                <span style={{ fontSize: '12px', color: uwMsg.ok ? '#4ade80' : '#f87171' }}>
+                  {uwMsg.text}
+                </span>
+              )}
+            </div>
+            <div style={{ marginTop: '16px', paddingTop: '14px', borderTop: '1px solid #1e293b', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0' }}>Enable Unusual Whales Data</div>
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                  Turn on to actually use the key above for real GEX/short-interest reads. Off
+                  by default, even with a key saved — a real, metered API, never on by accident.
+                </div>
+              </div>
+              <Toggle on={uwEnabled} onChange={handleToggleUwEnabled} disabled={uwEnabledSaving} />
+              <span style={{ fontSize: 11, color: uwEnabled ? '#4ade80' : '#475569', fontWeight: 600 }}>
+                {uwEnabled ? 'On' : 'Off'}
+              </span>
             </div>
           </div>
         </div>

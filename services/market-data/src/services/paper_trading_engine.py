@@ -3290,6 +3290,8 @@ def _call_decision_engine(
     open_risk_total: float | None = None,
     weekly_net_pnl_pct: float | None = None,
     open_exposure_pct: float | None = None,
+    squeeze_score: float | None = None,
+    pressure_score: float | None = None,
 ) -> tuple[bool, str, int, str | None] | None:
     """Call Decision Engine and return (should_enter, verdict, score, blocked_reason).
 
@@ -3462,6 +3464,16 @@ def _call_decision_engine(
                     **( {"sig_ref_price": sig_ref_price} if sig_ref_price is not None else {} ),
                     **( {"max_price_drift_pct": cfg.get("max_price_drift_pct", 3.0)}
                         if sig_ref_price is not None else {} ),
+                    # MPE-05: Market Pressure composite scores (MPE-01 short-squeeze, MPE-02
+                    # options-pressure) — pure corroborating soft-score layers (Layer 9,
+                    # scorer.py), never a hard gate. Both are symbol-level, universe-scoped
+                    # values computed by market-data's own compute_short_squeeze_score()/
+                    # compute_options_pressure_score(), not something signal-engine's own
+                    # reasons dict already carries — unlike calibrated_win_rate above, there is
+                    # no free port here; the real call site below fetches them fresh per
+                    # candidate right before this call.
+                    **( {"squeeze_score": squeeze_score} if squeeze_score is not None else {} ),
+                    **( {"pressure_score": pressure_score} if pressure_score is not None else {} ),
                     # T232-DL-DUALSCORER-DEBT / T226-A: _scan_for_entries' risk_off hard block
                     # (T226-A — data-backed: 9/30 real closed paper trades entered in risk_off
                     # had a 0% win rate) has no decision-engine equivalent — DE only has the
@@ -4347,6 +4359,41 @@ def _open_paper_trade(
              target=take_profit, score=score, rr=round(rr, 2),
              cash_remaining=round(portfolio.current_cash, 2))
     return trade, None
+
+
+def _squeeze_score_for(symbol: str, momentum_score: float | None) -> float | None:
+    """MPE-05: cheap, fail-open squeeze-score lookup for a real candidate at the moment
+    _scan_for_entries() considers it — reads the SAME already-cached fundamentals blob
+    routes.py's own short_squeeze() endpoint reads (stockai:fundamentals:v2:{symbol}), never a
+    fresh yfinance fetch inside this hot entry-scan loop. change_pct is deliberately omitted
+    here (None) — the richer per-symbol {price, change_pct} cache (stockai:live_prices) isn't
+    otherwise read by this function today, and change_pct is only 10 of squeeze_score's 100
+    points; compute_short_squeeze_score() already degrades this component to 0 gracefully when
+    the input is absent, matching every other optional-input degradation in that function.
+
+    Lazily imports from routes.py (a sibling module that itself already imports FROM this file
+    lazily inside function bodies — e.g. get_last_regime, resolve_entry_gate_params) rather
+    than at module level, to avoid a circular import.
+    """
+    try:
+        from ..api.routes import compute_short_squeeze_score, _get_redis
+        r = _get_redis()
+        cached = r.get(f"stockai:fundamentals:v2:{symbol}")
+        if not cached:
+            return None
+        data = json.loads(cached)
+        spf = data.get("short_percent_of_float")
+        if spf is None:
+            return None
+        result = compute_short_squeeze_score(
+            short_percent_of_float=round(spf * 100, 2),
+            days_to_cover=data.get("short_ratio"),
+            momentum_score=momentum_score,
+            change_pct=None,
+        )
+        return result["score"] if result else None
+    except Exception:
+        return None
 
 
 def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str, float], live_regime: dict | None = None) -> None:
@@ -5564,6 +5611,15 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         # already reads from — reused here, not re-fetched.
         _ta_score_raw = (sig.reasons or {}).get("ta_score")
         ta_score_f = float(_ta_score_raw) if _ta_score_raw is not None else None
+        # MPE-05: fresh, fail-open squeeze-score lookup — cheap (reuses an already-cached
+        # fundamentals blob, no new fetch). pressure_score is deliberately NOT wired here —
+        # its real inputs (cp_ratio, whale activity) only exist behind a live options-chain
+        # yfinance fetch, and this app's own established rate-limit discipline (see
+        # options_flow_snapshot.py's own docstring) explicitly rules out an options-chain call
+        # inside a hot per-candidate entry-scan loop.
+        _squeeze_score_val = _squeeze_score_for(
+            stock.symbol, ranking.momentum if ranking and ranking.momentum is not None else None,
+        )
         gate_source = "de"
 
         # T232-DL-DUALSCORER-SHADOW: run BOTH scorers on every candidate regardless of which one
@@ -5609,6 +5665,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             open_risk_total=_open_risk_total,           # T232-DL-DUALSCORER-DEBT: open_risk_cap gate parity
             weekly_net_pnl_pct=_weekly_net_pnl_pct,      # T232-DL-DUALSCORER-DEBT: weekly loss/gain gate parity
             open_exposure_pct=_open_exposure_pct,        # T232-DL-DUALSCORER-DEBT / T194: open-exposure cap gate parity
+            squeeze_score=_squeeze_score_val,             # MPE-05: Market Pressure Engine, soft corroboration layer
         )
         _max_corr = _max_correlation_with_open_positions(
             session, stock.id, _open_stock_ids, _open_closes_cache,

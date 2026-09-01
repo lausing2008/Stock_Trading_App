@@ -89,7 +89,14 @@ function shortColor(pct: number): string {
   return '#94a3b8';
 }
 
-type SortKey = 'short_pct' | 'change_pct' | 'momentum' | 'k_score' | 'short_ratio';
+type SortKey = 'short_pct' | 'change_pct' | 'momentum' | 'k_score' | 'short_ratio' | 'squeeze_score';
+
+function scoreColor(v: number): string {
+  if (v >= 65) return '#ef4444';
+  if (v >= 45) return '#f97316';
+  if (v >= 25) return '#facc15';
+  return '#64748b';
+}
 
 // ── T260-BEARISH-PUTS-WATCHLIST: bearish puts watch section ──────────────────────────────────
 
@@ -248,7 +255,7 @@ export default function ShortSqueezePage() {
   const [minShortFloat, setMinShortFloat] = useState(10);
   const [market, setMarket] = useState<'All' | 'US' | 'HK'>('All');
   const [search, setSearch] = useState('');
-  const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'short_pct', dir: 'desc' });
+  const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'squeeze_score', dir: 'desc' });
   const [showGuide, setShowGuide] = useState(false);
 
   const { data, error, isLoading, mutate } = useSWR<SqueezeCandidate[]>(
@@ -284,6 +291,7 @@ export default function ShortSqueezePage() {
         if (sort.key === 'momentum') return x.momentum_score ?? -999;
         if (sort.key === 'k_score') return x.k_score ?? -999;
         if (sort.key === 'short_ratio') return x.short_ratio ?? -999;
+        if (sort.key === 'squeeze_score') return x.squeeze_score?.score ?? -999;
         return 0;
       };
       const diff = getVal(b) - getVal(a);
@@ -472,6 +480,7 @@ export default function ShortSqueezePage() {
               <thead>
                 <tr>
                   <th style={{ padding: '9px 14px', textAlign: 'left', color: '#475569', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: '1px solid #1e293b', background: '#080f1e', whiteSpace: 'nowrap' }}>Symbol</th>
+                  <SortTh label="Score" col="squeeze_score" right />
                   <SortTh label="Short %" col="short_pct" right />
                   <SortTh label="Days to Cover" col="short_ratio" right />
                   <th style={{ padding: '9px 14px', textAlign: 'right', color: '#475569', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: '1px solid #1e293b', background: '#080f1e', whiteSpace: 'nowrap' }}>Shares Short</th>
@@ -496,6 +505,16 @@ export default function ShortSqueezePage() {
                         </div>
                         <div style={{ fontSize: '10px', color: '#475569', maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</div>
                         {r.sector && <div style={{ fontSize: '9px', color: '#334155' }}>{r.sector}</div>}
+                      </td>
+                      <td style={{ padding: '10px 14px', textAlign: 'right' }}>
+                        {r.squeeze_score != null ? (
+                          <span
+                            title={`Short float: ${r.squeeze_score.components.short_float_pts}/40 · Days to cover: ${r.squeeze_score.components.days_to_cover_pts}/30 · Momentum: ${r.squeeze_score.components.momentum_pts}/20 · Move: ${r.squeeze_score.components.change_pct_pts}/10${r.squeeze_score.components.uw_borrow_fee_pts != null ? ` · Borrow fee (UW): ${r.squeeze_score.components.uw_borrow_fee_pts}/5` : ''}`}
+                            style={{ fontWeight: 800, fontSize: '14px', color: scoreColor(r.squeeze_score.score), fontVariantNumeric: 'tabular-nums', cursor: 'help' }}
+                          >
+                            {r.squeeze_score.score.toFixed(0)}
+                          </span>
+                        ) : <span style={{ color: '#334155' }}>—</span>}
                       </td>
                       <td style={{ padding: '10px 14px', textAlign: 'right', whiteSpace: 'nowrap' }}>
                         <span style={{ fontWeight: 800, fontSize: '13px', color: shortColor(r.short_percent_of_float), background: shortBg(r.short_percent_of_float), padding: '2px 8px', borderRadius: '5px', fontVariantNumeric: 'tabular-nums' }}>
@@ -550,8 +569,8 @@ export default function ShortSqueezePage() {
             </table>
           </div>
           <div style={{ padding: '10px 16px', fontSize: '11px', color: '#334155', borderTop: '1px solid #1e293b', display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' }}>
-            <span>{rows.length} candidates · short interest from Yahoo Finance · momentum from K-Score model</span>
-            <span style={{ color: '#1e293b' }}>🔥 = high short % + bullish momentum (prime squeeze candidate)</span>
+            <span>{rows.length} candidates · short interest from Yahoo Finance{rows.some(r => r.uw_fee_rate != null) ? ' + Unusual Whales' : ''} · momentum from K-Score model</span>
+            <span style={{ color: '#1e293b' }}>Score = composite 0-100 (hover a score for its breakdown) · 🔥 = high short % + bullish momentum</span>
           </div>
         </div>
       )}

@@ -339,6 +339,16 @@ WEEKLY_COLUMNS = [
     "weekly_trend",  # +1 if price > 10-week SMA by >1%, -1 if below by >1%, else 0
 ]
 
+# MPE-04: options-flow features for the feature-ablation harness's +OPTIONS group — point-
+# in-time joined from options_flow_snapshots (see trainer.py's _load_options_snapshots()),
+# NaN-allowed like fundamentals/weekly since this table only covers a bounded symbol subset
+# (most training rows will have zero real values here, by design — see that function's own
+# docstring for why).
+OPTIONS_COLUMNS = [
+    "opt_cp_ratio",       # call/put volume ratio as of the snapshot nearest this row's date
+    "opt_whale_count",    # count of >$500K-premium contracts as of that same snapshot
+]
+
 FEATURE_COLUMNS = [
     # Momentum
     "ret_1", "ret_5", "ret_10", "ret_20", "ret_60",
@@ -371,6 +381,8 @@ FEATURE_COLUMNS = [
     *OUTCOME_COLUMNS,
     # Fundamentals — static per stock, broadcast to all price rows
     *FUNDAMENTAL_COLUMNS,
+    # MPE-04: options-flow snapshot features — NaN-allowed, bounded-symbol-set coverage
+    *OPTIONS_COLUMNS,
 ]
 
 
@@ -609,6 +621,7 @@ def build_features(
     outcome_df: "pd.DataFrame | None" = None,
     up_to_date: str | None = None,
     fund_snapshots: "list[dict] | None" = None,
+    options_snapshots: "list[dict] | None" = None,
 ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     """Return (X, y_direction, y_return).
 
@@ -941,6 +954,40 @@ def build_features(
             log.warning("builder.pit_join_failed", error=str(_pit_exc))
             # fall through — broadcast values remain (training still usable, just biased)
 
+    # MPE-04: options-flow snapshot features (opt_cp_ratio/opt_whale_count) — point-in-time
+    # joined the SAME way as the _PIT_COLS fundamentals block above (merge_asof direction=
+    # "backward" against each row's own bar date), computed in BOTH training and inference
+    # mode since options_flow_snapshots is a real dated (stock_id, as_of) table, not a static
+    # broadcast value the way plain fund_data is — there is no "leaky broadcast" version of
+    # this feature to fall back to, only "NaN until a real snapshot exists at or before this
+    # row's own date," exactly matching analyst_pt_upside's own reasoning above.
+    if options_snapshots:
+        try:
+            _opt_df = pd.DataFrame(options_snapshots)
+            _opt_df["snapshot_date"] = pd.to_datetime(_opt_df["snapshot_date"])
+            _opt_df = _opt_df.sort_values("snapshot_date").reset_index(drop=True)
+            _price_dates = pd.to_datetime(dates).rename("date")
+            _left = pd.DataFrame({"date": _price_dates}, index=out.index)
+            _opt_cols_present = [c for c in OPTIONS_COLUMNS if c in _opt_df.columns]
+            _opt_merged = pd.merge_asof(
+                _left.reset_index(),
+                _opt_df[["snapshot_date"] + _opt_cols_present],
+                left_on="date", right_on="snapshot_date", direction="backward",
+            )
+            _opt_merged = _opt_merged.set_index("index")
+            for col in _opt_cols_present:
+                out[col] = _opt_merged[col].values
+            for col in OPTIONS_COLUMNS:
+                if col not in out.columns:
+                    out[col] = np.nan
+        except Exception as _opt_exc:
+            log.warning("builder.options_snapshots_join_failed", error=str(_opt_exc))
+            for col in OPTIONS_COLUMNS:
+                out[col] = np.nan
+    else:
+        for col in OPTIONS_COLUMNS:
+            out[col] = np.nan
+
     # --- Target ---
     fwd_ret = c.shift(-horizon) / c - 1
     # After dead-zone filtering (below), only |fwd_ret| >= threshold rows remain,
@@ -952,7 +999,7 @@ def build_features(
     # Fundamental, weekly, sector, and signal outcome columns are NaN-allowed — XGBoost handles natively.
     # Outcome columns are NaN until enough signal history accumulates (min 5 per window).
     # Require only the core daily features to be non-null so rows aren't discarded.
-    _nan_ok = set(FUNDAMENTAL_COLUMNS) | set(WEEKLY_COLUMNS) | set(SECTOR_COLUMNS) | set(OUTCOME_COLUMNS)
+    _nan_ok = set(FUNDAMENTAL_COLUMNS) | set(WEEKLY_COLUMNS) | set(SECTOR_COLUMNS) | set(OUTCOME_COLUMNS) | set(OPTIONS_COLUMNS)
     _required = [c for c in FEATURE_COLUMNS if c not in _nan_ok]
 
     if inference_mode:

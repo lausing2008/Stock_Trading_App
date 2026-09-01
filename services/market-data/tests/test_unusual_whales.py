@@ -1,0 +1,375 @@
+"""Tests for MPE-06/MPE-07's unusual_whales.py client.
+
+httpx AND tenacity are both stubbed as MagicMock by conftest.py (matching every other
+outbound-HTTP-client test file in this repo) — with tenacity stubbed, the module's own
+`@retry(...)`-decorated `_get()` becomes a bare MagicMock itself (verified directly: decorating
+a real function with a MagicMock-stubbed `tenacity.retry` returns a MagicMock, not the original
+function), so the parsing/caching layer (get_gex_levels/get_short_interest/_to_float) is tested
+by mocking `_get()` directly at the call boundary — matching test_market_pulse.py's own
+established `patch.object(news, "_get_redis", ...)` convention for this exact stubbing shape.
+
+_get()'s own retry/rate-limit/auth-error classification logic is real, meaningful code that the
+mocked-_get() tests above never exercise — TestGetFunctionRealHttpBehavior below pops the
+httpx/tenacity/common.ai_keys stubs and imports a FRESH copy of the module with the real
+packages, then mocks httpx.Client itself (not _get) to drive that logic for real, matching
+test_risk_snapshots.py's/test_correlation_preentry.py's own established "pop specific stubs,
+build against the real thing, restore immediately" technique for this exact constraint.
+"""
+import sys
+from dataclasses import asdict
+from unittest.mock import patch
+
+from src.services import unusual_whales as uw
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.store: dict[str, str] = {}
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def setex(self, key, ttl, value):
+        self.store[key] = value
+
+
+# ── is_available() ───────────────────────────────────────────────────────────────────────
+
+def test_is_available_false_when_key_missing():
+    with patch.object(uw, "is_unusual_whales_enabled", return_value=True), \
+         patch.object(uw, "get_unusual_whales_key", return_value=""):
+        assert uw.is_available() is False
+
+
+def test_is_available_false_when_disabled_even_with_a_real_key():
+    with patch.object(uw, "is_unusual_whales_enabled", return_value=False), \
+         patch.object(uw, "get_unusual_whales_key", return_value="real-token"):
+        assert uw.is_available() is False
+
+
+def test_is_available_true_only_when_both_conditions_hold():
+    with patch.object(uw, "is_unusual_whales_enabled", return_value=True), \
+         patch.object(uw, "get_unusual_whales_key", return_value="real-token"):
+        assert uw.is_available() is True
+
+
+# ── _to_float() ───────────────────────────────────────────────────────────────────────────
+
+def test_to_float_handles_real_numbers():
+    assert uw._to_float(42.5) == 42.5
+    assert uw._to_float("42.5") == 42.5
+    assert uw._to_float(0) == 0.0
+
+
+def test_to_float_degrades_none_and_empty_string_to_none():
+    assert uw._to_float(None) is None
+    assert uw._to_float("") is None
+
+
+def test_to_float_degrades_non_numeric_to_none_not_a_crash():
+    assert uw._to_float("not-a-number") is None
+    assert uw._to_float([1, 2, 3]) is None
+
+
+def test_to_float_degrades_real_nan_to_none():
+    """UW-returned NaN must never leak into a JSON round-trip (the exact bug class already
+    fixed once for updown_vol_ratio elsewhere in this app — json.dumps(float('nan')) emits a
+    non-standard, JSON.parse-rejecting token)."""
+    assert uw._to_float(float("nan")) is None
+
+
+# ── get_gex_levels() — parsing/caching, with _get() mocked directly ────────────────────────
+
+def test_gex_levels_returns_none_when_not_available():
+    with patch.object(uw, "is_available", return_value=False), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_gex_levels("AAPL")
+    assert result is None
+    mock_get.assert_not_called()
+
+
+def test_gex_levels_reads_from_cache_when_present():
+    fake_redis = _FakeRedis()
+    cached_row = uw.GexLevels(call_wall=250.0, put_wall=200.0, gamma_flip=225.0,
+                               gamma_magnet=230.0, as_of_date="2026-08-25")
+    import json
+    fake_redis.store["stockai:uw:gex:AAPL"] = json.dumps(asdict(cached_row))
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_gex_levels("AAPL")
+    assert result == cached_row
+    mock_get.assert_not_called()
+
+
+def test_gex_levels_parses_a_real_dict_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value={
+             "call_wall": "250.0", "put_wall": "200.0", "gamma_flip": "225.5",
+             "gamma_magnet": "230.0", "date": "2026-08-25",
+         }):
+        result = uw.get_gex_levels("AAPL")
+    assert result.call_wall == 250.0
+    assert result.put_wall == 200.0
+    assert result.gamma_flip == 225.5
+    assert result.gamma_magnet == 230.0
+    assert result.as_of_date == "2026-08-25"
+
+
+def test_gex_levels_parses_a_real_list_response_using_the_first_row():
+    """UW's real response for this endpoint is a list of per-expiry rows (confirmed live) —
+    the first row must be the one used."""
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"call_wall": "250.0", "put_wall": "200.0", "gamma_flip": "225.0",
+              "gamma_magnet": "230.0", "date": "2026-08-25"},
+             {"call_wall": "999.0", "put_wall": "999.0", "gamma_flip": "999.0",
+              "gamma_magnet": "999.0", "date": "2026-09-25"},
+         ]):
+        result = uw.get_gex_levels("AAPL")
+    assert result.call_wall == 250.0
+    assert result.as_of_date == "2026-08-25"
+
+
+def test_gex_levels_returns_none_for_a_symbol_with_no_options():
+    """An empty list (a real, common shape for a symbol with no listed options) must not
+    crash — and must correctly degrade to None, not a fabricated GexLevels with every field
+    None (a caller checking `if result:` needs a real None, not a truthy-but-empty object —
+    GexLevels has no __bool__ override, so an all-None instance would still be truthy)."""
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[]):
+        result = uw.get_gex_levels("XYZ")
+    assert result is None
+
+
+def test_gex_levels_returns_none_on_a_fetch_exception():
+    """A single symbol's failure must never raise — fail-open, matching every other optional
+    cross-service/external-data enrichment in this codebase."""
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", side_effect=RuntimeError("boom")):
+        result = uw.get_gex_levels("AAPL")
+    assert result is None
+
+
+def test_gex_levels_writes_a_negative_cache_entry_too():
+    """Caching the None result (not just real results) avoids re-hitting the metered API on
+    every single call for a symbol confirmed to have no real GEX data."""
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=None):
+        uw.get_gex_levels("XYZ")
+    assert "stockai:uw:gex:XYZ" in fake_redis.store
+
+
+# ── get_short_interest() — parsing/caching, with _get() mocked directly ────────────────────
+
+def test_short_interest_returns_none_when_not_available():
+    with patch.object(uw, "is_available", return_value=False), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_short_interest("GME")
+    assert result is None
+    mock_get.assert_not_called()
+
+
+def test_short_interest_parses_a_real_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value={
+             "short_interest": "12000000", "short_shares_available": "500000",
+             "days_to_cover": "3.2", "fee_rate": "1.15", "rebate_rate": "-0.5",
+             "si_float": "0.22", "total_float": "55000000", "market_date": "2026-08-15",
+         }):
+        result = uw.get_short_interest("GME")
+    assert result.short_interest == 12_000_000.0
+    assert result.days_to_cover == 3.2
+    assert result.fee_rate == 1.15
+    assert result.si_float == 0.22
+    assert result.market_date == "2026-08-15"
+
+
+def test_short_interest_returns_none_for_a_missing_symbol():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=None):
+        result = uw.get_short_interest("ZZZZ")
+    assert result is None
+
+
+def test_short_interest_uses_the_6h_ttl_not_the_gex_15min_ttl():
+    """Short-interest settles ~2x/month with a real reporting lag — caching it on the same
+    15-min TTL as GEX would be pure waste, re-fetching data that hasn't actually changed."""
+    class _SpyRedis(_FakeRedis):
+        def __init__(self):
+            super().__init__()
+            self.setex_calls = []
+        def setex(self, key, ttl, value):
+            self.setex_calls.append((key, ttl))
+            super().setex(key, ttl, value)
+    spy = _SpyRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=spy), \
+         patch.object(uw, "_get", return_value={"short_interest": "1000"}):
+        uw.get_short_interest("GME")
+    assert len(spy.setex_calls) == 1
+    assert spy.setex_calls[0][1] == uw._SHORT_INTEREST_TTL
+    assert spy.setex_calls[0][1] != uw._GEX_TTL
+
+
+# ── _get() real retry/error-classification behavior ─────────────────────────────────────
+
+class TestGetFunctionRealHttpBehavior:
+    """Pops httpx/tenacity off the stub list (both real, standalone-installable packages with
+    no parent-package involved, unlike common.ai_keys — which stays mocked here and is patched
+    at the call boundary instead, avoiding the documented "a fresh import against a
+    MagicMock-stubbed parent auto-vivifies a DIFFERENT child mock" gotcha this repo has hit
+    before whenever `common` itself needs to resolve as a real package for a submodule import
+    to work) and imports a fresh copy of the module against the real httpx/tenacity, so
+    _get()'s own @retry decorator and status-code classification run for real (not as a
+    MagicMock passthrough). Restores the stubs immediately after import so later-collected
+    test files in the same pytest session are unaffected, matching test_risk_snapshots.py's
+    established stub-pop-and-restore technique.
+    """
+
+    @classmethod
+    def setup_class(cls):
+        _stubbed = ("httpx", "tenacity")
+        saved = {m: sys.modules.pop(m, None) for m in _stubbed}
+        # Force a fresh re-import of the module-under-test against the REAL httpx/tenacity —
+        # the already-imported `uw` module above is still bound to the stubbed versions.
+        sys.modules.pop("src.services.unusual_whales", None)
+        import importlib
+        cls.real_uw = importlib.import_module("src.services.unusual_whales")
+        for m, stub in saved.items():
+            if stub is not None:
+                sys.modules[m] = stub
+            else:
+                sys.modules.pop(m, None)
+        # Re-import the stubbed version back into sys.modules for every OTHER test in this
+        # file (collected before/after this class) to keep working against the mocked version.
+        sys.modules.pop("src.services.unusual_whales", None)
+        importlib.import_module("src.services.unusual_whales")
+
+    def test_returns_none_with_no_key_configured(self):
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value=""):
+            assert self.real_uw._get("/api/stock/AAPL/gex-levels") is None
+
+    def test_a_real_200_response_returns_the_data_field(self):
+        class _FakeResp:
+            status_code = 200
+            def json(self):
+                return {"data": {"call_wall": 250.0}}
+            def raise_for_status(self):
+                pass
+
+        class _FakeClient:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def get(self, *a, **kw):
+                return _FakeResp()
+
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value="real-token"), \
+             patch.object(self.real_uw.httpx, "Client", return_value=_FakeClient()):
+            result = self.real_uw._get("/api/stock/AAPL/gex-levels")
+        assert result == {"call_wall": 250.0}
+
+    def test_a_404_returns_none_not_an_exception(self):
+        """A real, expected 'no data' response — must never be treated as a retryable/loggable
+        error the way a genuine failure would be."""
+        class _FakeResp:
+            status_code = 404
+        class _FakeClient:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def get(self, *a, **kw):
+                return _FakeResp()
+
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value="real-token"), \
+             patch.object(self.real_uw.httpx, "Client", return_value=_FakeClient()):
+            result = self.real_uw._get("/api/stock/ZZZZ/gex-levels")
+        assert result is None
+
+    def test_a_429_raises_the_dedicated_rate_limit_exception(self):
+        class _FakeResp:
+            status_code = 429
+        class _FakeClient:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def get(self, *a, **kw):
+                return _FakeResp()
+
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value="real-token"), \
+             patch.object(self.real_uw.httpx, "Client", return_value=_FakeClient()):
+            try:
+                self.real_uw._get("/api/stock/AAPL/gex-levels")
+                assert False, "expected UnusualWhalesRateLimitError"
+            except self.real_uw.UnusualWhalesRateLimitError:
+                pass
+
+    def test_a_401_raises_the_dedicated_auth_error_and_is_never_retried(self):
+        """The auth-error path must be excluded from tenacity's own retry — retrying a bad key
+        wastes the request budget on an error that can never self-resolve. Verified by
+        counting real .get() calls: if the retry decorator wrongly included this exception
+        type, we'd see 3 calls (tenacity's stop_after_attempt(3)), not 1."""
+        call_count = {"n": 0}
+        class _FakeResp:
+            status_code = 401
+        class _FakeClient:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def get(self, *a, **kw):
+                call_count["n"] += 1
+                return _FakeResp()
+
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value="real-token"), \
+             patch.object(self.real_uw.httpx, "Client", return_value=_FakeClient()):
+            try:
+                self.real_uw._get("/api/stock/AAPL/gex-levels")
+                assert False, "expected UnusualWhalesAuthError"
+            except self.real_uw.UnusualWhalesAuthError:
+                pass
+        assert call_count["n"] == 1
+
+    def test_a_generic_500_is_retried_up_to_3_times(self):
+        """A genuine transient failure (5xx, timeout, connection error) IS covered by the
+        retry_if_not_exception_type((RateLimit, Auth)) exclusion — everything else retries."""
+        call_count = {"n": 0}
+        class _FakeResp:
+            status_code = 500
+            def raise_for_status(self):
+                raise RuntimeError("500 server error")
+        class _FakeClient:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def get(self, *a, **kw):
+                call_count["n"] += 1
+                return _FakeResp()
+
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value="real-token"), \
+             patch.object(self.real_uw.httpx, "Client", return_value=_FakeClient()):
+            try:
+                self.real_uw._get("/api/stock/AAPL/gex-levels")
+                assert False, "expected the underlying RuntimeError to propagate after retries"
+            except RuntimeError:
+                pass
+        assert call_count["n"] == 3

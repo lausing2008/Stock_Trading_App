@@ -2449,6 +2449,12 @@ def short_squeeze(
     except Exception:
         pass
 
+    # MPE-01/MPE-07: check Unusual Whales availability ONCE for the whole screener (not per
+    # row) — is_available() itself is cheap (a Redis read), but per-row it would still be
+    # min_short_float(15%+)-many redundant identical reads for no benefit.
+    from ..services import unusual_whales as _uw
+    _uw_on = _uw.is_available()
+
     results = []
     _misses = 0
     for symbol, stock in stock_map.items():
@@ -2465,18 +2471,34 @@ def short_squeeze(
             sid = stock_id_map.get(symbol)
             rank = rank_map.get(sid)
             p = prices.get(symbol)
+            _change_pct = p.get("change_pct") if p else None
+            _momentum = rank.momentum if rank else None
+            _dtc = data.get("short_ratio")
+
+            # MPE-07: real Unusual Whales short-interest enrichment, when a subscription is
+            # active — a per-symbol call only for rows that ALREADY cleared the short-float
+            # floor above (never the whole universe), bounding real request cost to exactly
+            # this screener's own already-filtered candidate set.
+            _uw_fee_rate = None
+            _uw_shares_avail = None
+            if _uw_on:
+                _uw_si = _uw.get_short_interest(symbol)
+                if _uw_si is not None:
+                    _uw_fee_rate = _uw_si.fee_rate
+                    _uw_shares_avail = _uw_si.short_shares_available
+
             results.append({
                 "symbol": symbol,
                 "name": stock.name,
                 "sector": stock.sector,
                 "market": stock.market.value if hasattr(stock.market, "value") else str(stock.market),
                 "short_percent_of_float": round(spf * 100, 2),
-                "short_ratio": data.get("short_ratio"),
+                "short_ratio": _dtc,
                 "shares_short": data.get("shares_short"),
                 "shares_short_prior_month": data.get("shares_short_prior_month"),
                 "price": p.get("price") if p else None,
-                "change_pct": p.get("change_pct") if p else None,
-                "momentum_score": rank.momentum if rank else None,
+                "change_pct": _change_pct,
+                "momentum_score": _momentum,
                 "k_score": rank.score if rank else None,
                 # AUD265-SQUEEZE-MOMENTUM-NULL-ON-STALE-RANKINGS: rank is now the latest
                 # ranking within 90 days regardless of whether it clears the (much tighter)
@@ -2494,11 +2516,24 @@ def short_squeeze(
                     data.get("short_interest_date") is None
                     or data.get("short_interest_date") < _stale_cutoff_str
                 ),
+                # MPE-01/MPE-07: composite 0-100 score replacing the frontend's own binary
+                # "Prime Candidate" heuristic — see compute_short_squeeze_score()'s own
+                # docstring for the full weighting rationale.
+                "squeeze_score": compute_short_squeeze_score(
+                    short_percent_of_float=round(spf * 100, 2),
+                    days_to_cover=_dtc,
+                    momentum_score=_momentum,
+                    change_pct=_change_pct,
+                    short_shares_available=_uw_shares_avail,
+                    fee_rate=_uw_fee_rate,
+                ),
+                "uw_short_shares_available": _uw_shares_avail,
+                "uw_fee_rate": _uw_fee_rate,
             })
         except Exception:
             continue
     _log_fundamentals_cache_misses("short_squeeze", _misses, len(stock_map))
-    results.sort(key=lambda x: x["short_percent_of_float"], reverse=True)
+    results.sort(key=lambda x: (x["squeeze_score"]["score"] if x["squeeze_score"] else -1), reverse=True)
     return results
 
 
@@ -3260,6 +3295,9 @@ def get_options_flow(symbol: str):
         # Sort unusual by premium desc, keep top 10
         unusual.sort(key=lambda x: x["premium"], reverse=True)
 
+        _whale_count = sum(1 for c in unusual if c.get("is_whale"))
+        _top_whale_premium = max((c["premium"] for c in unusual), default=0)
+
         result = {
             "symbol":            sym,
             "available":         True,
@@ -3270,8 +3308,18 @@ def get_options_flow(symbol: str):
             "unusual_count":     len(unusual),
             "unusual":           unusual[:10],
             "expiries_used":     list(expiries[:4]),
-            "whale_count":       sum(1 for c in unusual if c.get("is_whale")),
-            "top_whale_premium": max((c["premium"] for c in unusual), default=0),
+            "whale_count":       _whale_count,
+            "top_whale_premium": _top_whale_premium,
+            # MPE-02: composite 0-100 options-pressure score — see
+            # compute_options_pressure_score()'s own docstring for the weighting rationale.
+            "pressure_score": compute_options_pressure_score(
+                cp_ratio=cp_ratio,
+                sentiment=sentiment,
+                whale_count=_whale_count,
+                total_call_vol=total_call_vol,
+                total_put_vol=total_put_vol,
+                gex=_options_flow_gex_component(sym),
+            ),
         }
 
         try:
@@ -3284,6 +3332,116 @@ def get_options_flow(symbol: str):
     except Exception as exc:
         log.warning("options_flow.error", symbol=sym, error=str(exc))
         return {"symbol": sym, "available": False, "reason": "fetch_error"}
+
+
+def _options_flow_gex_component(symbol: str) -> dict | None:
+    """MPE-07: real Unusual Whales GEX proximity for compute_options_pressure_score()'s optional
+    enrichment — how close the current live price sits to gamma_flip (the "zero gamma" level
+    where dealer hedging flips direction). Isolated into its own small helper (rather than
+    inlined into get_options_flow()) purely so compute_short_squeeze_score()'s own sibling
+    caller doesn't need to duplicate this same "check availability, fetch GEX, fetch live price,
+    compute proximity" sequence — kept private (leading underscore) since it's real orchestration
+    logic, not a pure function meant to be unit-tested on its own the way compute_max_pain()/
+    compute_short_squeeze_score()/compute_options_pressure_score() are.
+
+    Returns None whenever Unusual Whales is unavailable, has no real GEX data for this symbol,
+    or a live price can't be resolved — the caller (compute_options_pressure_score) already
+    treats a None gex argument as "no enrichment," so this never needs a fallback value.
+    """
+    from ..services import unusual_whales as _uw
+    if not _uw.is_available():
+        return None
+    levels = _uw.get_gex_levels(symbol)
+    if levels is None or levels.gamma_flip is None:
+        return None
+    try:
+        cached_prices = _get_redis().get(_LIVE_KEY)
+        if not cached_prices:
+            return None
+        live_price = None
+        for item in json.loads(cached_prices):
+            if item.get("symbol") == symbol:
+                live_price = item.get("price")
+                break
+        if live_price is None or live_price <= 0:
+            return None
+    except Exception:
+        return None
+    return {
+        "gamma_flip": levels.gamma_flip,
+        "call_wall": levels.call_wall,
+        "put_wall": levels.put_wall,
+        "distance_to_flip_pct": round(abs(live_price - levels.gamma_flip) / live_price * 100, 2),
+        "above_flip": live_price >= levels.gamma_flip,
+    }
+
+
+def compute_options_pressure_score(
+    cp_ratio: float | None,
+    sentiment: str | None,
+    whale_count: int,
+    total_call_vol: int,
+    total_put_vol: int,
+    gex: dict | None = None,
+) -> dict | None:
+    """MPE-02: composite 0-100 options-pressure score, built entirely from fields
+    get_options_flow() already computes above — no new data source needed for the free-tier
+    score. `gex` (Unusual Whales-only, MPE-07 — see _options_flow_gex_component()) is optional
+    real enrichment layered on top when a subscription is active.
+
+    Unlike compute_short_squeeze_score() (which is inherently directional — more short-float
+    pressure is always "more squeeze-y"), options pressure has no single "good" direction —
+    strongly_bullish and bearish are both real signals of conviction, just opposite ones. This
+    score therefore measures CONVICTION/INTENSITY (how far from neutral, how much size is
+    behind it), not bullishness — a caller wanting direction should read `sentiment` (already
+    returned by get_options_flow()) alongside this score, not instead of it.
+
+    Components:
+      - cp_ratio distance from 1.0 (neutral) — scored 0-40. cp_ratio is already capped at 10.0
+        by get_options_flow() itself; a ratio of 1.0 (perfectly balanced call/put volume) scores
+        0, ramping to a full 40 points at the two extremes (cp_ratio<=0.2 or >=5.0 — chosen as
+        roughly 5x away from neutral in either direction, a genuinely lopsided real reading).
+      - whale_count (contracts with >$500K premium, already detected by get_options_flow()) —
+        scored 0-30, 10 points per whale trade up to 3 whales (a 4th+ doesn't add more — the
+        conviction signal from "multiple large trades" is already established by 3).
+      - total volume (call+put combined) — scored 0-10, a simple liquidity-floor signal so a
+        thinly-traded name with one big lucky print doesn't score as high as genuinely active
+        options flow. Capped at 5,000 combined contracts.
+      - GEX proximity (Unusual Whales only) — scored 0-20, how close the current price sits to
+        gamma_flip. Price NEAR the flip level is where dealer hedging is most reactive/unstable
+        (a small move can trigger a larger hedging response) — scored INVERSELY to distance:
+        full 20 points within 1% of the flip, tapering to 0 at 10%+ away.
+
+    Returns None only when cp_ratio itself is missing (get_options_flow()'s own "no options
+    listed"/"no volume" cases already return available: False before this is ever called in
+    practice, but the guard is real defense, not dead code, since a future caller could pass
+    partial data through directly).
+    """
+    if cp_ratio is None:
+        return None
+
+    cpr_pts = min(40.0, max(0.0, abs(cp_ratio - 1.0) / (5.0 - 1.0) * 40.0))
+
+    whale_pts = min(30.0, whale_count * 10.0)
+
+    total_vol = (total_call_vol or 0) + (total_put_vol or 0)
+    vol_pts = min(10.0, max(0.0, total_vol / 5000.0 * 10.0))
+
+    score = round(cpr_pts + whale_pts + vol_pts, 1)
+
+    components = {
+        "cp_ratio_pts": round(cpr_pts, 1),
+        "whale_pts": round(whale_pts, 1),
+        "volume_pts": round(vol_pts, 1),
+    }
+
+    if gex is not None and gex.get("distance_to_flip_pct") is not None:
+        gex_dist = gex["distance_to_flip_pct"]
+        gex_pts = min(20.0, max(0.0, (10.0 - gex_dist) / 10.0 * 20.0))
+        components["uw_gex_proximity_pts"] = round(gex_pts, 1)
+        score = round(score + gex_pts, 1)
+
+    return {"score": min(100.0, score), "components": components, "sentiment": sentiment}
 
 
 _OPTIONS_CHAIN_TTL = 900  # 15-min — matches _OPTIONS_TTL's own refresh cadence
@@ -3362,6 +3520,82 @@ def compute_max_pain(calls: list[dict], puts: list[dict]) -> dict | None:
     }
 
 
+def compute_short_squeeze_score(
+    short_percent_of_float: float | None,
+    days_to_cover: float | None,
+    momentum_score: float | None,
+    change_pct: float | None,
+    short_shares_available: float | None = None,
+    fee_rate: float | None = None,
+) -> dict | None:
+    """MPE-01: composite 0-100 short-squeeze score, replacing short-squeeze.tsx's own binary
+    "Prime Candidate" heuristic (momentum_score > 50 and short_percent_of_float >= 15) with a
+    real weighted score built entirely from data this app already fetches — no new data source
+    needed for the free-tier score. `short_shares_available`/`fee_rate` (Unusual Whales-only,
+    MPE-07) are optional real enrichment layered on top when a subscription is active; the
+    score degrades gracefully to the free-tier components alone when they're absent.
+
+    Every threshold below is a REAL, cited number from this codebase's own established
+    conventions, never invented for this function:
+      - short_percent_of_float: the SAME 15% floor check_short_squeeze_alerts() already gates
+        alerts on (_SQUEEZE_MIN_SHORT_FLOAT, scheduler.py) — scored 0 below 5%, ramping to a
+        full 40 points at >=30% (roughly 2x the alert's own floor, matching this app's own
+        "critical" framing pattern elsewhere, e.g. _SQUEEZE_CRITICAL_DAYS_TO_COVER being ~half
+        the p25 days-to-cover reading).
+      - days_to_cover: the REAL, live-calibrated percentiles from _SQUEEZE_CRITICAL_DAYS_TO_
+        COVER's own 2026-08-13 production analysis (scheduler.py: p10=1.13, p25=1.92, p50=4.65
+        among candidates that already clear the short-float floor) — LOWER is more acute (shorts
+        can't exit quietly), so this component scores INVERSELY: full 30 points at or below the
+        real p10, tapering to 0 at/above the real p50.
+      - momentum_score (K-Score's own 0-100 momentum component, already computed by
+        ranking-engine) — scored 0-20, a straight 1:5 scale of the already-0-100 input.
+      - change_pct (today's real move) — scored 0-10, capped at a 10% move (a squeeze is
+        already well underway by 10%; further upside doesn't need more score weight here).
+
+    Returns None (never a fabricated 0) when short_percent_of_float itself is missing — the one
+    genuinely load-bearing input; every other component degrades to 0 contribution when absent,
+    since "unknown momentum" and "definitely zero momentum" are meaningfully different, but a
+    squeeze score with NO short-interest data at all isn't measuring a squeeze at any confidence.
+    """
+    if short_percent_of_float is None:
+        return None
+
+    spf_pts = min(40.0, max(0.0, (short_percent_of_float - 5.0) / (30.0 - 5.0) * 40.0))
+
+    if days_to_cover is None:
+        dtc_pts = 0.0
+    else:
+        dtc_pts = min(30.0, max(0.0, (4.65 - days_to_cover) / (4.65 - 1.13) * 30.0))
+
+    mom_pts = 0.0 if momentum_score is None else min(20.0, max(0.0, momentum_score / 100.0 * 20.0))
+
+    chg_pts = 0.0 if change_pct is None else min(10.0, max(0.0, change_pct / 10.0 * 10.0))
+
+    score = round(spf_pts + dtc_pts + mom_pts + chg_pts, 1)
+
+    components = {
+        "short_float_pts": round(spf_pts, 1),
+        "days_to_cover_pts": round(dtc_pts, 1),
+        "momentum_pts": round(mom_pts, 1),
+        "change_pct_pts": round(chg_pts, 1),
+    }
+
+    # MPE-07: Unusual Whales real short-shares-available / borrow-fee-rate enrichment, when a
+    # subscription is active — a genuinely richer, faster-updating read of "can shorts actually
+    # exit," but never required for the score itself (both default to None, contributing 0).
+    uw_pts = 0.0
+    if fee_rate is not None:
+        # A high real borrow fee (shorts paying a premium to stay short) is itself squeeze
+        # pressure — capped at 5 points so this optional enrichment can meaningfully nudge but
+        # never dominate the free-tier score above. 20%+ annualized fee is a genuinely extreme
+        # real-world reading (typical borrow fees on a liquid name are well under 1%).
+        uw_pts = min(5.0, max(0.0, fee_rate / 20.0 * 5.0))
+        components["uw_borrow_fee_pts"] = round(uw_pts, 1)
+        score = round(score + uw_pts, 1)
+
+    return {"score": min(100.0, score), "components": components}
+
+
 @router.get("/{symbol}/options-chain")
 def get_options_chain(symbol: str, expiry: str | None = None):
     """T230-DATA-OPTIONS-CHAIN: full strike/expiry matrix for one expiration date.
@@ -3428,6 +3662,170 @@ def get_options_chain(symbol: str, expiry: str | None = None):
     except Exception as exc:
         log.warning("options_chain.error", symbol=sym, error=str(exc))
         return {"symbol": sym, "available": False, "reason": "fetch_error"}
+
+
+def compute_expiration_rollup(per_expiry: list[dict]) -> list[dict]:
+    """MPE-03: per-expiration open-interest/volume rollup, classified NORMAL/ELEVATED/HIGH/
+    EXTREME relative to the OTHER expiries fetched in the same call — not a fabricated
+    historical baseline (this app persists no per-expiration OI time series anywhere; the
+    closest table, OptionsFlowSnapshot, is a whole-symbol daily aggregate across expiries
+    combined, not a per-expiration history), but a real, honest relative-to-peers comparison
+    computed fresh from the exact data just fetched.
+
+    `per_expiry` is a list of {"expiry": str, "call_oi": int, "put_oi": int, "call_volume": int,
+    "put_volume": int} dicts, one per expiration date (already summed from that expiry's own
+    calls/puts DataFrames by the caller). Returns the same rows enriched with `total_oi`,
+    `put_call_oi_ratio`, and `concentration_pct` (this expiration's share of the TOTAL open
+    interest across every expiry in the input) plus a `level` classification:
+      - EXTREME: concentration_pct >= 40% of the total (a single expiration holding nearly half
+        or more of all open interest across every fetched date is a real outlier)
+      - HIGH: >= 25%
+      - ELEVATED: >= 15%
+      - NORMAL: below 15% (an unremarkable, evenly-distributed share)
+    These thresholds are a straightforward "how far above an even split would be" reference — an
+    evenly-distributed 4-expiry rollup would put each at 25%, so ELEVATED (15%) sits meaningfully
+    below even-split and EXTREME (40%) sits meaningfully above it, not arbitrary round numbers.
+
+    Returns an empty list (never a divide-by-zero) when total OI across every input row is zero.
+    """
+    total_oi = sum((r.get("call_oi") or 0) + (r.get("put_oi") or 0) for r in per_expiry)
+    if total_oi <= 0:
+        return []
+
+    result = []
+    for r in per_expiry:
+        call_oi = r.get("call_oi") or 0
+        put_oi = r.get("put_oi") or 0
+        row_total = call_oi + put_oi
+        concentration_pct = round(row_total / total_oi * 100, 2)
+
+        if concentration_pct >= 40.0:
+            level = "extreme"
+        elif concentration_pct >= 25.0:
+            level = "high"
+        elif concentration_pct >= 15.0:
+            level = "elevated"
+        else:
+            level = "normal"
+
+        result.append({
+            "expiry": r.get("expiry"),
+            "call_oi": call_oi,
+            "put_oi": put_oi,
+            "total_oi": row_total,
+            "call_volume": r.get("call_volume") or 0,
+            "put_volume": r.get("put_volume") or 0,
+            "put_call_oi_ratio": round(put_oi / call_oi, 3) if call_oi > 0 else None,
+            "concentration_pct": concentration_pct,
+            "level": level,
+        })
+    return result
+
+
+@router.get("/{symbol}/options-expirations")
+def get_options_expirations(symbol: str):
+    """MPE-03: per-expiration open-interest/volume rollup across every listed expiration date
+    (not just the nearest 4 get_options_flow()/get_options_chain() already fetch), with a
+    NORMAL/ELEVATED/HIGH/EXTREME concentration classification per expiry (see
+    compute_expiration_rollup()'s own docstring for the exact thresholds and why this is a
+    relative-to-peers read, not a fabricated historical-norm comparison — no per-expiration OI
+    history is persisted anywhere in this app).
+
+    Bounded to the nearest 6 expiries (not every one yfinance lists, which can run 15-20+ out
+    for a liquid large-cap) — the same yfinance rate-limit-fragility concern that already caps
+    get_options_flow()/get_options_chain() at 4, widened slightly here since this endpoint's
+    whole purpose is the cross-expiry comparison itself, not a single day's detail.
+    """
+    sym = symbol.upper()
+    cache_key = f"options_expirations:{sym}"
+    try:
+        rdb = _get_redis()
+        cached = rdb.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        rdb = None
+
+    try:
+        t = yf.Ticker(sym)
+        expiries = sorted(t.options)
+        if not expiries:
+            return {"symbol": sym, "available": False, "reason": "no_options_listed"}
+
+        per_expiry = []
+        for exp in expiries[:6]:
+            try:
+                chain = t.option_chain(exp)
+            except Exception:
+                continue
+            calls = chain.calls.fillna(0)
+            puts = chain.puts.fillna(0)
+            per_expiry.append({
+                "expiry": exp,
+                "call_oi": int(calls["openInterest"].sum()),
+                "put_oi": int(puts["openInterest"].sum()),
+                "call_volume": int(calls["volume"].sum()),
+                "put_volume": int(puts["volume"].sum()),
+            })
+
+        rollup = compute_expiration_rollup(per_expiry)
+        if not rollup:
+            return {"symbol": sym, "available": False, "reason": "no_open_interest"}
+
+        result = {"symbol": sym, "available": True, "expirations": rollup}
+
+        if rdb is not None:
+            try:
+                rdb.setex(cache_key, _OPTIONS_CHAIN_TTL, json.dumps(result))
+            except Exception:
+                pass
+
+        return result
+
+    except Exception as exc:
+        log.warning("options_expirations.error", symbol=sym, error=str(exc))
+        return {"symbol": sym, "available": False, "reason": "fetch_error"}
+
+
+@router.get("/{symbol}/gamma-exposure")
+def get_gamma_exposure(symbol: str):
+    """MPE-06: real, calculated dealer gamma exposure (GEX) via Unusual Whales — call_wall/
+    put_wall (the strikes where dealer gamma concentrates) and gamma_flip (the "zero gamma"
+    level where dealer hedging flips direction), when a real subscription is configured and
+    enabled (see Settings → Market Pressure Data).
+
+    Deliberately NOT a replacement for check_gamma_unwind_alerts()'s existing free OI-
+    concentration proxy (scheduler.py) — that mechanism's own docstring already discloses it is
+    NOT a real GEX calculation, just a strike-concentration heuristic computed from yfinance's
+    open interest. This endpoint is the genuine article when available; `source` in the
+    response tells the caller which one it's looking at, so a frontend can render an honest
+    "real GEX" vs. "free proxy" distinction rather than silently presenting one as the other.
+
+    Falls back to `available: False, source: "none"` (never a fabricated GEX value) when
+    Unusual Whales is disabled/unconfigured or the symbol has no real GEX data — a caller
+    should treat that the same as "keep using the existing squeeze/gamma alert family's own
+    free proxy," not as an error.
+    """
+    from ..services import unusual_whales as _uw
+
+    sym = symbol.upper()
+    if not _uw.is_available():
+        return {"symbol": sym, "available": False, "source": "none", "reason": "unusual_whales_disabled"}
+
+    levels = _uw.get_gex_levels(sym)
+    if levels is None:
+        return {"symbol": sym, "available": False, "source": "none", "reason": "no_data"}
+
+    return {
+        "symbol": sym,
+        "available": True,
+        "source": "unusual_whales",
+        "call_wall": levels.call_wall,
+        "put_wall": levels.put_wall,
+        "gamma_flip": levels.gamma_flip,
+        "gamma_magnet": levels.gamma_magnet,
+        "as_of_date": levels.as_of_date,
+    }
 
 
 # ── Per-symbol Relative Strength ─────────────────────────────────────────────
