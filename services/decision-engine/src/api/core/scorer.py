@@ -302,6 +302,32 @@ def compute_score(
         score += pts
         breakdown.append(ScoreItem(layer="consensus", pts=pts, note=note))
 
+    # ── Layer 8: Calibrated win-rate feedback (AUD288-CONFIDENCE-CALIBRATION-NOT-FEDBACK) ──
+    # Ported from _should_enter()'s own identical layer — reasons["calibrated_win_rate"] is
+    # already forwarded to decision-engine wholesale (paper_trading_engine.py's "reasons":
+    # sig.reasons or {} — a genuine free port, no write-side change needed), so this layer
+    # was simply never read on this side despite the data already being present. Gated behind
+    # the SAME cfg["calibration_feedback_enabled"] flag (default False — a pure no-op unless
+    # explicitly turned on for a portfolio) matching the fallback gate's own promotion-gate
+    # discipline exactly: this is a NEW score adjustment, not a tuned value of an existing one,
+    # and real production calibration data shows genuine non-monotonic confidence inversions
+    # (e.g. SWING|BUY|HK: 30.9% win rate at 40-55 confidence vs 13.4% at 55-70) — so this reads
+    # whichever band's OWN measured win rate applies to THIS signal, never an assumption that
+    # higher confidence implies a higher score. _calibrated_win_rate() itself already enforces
+    # a 30-sample floor before ever returning a non-None value, so no second floor check here.
+    _cal_wr = reasons.get("calibrated_win_rate")
+    if cfg.get("calibration_feedback_enabled") and _cal_wr is not None:
+        _cal_wr = float(_cal_wr)
+        _cal_n = reasons.get("calibrated_win_rate_count")
+        if _cal_wr >= 0.55:
+            pts, note = 1, f"Calibrated win rate {_cal_wr*100:.0f}% (n={_cal_n}) for this exact confidence band — measured edge above baseline"
+            score += pts
+            breakdown.append(ScoreItem(layer="calibration_feedback", pts=pts, note=note))
+        elif _cal_wr <= 0.35:
+            pts, note = -1, f"Calibrated win rate {_cal_wr*100:.0f}% (n={_cal_n}) for this exact confidence band — measured edge below baseline"
+            score += pts
+            breakdown.append(ScoreItem(layer="calibration_feedback", pts=pts, note=note))
+
     return score, breakdown
 
 

@@ -4969,11 +4969,19 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     )
     # T232-DL-DUALSCORER-DEBT / T194: open-exposure cap gate parity — the ONE aggregate-
     # exposure sibling of the sector-$-cap and open-risk-$-cap above that was never ported.
-    # Deliberately reuses _open_sector_values (already summed with the SAME _best_price()
-    # convention) rather than re-summing entry_price*shares over _prefetched_open a second
-    # time — a portfolio-wide total is just the sum across every sector bucket already computed.
+    # AUD-DECIDE-OPENEXPOSURE-BASEMISMATCH (fixed): this value MUST use entry_price*shares
+    # (cost basis) — NOT _open_sector_values' own live-price sum — because T194's own
+    # pre-existing local hard reject a few dozen lines below (the check this value is
+    # supposed to give decision-engine parity with) uses entry_price*shares, not live value.
+    # Reusing _open_sector_values here looked like free reuse of an already-computed
+    # aggregate, but it silently duplicated the WRONG base — a portfolio with meaningfully
+    # appreciated open positions would read a materially higher % here than T194's own local
+    # check computes for the identical state, letting decision-engine block an entry the
+    # fallback gate (_should_enter()) would itself approve. Computed as its own genuine sum
+    # over _prefetched_open, matching T194's own formula (line ~5009) exactly.
     _open_exposure_pct = (
-        (sum(_open_sector_values.values()) / equity * 100) if equity > 0 else None
+        (sum(float(_t.entry_price) * float(_t.shares) for _t, _ in _prefetched_open) / equity * 100)
+        if equity > 0 else None
     )
 
     # T258-PORTFOLIO-CORRELATION-PREENTRY: bulk-fetch daily closes for the open book ONCE per

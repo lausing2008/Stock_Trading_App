@@ -223,6 +223,91 @@ def test_buy_action_rejects_when_already_holding_an_open_position_in_the_symbol(
     assert "Already have an open position" in body
 
 
+# ── AUD-CONDORDER-CIRCUITBREAKER-BYPASS ────────────────────────────────────────────────────
+# A conditional BUY previously called _call_decision_engine() with the default
+# daily_pnl_pct=0.0 (never threading the portfolio's REAL daily P&L) — hard_rejects.py's
+# daily-loss gate is `if daily_pnl_pct <= -abs(max_daily_loss)`, unconditionally evaluated
+# with no is_not_None guard, so 0.0 can NEVER satisfy it regardless of the portfolio's actual
+# state. The fallback _should_enter() path has no equivalent parameter at all. Combined with
+# no check of portfolio.config["paused"] anywhere in this module, a conditional order could
+# silently open a real position on a paused portfolio, or one already past its daily-loss,
+# weekly-loss, weekly-gain-lock, drawdown, or consecutive-loss circuit breaker — exactly the
+# protections _scan_for_entries() enforces for every organic entry on the same portfolio.
+
+def _execute_buy_body():
+    start = _MODULE_SOURCE.index("def _execute_buy(")
+    end = _MODULE_SOURCE.index("def _execute_sell_partial(", start)
+    return _MODULE_SOURCE[start:end]
+
+
+def test_buy_action_checks_the_portfolio_pause_flag():
+    body = _execute_buy_body()
+    pause_idx = body.index('.get("paused"')
+    de_call_idx = body.index("_call_decision_engine(")
+    assert pause_idx < de_call_idx, "the pause check must happen before any entry gate runs"
+
+
+def test_buy_action_threads_a_real_daily_pnl_pct_not_the_fabricated_zero_default():
+    """The bug this guards against: previously _call_decision_engine() was called with no
+    daily_pnl_pct kwarg at all, silently taking its own default of 0.0 — a value that can
+    NEVER satisfy hard_rejects.py's `daily_pnl_pct <= -abs(max_daily_loss)` gate regardless of
+    the portfolio's real state. Must now compute and pass a real value derived from today's
+    closed PaperTrade.pnl, matching _scan_for_entries()'s own identical computation."""
+    body = _execute_buy_body()
+    assert "daily_pnl_pct=_daily_pnl_pct" in body
+    # the real computation must exist, not just the kwarg name
+    assert "_daily_pnl_pct = round(daily_net_pnl / equity, 4)" in body
+
+
+def test_buy_action_threads_weekly_net_pnl_pct():
+    body = _execute_buy_body()
+    assert "weekly_net_pnl_pct=_weekly_net_pnl_pct" in body
+    assert "_weekly_net_pnl_pct = weekly_net_pnl / equity * 100" in body
+
+
+def test_buy_action_checks_the_drawdown_circuit_breaker_before_calling_decision_engine():
+    """Anchor on the real call site (de_result = _call_decision_engine(...)), not the
+    function's own docstring, which mentions "_call_decision_engine" in prose before the real
+    call ever appears — a naive body.index("_call_decision_engine(") would match that first."""
+    body = _execute_buy_body()
+    dd_idx = body.index("_compute_portfolio_drawdown(")
+    de_call_idx = body.index("de_result = _call_decision_engine(")
+    assert dd_idx < de_call_idx
+
+
+def test_buy_action_checks_daily_loss_weekly_loss_and_gain_lock_and_consec_loss_locally_too():
+    """These 4 circuit breakers must ALSO be checked directly inside _execute_buy() (not just
+    threaded to decision-engine as data) — the fallback _should_enter() path (used whenever DE
+    is unreachable) has no equivalent parameter, so without a LOCAL check here a conditional
+    order would bypass all 4 breakers entirely whenever DE happens to be down."""
+    body = _execute_buy_body()
+    assert "Daily loss limit hit" in body
+    assert "Weekly loss" in body and "exceeds" in body
+    assert "Weekly gain lock" in body
+    assert "Consecutive-loss limit hit" in body
+
+
+def test_buy_action_respects_the_same_admin_gates_override_escape_hatch():
+    """Must reuse _entry_gates_override_active(cfg) — the SAME admin emergency override
+    _scan_for_entries() already respects — not a separate, second override mechanism that
+    could silently diverge from it."""
+    body = _execute_buy_body()
+    assert "_gates_override = _entry_gates_override_active(cfg)" in body
+    assert body.count("not _gates_override") >= 4  # drawdown, daily-loss, weekly x2 or consec
+
+
+def test_sell_partial_uses_size_aware_slippage_matching_the_organic_scale_out_path():
+    """AUD-CONDORDER-SLIPPAGE-CONSISTENCY: previously always used the flat entry_slippage_pct
+    base rate regardless of position size — an inconsistency with _monitor_positions()'s own
+    two organic partial-scale-out blocks, which both apply the IF-06 size-aware slippage model
+    gated behind size_aware_slippage_enabled."""
+    start = _MODULE_SOURCE.index("def _execute_sell_partial(")
+    end = _MODULE_SOURCE.index("def _execute_tighten_stop(", start)
+    body = _MODULE_SOURCE[start:end]
+    assert "_size_aware_slippage_pct(partial_shares, _avg_daily_volume_for(order.symbol), _base_slippage)" in body
+    assert 'cfg.get("size_aware_slippage_enabled", True)' in body
+
+
 def test_tighten_stop_action_is_monotonic_never_loosens_the_stop():
     start = _MODULE_SOURCE.index("def _execute_tighten_stop(")
     end = _MODULE_SOURCE.index("def _execute_close_position(", start)

@@ -19739,3 +19739,339 @@ history (e.g. a new, longer-period indicator added to `_technical_raw_inputs()`)
 300-bar constant must be re-verified against the new requirement — it is NOT a generic
 "300 is always enough" assumption, it is specifically `sma200`'s 200-bar need plus a
 100-bar warmup margin.
+
+---
+
+## Deep Audit Series (2026-08-31): Decision Making — 4 of 5
+
+**Fourth area of the requested sequential 5-area deep audit** (AI Signal, Short Squeeze,
+Model Training already done — each found real bugs). Scope: `services/decision-engine/`,
+the service producing the final ENTER/BLOCKED/HOLD verdict, separate from AI Signal
+generation and Paper Trading execution. A dedicated audit agent (grounded in a pre-extracted
+~80KB briefing of every decision-engine-relevant CLAUDE.md section, since the full ~20K-line
+file itself exceeds a single prompt's budget) found 2 genuine, previously-undocumented
+divergences, both personally re-verified against real current code before building anything.
+
+### Finding 1 — `open_exposure_pct` sent to decision-engine used a DIFFERENT formula base than the local T194 gate it's supposed to give parity with
+
+**Files**: `services/market-data/src/services/paper_trading_engine.py` — the value SENT to
+decision-engine (`_open_exposure_pct`, built from `_open_sector_values` at line ~4962) vs.
+the pre-existing local T194 hard-reject check a few dozen lines below it (line ~5009).
+
+`_open_exposure_pct` was computed as `sum(_open_sector_values.values()) / equity * 100` —
+reusing `_open_sector_values`, which sums `_best_price(trade, live_prices) * trade.shares`
+(**live market value**) across every open position. But T194's own, older, pre-existing local
+check computes `sum(float(t.entry_price) * float(t.shares) for t, _ in _prefetched_open)`
+(**cost basis**). The commit that introduced the sent value (`T232-DL-DUALSCORER-WEEKLYPNL-
+EXPOSURE`) reasoned that reusing `_open_sector_values` was safe because it "already uses the
+SAME `_best_price()` convention" as the sibling sector-$ cap — true, but that reasoning never
+checked the ACTUAL gate this value is meant to mirror, which uses a genuinely different base.
+
+**Concrete failure scenario**: a portfolio whose open positions have appreciated ~30% since
+entry (a realistic, non-degenerate state) would have `_open_exposure_pct` read ~30% higher
+than what the local T194 check computes for the identical state — if the true entry-cost
+exposure is 32% (T194 does NOT block, below the 40% default), the live-value version could
+read ~42%, and decision-engine's ported T194 gate would **BLOCK an entry the fallback gate
+itself would approve**, for the same portfolio at the same moment — the opposite of this
+whole port's stated goal.
+
+**Fix applied**: `_open_exposure_pct` recomputed as its own genuine sum over
+`_prefetched_open` using `entry_price * shares`, matching T194's own formula exactly (T194 is
+the older, authoritative, pre-existing local definition this port was built to mirror, so the
+SENT value was corrected to match it, not the reverse). The two sibling ports in the same
+code block (`_open_sector_values` for the sector-$ cap, `_open_risk_total` for the open-risk
+cap) were independently checked against their own respective local formulas and confirmed
+genuinely consistent — the bug was isolated specifically to the open-exposure port.
+
+**A pre-existing test had codified the bug as a requirement** —
+`test_open_exposure_pct_reuses_the_already_summed_sector_values_not_a_second_pass`
+(`test_weekly_pnl_and_open_exposure_config_wiring.py`) explicitly asserted the WRONG formula
+must be used. Corrected to assert the fixed formula and added a direct textual-parity test
+confirming the two formulas (sent value vs. T194's own local check) are now byte-identical in
+shape, not just "also mentions entry_price somewhere."
+
+### Finding 2 — a real score layer existed only in the DE-outage fallback gate, never ported to decision-engine's own scorer
+
+**Files**: `services/market-data/src/services/paper_trading_engine.py`'s `_should_enter()`
+(the `AUD288-CONFIDENCE-CALIBRATION-NOT-FEDBACK` calibrated-win-rate feedback layer) vs.
+`services/decision-engine/src/api/core/scorer.py`'s `compute_score()` (confirmed via grep:
+zero references to `calibration_feedback_enabled`/`calibrated_win_rate` anywhere in
+decision-engine).
+
+This layer is currently inert on every real portfolio (the flag defaults `False`, and its own
+walk-forward validation sweep already found no measurable benefit in the tested window) — so
+zero live impact TODAY. But it's a real architectural gap: if the flag is ever turned on for
+a real portfolio in the future, decision-engine's `/decide/{symbol}` (the live
+`decision_engine_mode="primary"` path) would silently ignore it while the fallback would
+apply it — exactly the class of divergence the whole `T232-DL-DUALSCORER-DEBT` series exists
+to close, introduced after the last comprehensive parity sweep.
+
+**Fix applied**: `reasons["calibrated_win_rate"]`/`["calibrated_win_rate_count"]` are already
+forwarded to decision-engine wholesale (`paper_trading_engine.py` sends the FULL `reasons`
+dict — a genuine free port, zero write-side change needed). Added a new Layer 8 to
+`compute_score()`, mirroring `_should_enter()`'s own logic exactly (`>=0.55` boosts `+1`,
+`<=0.35` penalizes `-1`, gated behind `cfg.get("calibration_feedback_enabled")`, defaulting to
+a strict no-op when absent) — 6 new dedicated tests, including a boundary test proving the
+flag's ABSENCE is a strict no-op even with a real, strongly-positive `calibrated_win_rate`
+present (not an implicit opt-in).
+
+### Verification (both findings)
+
+Adversarially verified both fixes independently: reverted each source change, confirmed the
+new/corrected tests fail with clean, real diagnostics (Finding 1's test showed the wrong
+formula's real computed values; Finding 2's 3 sabotage-targeted tests correctly failed while
+the 3 absence/no-op tests correctly stayed green), restored and confirmed byte-identical via
+`diff`. Full 282-test decision-engine suite green (up from 276); pyflakes clean on both
+touched files. Deployed and live-verified against real production data: both containers
+restarted clean, checksums confirmed byte-identical, a real `/decide/AAPL` call with
+`calibration_feedback_enabled: True` set completed end-to-end with no crash, and a real
+current signal row for AAPL confirmed carrying a genuine `calibrated_win_rate: 0.389` (n=1163)
+already flowing through `reasons` exactly as the fix assumes.
+
+**Everything else checked and confirmed genuinely clean**: route registration order
+(`/decide/batch`/`/decide/score-replay` correctly registered before the `/decide/{symbol}`
+catch-all), the falsy-zero/`or`-vs-`is not None` pattern (checked every `x or default`
+occurrence in scorer.py/sizer.py/hard_rejects.py — the 2 candidates found are both currently
+safe, though not by design), all ~23 hard-reject gates and all 7 pre-existing score layers
+cross-checked line-by-line against `_should_enter()`'s own equivalents with no further
+divergence found, `/decide/score-replay`'s historical-replay reconstruction (confirmed it
+calls the real `compute_score()`/`min_score_for_regime()`, never a re-implementation),
+`aggregator.py`'s config-fetch caching, and `llm_scorer.py`/`risk_agent.py`'s fail-open logic.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n "AUD-DECIDE-OPENEXPOSURE-BASEMISMATCH" /app/src/services/paper_trading_engine.py
+docker exec stockai-decision-engine-1 grep -n "Layer 8: Calibrated win-rate feedback" /app/src/api/core/scorer.py
+```
+
+---
+
+## Deep Audit Series (2026-08-31): Paper Trading — 5 of 5 — SERIES COMPLETE
+
+**Fifth and final area of the requested sequential 5-area deep audit.** Scope: the paper-
+trading execution engine in `services/market-data/` — `_should_enter()`, `_scan_for_entries()`,
+`_open_paper_trade()`, `_monitor_positions()`, `paper_portfolio.py`, `conditional_orders.py`,
+`gate_harness.py`, `portfolio_backtest.py`. A dedicated audit agent (grounded in a
+pre-extracted ~157KB briefing of every paper-trading-relevant CLAUDE.md section — this is by
+far the most-worked-on area in this file's own history) found 6 genuine findings, all
+personally re-verified and reproduced concretely before building anything.
+
+### Finding 1 (highest severity) — `AUD-CONDORDER-CIRCUITBREAKER-BYPASS`: a conditional-order BUY silently bypassed every portfolio-wide circuit breaker
+
+**File**: `services/market-data/src/services/conditional_orders.py`'s `_execute_buy()`.
+
+`_call_decision_engine()`'s `daily_pnl_pct: float = 0.0` default was never overridden by
+`_execute_buy()` — and `hard_rejects.py`'s daily-loss gate
+(`if daily_pnl_pct <= -abs(max_daily_loss)`) has **no `is not None` guard**, so it's
+unconditionally evaluated on every call. `0.0` can never satisfy this comparison regardless
+of the portfolio's real state — the daily-loss circuit breaker was structurally unreachable
+via this path. The fallback `_should_enter()` path has **no equivalent parameter at all** —
+drawdown/weekly-loss/weekly-gain-lock/consecutive-loss circuit breakers live exclusively in
+`_scan_for_entries()`'s own gate block, which `_execute_buy()` never replicated. Nor did it
+check `portfolio.config["paused"]` anywhere, or the `is_active` column (a SEPARATE flag from
+the config-level pause — `check_conditional_orders()` only checked the latter).
+
+**Concrete failure scenario**: a user configures a conditional BUY order on a portfolio
+that's already paused, or already past its daily-loss limit (which has correctly halted
+every ORGANIC entry) — if the trigger condition fires, the conditional order would still open
+a real position, completely bypassing the exact protections the user or the app had just put
+in place. Directly contradicts the feature's own module docstring ("a conditional order only
+ever decides WHEN to act... never WHETHER the setup itself is valid").
+
+**Fix applied**: `_execute_buy()` now checks `portfolio.config["paused"]` first (fail fast),
+then computes the SAME real drawdown/daily-loss/weekly-loss/weekly-gain-lock/consecutive-loss
+values `_scan_for_entries()` computes, checking all 5 locally (covering the fallback-gate
+path, which has no other way to see them) AND threading `daily_pnl_pct`/`weekly_net_pnl_pct`
+through to `_call_decision_engine()` (covering the DE-reachable path). Reuses the SAME admin
+`_entry_gates_override_active(cfg)` emergency escape hatch `_scan_for_entries()` already
+respects, not a second, divergent override mechanism.
+
+**A real test-writing trap self-caught and fixed**: the first version of the drawdown-
+ordering test anchored on `body.index("_call_decision_engine(")`, which matched the
+function's OWN DOCSTRING mention of that name (in prose, at the very top) before the real call
+site — the exact "matched the docstring, not the call" trap this codebase's own history has
+hit multiple times before. Fixed by anchoring on the real assignment form
+(`"de_result = _call_decision_engine("`).
+
+### Finding 2 — `AUD-ALPHABETA-VAREPS`: `_compute_alpha_beta()`'s information ratio had the exact float-noise-explosion bug already fixed once in a sibling function, never ported
+
+**File**: `services/market-data/src/api/paper_portfolio.py`'s `_compute_alpha_beta()`.
+
+`te = math.sqrt(var_active * 252) if var_active > 0 else 0` — the identical bare-`>0`-on-a-
+computed-variance bug `AUD292-SHARPE-VAREPS` (2026-08-20) already found and fixed in the
+sibling `_portfolio_risk_metrics()` a few dozen lines above it, in the SAME file, never
+ported to this function. A portfolio consistently tracking SPY with a fixed daily offset
+(plausible for a highly-correlated, low-turnover book) produces `var_active` that is pure
+floating-point noise (~6e-39, confirmed via direct reproduction), not an exact `0.0` — the
+bare `>0` check lets it through and explodes the user-facing `info_ratio` stat toward
+~1.02e17. `beta`'s own separate, pre-existing epsilon (`1e-10`) was also raised to match
+`_VAR_EPS = 1e-9` for internal consistency within the one function.
+
+**Fix applied and reproduced concretely before AND after**: constructed the exact triggering
+fixture (30-day fixed-offset-tracking portfolio), confirmed the pre-fix code produced a real
+`70,290,788,724,061.5` exploded value, applied the epsilon fix, confirmed `info_ratio`
+correctly reports `None` (undefined tracking error) instead.
+
+### Finding 3 — `AUD-PORTFOLIOBACKTEST-VAREPS`: the same bug class, a THIRD time, in the admin backtest research endpoint
+
+**File**: `services/market-data/src/backtest/portfolio_backtest.py`'s `_annualized_sharpe()`.
+
+A bare `if std == 0: return None` guard — reproduced concretely against the EXACT equity-
+curve construction this function's own real caller builds (`equity[i]/equity[i-1]-1` day-
+over-day returns, feeding `run_portfolio_backtest()`'s `sharpe_ratio`): a 24-step equity curve
+with a target rate perturbed by `1e-17` per step produces a real, sub-epsilon `std` (~6.5e-17)
+that explodes `sharpe` to `2.42e14` (and, in the adversarial-revert re-run, a different but
+equally-exploded `139,974,310,775,683.22`, confirming genuine reproducibility, not a fluke).
+Same `_VAR_EPS = 1e-9` fix applied.
+
+### Finding 4 — `AUD-CONFIGGAP-WEEKLYGAINLOCK`: same T232-CONFIGGAP class recurring for `max_weekly_gain_pct`
+
+`max_weekly_loss_pct` was present in both `configure_portfolio()`'s `allowed_keys` set and
+`_RANGE_CHECKS`; its sibling `max_weekly_gain_pct` (T191's weekly gain-lock threshold, reads
+identically alongside it in the SAME weekly-P&L circuit-breaker block) was absent from both —
+any attempt to tune the gain-lock side via the Config Panel was silently dropped as an
+"unknown key," while the loss-limit side worked. Added to both, matching the sibling's exact
+convention (a real decimal-fraction range check, `0.02–0.30`).
+
+### Finding 5 — `AUD-CONDORDER-SLIPPAGE-CONSISTENCY`: conditional-order partial sells used flat slippage, unlike the organic path
+
+`_execute_sell_partial()` always used `cfg.get("entry_slippage_pct", 0.001)` regardless of
+position size — the organic scale-out path (`_monitor_positions()`'s two partial-scale-out
+blocks) both apply the IF-06 size-aware slippage model
+(`_size_aware_slippage_pct(shares, avg_daily_volume, base_slippage)`, gated behind
+`size_aware_slippage_enabled`). A real, if lower-severity, inconsistency — fixed to match.
+
+### Verification (all 6 findings)
+
+Every fix adversarially verified: reverted each source change independently, confirmed the
+corresponding new/corrected test(s) fail with clean, real diagnostics reproducing the exact
+bug (concrete exploded numeric values for Findings 2/3, real assertion diffs for Findings
+1/4/5), restored and confirmed byte-identical via `diff`/`md5sum` before moving on. Full
+2161-test market-data suite green (up from 2145 baseline this session — 16 new tests);
+pyflakes clean on all 4 touched source files (all pre-existing warnings confirmed via
+`git stash` to predate this session, only line numbers shifted). Deployed and live-verified
+against real production data: all 4 touched files confirmed byte-identical to fixed source on
+EC2, clean restart with zero Python tracebacks (only benign, pre-existing yfinance 404s for
+symbols genuinely lacking fundamentals data), and the new circuit-breaker logic directly
+exercised against a real production portfolio (US SWING Portfolio: equity $51,376.67,
+drawdown 1.58%, not paused, no override active — the exact state `_execute_buy()`'s new
+checks would evaluate against for a real conditional order on this portfolio).
+
+**Everything else checked and confirmed genuinely clean**: `_should_enter()` (including
+confirming `BUG232-DEADCODE`'s redundant local `datetime` import fix is still in place),
+`_scan_for_entries()`'s ~9 portfolio-level circuit breakers (all correctly gated, and this
+session's own earlier Finding 1 fix confirmed consistent at both its computation site and
+the local T194 duplicate), `_open_paper_trade()`'s full sizing/cap stack, `_monitor_positions()`'s
+exit-reason labeling (`AUD262-EXITREASON-CONFLATION-ROOT` and the blended-P&L-writeback fix
+both confirmed still correctly applied, plus the delisted-stock auto-exit's execute-exit
+routing), `gate_harness.py`'s full 8 walk-forward sweep functions (chronological split,
+`_resolvable_window_end()`, `_passes_promotion_margin()`'s dual-guard, all 3 point-in-time
+historical-reconstruction helpers), `portfolio_backtest.py`'s day-stepping and all 3 sweep
+functions, `_close_one_paper_trade()`/`liquidate_portfolio()`'s two-layer confirmation, and
+`trade_coach.py`/`check_portfolio_drawdown_alerts()`.
+
+**This closes the requested sequential 5-area deep audit series in full** (AI Signal, Short
+Squeeze, Model Training, Decision Making, Paper Trading) — 12 genuine bugs found and fixed
+across the platform this session, each personally verified against actual current code
+(never trusted from a background agent's report alone), adversarially tested, and confirmed
+live in production.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n "AUD-CONDORDER-CIRCUITBREAKER-BYPASS\|AUD-ALPHABETA-VAREPS\|AUD-CONFIGGAP-WEEKLYGAINLOCK\|AUD-CONDORDER-SLIPPAGE-CONSISTENCY" /app/src/services/conditional_orders.py /app/src/api/paper_portfolio.py
+docker exec stockai-market-data-1 grep -n "AUD-PORTFOLIOBACKTEST-VAREPS" /app/src/backtest/portfolio_backtest.py
+```
+
+---
+
+## Scoping Decision: Market Pressure, Options, Short Squeeze & Margin Risk Engine (2026-09-01)
+
+**User asked to review a large proposal document** (`Improvements/Market Pressure, Options,
+Short Squeeze & Margin Risk Engine.md`, 30 sections) asking for a combined Short-Squeeze/
+Options-Gamma/Margin-Risk scoring engine feeding the AI decision engine. Per the doc's own
+§30, it explicitly requires an "existing architecture summary" response BEFORE any code is
+written — dispatched a mapping agent to check every claim against real current code, then
+personally spot-checked the most load-bearing claims via direct grep before trusting the
+report (the same standing discipline this whole session has repeatedly applied to background
+agent output).
+
+**Headline finding: roughly 60–70% of the doc's ask already exists**, under different names,
+and its two central premises are factually false for this codebase (confirmed via zero-hit
+greps in both directions):
+
+- **"FMP fundamentals integration/planned integration"** — false. `fmp_api_key`
+  (`shared/common/config.py:69`) is a dead config stub with zero consumers anywhere in the
+  codebase. Fundamentals are 100% yfinance today.
+- **"Unusual Whales API integration/planned integration"** — false. Zero code references
+  anywhere (`unusual_whales`/`UnusualWhales`/`uw_api` all return zero hits). This repo already
+  investigated Unusual Whales' real pricing once (2026-08-24, documented elsewhere in this
+  file) and found the entry tier is $125/mo, deliberately deferring subscription — that
+  decision stands, unrevisited by this scoping pass.
+- **"Portfolio Margin Risk" (§7/§8)** — the doc assumes real leverage/margin exists to model.
+  Confirmed directly: `_open_paper_trade()`'s hard cash gate
+  (`if position_value > portfolio.current_cash * 0.98: return None, "insufficient_cash"`)
+  makes a leveraged position structurally impossible. Zero real margin-call/maintenance-
+  margin/leverage concept exists anywhere in the trading engine (the sole "leverage" grep hit
+  across the whole `market-data` service is figurative English usage in an unrelated code
+  comment, not a trading concept).
+
+**What already exists** (verified directly, not just via the agent's report): real
+options-chain/options-flow endpoints + max-pain calculation (yfinance-sourced); an honestly
+self-disclaimed OI-concentration gamma proxy (`check_gamma_unwind_alerts()`'s own docstring
+explicitly states "this is NOT a real gamma-exposure (GEX) calculation" — confirmed zero
+Black-Scholes/dealer-positioning code exists anywhere); real short-interest fields
+(`short_percent_of_float`/`short_ratio`/`shares_short`/`short_interest_date`) already on the
+point-in-time-safe `Fundamental` table AND already real ML features
+(`FUNDAMENTAL_COLUMNS` in `builder.py`); two live squeeze-alert scheduled jobs with real
+gating logic; a `RestrictedSymbol` blacklist; real portfolio risk metrics (Sharpe/Sortino/
+Calmar/CAGR/max-drawdown/Profit Factor, VaR/CVaR + 5 real historical stress scenarios,
+volatility-targeting position sizing); a mature walk-forward promotion-gate framework; and
+decision-engine's `compute_score()` already has 8 named layers + `hard_rejects.py`'s ~23
+hard-reject gates with an established `cfg`-driven-threshold pattern any new score component
+would slot into cleanly.
+
+**What's genuinely missing**: a group-level feature-ablation harness (every existing sweep
+perturbs one or two numeric constants at a time, never a whole named feature GROUP); true
+GEX/dealer-hedging (needs real per-contract Greeks + a dealer-positioning assumption — no
+data source currently provides either); Profit-Factor-as-primary-optimization-objective
+(every existing promotion gate optimizes EV-lift or precision today, never Profit Factor
+directly, despite Profit Factor already being a computed metric in 3+ places).
+
+**Disposition, filed as Tier 320 / ids `MPE-01` through `MPE-10`** in
+`frontend/src/pages/improvements.tsx` — full per-item reasoning in
+`docs/SCOPING_MARKET_PRESSURE_ENGINE_2026-09-01.md`:
+
+- **Build now (MPE-01 through MPE-05)**: a composite Short Squeeze Score and a composite
+  Options Pressure Score (both pure compositing over already-existing data, no new data
+  source); an options-expiration tracking view (rollup over already-fetched options-chain
+  data); a genuinely new 4-cell feature-ablation harness (BASELINE/+SHORT/+OPTIONS/
+  +SHORT+OPTIONS — deliberately narrower than the doc's own 8-cell grid, matching this
+  codebase's own "combinatorial cost + overfitting risk on a thin sample" discipline already
+  applied to every existing sweep), built FIRST to test whether the ALREADY-EXISTING short-
+  interest ML features carry real predictive value before scoring anything new on top of
+  them; and wiring the two composite scores into decision-engine's existing scorer as a 9th
+  layer — explicitly gated on the ablation harness's own result, never built speculatively.
+- **Deferred pending Unusual Whales (MPE-06/MPE-07)**: true GEX/dealer-hedging; short-covering
+  probability/borrow-fee/utilization/shares-available. Re-affirms the existing deferral
+  decision — re-check `SqueezeAlertOutcome`/`PreBreakoutAlertOutcome` row counts (currently
+  only ~107 alerts fired total across the whole family) before ever revisiting.
+- **Rejected as literally specified (MPE-08)**: Portfolio Margin Risk — no real substrate
+  exists to compute against on a cash-only platform; building it would mean fabricating a
+  purely hypothetical simulation with nothing real at stake.
+- **Deferred as their own separate future decisions (MPE-09/MPE-10)**: shifting every
+  existing promotion gate to optimize Profit Factor as the primary objective (a real, large,
+  cross-cutting change to already-proven infrastructure — deserves its own dedicated scoping
+  pass with before/after validation, not a silent side-effect of this build); the full 8-cell
+  ablation grid (assumes a margin feature group that does not exist per MPE-08).
+
+**No code was written for this task** — it was a research + scoping + documentation pass
+only, per the doc's own explicit "wait for confirmation before making large architectural
+changes" instruction.
+
+**What to check if this needs re-verifying**:
+```bash
+grep -rn "unusual_whales\|UnusualWhales\|uw_api" services/ shared/
+grep -rn "financialmodelingprep\|FinancialModelingPrep\|fmp_adapter\|class FMP" services/ shared/
+grep -n "insufficient_cash\|current_cash \* 0.98" services/market-data/src/services/paper_trading_engine.py
+cat docs/SCOPING_MARKET_PRESSURE_ENGINE_2026-09-01.md   # full disposition table
+```

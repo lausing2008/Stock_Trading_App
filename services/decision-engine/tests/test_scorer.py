@@ -360,3 +360,74 @@ def test_catalyst_thresholds_item14_default_matches_original_and_is_overridable(
     )
     assert _layer_pts(breakdown2, "catalyst_insider") == 1
     assert _layer_pts(breakdown2, "catalyst_congress") == 1
+
+
+# ── AUD-DECIDE-CALIBRATIONFEEDBACK-NOTPORTED: Layer 8, calibrated win-rate feedback ─────
+#
+# reasons["calibrated_win_rate"] is already forwarded to decision-engine wholesale (a free
+# port — paper_trading_engine.py sends the FULL reasons dict, no write-side change needed) but
+# this scoring layer itself was never added on the read side, so _should_enter()'s identical
+# layer had zero decision-engine equivalent. Gated behind cfg["calibration_feedback_enabled"],
+# defaulting to False/absent — a pure no-op for every existing caller that never sets it,
+# matching the fallback gate's own promotion-gate discipline (this layer must stay off until a
+# real walk-forward sweep validates it).
+
+def test_calibration_feedback_disabled_by_default_even_with_a_real_high_win_rate():
+    """The flag being absent entirely must be a strict no-op, not an implicit opt-in — a real,
+    strongly-positive calibrated_win_rate must NOT silently boost the score unless the caller
+    explicitly turned the flag on."""
+    reasons = {"calibrated_win_rate": 0.90, "calibrated_win_rate_count": 200}
+    _, breakdown = compute_score(100.0, _game_plan(), _signal_data(reasons), None, None, "neutral", {})
+    assert "calibration_feedback" not in _layer_names(breakdown)
+
+
+def test_calibration_feedback_high_win_rate_boosts_score_when_enabled():
+    reasons = {"calibrated_win_rate": 0.62, "calibrated_win_rate_count": 85}
+    _, breakdown = compute_score(
+        100.0, _game_plan(), _signal_data(reasons), None, None, "neutral",
+        {"calibration_feedback_enabled": True},
+    )
+    assert _layer_pts(breakdown, "calibration_feedback") == 1
+
+
+def test_calibration_feedback_low_win_rate_penalizes_score_when_enabled():
+    reasons = {"calibrated_win_rate": 0.20, "calibrated_win_rate_count": 60}
+    _, breakdown = compute_score(
+        100.0, _game_plan(), _signal_data(reasons), None, None, "neutral",
+        {"calibration_feedback_enabled": True},
+    )
+    assert _layer_pts(breakdown, "calibration_feedback") == -1
+
+
+def test_calibration_feedback_middle_band_is_neutral_when_enabled():
+    """Between the two thresholds (0.35 < wr < 0.55) — neither boosts nor penalizes, matching
+    _should_enter()'s own identical dead-zone."""
+    reasons = {"calibrated_win_rate": 0.45, "calibrated_win_rate_count": 50}
+    _, breakdown = compute_score(
+        100.0, _game_plan(), _signal_data(reasons), None, None, "neutral",
+        {"calibration_feedback_enabled": True},
+    )
+    assert "calibration_feedback" not in _layer_names(breakdown)
+
+
+def test_calibration_feedback_enabled_but_no_measured_value_produces_no_layer():
+    """The flag alone is not enough — calibrated_win_rate itself must be present (a real,
+    measured value with >=30 samples per _calibrated_win_rate()'s own upstream contract).
+    A symbol/horizon/band combo with no calibration data yet must not fabricate one."""
+    _, breakdown = compute_score(
+        100.0, _game_plan(), _signal_data({}), None, None, "neutral",
+        {"calibration_feedback_enabled": True},
+    )
+    assert "calibration_feedback" not in _layer_names(breakdown)
+
+
+def test_calibration_feedback_does_not_assume_higher_confidence_means_higher_score():
+    """Real production data shows non-monotonic inversions (documented in the code's own
+    comment) — this layer must read whichever measured win rate is present, never derive one
+    from the signal's own bullish_probability/confidence."""
+    reasons_low_conf_high_wr = {"calibrated_win_rate": 0.70, "calibrated_win_rate_count": 40}
+    _, breakdown = compute_score(
+        100.0, _game_plan(), _signal_data(reasons_low_conf_high_wr, bullish_probability=0.51),
+        None, None, "neutral", {"calibration_feedback_enabled": True},
+    )
+    assert _layer_pts(breakdown, "calibration_feedback") == 1

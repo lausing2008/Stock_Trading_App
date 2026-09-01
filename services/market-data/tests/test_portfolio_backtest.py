@@ -297,6 +297,24 @@ class TestDrawdownAndSharpe:
         assert result is not None
         assert result > 0
 
+    def test_sharpe_is_none_not_exploded_on_float_noise_variance_from_a_real_equity_curve(self):
+        """AUD-PORTFOLIOBACKTEST-VAREPS: a bare `std == 0` guard lets real, sub-epsilon
+        floating-point noise through as if it were genuine volatility. Reproduces the exact
+        production construction (equity[i]/equity[i-1]-1 recomputed from a real, repeatedly-
+        multiplied equity curve — the SAME construction run_portfolio_backtest()'s own caller
+        below builds) with a target daily rate perturbed by 1e-17 per step, matching
+        test_sharpe_variance_epsilon.py's own already-proven technique for landing inside the
+        (0, 1e-9) float-noise band rather than at an exact, already-guarded 0.0."""
+        equity = 100_000.0
+        base_rate = 0.001
+        values = [equity]
+        for i in range(24):
+            equity = equity * (1 + base_rate + i * 1e-17)
+            values.append(equity)
+        daily_rets = [(values[i] / values[i - 1] - 1) for i in range(1, len(values))]
+        result = _annualized_sharpe(daily_rets)
+        assert result is None, f"expected None (float-noise std), got {result}"
+
 
 # ── run_portfolio_backtest() — the real day-stepped integration ─────────────────────────────
 

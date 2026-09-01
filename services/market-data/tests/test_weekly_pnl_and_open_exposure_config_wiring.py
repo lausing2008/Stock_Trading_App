@@ -122,13 +122,40 @@ def test_open_exposure_keys_are_conditional_on_open_exposure_pct_being_present()
         assert start <= key_pos < guard_end, f"{key} falls outside the conditional block"
 
 
-def test_open_exposure_pct_reuses_the_already_summed_sector_values_not_a_second_pass():
-    """Must derive from summing _open_sector_values (already computed with the SAME
-    _best_price() convention as the sector-$ cap) rather than re-summing
-    entry_price*shares over _prefetched_open a SECOND, independent time — a second
-    independent sum could silently drift from the sector-cap's own aggregate if either one
-    is ever changed without the other."""
-    assert "sum(_open_sector_values.values())" in _pte_source
+def test_open_exposure_pct_uses_entry_price_cost_basis_not_live_market_value():
+    """AUD-DECIDE-OPENEXPOSURE-BASEMISMATCH: this MUST be entry_price*shares (cost basis),
+    matching T194's own pre-existing local hard reject below (line ~5009,
+    `sum(float(t.entry_price) * float(t.shares) for t, _ in _prefetched_open)`) — the
+    exact gate this value is threaded to decision-engine to give parity with. An earlier
+    version of this fix instead reused `_open_sector_values` (a live-market-value sum,
+    correct for the SIBLING sector-$/open-risk ports but NOT for this one) — a portfolio
+    with meaningfully appreciated open positions would report a materially higher % here
+    than T194's own local check computes for the identical state, letting decision-engine
+    block an entry the fallback gate would itself approve. Must NOT reuse
+    _open_sector_values (a different, live-value-based aggregate)."""
+    open_exp_start = _pte_source.index("_open_exposure_pct = (")
+    open_exp_end = _pte_source.index("\n\n", open_exp_start)
+    open_exp_block = _pte_source[open_exp_start:open_exp_end]
+    assert "entry_price" in open_exp_block, "must compute from entry_price, not live price"
+    assert "_open_sector_values" not in open_exp_block, (
+        "must NOT reuse the live-value sector aggregate — that was the bug"
+    )
+
+
+def test_open_exposure_pct_formula_matches_t194s_own_local_check_exactly():
+    """Direct textual proof the two formulas are now identical (modulo local variable
+    names) — the whole point of this fix. T194's own local check a few dozen lines below
+    is `sum(float(t.entry_price) * float(t.shares) for t, _ in _prefetched_open)`; the
+    value sent to decision-engine must use the identical shape over the identical
+    iterable, not merely "also mention entry_price" somewhere unrelated."""
+    assert (
+        "sum(float(_t.entry_price) * float(_t.shares) for _t, _ in _prefetched_open)"
+        in _pte_source
+    )
+    assert (
+        "sum(float(t.entry_price) * float(t.shares) for t, _ in _prefetched_open)"
+        in _pte_source
+    )
 
 
 def test_call_site_passes_open_exposure_pct():

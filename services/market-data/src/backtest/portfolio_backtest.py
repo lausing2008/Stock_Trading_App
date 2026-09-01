@@ -218,12 +218,22 @@ def _max_drawdown_pct(equity_values: list[float]) -> float:
 def _annualized_sharpe(daily_returns: list[float]) -> float | None:
     """Annualized Sharpe (252 trading days, 0% risk-free rate) on a daily-return series.
     None (not 0.0) when there are fewer than 2 return observations or zero variance — a
-    fabricated Sharpe of 0.0 would misleadingly read as "genuinely flat," not "unmeasurable"."""
+    fabricated Sharpe of 0.0 would misleadingly read as "genuinely flat," not "unmeasurable".
+
+    AUD-PORTFOLIOBACKTEST-VAREPS: a bare `std == 0` guard is the same float-noise-explosion
+    bug class AUD292-SHARPE-VAREPS already found and fixed elsewhere in this codebase — a
+    day-over-day equity[i]/equity[i-1]-1 return series (exactly what this function's own
+    caller builds) can produce a `std` that is pure floating-point noise (~1e-17, not exactly
+    0.0) during a run of near-identical daily returns, which a bare `== 0` lets through and
+    explodes the resulting Sharpe toward an enormous, meaningless value (reproduced directly:
+    ~2.4e+14 from a real, non-degenerate 24-step equity-curve fixture). Same _VAR_EPS
+    threshold convention as the already-fixed sibling."""
+    _VAR_EPS = 1e-9
     if len(daily_returns) < 2:
         return None
     arr = np.array(daily_returns, dtype=float)
     std = arr.std(ddof=1)
-    if std == 0:
+    if std <= _VAR_EPS:
         return None
     return round(float(arr.mean() / std * np.sqrt(252)), 3)
 

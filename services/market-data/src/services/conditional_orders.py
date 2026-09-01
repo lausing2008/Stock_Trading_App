@@ -20,9 +20,9 @@ close_position, alert_only.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from common.config import get_settings
@@ -190,11 +190,19 @@ def _execute_buy(order: ConditionalOrder, portfolio: PaperPortfolio, live_price:
     """
     from .paper_trading_engine import (
         _DEFAULT_CONFIG, _STYLE_OVERRIDES, _build_game_plan_for_style, _call_decision_engine,
-        _compute_equity, _consec_loss_streak, _recent_win_rate, _should_enter,
+        _compute_equity, _compute_portfolio_drawdown, _consec_loss_streak,
+        _entry_gates_override_active, _recent_win_rate, _should_enter,
     )
 
     style = (portfolio.config or {}).get("trading_style", "SWING")
     cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {}), **(portfolio.config or {})}
+
+    # AUD-CONDORDER-CIRCUITBREAKER-BYPASS: a conditional order must respect the SAME
+    # portfolio-wide pause switch _scan_for_entries()'s own caller (paper_trading_step())
+    # already checks before ever scanning for organic entries — otherwise pausing a portfolio
+    # via the admin UI silently does nothing to a pending conditional order on that portfolio.
+    if (portfolio.config or {}).get("paused", False):
+        return False, "Portfolio is paused — no new entries, including conditional orders", None
 
     stock = session.execute(select(Stock).where(Stock.symbol == order.symbol)).scalar_one_or_none()
     if stock is None:
@@ -243,12 +251,69 @@ def _execute_buy(order: ConditionalOrder, portfolio: PaperPortfolio, live_price:
     consec_losses = _consec_loss_streak(session, portfolio.id)
     regime_state = (portfolio.config or {}).get("regime_state", "neutral")
 
+    # AUD-CONDORDER-CIRCUITBREAKER-BYPASS: mirror _scan_for_entries()'s own portfolio-wide
+    # circuit breakers (drawdown, daily-loss, weekly-loss/gain-lock) — previously entirely
+    # absent from this path. A conditional order calling _call_decision_engine() with the
+    # default daily_pnl_pct=0.0 made hard_rejects.py's daily-loss gate structurally
+    # unreachable (0.0 can never satisfy `<= -abs(max_daily_loss)`), and the fallback
+    # _should_enter() has no equivalent parameter at all — so on EITHER path a conditional
+    # BUY could silently bypass every one of these breakers regardless of the portfolio's
+    # real current state. Same _gates_override admin escape hatch as _scan_for_entries().
+    _gates_override = _entry_gates_override_active(cfg)
+
+    max_dd_cfg = cfg.get("max_portfolio_drawdown_pct", 0.20)
+    if max_dd_cfg and max_dd_cfg > 0 and not _gates_override:
+        current_dd = _compute_portfolio_drawdown(session, portfolio.id, equity)
+        if current_dd is not None and current_dd > max_dd_cfg:
+            return False, f"Portfolio drawdown {current_dd*100:.1f}% exceeds {max_dd_cfg*100:.0f}% limit — no new entries until equity recovers", None
+
+    _daily_pnl_pct = 0.0
+    max_daily_loss = cfg.get("max_daily_loss_pct", 0.04)
+    if max_daily_loss and max_daily_loss > 0 and equity > 0:
+        today_open = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())
+        daily_net_pnl = session.execute(
+            select(func.sum(PaperTrade.pnl))
+            .where(
+                PaperTrade.portfolio_id == portfolio.id,
+                PaperTrade.stage == "closed",
+                PaperTrade.exit_time >= today_open,
+            )
+        ).scalar() or 0.0
+        _daily_pnl_pct = round(daily_net_pnl / equity, 4)  # a fraction, matching _call_decision_engine()'s own convention
+        if daily_net_pnl < 0 and abs(daily_net_pnl) / equity > max_daily_loss and not _gates_override:
+            return False, f"Daily loss limit hit ({_daily_pnl_pct*100:.1f}% <= -{max_daily_loss*100:.0f}%) — no new entries today", None
+
+    _weekly_net_pnl_pct: float | None = None
+    max_weekly_loss = cfg.get("max_weekly_loss_pct", 0.08)
+    max_weekly_gain = cfg.get("max_weekly_gain_pct", 0.06)
+    if ((max_weekly_loss and max_weekly_loss > 0) or (max_weekly_gain and max_weekly_gain > 0)) and equity > 0:
+        from zoneinfo import ZoneInfo
+        week_start = datetime.now(ZoneInfo("America/New_York")) - timedelta(days=7)
+        weekly_net_pnl = session.execute(
+            select(func.sum(PaperTrade.pnl))
+            .where(
+                PaperTrade.portfolio_id == portfolio.id,
+                PaperTrade.stage == "closed",
+                PaperTrade.exit_time >= week_start,
+            )
+        ).scalar() or 0.0
+        _weekly_net_pnl_pct = weekly_net_pnl / equity * 100
+        if max_weekly_loss and weekly_net_pnl < 0 and abs(weekly_net_pnl) / equity > max_weekly_loss and not _gates_override:
+            return False, f"Weekly loss {abs(weekly_net_pnl)/equity*100:.1f}% exceeds {max_weekly_loss*100:.0f}% limit — no entries until next week", None
+        if max_weekly_gain and weekly_net_pnl > 0 and weekly_net_pnl / equity > max_weekly_gain and not _gates_override:
+            return False, f"Weekly gain lock — up {weekly_net_pnl/equity*100:.1f}% this week; protecting profits until Monday", None
+
+    max_consec_losses = cfg.get("max_consecutive_losses", 3)
+    if max_consec_losses and max_consec_losses > 0 and consec_losses >= max_consec_losses and not _gates_override:
+        return False, f"Consecutive-loss limit hit ({consec_losses} >= {max_consec_losses}) — no new entries", None
+
     de_result = _call_decision_engine(
         symbol=order.symbol, live_price=live_price, game_plan=game_plan,
         equity=equity, open_count=len(open_count), cfg=cfg,
-        initial_capital=portfolio.initial_capital, recent_win_rate=recent_wr,
-        consec_losses=consec_losses, kscore=kscore_f, ta_score=ta_score_f,
-        regime_state=regime_state,
+        initial_capital=portfolio.initial_capital, daily_pnl_pct=_daily_pnl_pct,
+        recent_win_rate=recent_wr, consec_losses=consec_losses, kscore=kscore_f,
+        ta_score=ta_score_f, regime_state=regime_state,
+        weekly_net_pnl_pct=_weekly_net_pnl_pct,
     )
     notes: list[str] = []
     gate_source = "de"
@@ -299,10 +364,18 @@ def _execute_sell_partial(order: ConditionalOrder, portfolio: PaperPortfolio, li
     fraction = order.action_value if order.action_value is not None else 0.5
     fraction = max(0.01, min(1.0, fraction))
     cfg = portfolio.config or {}
-    slippage = cfg.get("entry_slippage_pct", 0.001)
     partial_shares = round(trade.shares * fraction, 4)
     if partial_shares <= 0:
         return False, "Nothing left to sell", None
+    # AUD-CONDORDER-SLIPPAGE-CONSISTENCY: match the organic scale-out path's own IF-06
+    # size-aware slippage model (_monitor_positions()'s two partial-scale-out blocks) instead
+    # of always using the flat base rate regardless of position size.
+    from .paper_trading_engine import _avg_daily_volume_for, _size_aware_slippage_pct
+    _base_slippage = cfg.get("entry_slippage_pct", 0.001)
+    slippage = (
+        _size_aware_slippage_pct(partial_shares, _avg_daily_volume_for(order.symbol), _base_slippage)
+        if cfg.get("size_aware_slippage_enabled", True) else _base_slippage
+    )
     partial_price = round(live_price * (1 - slippage), 4)
     partial_value = round(partial_shares * partial_price, 2)
     partial_pnl = round((partial_price - trade.entry_price) * partial_shares, 2)

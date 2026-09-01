@@ -160,7 +160,19 @@ def _portfolio_risk_metrics(curve_rows: list) -> dict:
 
 
 def _compute_alpha_beta(curve_rows: list) -> dict:
-    """Compute beta and annualised Jensen's alpha vs SPY from equity curve rows."""
+    """Compute beta and annualised Jensen's alpha vs SPY from equity curve rows.
+
+    AUD-ALPHABETA-VAREPS: info_ratio's own `te` (tracking error) used a bare `var_active > 0`
+    guard — the exact float-noise-explosion bug AUD292-SHARPE-VAREPS already found and fixed
+    in _portfolio_risk_metrics() a few dozen lines above, never ported to this sibling
+    function in the same file. A portfolio that consistently tracks SPY with a fixed daily
+    offset (plausible for a highly-correlated, low-turnover book) produces a `var_active` that
+    is pure floating-point noise (~1e-39), not an exact 0.0 — `> 0` lets it through, exploding
+    info_ratio toward an enormous, meaningless value (reproduced: 1.02e+17 from a real,
+    non-degenerate 30-day fixture). Same _VAR_EPS = 1e-9 threshold as the already-fixed
+    sibling; beta's own separate 1e-10 threshold is also raised to match for consistency
+    within this one function."""
+    _VAR_EPS = 1e-9
     paired = [
         (r.equity, r.spy_close) for r in curve_rows
         if r.equity and r.spy_close and r.equity > 0 and r.spy_close > 0
@@ -183,7 +195,7 @@ def _compute_alpha_beta(curve_rows: list) -> dict:
     cov   = sum((p_rets[i] - mean_p) * (s_rets[i] - mean_s) for i in range(n)) / max(n - 1, 1)
     var_s = sum((s_rets[i] - mean_s) ** 2                    for i in range(n)) / max(n - 1, 1)
 
-    beta = round(cov / var_s, 3) if var_s > 1e-10 else None
+    beta = round(cov / var_s, 3) if var_s > _VAR_EPS else None
 
     if beta is None:
         return {"alpha": None, "beta": None, "info_ratio": None}
@@ -195,8 +207,8 @@ def _compute_alpha_beta(curve_rows: list) -> dict:
     active = [p_rets[i] - s_rets[i] for i in range(n)]
     mean_active = sum(active) / n
     var_active  = sum((r - mean_active) ** 2 for r in active) / max(n - 1, 1)
-    te = math.sqrt(var_active * 252) if var_active > 0 else 0
-    info_ratio = round((mean_active * 252) / te, 2) if te > 0 else None
+    te = math.sqrt(var_active * 252) if var_active > _VAR_EPS else 0.0
+    info_ratio = round((mean_active * 252) / te, 2) if te > _VAR_EPS else None
 
     return {"alpha": alpha, "beta": round(beta, 2), "info_ratio": info_ratio}
 
@@ -933,7 +945,12 @@ def configure_portfolio(
         # T232-CONFIGGAP additions:
         "max_market_positions", "max_sector_positions", "max_entries_per_day",
         "max_entry_gap_pct", "hold_stall_days", "max_consecutive_losses",
-        "max_weekly_loss_pct", "max_open_exposure_pct", "equity_floor_pct",
+        # AUD-CONFIGGAP-WEEKLYGAINLOCK: same T232-CONFIGGAP class — max_weekly_gain_pct (T191's
+        # weekly gain-lock threshold) reads identically to its sibling max_weekly_loss_pct in
+        # paper_trading_engine.py's own weekly-P&L circuit-breaker block, but was never added
+        # to this allowlist alongside it — any attempt to tune the gain-lock side via the
+        # Config Panel was silently dropped as "unknown", while the loss-limit side worked.
+        "max_weekly_loss_pct", "max_weekly_gain_pct", "max_open_exposure_pct", "equity_floor_pct",
         "min_ta_score", "min_volume_z", "partial_tp_pct",
         # T203-LLMWIRE: llm_scoring_enabled existed in decision-engine's llm_scorer.py since
         # T203 but was never threaded from portfolio config into _call_decision_engine()'s
@@ -972,6 +989,7 @@ def configure_portfolio(
         "hold_stall_max_gain":  (0.01,  0.30,  "Enter as decimal fraction (e.g. 0.05 for 5%)."),
         "max_entry_gap_pct":    (0.01,  0.20,  "Enter as decimal fraction (e.g. 0.04 for 4%)."),
         "max_weekly_loss_pct":  (0.01,  0.30,  "Enter as decimal fraction (e.g. 0.08 for 8%)."),
+        "max_weekly_gain_pct":  (0.02,  0.30,  "Enter as decimal fraction (e.g. 0.06 for 6%)."),
         "max_open_exposure_pct":(0.05,  1.00,  "Enter as decimal fraction (e.g. 0.40 for 40%)."),
         "equity_floor_pct":     (0.10,  1.00,  "Enter as decimal fraction (e.g. 0.80 for 80%)."),
         "partial_tp_pct":       (0.01,  0.50,  "Enter as decimal fraction (e.g. 0.10 for 10%)."),
