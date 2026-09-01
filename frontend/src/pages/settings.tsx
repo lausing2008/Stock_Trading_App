@@ -88,6 +88,32 @@ function SourceRow({
   );
 }
 
+function KeyInput({ value, onChange, placeholder, showKey, onToggleShow }: {
+  value: string; onChange: (v: string) => void; placeholder?: string;
+  showKey: boolean; onToggleShow: () => void;
+}) {
+  return (
+    <div style={{ position: 'relative' }}>
+      <input
+        type={showKey ? 'text' : 'password'}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder ?? 'sk-…'}
+        style={{ ...inpKey, paddingRight: '48px' }}
+      />
+      <button
+        onClick={onToggleShow}
+        style={{
+          position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)',
+          background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '12px',
+        }}
+      >
+        {showKey ? 'hide' : 'show'}
+      </button>
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const [s, setS] = useState<AppSettings>(loadSettings);
   const [saved, setSaved] = useState(false);
@@ -781,29 +807,6 @@ export default function SettingsPage() {
     setShowKeys(prev => ({ ...prev, [k]: !prev[k] }));
   }
 
-  function KeyInput({ id, value, onChange, placeholder }: { id: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
-    return (
-      <div style={{ position: 'relative' }}>
-        <input
-          type={showKeys[id] ? 'text' : 'password'}
-          value={value}
-          onChange={e => onChange(e.target.value)}
-          placeholder={placeholder ?? 'sk-…'}
-          style={{ ...inpKey, paddingRight: '48px' }}
-        />
-        <button
-          onClick={() => toggleKeyVisible(id)}
-          style={{
-            position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)',
-            background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '12px',
-          }}
-        >
-          {showKeys[id] ? 'hide' : 'show'}
-        </button>
-      </div>
-    );
-  }
-
   const aiProviderOptions: { value: AppSettings['aiProvider']; label: string; color: string; desc: string }[] = [
     { value: 'none', label: 'Disabled', color: '#475569', desc: 'No AI analysis' },
     { value: 'claude', label: 'Claude (Anthropic)', color: '#818cf8', desc: 'Most capable, great at reasoning' },
@@ -868,10 +871,11 @@ export default function SettingsPage() {
           <div>
             <label style={lbl}>Alpha Vantage API Key</label>
             <KeyInput
-              id="av"
               value={s.alphaVantageApiKey}
               onChange={v => update('alphaVantageApiKey', v)}
               placeholder="Enter your Alpha Vantage API key"
+              showKey={!!showKeys.av}
+              onToggleShow={() => toggleKeyVisible('av')}
             />
             <div style={hint}>
               Get a free key at{' '}
@@ -890,10 +894,11 @@ export default function SettingsPage() {
           <div>
             <label style={lbl}>Polygon.io API Key</label>
             <KeyInput
-              id="poly"
               value={s.polygonApiKey}
               onChange={v => update('polygonApiKey', v)}
               placeholder="Enter your Polygon.io API key"
+              showKey={!!showKeys.poly}
+              onToggleShow={() => toggleKeyVisible('poly')}
             />
             <div style={hint}>
               Get a free key at{' '}
@@ -1075,10 +1080,11 @@ export default function SettingsPage() {
               <div>
                 <label style={lbl}>Claude API Key</label>
                 <KeyInput
-                  id="claude"
                   value={s.claudeApiKey}
                   onChange={v => update('claudeApiKey', v)}
                   placeholder="sk-ant-…"
+                  showKey={!!showKeys.claude}
+                  onToggleShow={() => toggleKeyVisible('claude')}
                 />
                 <div style={hint}>
                   Get your key at{' '}
@@ -1103,10 +1109,11 @@ export default function SettingsPage() {
               <div>
                 <label style={lbl}>DeepSeek API Key</label>
                 <KeyInput
-                  id="ds"
                   value={s.deepseekApiKey}
                   onChange={v => update('deepseekApiKey', v)}
                   placeholder="sk-…"
+                  showKey={!!showKeys.ds}
+                  onToggleShow={() => toggleKeyVisible('ds')}
                 />
                 <div style={hint}>
                   Get your key at{' '}
@@ -1221,19 +1228,21 @@ export default function SettingsPage() {
               <div>
                 <label style={lbl}>Alpaca API Key ID</label>
                 <KeyInput
-                  id="alpaca_key"
                   value={alpacaApiKey}
                   onChange={setAlpacaApiKey}
                   placeholder="PK…"
+                  showKey={!!showKeys.alpaca_key}
+                  onToggleShow={() => toggleKeyVisible('alpaca_key')}
                 />
               </div>
               <div>
                 <label style={lbl}>Alpaca Secret Key</label>
                 <KeyInput
-                  id="alpaca_secret"
                   value={alpacaSecretKey}
                   onChange={setAlpacaSecretKey}
                   placeholder="Enter your Alpaca secret key"
+                  showKey={!!showKeys.alpaca_secret}
+                  onToggleShow={() => toggleKeyVisible('alpaca_secret')}
                 />
               </div>
             </div>
@@ -1299,10 +1308,11 @@ export default function SettingsPage() {
               <div>
                 <label style={lbl}>Unusual Whales API Key</label>
                 <KeyInput
-                  id="uw_key"
                   value={uwApiKey}
                   onChange={setUwApiKey}
                   placeholder="Enter your Unusual Whales API key"
+                  showKey={!!showKeys.uw_key}
+                  onToggleShow={() => toggleKeyVisible('uw_key')}
                 />
               </div>
             </div>
