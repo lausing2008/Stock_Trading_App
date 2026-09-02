@@ -328,6 +328,14 @@ def get_flow_alerts(
     except Exception as exc:
         log.warning("unusual_whales.flow_alerts_failed", symbol=sym, error=str(exc))
         return []
+    return _parse_flow_alert_rows(data, sym)
+
+
+def _parse_flow_alert_rows(data, sym: str) -> list["FlowAlert"]:
+    """Shared row-parsing between get_flow_alerts() (live) and get_historical_flow_alerts()
+    (backtest) — both hit the identical /api/option-trades/flow-alerts response shape, so this
+    is the ONE place that shape gets translated into a FlowAlert, never a second, independently-
+    drifting copy."""
     if not data or not isinstance(data, list):
         return []
     alerts: list[FlowAlert] = []
@@ -355,6 +363,83 @@ def get_flow_alerts(
         except Exception:
             continue  # one malformed row must never drop the rest of a real response
     return alerts
+
+
+_HISTORICAL_FLOW_ALERTS_MAX_PAGES = 5  # UW's own limit=200 max per call — 5 pages = up to 1,000
+# rows per symbol per backtest window, a real bound on both wall-clock time and the trial tier's
+# request budget when scanning many symbols over a multi-month window.
+
+
+def get_historical_flow_alerts(
+    symbol: str,
+    *,
+    newer_than: str,
+    older_than: str,
+    min_premium: float = 250_000,
+    min_volume_oi_ratio: float = 3.0,
+    is_sweep: bool | None = True,
+    max_dte: int = 45,
+) -> list[FlowAlert]:
+    """MPE-OPTIONS-FLOW-ALERT backtest: the SAME real /api/option-trades/flow-alerts endpoint
+    get_flow_alerts() uses, but scoped to a real historical date range via newer_than/older_than
+    — confirmed live against production (not assumed from the spec alone) that UW genuinely
+    retains at least 2 months of real historical flow-alert rows with real created_at
+    timestamps, real premiums, and real underlying_price snapshots at the moment each alert
+    fired. This is a GENUINE historical replay, not a proxy — unlike squeeze_alert_backtest()'s
+    own gamma-unwind gap (no historical options open-interest data exists anywhere for that),
+    UW's own flow-alerts feed IS retained historically, so a real backtest is possible here.
+
+    Defaults match check_options_flow_alerts()'s own live thresholds exactly (see
+    AUD-OPTIONSFLOW-FLOODED) — a caller can override to test alternate thresholds, but the
+    default backtest run tests the SAME filter that's actually live today, not a different one.
+
+    is_sweep=None omits the query param entirely, returning a genuine MIX of sweep and non-
+    sweep rows — confirmed live against production that UW's own is_sweep param is a hard
+    binary filter both ways (True returns ONLY sweeps, False returns ONLY non-sweeps, neither
+    is "unfiltered"), so a caller wanting to actually COMPARE sweep-vs-non-sweep outcomes must
+    omit the key, not pass False (which would silently exclude every sweep, the opposite of a
+    fair comparison).
+
+    Paginates via older_than (UW's own 200-row-per-call max) up to
+    _HISTORICAL_FLOW_ALERTS_MAX_PAGES pages — bounded, not exhaustive, matching this app's own
+    "no silent truncation, log what's dropped" discipline: a symbol/window combination that
+    would need more pages than this cap simply returns whatever the cap covers (the newest rows
+    in the window, since UW returns newest-first), not a crash or an infinite loop.
+    """
+    if not is_available():
+        return []
+    sym = symbol.upper()
+    all_rows: list[dict] = []
+    cursor_older_than = older_than
+    params: dict = {
+        "ticker_symbol": sym,
+        "min_premium": min_premium,
+        "min_volume_oi_ratio": min_volume_oi_ratio,
+        "max_dte": max_dte,
+        "newer_than": newer_than,
+        "limit": 200,
+    }
+    if is_sweep is not None:
+        params["is_sweep"] = "true" if is_sweep else "false"
+    for _page in range(_HISTORICAL_FLOW_ALERTS_MAX_PAGES):
+        try:
+            data = _get(
+                "/api/option-trades/flow-alerts",
+                params={**params, "older_than": cursor_older_than},
+            )
+        except Exception as exc:
+            log.warning("unusual_whales.historical_flow_alerts_failed", symbol=sym, error=str(exc))
+            break
+        if not data or not isinstance(data, list):
+            break
+        all_rows.extend(data)
+        if len(data) < 200:
+            break  # fewer than a full page — no more history left in this window
+        oldest_created_at = data[-1].get("created_at")
+        if not oldest_created_at:
+            break
+        cursor_older_than = oldest_created_at  # page backward in time
+    return _parse_flow_alert_rows(all_rows, sym)
 
 
 def _to_float(v) -> float | None:

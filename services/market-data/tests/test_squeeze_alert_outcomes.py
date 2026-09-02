@@ -191,7 +191,7 @@ def _extract_squeeze_alert_backtest():
     exec(_SCHEDULER_SOURCE[windows_start:windows_end], const_namespace)  # noqa: S102
 
     func_start = _ADMIN_SOURCE.index("def squeeze_alert_backtest(")
-    end = _ADMIN_SOURCE.index("\n\n\n@router.get(\"/watchlist-rotation-history\")", func_start)
+    end = _ADMIN_SOURCE.index("\n\n\n@router.get(\"/options-flow-alert-backtest\")", func_start)
     # Skip the real function's own `from datetime import ...` / `from ..services.scheduler
     # import ...` local imports — this test injects the SAME real values via the namespace
     # instead (see the docstring above), so re-running those actual import statements here
@@ -753,7 +753,7 @@ def test_backtest_a_later_qualifying_snapshots_window_does_not_extend_backward_p
 
 def test_backtest_reports_gamma_unwind_is_not_backtestable():
     idx = _ADMIN_SOURCE.index("def squeeze_alert_backtest(")
-    end = _ADMIN_SOURCE.index("\n\n\n@router.get(\"/watchlist-rotation-history\")", idx)
+    end = _ADMIN_SOURCE.index("\n\n\n@router.get(\"/options-flow-alert-backtest\")", idx)
     body = _ADMIN_SOURCE[idx:end]
     assert "gamma_unwind is not" in body or "gamma_unwind_calls" not in body
     assert "no historical open-interest API" in body or "no historical options open-interest API" in body

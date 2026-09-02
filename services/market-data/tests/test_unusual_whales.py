@@ -314,6 +314,114 @@ def test_flow_alerts_is_never_cached_unlike_gex_and_short_interest():
         uw.get_flow_alerts("AAPL")  # must not raise
 
 
+# ── get_historical_flow_alerts() — MPE-OPTIONS-FLOW-ALERT backtest ─────────────────────────
+
+def _historical_row(ticker="AAPL", created_at="2026-08-15T12:00:00Z"):
+    return {
+        "ticker": ticker, "option_chain": f"{ticker}240101C00200000", "type": "call",
+        "strike": "200", "expiry": "2024-01-01", "underlying_price": "195.0",
+        "total_premium": "300000", "total_ask_side_prem": "300000", "total_bid_side_prem": "0",
+        "volume_oi_ratio": "5.0", "has_sweep": True, "created_at": created_at,
+    }
+
+
+def test_historical_flow_alerts_returns_empty_list_when_not_available():
+    with patch.object(uw, "is_available", return_value=False):
+        assert uw.get_historical_flow_alerts("AAPL", newer_than="2026-08-01", older_than="2026-08-31") == []
+
+
+def test_historical_flow_alerts_single_page_stops_pagination():
+    """Fewer than 200 rows in one page means no more history exists — must NOT make a second
+    request just because the loop technically allows up to 5 pages."""
+    calls = []
+    def _fake_get(path, params=None):
+        calls.append(params)
+        return [_historical_row()]
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=_fake_get):
+        result = uw.get_historical_flow_alerts("AAPL", newer_than="2026-08-01", older_than="2026-08-31")
+    assert len(result) == 1
+    assert len(calls) == 1
+
+
+def test_historical_flow_alerts_paginates_backward_via_older_than():
+    """A full 200-row page must trigger a second call, using the OLDEST row's own created_at
+    as the new older_than cursor — paging backward in time, never forward or stuck in place."""
+    page1 = [_historical_row(created_at=f"2026-08-{20 - i:02d}T12:00:00Z") for i in range(200)]
+    page2 = [_historical_row(created_at="2026-08-01T09:00:00Z")]  # < 200 rows -> stop after this
+    calls = []
+    def _fake_get(path, params=None):
+        calls.append(dict(params))
+        return page1 if len(calls) == 1 else page2
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=_fake_get):
+        result = uw.get_historical_flow_alerts("AAPL", newer_than="2026-08-01", older_than="2026-08-31")
+    assert len(calls) == 2
+    assert calls[0]["older_than"] == "2026-08-31"  # first call uses the caller's own older_than
+    assert calls[1]["older_than"] == page1[-1]["created_at"]  # second call pages backward
+    assert len(result) == 201
+
+
+def test_historical_flow_alerts_caps_at_max_pages_not_infinite_loop():
+    """Even if UW kept returning full 200-row pages forever, this must stop at the real,
+    disclosed page cap rather than looping until the caller's window is exhausted."""
+    calls = []
+    def _fake_get(path, params=None):
+        calls.append(params)
+        return [_historical_row(created_at=f"2026-0{len(calls)}-01T00:00:00Z") for _ in range(200)]
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=_fake_get):
+        uw.get_historical_flow_alerts("AAPL", newer_than="2026-01-01", older_than="2026-08-31")
+    assert len(calls) == uw._HISTORICAL_FLOW_ALERTS_MAX_PAGES
+
+
+def test_historical_flow_alerts_is_sweep_none_omits_the_param_entirely():
+    """UW's own is_sweep param is a HARD binary filter both ways (confirmed live against
+    production) — True returns ONLY sweeps, False returns ONLY non-sweeps. A caller wanting a
+    genuine mix (to compare sweep-vs-non-sweep outcomes) must get the key OMITTED, never sent
+    as a literal 'false' string, which would silently exclude every real sweep."""
+    captured = {}
+    def _fake_get(path, params=None):
+        captured.update(params)
+        return []
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=_fake_get):
+        uw.get_historical_flow_alerts("AAPL", newer_than="2026-08-01", older_than="2026-08-31", is_sweep=None)
+    assert "is_sweep" not in captured
+
+
+def test_historical_flow_alerts_is_sweep_true_still_sends_the_param():
+    """The default (is_sweep=True) must keep sending the real filter — only an EXPLICIT
+    is_sweep=None omits it."""
+    captured = {}
+    def _fake_get(path, params=None):
+        captured.update(params)
+        return []
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=_fake_get):
+        uw.get_historical_flow_alerts("AAPL", newer_than="2026-08-01", older_than="2026-08-31")
+    assert captured["is_sweep"] == "true"
+
+
+def test_historical_flow_alerts_returns_empty_list_on_a_fetch_exception():
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=RuntimeError("boom")):
+        assert uw.get_historical_flow_alerts("AAPL", newer_than="2026-08-01", older_than="2026-08-31") == []
+
+
+def test_historical_flow_alerts_reuses_the_same_row_parser_as_the_live_endpoint():
+    """Both get_flow_alerts() and get_historical_flow_alerts() must translate UW's identical
+    response shape through the SAME _parse_flow_alert_rows() helper — never two independently-
+    drifting copies of the same parsing logic."""
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", return_value=[_historical_row(ticker="MSFT")]):
+        result = uw.get_historical_flow_alerts("MSFT", newer_than="2026-08-01", older_than="2026-08-31")
+    assert len(result) == 1
+    assert result[0].ticker == "MSFT"
+    assert result[0].underlying_price == 195.0
+    assert result[0].total_premium == 300000.0
+
+
 def test_flow_alerts_passes_real_filter_params_to_get():
     """The whole point of the default thresholds — confirms they actually reach _get()'s own
     params dict, not silently dropped/ignored."""

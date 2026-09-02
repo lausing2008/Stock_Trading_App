@@ -1011,6 +1011,201 @@ def squeeze_alert_backtest(
     }
 
 
+@router.get("/options-flow-alert-backtest")
+def options_flow_alert_backtest(
+    days_back: int = Query(60, ge=1, le=90, description="How far back to pull real historical UW flow-alerts (UW itself confirmed to retain >=60 real days on the trial tier)"),
+    min_samples: int = Query(10, ge=1, le=200, description="Minimum resolved samples before reporting a real win rate for a bucket"),
+    _: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+):
+    """MPE-OPTIONS-FLOW-ALERT backtest — direct follow-up to a user asking "should I buy same
+    direction or different direction, and when should I enter?" with ZERO live-resolved
+    outcomes yet (the feature only just shipped). Genuinely different from squeeze_alert_
+    backtest()'s own gamma_unwind gap: UW's real /api/option-trades/flow-alerts endpoint
+    (confirmed live, not assumed) retains real historical rows with real created_at timestamps
+    and real underlying_price snapshots at the moment each alert fired — so this is an actual
+    historical REPLAY, not a proxy standing in for missing data. Uses the SAME min_premium/
+    min_volume_oi_ratio/max_dte defaults check_options_flow_alerts() uses — but deliberately
+    OMITS the is_sweep filter (unlike the live job, which requires it) so by_sweep below can
+    genuinely compare sweep-vs-non-sweep outcomes rather than replaying a population that's
+    already 100% sweeps by construction.
+
+    Scoped to _bounded_options_flow_symbols() — the SAME real symbol set the live job scans
+    (PriceAlert-subscribed + top-K by K-Score), not a fabricated universe. Entry price is UW's
+    own real underlying_price at the alert's own created_at moment (not a T+1 lookup — UW
+    already gives us the real price at that instant, unlike squeeze_alert_backtest()'s own
+    weekly-snapshot proxy, which has no such field). Forward returns use the EXACT same
+    _squeeze_outcome_lookup_price()/_SQUEEZE_OUTCOME_WIN_HURDLE_PCT/_SQUEEZE_OUTCOME_WINDOWS
+    machinery every other outcome evaluator in this file already uses.
+
+    Reports 3 independent cuts of the SAME resolved outcomes, directly answering the user's own
+    2 questions:
+      - by_direction: does following bullish/bearish flow (in the SAME direction the alert
+        implies) actually predict a forward move?
+      - by_sweep: does a sweep (urgent, cross-exchange fill) predict better than a non-sweep row?
+      - by_volume_oi_band: does a HIGHER volume/OI ratio ("larger, more unusual" activity)
+        predict better, worse, or no differently than activity just barely clearing the floor?
+
+    HONEST SCOPE, decided before writing this endpoint: UW's own historical retention is
+    real but bounded (confirmed live at >=60 days on the trial tier — days_back is capped at
+    90 to stay within what's actually been verified, not assumed further back). get_historical_
+    flow_alerts() itself caps at 5 pages (1,000 rows) per symbol per window — a real, disclosed
+    bound, not silent truncation (see that function's own docstring) — a symbol with more than
+    1,000 qualifying rows in the window only has its NEWEST 1,000 replayed.
+    """
+    from datetime import date, datetime, timedelta
+    from ..services import unusual_whales as _uw
+    from ..services.scheduler import (
+        _squeeze_outcome_lookup_price, _SQUEEZE_OUTCOME_WIN_HURDLE_PCT, _SQUEEZE_OUTCOME_WINDOWS,
+        _bounded_options_flow_symbols, _options_flow_alert_direction,
+        _OPTIONS_FLOW_ALERT_MIN_PREMIUM, _OPTIONS_FLOW_ALERT_MIN_VOLUME_OI_RATIO, _OPTIONS_FLOW_ALERT_MAX_DTE,
+    )
+
+    if not _uw.is_available():
+        return {"days_back": days_back, "min_samples": min_samples, "n_symbols_scanned": 0,
+                "n_alerts_replayed": 0, "by_direction": [], "by_sweep": [], "by_volume_oi_band": [],
+                "reason": "unusual_whales_not_available", "note": "Configure and enable an Unusual Whales API key in Settings first."}
+
+    symbols = _bounded_options_flow_symbols(session)
+    if not symbols:
+        return {"days_back": days_back, "min_samples": min_samples, "n_symbols_scanned": 0,
+                "n_alerts_replayed": 0, "by_direction": [], "by_sweep": [], "by_volume_oi_band": [],
+                "reason": "no_bounded_symbols", "note": None}
+
+    today = date.today()
+    newer_than = (today - timedelta(days=days_back)).isoformat()
+    older_than = today.isoformat()
+
+    # ── Pull real historical flow-alerts for every symbol ──────────────────────────────────
+    # is_sweep=None (omitted from the query) so by_sweep below can genuinely COMPARE sweep vs.
+    # non-sweep outcomes — UW's own is_sweep param is a hard binary filter both ways (True
+    # returns ONLY sweeps, False returns ONLY non-sweeps), so passing True here (matching the
+    # live job's own filter) would make every replayed row a sweep by construction, silently
+    # collapsing by_sweep's "false" bucket to zero real comparison data.
+    alert_rows: list[dict] = []
+    for stock_id, symbol in symbols:
+        try:
+            rows = _uw.get_historical_flow_alerts(
+                symbol, newer_than=newer_than, older_than=older_than,
+                min_premium=_OPTIONS_FLOW_ALERT_MIN_PREMIUM,
+                min_volume_oi_ratio=_OPTIONS_FLOW_ALERT_MIN_VOLUME_OI_RATIO,
+                is_sweep=None, max_dte=_OPTIONS_FLOW_ALERT_MAX_DTE,
+            )
+        except Exception:
+            continue
+        for row in rows:
+            if not row.option_chain or row.option_type not in ("call", "put"):
+                continue
+            if not row.created_at or row.underlying_price is None:
+                continue
+            ask = row.total_ask_side_prem or 0.0
+            bid = row.total_bid_side_prem or 0.0
+            if ask == 0.0 and bid == 0.0:
+                continue
+            try:
+                fired_dt = datetime.fromisoformat(row.created_at.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            alert_rows.append({
+                "stock_id": stock_id, "symbol": symbol,
+                "direction": _options_flow_alert_direction(row.option_type, ask >= bid),
+                "has_sweep": bool(row.has_sweep),
+                "volume_oi_ratio": row.volume_oi_ratio,
+                "fired_date": fired_dt.date(),
+                "entry_price": float(row.underlying_price),
+            })
+
+    if not alert_rows:
+        return {"days_back": days_back, "min_samples": min_samples, "n_symbols_scanned": len(symbols),
+                "n_alerts_replayed": 0, "by_direction": [], "by_sweep": [], "by_volume_oi_band": [],
+                "reason": "no_qualifying_historical_alerts", "note": None}
+
+    # ── One bulk Price query for every involved stock, same pattern as evaluate_squeeze_alert_
+    # outcomes() — never a per-alert query. ─────────────────────────────────────────────────
+    stock_ids = {r["stock_id"] for r in alert_rows}
+    min_fired = min(r["fired_date"] for r in alert_rows)
+    bulk_prices = session.execute(
+        select(Price.stock_id, Price.ts, Price.close).where(
+            Price.stock_id.in_(stock_ids), Price.timeframe == TimeFrame.D1,
+            Price.ts >= datetime.combine(min_fired, datetime.min.time()),
+        ).order_by(Price.stock_id, Price.ts)
+    ).all()
+    price_map: dict[int, list[tuple]] = {}
+    for stock_id, ts, close in bulk_prices:
+        pr_date = ts.date() if hasattr(ts, "date") else ts
+        price_map.setdefault(stock_id, []).append((pr_date, float(close)))
+
+    # ── Score every replayed alert's forward return at each window ─────────────────────────
+    resolved: list[dict] = []
+    for r in alert_rows:
+        bucket = price_map.get(r["stock_id"], [])
+        returns: dict[int, float] = {}
+        for window in _SQUEEZE_OUTCOME_WINDOWS:
+            target = r["fired_date"] + timedelta(days=window)
+            if target > today:
+                continue
+            result = _squeeze_outcome_lookup_price(bucket, target)
+            if result is None:
+                continue
+            _, price = result
+            returns[window] = (price - r["entry_price"]) / r["entry_price"]
+        if returns:
+            resolved.append({**r, "returns": returns})
+
+    def _bucket_stats(rows: list[dict], window: int) -> dict | None:
+        rets = []
+        for r in rows:
+            ret = r["returns"].get(window)
+            if ret is None:
+                continue
+            is_bearish_thesis = r["direction"] == "bearish"
+            is_correct = ret < -_SQUEEZE_OUTCOME_WIN_HURDLE_PCT if is_bearish_thesis else ret > _SQUEEZE_OUTCOME_WIN_HURDLE_PCT
+            rets.append((ret, is_correct))
+        if len(rets) < min_samples:
+            return {"n": len(rets), "win_rate": None, "avg_return_pct": None, "note": f"below the {min_samples}-sample floor"} if rets else None
+        wins = sum(1 for _, c in rets if c)
+        avg_ret = sum(rr for rr, _ in rets) / len(rets)
+        return {"n": len(rets), "win_rate": round(wins / len(rets), 3), "avg_return_pct": round(avg_ret * 100, 2)}
+
+    def _windows_for(rows: list[dict]) -> dict:
+        return {f"window_{w}d": _bucket_stats(rows, w) for w in _SQUEEZE_OUTCOME_WINDOWS}
+
+    by_direction = [
+        {"direction": d, "n_alerts": len([r for r in resolved if r["direction"] == d]), **_windows_for([r for r in resolved if r["direction"] == d])}
+        for d in ("bullish", "bearish")
+    ]
+    by_sweep = [
+        {"has_sweep": s, "n_alerts": len([r for r in resolved if r["has_sweep"] == s]), **_windows_for([r for r in resolved if r["has_sweep"] == s])}
+        for s in (True, False)
+    ]
+    _VOL_OI_BANDS = [("3.0-5.0x", 3.0, 5.0), ("5.0-10.0x", 5.0, 10.0), ("10.0x+", 10.0, float("inf"))]
+    by_volume_oi_band = []
+    for label, lo, hi in _VOL_OI_BANDS:
+        band_rows = [r for r in resolved if r["volume_oi_ratio"] is not None and lo <= r["volume_oi_ratio"] < hi]
+        by_volume_oi_band.append({"band": label, "n_alerts": len(band_rows), **_windows_for(band_rows)})
+
+    return {
+        "days_back": days_back,
+        "min_samples": min_samples,
+        "n_symbols_scanned": len(symbols),
+        "n_alerts_replayed": len(resolved),
+        "by_direction": by_direction,
+        "by_sweep": by_sweep,
+        "by_volume_oi_band": by_volume_oi_band,
+        "reason": None,
+        "note": (
+            "A GENUINE historical replay (UW retains real flow-alert history — confirmed live, "
+            "not a proxy) using the SAME direction/premium/volume-OI/sweep filter the live alert "
+            "uses today. by_direction answers 'does following the alert's own implied direction "
+            "work'; by_sweep and by_volume_oi_band answer 'does a bigger/more urgent signal work "
+            "better' — win = price cleared the same cost hurdle the live evaluator uses, in the "
+            "direction the alert implies (bearish wins on a price DROP, matching a real put/short "
+            "thesis). Capped at 1,000 rows/symbol/window (UW's own newest-first pagination) — see "
+            "get_historical_flow_alerts()'s own docstring."
+        ),
+    }
+
+
 @router.get("/watchlist-rotation-history")
 def watchlist_rotation_history(
     watchlist_id: int | None = Query(None, description="Filter to one watchlist"),
