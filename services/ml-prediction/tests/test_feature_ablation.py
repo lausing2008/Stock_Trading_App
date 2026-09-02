@@ -150,3 +150,82 @@ def test_options_coverage_flag_is_computed_and_reported():
 def test_skips_rather_than_fabricates_below_the_300_sample_floor():
     """Matches tune_symbol()'s own established floor exactly — never a re-derived number."""
     assert "if len(X_train) < 300:" in _SOURCE
+
+
+# AUD-MPE04-TRAINCOVERAGE — behavioral tests, not just source-text presence checks, since the
+# whole point of this fix is that the pre-existing options_coverage flag (checking the WHOLE X
+# matrix) is structurally unable to catch "real values exist, but only in the holdout tail, not
+# in training" — confirmed against real production data (AVGO, 2026-09-01): 21/296 real
+# short_ratio rows across the whole matrix, but 0/251 of them in the training slice specifically,
+# because fundamentals_snapshot only started being populated ~64 real calendar days ago. A
+# substring-presence test alone would not catch a regression that reverted the fix back to
+# checking X instead of X_train — these tests drive the real coverage-check expression with
+# real pandas DataFrames reproducing that exact split.
+def _coverage_for(x_train_df):
+    """Re-run the real extracted expressions against an arbitrary X_train DataFrame."""
+    namespace = {
+        "np": np, "pd": pd, "X_train": x_train_df,
+        "SHORT_INTEREST_COLUMNS": ["short_ratio", "short_ratio_delta", "short_percent_of_float"],
+        "OPTIONS_COLUMNS": ["opt_cp_ratio", "opt_whale_count"],
+    }
+    start = _SOURCE.index("short_interest_train_coverage = bool(")
+    end = _SOURCE.index("\n    if not short_interest_train_coverage", start)
+    body = "\n".join(line[4:] if line.startswith("    ") else line for line in _SOURCE[start:end].split("\n"))
+    exec(body, namespace)  # noqa: S102 — isolated eval of the real source's coverage expressions
+    return namespace["short_interest_train_coverage"], namespace["options_train_coverage"]
+
+
+def _full_cols():
+    return {
+        "short_ratio": [np.nan] * 5, "short_ratio_delta": [np.nan] * 5,
+        "short_percent_of_float": [np.nan] * 5,
+        "opt_cp_ratio": [np.nan] * 5, "opt_whale_count": [np.nan] * 5,
+    }
+
+
+def test_train_coverage_is_false_when_short_interest_is_entirely_nan_in_the_training_slice():
+    """Reproduces the exact production scenario: real short-interest values exist, but only
+    in the holdout tail — this is what options_coverage (whole-matrix) alone cannot catch."""
+    x_train = pd.DataFrame(_full_cols())  # every training row NaN, matching the real AVGO case
+    short_cov, opt_cov = _coverage_for(x_train)
+    assert short_cov is False
+    assert opt_cov is False
+
+
+def test_train_coverage_is_true_when_at_least_one_training_row_has_a_real_short_interest_value():
+    cols = _full_cols()
+    cols["short_ratio"][2] = 1.95  # one real value, matching a genuinely covered symbol
+    x_train = pd.DataFrame(cols)
+    short_cov, opt_cov = _coverage_for(x_train)
+    assert short_cov is True
+    assert opt_cov is False  # options columns are still untouched — independent flags
+
+
+def test_train_coverage_flags_are_independent_of_each_other():
+    cols = _full_cols()
+    cols["opt_cp_ratio"][0] = 1.2
+    x_train = pd.DataFrame(cols)
+    short_cov, opt_cov = _coverage_for(x_train)
+    assert short_cov is False
+    assert opt_cov is True
+
+
+def test_lift_fields_are_none_not_a_computed_zero_when_train_coverage_is_absent():
+    """The whole point of this fix: reporting 0.0 here would misleadingly read as "measured,
+    no real lift" when the true state is "unmeasurable — the training slice had no real short-
+    interest signal at all." Checked via the real gating expression in the return dict."""
+    assert (
+        'if short_interest_train_coverage\n'
+        '            and results["short"]["ev_pct"] is not None and results["baseline"]["ev_pct"] is not None'
+        in _SOURCE
+    )
+    assert (
+        'if options_train_coverage\n'
+        '            and results["options"]["ev_pct"] is not None and results["baseline"]["ev_pct"] is not None'
+        in _SOURCE
+    )
+
+
+def test_both_train_coverage_flags_are_reported_in_the_return_dict():
+    assert '"short_interest_train_coverage": short_interest_train_coverage,' in _SOURCE
+    assert '"options_train_coverage": options_train_coverage,' in _SOURCE

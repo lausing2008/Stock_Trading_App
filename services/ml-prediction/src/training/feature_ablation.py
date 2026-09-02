@@ -155,6 +155,28 @@ def run_feature_ablation(symbol: str, horizon: int = 5, style: str = "SWING") ->
         log.warning("feature_ablation.skipped", symbol=symbol, reason=reason)
         return {"symbol": symbol, "skipped": True, "reason": reason}
 
+    # AUD-MPE04-TRAINCOVERAGE: options_coverage (below) only ever checked the WHOLE X matrix
+    # (train+holdout combined) — but a feature masked to NaN across every TRAINING row still
+    # gives XGBoost nothing to learn from, even when the holdout slice happens to have real
+    # values (both fundamentals_snapshot and options_flow_snapshots are young, real-data-only-
+    # since tables — 64 and 32 real calendar days old respectively as of this fix — so for any
+    # symbol with more than a few months of price history, a plain 85/15 ROW-COUNT split lands
+    # the training slice almost entirely before either table existed). Confirmed empirically
+    # against real production data (AVGO, 2026-09-01): short_interest_train_coverage was False
+    # (0/251 real training rows) while the whole-matrix check alone would have reported
+    # options_coverage=True (21/296 real rows, all in the holdout tail) — the pre-existing
+    # options_coverage flag alone cannot catch this, since it never looks at train vs. holdout
+    # separately. Reporting `short_interest_lift_pct: 0.0` in this state reads as "measured, no
+    # real lift" when the true state is "unmeasurable — the model never saw a real value in
+    # training." A future session revisiting this once both snapshot tables have several more
+    # months of real history should re-check whether this guard still trips for common symbols.
+    short_interest_train_coverage = bool(X_train[SHORT_INTEREST_COLUMNS].notna().any().any())
+    options_train_coverage = bool(X_train[OPTIONS_COLUMNS].notna().any().any())
+    if not short_interest_train_coverage:
+        log.info("feature_ablation.no_short_interest_train_coverage", symbol=symbol)
+    if not options_train_coverage:
+        log.info("feature_ablation.no_options_train_coverage", symbol=symbol)
+
     options_coverage = bool(X[OPTIONS_COLUMNS].notna().any().any())
     if not options_coverage:
         log.info("feature_ablation.no_options_coverage", symbol=symbol)
@@ -181,17 +203,26 @@ def run_feature_ablation(symbol: str, horizon: int = 5, style: str = "SWING") ->
         "symbol": symbol,
         "skipped": False,
         "options_coverage": options_coverage,
+        "short_interest_train_coverage": short_interest_train_coverage,
+        "options_train_coverage": options_train_coverage,
         "n_train": len(X_train),
         "n_holdout": len(X_holdout),
         "results": results,
+        # AUD-MPE04-TRAINCOVERAGE: lift is only ever a real, trustworthy measurement when the
+        # TRAINING slice actually had real values to learn from — reported as None (unmeasurable)
+        # rather than a computed 0.0/near-0.0, which would misleadingly read as "measured, no
+        # real lift" per this file's own established None-means-unmeasurable convention
+        # (compute_holdout_ev()'s own docstring uses the identical distinction).
         "short_interest_lift_pct": (
             (results["short"]["ev_pct"] - results["baseline"]["ev_pct"])
-            if results["short"]["ev_pct"] is not None and results["baseline"]["ev_pct"] is not None
+            if short_interest_train_coverage
+            and results["short"]["ev_pct"] is not None and results["baseline"]["ev_pct"] is not None
             else None
         ),
         "options_lift_pct": (
             (results["options"]["ev_pct"] - results["baseline"]["ev_pct"])
-            if results["options"]["ev_pct"] is not None and results["baseline"]["ev_pct"] is not None
+            if options_train_coverage
+            and results["options"]["ev_pct"] is not None and results["baseline"]["ev_pct"] is not None
             else None
         ),
     }
