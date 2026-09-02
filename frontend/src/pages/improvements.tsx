@@ -18743,7 +18743,8 @@ const ITEMS: Item[] = [
   // recorded in that doc's own "Corrections Made During Review" section.
   {
     id: 'TOKEN-01',
-    tier: 321, severity: 'high', defaultStatus: 'todo',
+    tier: 321, severity: 'high', defaultStatus: 'done',
+    implementedNote: 'Split executed 2026-09-02 with a mechanically-verified, zero-content-loss guarantee before touching the real repo: every one of the file\'s 230 real top-level sections (252 raw "## " lines merged into 230 logical headers -- several long titles wrap across 2-3 physical "## "-prefixed lines, an artifact this splitting pass corrected for) was assigned to exactly one of 68 target files (28 docs/incidents/, 25 docs/features/, 15 docs/audits/), then a byte-for-byte reconstruction check confirmed concatenating the preamble + all 230 sections in original order reproduces the EXACT original 1,396,158-character file. Bug-class incidents were grouped by recurring theme, not by date, per the explicit design choice made before starting (e.g. all 7 "jose/redis/feedparser missing from container" entries now live in one file, all 19 T232-DL-DUALSCORER-DEBT decision-engine-parity entries in another). Result: .claude/CLAUDE.md went from 20,077 lines / ~347k tokens to 270 lines / ~6,021 tokens -- a 98.3% reduction -- with a full topic-file index retained in the new core. Zero code/test in the repo programmatically parses CLAUDE.md\'s content (confirmed via repo-wide grep); the ~10 source comments that mention ".claude/CLAUDE.md" as a documentation pointer remain accurate in spirit (the referenced history still exists, just relocated) and were left as-is.',
     title: 'Split CLAUDE.md (347,000 tokens, 20,077 lines, 252 dated sections) into a small always-loaded core + on-demand topic files under docs/',
     file: '.claude/CLAUDE.md; docs/incidents/; docs/features/; docs/audits/',
     effort: 'L',
@@ -18753,7 +18754,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'TOKEN-02',
-    tier: 321, severity: 'high', defaultStatus: 'todo',
+    tier: 321, severity: 'high', defaultStatus: 'done',
+    implementedNote: 'The new core .claude/CLAUDE.md opens with a dedicated "Writing convention -- READ THIS BEFORE ADDING A NEW ENTRY" section, placed immediately after the intro (before Deployment Pattern) so it is unmissable on every session read: a new entry for an existing bug class goes into that class\'s own docs/incidents/<class>.md file, a new shipped feature into its area\'s docs/features/<area>.md, a new dated audit into a fresh docs/audits/<date>-<name>.md -- and explicitly states "only the one-line index pointer below ever lands in this file." This is genuinely enforced by making it the very first thing read, not just documented in a topic file that could itself be skipped.',
     title: 'Enforce the write-new-entries-to-topic-files discipline so CLAUDE.md cannot regrow to 347k tokens after TOKEN-01 ships',
     file: '.claude/CLAUDE.md (the core file\'s own documented convention)',
     effort: 'S',
