@@ -191,7 +191,7 @@ _ALERT_JOB_IDS = {
 }
 
 _NON_ALERT_JOB_IDS = {
-    "us_open_burst", "us_intra", "us_close_burst", "us_post_close", "options_flow_eod",
+    "us_open_burst", "us_intra", "us_close_burst", "us_post_close", "options_flow_eod", "gex_eod",
     "hk_open_burst", "hk_intra", "hk_close_burst", "hk_post_close", "weekly_full_refresh",
     "us_premarket_5m_early", "us_premarket_5m_9am", "us_5m_intraday", "hk_5m_intraday",
     "(f-string prefix='broker_token_renewal_')",

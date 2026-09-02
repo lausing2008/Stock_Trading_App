@@ -98,6 +98,14 @@ function scoreColor(v: number): string {
   return '#64748b';
 }
 
+// MPE-07: LOW/MEDIUM/HIGH short-covering-pressure badge colors, matching scoreColor's own
+// red/orange/gray palette so the two visual signals read consistently on the same row.
+function pressureColor(pressure: 'LOW' | 'MEDIUM' | 'HIGH'): string {
+  if (pressure === 'HIGH') return '#ef4444';
+  if (pressure === 'MEDIUM') return '#f97316';
+  return '#64748b';
+}
+
 // ── T260-BEARISH-PUTS-WATCHLIST: bearish puts watch section ──────────────────────────────────
 
 function BearishPutsWatchSection({
@@ -508,12 +516,23 @@ export default function ShortSqueezePage() {
                       </td>
                       <td style={{ padding: '10px 14px', textAlign: 'right' }}>
                         {r.squeeze_score != null ? (
-                          <span
-                            title={`Short float: ${r.squeeze_score.components.short_float_pts}/40 · Days to cover: ${r.squeeze_score.components.days_to_cover_pts}/30 · Momentum: ${r.squeeze_score.components.momentum_pts}/20 · Move: ${r.squeeze_score.components.change_pct_pts}/10${r.squeeze_score.components.uw_borrow_fee_pts != null ? ` · Borrow fee (UW): ${r.squeeze_score.components.uw_borrow_fee_pts}/5` : ''}`}
-                            style={{ fontWeight: 800, fontSize: '14px', color: scoreColor(r.squeeze_score.score), fontVariantNumeric: 'tabular-nums', cursor: 'help' }}
-                          >
-                            {r.squeeze_score.score.toFixed(0)}
-                          </span>
+                          <div>
+                            <span
+                              title={`Short float: ${r.squeeze_score.components.short_float_pts}/40 · Days to cover: ${r.squeeze_score.components.days_to_cover_pts}/30 · Momentum: ${r.squeeze_score.components.momentum_pts}/20 · Move: ${r.squeeze_score.components.change_pct_pts}/10${r.squeeze_score.components.uw_borrow_fee_pts != null ? ` · Borrow fee (UW): ${r.squeeze_score.components.uw_borrow_fee_pts}/5` : ''}${r.squeeze_score.components.uw_utilization_pts != null ? ` · Utilization (UW): ${r.squeeze_score.components.uw_utilization_pts}/5 (${r.squeeze_score.components.uw_utilization_pct?.toFixed(0)}%)` : ''}`}
+                              style={{ fontWeight: 800, fontSize: '14px', color: scoreColor(r.squeeze_score.score), fontVariantNumeric: 'tabular-nums', cursor: 'help' }}
+                            >
+                              {r.squeeze_score.score.toFixed(0)}
+                            </span>
+                            {/* MPE-07: LOW/MEDIUM/HIGH covering-pressure classification + confidence — a
+                                MEASURED reflection of the score above, never a prediction that shorts will
+                                actually be forced to cover (see _short_covering_pressure()'s own docstring). */}
+                            <div
+                              title={`Confidence: ${r.squeeze_score.covering_pressure.confidence.toFixed(0)}% — how many real inputs informed this score, not a statistical forecast`}
+                              style={{ fontSize: '9px', fontWeight: 700, color: pressureColor(r.squeeze_score.covering_pressure.pressure), cursor: 'help' }}
+                            >
+                              {r.squeeze_score.covering_pressure.pressure} · {r.squeeze_score.covering_pressure.confidence.toFixed(0)}%
+                            </div>
+                          </div>
                         ) : <span style={{ color: '#334155' }}>—</span>}
                       </td>
                       <td style={{ padding: '10px 14px', textAlign: 'right', whiteSpace: 'nowrap' }}>
@@ -535,6 +554,20 @@ export default function ShortSqueezePage() {
                             </div>
                           );
                         })()}
+                        {/* MPE-07: real Unusual Whales enrichment, when a subscription is active. Both
+                            uw_short_interest and uw_short_shares_available MUST come from the same UW
+                            call together — never mixed with the free-tier shares_short above, which is
+                            a different provider's own number. */}
+                        {r.uw_short_interest != null && r.uw_short_shares_available != null && r.uw_short_shares_available > 0 && (
+                          <div style={{ fontSize: '9px', color: '#818cf8' }} title="Real short-interest utilization from Unusual Whales — shares reported short as a % of shares currently available to borrow">
+                            {Math.min(100, (r.uw_short_interest / r.uw_short_shares_available) * 100).toFixed(0)}% util (UW)
+                          </div>
+                        )}
+                        {r.uw_fee_rate != null && (
+                          <div style={{ fontSize: '9px', color: '#818cf8' }} title="Real annualized borrow fee from Unusual Whales — a rising fee is real evidence shorts are paying more to stay short">
+                            {r.uw_fee_rate.toFixed(1)}% fee (UW)
+                          </div>
+                        )}
                       </td>
                       <td style={{ padding: '10px 14px', textAlign: 'right', color: '#e2e8f0', fontVariantNumeric: 'tabular-nums' }}>
                         {r.price != null ? (r.price >= 100 ? r.price.toFixed(2) : r.price.toPrecision(4)) : '—'}

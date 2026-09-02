@@ -1474,6 +1474,15 @@ export type AnalystConsensus = {
 
 // MPE-01: composite 0-100 short-squeeze score — see compute_short_squeeze_score()'s own
 // docstring in routes.py for the full weighting rationale.
+export type SqueezeCoveringPressure = {
+  // MPE-07: the doc's own "Short Covering Pressure: LOW/MEDIUM/HIGH, Confidence: N%" ask —
+  // see _short_covering_pressure()'s own docstring for why confidence is NOT a statistical
+  // estimate (this app's squeeze-alert family has nowhere near enough resolved outcomes to
+  // fit a real model), just an honest reflection of how many real inputs informed the score.
+  pressure: 'LOW' | 'MEDIUM' | 'HIGH';
+  confidence: number;
+};
+
 export type SqueezeScore = {
   score: number;
   components: {
@@ -1482,7 +1491,12 @@ export type SqueezeScore = {
     momentum_pts: number;
     change_pct_pts: number;
     uw_borrow_fee_pts?: number;
+    // MPE-07: real short-interest UTILIZATION (shares_short / short_shares_available), both
+    // from Unusual Whales' own paired fields — never mixed with a different provider's value.
+    uw_utilization_pts?: number;
+    uw_utilization_pct?: number;
   };
+  covering_pressure: SqueezeCoveringPressure;
 };
 
 export type SqueezeCandidate = {
@@ -1509,6 +1523,7 @@ export type SqueezeCandidate = {
   squeeze_score: SqueezeScore | null;
   uw_short_shares_available: number | null;
   uw_fee_rate: number | null;
+  uw_short_interest: number | null;
 };
 
 // T260-BEARISH-PUTS-WATCHLIST

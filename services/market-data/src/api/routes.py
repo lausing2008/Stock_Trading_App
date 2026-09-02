@@ -2481,11 +2481,13 @@ def short_squeeze(
             # this screener's own already-filtered candidate set.
             _uw_fee_rate = None
             _uw_shares_avail = None
+            _uw_short_interest = None
             if _uw_on:
                 _uw_si = _uw.get_short_interest(symbol)
                 if _uw_si is not None:
                     _uw_fee_rate = _uw_si.fee_rate
                     _uw_shares_avail = _uw_si.short_shares_available
+                    _uw_short_interest = _uw_si.short_interest
 
             results.append({
                 "symbol": symbol,
@@ -2526,9 +2528,11 @@ def short_squeeze(
                     change_pct=_change_pct,
                     short_shares_available=_uw_shares_avail,
                     fee_rate=_uw_fee_rate,
+                    short_interest=_uw_short_interest,
                 ),
                 "uw_short_shares_available": _uw_shares_avail,
                 "uw_fee_rate": _uw_fee_rate,
+                "uw_short_interest": _uw_short_interest,
             })
         except Exception:
             continue
@@ -3520,6 +3524,38 @@ def compute_max_pain(calls: list[dict], puts: list[dict]) -> dict | None:
     }
 
 
+_SQUEEZE_PRESSURE_LOW_MAX = 40.0
+_SQUEEZE_PRESSURE_MEDIUM_MAX = 70.0
+
+
+def _short_covering_pressure(score: float, has_uw_enrichment: bool) -> dict:
+    """MPE-07: the doc's own §2 SHORT COVERING PROBABILITY ask — "Do NOT say forced covering
+    WILL happen... use LOW/MEDIUM/HIGH with confidence" — a pure classification layer over the
+    ALREADY-COMPUTED composite score, no new data source. Thresholds deliberately split the
+    0-100 range into 3 even bands (<40 / 40-70 / >=70) rather than re-deriving a second set of
+    calibrated percentiles — the score itself is already built from this app's own real,
+    calibrated component thresholds (see compute_short_squeeze_score()'s own docstring); a
+    second independent calibration for the tier boundaries would risk the two disagreeing with
+    each other for no real benefit.
+
+    Confidence is NOT a statistical estimate (per the doc's own explicit instruction: "Only
+    calculate probability if the available historical data supports proper model training" —
+    this app's squeeze-alert family has fired ~107 alerts total since launch, nowhere near
+    enough to fit a real model) — it is a simple, honest reflection of how many real inputs
+    actually informed the score: a free-tier-only score (no UW data) tops out lower than one
+    with real UW borrow-fee/utilization enrichment behind it, since more independent real
+    signals agreeing is itself more informative than one score built from fewer inputs.
+    """
+    if score >= _SQUEEZE_PRESSURE_MEDIUM_MAX:
+        pressure = "HIGH"
+    elif score >= _SQUEEZE_PRESSURE_LOW_MAX:
+        pressure = "MEDIUM"
+    else:
+        pressure = "LOW"
+    confidence = min(95.0, round((55.0 if has_uw_enrichment else 45.0) + score * 0.4, 0))
+    return {"pressure": pressure, "confidence": confidence}
+
+
 def compute_short_squeeze_score(
     short_percent_of_float: float | None,
     days_to_cover: float | None,
@@ -3527,13 +3563,15 @@ def compute_short_squeeze_score(
     change_pct: float | None,
     short_shares_available: float | None = None,
     fee_rate: float | None = None,
+    short_interest: float | None = None,
 ) -> dict | None:
     """MPE-01: composite 0-100 short-squeeze score, replacing short-squeeze.tsx's own binary
     "Prime Candidate" heuristic (momentum_score > 50 and short_percent_of_float >= 15) with a
     real weighted score built entirely from data this app already fetches — no new data source
-    needed for the free-tier score. `short_shares_available`/`fee_rate` (Unusual Whales-only,
-    MPE-07) are optional real enrichment layered on top when a subscription is active; the
-    score degrades gracefully to the free-tier components alone when they're absent.
+    needed for the free-tier score. `short_shares_available`/`fee_rate`/`short_interest`
+    (Unusual Whales-only, MPE-07) are optional real enrichment layered on top when a
+    subscription is active; the score degrades gracefully to the free-tier components alone
+    when they're absent.
 
     Every threshold below is a REAL, cited number from this codebase's own established
     conventions, never invented for this function:
@@ -3580,6 +3618,8 @@ def compute_short_squeeze_score(
         "change_pct_pts": round(chg_pts, 1),
     }
 
+    has_uw_enrichment = False
+
     # MPE-07: Unusual Whales real short-shares-available / borrow-fee-rate enrichment, when a
     # subscription is active — a genuinely richer, faster-updating read of "can shorts actually
     # exit," but never required for the score itself (both default to None, contributing 0).
@@ -3592,8 +3632,34 @@ def compute_short_squeeze_score(
         uw_pts = min(5.0, max(0.0, fee_rate / 20.0 * 5.0))
         components["uw_borrow_fee_pts"] = round(uw_pts, 1)
         score = round(score + uw_pts, 1)
+        has_uw_enrichment = True
 
-    return {"score": min(100.0, score), "components": components}
+    # MPE-07: real short-interest UTILIZATION (shares_short / short_shares_available) — the
+    # doc's own §1 ask, distinct from short_percent_of_float (which measures short interest
+    # against the whole FLOAT, not against how many shares are actually left to borrow). A
+    # squeeze with 30% short float but abundant shares still available to borrow is much less
+    # acute than one where shares are nearly exhausted — utilization captures exactly that,
+    # which short_percent_of_float alone cannot. Both inputs MUST come from the SAME source
+    # (UW's own paired short_interest/short_shares_available fields) — never short_interest
+    # from one provider divided by short_shares_available from a different one, which could
+    # silently disagree on reporting date/methodology and produce a misleadingly-precise but
+    # wrong ratio. Capped at 5 points, matching the borrow-fee component's own weight — >=90%
+    # utilization is a genuinely extreme real-world reading (most liquid names sit well under
+    # 50%), scored 0 below a 50% floor since moderate utilization isn't itself acute pressure.
+    if short_interest is not None and short_shares_available is not None and short_shares_available > 0:
+        utilization_pct = min(100.0, max(0.0, short_interest / short_shares_available * 100.0))
+        util_pts = min(5.0, max(0.0, (utilization_pct - 50.0) / (90.0 - 50.0) * 5.0))
+        components["uw_utilization_pts"] = round(util_pts, 1)
+        components["uw_utilization_pct"] = round(utilization_pct, 1)
+        score = round(score + util_pts, 1)
+        has_uw_enrichment = True
+
+    final_score = min(100.0, score)
+    return {
+        "score": final_score,
+        "components": components,
+        "covering_pressure": _short_covering_pressure(final_score, has_uw_enrichment),
+    }
 
 
 @router.get("/{symbol}/options-chain")

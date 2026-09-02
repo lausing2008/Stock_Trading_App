@@ -1,10 +1,15 @@
 """Tests for MPE-01's compute_short_squeeze_score() — the composite 0-100 score replacing
-short-squeeze.tsx's own binary "Prime Candidate" heuristic.
+short-squeeze.tsx's own binary "Prime Candidate" heuristic. Also covers MPE-07's short-
+interest UTILIZATION component and the LOW/MEDIUM/HIGH covering-pressure classification added
+once Unusual Whales became available.
 
 routes.py can't be imported directly in this test environment (its import chain pulls in
 common.config/db, none of which conftest.py stubs for real) — compute_short_squeeze_score()'s
 real source is extracted and exec()'d, matching test_max_pain.py's established source-text-
-extraction technique for pure functions in this exact file.
+extraction technique for pure functions in this exact file. _short_covering_pressure() is a
+real dependency compute_short_squeeze_score() calls, so both are extracted together in one
+exec() namespace — a namespace missing the helper would raise a real NameError the moment the
+function under test tries to call it, not silently produce a wrong result.
 """
 import pathlib
 
@@ -13,11 +18,11 @@ _ROUTES_SOURCE = _ROUTES_PATH.read_text()
 
 
 def _extract_compute_short_squeeze_score():
-    start = _ROUTES_SOURCE.index("def compute_short_squeeze_score(")
+    start = _ROUTES_SOURCE.index("_SQUEEZE_PRESSURE_LOW_MAX = ")
     end = _ROUTES_SOURCE.index('\n\n@router.get("/{symbol}/options-chain")', start)
     func_source = _ROUTES_SOURCE[start:end]
     namespace = {}
-    exec(func_source, namespace)  # noqa: S102 — isolated eval of one pure function's real source
+    exec(func_source, namespace)  # noqa: S102 — isolated eval of these pure functions' real source
     return namespace["compute_short_squeeze_score"]
 
 
@@ -177,11 +182,179 @@ def test_uw_enrichment_never_pushes_the_score_above_100():
 
 
 def test_the_score_is_a_real_dict_shape_not_a_bare_number():
-    """Callers (the endpoint wiring, the frontend) rely on both 'score' and 'components' being
-    present — a regression collapsing this to a bare float would break both silently."""
+    """Callers (the endpoint wiring, the frontend) rely on 'score'/'components'/
+    'covering_pressure' all being present — a regression collapsing this to a bare float
+    would break all three silently."""
     result = compute_short_squeeze_score(
         short_percent_of_float=20.0, days_to_cover=3.0, momentum_score=60.0, change_pct=4.0,
     )
-    assert set(result.keys()) == {"score", "components"}
+    assert set(result.keys()) == {"score", "components", "covering_pressure"}
     assert isinstance(result["score"], float)
     assert isinstance(result["components"], dict)
+    assert isinstance(result["covering_pressure"], dict)
+
+
+# ── MPE-07: real short-interest UTILIZATION component ──────────────────────────────────────
+
+def test_utilization_absent_when_either_uw_input_is_missing():
+    """Both short_interest AND short_shares_available must be present — a lone value from
+    only one source can't compute a real ratio, and the two must never be mixed with a
+    DIFFERENT provider's own value for the other half."""
+    result_neither = compute_short_squeeze_score(
+        short_percent_of_float=20.0, days_to_cover=None, momentum_score=None, change_pct=None,
+    )
+    result_only_shares_avail = compute_short_squeeze_score(
+        short_percent_of_float=20.0, days_to_cover=None, momentum_score=None, change_pct=None,
+        short_shares_available=1_000_000.0,
+    )
+    result_only_short_interest = compute_short_squeeze_score(
+        short_percent_of_float=20.0, days_to_cover=None, momentum_score=None, change_pct=None,
+        short_interest=800_000.0,
+    )
+    assert "uw_utilization_pts" not in result_neither["components"]
+    assert "uw_utilization_pts" not in result_only_shares_avail["components"]
+    assert "uw_utilization_pts" not in result_only_short_interest["components"]
+
+
+def test_utilization_hand_computed_at_a_real_ratio():
+    """800,000 shares short / 1,000,000 shares available = 80% utilization — squarely inside
+    the 50-90% scoring range: util_pts = (80-50)/(90-50)*5 = 3.75, rounded to 1dp = 3.8
+    (matching the function's own round(util_pts, 1) — the hand-computed raw value, not the
+    displayed one, is 3.75)."""
+    result = compute_short_squeeze_score(
+        short_percent_of_float=20.0, days_to_cover=None, momentum_score=None, change_pct=None,
+        short_interest=800_000.0, short_shares_available=1_000_000.0,
+    )
+    assert result["components"]["uw_utilization_pct"] == 80.0
+    assert result["components"]["uw_utilization_pts"] == 3.8
+
+
+def test_utilization_floors_at_zero_points_below_50_pct():
+    result = compute_short_squeeze_score(
+        short_percent_of_float=20.0, days_to_cover=None, momentum_score=None, change_pct=None,
+        short_interest=300_000.0, short_shares_available=1_000_000.0,
+    )
+    assert result["components"]["uw_utilization_pct"] == 30.0
+    assert result["components"]["uw_utilization_pts"] == 0.0
+
+
+def test_utilization_caps_at_5_points_at_or_beyond_90_pct():
+    result_at_90 = compute_short_squeeze_score(
+        short_percent_of_float=20.0, days_to_cover=None, momentum_score=None, change_pct=None,
+        short_interest=900_000.0, short_shares_available=1_000_000.0,
+    )
+    result_beyond = compute_short_squeeze_score(
+        short_percent_of_float=20.0, days_to_cover=None, momentum_score=None, change_pct=None,
+        short_interest=1_500_000.0, short_shares_available=1_000_000.0,
+    )
+    assert result_at_90["components"]["uw_utilization_pts"] == 5.0
+    assert result_beyond["components"]["uw_utilization_pts"] == 5.0
+    # a real ratio can legitimately exceed 100% (more shares reported short than currently
+    # available to borrow, e.g. between settlement dates) — the reported PCT itself must still
+    # clamp at 100, never a nonsensical 150%.
+    assert result_beyond["components"]["uw_utilization_pct"] == 100.0
+
+
+def test_utilization_never_divides_by_a_zero_shares_available():
+    result = compute_short_squeeze_score(
+        short_percent_of_float=20.0, days_to_cover=None, momentum_score=None, change_pct=None,
+        short_interest=500_000.0, short_shares_available=0.0,
+    )
+    assert "uw_utilization_pts" not in result["components"]
+
+
+def test_utilization_and_borrow_fee_stack_additively():
+    """Both UW enrichment components can fire together — 5 (fee) + 5 (utilization) = 10 extra
+    points on top of the free-tier score, not one silently overwriting the other."""
+    without_uw = compute_short_squeeze_score(
+        short_percent_of_float=20.0, days_to_cover=None, momentum_score=None, change_pct=None,
+    )
+    with_both = compute_short_squeeze_score(
+        short_percent_of_float=20.0, days_to_cover=None, momentum_score=None, change_pct=None,
+        fee_rate=20.0, short_interest=900_000.0, short_shares_available=1_000_000.0,
+    )
+    assert with_both["score"] == without_uw["score"] + 5.0 + 5.0
+
+
+def test_utilization_enrichment_never_pushes_the_score_above_100():
+    result = compute_short_squeeze_score(
+        short_percent_of_float=100.0, days_to_cover=0.0, momentum_score=100.0, change_pct=100.0,
+        fee_rate=100.0, short_interest=2_000_000.0, short_shares_available=1_000_000.0,
+    )
+    assert result["score"] == 100.0
+
+
+# ── MPE-07: LOW/MEDIUM/HIGH short-covering-pressure classification ─────────────────────────
+
+def test_covering_pressure_is_low_below_40():
+    result = compute_short_squeeze_score(
+        short_percent_of_float=6.0, days_to_cover=None, momentum_score=None, change_pct=None,
+    )
+    assert result["score"] < 40.0
+    assert result["covering_pressure"]["pressure"] == "LOW"
+
+
+def test_covering_pressure_is_medium_between_40_and_70():
+    result = compute_short_squeeze_score(
+        short_percent_of_float=20.0, days_to_cover=2.5, momentum_score=40.0, change_pct=3.0,
+    )
+    assert 40.0 <= result["score"] < 70.0
+    assert result["covering_pressure"]["pressure"] == "MEDIUM"
+
+
+def test_covering_pressure_is_high_at_or_above_70():
+    result = compute_short_squeeze_score(
+        short_percent_of_float=30.0, days_to_cover=1.0, momentum_score=90.0, change_pct=8.0,
+    )
+    assert result["score"] >= 70.0
+    assert result["covering_pressure"]["pressure"] == "HIGH"
+
+
+def test_covering_pressure_boundaries_are_inclusive_on_the_lower_edge():
+    """Exactly 40.0 must read MEDIUM (not LOW); exactly 70.0 must read HIGH (not MEDIUM) — the
+    real >= comparison, not a > that would misclassify the exact boundary value. Both inputs
+    are hand-derived to sum to the exact boundary: spf=17.5 -> spf_pts=20.0, momentum=100.0
+    (capped) -> mom_pts=20.0, summing to exactly 40.0; adding days_to_cover=1.13 (the real p10,
+    already scoring the full 30 points elsewhere in this file) brings the same combination to
+    exactly 70.0."""
+    at_40 = compute_short_squeeze_score(
+        short_percent_of_float=17.5, days_to_cover=None, momentum_score=100.0, change_pct=None,
+    )
+    assert at_40["score"] == 40.0
+    assert at_40["covering_pressure"]["pressure"] == "MEDIUM"
+
+    at_70 = compute_short_squeeze_score(
+        short_percent_of_float=17.5, days_to_cover=1.13, momentum_score=100.0, change_pct=None,
+    )
+    assert at_70["score"] == 70.0
+    assert at_70["covering_pressure"]["pressure"] == "HIGH"
+
+
+def test_covering_pressure_confidence_is_higher_with_real_uw_enrichment():
+    """The doc's own instruction: confidence reflects how many real inputs informed the score,
+    never a fabricated statistical estimate (this app's alert family has nowhere near enough
+    resolved outcomes to fit a real model)."""
+    without_uw = compute_short_squeeze_score(
+        short_percent_of_float=20.0, days_to_cover=None, momentum_score=None, change_pct=None,
+    )
+    with_uw = compute_short_squeeze_score(
+        short_percent_of_float=20.0, days_to_cover=None, momentum_score=None, change_pct=None,
+        fee_rate=10.0,
+    )
+    assert with_uw["covering_pressure"]["confidence"] > without_uw["covering_pressure"]["confidence"]
+
+
+def test_covering_pressure_confidence_never_exceeds_95():
+    result = compute_short_squeeze_score(
+        short_percent_of_float=100.0, days_to_cover=0.0, momentum_score=100.0, change_pct=100.0,
+        fee_rate=100.0, short_interest=2_000_000.0, short_shares_available=1_000_000.0,
+    )
+    assert result["covering_pressure"]["confidence"] <= 95.0
+
+
+def test_covering_pressure_confidence_never_negative_on_a_zero_score():
+    result = compute_short_squeeze_score(
+        short_percent_of_float=5.0, days_to_cover=None, momentum_score=None, change_pct=None,
+    )
+    assert result["score"] == 0.0
+    assert result["covering_pressure"]["confidence"] >= 0.0

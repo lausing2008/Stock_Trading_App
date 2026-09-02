@@ -1588,6 +1588,43 @@ class OptionsFlowSnapshot(Base):
     computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class GexSnapshot(Base):
+    """MPE-10: end-of-day real gamma-exposure (GEX) snapshot persistence, mirroring
+    OptionsFlowSnapshot's own established pattern (bounded symbol set, ON CONFLICT upsert on
+    (stock_id, as_of), one commit per batch job).
+
+    Before this table, get_gex_levels() (services/market-data/src/services/unusual_whales.py)
+    was LIVE-ONLY with no history — the same gap OptionsFlowSnapshot closed for options-flow
+    data, now closed identically for real GEX. Built specifically so this table starts
+    accumulating real history TODAY, ahead of any actual need — MPE-04's own feature-ablation
+    harness cannot use a GEX feature group until real point-in-time history exists here, and
+    the sooner this table starts populating, the sooner it clears the same data-age bar
+    fundamentals_snapshot/options_flow_snapshots are still waiting on (both ~1-2 months old as
+    of this table's own creation — see feature_ablation.py's own AUD-MPE04-TRAINCOVERAGE note
+    for why that bar matters).
+
+    Gated entirely behind unusual_whales.is_available() — unlike OptionsFlowSnapshot (which
+    always has yfinance as a free fallback data source), real GEX has no free-tier equivalent
+    at all; this table is simply empty when no UW subscription is active, never backfilled from
+    a proxy.
+    """
+    __tablename__ = "gex_snapshots"
+    __table_args__ = (UniqueConstraint("stock_id", "as_of", name="uq_gex_snapshot_stock_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    as_of: Mapped[date] = mapped_column(Date, index=True)
+    call_wall: Mapped[float | None] = mapped_column(Float, nullable=True)
+    put_wall: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gamma_flip: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gamma_magnet: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The underlying's own close on `as_of` — needed by the ablation harness's future PIT join
+    # to compute a scale-invariant feature (e.g. distance-to-flip as a % of price), since raw
+    # dollar strike levels aren't comparable across symbols the way a ratio/percent is.
+    underlying_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class RealtimeNewsItem(Base):
     """New news-intelligence service (port 8011) — real-time financial headline ingestion.
 

@@ -2095,6 +2095,64 @@ def compute_options_flow_snapshots_eod() -> None:
     _record_job_status("options_flow_eod", "ok" if failed == 0 else "partial", elapsed)
 
 
+def compute_gex_snapshots_eod() -> None:
+    """MPE-10: end-of-day real-GEX snapshot job — mirrors compute_options_flow_snapshots_eod()
+    exactly (same bounded symbol set, same rate-limit discipline, same upsert-per-batch-commit
+    pattern), built specifically so this table starts accumulating real history TODAY, ahead of
+    any actual near-term use — see GexSnapshot's own docstring for why the data-age bar matters
+    here even more than it did for the options-flow table.
+
+    Gated entirely behind unusual_whales.is_available() — a no-op with no UW subscription
+    active, same contract as get_gex_levels() itself.
+    """
+    from . import unusual_whales as _uw
+    if not _uw.is_available():
+        log.info("scheduler.gex_eod_done", ok=0, failed=0, note="unusual_whales_not_available")
+        _record_job_status("gex_eod", "ok", 0.0)
+        return
+
+    from .gex_snapshot import upsert_gex_snapshot
+
+    _t0 = time.monotonic()
+    ok = failed = 0
+    try:
+        with SessionLocal() as session:
+            symbols = _bounded_options_flow_symbols(session)
+            if not symbols:
+                log.info("scheduler.gex_eod_done", ok=0, failed=0, note="no_symbols")
+                _record_job_status("gex_eod", "ok", time.monotonic() - _t0)
+                return
+
+            for stock_id, symbol in symbols:
+                try:
+                    levels = _uw.get_gex_levels(symbol)
+                    if levels is None or levels.gamma_flip is None:
+                        failed += 1
+                        continue
+                    close_row = session.execute(
+                        select(Price.close)
+                        .where(Price.stock_id == stock_id, Price.timeframe == TimeFrame.D1)
+                        .order_by(Price.ts.desc())
+                        .limit(1)
+                    ).scalar_one_or_none()
+                    upsert_gex_snapshot(session, stock_id, levels, underlying_close=close_row)
+                    ok += 1
+                except Exception as exc:
+                    log.warning("scheduler.gex_eod.symbol_error", symbol=symbol, error=str(exc))
+                    failed += 1
+                time.sleep(2.0)  # rate-limit discipline, matching compute_options_flow_snapshots_eod
+
+            session.commit()
+    except Exception as exc:
+        log.error("scheduler.gex_eod_error", error=str(exc))
+        _record_job_status("gex_eod", "error", time.monotonic() - _t0)
+        return
+
+    elapsed = time.monotonic() - _t0
+    log.info("scheduler.gex_eod_done", ok=ok, failed=failed, elapsed_s=round(elapsed))
+    _record_job_status("gex_eod", "ok" if failed == 0 else "partial", elapsed)
+
+
 def _fetch_recent_options_flow(session: Session) -> list[dict]:
     """T257-OVERNIGHT-FLOW-BRIEF Phase 2: yesterday's late-day options flow for the pre-market
     brief — reads only already-persisted OptionsFlowSnapshot rows (no live yfinance call here),
@@ -10214,6 +10272,13 @@ def start_scheduler() -> None:
         compute_options_flow_snapshots_eod,
         CronTrigger(hour=17, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
         id="options_flow_eod", replace_existing=True, **_JOB_DEFAULTS,
+    )
+    # MPE-10: EOD GEX snapshot — 17:15 ET, 15 min after the options-flow job above so the two
+    # UW/yfinance-touching batch jobs don't fire at the exact same instant.
+    _scheduler.add_job(
+        compute_gex_snapshots_eod,
+        CronTrigger(hour=17, minute=15, day_of_week="mon-fri", timezone="America/New_York"),
+        id="gex_eod", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── HK Market (Asia/Hong_Kong — UTC+8, no DST) ──────────────────────────
