@@ -44,6 +44,14 @@ https://api.unusualwhales.com/api/openapi spec (not guessed/assumed) before bein
     app: real off-exchange block trades (FINRA-reported, not OTC/pink-sheet). See
     get_dark_pool_prints() below and DarkPoolPrint's own model docstring (shared/db/models.py)
     for what this actually is.
+  - /api/screener/option-contracts — T324-OPTIONSFLOW-TAB: a real, universe-wide options
+    screener (not per-symbol) — see get_options_screener() below.
+  - /api/option-trades — the raw options tape, filterable by is_multi_leg/max_dte/min_premium
+    (all confirmed-real UW params) — the single shared data source behind this app's 0DTE Flow,
+    Multi-leg Flow, and Interval Flow UI views (UW itself has no separate endpoint for any of
+    the three). See get_option_trades() below.
+  - /api/market/market-tide — real market-WIDE net call/put options premium over time (UW's own
+    aggregate sentiment measure), not a per-symbol rollup. See get_market_tide() below.
 """
 from __future__ import annotations
 
@@ -561,6 +569,273 @@ def get_dark_pool_prints(symbol: str, *, limit: int = 50) -> list[DarkPoolPrintR
         import json
         from dataclasses import asdict
         _get_redis().setex(cache_key, _DARK_POOL_TTL, json.dumps([asdict(r) for r in result]))
+    except Exception:
+        pass
+    return result
+
+
+_OPTIONS_SCREENER_TTL = 300  # 5 min — a live scanning tool, but not fast enough-moving to need
+# flow-alerts' own deliberately-uncached freshness; short enough that a user re-opening the page
+# a few minutes later still sees genuinely current results.
+_OPTION_TRADES_TTL = 120  # 2 min — the fastest-moving of the new endpoints (individual prints,
+# not an aggregated screener), short TTL so 0DTE/interval views stay close to real-time without
+# re-fetching on every keystroke of a filter change.
+_MARKET_TIDE_TTL = 300  # 5 min — market-wide aggregate, doesn't need per-symbol freshness.
+
+
+@dataclass
+class OptionsScreenerRow:
+    """One row from UW's real `/api/screener/option-contracts` — a live scan across the full
+    options-eligible universe by unusual-activity criteria (volume > OI, min premium, DTE
+    window, OTM-only, etc — all real UW server-side filters, confirmed against its own
+    published example params), not a per-symbol lookup. Field names are UW's own best-known
+    shape for this endpoint (option_symbol/underlying_symbol/type/strike/expiry/volume/
+    open_interest/premium/iv) — this endpoint's exact response shape is NOT independently
+    documented with a full field list in UW's own skill.md (only the request params are), so
+    parsing below probes plausible key names defensively, matching get_congress_trades()'s own
+    established discipline for an under-documented endpoint rather than assuming one true shape."""
+    ticker: str
+    option_symbol: str | None
+    option_type: str | None  # "call" | "put"
+    strike: float | None
+    expiry: str | None
+    volume: int | None
+    open_interest: int | None
+    premium: float | None
+    implied_volatility: float | None
+
+
+@dataclass
+class OptionTradeRow:
+    """One row from UW's real `/api/option-trades` — the raw options tape (individual prints),
+    filterable by is_multi_leg/max_dte/min_premium/min_volume/is_otm/etc (all real, confirmed
+    UW server-side params). This is the SAME endpoint that powers 3 conceptually-different UI
+    views in this app (0DTE Flow = max_dte filter of 0, Multi-leg Flow = is_multi_leg=True,
+    Interval Flow = a time-window filter) — deliberately ONE client method + ONE frontend page
+    with filter toggles, not three independently-drifting copies of the same fetch/parse logic,
+    since UW itself does not distinguish these as separate endpoints (confirmed directly against
+    its own published API reference — no dedicated 0DTE or multi-leg endpoint exists)."""
+    ticker: str
+    option_symbol: str | None
+    option_type: str | None
+    strike: float | None
+    expiry: str | None
+    price: float | None
+    size: int | None
+    premium: float | None
+    is_multi_leg: bool | None
+    volume: int | None
+    open_interest: int | None
+    executed_at: str | None
+
+
+@dataclass
+class MarketTideRow:
+    """One row from UW's real `/api/market/market-tide` — market-WIDE (not per-symbol) net
+    call/put options premium over time, UW's own real aggregate sentiment measure. This is what
+    this app's new Net Flow page is built from; UW's own per-symbol `/api/stock/{ticker}/
+    net-prem-ticks` endpoint is NOT used here because its response shape is undocumented in
+    UW's own skill.md (confirmed by direct inspection — the endpoint is merely listed, with zero
+    example params or fields), and this app does not code against an unverified shape (matching
+    the standing discipline applied to every other endpoint in this module)."""
+    timestamp: str | None
+    net_call_premium: float | None
+    net_put_premium: float | None
+
+
+def get_options_screener(
+    *,
+    option_type: str | None = None,
+    min_premium: float = 100_000,
+    max_dte: int = 45,
+    is_otm: bool | None = None,
+    min_volume: int | None = None,
+    limit: int = 100,
+) -> list[OptionsScreenerRow]:
+    """Real, universe-wide options screener from UW's own `/api/screener/option-contracts` —
+    scans ALL options-eligible symbols by real, server-side unusual-activity criteria, not a
+    per-symbol lookup (the one genuinely new "search the whole market" capability among the
+    endpoints added in this batch). `option_type` is passed through as UW's own `type` param
+    ("Calls"/"Puts") when given; every other param matches UW's own confirmed-real example
+    request shape (min_premium, max_dte, is_otm, min_volume, vol_greater_oi always sent as True
+    — this is deliberately a SCREENER for unusual activity, not a raw unfiltered contract list).
+
+    Redis-cached 5 min. Fails open (empty list) on any error, matching every other function here.
+    """
+    if not is_available():
+        return []
+    cache_key = f"stockai:uw:screener:{option_type}:{min_premium}:{max_dte}:{is_otm}:{min_volume}:{limit}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            import json
+            rows = json.loads(cached)
+            return [OptionsScreenerRow(**r) for r in rows]
+    except Exception:
+        pass
+
+    params: dict = {
+        "limit": limit,
+        "min_premium": min_premium,
+        "max_dte": max_dte,
+        "vol_greater_oi": "true",
+    }
+    if option_type:
+        params["type"] = option_type
+    if is_otm is not None:
+        params["is_otm"] = "true" if is_otm else "false"
+    if min_volume is not None:
+        params["min_volume"] = min_volume
+
+    try:
+        data = _get("/api/screener/option-contracts", params=params)
+    except Exception as exc:
+        log.warning("unusual_whales.options_screener_failed", error=str(exc))
+        return []
+
+    result: list[OptionsScreenerRow] = []
+    if isinstance(data, list):
+        for row in data:
+            try:
+                result.append(OptionsScreenerRow(
+                    ticker=(row.get("ticker") or row.get("underlying_symbol") or "").upper(),
+                    option_symbol=row.get("option_symbol") or row.get("option_chain"),
+                    option_type=(row.get("type") or row.get("option_type") or "").lower() or None,
+                    strike=_to_float(row.get("strike")),
+                    expiry=row.get("expiry"),
+                    volume=int(row["volume"]) if row.get("volume") is not None else None,
+                    open_interest=int(row["open_interest"]) if row.get("open_interest") is not None else None,
+                    premium=_to_float(row.get("premium") or row.get("total_premium")),
+                    implied_volatility=_to_float(row.get("implied_volatility") or row.get("iv")),
+                ))
+            except Exception:
+                continue
+    result = [r for r in result if r.ticker]
+
+    try:
+        import json
+        from dataclasses import asdict
+        _get_redis().setex(cache_key, _OPTIONS_SCREENER_TTL, json.dumps([asdict(r) for r in result]))
+    except Exception:
+        pass
+    return result
+
+
+def get_option_trades(
+    *,
+    max_dte: int | None = None,
+    is_multi_leg: bool | None = None,
+    min_premium: float = 50_000,
+    min_volume: int | None = None,
+    limit: int = 100,
+) -> list[OptionTradeRow]:
+    """Real raw options-tape prints from UW's own `/api/option-trades` — the single shared data
+    source behind this app's 0DTE Flow (`max_dte=0`), Multi-leg Flow (`is_multi_leg=True`), and
+    Interval Flow (no extra filter, just a recent window) UI views. Every param matches UW's own
+    confirmed-real example request shape.
+
+    Redis-cached 2 min per distinct filter combination — the shortest TTL among the new
+    endpoints, since this is the closest of the three to a live tape rather than an aggregate.
+    Fails open (empty list) on any error.
+    """
+    if not is_available():
+        return []
+    cache_key = f"stockai:uw:option_trades:{max_dte}:{is_multi_leg}:{min_premium}:{min_volume}:{limit}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            import json
+            rows = json.loads(cached)
+            return [OptionTradeRow(**r) for r in rows]
+    except Exception:
+        pass
+
+    params: dict = {"limit": limit, "min_premium": min_premium}
+    if max_dte is not None:
+        params["max_dte"] = max_dte
+    if is_multi_leg is not None:
+        params["is_multi_leg"] = "true" if is_multi_leg else "false"
+    if min_volume is not None:
+        params["min_volume"] = min_volume
+
+    try:
+        data = _get("/api/option-trades", params=params)
+    except Exception as exc:
+        log.warning("unusual_whales.option_trades_failed", error=str(exc))
+        return []
+
+    result: list[OptionTradeRow] = []
+    if isinstance(data, list):
+        for row in data:
+            try:
+                result.append(OptionTradeRow(
+                    ticker=(row.get("ticker") or row.get("underlying_symbol") or "").upper(),
+                    option_symbol=row.get("option_symbol") or row.get("option_chain"),
+                    option_type=(row.get("type") or row.get("option_type") or "").lower() or None,
+                    strike=_to_float(row.get("strike")),
+                    expiry=row.get("expiry"),
+                    price=_to_float(row.get("price")),
+                    size=int(row["size"]) if row.get("size") is not None else None,
+                    premium=_to_float(row.get("premium") or row.get("total_premium")),
+                    is_multi_leg=row.get("is_multi_leg"),
+                    volume=int(row["volume"]) if row.get("volume") is not None else None,
+                    open_interest=int(row["open_interest"]) if row.get("open_interest") is not None else None,
+                    executed_at=row.get("executed_at") or row.get("timestamp"),
+                ))
+            except Exception:
+                continue
+    result = [r for r in result if r.ticker]
+
+    try:
+        import json
+        from dataclasses import asdict
+        _get_redis().setex(cache_key, _OPTION_TRADES_TTL, json.dumps([asdict(r) for r in result]))
+    except Exception:
+        pass
+    return result
+
+
+def get_market_tide(*, interval_5m: bool = False) -> list[MarketTideRow]:
+    """Real market-WIDE net call/put options premium over time from UW's own `/api/market/
+    market-tide` — a genuine aggregate sentiment measure UW itself computes, not a per-symbol
+    rollup. `interval_5m` matches UW's own real request param name verbatim.
+
+    Redis-cached 5 min. Fails open (empty list) on any error.
+    """
+    if not is_available():
+        return []
+    cache_key = f"stockai:uw:market_tide:{interval_5m}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            import json
+            rows = json.loads(cached)
+            return [MarketTideRow(**r) for r in rows]
+    except Exception:
+        pass
+
+    try:
+        data = _get("/api/market/market-tide", params={"interval_5m": "true" if interval_5m else "false"})
+    except Exception as exc:
+        log.warning("unusual_whales.market_tide_failed", error=str(exc))
+        return []
+
+    result: list[MarketTideRow] = []
+    if isinstance(data, list):
+        for row in data:
+            try:
+                result.append(MarketTideRow(
+                    timestamp=row.get("timestamp"),
+                    net_call_premium=_to_float(row.get("net_call_premium")),
+                    net_put_premium=_to_float(row.get("net_put_premium")),
+                ))
+            except Exception:
+                continue
+
+    try:
+        import json
+        from dataclasses import asdict
+        _get_redis().setex(cache_key, _MARKET_TIDE_TTL, json.dumps([asdict(r) for r in result]))
     except Exception:
         pass
     return result

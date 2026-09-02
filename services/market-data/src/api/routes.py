@@ -3930,6 +3930,182 @@ def get_dark_pool_prints_route(symbol: str):
     }
 
 
+# ── T324-OPTIONSFLOW-TAB: Options Flow nav tab — screener/flow-scanner/net-flow/cached views ──
+
+@router.get("/options-screener")
+def get_options_screener_route(
+    option_type: str | None = Query(None, description='"Calls" or "Puts", omit for both'),
+    min_premium: float = Query(100_000, ge=0),
+    max_dte: int = Query(45, ge=0, le=365),
+    is_otm: bool | None = Query(None),
+    min_volume: int | None = Query(None, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """T324-OPTIONSFLOW-TAB: real, universe-wide options screener via Unusual Whales' own
+    `/api/screener/option-contracts` — see get_options_screener()'s own docstring
+    (unusual_whales.py) for the exact real params this passes through. Genuinely new capability:
+    scans the WHOLE options-eligible universe by unusual-activity criteria, not a per-symbol
+    lookup like every other options endpoint in this file.
+
+    Falls back to `available: False` (never fabricated data) when Unusual Whales is disabled/
+    unconfigured — no free-proxy equivalent exists for a universe-wide screen.
+    """
+    from ..services import unusual_whales as _uw
+
+    if not _uw.is_available():
+        return {"available": False, "reason": "unusual_whales_disabled", "rows": []}
+
+    rows = _uw.get_options_screener(
+        option_type=option_type, min_premium=min_premium, max_dte=max_dte,
+        is_otm=is_otm, min_volume=min_volume, limit=limit,
+    )
+    return {
+        "available": True,
+        "rows": [
+            {
+                "ticker": r.ticker, "option_symbol": r.option_symbol, "option_type": r.option_type,
+                "strike": r.strike, "expiry": r.expiry, "volume": r.volume,
+                "open_interest": r.open_interest, "premium": r.premium,
+                "implied_volatility": r.implied_volatility,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/option-trades")
+def get_option_trades_route(
+    max_dte: int | None = Query(None, ge=0, le=365, description="e.g. 0 for 0DTE"),
+    is_multi_leg: bool | None = Query(None),
+    min_premium: float = Query(50_000, ge=0),
+    min_volume: int | None = Query(None, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """T324-OPTIONSFLOW-TAB: real raw options-tape prints via Unusual Whales' own
+    `/api/option-trades` — the single shared endpoint behind this app's 0DTE Flow
+    (`max_dte=0`), Multi-leg Flow (`is_multi_leg=true`), and Interval Flow (no extra filter)
+    frontend views. See get_option_trades()'s own docstring (unusual_whales.py) for why this is
+    deliberately ONE client method + route rather than three near-duplicate copies.
+    """
+    from ..services import unusual_whales as _uw
+
+    if not _uw.is_available():
+        return {"available": False, "reason": "unusual_whales_disabled", "rows": []}
+
+    rows = _uw.get_option_trades(
+        max_dte=max_dte, is_multi_leg=is_multi_leg, min_premium=min_premium,
+        min_volume=min_volume, limit=limit,
+    )
+    return {
+        "available": True,
+        "rows": [
+            {
+                "ticker": r.ticker, "option_symbol": r.option_symbol, "option_type": r.option_type,
+                "strike": r.strike, "expiry": r.expiry, "price": r.price, "size": r.size,
+                "premium": r.premium, "is_multi_leg": r.is_multi_leg, "volume": r.volume,
+                "open_interest": r.open_interest, "executed_at": r.executed_at,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/market-tide")
+def get_market_tide_route(interval_5m: bool = Query(False)):
+    """T324-OPTIONSFLOW-TAB: real market-WIDE net call/put options premium over time via
+    Unusual Whales' own `/api/market/market-tide` — this app's Net Flow page. See
+    get_market_tide()'s own docstring (unusual_whales.py) for why this is built off market-tide
+    rather than the per-symbol, undocumented-shape net-prem-ticks endpoint.
+    """
+    from ..services import unusual_whales as _uw
+
+    if not _uw.is_available():
+        return {"available": False, "reason": "unusual_whales_disabled", "rows": []}
+
+    rows = _uw.get_market_tide(interval_5m=interval_5m)
+    return {
+        "available": True,
+        "rows": [
+            {"timestamp": r.timestamp, "net_call_premium": r.net_call_premium, "net_put_premium": r.net_put_premium}
+            for r in rows
+        ],
+    }
+
+
+@router.get("/options-flow-alerts-recent")
+def get_options_flow_alerts_recent_route(
+    limit: int = Query(50, ge=1, le=200),
+    session: Session = Depends(get_session),
+):
+    """T324-OPTIONSFLOW-TAB: recent flow-alert candidates for a regular (non-admin) user's new
+    Options Flow tab, reusing the SAME OptionsFlowAlertOutcome query shape admin.py's
+    options_flow_alert_performance() already established (not a second, independently-drifting
+    query) — every candidate check_options_flow_alerts() has recorded, not just the ones an
+    email was actually sent for.
+
+    Deliberately reads from the existing DB table populated by check_options_flow_alerts()'s
+    own scheduled job — NOT a fresh on-demand Unusual Whales call — per this feature's own
+    design constraint (bounded API cost). This means results are scoped to whatever that job's
+    own bounded symbol universe (_bounded_options_flow_symbols(): PriceAlert-subscribed symbols
+    + top-K by K-Score) has scanned in its most recent cycles, not a free-text "any ticker"
+    search — an honest, disclosed limitation (`scope` field below), not hidden from the caller.
+    """
+    from db import OptionsFlowAlertOutcome
+
+    rows = session.execute(
+        select(OptionsFlowAlertOutcome, Stock.symbol)
+        .join(Stock, OptionsFlowAlertOutcome.stock_id == Stock.id)
+        .order_by(OptionsFlowAlertOutcome.fired_date.desc(), OptionsFlowAlertOutcome.fired_at.desc())
+        .limit(limit)
+    ).all()
+    return {
+        "scope": "price_alert_subscribed_and_top_k_symbols",
+        "alerts": [
+            {
+                "symbol": symbol, "option_chain": row.option_chain, "option_type": row.option_type,
+                "direction": row.direction, "strike": row.strike,
+                "expiry": row.expiry.isoformat() if row.expiry else None,
+                "fired_date": row.fired_date.isoformat(), "fired_at": row.fired_at.isoformat() if row.fired_at else None,
+                "alert_price": row.alert_price, "total_premium": row.total_premium,
+                "ask_side_dominant": row.ask_side_dominant, "has_sweep": row.has_sweep,
+                "volume_oi_ratio": row.volume_oi_ratio, "alert_rule": row.alert_rule,
+            }
+            for row, symbol in rows
+        ],
+    }
+
+
+@router.get("/dark-pool-alerts-recent")
+def get_dark_pool_alerts_recent_route(
+    limit: int = Query(50, ge=1, le=200),
+    session: Session = Depends(get_session),
+):
+    """T324-OPTIONSFLOW-TAB: recent dark-pool alert candidates for the new Options Flow tab,
+    matching get_options_flow_alerts_recent_route()'s own exact cached-view contract (reads
+    DarkPoolAlertOutcome, populated by check_dark_pool_alerts()'s scheduled job, same bounded
+    symbol scope, same honest `scope` field).
+    """
+    from db import DarkPoolAlertOutcome
+
+    rows = session.execute(
+        select(DarkPoolAlertOutcome, Stock.symbol)
+        .join(Stock, DarkPoolAlertOutcome.stock_id == Stock.id)
+        .order_by(DarkPoolAlertOutcome.fired_date.desc(), DarkPoolAlertOutcome.fired_at.desc())
+        .limit(limit)
+    ).all()
+    return {
+        "scope": "price_alert_subscribed_and_top_k_symbols",
+        "alerts": [
+            {
+                "symbol": symbol, "fired_date": row.fired_date.isoformat(),
+                "fired_at": row.fired_at.isoformat() if row.fired_at else None,
+                "alert_price": row.alert_price, "premium": row.qualifying_metric,
+            }
+            for row, symbol in rows
+        ],
+    }
+
+
 # ── T322-OPTIONS-GAMEPLAN: AI Signal + Options Game Plan ─────────────────────
 
 _OPTIONS_GAME_PLAN_MIN_PUT_DTE = 25   # protective puts need enough runway to be worth the premium

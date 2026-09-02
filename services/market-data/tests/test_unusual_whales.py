@@ -629,6 +629,212 @@ def test_congress_trades_and_congress_trade_row_are_reexported_from_uw_congress(
     assert hasattr(uw, "CongressTradeRow")
 
 
+# ── get_options_screener() — T324-OPTIONSFLOW-TAB ───────────────────────────────────────
+
+def test_options_screener_returns_empty_list_when_not_available():
+    with patch.object(uw, "is_available", return_value=False), \
+         patch.object(uw, "_get") as mock_get:
+        assert uw.get_options_screener() == []
+    mock_get.assert_not_called()
+
+
+def test_options_screener_reads_from_cache_when_present():
+    fake_redis = _FakeRedis()
+    cached_row = uw.OptionsScreenerRow(ticker="AAPL", option_symbol="AAPL240119C00200000",
+                                         option_type="call", strike=200.0, expiry="2024-01-19",
+                                         volume=5000, open_interest=1000, premium=500_000.0,
+                                         implied_volatility=0.35)
+    import json
+    cache_key = "stockai:uw:screener:None:250000.0:45:None:None:100"
+    fake_redis.store[cache_key] = json.dumps([asdict(cached_row)])
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_options_screener(min_premium=250_000.0)
+    assert result == [cached_row]
+    mock_get.assert_not_called()
+
+
+def test_options_screener_parses_a_real_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"ticker": "aapl", "option_symbol": "AAPL240119C00200000", "type": "Call",
+              "strike": "200.0", "expiry": "2024-01-19", "volume": 5000, "open_interest": 1000,
+              "premium": "500000.0", "implied_volatility": "0.35"},
+         ]):
+        result = uw.get_options_screener()
+    assert len(result) == 1
+    r = result[0]
+    assert r.ticker == "AAPL"
+    assert r.option_type == "call"
+    assert r.strike == 200.0
+    assert r.volume == 5000
+    assert r.open_interest == 1000
+    assert r.premium == 500_000.0
+    assert r.implied_volatility == 0.35
+
+
+def test_options_screener_sends_type_param_only_when_option_type_given():
+    captured = {}
+    def _fake_get(path, params=None):
+        captured["params"] = params
+        return []
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=_fake_get):
+        uw.get_options_screener(option_type="Calls")
+    assert captured["params"]["type"] == "Calls"
+
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=_fake_get):
+        uw.get_options_screener()
+    assert "type" not in captured["params"]
+
+
+def test_options_screener_drops_rows_with_no_ticker():
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", return_value=[{"ticker": ""}]):
+        assert uw.get_options_screener() == []
+
+
+def test_options_screener_returns_empty_list_on_a_fetch_exception():
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=RuntimeError("boom")):
+        assert uw.get_options_screener() == []
+
+
+def test_options_screener_one_malformed_row_does_not_drop_the_rest():
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", return_value=[
+             {"ticker": "BAD", "volume": "not-a-number-but-caught"},
+             {"ticker": "AAPL", "volume": 100},
+         ]):
+        result = uw.get_options_screener()
+    # BAD row: volume int() cast raises ValueError inside the try -> skipped entirely.
+    assert len(result) == 1
+    assert result[0].ticker == "AAPL"
+
+
+# ── get_option_trades() — T324-OPTIONSFLOW-TAB ───────────────────────────────────────────
+
+def test_option_trades_returns_empty_list_when_not_available():
+    with patch.object(uw, "is_available", return_value=False), \
+         patch.object(uw, "_get") as mock_get:
+        assert uw.get_option_trades() == []
+    mock_get.assert_not_called()
+
+
+def test_option_trades_parses_a_real_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"ticker": "msft", "option_symbol": "MSFT240119C00400000", "type": "call",
+              "strike": "400.0", "expiry": "2024-01-19", "price": "5.25", "size": 10,
+              "premium": "5250.0", "is_multi_leg": False, "volume": 200, "open_interest": 50,
+              "executed_at": "2026-09-02T14:30:00Z"},
+         ]):
+        result = uw.get_option_trades()
+    assert len(result) == 1
+    r = result[0]
+    assert r.ticker == "MSFT"
+    assert r.is_multi_leg is False
+    assert r.price == 5.25
+    assert r.size == 10
+
+
+def test_option_trades_sends_max_dte_zero_for_0dte_filter():
+    """max_dte=0 must actually be sent as a real query param — 0 is falsy in Python, a naive
+    `if max_dte:` guard would silently drop it and turn a 0DTE-only scan into an unfiltered one."""
+    captured = {}
+    def _fake_get(path, params=None):
+        captured["params"] = params
+        return []
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=_fake_get):
+        uw.get_option_trades(max_dte=0)
+    assert captured["params"]["max_dte"] == 0
+
+
+def test_option_trades_sends_is_multi_leg_true_for_multileg_filter():
+    captured = {}
+    def _fake_get(path, params=None):
+        captured["params"] = params
+        return []
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=_fake_get):
+        uw.get_option_trades(is_multi_leg=True)
+    assert captured["params"]["is_multi_leg"] == "true"
+
+
+def test_option_trades_omits_max_dte_and_is_multi_leg_when_not_given():
+    """The Interval Flow view (no extra filter) must not accidentally send a stale/default
+    max_dte or is_multi_leg param."""
+    captured = {}
+    def _fake_get(path, params=None):
+        captured["params"] = params
+        return []
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=_fake_get):
+        uw.get_option_trades()
+    assert "max_dte" not in captured["params"]
+    assert "is_multi_leg" not in captured["params"]
+
+
+def test_option_trades_returns_empty_list_on_a_fetch_exception():
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=RuntimeError("boom")):
+        assert uw.get_option_trades() == []
+
+
+def test_option_trades_drops_rows_with_no_ticker():
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", return_value=[{"ticker": ""}]):
+        assert uw.get_option_trades() == []
+
+
+# ── get_market_tide() — T324-OPTIONSFLOW-TAB ─────────────────────────────────────────────
+
+def test_market_tide_returns_empty_list_when_not_available():
+    with patch.object(uw, "is_available", return_value=False), \
+         patch.object(uw, "_get") as mock_get:
+        assert uw.get_market_tide() == []
+    mock_get.assert_not_called()
+
+
+def test_market_tide_parses_a_real_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"timestamp": "2026-09-02T14:00:00Z", "net_call_premium": "1500000.0", "net_put_premium": "-800000.0"},
+         ]):
+        result = uw.get_market_tide()
+    assert len(result) == 1
+    r = result[0]
+    assert r.timestamp == "2026-09-02T14:00:00Z"
+    assert r.net_call_premium == 1_500_000.0
+    assert r.net_put_premium == -800_000.0
+
+
+def test_market_tide_sends_interval_5m_param_correctly():
+    captured = {}
+    def _fake_get(path, params=None):
+        captured["params"] = params
+        return []
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=_fake_get):
+        uw.get_market_tide(interval_5m=True)
+    assert captured["params"]["interval_5m"] == "true"
+
+
+def test_market_tide_returns_empty_list_on_a_fetch_exception():
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=RuntimeError("boom")):
+        assert uw.get_market_tide() == []
+
+
 # ── _get() real retry/error-classification behavior ─────────────────────────────────────
 
 class TestGetFunctionRealHttpBehavior:

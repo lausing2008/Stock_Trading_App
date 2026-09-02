@@ -14,7 +14,11 @@ _ROUTES_SOURCE = _ROUTES_PATH.read_text()
 
 def _extract_dark_pool_route_source() -> str:
     start = _ROUTES_SOURCE.index('@router.get("/{symbol}/dark-pool-prints")')
-    end = _ROUTES_SOURCE.index('\n# ── T322-OPTIONS-GAMEPLAN', start)
+    # T324-OPTIONSFLOW-TAB: end marker moved from the old T322-OPTIONS-GAMEPLAN section comment
+    # to this function's own next real sibling section (the new Options Flow tab routes), which
+    # now sits between this function and that comment — its own source is tested independently
+    # in test_options_flow_tab_routes.py, so it must not leak into THIS function's extraction.
+    end = _ROUTES_SOURCE.index('# ── T324-OPTIONSFLOW-TAB', start)
     return _ROUTES_SOURCE[start:end]
 
 

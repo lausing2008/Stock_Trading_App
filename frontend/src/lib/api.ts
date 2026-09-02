@@ -523,6 +523,47 @@ export const api = {
     request<OptionsChain>(`/stocks/${symbol}/options-chain${expiry ? `?expiry=${expiry}` : ''}`),
   getGammaExposure: (symbol: string) => request<GammaExposure>(`/stocks/${symbol}/gamma-exposure`),
   getDarkPoolPrints: (symbol: string) => request<DarkPoolPrints>(`/stocks/${symbol}/dark-pool-prints`),
+
+  // T324-OPTIONSFLOW-TAB
+  getOptionsScreener: (params?: { option_type?: 'Calls' | 'Puts'; min_premium?: number; max_dte?: number; is_otm?: boolean; min_volume?: number; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.option_type) p.set('option_type', params.option_type);
+    if (params?.min_premium != null) p.set('min_premium', String(params.min_premium));
+    if (params?.max_dte != null) p.set('max_dte', String(params.max_dte));
+    if (params?.is_otm != null) p.set('is_otm', String(params.is_otm));
+    if (params?.min_volume != null) p.set('min_volume', String(params.min_volume));
+    if (params?.limit != null) p.set('limit', String(params.limit));
+    const qs = p.toString();
+    return request<OptionsScreenerResponse>(`/stocks/options-screener${qs ? `?${qs}` : ''}`);
+  },
+  getOptionTrades: (params?: { max_dte?: number; is_multi_leg?: boolean; min_premium?: number; min_volume?: number; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.max_dte != null) p.set('max_dte', String(params.max_dte));
+    if (params?.is_multi_leg != null) p.set('is_multi_leg', String(params.is_multi_leg));
+    if (params?.min_premium != null) p.set('min_premium', String(params.min_premium));
+    if (params?.min_volume != null) p.set('min_volume', String(params.min_volume));
+    if (params?.limit != null) p.set('limit', String(params.limit));
+    const qs = p.toString();
+    return request<OptionTradesResponse>(`/stocks/option-trades${qs ? `?${qs}` : ''}`);
+  },
+  getMarketTide: (params?: { interval_5m?: boolean }) => {
+    const p = new URLSearchParams();
+    if (params?.interval_5m != null) p.set('interval_5m', String(params.interval_5m));
+    const qs = p.toString();
+    return request<MarketTideResponse>(`/stocks/market-tide${qs ? `?${qs}` : ''}`);
+  },
+  getOptionsFlowAlertsRecent: (params?: { limit?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.limit != null) p.set('limit', String(params.limit));
+    const qs = p.toString();
+    return request<OptionsFlowAlertsRecentResponse>(`/stocks/options-flow-alerts-recent${qs ? `?${qs}` : ''}`);
+  },
+  getDarkPoolAlertsRecent: (params?: { limit?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.limit != null) p.set('limit', String(params.limit));
+    const qs = p.toString();
+    return request<DarkPoolAlertsRecentResponse>(`/stocks/dark-pool-alerts-recent${qs ? `?${qs}` : ''}`);
+  },
   getOptionsExpirations: (symbol: string) => request<OptionsExpirationsResponse>(`/stocks/${symbol}/options-expirations`),
   getOptionsGamePlan: (symbol: string, opts: { stopLoss?: number; takeProfit?: number; shares?: number }) => {
     const params = new URLSearchParams();
@@ -1165,6 +1206,96 @@ export type DarkPoolPrints = {
   source: 'unusual_whales' | 'none';
   reason?: string;
   prints: DarkPoolPrint[];
+};
+
+// T324-OPTIONSFLOW-TAB: Options Flow nav tab types — screener/flow-scanner/net-flow/cached views.
+// All degrade to available:false with an empty rows/alerts array when Unusual Whales is
+// disabled/unconfigured, matching every other UW-backed type's own honest-failure contract.
+
+export type OptionsScreenerRow = {
+  ticker: string;
+  option_symbol: string | null;
+  option_type: string | null;
+  strike: number | null;
+  expiry: string | null;
+  volume: number | null;
+  open_interest: number | null;
+  premium: number | null;
+  implied_volatility: number | null;
+};
+
+export type OptionsScreenerResponse = {
+  available: boolean;
+  reason?: string;
+  rows: OptionsScreenerRow[];
+};
+
+export type OptionTradeRow = {
+  ticker: string;
+  option_symbol: string | null;
+  option_type: string | null;
+  strike: number | null;
+  expiry: string | null;
+  price: number | null;
+  size: number | null;
+  premium: number | null;
+  is_multi_leg: boolean | null;
+  volume: number | null;
+  open_interest: number | null;
+  executed_at: string | null;
+};
+
+export type OptionTradesResponse = {
+  available: boolean;
+  reason?: string;
+  rows: OptionTradeRow[];
+};
+
+export type MarketTideRow = {
+  timestamp: string | null;
+  net_call_premium: number | null;
+  net_put_premium: number | null;
+};
+
+export type MarketTideResponse = {
+  available: boolean;
+  reason?: string;
+  rows: MarketTideRow[];
+};
+
+export type OptionsFlowAlertRecent = {
+  symbol: string;
+  option_chain: string;
+  option_type: string;
+  direction: string;
+  strike: number | null;
+  expiry: string | null;
+  fired_date: string;
+  fired_at: string | null;
+  alert_price: number;
+  total_premium: number | null;
+  ask_side_dominant: boolean | null;
+  has_sweep: boolean | null;
+  volume_oi_ratio: number | null;
+  alert_rule: string | null;
+};
+
+export type OptionsFlowAlertsRecentResponse = {
+  scope: string;
+  alerts: OptionsFlowAlertRecent[];
+};
+
+export type DarkPoolAlertRecent = {
+  symbol: string;
+  fired_date: string;
+  fired_at: string | null;
+  alert_price: number;
+  premium: number | null;
+};
+
+export type DarkPoolAlertsRecentResponse = {
+  scope: string;
+  alerts: DarkPoolAlertRecent[];
 };
 
 // MPE-03: per-expiration OI/volume rollup, NORMAL/ELEVATED/HIGH/EXTREME relative to the other

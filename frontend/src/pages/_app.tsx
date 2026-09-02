@@ -87,6 +87,16 @@ const NAV_GROUPS: NavGroupDef[] = [
     ],
   },
   {
+    label: 'Options Flow',
+    items: [
+      { label: 'Flow Alerts',      href: '/options-flow?tab=flow-alerts', color: '#38bdf8', tag: 'new' },
+      { label: 'Dark Pool',        href: '/options-flow?tab=dark-pool',   color: '#38bdf8', tag: 'new' },
+      { label: 'Options Screener', href: '/options-flow?tab=screener',    color: '#38bdf8', tag: 'new' },
+      { label: 'Flow Scanner',     href: '/options-flow?tab=scanner',     color: '#38bdf8', tag: 'new' },
+      { label: 'Net Flow',         href: '/options-flow?tab=net-flow',    color: '#38bdf8', tag: 'new' },
+    ],
+  },
+  {
     label: 'Portfolio',
     items: [
       { label: 'Watchlist',    href: '/watchlist' },
