@@ -188,6 +188,10 @@ export const api = {
   adminResetPassword: (username: string, newPassword: string) =>
     request(`/auth/users/${username}/reset-password`, { method: 'PUT', body: JSON.stringify({ new_password: newPassword }) }),
   toggleUser: (username: string) => request<{ is_active: boolean }>(`/auth/users/${username}/toggle`, { method: 'PUT' }),
+  setUserTier: (username: string, tier: 'basic' | 'advanced') =>
+    request<{ status: string; tier: string }>(`/auth/users/${username}/tier`, {
+      method: 'PUT', body: JSON.stringify({ tier }),
+    }),
   pushConfig: (keys: {
     polygon_api_key?: string; alpha_vantage_api_key?: string;
     claude_api_key?: string; deepseek_api_key?: string;
@@ -519,6 +523,14 @@ export const api = {
     request<OptionsChain>(`/stocks/${symbol}/options-chain${expiry ? `?expiry=${expiry}` : ''}`),
   getGammaExposure: (symbol: string) => request<GammaExposure>(`/stocks/${symbol}/gamma-exposure`),
   getOptionsExpirations: (symbol: string) => request<OptionsExpirationsResponse>(`/stocks/${symbol}/options-expirations`),
+  getOptionsGamePlan: (symbol: string, opts: { stopLoss?: number; takeProfit?: number; shares?: number }) => {
+    const params = new URLSearchParams();
+    if (opts.stopLoss != null) params.set('stop_loss', String(opts.stopLoss));
+    if (opts.takeProfit != null) params.set('take_profit', String(opts.takeProfit));
+    if (opts.shares != null) params.set('shares', String(opts.shares));
+    const qs = params.toString();
+    return request<OptionsGamePlan>(`/stocks/${symbol}/options-game-plan${qs ? `?${qs}` : ''}`);
+  },
   getDividends: (symbol: string) => request<DividendData>(`/stocks/${symbol}/dividends`),
 
   // Institutional holders
@@ -1014,7 +1026,7 @@ export type WatchlistItem = { symbol: string; name: string; name_zh?: string | n
 export type WatchlistMeta = { id: number; name: string; item_count: number; trading_style: string | null; created_at: string };
 export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };
 export type MarketPulse = { score: number; label: 'positive' | 'negative' | 'neutral'; source: 'claude' | 'vader'; themes: string[]; headlines: NewsItem[]; generated_at: number };
-export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; email?: string | null; notification_webhook?: string | null; created_at: string };
+export type AppUser = { id: number; username: string; role: 'admin' | 'user'; tier: 'basic' | 'advanced'; is_active: boolean; email?: string | null; notification_webhook?: string | null; created_at: string };
 export type CompoundCondition = { metric: 'volume_ratio' | 'rsi' | 'signal'; op: 'gte' | 'lte' | 'eq'; value: number | string };
 export type PriceAlert = { id: number; symbol: string; condition: string; threshold: number; email: string; note: string | null; triggered: boolean; triggered_at: string | null; recurring: boolean; last_sent_at: string | null; webhook_url: string | null; created_at: string; compound_conditions: CompoundCondition[] | null };
 export type SignalAlertItem = { id: number; symbol: string; email: string | null; last_signal: string | null; last_sent_at: string | null; alert_mode: string; horizon: string; require_consensus: boolean; created_at: string };
@@ -1579,6 +1591,46 @@ export type SrWatchCreateRequest = {
   symbol: string;
   atr_multiplier?: number;
   note?: string | null;
+};
+
+// T322-OPTIONS-GAMEPLAN — Advanced-tier only (GET returns 403 for a basic-tier user).
+export type ProtectivePutLeg = {
+  expiry: string;
+  days_to_expiry: number;
+  in_target_window: boolean;
+  strike: number;
+  mid_price: number;
+  cost_pct_of_position: number | null;
+  cost_per_contract: number;
+  effective_floor_price: number;
+  iv: number;
+  oi: number;
+  reference_stop_loss: number;
+};
+
+export type CoveredCallLeg = {
+  expiry: string;
+  days_to_expiry: number;
+  in_target_window: boolean;
+  strike: number;
+  mid_price: number;
+  credit_pct_of_position: number | null;
+  credit_per_contract: number;
+  effective_cap_price: number;
+  iv: number;
+  oi: number;
+  reference_take_profit: number;
+};
+
+export type OptionsGamePlan = {
+  symbol: string;
+  available: boolean;
+  reason?: string;
+  current_price?: number;
+  shares?: number | null;
+  signal?: string | null;
+  protective_put: ProtectivePutLeg | null;
+  covered_call: CoveredCallLeg | null;
 };
 
 export type EarningsAlertSub = {

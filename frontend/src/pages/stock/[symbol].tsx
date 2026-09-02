@@ -35,6 +35,7 @@ import useSWR from 'swr';
 import dynamic from 'next/dynamic';
 import SignalCard from '@/components/SignalCard';
 import PositionSizer from '@/components/PositionSizer';
+import OptionsGamePlanCard from '@/components/OptionsGamePlanCard';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
 import OptionsChainChart from '@/components/OptionsChainChart';
@@ -46,7 +47,7 @@ import { computeVolumeProfile } from '@/lib/volumeProfile';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
 import { activeNewsSources, loadSettings } from '@/lib/settings';
-import { getUsername } from '@/lib/auth';
+import { getUsername, getSession } from '@/lib/auth';
 import ResearchPage from '@/pages/research/[symbol]';
 import StockGoalsPanel from '@/components/StockGoalsPanel';
 import EarningsForecastPanel from '@/components/EarningsForecastPanel';
@@ -2867,6 +2868,30 @@ Return ONLY valid JSON — no markdown, no prose:
                   <div><span style={{ color: '#64748b' }}>R:R:</span> <span style={{ color: '#f1f5f9', fontWeight: 600 }}>{plan.rr.toFixed(1)}:1</span></div>
                 </div>
               </div>
+            );
+          })()}
+
+          {/* T322-OPTIONS-GAMEPLAN: Advanced-tier only — reuses the SAME nearest-support/
+              analyst-target values PositionSizer above already computes (not a second,
+              possibly-drifting derivation), so the hedge/income legs line up with what's
+              already shown on this page. */}
+          {(() => {
+            if (getSession()?.tier !== 'advanced' && getSession()?.role !== 'admin') return null;
+            const lp4 = allPrices?.find(p => p.symbol === symbol);
+            const curPx = lp4?.price ?? data.prices?.at(-1)?.close ?? undefined;
+            const nearestSupport = data.levels?.support_resistance
+              ?.filter(l => curPx == null || l.price < curPx)
+              .sort((a, b) => b.price - a.price)[0]?.price ?? undefined;
+            const takeProfit = data.fundamentals?.target_price ?? undefined;
+            const activeSignal = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig?.signal;
+            return (
+              <OptionsGamePlanCard
+                symbol={symbol as string}
+                currentPrice={curPx}
+                stopLoss={nearestSupport}
+                takeProfit={takeProfit}
+                signal={activeSignal}
+              />
             );
           })()}
 

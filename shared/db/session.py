@@ -524,6 +524,23 @@ def _run_migrations() -> None:  # noqa: C901
                     f"ALTER TABLE {_tbl} ADD COLUMN IF NOT EXISTS is_correct_{_w}d BOOLEAN"
                 ))
 
+        # T322-FEATURE-TIERING: users.tier is a NEW enum-typed column on an EXISTING,
+        # already-populated table — SAEnum(UserTier)'s Postgres type name is lowercased from
+        # the class name ("usertier"), matching how `role`'s own "userrole" type was already
+        # implicitly created by create_all() the first time this table was ever built. Postgres
+        # has no native `CREATE TYPE ... IF NOT EXISTS`; guard via a DO block catching the
+        # duplicate_object exception so this stays idempotent on every restart, matching every
+        # other statement in this function.
+        conn.execute(text("""
+            DO $$ BEGIN
+                CREATE TYPE usertier AS ENUM ('BASIC', 'ADVANCED');
+            EXCEPTION WHEN duplicate_object THEN null;
+            END $$;
+        """))
+        conn.execute(text(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS tier usertier NOT NULL DEFAULT 'BASIC'"
+        ))
+
 
 def _seed_admin() -> None:
     try:

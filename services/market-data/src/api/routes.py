@@ -42,7 +42,7 @@ import yfinance as yf
 from common.config import get_settings
 from common.logging import get_logger
 from db import AnalystPriceTarget, EarningsAlertSubscription, Fundamental, Price, SqueezeWatch, SrWatch, Stock, StockGoal, TimeFrame, get_session
-from .auth import get_current_user
+from .auth import get_current_user, get_advanced_user
 from ..services.ingestion import _classify_session
 
 log = get_logger("routes")
@@ -3892,6 +3892,220 @@ def get_gamma_exposure(symbol: str):
         "gamma_magnet": levels.gamma_magnet,
         "as_of_date": levels.as_of_date,
     }
+
+
+# ── T322-OPTIONS-GAMEPLAN: AI Signal + Options Game Plan ─────────────────────
+
+_OPTIONS_GAME_PLAN_MIN_PUT_DTE = 25   # protective puts need enough runway to be worth the premium
+_OPTIONS_GAME_PLAN_MAX_PUT_DTE = 60   # beyond ~2 months, premium decay cost rises without much extra protection
+_OPTIONS_GAME_PLAN_MIN_CALL_DTE = 14  # covered calls can be shorter-dated — income, not insurance
+_OPTIONS_GAME_PLAN_MAX_CALL_DTE = 45
+
+
+def _nearest_expiry_in_dte_window(expiries: list[str], today: date, min_dte: int, max_dte: int) -> str | None:
+    """Picks the expiry whose days-to-expiry falls closest to the CENTER of [min_dte, max_dte]
+    among those actually inside the window — never just "closest to min_dte", which would bias
+    toward the cheapest/least-protective contract available. Falls back to the single nearest
+    expiry to the window's center if NONE fall inside it (a real gap in what's listed, e.g. a
+    thinly-traded name with only weekly/far-dated expiries) rather than returning nothing —
+    the caller can still show a real contract, just outside the "ideal" window, and the
+    response says so explicitly via `in_target_window`.
+    """
+    if not expiries:
+        return None
+    center = (min_dte + max_dte) / 2.0
+    in_window = []
+    all_scored = []
+    for exp in expiries:
+        try:
+            dte = (datetime.strptime(exp, "%Y-%m-%d").date() - today).days
+        except ValueError:
+            continue
+        if dte < 0:
+            continue
+        dist = abs(dte - center)
+        all_scored.append((dist, exp))
+        if min_dte <= dte <= max_dte:
+            in_window.append((dist, exp))
+    pool = in_window or all_scored
+    if not pool:
+        return None
+    return min(pool, key=lambda x: x[0])[1]
+
+
+def _nearest_strike(rows: list[dict], target: float) -> dict | None:
+    """The listed strike closest to `target` — real strikes are discrete (e.g. $2.50/$5 apart
+    for a large-cap), so "the stop-loss price" itself is essentially never a listed strike."""
+    if not rows or target is None:
+        return None
+    return min(rows, key=lambda r: abs(r["strike"] - target))
+
+
+def compute_options_game_plan(
+    *,
+    current_price: float,
+    stop_loss: float | None,
+    take_profit: float | None,
+    signal: str | None,
+    put_expiries: list[str],
+    put_rows: list[dict],
+    call_expiries: list[str],
+    call_rows: list[dict],
+    shares: float | None = None,
+    today: date | None = None,
+) -> dict:
+    """MPE / T322-OPTIONS-GAMEPLAN: composes a real protective-put hedge (against `stop_loss`)
+    and a real covered-call income leg (against `take_profit`) from an ALREADY-FETCHED options
+    chain — never re-derives entry/stop/target itself, those come from the SAME Position Sizer/
+    AI Signal numbers already shown elsewhere on the stock page (nearest support, ATR stop,
+    analyst target), passed in by the caller. This function is pure — no DB/HTTP access — so it
+    can be tested directly against a synthetic chain without a live yfinance/UW call.
+
+    Deliberately does NOT recommend a strategy the user didn't ask about: a protective put only
+    makes sense for someone who owns (or plans to buy) the stock and wants downside insurance; a
+    covered call only makes sense for someone already holding shares willing to cap their
+    upside at the target. Both legs are computed and returned independently whenever the
+    underlying stop_loss/take_profit values exist — the frontend decides which to show/hint at
+    based on the user's own stated position, not this function.
+
+    Neither leg is a recommendation to buy/sell RIGHT NOW — both report REAL, currently-listed
+    contract prices as of this call, framed as "here is what insuring/collecting income against
+    your plan would currently cost," matching this app's own established options-honesty
+    convention (max-pain, GEX, squeeze alerts all explicitly disclaim prediction).
+    """
+    today = today or datetime.now(timezone.utc).date()
+    result: dict = {"protective_put": None, "covered_call": None}
+
+    if stop_loss and stop_loss > 0 and put_rows and put_expiries:
+        put_exp = _nearest_expiry_in_dte_window(
+            put_expiries, today, _OPTIONS_GAME_PLAN_MIN_PUT_DTE, _OPTIONS_GAME_PLAN_MAX_PUT_DTE
+        )
+        if put_exp:
+            contract = _nearest_strike(put_rows, stop_loss)
+            if contract:
+                mid = (contract["bid"] + contract["ask"]) / 2.0 if (contract["bid"] or contract["ask"]) else contract["last_price"]
+                dte = (datetime.strptime(put_exp, "%Y-%m-%d").date() - today).days
+                cost_pct = round(mid / current_price * 100, 2) if current_price > 0 else None
+                effective_floor = round(contract["strike"] - mid, 2)
+                result["protective_put"] = {
+                    "expiry": put_exp,
+                    "days_to_expiry": dte,
+                    "in_target_window": _OPTIONS_GAME_PLAN_MIN_PUT_DTE <= dte <= _OPTIONS_GAME_PLAN_MAX_PUT_DTE,
+                    "strike": contract["strike"],
+                    "mid_price": round(mid, 2),
+                    "cost_pct_of_position": cost_pct,
+                    "cost_per_contract": round(mid * 100, 2),
+                    "effective_floor_price": effective_floor,
+                    "iv": contract["iv"],
+                    "oi": contract["oi"],
+                    "reference_stop_loss": stop_loss,
+                }
+
+    if take_profit and take_profit > 0 and call_rows and call_expiries:
+        call_exp = _nearest_expiry_in_dte_window(
+            call_expiries, today, _OPTIONS_GAME_PLAN_MIN_CALL_DTE, _OPTIONS_GAME_PLAN_MAX_CALL_DTE
+        )
+        if call_exp:
+            contract = _nearest_strike(call_rows, take_profit)
+            if contract:
+                mid = (contract["bid"] + contract["ask"]) / 2.0 if (contract["bid"] or contract["ask"]) else contract["last_price"]
+                dte = (datetime.strptime(call_exp, "%Y-%m-%d").date() - today).days
+                credit_pct = round(mid / current_price * 100, 2) if current_price > 0 else None
+                result["covered_call"] = {
+                    "expiry": call_exp,
+                    "days_to_expiry": dte,
+                    "in_target_window": _OPTIONS_GAME_PLAN_MIN_CALL_DTE <= dte <= _OPTIONS_GAME_PLAN_MAX_CALL_DTE,
+                    "strike": contract["strike"],
+                    "mid_price": round(mid, 2),
+                    "credit_pct_of_position": credit_pct,
+                    "credit_per_contract": round(mid * 100, 2),
+                    "effective_cap_price": round(contract["strike"] + mid, 2),
+                    "iv": contract["iv"],
+                    "oi": contract["oi"],
+                    "reference_take_profit": take_profit,
+                }
+
+    result["signal"] = signal
+    result["current_price"] = current_price
+    result["shares"] = shares
+    return result
+
+
+@router.get("/{symbol}/options-game-plan")
+def get_options_game_plan(
+    symbol: str,
+    stop_loss: float | None = Query(None),
+    take_profit: float | None = Query(None),
+    shares: float | None = Query(None),
+    session: Session = Depends(get_session),
+    _user=Depends(get_advanced_user),
+):
+    """T322-OPTIONS-GAMEPLAN: Advanced-tier-only. Composes compute_options_game_plan() above
+    from a REAL, freshly-fetched options chain (calls for the covered-call leg, puts for the
+    protective-put leg — two separate t.option_chain() calls at two independently-chosen
+    expiries, since the ideal DTE window differs between the two legs). `stop_loss`/
+    `take_profit` are passed in by the frontend, sourced from the SAME nearest-support/ATR-stop/
+    analyst-target numbers PositionSizer already computes on the stock page — this endpoint
+    never re-derives them, avoiding a second, possibly-drifting copy of that logic.
+
+    Gated behind get_advanced_user (T322-FEATURE-TIERING) — an admin or Advanced-tier user only.
+    """
+    sym = symbol.upper()
+    try:
+        t = yf.Ticker(sym)
+        expiries = sorted(t.options)
+        if not expiries:
+            return {"symbol": sym, "available": False, "reason": "no_options_listed"}
+
+        current_price = _goal_current_price(session, sym)
+        if current_price is None:
+            hist = t.history(period="1d")
+            current_price = float(hist["Close"].iloc[-1]) if not hist.empty else None
+        if not current_price:
+            return {"symbol": sym, "available": False, "reason": "no_price"}
+
+        today = datetime.now(timezone.utc).date()
+        put_exp = _nearest_expiry_in_dte_window(
+            expiries, today, _OPTIONS_GAME_PLAN_MIN_PUT_DTE, _OPTIONS_GAME_PLAN_MAX_PUT_DTE
+        )
+        call_exp = _nearest_expiry_in_dte_window(
+            expiries, today, _OPTIONS_GAME_PLAN_MIN_CALL_DTE, _OPTIONS_GAME_PLAN_MAX_CALL_DTE
+        )
+
+        put_rows: list[dict] = []
+        call_rows: list[dict] = []
+        try:
+            if put_exp:
+                put_rows = _options_chain_rows(t.option_chain(put_exp).puts)
+        except Exception as exc:
+            log.warning("options_game_plan.put_fetch_failed", symbol=sym, expiry=put_exp, error=str(exc))
+        try:
+            if call_exp == put_exp:
+                call_rows = _options_chain_rows(t.option_chain(call_exp).calls) if call_exp else []
+            elif call_exp:
+                call_rows = _options_chain_rows(t.option_chain(call_exp).calls)
+        except Exception as exc:
+            log.warning("options_game_plan.call_fetch_failed", symbol=sym, expiry=call_exp, error=str(exc))
+
+        plan = compute_options_game_plan(
+            current_price=current_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            signal=None,
+            put_expiries=[put_exp] if put_exp else [],
+            put_rows=put_rows,
+            call_expiries=[call_exp] if call_exp else [],
+            call_rows=call_rows,
+            shares=shares,
+            today=today,
+        )
+        plan["symbol"] = sym
+        plan["available"] = bool(plan["protective_put"] or plan["covered_call"])
+        return plan
+
+    except Exception as exc:
+        log.warning("options_game_plan.error", symbol=sym, error=str(exc))
+        return {"symbol": sym, "available": False, "reason": "fetch_error"}
 
 
 # ── Per-symbol Relative Strength ─────────────────────────────────────────────

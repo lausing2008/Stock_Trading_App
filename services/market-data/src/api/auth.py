@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import SessionLocal, PriceAlert, SignalAlert, User, UserRole, get_session
+from db import SessionLocal, PriceAlert, SignalAlert, User, UserRole, UserTier, get_session
 
 log = get_logger("auth")
 
@@ -159,10 +159,17 @@ ALGORITHM = "HS256"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _make_token(username: str, role: str) -> str:
+def _make_token(username: str, role: str, tier: str = "basic") -> str:
+    """T322-FEATURE-TIERING: `tier` baked into the JWT itself, matching `role`'s own existing
+    convention, so the frontend can gate on it synchronously at initial page load (matching
+    _app.tsx's existing lazy-init-from-JWT pattern) without a separate /auth/me round-trip.
+    Same staleness trade-off `role` already accepted: an admin changing a user's tier only
+    takes effect on that user's NEXT login (or token refresh), not instantly — an accepted,
+    pre-existing property of this token design, not a new gap introduced here.
+    """
     expire = datetime.now(timezone.utc) + timedelta(days=_settings.jwt_expire_days)
     return jwt.encode(
-        {"sub": username, "role": role.lower(), "exp": expire, "jti": str(uuid.uuid4())},
+        {"sub": username, "role": role.lower(), "tier": tier.lower(), "exp": expire, "jti": str(uuid.uuid4())},
         _settings.jwt_secret,
         algorithm=ALGORITHM,
     )
@@ -193,6 +200,16 @@ def get_current_user(
 def get_admin_user(current: User = Depends(get_current_user)) -> User:
     if current.role != UserRole.ADMIN:
         raise HTTPException(403, "Admin access required")
+    return current
+
+
+def get_advanced_user(current: User = Depends(get_current_user)) -> User:
+    """T322-FEATURE-TIERING gate for advanced-tier-only routes (e.g. the Options Game Plan).
+    An ADMIN always passes regardless of their own tier — role already implies full platform
+    access, and forcing an admin to separately flip their own tier just to test/use an
+    advanced feature would be needless friction with no real access-control benefit."""
+    if current.role != UserRole.ADMIN and current.tier != UserTier.ADVANCED:
+        raise HTTPException(403, "This feature requires an Advanced-tier account")
     return current
 
 
@@ -228,6 +245,7 @@ class UserOut(BaseModel):
     id: int
     username: str
     role: str
+    tier: str
     is_active: bool
     email: str | None = None
     notification_webhook: str | None = None
@@ -255,8 +273,8 @@ def login(request: Request, body: LoginRequest, session: Session = Depends(get_s
         _record_login_failure(ip)
         raise HTTPException(401, "Incorrect username or password")
     _clear_rate_limit(ip)
-    token = _make_token(user.username, user.role.value)
-    return {"token": token, "username": user.username, "role": user.role.value.lower()}
+    token = _make_token(user.username, user.role.value, user.tier.value)
+    return {"token": token, "username": user.username, "role": user.role.value.lower(), "tier": user.tier.value.lower()}
 
 
 @router.post("/logout")
@@ -303,6 +321,7 @@ def reset_password_public(request: Request, body: ResetPasswordRequest, session:
 def me(current: User = Depends(get_current_user)):
     return UserOut(
         id=current.id, username=current.username, role=current.role.value.lower(),
+        tier=current.tier.value.lower(),
         is_active=current.is_active, email=current.email,
         notification_webhook=current.notification_webhook,
         created_at=current.created_at.isoformat(),
@@ -344,6 +363,7 @@ def update_me(
     session.refresh(user)
     return UserOut(
         id=user.id, username=user.username, role=user.role.value.lower(),
+        tier=user.tier.value.lower(),
         is_active=user.is_active, email=user.email,
         notification_webhook=user.notification_webhook,
         created_at=user.created_at.isoformat(),
@@ -400,6 +420,7 @@ def list_users(admin: User = Depends(get_admin_user), session: Session = Depends
     return [
         UserOut(
             id=u.id, username=u.username, role=u.role.value.lower(),
+            tier=u.tier.value.lower(),
             is_active=u.is_active, email=u.email, created_at=u.created_at.isoformat(),
         )
         for u in rows
@@ -431,6 +452,7 @@ def create_user(
     session.refresh(user)
     return UserOut(
         id=user.id, username=user.username, role=user.role.value.lower(),
+        tier=user.tier.value.lower(),
         is_active=user.is_active, email=user.email, created_at=user.created_at.isoformat(),
     )
 
@@ -494,12 +516,12 @@ def impersonate(
     # Short-lived impersonation token (1 hour) with audit claim
     expire = datetime.now(timezone.utc) + timedelta(hours=1)
     token = jwt.encode(
-        {"sub": user.username, "role": user.role.value.lower(),
+        {"sub": user.username, "role": user.role.value.lower(), "tier": user.tier.value.lower(),
          "exp": expire, "jti": str(uuid.uuid4()), "impersonated_by": admin.username},
         _settings.jwt_secret, algorithm=ALGORITHM,
     )
     log.warning("auth.impersonate", admin=admin.username, target=user.username)
-    return {"token": token, "username": user.username, "role": user.role.value.lower()}
+    return {"token": token, "username": user.username, "role": user.role.value.lower(), "tier": user.tier.value.lower()}
 
 
 @router.put("/users/{username}/toggle")
@@ -518,3 +540,31 @@ def toggle_user(
     user.is_active = not user.is_active
     session.commit()
     return {"status": "ok", "is_active": user.is_active}
+
+
+class SetTierRequest(BaseModel):
+    tier: str  # "basic" | "advanced"
+
+
+@router.put("/users/{username}/tier")
+def set_user_tier(
+    username: str,
+    body: SetTierRequest,
+    admin: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+):
+    """T322-FEATURE-TIERING: admin-only tier assignment, mirroring toggle_user()'s exact
+    lookup/404 pattern. No self-restriction the way toggle_user() has (an admin demoting their
+    own tier doesn't lock them out of anything — role, not tier, gates admin routes)."""
+    tier_lower = body.tier.strip().lower()
+    if tier_lower not in ("basic", "advanced"):
+        raise HTTPException(422, "tier must be 'basic' or 'advanced'")
+    user = session.execute(
+        select(User).where(User.username == username.lower())
+    ).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, f"User '{username}' not found")
+    user.tier = UserTier.ADVANCED if tier_lower == "advanced" else UserTier.BASIC
+    session.commit()
+    log.warning("auth.set_tier", admin=admin.username, target=user.username, tier=tier_lower)
+    return {"status": "ok", "tier": user.tier.value.lower()}

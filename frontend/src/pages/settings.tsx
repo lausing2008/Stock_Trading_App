@@ -750,6 +750,18 @@ export default function SettingsPage() {
     } catch {}
   }
 
+  const [tierError, setTierError] = useState<string | null>(null);
+
+  async function handleSetTier(username: string, tier: 'basic' | 'advanced') {
+    setTierError(null);
+    try {
+      const res = await api.setUserTier(username, tier);
+      setUsers(prev => prev.map(u => u.username === username ? { ...u, tier: res.tier as 'basic' | 'advanced' } : u));
+    } catch {
+      setTierError(`Failed to update tier for ${username}.`);
+    }
+  }
+
   async function handleAdminReset(e: React.FormEvent) {
     e.preventDefault();
     setResetMsg(null);
@@ -2015,6 +2027,9 @@ export default function SettingsPage() {
           {/* User list */}
           <div style={{ padding: '14px 20px', borderBottom: '1px solid #1e293b' }}>
             <label style={lbl}>Current Users</label>
+            {tierError && (
+              <div style={{ fontSize: '12px', color: '#f87171', marginTop: '6px', marginBottom: '4px' }}>{tierError}</div>
+            )}
             {usersLoading ? (
               <div style={{ fontSize: '13px', color: '#475569' }}>Loading…</div>
             ) : (
@@ -2038,8 +2053,21 @@ export default function SettingsPage() {
                       background: u.is_active ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)',
                       color: u.is_active ? '#4ade80' : '#f87171',
                     }}>{u.is_active ? 'Active' : 'Disabled'}</span>
+                    <span title="T322-FEATURE-TIERING: gates access to Advanced-tier features like the Options Game Plan" style={{
+                      fontSize: '10px', padding: '2px 7px', borderRadius: '4px', fontWeight: 700,
+                      background: u.tier === 'advanced' ? 'rgba(245,158,11,0.15)' : 'rgba(100,116,139,0.12)',
+                      color: u.tier === 'advanced' ? '#f59e0b' : '#94a3b8',
+                      border: u.tier === 'advanced' ? '1px solid rgba(245,158,11,0.3)' : '1px solid #1e293b',
+                    }}>{u.tier === 'advanced' ? '⚡ ADVANCED' : 'BASIC'}</span>
                     {u.username !== session?.username && (
                       <>
+                        <button
+                          onClick={() => handleSetTier(u.username, u.tier === 'advanced' ? 'basic' : 'advanced')}
+                          style={{
+                            fontSize: '11px', padding: '4px 10px', borderRadius: '6px', cursor: 'pointer',
+                            background: 'transparent', border: '1px solid rgba(245,158,11,0.3)', color: '#f59e0b',
+                          }}
+                        >{u.tier === 'advanced' ? 'Downgrade to Basic' : 'Upgrade to Advanced'}</button>
                         <button onClick={() => handleToggleUser(u.username)} style={{
                           fontSize: '11px', padding: '4px 10px', borderRadius: '6px', cursor: 'pointer',
                           background: 'transparent', border: '1px solid #1e293b', color: '#64748b',

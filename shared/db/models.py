@@ -59,6 +59,18 @@ class UserRole(str, enum.Enum):
     USER = "USER"
 
 
+# T322-FEATURE-TIERING: a genuinely separate axis from UserRole above — role gates ADMIN-only
+# operations (user management, config, restricted symbols, ...); tier gates which TRADING
+# FEATURES a regular user sees at all (e.g. the Options Game Plan below). An ADMIN's own tier
+# is independent — an admin isn't automatically "advanced", and an advanced non-admin user
+# still can't touch admin-only routes. Deliberately a plain 2-value enum (not a per-feature
+# flag set) per the explicit design choice made for this first tiered feature — extend this
+# enum, not a second parallel mechanism, if a 3rd tier is ever needed.
+class UserTier(str, enum.Enum):
+    BASIC = "BASIC"
+    ADVANCED = "ADVANCED"
+
+
 class SignalType(str, enum.Enum):
     BUY = "BUY"
     SELL = "SELL"
@@ -80,6 +92,7 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(256))
     role: Mapped[UserRole] = mapped_column(SAEnum(UserRole), default=UserRole.USER)
+    tier: Mapped[UserTier] = mapped_column(SAEnum(UserTier), default=UserTier.BASIC)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     email: Mapped[str | None] = mapped_column(String(256), nullable=True)
     # T230-ALERTING-SLACK-DISCORD-FIX: this field was referenced by scheduler.py's signal-alert

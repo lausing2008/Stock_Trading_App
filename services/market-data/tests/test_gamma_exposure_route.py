@@ -18,7 +18,7 @@ _ROUTES_SOURCE = _ROUTES_PATH.read_text()
 
 def _extract_gamma_exposure_source() -> str:
     start = _ROUTES_SOURCE.index('@router.get("/{symbol}/gamma-exposure")')
-    end = _ROUTES_SOURCE.index('\n# ── Per-symbol Relative Strength', start)
+    end = _ROUTES_SOURCE.index('\n# ── T322-OPTIONS-GAMEPLAN', start)
     return _ROUTES_SOURCE[start:end]
 
 

@@ -4,6 +4,11 @@ const JWT_ADMIN_KEY = 'stockai_jwt_admin'; // saved admin token during impersona
 export interface Session {
   username: string;
   role: 'admin' | 'user';
+  // T322-FEATURE-TIERING: baked into the JWT alongside role (see auth.py's _make_token() docstring
+  // for why) so gating is synchronous at initial page load — an older token minted before this
+  // field existed simply has no `tier` claim, which decodes as undefined here; fall back to
+  // 'basic' at every call site rather than treating a missing claim as advanced access.
+  tier?: 'basic' | 'advanced';
 }
 
 function decodeJWT(token: string): Session | null {
@@ -12,7 +17,11 @@ function decodeJWT(token: string): Session | null {
     const b64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
     const payload = JSON.parse(atob(b64));
     if (payload.exp < Date.now() / 1000) return null;
-    return { username: payload.sub as string, role: payload.role as 'admin' | 'user' };
+    return {
+      username: payload.sub as string,
+      role: payload.role as 'admin' | 'user',
+      tier: (payload.tier as 'basic' | 'advanced' | undefined) ?? 'basic',
+    };
   } catch {
     return null;
   }
