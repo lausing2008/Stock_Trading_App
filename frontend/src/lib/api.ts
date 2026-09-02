@@ -262,6 +262,17 @@ export const api = {
     return request<OptionsFlowAlertPerformanceResponse>(`/admin/options-flow-alert-performance${qs ? `?${qs}` : ''}`);
   },
 
+  // MPE-OPTIONS-FLOW-ALERT backtest — a genuine historical replay (UW retains real flow-alert
+  // history), answering "same direction or different, when to enter" while the live job still
+  // has too few resolved outcomes of its own
+  getOptionsFlowAlertBacktest: (params?: { days_back?: number; min_samples?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.days_back != null) p.set('days_back', String(params.days_back));
+    if (params?.min_samples != null) p.set('min_samples', String(params.min_samples));
+    const qs = p.toString();
+    return request<OptionsFlowAlertBacktestResponse>(`/admin/options-flow-alert-backtest${qs ? `?${qs}` : ''}`);
+  },
+
   // WATCHLIST-AUTO-ROTATION history/revert
   getWatchlistRotationHistory: (params?: { watchlist_id?: number; style?: string; limit?: number }) => {
     const p = new URLSearchParams();
@@ -1940,6 +1951,53 @@ export type OptionsFlowAlertPerformanceResponse = {
   days_back: number;
   by_direction: OptionsFlowAlertDirectionSummary[];
   recent_alerts: OptionsFlowAlertRow[];
+};
+
+// MPE-OPTIONS-FLOW-ALERT backtest — a GENUINE historical replay (UW retains real flow-alert
+// history, confirmed live) using the same filter the live alert uses, answering "same
+// direction or different, and when to enter" while the live job still has too few resolved
+// outcomes of its own. See options_flow_alert_backtest()'s own docstring for the full design.
+export type OptionsFlowAlertBacktestWindowStat = {
+  n: number;
+  win_rate: number | null;
+  avg_return_pct: number | null;
+  note?: string;
+} | null;
+
+export type OptionsFlowAlertBacktestWindows = {
+  window_1d: OptionsFlowAlertBacktestWindowStat;
+  window_2d: OptionsFlowAlertBacktestWindowStat;
+  window_3d: OptionsFlowAlertBacktestWindowStat;
+  window_5d: OptionsFlowAlertBacktestWindowStat;
+  window_10d: OptionsFlowAlertBacktestWindowStat;
+  window_20d: OptionsFlowAlertBacktestWindowStat;
+};
+
+export type OptionsFlowAlertBacktestDirectionRow = OptionsFlowAlertBacktestWindows & {
+  direction: 'bullish' | 'bearish';
+  n_alerts: number;
+};
+
+export type OptionsFlowAlertBacktestSweepRow = OptionsFlowAlertBacktestWindows & {
+  has_sweep: boolean;
+  n_alerts: number;
+};
+
+export type OptionsFlowAlertBacktestVolumeOiBandRow = OptionsFlowAlertBacktestWindows & {
+  band: string;
+  n_alerts: number;
+};
+
+export type OptionsFlowAlertBacktestResponse = {
+  days_back: number;
+  min_samples: number;
+  n_symbols_scanned: number;
+  n_alerts_replayed: number;
+  by_direction: OptionsFlowAlertBacktestDirectionRow[];
+  by_sweep: OptionsFlowAlertBacktestSweepRow[];
+  by_volume_oi_band: OptionsFlowAlertBacktestVolumeOiBandRow[];
+  reason: string | null;
+  note: string | null;
 };
 
 // T264-SQUEEZEALERT-PERFORMANCE backtest follow-up

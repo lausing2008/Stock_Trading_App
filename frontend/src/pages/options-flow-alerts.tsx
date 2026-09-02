@@ -1,7 +1,13 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
-import { api, type OptionsFlowAlertDirectionSummary, type OptionsFlowAlertRow } from '@/lib/api';
+import {
+  api,
+  type OptionsFlowAlertDirectionSummary,
+  type OptionsFlowAlertRow,
+  type OptionsFlowAlertBacktestResponse,
+  type OptionsFlowAlertBacktestWindowStat,
+} from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 // MPE-OPTIONS-FLOW-ALERT — dashboard for the real Unusual Whales unusual-options-activity
@@ -68,6 +74,154 @@ function DirectionCard({ row }: { row: OptionsFlowAlertDirectionSummary }) {
         <span>5d: {row.window_5d ? `${fmtPct(row.window_5d.avg_return_pct)} (${row.window_5d.n})` : '—'}</span>
         <span>20d: {row.window_20d ? `${fmtPct(row.window_20d.avg_return_pct)} (${row.window_20d.n})` : '—'}</span>
       </div>
+    </div>
+  );
+}
+
+function BacktestWindowCell({ label, w }: { label: string; w: OptionsFlowAlertBacktestWindowStat }) {
+  if (w == null || w.win_rate == null) {
+    return (
+      <div style={{ padding: '10px 12px', borderRadius: '8px', background: '#0d1424', border: '1px solid #1e293b' }}>
+        <div style={{ fontSize: '9.5px', color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 5 }}>{label}</div>
+        <div style={{ fontSize: '11px', color: '#475569' }}>{w?.note ?? `n=${w?.n ?? 0}`}</div>
+      </div>
+    );
+  }
+  const col = winRateColor(w.win_rate);
+  return (
+    <div style={{ padding: '10px 12px', borderRadius: '8px', background: '#0d1424', border: '1px solid #1e293b' }}>
+      <div style={{ fontSize: '9.5px', color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 5 }}>{label}</div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <span style={{ fontSize: '14px', fontWeight: 800, color: col }}>{(w.win_rate * 100).toFixed(0)}%</span>
+        <span style={{ fontSize: '12px', fontWeight: 700, color: (w.avg_return_pct ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>{fmtPct(w.avg_return_pct)}</span>
+      </div>
+      <div style={{ fontSize: '10px', color: '#64748b', marginTop: 2 }}>n={w.n}</div>
+    </div>
+  );
+}
+
+function BacktestWindowRow({ w }: { w: { window_1d: OptionsFlowAlertBacktestWindowStat; window_2d: OptionsFlowAlertBacktestWindowStat; window_3d: OptionsFlowAlertBacktestWindowStat; window_5d: OptionsFlowAlertBacktestWindowStat; window_10d: OptionsFlowAlertBacktestWindowStat; window_20d: OptionsFlowAlertBacktestWindowStat } }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(90px, 1fr))', gap: '8px' }}>
+      <BacktestWindowCell label="1d" w={w.window_1d} />
+      <BacktestWindowCell label="2d" w={w.window_2d} />
+      <BacktestWindowCell label="3d" w={w.window_3d} />
+      <BacktestWindowCell label="5d" w={w.window_5d} />
+      <BacktestWindowCell label="10d" w={w.window_10d} />
+      <BacktestWindowCell label="20d" w={w.window_20d} />
+    </div>
+  );
+}
+
+function BacktestSection() {
+  const [daysBack, setDaysBack] = useState(60);
+  const [result, setResult] = useState<OptionsFlowAlertBacktestResponse | null>(null);
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
+
+  const runBacktest = async () => {
+    setRunning(true);
+    setRunError(null);
+    try {
+      const data = await api.getOptionsFlowAlertBacktest({ days_back: daysBack, min_samples: 10 });
+      setResult(data);
+    } catch {
+      setRunError('Failed to run the backtest.');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: '28px', paddingTop: '20px', borderTop: '1px solid #1e293b' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px', flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>
+          HISTORICAL BACKTEST — SAME DIRECTION OR DIFFERENT? WHEN TO ENTER?
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <select
+            value={daysBack}
+            onChange={e => setDaysBack(Number(e.target.value))}
+            style={{ padding: '4px 8px', borderRadius: '6px', fontSize: '11px', background: '#0d1424', border: '1px solid #1e293b', color: '#94a3b8' }}
+          >
+            {[14, 30, 60, 90].map(d => <option key={d} value={d}>{d}d back</option>)}
+          </select>
+          <button
+            onClick={runBacktest}
+            disabled={running}
+            style={{ padding: '6px 14px', borderRadius: '6px', fontSize: '12px', fontWeight: 600, cursor: running ? 'default' : 'pointer', border: '1px solid #6d28d9', background: running ? 'transparent' : 'rgba(109,40,217,0.15)', color: '#a78bfa' }}
+          >
+            {running ? 'Running… (can take a minute)' : 'Run backtest'}
+          </button>
+        </div>
+      </div>
+      <p style={{ fontSize: '11px', color: '#334155', marginBottom: '14px', maxWidth: 760 }}>
+        A GENUINE historical replay — Unusual Whales retains real flow-alert history (confirmed
+        live, not a proxy) — using the SAME filter the live alert uses today. Answers: does
+        following the alert&apos;s own implied direction actually work (by_direction), does a
+        sweep/bigger-volume-OI-ratio signal predict better (by_sweep / by_volume_oi_band)?
+        Capped at 1,000 rows/symbol (UW&apos;s own newest-first pagination) — see
+        get_historical_flow_alerts()&apos;s own docstring for the exact bound.
+      </p>
+
+      {runError && <div style={{ fontSize: '12px', color: '#f87171', marginBottom: 12 }}>{runError}</div>}
+
+      {result && result.reason && (
+        <div style={{ fontSize: '12px', color: '#94a3b8', padding: '16px', textAlign: 'center' }}>
+          No result — {result.reason.replace(/_/g, ' ')}.
+        </div>
+      )}
+
+      {result && !result.reason && (
+        <>
+          <div style={{ fontSize: '11px', color: '#64748b', marginBottom: 14 }}>
+            {result.n_alerts_replayed} real alert{result.n_alerts_replayed === 1 ? '' : 's'} replayed
+            across {result.n_symbols_scanned} symbol{result.n_symbols_scanned === 1 ? '' : 's'}, last {result.days_back} days.
+          </div>
+
+          <div style={{ marginBottom: '20px' }}>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#94a3b8', marginBottom: 8 }}>
+              BY DIRECTION — does following the alert&apos;s own implied direction work?
+            </div>
+            {result.by_direction.map(row => (
+              <div key={row.direction} style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: 6, color: row.direction === 'bullish' ? '#22c55e' : '#ef4444', textTransform: 'uppercase' }}>
+                  {row.direction} <span style={{ color: '#475569', fontWeight: 400, textTransform: 'none' }}>({row.n_alerts} alerts)</span>
+                </div>
+                <BacktestWindowRow w={row} />
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginBottom: '20px' }}>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#94a3b8', marginBottom: 8 }}>
+              BY SWEEP — does urgent, cross-exchange activity predict better?
+            </div>
+            {result.by_sweep.map(row => (
+              <div key={String(row.has_sweep)} style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: 6, color: '#94a3b8' }}>
+                  {row.has_sweep ? '⚡ Sweep' : 'Non-sweep'} <span style={{ color: '#475569', fontWeight: 400 }}>({row.n_alerts} alerts)</span>
+                </div>
+                <BacktestWindowRow w={row} />
+              </div>
+            ))}
+          </div>
+
+          <div>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#94a3b8', marginBottom: 8 }}>
+              BY VOLUME/OI RATIO — does a bigger, more unusual signal predict better?
+            </div>
+            {result.by_volume_oi_band.map(row => (
+              <div key={row.band} style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: 6, color: '#94a3b8' }}>
+                  {row.band} <span style={{ color: '#475569', fontWeight: 400 }}>({row.n_alerts} alerts)</span>
+                </div>
+                <BacktestWindowRow w={row} />
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -255,6 +409,8 @@ export default function OptionsFlowAlertsPage() {
           </div>
         </>
       )}
+
+      <BacktestSection />
     </div>
   );
 }
