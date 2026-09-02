@@ -6,6 +6,7 @@ _stubs = [
     # shared/ modules
     "structlog",
     "common", "common.config", "common.logging", "common.ai_keys", "common.redis_client",
+    "common.uw_congress",
     "db", "db.session",
     # DB / cache drivers
     "sqlalchemy", "sqlalchemy.orm", "sqlalchemy.dialects",

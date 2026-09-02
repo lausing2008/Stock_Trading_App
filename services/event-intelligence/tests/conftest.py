@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 _stubs = [
     "structlog",
     "common", "common.config", "common.logging", "common.redis_client",
+    "common.ai_keys", "common.uw_congress",
     "db", "db.session",
     "sqlalchemy", "sqlalchemy.orm", "sqlalchemy.dialects",
     "sqlalchemy.dialects.postgresql",
@@ -34,7 +35,7 @@ for _m in _stubs:
 # resolves via the identical getattr path) would then silently observe a mock the real import
 # never reaches. Mirrors the identical explicit-link fix already applied for common.indicators
 # in market-data/tests/conftest.py.
-for _m in ("config", "logging", "redis_client"):
+for _m in ("config", "logging", "redis_client", "ai_keys", "uw_congress"):
     setattr(sys.modules["common"], _m, sys.modules[f"common.{_m}"])
 
 import common.config as _cfg  # noqa: E402

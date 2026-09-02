@@ -179,7 +179,18 @@ async def start_scheduler():
     _scheduler.add_job(
         job_backfill_post_earnings_returns, "cron", hour=6, minute=40, id="backfill_post_earnings_returns",
     )
-    _scheduler.add_job(job_sync_insider,       "cron", hour=7,  minute=0,  id="sync_insider")
+    # T323-DARKPOOL: was once-daily (07:00 UTC only) despite SEC EDGAR itself indexing a filed
+    # Form 4 in under 60 seconds (confirmed directly against EDGAR's own full-text-search FAQ) —
+    # a real, free freshness gap this app was leaving on the table with no data-quality tradeoff
+    # at all, since Form 4 IS the primary source (see T323-DARKPOOL's own scoping note: UW's own
+    # insider endpoint is confirmed to be the identical Form 4 data, re-served — no vendor can be
+    # faster than the SEC's own filing system). Every 4h rather than hourly: sync_all_insider()
+    # loops the WHOLE tracked-stock universe with a real 0.5s sleep between EDGAR calls (see its
+    # own docstring), so hourly would be a real 24x increase in daily EDGAR request volume for
+    # only a marginal freshness gain (most symbols have no new Form 4 in any given hour anyway) —
+    # 4h closes most of the real gap (worst case ~4h stale vs. the old ~24h) without needlessly
+    # increasing load against SEC's own fair-access expectations.
+    _scheduler.add_job(job_sync_insider,       "cron", hour="3,7,11,15,19,23",  minute=0,  id="sync_insider")
     _scheduler.add_job(job_sync_congress,      "cron", hour=7,  minute=30, id="sync_congress")
     _scheduler.add_job(job_sync_political,     "cron", hour=8,  minute=0,  id="sync_political")
     _scheduler.add_job(job_sync_cape,          "cron", hour=8,  minute=45, id="sync_cape")

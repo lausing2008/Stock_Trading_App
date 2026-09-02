@@ -18,7 +18,11 @@ _ROUTES_SOURCE = _ROUTES_PATH.read_text()
 
 def _extract_gamma_exposure_source() -> str:
     start = _ROUTES_SOURCE.index('@router.get("/{symbol}/gamma-exposure")')
-    end = _ROUTES_SOURCE.index('\n# ── T322-OPTIONS-GAMEPLAN', start)
+    # T323-DARKPOOL: end marker moved from the old T322-OPTIONS-GAMEPLAN section comment to this
+    # function's own next real sibling route — get_dark_pool_prints_route() now sits between
+    # this function and that section comment, and its own source is tested independently in
+    # test_dark_pool_route.py, so it must not leak into THIS function's extracted source.
+    end = _ROUTES_SOURCE.index('@router.get("/{symbol}/dark-pool-prints")', start)
     return _ROUTES_SOURCE[start:end]
 
 

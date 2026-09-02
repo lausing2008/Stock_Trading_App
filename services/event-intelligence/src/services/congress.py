@@ -12,6 +12,7 @@ from sqlalchemy import func as _func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db import get_session, SessionLocal, CongressTrade, Stock
+from common.uw_congress import get_congress_trades as _uw_get_congress_trades, is_available as _uw_available
 
 log = structlog.get_logger()
 
@@ -77,14 +78,47 @@ def _ticker_to_stock_id(ticker: str, ticker_map: dict[str, int]) -> int | None:
     return ticker_map.get(ticker.upper())
 
 
+def _uw_rows_to_kadoa_shape(rows: list) -> list[dict]:
+    """Translate shared/common/uw_congress.py's CongressTradeRow list into the same dict shape
+    the kadoa feed's own raw JSON rows already have (branch/filer_name/transaction_date/etc),
+    so the single upsert loop below stays source-agnostic rather than needing two parallel
+    branches for "what a row looks like.\""""
+    out = []
+    for r in rows:
+        out.append({
+            "branch": "congress",  # UW's feed is congress-only already, unlike kadoa's mixed feed
+            "filer_name": r.politician_name,
+            "party": r.party,
+            "chamber": r.chamber,
+            "ticker": r.ticker,
+            "transaction_type": r.transaction_type,
+            "amount_range_label": None,
+            "amount_range_low": r.amount_min,
+            "amount_range_high": r.amount_max,
+            "transaction_date": r.trade_date,
+            "filing_date": r.disclosure_date,
+        })
+    return out
+
+
 async def sync_congress_trades(lookback_days: int = 365) -> dict:
     """Download congress trading disclosures and upsert recent trades to DB.
 
-    EI-CONGRESS1: source is now kadoa-org/congress-trading-monitor (see module docstring
-    comment above _KADOA_URL) — a single combined House+Senate+executive-branch feed, unlike
-    the old two-URL House/Senate loop. Non-congress (branch != "congress") records — mostly
-    OGE executive-branch filings, ~85% of the feed's rolling 5000-row window — are filtered
-    out here since this function is specifically congress trades.
+    T323-DARKPOOL: tries Unusual Whales' real `/api/congress/recent-trades` first (a live,
+    dedicated Congressional feed — see shared/common/uw_congress.py) when a subscription is
+    configured and enabled, one day at a time back to `lookback_days` (UW's own endpoint is
+    date-filtered, not a single "give me everything" call the way kadoa's static JSON dump is).
+    Falls back to EI-CONGRESS1's own kadoa-org/congress-trading-monitor feed (see module
+    docstring comment above _KADOA_URL) whenever UW is unconfigured/disabled/erroring — the
+    exact same graceful-degradation contract every other Unusual Whales integration in this app
+    already uses (gamma exposure, short interest, options-flow alerts all fall back to a free
+    proxy the same way; this is the same pattern applied to a genuinely different data type).
+    Rows from either source flow through the SAME upsert loop below via
+    _uw_rows_to_kadoa_shape() — one write path, not two independently-drifting ones.
+
+    Non-congress (branch != "congress") records — mostly OGE executive-branch filings from the
+    kadoa feed specifically, ~85% of its rolling 5000-row window — are filtered out here since
+    this function is specifically congress trades.
     """
     cutoff = date.today() - timedelta(days=lookback_days)
 
@@ -92,94 +126,120 @@ async def sync_congress_trades(lookback_days: int = 365) -> dict:
     with SessionLocal() as s:
         ticker_map: dict[str, int] = {sym: sid for sid, sym in s.execute(select(Stock.id, Stock.symbol)).all()}
 
-    total = 0
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+    trades: list[dict] = []
+    source_label = "kadoa"
+    if _uw_available():
         try:
-            r = await client.get(_KADOA_URL)
-            if r.status_code != 200:
-                log.warning("congress.fetch_fail", status=r.status_code, url=_KADOA_URL)
-                return {"rows_upserted": 0}
-            trades = r.json()
-            if isinstance(trades, dict):
-                trades = trades.get("data") or trades.get("trades") or []
+            uw_rows = []
+            day = date.today()
+            while day >= cutoff:
+                day_rows = _uw_get_congress_trades(since=day.isoformat())
+                uw_rows.extend(day_rows)
+                day -= timedelta(days=1)
+            if uw_rows:
+                trades = _uw_rows_to_kadoa_shape(uw_rows)
+                source_label = "unusual_whales"
         except Exception as exc:
-            log.warning("congress.fetch_error", error=str(exc), url=_KADOA_URL)
-            return {"rows_upserted": 0}
+            log.warning("congress.uw_fetch_error", error=str(exc))
+            trades = []
 
-        with SessionLocal() as s:
-            for t in trades:
-                try:
-                    if t.get("branch") != "congress":
-                        continue
+    if not trades:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            try:
+                r = await client.get(_KADOA_URL)
+                if r.status_code != 200:
+                    log.warning("congress.fetch_fail", status=r.status_code, url=_KADOA_URL)
+                    return {"rows_upserted": 0}
+                trades = r.json()
+                if isinstance(trades, dict):
+                    trades = trades.get("data") or trades.get("trades") or []
+            except Exception as exc:
+                log.warning("congress.fetch_error", error=str(exc), url=_KADOA_URL)
+                return {"rows_upserted": 0}
 
-                    trade_date_str = t.get("transaction_date") or ""
-                    if not trade_date_str:
-                        continue
-                    trade_date = date.fromisoformat(trade_date_str[:10])
-                    if trade_date < cutoff:
-                        continue
-
-                    ticker = (t.get("ticker") or "").upper()[:16]
-                    if not ticker or len(ticker) > 8:
-                        continue
-
-                    chamber = (t.get("chamber") or "").capitalize() or "Unknown"
-                    politician = (t.get("filer_name") or "Unknown")[:255]
-                    party = (t.get("party") or "")[:32]
-                    state = (t.get("state") or "")[:8]
-                    txn_type = _normalize_txn_type(t.get("transaction_type"))
-                    amount_str = t.get("amount_range_label") or ""
-                    amount_min = t.get("amount_range_low")
-                    amount_max = t.get("amount_range_high")
-                    disc_date_str = t.get("filing_date") or ""
-                    disc_date = date.fromisoformat(disc_date_str[:10]) if disc_date_str else None
-                    stock_id = _ticker_to_stock_id(ticker, ticker_map)
-
-                    insert_stmt = pg_insert(CongressTrade).values(
-                        politician_name=politician,
-                        party=party,
-                        chamber=chamber,
-                        state=state,
-                        ticker=ticker,
-                        stock_id=stock_id,
-                        transaction_type=txn_type,
-                        amount_range=amount_str[:64] if amount_str else None,
-                        amount_min=amount_min,
-                        amount_max=amount_max,
-                        trade_date=trade_date,
-                        disclosure_date=disc_date,
-                        source="kadoa_" + chamber.lower(),
-                    )
-                    # T247-EVENTINTELLIGENCE-CONGRESSAMENDMENT: on_conflict_do_nothing silently
-                    # dropped amendments — a politician correcting a previously-filed
-                    # disclosure's amount range or disclosure date (same politician/ticker/
-                    # trade_date/transaction_type, the uq_congress_trade key) never updated the
-                    # stale original row. Use do_update for the fields a real amendment can
-                    # correct; leave the identity columns (politician_name, ticker, trade_date,
-                    # transaction_type) alone since those ARE the conflict key.
-                    # AUD-EI-CONGRESS-STOCKID-NULL: don't let a failed re-resolution (stock_id
-                    # None this run) overwrite a previously-resolved stock_id — coalesce to the
-                    # existing row's value so a transient ticker-lookup miss can't regress a
-                    # trade that was correctly linked on an earlier sync.
-                    stmt = insert_stmt.on_conflict_do_update(
-                        constraint="uq_congress_trade",
-                        set_={
-                            "party": insert_stmt.excluded.party,
-                            "chamber": insert_stmt.excluded.chamber,
-                            "state": insert_stmt.excluded.state,
-                            "stock_id": _func.coalesce(insert_stmt.excluded.stock_id, CongressTrade.stock_id),
-                            "amount_range": insert_stmt.excluded.amount_range,
-                            "amount_min": insert_stmt.excluded.amount_min,
-                            "amount_max": insert_stmt.excluded.amount_max,
-                            "disclosure_date": insert_stmt.excluded.disclosure_date,
-                            "source": insert_stmt.excluded.source,
-                        },
-                    )
-                    result = s.execute(stmt)
-                    total += result.rowcount
-                except Exception:
+    total = 0
+    with SessionLocal() as s:
+        for t in trades:
+            try:
+                if t.get("branch") != "congress":
                     continue
-            s.commit()
+
+                trade_date_str = t.get("transaction_date") or ""
+                if not trade_date_str:
+                    continue
+                trade_date = date.fromisoformat(trade_date_str[:10])
+                if trade_date < cutoff:
+                    continue
+
+                ticker = (t.get("ticker") or "").upper()[:16]
+                if not ticker or len(ticker) > 8:
+                    continue
+
+                chamber = (t.get("chamber") or "").capitalize() or "Unknown"
+                politician = (t.get("filer_name") or "Unknown")[:255]
+                party = (t.get("party") or "")[:32]
+                state = (t.get("state") or "")[:8]
+                txn_type = _normalize_txn_type(t.get("transaction_type"))
+                amount_str = t.get("amount_range_label") or ""
+                amount_min = t.get("amount_range_low")
+                amount_max = t.get("amount_range_high")
+                disc_date_str = t.get("filing_date") or ""
+                disc_date = date.fromisoformat(disc_date_str[:10]) if disc_date_str else None
+                stock_id = _ticker_to_stock_id(ticker, ticker_map)
+
+                # T323-DARKPOOL: row_source distinguishes a real UW-fed row from a kadoa-fed
+                # one — kept per-CHAMBER for kadoa (as before, "kadoa_house"/"kadoa_senate")
+                # since that feed's own per-row chamber field is meaningful provenance, but a
+                # single flat "unusual_whales" for UW rows since that feed already scopes
+                # itself to congress-only and doesn't need the same chamber-in-source
+                # disambiguation kadoa's mixed House+Senate+executive-branch feed benefits from.
+                row_source = source_label if source_label == "unusual_whales" else "kadoa_" + chamber.lower()
+
+                insert_stmt = pg_insert(CongressTrade).values(
+                    politician_name=politician,
+                    party=party,
+                    chamber=chamber,
+                    state=state,
+                    ticker=ticker,
+                    stock_id=stock_id,
+                    transaction_type=txn_type,
+                    amount_range=amount_str[:64] if amount_str else None,
+                    amount_min=amount_min,
+                    amount_max=amount_max,
+                    trade_date=trade_date,
+                    disclosure_date=disc_date,
+                    source=row_source,
+                )
+                # T247-EVENTINTELLIGENCE-CONGRESSAMENDMENT: on_conflict_do_nothing silently
+                # dropped amendments — a politician correcting a previously-filed
+                # disclosure's amount range or disclosure date (same politician/ticker/
+                # trade_date/transaction_type, the uq_congress_trade key) never updated the
+                # stale original row. Use do_update for the fields a real amendment can
+                # correct; leave the identity columns (politician_name, ticker, trade_date,
+                # transaction_type) alone since those ARE the conflict key.
+                # AUD-EI-CONGRESS-STOCKID-NULL: don't let a failed re-resolution (stock_id
+                # None this run) overwrite a previously-resolved stock_id — coalesce to the
+                # existing row's value so a transient ticker-lookup miss can't regress a
+                # trade that was correctly linked on an earlier sync.
+                stmt = insert_stmt.on_conflict_do_update(
+                    constraint="uq_congress_trade",
+                    set_={
+                        "party": insert_stmt.excluded.party,
+                        "chamber": insert_stmt.excluded.chamber,
+                        "state": insert_stmt.excluded.state,
+                        "stock_id": _func.coalesce(insert_stmt.excluded.stock_id, CongressTrade.stock_id),
+                        "amount_range": insert_stmt.excluded.amount_range,
+                        "amount_min": insert_stmt.excluded.amount_min,
+                        "amount_max": insert_stmt.excluded.amount_max,
+                        "disclosure_date": insert_stmt.excluded.disclosure_date,
+                        "source": insert_stmt.excluded.source,
+                    },
+                )
+                result = s.execute(stmt)
+                total += result.rowcount
+            except Exception:
+                continue
+        s.commit()
 
     return {"rows_upserted": total}
 

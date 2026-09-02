@@ -522,6 +522,7 @@ export const api = {
   getOptionsChain: (symbol: string, expiry?: string) =>
     request<OptionsChain>(`/stocks/${symbol}/options-chain${expiry ? `?expiry=${expiry}` : ''}`),
   getGammaExposure: (symbol: string) => request<GammaExposure>(`/stocks/${symbol}/gamma-exposure`),
+  getDarkPoolPrints: (symbol: string) => request<DarkPoolPrints>(`/stocks/${symbol}/dark-pool-prints`),
   getOptionsExpirations: (symbol: string) => request<OptionsExpirationsResponse>(`/stocks/${symbol}/options-expirations`),
   getOptionsGamePlan: (symbol: string, opts: { stopLoss?: number; takeProfit?: number; shares?: number }) => {
     const params = new URLSearchParams();
@@ -1146,6 +1147,24 @@ export type GammaExposure = {
   gamma_flip?: number | null;
   gamma_magnet?: number | null;
   as_of_date?: string | null;
+};
+
+// T323-DARKPOOL: real off-exchange block trades via Unusual Whales — genuinely new capability,
+// no free-proxy fallback (see get_dark_pool_prints_route()'s own docstring in routes.py).
+export type DarkPoolPrint = {
+  price: number | null;
+  size: number | null;
+  premium: number | null;
+  venue: string | null;
+  executed_at: string | null;
+};
+
+export type DarkPoolPrints = {
+  symbol: string;
+  available: boolean;
+  source: 'unusual_whales' | 'none';
+  reason?: string;
+  prints: DarkPoolPrint[];
 };
 
 // MPE-03: per-expiration OI/volume rollup, NORMAL/ELEVATED/HIGH/EXTREME relative to the other

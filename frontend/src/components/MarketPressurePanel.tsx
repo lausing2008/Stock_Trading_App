@@ -21,11 +21,17 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
     () => api.getOptionsExpirations(symbol),
     { revalidateOnFocus: false },
   );
+  const { data: darkPool } = useSWR(
+    symbol ? `dark-pool-prints-${symbol}` : null,
+    () => api.getDarkPoolPrints(symbol),
+    { revalidateOnFocus: false },
+  );
 
   const hasGex = gex?.available && gex.source === 'unusual_whales';
   const hasExpirations = expirations?.available && (expirations.expirations?.length ?? 0) > 0;
+  const hasDarkPool = darkPool?.available && (darkPool.prints?.length ?? 0) > 0;
 
-  if (!hasGex && !hasExpirations) return null;
+  if (!hasGex && !hasExpirations && !hasDarkPool) return null;
 
   const levelColor = (level: string): string => {
     if (level === 'extreme') return '#ef4444';
@@ -43,9 +49,14 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
             Real GEX — Unusual Whales
           </span>
         )}
+        {hasDarkPool && (
+          <span style={{ fontSize: 10, fontWeight: 700, color: '#38bdf8', background: 'rgba(56,189,248,0.12)', border: '1px solid rgba(56,189,248,0.3)', borderRadius: 4, padding: '2px 7px' }}>
+            Dark Pool — Unusual Whales
+          </span>
+        )}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: hasGex && hasExpirations ? '1fr 1fr' : '1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
         {hasGex && (
           <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
             <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>
@@ -106,6 +117,34 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
                         {row.level} <span style={{ color: '#475569', fontWeight: 400 }}>({row.concentration_pct.toFixed(0)}%)</span>
                       </span>
                     </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {hasDarkPool && (
+          <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+            <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>
+              Recent large off-exchange block prints — a measured fact (real size, real price),
+              not a directional signal. <a href="/dark-pool-guide" style={{ color: '#38bdf8' }}>What is dark pool trading?</a>
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                  {['Size', 'Price', 'Premium', 'Venue'].map(h => (
+                    <th key={h} style={{ padding: '4px 6px', textAlign: h === 'Size' ? 'left' : 'right', color: '#475569', fontWeight: 500 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {darkPool!.prints!.slice(0, 8).map((p, i) => (
+                  <tr key={`${p.executed_at}-${i}`} style={{ borderBottom: '1px solid #0f172a' }}>
+                    <td style={{ padding: '5px 6px', color: '#e2e8f0', fontVariantNumeric: 'tabular-nums' }}>{p.size != null ? p.size.toLocaleString() : '—'}</td>
+                    <td style={{ padding: '5px 6px', textAlign: 'right', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>{p.price != null ? `$${p.price.toFixed(2)}` : '—'}</td>
+                    <td style={{ padding: '5px 6px', textAlign: 'right', color: '#38bdf8', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{p.premium != null ? `$${p.premium.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}</td>
+                    <td style={{ padding: '5px 6px', textAlign: 'right', color: '#64748b' }}>{p.venue || '—'}</td>
                   </tr>
                 ))}
               </tbody>

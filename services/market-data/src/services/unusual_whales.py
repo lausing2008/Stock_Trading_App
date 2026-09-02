@@ -31,6 +31,19 @@ https://api.unusualwhales.com/api/openapi spec (not guessed/assumed) before bein
     streaming of this same feed (wss://api.unusualwhales.com/socket, channel "flow-alerts")
     requires UW's paid Advanced tier — this app polls the REST endpoint instead, which the
     trial tier's 30,000 req/day budget comfortably supports for a bounded symbol set.
+  - /api/congress/recent-trades — T323-DARKPOOL: a live, dedicated Congressional-disclosure
+    feed, replacing services/event-intelligence's own EI-CONGRESS1 fallback (an unofficial,
+    rolling ~5000-row GitHub mirror) when a paid subscription is configured — see
+    get_congress_trades() below. Response field names for this specific endpoint are NOT
+    documented in UW's own published skill.md/API reference (confirmed by direct inspection);
+    get_congress_trades() therefore probes several plausible key names per field (e.g.
+    politician_name/reporter/name) rather than assuming one, and every row-level failure is
+    swallowed per-row so a genuinely different real shape degrades gracefully to fewer parsed
+    fields rather than dropping the whole response.
+  - /api/darkpool/{ticker} — genuinely new capability, not previously built anywhere in this
+    app: real off-exchange block trades (FINRA-reported, not OTC/pink-sheet). See
+    get_dark_pool_prints() below and DarkPoolPrint's own model docstring (shared/db/models.py)
+    for what this actually is.
 """
 from __future__ import annotations
 
@@ -472,6 +485,85 @@ def get_historical_flow_alerts(
             break
         cursor_older_than = oldest_created_at  # page backward in time
     return _parse_flow_alert_rows(all_rows, sym)
+
+
+# T323-DARKPOOL: get_congress_trades()/CongressTradeRow live in shared/common/uw_congress.py,
+# not here — event-intelligence (the only real consumer, via congress.py) runs in a separate
+# container that never mounts market-data's own src/ tree. Re-exported here so any market-data
+# code that wants congress data alongside GEX/short-interest/flow-alerts can still `from
+# services.unusual_whales import get_congress_trades` without knowing about the split.
+from common.uw_congress import get_congress_trades, CongressTradeRow  # noqa: E402,F401
+
+_DARK_POOL_TTL = 900  # 15 min — matches GEX's own cadence; a real, current-day trading signal.
+
+
+@dataclass
+class DarkPoolPrintRow:
+    """One row from UW's real `/api/darkpool/{ticker}` — a genuine off-exchange block trade,
+    reported under FINRA's own trade-reporting rules. See DarkPoolPrint's own model docstring
+    (shared/db/models.py) for what a dark pool actually is and why `venue` is stored verbatim."""
+    symbol: str
+    price: float | None
+    size: int | None
+    premium: float | None
+    venue: str | None
+    executed_at: str | None  # ISO datetime
+
+
+def get_dark_pool_prints(symbol: str, *, limit: int = 50) -> list[DarkPoolPrintRow]:
+    """Real off-exchange block trades for `symbol` from UW's real `/api/darkpool/{ticker}`.
+    Redis-cached 15 min, matching GEX's own cadence — a real, current-trading-day signal that
+    should never be more than briefly stale. Fails open (empty list), same contract as every
+    other function in this module — a caller (MarketPressurePanel's dark-pool card,
+    check_dark_pool_alerts()) must always be able to render/scan nothing without special-casing
+    which failure mode occurred.
+    """
+    if not is_available():
+        return []
+    sym = symbol.upper()
+    cache_key = f"stockai:uw:darkpool:{sym}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            import json
+            rows = json.loads(cached)
+            return [DarkPoolPrintRow(**r) for r in rows]
+    except Exception:
+        pass
+
+    try:
+        data = _get(f"/api/darkpool/{sym}", params={"limit": limit})
+    except Exception as exc:
+        log.warning("unusual_whales.dark_pool_failed", symbol=sym, error=str(exc))
+        return []
+
+    result: list[DarkPoolPrintRow] = []
+    if isinstance(data, list):
+        for row in data:
+            try:
+                price = _to_float(row.get("price"))
+                size = int(row["size"]) if row.get("size") is not None else None
+                premium = _to_float(row.get("premium"))
+                if premium is None and price is not None and size is not None:
+                    premium = price * size
+                result.append(DarkPoolPrintRow(
+                    symbol=sym,
+                    price=price,
+                    size=size,
+                    premium=premium,
+                    venue=row.get("market_center") or row.get("venue"),
+                    executed_at=row.get("executed_at") or row.get("timestamp"),
+                ))
+            except Exception:
+                continue
+
+    try:
+        import json
+        from dataclasses import asdict
+        _get_redis().setex(cache_key, _DARK_POOL_TTL, json.dumps([asdict(r) for r in result]))
+    except Exception:
+        pass
+    return result
 
 
 def _to_float(v) -> float | None:

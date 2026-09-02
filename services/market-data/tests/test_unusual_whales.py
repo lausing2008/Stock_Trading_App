@@ -501,6 +501,134 @@ def test_flow_alerts_uppercases_the_symbol():
     assert captured["params"]["ticker_symbol"] == "AAPL"
 
 
+# ── get_dark_pool_prints() — T323-DARKPOOL, genuinely new capability ────────────────────────
+
+def test_dark_pool_prints_returns_empty_list_when_not_available():
+    with patch.object(uw, "is_available", return_value=False), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_dark_pool_prints("AAPL")
+    assert result == []
+    mock_get.assert_not_called()
+
+
+def test_dark_pool_prints_reads_from_cache_when_present():
+    fake_redis = _FakeRedis()
+    cached_row = uw.DarkPoolPrintRow(symbol="AAPL", price=250.0, size=10000, premium=2_500_000.0,
+                                       venue="L", executed_at="2026-09-01T14:30:00Z")
+    import json
+    fake_redis.store["stockai:uw:darkpool:AAPL"] = json.dumps([asdict(cached_row)])
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_dark_pool_prints("AAPL")
+    assert result == [cached_row]
+    mock_get.assert_not_called()
+
+
+def test_dark_pool_prints_parses_a_real_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"price": "250.50", "size": 10000, "market_center": "L", "executed_at": "2026-09-01T14:30:00Z"},
+         ]):
+        result = uw.get_dark_pool_prints("AAPL")
+    assert len(result) == 1
+    r = result[0]
+    assert r.symbol == "AAPL"
+    assert r.price == 250.50
+    assert r.size == 10000
+    assert r.venue == "L"
+    assert r.executed_at == "2026-09-01T14:30:00Z"
+
+
+def test_dark_pool_prints_computes_premium_when_uw_omits_it():
+    """UW's own `premium` field is not guaranteed present on every row — price * size must be
+    computed as a fallback rather than leaving a real, derivable number as None."""
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"price": "100.0", "size": 5000, "executed_at": "2026-09-01T14:30:00Z"},
+         ]):
+        result = uw.get_dark_pool_prints("AAPL")
+    assert result[0].premium == 500_000.0
+
+
+def test_dark_pool_prints_uses_uws_own_premium_when_present_not_recomputed():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"price": "100.0", "size": 5000, "premium": "999999", "executed_at": "2026-09-01T14:30:00Z"},
+         ]):
+        result = uw.get_dark_pool_prints("AAPL")
+    assert result[0].premium == 999999.0
+
+
+def test_dark_pool_prints_returns_empty_list_for_no_prints():
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", return_value=[]):
+        assert uw.get_dark_pool_prints("XYZ") == []
+
+
+def test_dark_pool_prints_returns_empty_list_on_a_non_list_response():
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", return_value={"unexpected": "shape"}):
+        assert uw.get_dark_pool_prints("XYZ") == []
+
+
+def test_dark_pool_prints_returns_empty_list_on_a_fetch_exception():
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=RuntimeError("boom")):
+        assert uw.get_dark_pool_prints("XYZ") == []
+
+
+def test_dark_pool_prints_one_malformed_row_does_not_drop_the_rest():
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", return_value=[
+             {"price": "not-a-number-but-still-should-not-crash-the-loop", "size": "also-bad"},
+             {"price": "100.0", "size": 5000, "executed_at": "2026-09-01T14:30:00Z"},
+         ]):
+        result = uw.get_dark_pool_prints("XYZ")
+    assert len(result) == 1
+    assert result[0].price == 100.0
+
+
+def test_dark_pool_prints_uses_the_15min_ttl_not_the_6h_congress_ttl():
+    fake_redis = _FakeRedis()
+    spy_calls = []
+    orig_setex = fake_redis.setex
+    def _spy_setex(key, ttl, value):
+        spy_calls.append((key, ttl, value))
+        return orig_setex(key, ttl, value)
+    fake_redis.setex = _spy_setex
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"price": "100.0", "size": 5000, "executed_at": "2026-09-01T14:30:00Z"},
+         ]):
+        uw.get_dark_pool_prints("AAPL")
+    assert len(spy_calls) == 1
+    assert spy_calls[0][1] == uw._DARK_POOL_TTL
+    assert spy_calls[0][1] == 900
+
+
+# ── get_congress_trades()/CongressTradeRow re-export (T323-DARKPOOL) ─────────────────────
+
+def test_congress_trades_and_congress_trade_row_are_reexported_from_uw_congress():
+    """unusual_whales.py deliberately does NOT re-implement congress-trade fetching (see the
+    T323-DARKPOOL comment above the import in unusual_whales.py) — it re-exports the real
+    implementation from shared/common/uw_congress.py so market-data code can still
+    `from services.unusual_whales import get_congress_trades` without knowing about the split.
+    Under this test environment's stubs, common.uw_congress is a blanket MagicMock (matching
+    common.ai_keys' own stubbing), so this only verifies the NAMES are re-exported and reachable
+    — the real behavior is tested directly against shared/common/uw_congress.py in
+    test_uw_congress.py, which loads the real file rather than the stub."""
+    assert hasattr(uw, "get_congress_trades")
+    assert hasattr(uw, "CongressTradeRow")
+
+
 # ── _get() real retry/error-classification behavior ─────────────────────────────────────
 
 class TestGetFunctionRealHttpBehavior:

@@ -1196,6 +1196,90 @@ class CongressTrade(Base):
     )
 
 
+class DarkPoolPrint(Base):
+    """T323-DARKPOOL: real off-exchange block trades from Unusual Whales' `/api/darkpool/{ticker}`
+    (per-symbol, on-demand fetch, Redis-cached — see get_dark_pool_prints() in
+    services/market-data/src/services/unusual_whales.py) and `/api/darkpool/recent`
+    (market-wide, feeding check_dark_pool_alerts() below).
+
+    A "dark pool" is a private trading venue where large institutional block orders execute
+    OFF the public exchange tape, reported afterward under FINRA's own trade-reporting rules —
+    real, exchange-adjacent activity (not OTC/pink-sheet trades), just not visible on a normal
+    Level 2 quote screen the way a lit-exchange trade is. UW's own field for this is the
+    `market_center` code (e.g. "L" for a FINRA ADF dark venue) — persisted here as `venue`
+    verbatim rather than this app inventing its own taxonomy on top of UW's real classification.
+
+    One row per (symbol, executed_at, price, size) — matches UW's own print-level granularity
+    (no aggregation at ingest time; rollups for the stock-detail card and ML feature are
+    computed FROM this table, not baked into it, so the raw prints stay available for either
+    consumer to aggregate differently later without a second ingest path).
+    """
+    __tablename__ = "dark_pool_prints"
+    __table_args__ = (
+        UniqueConstraint("symbol", "executed_at", "price", "size", name="uq_dark_pool_print"),
+        Index("ix_dark_pool_symbol_executed", "symbol", "executed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    stock_id: Mapped[int | None] = mapped_column(ForeignKey("stocks.id", ondelete="SET NULL"), nullable=True, index=True)
+    price: Mapped[float] = mapped_column(Float)
+    size: Mapped[int] = mapped_column(BigInteger)
+    premium: Mapped[float | None] = mapped_column(Float, nullable=True)  # price * size, UW's own field when present
+    venue: Mapped[str | None] = mapped_column(String(16), nullable=True)  # UW's market_center code, verbatim
+    executed_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class DarkPoolAlertOutcome(Base):
+    """T323-DARKPOOL: forward-return tracking for check_dark_pool_alerts(), matching
+    SqueezeAlertOutcome's own established one-row-per-(alert_type, stock_id, fired_date)
+    discipline exactly — this repo's standing rule that no alert ships as "trust it" with no
+    way to later check whether it actually helped (see SqueezeAlertOutcome's own docstring for
+    the full rationale, unrepeated here).
+
+    alert_type is always "dark_pool_block" today (a single mechanism, unlike the squeeze/gamma
+    table's multi-type split) — kept as a real column rather than hardcoded so a future second
+    dark-pool alert variant (e.g. "sustained accumulation over N days") can share this table
+    the same way gamma_unwind_calls/gamma_unwind_puts share SqueezeAlertOutcome.
+    """
+    __tablename__ = "dark_pool_alert_outcomes"
+    __table_args__ = (
+        UniqueConstraint("alert_type", "stock_id", "fired_date", name="uq_dark_pool_alert_outcome_type_stock_date"),
+        Index("ix_dark_pool_alert_outcomes_type_date", "alert_type", "fired_date"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    alert_type: Mapped[str] = mapped_column(String(24), index=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    fired_date: Mapped[date] = mapped_column(Date, index=True)
+    fired_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    alert_price: Mapped[float] = mapped_column(Float)
+    qualifying_metric: Mapped[float | None] = mapped_column(Float, nullable=True)  # the print's own premium ($) at fire time
+    entry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price_1d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_1d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_1d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_2d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_2d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_2d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_3d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_3d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_3d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_5d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_10d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_10d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_10d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_20d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class InstitutionalHolding(Base):
     __tablename__ = "institutional_holdings"
 

@@ -115,6 +115,7 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Watchlist Rotation — How It Works', href: '/watchlist-rotation-explainer', color: '#f59e0b', tag: 'new' },
       { label: 'Conditional Orders Guide', href: '/conditional-orders-guide', color: '#22c55e', tag: 'new' },
       { label: 'Option Trading Guide', href: '/option-trading-guide', color: '#f59e0b', tag: 'new' },
+      { label: 'Dark Pool Guide', href: '/dark-pool-guide', color: '#38bdf8', tag: 'new' },
       { label: 'Session Changelog', href: '/session-changelog', color: '#a78bfa', tag: 'new' },
     ],
   },

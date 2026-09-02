@@ -85,7 +85,7 @@ from sqlalchemy.orm import selectinload, Session
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, AnalystPriceTarget, EarningsEvent, EconomicEvent, FundamentalsSnapshot, Market, OptionsFlowAlertOutcome, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
+from db import AlertCondition, AnalystPriceTarget, DarkPoolAlertOutcome, EarningsEvent, EconomicEvent, FundamentalsSnapshot, Market, OptionsFlowAlertOutcome, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -4490,6 +4490,194 @@ def check_options_flow_alerts() -> None:
             pass
 
 
+_DARK_POOL_ALERT_LOCK_KEY = "stockai:lock:check_dark_pool_alerts"
+_DARK_POOL_ALERT_LOCK_TTL = 55  # every 60s, same cadence as check_options_flow_alerts() — UW's
+# per-symbol REST darkpool endpoint is cheap and the client caches it 15 min on its own, so
+# calling on a 1-min job cycle costs nothing extra beyond the cache's own refresh cadence.
+_DARK_POOL_ALERT_MIN_PREMIUM = 1_000_000  # a real institutional-size block, not routine flow —
+# matches this app's own established "raise the bar until it's genuinely unusual" lesson from
+# AUD-OPTIONSFLOW-FLOODED (that alert's original $50k floor caught routine trades, not unusual
+# ones); a $1M+ notional print is a real, large block by any reasonable retail-investor reading.
+_DARK_POOL_ALERT_EMAIL_CAP = 12  # matches _OPTIONS_FLOW_ALERT_EMAIL_CAP exactly
+_DARK_POOL_ALERT_COOLDOWN_MINUTES = 60  # longer than options-flow's 30 — a symbol can see many
+# large dark-pool prints in a single session (unlike a specific options contract sweep), so a
+# shorter cooldown would flood a user's inbox with what's often the same accumulating position
+# printing in pieces over the day.
+
+
+def _record_dark_pool_alert_outcome(session, stock_id: int, symbol: str, price: float, qualifying_metric: float | None) -> None:
+    """Same fail-open, existence-check-first persistence discipline as
+    _record_options_flow_alert_outcome()/_record_squeeze_alert_outcome() — a persistence hiccup
+    here must never block the actual email send. One row per (stock_id, fired_date), matching
+    SqueezeAlertOutcome's own first-fire-of-the-day semantics — a symbol with 5 qualifying
+    prints in one day gets ONE outcome row (the day's first/largest-so-far print at the moment
+    of qualification), not 5, since this table measures "did dark-pool activity on this day
+    predict anything," not a per-print backtest."""
+    try:
+        today = date.today()
+        existing = session.execute(
+            select(DarkPoolAlertOutcome).where(
+                DarkPoolAlertOutcome.alert_type == "dark_pool_block",
+                DarkPoolAlertOutcome.stock_id == stock_id,
+                DarkPoolAlertOutcome.fired_date == today,
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return
+        session.add(DarkPoolAlertOutcome(
+            alert_type="dark_pool_block", stock_id=stock_id, symbol=symbol, fired_date=today,
+            alert_price=float(price), qualifying_metric=qualifying_metric,
+        ))
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        log.warning("dark_pool_alert_outcome.record_failed", symbol=symbol, error=str(exc))
+
+
+def check_dark_pool_alerts() -> None:
+    """T323-DARKPOOL: real large off-exchange block print alert — direct user request to add
+    Unusual Whales' dark pool data to this app. A "dark pool" is a private trading venue where
+    large institutional orders execute OFF the public exchange tape, reported afterward under
+    FINRA's own trade-reporting rules (real, exchange-adjacent activity, not OTC/pink-sheet
+    trades — just not visible on a normal Level 2 quote screen the way a lit trade is). See
+    DarkPoolPrint's own model docstring (shared/db/models.py) for the full explanation this
+    app's Dark Pool learning guide (frontend/src/pages/dark-pool-guide.tsx) also covers.
+
+    Genuinely NEW capability, not previously built anywhere in this app — unlike GEX/short-
+    interest, there is no free-proxy equivalent for dark-pool prints, so this alert simply never
+    fires with no Unusual Whales key configured/enabled (matches check_options_flow_alerts()'s
+    own "one genuinely new capability, no fallback" framing exactly).
+
+    HONEST FRAMING (see send_dark_pool_alert_email()'s own docstring for the full statement):
+    this reports a MEASURED fact — a large block genuinely printed off-exchange — never a claim
+    about WHY it happened or that the stock will move as a result. Institutional blocks cross
+    dark pools for many routine reasons (index rebalancing, portfolio hedging, block-crossing to
+    avoid market impact) that have nothing to do with a directional view.
+
+    Scoped to _bounded_options_flow_symbols() (US-only, PriceAlert-subscribed + top-K by
+    K-Score) — the same bounded universe check_options_flow_alerts() already established for a
+    per-symbol UW REST call, reused rather than re-invented, matching this app's own "one real
+    definition of a bounded symbol set for per-symbol UW calls" discipline.
+
+    Deduped per (user, symbol) with a 60-minute cooldown (see _DARK_POOL_ALERT_COOLDOWN_MINUTES's
+    own comment for why this is longer than options-flow's 30) — a symbol that already alerted
+    this user recently is skipped even if a new, separate print qualifies, since a single large
+    institutional position often prints in several pieces across an hour.
+    """
+    from . import unusual_whales as _uw
+    if not _uw.is_available():
+        return
+    try:
+        acquired = _get_redis().set(_DARK_POOL_ALERT_LOCK_KEY, "1", nx=True, ex=_DARK_POOL_ALERT_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    _t0 = time.monotonic()
+    try:
+        import json as _json
+
+        with SessionLocal() as session:
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            if not alerts:
+                _record_job_status("check_dark_pool_alerts", "ok", time.monotonic() - _t0)
+                return
+            recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            if not recipients:
+                _record_job_status("check_dark_pool_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            symbols = _bounded_options_flow_symbols(session)
+            if not symbols:
+                _record_job_status("check_dark_pool_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            _rc = _get_redis()
+            try:
+                _live_raw = {row["symbol"]: row for row in _json.loads(_rc.get("stockai:live_prices") or "[]")}
+            except Exception:
+                _live_raw = {}
+
+            # Keyed by symbol — one candidate per symbol per cycle (the LARGEST qualifying
+            # print), not one per individual print, matching _record_dark_pool_alert_outcome()'s
+            # own one-row-per-(stock_id, fired_date) semantics.
+            candidates: dict[str, dict] = {}
+            id_by_symbol: dict[str, int] = {}
+            for stock_id, symbol in symbols:
+                try:
+                    live = _live_raw.get(symbol)
+                    price = live.get("price") if live else None
+                    rows = _uw.get_dark_pool_prints(symbol)
+                    qualifying = [r for r in rows if (r.premium or 0) >= _DARK_POOL_ALERT_MIN_PREMIUM]
+                    if not qualifying:
+                        continue
+                    id_by_symbol[symbol] = stock_id
+                    biggest = max(qualifying, key=lambda r: r.premium or 0)
+                    candidates[symbol] = {
+                        "symbol": symbol,
+                        "price": price or biggest.price,
+                        "size": biggest.size,
+                        "premium": biggest.premium,
+                        "venue": biggest.venue,
+                        "executed_at": biggest.executed_at,
+                    }
+                except Exception as exc:
+                    log.warning("dark_pool_alert.symbol_error", symbol=symbol, error=str(exc))
+                    continue
+
+            if not candidates:
+                _record_job_status("check_dark_pool_alerts", "ok", time.monotonic() - _t0)
+                return
+
+            for symbol, cand in candidates.items():
+                _record_dark_pool_alert_outcome(
+                    session, id_by_symbol[symbol], symbol, float(cand["price"] or 0.0), cand.get("premium"),
+                )
+
+            from .email_service import send_dark_pool_alert_email
+            sent = 0
+            for uid, user in recipients.items():
+                cooldown_ok_symbols = []
+                for symbol in candidates.keys():
+                    cd_key = f"stockai:dark_pool_alert_cooldown:{uid}:{symbol}"
+                    try:
+                        if _rc.set(cd_key, "1", nx=True, ex=_DARK_POOL_ALERT_COOLDOWN_MINUTES * 60):
+                            cooldown_ok_symbols.append(symbol)
+                    except Exception:
+                        cooldown_ok_symbols.append(symbol)  # fail open — a Redis hiccup must not silently drop a real alert
+
+                if not cooldown_ok_symbols:
+                    continue
+                ranked = sorted(
+                    cooldown_ok_symbols,
+                    key=lambda s: candidates[s].get("premium") or 0.0,
+                    reverse=True,
+                )
+                capped = ranked[:_DARK_POOL_ALERT_EMAIL_CAP]
+                omitted = len(ranked) - len(capped)
+                payload = [candidates[s] for s in capped]
+                try:
+                    send_ok = send_dark_pool_alert_email(user.email, payload, omitted_count=omitted)
+                except Exception as _send_exc:
+                    send_ok = False
+                    log.warning("dark_pool_alert.recipient_send_error", user=uid, error=str(_send_exc))
+                if send_ok:
+                    sent += 1
+
+            _record_job_status("check_dark_pool_alerts", "ok", time.monotonic() - _t0)
+            log.info("dark_pool_alert.done", candidates=len(candidates), sent=sent, recipients=len(recipients))
+    except Exception as exc:
+        log.error("dark_pool_alert.failed", error=str(exc), exc_info=True)
+        _record_job_status("check_dark_pool_alerts", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        try:
+            _get_redis().delete(_DARK_POOL_ALERT_LOCK_KEY)
+        except Exception:
+            pass
+
+
 _BEARISH_WATCH_MIN_DAYS_TO_EXPIRY = 3  # the puts-heavy scan the user asked for is 3-5 days out,
 _BEARISH_WATCH_MAX_DAYS_TO_EXPIRY = 5  # a NARROWER window than the shared 0-5 gamma-unwind scan
 _BEARISH_WATCH_MIN_AGREEING_SIGNALS = 2  # of 3 real signals below — needed for "high conviction"
@@ -5261,6 +5449,111 @@ def evaluate_options_flow_alert_outcomes() -> None:
     finally:
         try:
             _get_redis().delete(_OPTIONS_FLOW_ALERT_OUTCOME_EVAL_LOCK_KEY)
+        except Exception:
+            pass
+
+
+_DARK_POOL_ALERT_OUTCOME_EVAL_LOCK_KEY = "stockai:lock:evaluate_dark_pool_alert_outcomes"
+_DARK_POOL_ALERT_OUTCOME_EVAL_LOCK_TTL = 3600
+_DARK_POOL_OUTCOME_MOVE_HURDLE_PCT = 0.02  # a real, noticeably-larger-than-routine move (2%) in
+# EITHER direction — deliberately NOT a directional bullish/bearish hurdle like every other
+# alert's own _OUTCOME_WIN_HURDLE_PCT, because check_dark_pool_alerts() makes no directional
+# claim (see its own docstring — a large block print is not by itself bullish or bearish). What
+# this table CAN honestly measure is "did a large dark-pool print precede outsized volatility" —
+# a genuinely different, non-directional question — so is_correct_Nd here means "price moved at
+# least this much either way," not "price went up/down as predicted."
+
+
+def evaluate_dark_pool_alert_outcomes() -> None:
+    """T323-DARKPOOL: fills entry_price + 1d/2d/3d/5d/10d/20d forward returns for every
+    DarkPoolAlertOutcome row whose windows haven't closed yet — the sibling evaluator to
+    evaluate_options_flow_alert_outcomes()/evaluate_squeeze_alert_outcomes() above, reusing the
+    SAME _squeeze_outcome_lookup_price() helper and _SQUEEZE_OUTCOME_WINDOWS constant (a
+    genuinely shared T+1-entry / bisect-nearest-bar-with-grace-window discipline).
+
+    Deliberately NON-directional scoring — see _DARK_POOL_OUTCOME_MOVE_HURDLE_PCT's own comment
+    for why is_correct_Nd here means "a real, outsized move happened" rather than "the predicted
+    direction happened." check_dark_pool_alerts() never claims a direction, so scoring this table
+    as if it had would misrepresent what the alert actually measures.
+    """
+    try:
+        acquired = _get_redis().set(
+            _DARK_POOL_ALERT_OUTCOME_EVAL_LOCK_KEY, "1", nx=True, ex=_DARK_POOL_ALERT_OUTCOME_EVAL_LOCK_TTL,
+        )
+        if not acquired:
+            return
+    except Exception:
+        pass
+    _t0 = time.monotonic()
+    try:
+        today = date.today()
+        with SessionLocal() as session:
+            pending = session.execute(
+                select(DarkPoolAlertOutcome).where(
+                    (DarkPoolAlertOutcome.entry_price.is_(None))
+                    | (DarkPoolAlertOutcome.return_20d.is_(None))
+                )
+            ).scalars().all()
+            if not pending:
+                _record_job_status("evaluate_dark_pool_alert_outcomes", "ok", time.monotonic() - _t0)
+                return
+
+            stock_ids = {row.stock_id for row in pending}
+            min_fired = min(row.fired_date for row in pending)
+            bulk_prices = session.execute(
+                select(Price.stock_id, Price.ts, Price.close).where(
+                    Price.stock_id.in_(stock_ids),
+                    Price.timeframe == TimeFrame.D1,
+                    Price.ts >= datetime.combine(min_fired, datetime.min.time()),
+                )
+                .order_by(Price.stock_id, Price.ts)
+            ).all()
+            price_map: dict[int, list[tuple]] = {}
+            for stock_id, ts, close in bulk_prices:
+                pr_date = ts.date() if hasattr(ts, "date") else ts
+                price_map.setdefault(stock_id, []).append((pr_date, float(close)))
+
+            evaluated = 0
+            for row in pending:
+                try:
+                    bucket = price_map.get(row.stock_id, [])
+                    if row.entry_price is None:
+                        entry_result = _squeeze_outcome_lookup_price(bucket, row.fired_date + timedelta(days=1))
+                        if entry_result is None:
+                            continue
+                        row.entry_date, row.entry_price = entry_result
+
+                    for window in _SQUEEZE_OUTCOME_WINDOWS:
+                        price_field, ret_field, correct_field = f"price_{window}d", f"return_{window}d", f"is_correct_{window}d"
+                        if getattr(row, price_field) is not None:
+                            continue
+                        target = row.entry_date + timedelta(days=window)
+                        if target > today:
+                            continue
+                        result = _squeeze_outcome_lookup_price(bucket, target)
+                        if result is None:
+                            continue
+                        _, price = result
+                        ret = (price - row.entry_price) / row.entry_price
+                        is_correct = abs(ret) > _DARK_POOL_OUTCOME_MOVE_HURDLE_PCT
+                        setattr(row, price_field, price)
+                        setattr(row, ret_field, ret)
+                        setattr(row, correct_field, is_correct)
+                    row.evaluated_at = datetime.now(timezone.utc)
+                    evaluated += 1
+                except Exception as exc:
+                    log.warning("dark_pool_alert_outcome.eval_row_failed", symbol=row.symbol, error=str(exc))
+                    continue
+
+            session.commit()
+            _record_job_status("evaluate_dark_pool_alert_outcomes", "ok", time.monotonic() - _t0)
+            log.info("dark_pool_alert_outcome.eval_done", pending=len(pending), evaluated=evaluated)
+    except Exception as exc:
+        log.error("dark_pool_alert_outcome.eval_failed", error=str(exc), exc_info=True)
+        _record_job_status("evaluate_dark_pool_alert_outcomes", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        try:
+            _get_redis().delete(_DARK_POOL_ALERT_OUTCOME_EVAL_LOCK_KEY)
         except Exception:
             pass
 
@@ -10510,6 +10803,14 @@ def start_scheduler() -> None:
         id="options_flow_alert_outcome_eval_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
 
+    # ── T323-DARKPOOL: dark-pool alert outcome evaluator — 18:30 ET ──
+    # Pure data computation, no email sent. Runs right after its sibling evaluators above.
+    _scheduler.add_job(
+        evaluate_dark_pool_alert_outcomes,
+        CronTrigger(hour=18, minute=30, timezone="America/New_York"),
+        id="dark_pool_alert_outcome_eval_daily", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
     # BUG-LOCALDEV-ALERTS-UNGATED: every 1-minute-interval checker below sends real alert
     # emails when it fires — gated behind _is_alerting_enabled() as a block (they're all
     # alert-emitting, no data-only jobs interleaved in this contiguous stretch).
@@ -10627,6 +10928,20 @@ def start_scheduler() -> None:
             "interval",
             minutes=1,
             id="options_flow_alert_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True,
+        )
+
+        # ── T323-DARKPOOL: real Unusual Whales dark-pool block-print alert — every minute ─────
+        # Gated entirely behind unusual_whales.is_available() — see check_dark_pool_alerts()'s
+        # own docstring for the full mechanism. Same bounded symbol set and cadence as the
+        # options-flow-alert job just above (both are per-symbol UW REST calls over the same
+        # PriceAlert-subscribed + top-K universe).
+        _scheduler.add_job(
+            check_dark_pool_alerts,
+            "interval",
+            minutes=1,
+            id="dark_pool_alert_check",
             replace_existing=True,
             max_instances=1, coalesce=True,
         )

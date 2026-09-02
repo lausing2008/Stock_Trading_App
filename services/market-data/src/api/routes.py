@@ -3894,6 +3894,42 @@ def get_gamma_exposure(symbol: str):
     }
 
 
+@router.get("/{symbol}/dark-pool-prints")
+def get_dark_pool_prints_route(symbol: str):
+    """T323-DARKPOOL: real recent off-exchange block trades via Unusual Whales' own
+    `/api/darkpool/{ticker}` — genuinely new capability, not previously built anywhere in this
+    app (unlike gamma-exposure/short-interest, there is no free-proxy fallback for this). See
+    DarkPoolPrint's own model docstring (shared/db/models.py) for what a dark pool actually is.
+
+    Falls back to `available: False, source: "none"` (never fabricated data) when Unusual
+    Whales is disabled/unconfigured or the symbol has no real recent prints — a caller
+    (MarketPressurePanel's dark-pool card) should render nothing in that case, matching every
+    other optional-enrichment card's own contract.
+    """
+    from ..services import unusual_whales as _uw
+
+    sym = symbol.upper()
+    if not _uw.is_available():
+        return {"symbol": sym, "available": False, "source": "none", "reason": "unusual_whales_disabled", "prints": []}
+
+    rows = _uw.get_dark_pool_prints(sym)
+    if not rows:
+        return {"symbol": sym, "available": False, "source": "none", "reason": "no_data", "prints": []}
+
+    return {
+        "symbol": sym,
+        "available": True,
+        "source": "unusual_whales",
+        "prints": [
+            {
+                "price": r.price, "size": r.size, "premium": r.premium,
+                "venue": r.venue, "executed_at": r.executed_at,
+            }
+            for r in rows
+        ],
+    }
+
+
 # ── T322-OPTIONS-GAMEPLAN: AI Signal + Options Game Plan ─────────────────────
 
 _OPTIONS_GAME_PLAN_MIN_PUT_DTE = 25   # protective puts need enough runway to be worth the premium

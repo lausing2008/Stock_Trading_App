@@ -1735,6 +1735,83 @@ def send_options_flow_alert_email(to: str, candidates: list[dict], omitted_count
     return send_email(to, subject, body_html, body_text)
 
 
+def send_dark_pool_alert_email(to: str, candidates: list[dict], omitted_count: int = 0) -> bool:
+    """T323-DARKPOOL: real large off-exchange block print detected via Unusual Whales'
+    `/api/darkpool/{ticker}`. Each dict: {symbol, price, size, premium, venue, executed_at}.
+
+    HONEST FRAMING, matching this app's own established alert-honesty discipline (T257-VOLUME-
+    ANOMALY-ALERT, send_options_flow_alert_email, every squeeze alert already shipped): this
+    reports a MEASURED fact — a large block genuinely printed off-exchange, real size, real
+    price, real venue — never a claim about WHY it happened or that the stock will move as a
+    result. Institutional block trades cross dark pools for many reasons (index rebalancing,
+    portfolio hedging, block-crossing to avoid market impact) that have nothing to do with a
+    directional view — this is explicitly NOT framed as "smart money is bullish/bearish," only
+    "size just moved off-exchange, here's the print."
+
+    `candidates` is already capped by the caller (largest premium first) to keep this email
+    readable — `omitted_count` is how many additional, real, genuinely-recorded prints didn't
+    make the cap.
+    """
+    n = len(candidates)
+    subject = f"🌊 Dark Pool Activity — {n} large block print{'s' if n != 1 else ''}"
+
+    rows_html = ""
+    rows_text = ""
+    for c in candidates:
+        sym = c["symbol"]
+        price = c.get("price")
+        size = c.get("size")
+        premium = c.get("premium")
+        venue = c.get("venue") or "—"
+        price_str = f"${price:.2f}" if price is not None else "—"
+        size_str = f"{size:,}" if size is not None else "—"
+        premium_str = f"${premium:,.0f}" if premium is not None else "—"
+        rows_html += (
+            f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
+            f'<strong style="font-size:14px">{sym}</strong>'
+            f'<span style="font-size:13px;color:#0369a1;font-weight:700">{premium_str}</span>'
+            f'</div>'
+            f'<div style="font-size:12px;color:#64748b;margin-top:2px">'
+            f'{size_str} shares @ {price_str} · venue {venue}'
+            f'</div>'
+            f'</div>'
+        )
+        rows_text += f"  {sym}: {size_str} shares @ {price_str} = {premium_str} premium (venue {venue})\n"
+
+    omitted_html = (
+        f'<p style="font-size:12px;color:#0369a1;margin-top:8px">+ {omitted_count} more print'
+        f'{"s" if omitted_count != 1 else ""} today (smaller size) — see the stock page\'s '
+        f'Market Pressure panel for the full recent list.</p>'
+    ) if omitted_count > 0 else ""
+    omitted_text = (
+        f"\n+ {omitted_count} more print{'s' if omitted_count != 1 else ''} today (smaller "
+        f"size) — see the stock page's Market Pressure panel for the full recent list.\n"
+    ) if omitted_count > 0 else ""
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:#0369a1">🌊 Dark Pool Activity</h2>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} real large off-exchange block print{'s' if n != 1 else ''} on your watched symbols.</p>
+    <div style="margin-top:12px">{rows_html}</div>
+    {omitted_html}
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      This reports a MEASURED fact — a real, large block trade printed off-exchange (FINRA-
+      reported dark pool venue) — not a claim about why it happened or that the stock will move
+      as a result. Institutional blocks cross dark pools for many reasons unrelated to a
+      directional view. Not financial advice.
+    </p>
+  </div>
+</body></html>"""
+    body_text = (
+        f"Dark Pool Activity — {n} large block print{'s' if n != 1 else ''}\n\n"
+        + rows_text
+        + omitted_text
+        + "\nMeasured fact (a real off-exchange print), not a prediction of direction. Not financial advice.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_prebreakout_email(to: str, candidates: list[dict]) -> bool:
     """T264-SHORTSQUEEZE-PREBREAKOUT: "coiling" alert — the pre-move counterpart to
     send_short_squeeze_email() above, direct user request: "predict the short sell not able to
