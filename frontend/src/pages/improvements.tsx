@@ -18685,7 +18685,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'MPE-06',
-    tier: 320, severity: 'low', defaultStatus: 'todo',
+    tier: 320, severity: 'low', defaultStatus: 'done',
+    implementedNote: 'This item\'s own \'todo\' text was stale -- a real Unusual Whales subscription is now live (confirmed 2026-09-01: stockai:admin:unusual_whales_api_key exists, stockai:admin:feature:unusual_whales_enabled=1 in production Redis), and real GEX was already wired in by an earlier session before this scoping pass: get_gex_levels() (unusual_whales.py) calls UW\'s own /api/stock/{sym}/gex-levels for real call_wall/put_wall/gamma_flip/gamma_magnet -- no fabricated Greeks, no Black-Scholes -- already feeding compute_options_pressure_score()\'s uw_gex_proximity_pts component and GET /stocks/{symbol}/gamma-exposure. Extended this session (commit 11868dd): added GexSnapshot (shared/db/models.py) + compute_gex_snapshots_eod() (17:15 ET daily job, mirrors compute_options_flow_snapshots_eod()\'s exact pattern) so real GEX history starts persisting today -- previously live-only with zero history, matching the exact gap OptionsFlowSnapshot closed for options-flow data. The free check_gamma_unwind_alerts() OI-concentration proxy is deliberately UNCHANGED and still the fallback when UW is off -- both paths coexist, real GEX only ever adds on top.',
     title: 'True GEX / dealer-hedging engine -- DEFERRED, not rejected: needs Unusual Whales (or equivalent) subscription; re-affirms the existing 2026-08-24 deferral decision rather than re-litigating it',
     file: 'N/A -- blocked on external data source',
     effort: 'L',
@@ -18695,7 +18696,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'MPE-07',
-    tier: 320, severity: 'low', defaultStatus: 'todo',
+    tier: 320, severity: 'low', defaultStatus: 'done',
+    implementedNote: 'Borrow-fee enrichment (uw_borrow_fee_pts, up to 5 points) was already live from an earlier session. This session (commit 11868dd) added the 2 genuinely still-missing pieces, verified via direct code read before building: (1) real short-interest UTILIZATION (compute_short_squeeze_score()\'s new short_interest param, short_interest/short_shares_available both from UW\'s own paired /api/shorts/{sym}/interest-float/v2 fields -- never mixed with a different provider\'s number for the other half -- capped at 5 points matching the borrow-fee component\'s own weight); (2) the doc\'s own explicit LOW/MEDIUM/HIGH "Short Covering Pressure" + confidence classification (_short_covering_pressure(), a pure layer over the already-computed score, confidence reflecting how many real inputs informed it rather than a fabricated statistical estimate -- this app\'s squeeze-alert family has nowhere near enough resolved outcomes to fit a real model, matching the doc\'s own instruction not to guess a probability the data can\'t support). Both new UW fields also now render as real, always-visible sub-lines on short-squeeze.tsx -- previously fetched/typed but only ever surfaced in one conditional footer word. 31 tests in test_short_squeeze_score.py, adversarially verified (2 sabotage cycles, both caught).',
     title: 'Short covering probability / borrow-fee / utilization / shares-available inputs -- DEFERRED, same Unusual-Whales dependency as MPE-06',
     file: 'N/A -- blocked on external data source',
     effort: 'M',
@@ -18726,6 +18728,7 @@ const ITEMS: Item[] = [
   {
     id: 'MPE-10',
     tier: 320, severity: 'low', defaultStatus: 'todo',
+    implementedNote: 'Partially advanced, deliberately kept todo since the core ask (a real GEX ablation group) still cannot run. Investigated adding GEX as a 3rd feature group to MPE-04\'s 4-cell harness now that UW is live and found it needs genuinely new infrastructure first: get_gex_levels() was live-only, zero historical persistence, unlike the SHORT/OPTIONS groups which already had real snapshot tables to build a PIT-safe ML feature from. Built that missing infrastructure (commit 11868dd): GexSnapshot table + compute_gex_snapshots_eod() daily sync job, so real GEX history starts accumulating from 2026-09-01 onward. But per MPE-04\'s own already-established finding, this doesn\'t unblock anything near-term -- the ablation study cannot produce a trustworthy verdict for ANY group yet (fundamentals_snapshot/options_flow_snapshots are still only ~1-2 months old), and a brand-new GexSnapshot table starts at zero days of history, further from testable than the existing groups. The full 8-cell grid also remains blocked by MPE-08\'s margin rejection regardless. Revisit once GexSnapshot has several months of real history AND the existing groups have cleared their own data-age bar -- re-check both before ever adding a 3rd ablation cell.',
     title: 'Full 8-cell group-level feature ablation (BASELINE+ALL combinations, SS14) -- DEFERRED pending MPE-04\'s own 4-cell result and MPE-08\'s margin rejection',
     file: 'N/A -- scope decision, not yet a build target',
     effort: 'N/A',
