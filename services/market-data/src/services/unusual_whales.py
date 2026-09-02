@@ -35,6 +35,7 @@ https://api.unusualwhales.com/api/openapi spec (not guessed/assumed) before bein
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
@@ -276,6 +277,17 @@ def get_short_interest(symbol: str) -> ShortInterestData | None:
     return result
 
 
+_FLOW_ALERT_MAX_AGE_HOURS = 48  # AUD-OPTIONSFLOW-STALEALERTS — see get_flow_alerts()'s own
+# docstring for the real production incident (live confirmed) this closes: UW's own endpoint,
+# with no newer_than sent, silently returns EVERY historically-qualifying row still inside
+# its retention window — confirmed live to include rows over 1,300 HOURS (54 days) old, not
+# just "recent activity." 48h is a real, evidence-based choice, not a guess: live-checked
+# real created_at ages across 5 liquid symbols and found a consistent, sharp gap between a
+# fresh cluster (5-30h old) and the next-oldest batch (100h+) — 48h sits cleanly inside that
+# gap, generous enough that a genuinely fresh sweep is never missed even across a brief job
+# outage, while excluding the multi-week backlog entirely.
+
+
 def get_flow_alerts(
     symbol: str,
     *,
@@ -306,6 +318,17 @@ def get_flow_alerts(
     — every caller can override them, but the defaults alone already exclude routine, low-
     signal trades.
 
+    AUD-OPTIONSFLOW-STALEALERTS (found 2026-09-02, a real user report): a user received an
+    email for an HPE contract whose OWN expiry (2026-07-31) had already passed by the time the
+    alert arrived. Confirmed live against production: this endpoint sends max_dte (bounding the
+    CONTRACT's own expiration window) but never sent newer_than (bounding how recently the
+    ALERT ITSELF fired) — UW happily keeps re-serving a real, still-qualifying-by-the-filter row
+    from 7 weeks ago as if it were fresh activity, because nothing ever asked it not to. Now
+    sends a real newer_than = now - _FLOW_ALERT_MAX_AGE_HOURS, so a genuinely stale alert can
+    never reach a caller at all — this is a SERVER-side filter (UW itself excludes the old rows
+    before they're ever returned), not a client-side post-filter, closing both the staleness bug
+    and a real cost/flood contributor at the same time (see AUD-OPTIONSFLOW-FLOODED).
+
     Returns an empty list (never raises) on any failure — the disabled/unconfigured/rate-limited/
     no-alerts-for-this-symbol cases are all indistinguishable to a caller by design, matching
     get_gex_levels()/get_short_interest()'s own fail-open contract.
@@ -313,6 +336,14 @@ def get_flow_alerts(
     if not is_available():
         return []
     sym = symbol.upper()
+    # UW's own newer_than param silently ignores ANY value with a time component (a full ISO
+    # datetime, with or without a "Z"/offset suffix) — confirmed live against production: only
+    # a bare unix-epoch integer or a bare YYYY-MM-DD date actually filters server-side; every
+    # datetime-with-time form returns the exact same unfiltered result as omitting the param
+    # entirely. Epoch seconds gives real sub-day precision (a bare date would only round to
+    # "since midnight N days ago"), so that's the format sent here, not the ISO string this
+    # module's docstrings otherwise use for get_historical_flow_alerts()'s own date-only params.
+    newer_than = str(int((datetime.now(timezone.utc) - timedelta(hours=_FLOW_ALERT_MAX_AGE_HOURS)).timestamp()))
     try:
         data = _get(
             "/api/option-trades/flow-alerts",
@@ -322,6 +353,7 @@ def get_flow_alerts(
                 "min_volume_oi_ratio": min_volume_oi_ratio,
                 "is_sweep": "true" if is_sweep else "false",
                 "max_dte": max_dte,
+                "newer_than": newer_than,
                 "limit": 50,
             },
         )

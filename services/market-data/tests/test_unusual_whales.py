@@ -441,6 +441,55 @@ def test_flow_alerts_passes_real_filter_params_to_get():
     assert captured["params"]["max_dte"] == 30
 
 
+# ── AUD-OPTIONSFLOW-STALEALERTS: get_flow_alerts() must send a real newer_than ──────────────
+# A real user reported receiving an alert whose OWN contract expiry had already passed weeks
+# earlier — confirmed live against production that UW's endpoint, with no newer_than sent,
+# happily re-serves any row still inside its retention window (found: rows over 1,300 hours/
+# 54 days old), and that UW's own newer_than param SILENTLY IGNORES any value with a time
+# component (a full ISO datetime, with or without a "Z"/offset) — only a bare unix-epoch
+# integer or a bare YYYY-MM-DD date actually filters server-side (confirmed live by testing
+# all 4 forms directly: date-only and epoch both correctly narrowed the result; every
+# datetime-with-time form returned the identical unfiltered count as omitting the param).
+
+def test_flow_alerts_sends_a_real_newer_than_epoch_value():
+    import time
+    captured = {}
+    def _fake_get(path, params=None):
+        captured.update(params)
+        return []
+    before = int(time.time())
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=_fake_get):
+        uw.get_flow_alerts("AAPL")
+    after = int(time.time())
+    assert "newer_than" in captured
+    sent = captured["newer_than"]
+    assert isinstance(sent, str)
+    assert sent.isdigit()  # a bare epoch-seconds integer, never an ISO datetime string
+    sent_epoch = int(sent)
+    expected_seconds_ago = uw._FLOW_ALERT_MAX_AGE_HOURS * 3600
+    # Must be genuinely close to "now minus the max-age window" — a wide, generous tolerance
+    # band (not an exact-second match, which would be flaky) rather than asserting no specific
+    # value at all.
+    assert before - expected_seconds_ago - 5 <= sent_epoch <= after - expected_seconds_ago + 5
+
+
+def test_flow_alerts_never_sends_an_iso_datetime_string_for_newer_than():
+    """The exact class of regression this whole fix closes — reverting to an ISO datetime
+    string (even one that LOOKS more precise/correct) would silently un-fix the staleness bug,
+    since UW's backend ignores it entirely rather than raising an error."""
+    captured = {}
+    def _fake_get(path, params=None):
+        captured.update(params)
+        return []
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", side_effect=_fake_get):
+        uw.get_flow_alerts("AAPL")
+    assert "T" not in captured["newer_than"]
+    assert "-" not in captured["newer_than"]
+    assert ":" not in captured["newer_than"]
+
+
 def test_flow_alerts_uppercases_the_symbol():
     captured = {}
     def _fake_get(path, params=None):
