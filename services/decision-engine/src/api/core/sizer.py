@@ -117,14 +117,30 @@ def compute_position(
     # coverage at all, silently un-penalizing exactly the weak-recommendation case this gating
     # logic exists to catch. Matches WATCH's existing pattern: recommendation present but
     # doesn't clear its confidence bar → 0.60, not a silent no-op back to neutral.
+    # AUD-DECIDE2-SIZERFALSYZERO: `research_score_val or 0` treated a genuine overall_score of
+    # 0 (the worst possible score, distinct from no score existing at all) as falsy, coercing
+    # it to 0 anyway — which happens to be harmless for a `>= N` comparison (0 fails every real
+    # threshold here either way) but is the same falsy-zero pattern already fixed once in this
+    # exact sibling variable at scorer.py's own T247-DECISIONENGINE-RESEARCHSCORE-FALSY (never
+    # swept to this file). `is not None` is the correct presence check, matching that fix.
     rec_upper = (research_rec or "").upper().replace("_", " ")
-    if rec_upper == "STRONG BUY" and (research_score_val or 0) >= 75:
+    if rec_upper == "STRONG BUY" and research_score_val is not None and research_score_val >= 75:
         research_mult = 1.20
-    elif rec_upper == "BUY" and (research_score_val or 0) >= 65:
+    elif rec_upper == "BUY" and research_score_val is not None and research_score_val >= 65:
         research_mult = 1.00
-    elif rec_upper == "WATCH" and (research_score_val or 0) >= 60:
+    elif rec_upper == "WATCH" and research_score_val is not None and research_score_val >= 60:
         research_mult = 0.80
     elif rec_upper in ("STRONG BUY", "BUY", "WATCH", "AVOID", "SELL"):
+        research_mult = 0.60
+    # AUD-DECIDE2-INSUFFICIENTDATA: research-engine emits "INSUFFICIENT DATA" whenever a
+    # report's own quality is "fallback" (research-engine's routes.py) — a real, confirmed-
+    # occurring verdict (it already caused a production StringDataRightTruncation crash once,
+    # Tier 247) meaning research explicitly FAILED to gather fundamentals, not "no research was
+    # attempted." Previously fell through every elif to the generic else below, sizing
+    # identically to a symbol with zero research coverage — this repo's own DE-SIZER1 comment
+    # a few lines above already states the intent this violates: "recommendation present but
+    # doesn't clear its bar -> 0.60, not a silent no-op back to neutral."
+    elif rec_upper == "INSUFFICIENT DATA":
         research_mult = 0.60
     else:
         research_mult = 1.00

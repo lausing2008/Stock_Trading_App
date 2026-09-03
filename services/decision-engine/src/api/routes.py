@@ -450,6 +450,7 @@ async def decide_batch(
         style=req.style,
         portfolio_id=req.portfolio_id,
         equity=req.equity,
+        initial_capital=req.initial_capital,
         open_positions=req.open_positions,
         max_positions=req.max_positions,
         daily_pnl_pct=req.daily_pnl_pct,

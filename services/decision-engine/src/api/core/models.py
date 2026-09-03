@@ -210,6 +210,14 @@ class BatchDecisionRequest(BaseModel):
         return v
     portfolio_id: int | None = None
     equity: float = 10_000.0
+    # AUD-DECIDE2-BATCHNOFLOOR: this field was missing entirely — decide_batch() built its
+    # inner DecisionRequest without it, silently falling to DecisionRequest's own 10_000.0
+    # default regardless of the real portfolio's actual starting capital. Since the T201
+    # equity-floor circuit breaker (hard_rejects.py) computes equity/initial_capital, a real
+    # portfolio whose initial_capital differs from 10_000 (e.g. any HK portfolio, seeded at
+    # 300_000) got a fabricated, wrong ratio on every batch call — see DecisionRequest's own
+    # comment above for the full rationale this field exists at all.
+    initial_capital: float = 10_000.0
     open_positions: int = 0
     max_positions: int = 6
     daily_pnl_pct: float = 0.0

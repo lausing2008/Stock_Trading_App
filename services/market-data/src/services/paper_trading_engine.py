@@ -3553,7 +3553,15 @@ def _call_decision_engine(
         should_enter  = verdict == "BUY"
         score         = result.get("score", 0)
         blocked       = result.get("blocked_reason")
-        return should_enter, verdict, score, blocked
+        # AUD-DECIDE2-SHADOWMINSCORE: decision-engine's own response always carries its real,
+        # regime-adjusted min_score (DecisionResponse.min_score, computed by
+        # min_score_for_regime() — see scorer.py) — this was being silently discarded, with
+        # every caller instead recording its OWN pre-call cfg["min_entry_score"] as if it were
+        # DE's verdict. See the caller's own _record_de_shadow_comparison() docstring for the
+        # concrete divergence this produced live (a single symbol logged 2 different
+        # de_min_score values 12 seconds apart, neither matching what DE actually used).
+        de_min_score  = result.get("min_score")
+        return should_enter, verdict, score, blocked, de_min_score
     except Exception as exc:
         log.debug("decision_engine.call_error", symbol=symbol, error=str(exc))
         return None
@@ -5677,13 +5685,14 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
 
         if de_mode == "primary":
             if de_result is not None:
-                should_enter, de_verdict, score, de_blocked = de_result
+                should_enter, de_verdict, score, de_blocked, de_min_score = de_result
                 notes = [f"DE: {de_verdict}"] + ([f"blocked: {de_blocked}"] if de_blocked else [])
                 log.info("paper.de_verdict", symbol=stock.symbol,
                          verdict=de_verdict, score=score, blocked=de_blocked)
                 _record_de_shadow_comparison(
                     stock.symbol, se_result[0], se_result[1],
-                    de_verdict, score, cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]),
+                    de_verdict, score,
+                    de_min_score if de_min_score is not None else cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]),
                     de_blocked,
                 )
             else:
@@ -5697,10 +5706,11 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             should_enter, score, notes = se_result
             gate_source = "legacy"
             if de_result is not None:
-                _, de_verdict, de_score, de_blocked = de_result
+                _, de_verdict, de_score, de_blocked, de_min_score = de_result
                 _record_de_shadow_comparison(
                     stock.symbol, should_enter, score,
-                    de_verdict, de_score, cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]),
+                    de_verdict, de_score,
+                    de_min_score if de_min_score is not None else cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]),
                     de_blocked,
                 )
 

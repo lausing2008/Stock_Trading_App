@@ -35,6 +35,13 @@ _RESEARCH_SCORE = {
     "WATCH":      0,
     "AVOID":     -1,
     "SELL":      -2,
+    # AUD-DECIDE2-INSUFFICIENTDATA: research-engine's real "INSUFFICIENT DATA" verdict
+    # (emitted when a report's own quality is "fallback") was absent from this table entirely,
+    # so `.get(rec_upper, 0)` silently scored it identically to WATCH (0 points) — a genuine
+    # "research failed to gather fundamentals" result should not score the same as a real,
+    # neutral WATCH recommendation. See sizer.py's own AUD-DECIDE2-INSUFFICIENTDATA fix for the
+    # matching sizing-side correction.
+    "INSUFFICIENT DATA": -1,
 }
 
 

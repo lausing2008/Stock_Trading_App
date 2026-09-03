@@ -852,9 +852,14 @@ export const api = {
   decide: (symbol: string, style = 'SWING') =>
     request<DecisionResult>(`/decide/${symbol}/explain?style=${style}`),
   decideBatch: (symbols: string[], style = 'SWING', market = 'US') =>
+    // AUD-DECIDE2-BATCHNOFLOOR: this is a standalone watchlist scanner with no real portfolio
+    // context (no portfolio_id), so there is no real initial_capital to send — initial_capital
+    // is set equal to the same fabricated `equity` value below so the equity-floor ratio comes
+    // out to a real, self-consistent 1.0 (never spuriously trips) instead of an accidental
+    // 100_000/10_000=10.0 the backend's own unset default previously produced.
     request<DecisionResult[]>('/decide/batch', {
       method: 'POST',
-      body: JSON.stringify({ symbols, style, market, equity: 100_000, open_positions: 0, max_positions: 6 }),
+      body: JSON.stringify({ symbols, style, market, equity: 100_000, initial_capital: 100_000, open_positions: 0, max_positions: 6 }),
     }),
   regime: (market: 'US' | 'HK' = 'US') =>
     request<RegimeStatus>(`/decide/regime?market=${market}`),
