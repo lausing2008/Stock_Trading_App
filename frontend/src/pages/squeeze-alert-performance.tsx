@@ -37,6 +37,20 @@ function winRateColor(wr: number | null): string {
   return '#ef4444';
 }
 
+// AUD-SQUEEZE2-BEARISHRETURNCOLOR: gamma_unwind_puts is a bearish thesis (a WIN = price fell
+// past the hurdle) — the stored return_Nd columns are the raw, unflipped price-move fraction
+// (evaluate_squeeze_alert_outcomes()'s own is_correct_Nd flips its WIN condition for this alert
+// type, but never flips the stored return value itself). Coloring every return with a flat
+// >=0=green/<0=red — as this page previously did everywhere — displays every correctly-called
+// bearish move (a real win, negative return) in red, and every failed bearish call (a real
+// loss, positive return) in green. This helper is the single place that decision is made.
+function returnColor(returnPct: number | null | undefined, alertType: string): string {
+  if (returnPct == null) return '#475569';
+  const isBearishThesis = alertType === 'gamma_unwind_puts';
+  const isWin = isBearishThesis ? returnPct <= 0 : returnPct >= 0;
+  return isWin ? '#22c55e' : '#ef4444';
+}
+
 function WinRatePill({ stat }: { stat: SqueezeAlertWindowStat }) {
   if (stat == null || stat.win_rate == null) {
     return <span style={{ color: '#475569', fontSize: 11 }}>No data</span>;
@@ -64,7 +78,7 @@ function TypeCard({ row }: { row: SqueezeAlertTypeSummary }) {
       {primary ? (
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
           <WinRatePill stat={primary} />
-          <span style={{ fontSize: '15px', fontWeight: 700, color: (primary.avg_return_pct ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>
+          <span style={{ fontSize: '15px', fontWeight: 700, color: returnColor(primary.avg_return_pct, row.alert_type) }}>
             {fmtPct(primary.avg_return_pct)}
           </span>
           <span style={{ fontSize: '11px', color: '#475569' }}>avg return, 10d</span>
@@ -255,12 +269,12 @@ export default function SqueezeAlertPerformancePage() {
                       <td style={{ padding: '8px 12px', fontWeight: 700, color: '#e2e8f0' }}>{row.symbol}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: '#64748b' }}>{row.alert_price.toFixed(2)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: '#64748b' }}>{row.entry_price != null ? row.entry_price.toFixed(2) : '—'}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', color: (row.return_1d ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>{fmtPct(row.return_1d)}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', color: (row.return_2d ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>{fmtPct(row.return_2d)}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', color: (row.return_3d ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>{fmtPct(row.return_3d)}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', color: (row.return_5d ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>{fmtPct(row.return_5d)}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', color: (row.return_10d ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>{fmtPct(row.return_10d)}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', color: (row.return_20d ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>{fmtPct(row.return_20d)}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: returnColor(row.return_1d, row.alert_type) }}>{fmtPct(row.return_1d)}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: returnColor(row.return_2d, row.alert_type) }}>{fmtPct(row.return_2d)}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: returnColor(row.return_3d, row.alert_type) }}>{fmtPct(row.return_3d)}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: returnColor(row.return_5d, row.alert_type) }}>{fmtPct(row.return_5d)}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: returnColor(row.return_10d, row.alert_type) }}>{fmtPct(row.return_10d)}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: returnColor(row.return_20d, row.alert_type) }}>{fmtPct(row.return_20d)}</td>
                     </tr>
                   ))}
                   {data.recent_alerts.length === 0 && (

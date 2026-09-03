@@ -39,6 +39,17 @@ function winRateColor(wr: number | null): string {
   return '#ef4444';
 }
 
+// AUD-SQUEEZE2-BEARISHRETURNCOLOR: OptionsFlowAlertDirectionSummary/Row (the LIVE performance
+// endpoint) store the raw, unflipped price-move return — a bearish "win" (price correctly
+// fell) is a negative number. Only used for the live performance cards/table below, NOT the
+// backtest section — options_flow_alert_backtest() already sign-adjusts avg_return_pct itself
+// (AUD-SQUEEZE2-MIXEDDIRECTIONRETURN) so a flat >=0=green is correct there.
+function returnColor(returnPct: number | null | undefined, direction: string): string {
+  if (returnPct == null) return '#475569';
+  const isWin = direction === 'bearish' ? returnPct <= 0 : returnPct >= 0;
+  return isWin ? '#22c55e' : '#ef4444';
+}
+
 function DirectionCard({ row }: { row: OptionsFlowAlertDirectionSummary }) {
   const primary = row.window_10d;
   const dirColor = row.direction === 'bullish' ? '#22c55e' : '#ef4444';
@@ -59,7 +70,7 @@ function DirectionCard({ row }: { row: OptionsFlowAlertDirectionSummary }) {
           }}>
             {primary.win_rate != null ? `${(primary.win_rate * 100).toFixed(0)}%` : '—'}
           </span>
-          <span style={{ fontSize: '15px', fontWeight: 700, color: (primary.avg_return_pct ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>
+          <span style={{ fontSize: '15px', fontWeight: 700, color: returnColor(primary.avg_return_pct, row.direction) }}>
             {fmtPct(primary.avg_return_pct)}
           </span>
           <span style={{ fontSize: '11px', color: '#475569' }}>avg return, 10d</span>
@@ -383,7 +394,7 @@ export default function OptionsFlowAlertsPage() {
                         {row.ask_side_dominant ? 'Ask (buy)' : 'Bid (sell)'}
                       </td>
                       <td style={{ padding: '8px 10px', textAlign: 'right' }}>{row.has_sweep ? '⚡' : ''}</td>
-                      <td style={{ padding: '8px 10px', textAlign: 'right', color: (row.return_10d ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>{fmtPct(row.return_10d)}</td>
+                      <td style={{ padding: '8px 10px', textAlign: 'right', color: returnColor(row.return_10d, row.direction) }}>{fmtPct(row.return_10d)}</td>
                       <td style={{ padding: '8px 10px', textAlign: 'right' }}>
                         {row.is_correct_10d == null ? <span style={{ color: '#475569' }}>—</span> : row.is_correct_10d ? <span style={{ color: '#22c55e' }}>✓</span> : <span style={{ color: '#ef4444' }}>✗</span>}
                       </td>

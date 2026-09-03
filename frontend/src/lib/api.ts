@@ -2146,7 +2146,7 @@ export type SqueezeAlertWindowStat = {
 } | null;
 
 export type SqueezeAlertTypeSummary = {
-  alert_type: 'short_squeeze' | 'gamma_unwind_calls' | 'gamma_unwind_puts';
+  alert_type: 'short_squeeze' | 'squeeze_ignition' | 'gamma_unwind_calls' | 'gamma_unwind_puts';
   label: string;
   fired_count: number;
   window_10d: SqueezeAlertWindowStat;

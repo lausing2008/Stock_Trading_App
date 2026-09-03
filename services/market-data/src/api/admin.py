@@ -884,6 +884,14 @@ def squeeze_alert_backtest(
     next, using that snapshot's own short-interest reading (point-in-time correct — never a
     later snapshot's value leaking backward).
 
+    AUD-SQUEEZE2-BACKTESTNORVOLGATE: also requires day_volume / trailing_20-day_avg_volume >=
+    _SQUEEZE_RVOL_BASE (the SAME base threshold the live alert scales by session-elapsed
+    fraction — unscaled here since a completed historical daily bar always represents the full
+    session's volume, unlike the live alert's own partial-day intraday reads) — the live alert
+    has required this confirmation since AUD288-SQUEEZE-NO-VOLUME-CONFIRM (2026-08-18); this
+    backtest previously replayed only the short-float + price-move gates, a strategy that
+    hasn't existed in production for weeks.
+
     Scores forward returns using the EXACT same _squeeze_outcome_lookup_price() helper and
     _SQUEEZE_OUTCOME_WIN_HURDLE_PCT/_SQUEEZE_OUTCOME_WINDOWS constants the live evaluator uses
     (services/market-data/src/services/scheduler.py) — imported lazily, matching this file's
@@ -894,7 +902,7 @@ def squeeze_alert_backtest(
     from datetime import date, timedelta
     from ..services.scheduler import (
         _squeeze_outcome_lookup_price, _SQUEEZE_OUTCOME_WIN_HURDLE_PCT, _SQUEEZE_OUTCOME_WINDOWS,
-        _SQUEEZE_MIN_SHORT_FLOAT, _SQUEEZE_MIN_INTRADAY_MOVE_PCT,
+        _SQUEEZE_MIN_SHORT_FLOAT, _SQUEEZE_MIN_INTRADAY_MOVE_PCT, _SQUEEZE_RVOL_BASE,
     )
 
     cutoff = date.today() - timedelta(weeks=weeks_back)
@@ -925,15 +933,21 @@ def squeeze_alert_backtest(
     stock_id_by_symbol = {sym: sid for sid, sym in stock_rows}
 
     bulk_prices = session.execute(
-        select(Price.stock_id, Price.ts, Price.close).where(
+        select(Price.stock_id, Price.ts, Price.close, Price.volume).where(
             Price.stock_id.in_(stock_id_by_symbol.values()),
             Price.timeframe == TimeFrame.D1,
         ).order_by(Price.stock_id, Price.ts)
     ).all()
     price_map: dict[int, list[tuple]] = {}
-    for stock_id, ts, close in bulk_prices:
+    # AUD-SQUEEZE2-BACKTESTNORVOLGATE: volume_map is a PARALLEL structure (day, close, volume)
+    # used only for the RVOL gate below — price_map itself is left untouched (still (day, close)
+    # tuples) since _squeeze_outcome_lookup_price() and every other consumer of price_map
+    # already depends on that exact 2-tuple shape.
+    volume_map: dict[int, list[tuple]] = {}
+    for stock_id, ts, close, volume in bulk_prices:
         d = ts.date() if hasattr(ts, "date") else ts
         price_map.setdefault(stock_id, []).append((d, float(close)))
+        volume_map.setdefault(stock_id, []).append((d, float(volume) if volume is not None else None))
 
     # Each snapshot's short-interest reading qualifies the stock for every trading day between
     # THIS Sunday and the NEXT snapshot (point-in-time — never lets a later reading leak backward
@@ -941,6 +955,25 @@ def squeeze_alert_backtest(
     by_symbol: dict[str, list[tuple]] = {}
     for sym, snap_date, spf in snapshots:
         by_symbol.setdefault(sym, []).append((snap_date, spf))
+
+    # AUD-SQUEEZE2-BACKTESTNORVOLGATE: the live alert has required RVOL confirmation
+    # (day_volume / trailing_avg_volume >= _SQUEEZE_RVOL_BASE) since AUD288-SQUEEZE-NO-VOLUME-
+    # CONFIRM (2026-08-18) — this backtest never applied it, replaying a 2-gate (short-float +
+    # price-move) strategy that hasn't existed in production for weeks, understating the live
+    # alert's real quality. The live gate scales _SQUEEZE_RVOL_BASE by session-elapsed fraction
+    # (_session_elapsed_rvol_thresholds) since it fires intraday against partial-day volume —
+    # meaningless here, since a completed historical daily bar always represents the FULL
+    # session's volume, so the honest proxy is the unscaled base threshold applied to
+    # day_volume / trailing_avg_volume (a rolling 20-trading-day average, matching
+    # refresh_avg_volume_cache()'s own real ~1-month lookback).
+    _RVOL_TRAILING_DAYS = 20
+
+    def _trailing_avg_volume(vol_bucket: list[tuple], idx: int) -> float | None:
+        start = max(0, idx - _RVOL_TRAILING_DAYS)
+        window = [v for _, v in vol_bucket[start:idx] if v is not None and v > 0]
+        if len(window) < 5:
+            return None
+        return sum(window) / len(window)
 
     candidate_days: list[tuple[int, str, date, float]] = []  # (stock_id, symbol, day, entry_close)
     for sym, snaps in by_symbol.items():
@@ -950,10 +983,11 @@ def squeeze_alert_backtest(
         bucket = price_map.get(stock_id, [])
         if not bucket:
             continue
+        vol_bucket = volume_map.get(stock_id, [])
         for i, (snap_date, _spf) in enumerate(snaps):
             window_end = snaps[i + 1][0] if i + 1 < len(snaps) else snap_date + timedelta(days=7)
             prev_close = None
-            for d, close in bucket:
+            for idx, (d, close) in enumerate(bucket):
                 if d < snap_date or d >= window_end:
                     if d < snap_date:
                         prev_close = close
@@ -963,7 +997,10 @@ def squeeze_alert_backtest(
                     continue
                 day_ret = (close - prev_close) / prev_close * 100
                 if day_ret >= _SQUEEZE_MIN_INTRADAY_MOVE_PCT:
-                    candidate_days.append((stock_id, sym, d, close))
+                    day_volume = vol_bucket[idx][1] if idx < len(vol_bucket) else None
+                    avg_volume = _trailing_avg_volume(vol_bucket, idx)
+                    if day_volume is not None and avg_volume is not None and day_volume / avg_volume >= _SQUEEZE_RVOL_BASE:
+                        candidate_days.append((stock_id, sym, d, close))
                 prev_close = close
 
     def _window_summary(window: int) -> dict | None:
@@ -1153,6 +1190,15 @@ def options_flow_alert_backtest(
             resolved.append({**r, "returns": returns})
 
     def _bucket_stats(rows: list[dict], window: int) -> dict | None:
+        # AUD-SQUEEZE2-MIXEDDIRECTIONRETURN: by_sweep/by_volume_oi_band group BOTH bullish and
+        # bearish alerts into the same bucket — averaging their RAW (unflipped) returns together
+        # would let a genuine bullish win (+5%) and a genuine bearish win (-5%) cancel out to
+        # ~0%, understating real performance whenever a bucket mixes directions. Sign-flip the
+        # bearish rows' return here so avg_return_pct always means "return in the direction the
+        # alert's own thesis predicted" — positive always means the thesis was right, matching
+        # is_correct's own semantics exactly. This also makes by_direction's bearish bucket
+        # (already single-direction, previously showing the raw/unflipped sign) consistent with
+        # the other two groupings rather than a special case the frontend had to know about.
         rets = []
         for r in rows:
             ret = r["returns"].get(window)
@@ -1160,7 +1206,8 @@ def options_flow_alert_backtest(
                 continue
             is_bearish_thesis = r["direction"] == "bearish"
             is_correct = ret < -_SQUEEZE_OUTCOME_WIN_HURDLE_PCT if is_bearish_thesis else ret > _SQUEEZE_OUTCOME_WIN_HURDLE_PCT
-            rets.append((ret, is_correct))
+            thesis_ret = -ret if is_bearish_thesis else ret
+            rets.append((thesis_ret, is_correct))
         if len(rets) < min_samples:
             return {"n": len(rets), "win_rate": None, "avg_return_pct": None, "note": f"below the {min_samples}-sample floor"} if rets else None
         wins = sum(1 for _, c in rets if c)

@@ -113,10 +113,10 @@ def _make_snapshot(session, symbol: str, snapshot_date: date, short_pct_of_float
     session.commit()
 
 
-def _make_price(session, stock_id, ts_date: date, close: float):
+def _make_price(session, stock_id, ts_date: date, close: float, volume: float = 1000.0):
     session.add(Price(
         id=_new_id(), stock_id=stock_id, ts=datetime.combine(ts_date, datetime.min.time()),
-        timeframe=TimeFrame.D1, open=close, high=close, low=close, close=close, volume=1000.0,
+        timeframe=TimeFrame.D1, open=close, high=close, low=close, close=close, volume=volume,
     ))
     session.commit()
 
@@ -189,6 +189,12 @@ def _extract_squeeze_alert_backtest():
     windows_end = _SCHEDULER_SOURCE.index("\n", windows_start)
     exec(_SCHEDULER_SOURCE[win_hurdle_start:win_hurdle_end], const_namespace)  # noqa: S102
     exec(_SCHEDULER_SOURCE[windows_start:windows_end], const_namespace)  # noqa: S102
+    # AUD-SQUEEZE2-BACKTESTNORVOLGATE: same real-value-injection convention as the other 4
+    # scheduler.py constants above — _SQUEEZE_RVOL_BASE is squeeze_alert_backtest()'s own newly
+    # added 6th real import.
+    rvol_base_start = _SCHEDULER_SOURCE.index("_SQUEEZE_RVOL_BASE = ")
+    rvol_base_end = _SCHEDULER_SOURCE.index("\n", rvol_base_start)
+    exec(_SCHEDULER_SOURCE[rvol_base_start:rvol_base_end], const_namespace)  # noqa: S102
 
     func_start = _ADMIN_SOURCE.index("def squeeze_alert_backtest(")
     end = _ADMIN_SOURCE.index("\n\n\n@router.get(\"/options-flow-alert-backtest\")", func_start)
@@ -210,6 +216,7 @@ def _extract_squeeze_alert_backtest():
         "_SQUEEZE_OUTCOME_WINDOWS": const_namespace["_SQUEEZE_OUTCOME_WINDOWS"],
         "_SQUEEZE_MIN_SHORT_FLOAT": const_namespace["_SQUEEZE_MIN_SHORT_FLOAT"],
         "_SQUEEZE_MIN_INTRADAY_MOVE_PCT": const_namespace["_SQUEEZE_MIN_INTRADAY_MOVE_PCT"],
+        "_SQUEEZE_RVOL_BASE": const_namespace["_SQUEEZE_RVOL_BASE"],
     }
     exec(body, namespace)  # noqa: S102 — isolated eval of real source
     return namespace["squeeze_alert_backtest"]
@@ -618,16 +625,24 @@ def test_squeeze_alert_performance_recent_alerts_row_includes_the_1d_2d_3d_retur
 
 # ── admin.py squeeze_alert_backtest() — real behavioral tests ────────────────────────────────
 
-def _make_daily_bars(session, stock_id, prices: dict):
+def _make_daily_bars(session, stock_id, prices: dict, volumes: dict | None = None):
     """prices: {date: close}. Realistic, tightly-spaced (weekday-only) bars are required here —
     a sparse fixture (bars several calendar days apart) would make the candidate-detection
     loop's day-over-day comparison span more than one real trading day, producing a spurious
     extra "move" purely from the gap. This was a real trap hit while writing this test file:
     an early attempt used bars 5 calendar days apart and found 2 candidate days instead of the
     intended 1 — traced and confirmed to be a fixture-spacing artifact, not a real bug in the
-    endpoint, by re-running with realistic daily spacing and getting the correct single match."""
+    endpoint, by re-running with realistic daily spacing and getting the correct single match.
+
+    volumes: optional {date: volume} override — AUD-SQUEEZE2-BACKTESTNORVOLGATE added a real
+    RVOL confirmation gate to squeeze_alert_backtest(), so a candidate day now ALSO needs
+    day_volume / trailing_avg_volume >= _SQUEEZE_RVOL_BASE. Every date not present here still
+    gets the flat 1000.0 default (a day_volume/avg_volume ratio of exactly 1.0 — never itself
+    enough to clear the gate), so tests that want a day to actually qualify must give it a real
+    volume spike relative to its own trailing days."""
+    volumes = volumes or {}
     for d, close in sorted(prices.items()):
-        _make_price(session, stock_id, d, close)
+        _make_price(session, stock_id, d, close, volume=volumes.get(d, 1000.0))
 
 
 def test_backtest_endpoint_is_admin_gated():
@@ -642,9 +657,16 @@ def test_backtest_finds_the_one_real_qualifying_day_not_every_day_in_the_window(
     st = _make_stock(session, "AAPL")
     _make_snapshot(session, "AAPL", date(2026, 1, 4), 0.20)  # 20% short of float, clears 15%
     _make_daily_bars(session, st.id, {
+        # AUD-SQUEEZE2-BACKTESTNORVOLGATE: a candidate day now also needs 5+ real trailing
+        # volume days (from the stock's FULL price history, not scoped to any one snapshot's
+        # own window) to compute a trailing average against — these 5 lead-in days, dated
+        # BEFORE the snapshot's own window, establish that baseline (flat 1000.0 volume) ahead
+        # of the actual +5% move day, which gets its own volume spike below.
+        date(2025, 12, 24): 100.0, date(2025, 12, 26): 100.0, date(2025, 12, 29): 100.0,
+        date(2025, 12, 30): 100.0, date(2025, 12, 31): 100.0,
         date(2026, 1, 4): 100.0, date(2026, 1, 5): 105.0,  # +5% -> the one real candidate day
         date(2026, 1, 6): 103.0, date(2026, 1, 7): 102.0, date(2026, 1, 8): 101.0,
-    })
+    }, volumes={date(2026, 1, 5): 3000.0})  # 3.0x the trailing 1000.0 average, clears 2.2x
     backtest = _extract_squeeze_alert_backtest()
 
     result = backtest(weeks_back=520, min_samples=1, _=None, session=session)
@@ -685,8 +707,10 @@ def test_backtest_reports_a_real_win_rate_and_avg_return_once_forward_windows_re
     st = _make_stock(session, "AAPL")
     _make_snapshot(session, "AAPL", date(2026, 1, 4), 0.20)
     _make_daily_bars(session, st.id, {
+        date(2025, 12, 24): 100.0, date(2025, 12, 26): 100.0, date(2025, 12, 29): 100.0,
+        date(2025, 12, 30): 100.0, date(2025, 12, 31): 100.0,
         date(2026, 1, 4): 100.0, date(2026, 1, 5): 105.0,
-    })
+    }, volumes={date(2026, 1, 5): 3000.0})  # AUD-SQUEEZE2-BACKTESTNORVOLGATE: clears the RVOL gate
     _make_price(session, st.id, date(2026, 1, 10), 110.0)  # 5d forward, +4.76% from entry (105)
     backtest = _extract_squeeze_alert_backtest()
 
@@ -720,9 +744,15 @@ def test_backtest_excludes_a_below_floor_week_even_when_a_later_week_qualifies()
     _make_snapshot(session, "AAPL", date(2026, 1, 4), 0.05)   # below floor
     _make_snapshot(session, "AAPL", date(2026, 1, 11), 0.20)  # clears floor, a week later
     _make_daily_bars(session, st.id, {
+        date(2025, 12, 24): 100.0, date(2025, 12, 26): 100.0, date(2025, 12, 29): 100.0,
+        date(2025, 12, 30): 100.0, date(2025, 12, 31): 100.0,
         date(2026, 1, 4): 100.0, date(2026, 1, 5): 106.0,   # +6% but BEFORE the qualifying snapshot
+        date(2026, 1, 6): 100.0, date(2026, 1, 7): 100.0, date(2026, 1, 8): 100.0, date(2026, 1, 9): 100.0,
         date(2026, 1, 11): 100.0, date(2026, 1, 12): 106.0,  # +6% AFTER the qualifying snapshot
-    })
+    # AUD-SQUEEZE2-BACKTESTNORVOLGATE: BOTH moves clear the RVOL gate — Jan 5 is excluded purely
+    # by the below-floor short-interest snapshot, not by volume, matching what this test is
+    # actually meant to isolate.
+    }, volumes={date(2026, 1, 5): 3000.0, date(2026, 1, 12): 3000.0})
     backtest = _extract_squeeze_alert_backtest()
 
     result = backtest(weeks_back=520, min_samples=1, _=None, session=session)
@@ -740,10 +770,13 @@ def test_backtest_a_later_qualifying_snapshots_window_does_not_extend_backward_p
     _make_snapshot(session, "AAPL", date(2026, 1, 4), 0.20)   # qualifies
     _make_snapshot(session, "AAPL", date(2026, 1, 11), 0.25)  # also qualifies, a week later
     _make_daily_bars(session, st.id, {
+        date(2025, 12, 24): 100.0, date(2025, 12, 26): 100.0, date(2025, 12, 29): 100.0,
+        date(2025, 12, 30): 100.0, date(2025, 12, 31): 100.0,
         date(2026, 1, 4): 100.0, date(2026, 1, 5): 106.0,    # +6% in week 1
         date(2026, 1, 6): 105.0, date(2026, 1, 7): 104.0, date(2026, 1, 8): 103.0,
         date(2026, 1, 11): 100.0, date(2026, 1, 12): 108.0,  # +8% in week 2
-    })
+    # AUD-SQUEEZE2-BACKTESTNORVOLGATE: both real moves clear the RVOL gate too.
+    }, volumes={date(2026, 1, 5): 3000.0, date(2026, 1, 12): 3000.0})
     backtest = _extract_squeeze_alert_backtest()
 
     result = backtest(weeks_back=520, min_samples=1, _=None, session=session)
@@ -774,7 +807,7 @@ def test_backtest_imports_the_real_shared_scheduler_constants_not_a_hand_copied_
     assert "from ..services.scheduler import" in body
     for name in (
         "_squeeze_outcome_lookup_price", "_SQUEEZE_OUTCOME_WIN_HURDLE_PCT", "_SQUEEZE_OUTCOME_WINDOWS",
-        "_SQUEEZE_MIN_SHORT_FLOAT", "_SQUEEZE_MIN_INTRADAY_MOVE_PCT",
+        "_SQUEEZE_MIN_SHORT_FLOAT", "_SQUEEZE_MIN_INTRADAY_MOVE_PCT", "_SQUEEZE_RVOL_BASE",
     ):
         assert name in body
 
