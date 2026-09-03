@@ -3161,6 +3161,7 @@ def promote_min_entry_score(
 def get_tune_history(
     style: str | None = Query(None, description="Filter to SHORT | SWING | LONG | GROWTH"),
     market: str | None = Query(None, description="Filter to US | HK"),
+    parameter_class: str | None = Query(None, description="Filter to a single mechanism, e.g. 'joint_strategy' (tune_strategy)"),
     limit: int = Query(50, ge=1, le=500),
     _: User = Depends(get_admin_user),
 ) -> dict:
@@ -3176,6 +3177,8 @@ def get_tune_history(
             q = q.where(TuneHistory.style == style.upper())
         if market:
             q = q.where(TuneHistory.market == market.upper())
+        if parameter_class:
+            q = q.where(TuneHistory.parameter_class == parameter_class)
         rows = session.execute(q).scalars().all()
         return {
             "count": len(rows),

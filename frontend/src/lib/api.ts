@@ -756,10 +756,11 @@ export const api = {
   // gap — tune_history is already written by every calibration mechanism, and
   // realized_ev_pct_after (backfill_realized_ev) is already computed, but neither had a
   // frontend consumer before this.
-  tuneHistory: (params?: { style?: string; market?: string; limit?: number }) => {
+  tuneHistory: (params?: { style?: string; market?: string; parameter_class?: string; limit?: number }) => {
     const q = new URLSearchParams();
     if (params?.style) q.set('style', params.style);
     if (params?.market) q.set('market', params.market);
+    if (params?.parameter_class) q.set('parameter_class', params.parameter_class);
     if (params?.limit) q.set('limit', String(params.limit));
     const qs = q.toString();
     return request<TuneHistoryResponse>(`/paper-portfolio/tune-history${qs ? `?${qs}` : ''}`);

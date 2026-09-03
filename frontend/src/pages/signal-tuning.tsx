@@ -80,6 +80,26 @@ function fmtVal(v: number | null | undefined): string {
   return v.toString();
 }
 
+// T255-STRATEGY-TUNER-DASHBOARD: tune_history.gate_failures values are a fixed, small vocabulary
+// written by promotion_gate.py's own evaluate_and_record() — plain-English labels for each.
+const GATE_FAILURE_LABELS: Record<string, string> = {
+  ev_lift_negative: 'Candidate would have performed WORSE than the current live setting',
+  ev_lift_below_promotion_margin: 'Improvement too small to clear the promotion margin',
+  ev_lift_below_min_and_shift_too_small: 'Improvement too small, and the parameter shift itself is trivial',
+  worst_trade_regression: 'Candidate’s worst-case trade loss was meaningfully bigger than today’s',
+  insufficient_validation_samples: 'Not enough held-out validation trades to trust the result',
+};
+
+function gateFailureLabel(code: string): string {
+  return GATE_FAILURE_LABELS[code] ?? code;
+}
+
+function thresholdDiff(oldVal: Record<string, unknown> | null, newVal: Record<string, unknown> | null): { key: string; from: unknown; to: unknown; changed: boolean }[] {
+  if (!oldVal || !newVal) return [];
+  const keys = Array.from(new Set([...Object.keys(oldVal), ...Object.keys(newVal)]));
+  return keys.map(key => ({ key, from: oldVal[key], to: newVal[key], changed: oldVal[key] !== newVal[key] }));
+}
+
 function sourceLabel(override: number | null, kind: string): string {
   if (override !== null) return kind;
   return 'default';
@@ -282,6 +302,16 @@ export default function SignalTuningPage() {
   const { data: tuneHistoryData } = useSWR(
     username ? 'tune-history' : null,
     () => api.tuneHistory({ limit: 30 }),
+    { revalidateOnFocus: false },
+  );
+  // T255-STRATEGY-TUNER-DASHBOARD: the weekly tune_strategy run specifically (buy_threshold x
+  // ml_weight_cap per horizon) — filtered separately from the generic table above so it isn't
+  // mixed in with the daily watchdog / other calibration mechanisms' rows. old_value/new_value/
+  // gate_failures were already being fetched by the generic table's own row type but never
+  // rendered anywhere — this section is what actually surfaces them.
+  const { data: strategyTuneData } = useSWR(
+    username ? 'tune-history-joint-strategy' : null,
+    () => api.tuneHistory({ parameter_class: 'joint_strategy', limit: 100 }),
     { revalidateOnFocus: false },
   );
   const { data: watchdogReportData } = useSWR(
@@ -598,6 +628,125 @@ export default function SignalTuningPage() {
           </div>
         </div>
       )}
+
+      {/* T255-STRATEGY-TUNER-DASHBOARD: tune_strategy's own weekly buy_threshold x
+          ml_weight_cap sweep per horizon — what changed (or was rejected) and why, grouped by
+          run so the most recent Sunday's 4-horizon verdict reads as one unit rather than being
+          mixed into the generic cross-mechanism table below. */}
+      {strategyTuneData && strategyTuneData.rows.length > 0 && (() => {
+        const runs = new Map<string, typeof strategyTuneData.rows>();
+        for (const row of strategyTuneData.rows) {
+          const arr = runs.get(row.run_id) ?? [];
+          arr.push(row);
+          runs.set(row.run_id, arr);
+        }
+        const runIds = Array.from(runs.keys()); // rows already ordered newest-first by the API
+        const latestRunId = runIds[0];
+        const latestRows = runs.get(latestRunId) ?? [];
+        const promotedEverCount = strategyTuneData.rows.filter(r => r.promoted).length;
+
+        return (
+          <div style={{ marginTop: 28, borderTop: '1px solid #1e293b', paddingTop: 18 }}>
+            <h2 style={{ color: '#94a3b8', fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+              Weekly Strategy Tuner (buy_threshold × ml_weight_cap)
+            </h2>
+            <p style={{ color: '#64748b', fontSize: 11, margin: '0 0 4px' }}>
+              Runs every Sunday, one sweep per horizon. A change is only ever PROMOTED if it beats
+              the current live setting on held-out validation data — most runs correctly reject.
+            </p>
+            <p style={{ color: '#475569', fontSize: 10.5, margin: '0 0 14px' }}>
+              {strategyTuneData.count} runs on record · {promotedEverCount} promoted ever
+              ({promotedEverCount > 0 ? `${((promotedEverCount / strategyTuneData.count) * 100).toFixed(0)}%` : '0%'})
+            </p>
+
+            <div style={{ color: '#64748b', fontSize: 11, marginBottom: 8 }}>
+              Latest run — {new Date(latestRows[0]?.ts).toLocaleString()}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, marginBottom: 20 }}>
+              {latestRows.map(row => {
+                const diffs = thresholdDiff(row.old_value, row.new_value);
+                return (
+                  <div key={row.id} style={{ background: '#0f172a', border: `1px solid ${(STYLE_COLORS[row.style ?? ''] || '#64748b')}33`, borderRadius: 6, padding: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <span style={{ color: (STYLE_COLORS[row.style ?? ''] || '#64748b'), fontWeight: 600, fontSize: 12 }}>{row.style}</span>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
+                        color: row.promoted ? '#4ade80' : '#f87171',
+                        background: row.promoted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)',
+                      }}>
+                        {row.promoted ? 'PROMOTED' : 'REJECTED'}
+                      </span>
+                    </div>
+                    {diffs.map(d => (
+                      <div key={d.key} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 3 }}>
+                        <span style={{ color: '#64748b' }}>{d.key}</span>
+                        <span style={{ color: d.changed ? '#e2e8f0' : '#475569', fontFamily: 'monospace' }}>
+                          {String(d.from)} {d.changed ? '→' : ''} {d.changed ? String(d.to) : ''}
+                        </span>
+                      </div>
+                    ))}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, marginTop: 8, color: '#475569' }}>
+                      <span>Val EV: {row.validation_ev_pct != null ? `${row.validation_ev_pct.toFixed(2)}%` : '—'}</span>
+                      <span>Baseline: {row.baseline_validation_ev_pct != null ? `${row.baseline_validation_ev_pct.toFixed(2)}%` : '—'}</span>
+                      <span>n={row.validation_n ?? '—'}</span>
+                    </div>
+                    {!row.promoted && row.gate_failures && row.gate_failures.length > 0 && (
+                      <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #1e293b' }}>
+                        {row.gate_failures.map(code => (
+                          <div key={code} style={{ color: '#fbbf24', fontSize: 10.5, marginBottom: 2 }}>
+                            {gateFailureLabel(code)}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {runIds.length > 1 && (
+              <details>
+                <summary style={{ color: '#64748b', fontSize: 11, cursor: 'pointer', marginBottom: 10 }}>
+                  Show {runIds.length - 1} earlier run{runIds.length - 1 !== 1 ? 's' : ''}
+                </summary>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, minWidth: 720 }}>
+                    <thead>
+                      <tr>
+                        {['When', 'Style', 'Old → New', 'Verdict', 'Reason', 'Val EV%', 'Baseline EV%'].map(h => (
+                          <th key={h} style={{ padding: '3px 8px', color: '#475569', fontWeight: 500, fontSize: 10, textAlign: 'left', textTransform: 'uppercase' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {runIds.slice(1).flatMap(runId => (runs.get(runId) ?? []).map(row => {
+                        const diffs = thresholdDiff(row.old_value, row.new_value).filter(d => d.changed);
+                        return (
+                          <tr key={row.id} style={{ borderTop: '1px solid #1e293b' }}>
+                            <td style={{ padding: '4px 8px', color: '#94a3b8', whiteSpace: 'nowrap' }}>{new Date(row.ts).toLocaleDateString()}</td>
+                            <td style={{ padding: '4px 8px', color: (STYLE_COLORS[row.style ?? ''] || '#64748b') }}>{row.style}</td>
+                            <td style={{ padding: '4px 8px', color: '#e2e8f0', fontFamily: 'monospace', fontSize: 10.5 }}>
+                              {diffs.length === 0 ? '—' : diffs.map(d => `${d.key}: ${d.from}→${d.to}`).join(', ')}
+                            </td>
+                            <td style={{ padding: '4px 8px', color: row.promoted ? '#4ade80' : '#f87171', fontWeight: 600 }}>
+                              {row.promoted ? 'Promoted' : 'Rejected'}
+                            </td>
+                            <td style={{ padding: '4px 8px', color: '#fbbf24', fontSize: 10.5 }}>
+                              {row.gate_failures && row.gate_failures.length > 0 ? row.gate_failures.map(gateFailureLabel).join('; ') : '—'}
+                            </td>
+                            <td style={{ padding: '4px 8px', color: '#e2e8f0' }}>{row.validation_ev_pct != null ? row.validation_ev_pct.toFixed(2) : '—'}</td>
+                            <td style={{ padding: '4px 8px', color: '#64748b' }}>{row.baseline_validation_ev_pct != null ? row.baseline_validation_ev_pct.toFixed(2) : '—'}</td>
+                          </tr>
+                        );
+                      }))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            )}
+          </div>
+        );
+      })()}
 
       {/* T233-SELFIMPROVE-DESIGN: recent calibration tuning attempts across every mechanism */}
       {tuneHistoryData && tuneHistoryData.rows.length > 0 && (
