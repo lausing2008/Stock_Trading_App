@@ -3405,6 +3405,13 @@ def compute_options_pressure_score(
         by get_options_flow() itself; a ratio of 1.0 (perfectly balanced call/put volume) scores
         0, ramping to a full 40 points at the two extremes (cp_ratio<=0.2 or >=5.0 — chosen as
         roughly 5x away from neutral in either direction, a genuinely lopsided real reading).
+        AUD-OPTIONS6-CPRATIOASYMMETRY: scaled separately on each side of 1.0 (below-1.0 side
+        divided by (1.0-0.2)=0.8, above-1.0 side by (5.0-1.0)=4.0) — a single shared linear-
+        distance denominator would let cp_ratio=0.2 reach only 8/40 while cp_ratio=5.0 correctly
+        reaches 40/40, since 0.2 and 5.0 are NOT equidistant from 1.0 in absolute terms (0.8 vs.
+        4.0) even though both are a genuine 5x move away from neutral in fold-change terms —
+        confirmed live in production affecting a real, non-trivial population of extreme-bearish
+        options-flow snapshots before this fix.
       - whale_count (contracts with >$500K premium, already detected by get_options_flow()) —
         scored 0-30, 10 points per whale trade up to 3 whales (a 4th+ doesn't add more — the
         conviction signal from "multiple large trades" is already established by 3).
@@ -3424,7 +3431,10 @@ def compute_options_pressure_score(
     if cp_ratio is None:
         return None
 
-    cpr_pts = min(40.0, max(0.0, abs(cp_ratio - 1.0) / (5.0 - 1.0) * 40.0))
+    if cp_ratio >= 1.0:
+        cpr_pts = min(40.0, max(0.0, (cp_ratio - 1.0) / (5.0 - 1.0) * 40.0))
+    else:
+        cpr_pts = min(40.0, max(0.0, (1.0 - cp_ratio) / (1.0 - 0.2) * 40.0))
 
     whale_pts = min(30.0, whale_count * 10.0)
 

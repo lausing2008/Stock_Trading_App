@@ -41,29 +41,43 @@ def test_neutral_cp_ratio_of_1_scores_zero_on_that_component():
 
 def test_a_low_cp_ratio_below_1_still_scores_high_conviction_not_zero():
     """This is a CONVICTION score, not a directional one — cp_ratio=0.2 (extreme put skew,
-    below the 1.0 neutral point) must still score a real, high cp_ratio_pts value via abs()
-    around the neutral point, not collapse toward 0 the way a naive "bigger ratio = more
-    points" (with no abs()) formula would."""
+    below the 1.0 neutral point) must still score a real, high cp_ratio_pts value, not collapse
+    toward 0 the way a naive "bigger ratio = more points" (with no distance-from-1.0 framing)
+    formula would. AUD-OPTIONS6-CPRATIOASYMMETRY: cp_ratio=0.2 is this score's own documented
+    EXTREME on the bearish side (matching cp_ratio=5.0's documented extreme on the bullish
+    side) and must score the FULL 40, not a partial value — the two sides are scaled separately
+    ((1.0-0.2)=0.8 below neutral, (5.0-1.0)=4.0 above) precisely so both extremes reach the same
+    max, since 0.2 and 5.0 are a 5x fold-change from 1.0 in either direction despite NOT being
+    equidistant in absolute linear terms."""
     low = compute_options_pressure_score(
         cp_ratio=0.2, sentiment="bearish", whale_count=0, total_call_vol=0, total_put_vol=0,
     )
-    assert low["components"]["cp_ratio_pts"] > 0.0
-    # |0.2 - 1| / 4 * 40 = 8.0, hand-verified.
-    assert low["components"]["cp_ratio_pts"] == 8.0
+    assert low["components"]["cp_ratio_pts"] == 40.0
 
 
-def test_equidistant_cp_ratios_above_and_below_neutral_score_identically():
-    """Two cp_ratio values equally far from the 1.0 neutral point on the LINEAR scale (1.0-x
-    and 1.0+x) must score the same — the abs()-around-1.0 structure, not the raw magnitude of
-    cp_ratio itself (which is asymmetric: floored at 0, capped at 10 by get_options_flow()
-    itself), is what this test isolates."""
-    below = compute_options_pressure_score(
-        cp_ratio=0.5, sentiment="bearish", whale_count=0, total_call_vol=0, total_put_vol=0,
+def test_cp_ratio_below_1_scaling_uses_the_08_denominator_not_the_above_1_side_denominator():
+    """A real, hand-computed midpoint on the below-1.0 side, distinct from the extreme (0.2)
+    and neutral (1.0) cases above — confirms the below-1.0 side genuinely uses its OWN
+    (1.0-0.2)=0.8 denominator, not accidentally sharing the above-1.0 side's (5.0-1.0)=4.0."""
+    result = compute_options_pressure_score(
+        cp_ratio=0.6, sentiment="bearish", whale_count=0, total_call_vol=0, total_put_vol=0,
     )
-    above = compute_options_pressure_score(
-        cp_ratio=1.5, sentiment="bullish", whale_count=0, total_call_vol=0, total_put_vol=0,
+    # (1.0 - 0.6) / (1.0 - 0.2) * 40 = 0.4 / 0.8 * 40 = 20.0, hand-verified.
+    assert result["components"]["cp_ratio_pts"] == 20.0
+
+
+def test_the_two_documented_extremes_now_score_identically():
+    """The exact bug this fix closes: cp_ratio=0.2 (bearish extreme) and cp_ratio=5.0 (bullish
+    extreme) are BOTH explicitly documented as the score's own two "full 40 points" extremes —
+    before the fix, 0.2 only reached 8.0 while 5.0 correctly reached 40.0."""
+    bearish_extreme = compute_options_pressure_score(
+        cp_ratio=0.2, sentiment="bearish", whale_count=0, total_call_vol=0, total_put_vol=0,
     )
-    assert below["components"]["cp_ratio_pts"] == above["components"]["cp_ratio_pts"]
+    bullish_extreme = compute_options_pressure_score(
+        cp_ratio=5.0, sentiment="bullish", whale_count=0, total_call_vol=0, total_put_vol=0,
+    )
+    assert bearish_extreme["components"]["cp_ratio_pts"] == 40.0
+    assert bullish_extreme["components"]["cp_ratio_pts"] == 40.0
 
 
 def test_cp_ratio_component_hand_computed_at_a_midpoint():
