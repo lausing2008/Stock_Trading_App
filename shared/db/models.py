@@ -198,6 +198,31 @@ class Signal(Base):
     bullish_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
     reasons: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source: Mapped[str] = mapped_column(String(64), default="signal-engine")
+    # AUD-SIGNAL3-EVALSELECTIONBIAS (2026-09-02): this row is upserted ~77x/trading day (every
+    # /signals/refresh cycle) via ON CONFLICT (stock_id, horizon, date_trunc('day', ts)) DO
+    # UPDATE — signal/confidence/bullish_probability/reasons above are the LIVE, ever-changing
+    # display state, correctly always reflecting the current signal. But
+    # evaluate_signal_outcomes() (outcomes.py) previously read those same live columns for
+    # BOTH selecting which signals to score AND what confidence/reasons to score them with —
+    # meaning (1) a signal that was BUY at 10am but faded to HOLD by close was invisible to
+    # evaluation entirely (the WHERE clause filters Signal.signal.in_([BUY, SELL]), the FINAL
+    # state), and (2) even a signal that stayed BUY all day was scored using its 4pm
+    # confidence/reasons, not the state that actually fired the trade thesis being measured.
+    # These 5 columns capture the state at first_buy_sell_at, the FIRST time signal transitions
+    # to BUY/SELL on a given calendar day — set ONCE via COALESCE in the upsert (see routes.py's
+    # own upsert SQL), frozen for the rest of that day regardless of how many times the live
+    # columns above are subsequently overwritten. A new calendar day's first upsert starts a
+    # fresh capture (the day boundary is the same date_trunc('day', ts) the live row's own
+    # conflict target already uses). Nullable because a HOLD-only day never populates them.
+    # first_buy_sell_bullish_probability mirrors bullish_probability (not just confidence) —
+    # SignalOutcome.fused_prob is load-bearing for calibration.py's ML-weight-cap re-simulation
+    # grids and analytics.py's rank-IC computation; leaving it unfrozen would silently corrupt
+    # those the same way the un-fixed bug corrupted confidence/reasons.
+    first_buy_sell_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    first_buy_sell_signal: Mapped[SignalType | None] = mapped_column(SAEnum(SignalType), nullable=True)
+    first_buy_sell_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    first_buy_sell_bullish_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    first_buy_sell_reasons: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     __table_args__ = (
         Index("ix_signals_stock_ts", "stock_id", "ts"),
         Index("ix_signals_stock_horizon_ts", "stock_id", "horizon", "ts"),

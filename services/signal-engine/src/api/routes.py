@@ -319,8 +319,20 @@ def _bulk_persist(symbols: list[str]) -> None:
                                 # 0.62 to get catalyst-upgraded to BUY — exactly backwards during
                                 # the regime that should be most conservative. Use the same
                                 # regime-aware threshold functions _decide_style() itself uses.
+                                #
+                                # AUD-SIGNAL1-STALEREGIMEVOCAB (fixed 2026-09-02): this whitelist
+                                # was never migrated when AUD264-SIGNALENGINE-SECOND-REGIME-
+                                # CLASSIFIER moved market_regime to the canonical 5-state value
+                                # (bull/neutral/choppy/risk_off/bear) — see signals.py's own
+                                # _decide_style() for the real, current vocabulary. A real
+                                # "choppy" or "risk_off" regime (both live-emitted by
+                                # /stocks/regime) silently fell through to "unknown" here — the
+                                # LOOSEST threshold tier — reopening the exact T237-SIG2 failure
+                                # mode this comment describes, through a different door: e.g.
+                                # SHORT's real risk_off buy_threshold is 0.68 but a risk_off
+                                # signal was catalyst-upgraded against unknown's 0.62 instead.
                                 _reg_cat = _ai.reasons.get("market_regime") if _ai.reasons else None
-                                _reg_cat = _reg_cat if _reg_cat in ("bull", "high_vol", "bear", "unknown") else "unknown"
+                                _reg_cat = _reg_cat if _reg_cat in ("bull", "neutral", "choppy", "risk_off", "bear", "unknown") else "unknown"
                                 _dyn_bt = _get_bt_cat(_hor_key, _reg_cat)
                                 _min_bt = _dyn_bt if _dyn_bt is not None else _SP_cat[_hor_key]["buy_threshold"][_reg_cat]
                                 _dyn_st = _get_st_cat(_hor_key)
@@ -434,21 +446,45 @@ def _bulk_persist(symbols: list[str]) -> None:
                     # → update in place so signal type changes within a day overwrite rather than grow the table.
                     # Use CAST() instead of ::type to avoid SQLAlchemy named-param
                     # binding ambiguity with PostgreSQL :: cast syntax (BUG-6).
+                    # AUD-SIGNAL3-EVALSELECTIONBIAS: first_buy_sell_* freezes the state at the
+                    # FIRST BUY/SELL of this calendar day — see Signal model's own docstring
+                    # (shared/db/models.py) for the full rationale. On INSERT (the day's first
+                    # upsert), populated directly whenever the incoming signal is BUY/SELL, NULL
+                    # otherwise (a HOLD-only day never gets a first-fire snapshot). On UPDATE,
+                    # COALESCE(signals.first_buy_sell_at, ...) means: if this day's row ALREADY
+                    # has a first-fire snapshot, keep it completely unchanged no matter what the
+                    # live signal/confidence/reasons columns do for the rest of the day; if it
+                    # doesn't yet (today's upserts so far were all HOLD), populate it now as soon
+                    # as a BUY/SELL genuinely first occurs — this correctly handles a signal that
+                    # starts HOLD and transitions to BUY/SELL later the same day, not just one
+                    # that's BUY/SELL on its very first upsert.
                     s.execute(
                         text("""
                             INSERT INTO signals
-                                (stock_id, signal, horizon, confidence, bullish_probability, reasons, source)
+                                (stock_id, signal, horizon, confidence, bullish_probability, reasons, source,
+                                 first_buy_sell_at, first_buy_sell_signal, first_buy_sell_confidence,
+                                 first_buy_sell_bullish_probability, first_buy_sell_reasons)
                             VALUES
                                 (:sid, CAST(:sig AS signaltype), CAST(:hor AS signalhorizon),
-                                 :conf, :bp, CAST(:rsns AS jsonb), :src)
+                                 :conf, :bp, CAST(:rsns AS json), :src,
+                                 CASE WHEN :sig IN ('BUY', 'SELL') THEN NOW() ELSE NULL END,
+                                 CASE WHEN :sig IN ('BUY', 'SELL') THEN CAST(:sig AS signaltype) ELSE NULL END,
+                                 CASE WHEN :sig IN ('BUY', 'SELL') THEN :conf ELSE NULL END,
+                                 CASE WHEN :sig IN ('BUY', 'SELL') THEN :bp ELSE NULL END,
+                                 CASE WHEN :sig IN ('BUY', 'SELL') THEN CAST(:rsns AS json) ELSE NULL END)
                             ON CONFLICT (stock_id, horizon, date_trunc('day', ts))
                             DO UPDATE SET
-                                signal              = EXCLUDED.signal,
-                                confidence          = EXCLUDED.confidence,
-                                bullish_probability = EXCLUDED.bullish_probability,
-                                reasons             = EXCLUDED.reasons,
-                                source              = EXCLUDED.source,
-                                ts                  = NOW()
+                                signal                    = EXCLUDED.signal,
+                                confidence                = EXCLUDED.confidence,
+                                bullish_probability       = EXCLUDED.bullish_probability,
+                                reasons                   = EXCLUDED.reasons,
+                                source                    = EXCLUDED.source,
+                                ts                        = NOW(),
+                                first_buy_sell_at                  = COALESCE(signals.first_buy_sell_at, EXCLUDED.first_buy_sell_at),
+                                first_buy_sell_signal               = COALESCE(signals.first_buy_sell_signal, EXCLUDED.first_buy_sell_signal),
+                                first_buy_sell_confidence           = COALESCE(signals.first_buy_sell_confidence, EXCLUDED.first_buy_sell_confidence),
+                                first_buy_sell_bullish_probability  = COALESCE(signals.first_buy_sell_bullish_probability, EXCLUDED.first_buy_sell_bullish_probability),
+                                first_buy_sell_reasons              = COALESCE(signals.first_buy_sell_reasons, EXCLUDED.first_buy_sell_reasons)
                         """),
                         dict(
                             sid=stock.id,
@@ -1147,8 +1183,11 @@ def signal_for(
                             )
                             _hor_key_sf = _ai_sf.horizon
                             if _hor_key_sf in _SP_sf:
+                                # AUD-SIGNAL1-STALEREGIMEVOCAB (fixed 2026-09-02): matches the
+                                # identical fix at this file's other catalyst-nudge site above —
+                                # see that site's own comment for the full explanation.
                                 _reg_sf = _ai_sf.reasons.get("market_regime") if _ai_sf.reasons else None
-                                _reg_sf = _reg_sf if _reg_sf in ("bull", "high_vol", "bear", "unknown") else "unknown"
+                                _reg_sf = _reg_sf if _reg_sf in ("bull", "neutral", "choppy", "risk_off", "bear", "unknown") else "unknown"
                                 _dyn_bt_sf = _get_bt_sf(_hor_key_sf, _reg_sf)
                                 _min_bt_sf = _dyn_bt_sf if _dyn_bt_sf is not None else _SP_sf[_hor_key_sf]["buy_threshold"][_reg_sf]
                                 _dyn_st_sf = _get_st_sf(_hor_key_sf)

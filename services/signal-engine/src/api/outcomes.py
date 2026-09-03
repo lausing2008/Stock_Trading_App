@@ -205,23 +205,30 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         ).all()
     )
 
-    # BUY and SELL signals old enough that at least SHORT window could be closed
-    # T232-OC6: Stock.delisted selected alongside symbol via the SAME existing join — no new
-    # query — so the censoring branch below can distinguish a confirmed delisting from an
-    # ordinary permanent price gap (halt, acquisition) without a per-row extra DB hit.
+    # BUY and SELL signals old enough that at least SHORT window could be closed.
+    #
+    # AUD-SIGNAL3-EVALSELECTIONBIAS (fixed 2026-09-02): previously filtered on the LIVE
+    # Signal.signal column — the day's FINAL, ~77x-overwritten state — which meant a signal
+    # that was genuinely BUY/SELL intraday but faded to HOLD by close was invisible to
+    # evaluation entirely (a systematic selection effect: the outcome table only ever recorded
+    # signals that were STILL BUY/SELL at 4pm, not every signal that actually fired). Filters on
+    # first_buy_sell_signal instead — set once, frozen at the moment a signal FIRST transitions
+    # to BUY/SELL each calendar day (see Signal model's own docstring, shared/db/models.py) —
+    # so a signal that fired and later faded is now correctly evaluated using the state that
+    # actually fired, not silently dropped. T232-OC6's delisted-symbol join is unchanged.
     pending_signals = session.execute(
         select(Signal, Stock.symbol, Stock.delisted)
         .join(Stock, Stock.id == Signal.stock_id)
         .where(
-            Signal.signal.in_([SignalType.BUY, SignalType.SELL]),
-            Signal.ts <= datetime.combine(cutoff, _time.max),
+            Signal.first_buy_sell_signal.in_([SignalType.BUY, SignalType.SELL]),
+            Signal.first_buy_sell_at <= datetime.combine(cutoff, _time.max),
         )
-        .order_by(Signal.ts)
+        .order_by(Signal.first_buy_sell_at)
     ).all()
 
     # Bulk-load D1 prices — always extend window to 20d for INT-8 multi-window
     pending_stock_ids = list({sig.stock_id for sig, _, _ in pending_signals})
-    price_min_ts = min((sig.ts for sig, _, _ in pending_signals), default=datetime.now())
+    price_min_ts = min((sig.first_buy_sell_at for sig, _, _ in pending_signals), default=datetime.now())
     price_max_ts = datetime.now() + timedelta(days=30)
     bulk_prices: list = []
     if pending_stock_ids:
@@ -335,12 +342,17 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
             continue
 
         horizon = sig.horizon.value
+        # AUD-SIGNAL3-EVALSELECTIONBIAS: sig.signal/sig.ts below are the LIVE, ever-changing
+        # display columns — the trade thesis being measured is the one captured in
+        # first_buy_sell_signal/first_buy_sell_at, which is what every read in this loop now
+        # uses instead (matches the WHERE clause above, which already filters on the same
+        # frozen columns).
         # T232-SIG10: SELL uses its own shorter hold window — see _SELL_OUTCOME_HOLD_DAYS above.
         hold_days = (
-            _SELL_OUTCOME_HOLD_DAYS[horizon] if sig.signal == SignalType.SELL
+            _SELL_OUTCOME_HOLD_DAYS[horizon] if sig.first_buy_sell_signal == SignalType.SELL
             else _OUTCOME_HOLD_DAYS[horizon]
         )
-        signal_date = sig.ts.date()
+        signal_date = sig.first_buy_sell_at.date()
 
         # Skip if another signal_id for the same (stock, horizon, date) was already evaluated.
         # This prevents 5×/day refreshes from creating duplicate outcome rows for the same
@@ -387,20 +399,20 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
                     # delisting itself doesn't confirm the SELL was right (could be an
                     # unrelated acquisition at a premium) — so SELL rows keep the prior,
                     # conservative NULL/censored behavior rather than guessing a direction.
-                    _is_confirmed_delisting = bool(is_delisted) and sig.signal == SignalType.BUY
+                    _is_confirmed_delisting = bool(is_delisted) and sig.first_buy_sell_signal == SignalType.BUY
                     outcome = SignalOutcome(
                         signal_id=sig.id,
                         stock_id=sig.stock_id,
                         symbol=symbol,
                         horizon=sig.horizon,
-                        signal_direction=sig.signal.value,
+                        signal_direction=sig.first_buy_sell_signal.value,
                         signal_date=signal_date,
-                        confidence=sig.confidence,
-                        fused_prob=sig.bullish_probability,
-                        ta_score=(sig.reasons or {}).get("ta_score"),
-                        ml_prob=(sig.reasons or {}).get("ml_probability"),
-                        ml_auc=(sig.reasons or {}).get("ml_test_auc"),
-                        market_regime=(sig.reasons or {}).get("market_regime"),
+                        confidence=sig.first_buy_sell_confidence,
+                        fused_prob=sig.first_buy_sell_bullish_probability,
+                        ta_score=(sig.first_buy_sell_reasons or {}).get("ta_score"),
+                        ml_prob=(sig.first_buy_sell_reasons or {}).get("ml_probability"),
+                        ml_auc=(sig.first_buy_sell_reasons or {}).get("ml_test_auc"),
+                        market_regime=(sig.first_buy_sell_reasons or {}).get("market_regime"),
                         entry_date=entry_date,
                         entry_price=entry_price,
                         is_correct=(False if _is_confirmed_delisting else None),
@@ -435,27 +447,27 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
                 # T232-OC4: require clearing a real cost hurdle, not just a bare zero line — see
                 # _OUTCOME_WIN_HURDLE_PCT above for why 0.5% and what's deliberately NOT modeled here.
                 is_correct = (
-                    pct_return > _OUTCOME_WIN_HURDLE_PCT if sig.signal == SignalType.BUY
+                    pct_return > _OUTCOME_WIN_HURDLE_PCT if sig.first_buy_sell_signal == SignalType.BUY
                     else pct_return < -_OUTCOME_WIN_HURDLE_PCT
                 )
 
                 # INT-8: multi-window forward returns (pass signal direction so SELL wins on negative returns)
-                _sig_dir = sig.signal.value  # "BUY" or "SELL"
+                _sig_dir = sig.first_buy_sell_signal.value  # "BUY" or "SELL"
                 p5, r5, c5   = _window_return(sig.stock_id, entry_date, entry_price, 5,  _sig_dir)
                 p10, r10, c10 = _window_return(sig.stock_id, entry_date, entry_price, 10, _sig_dir)
                 p20, r20, c20 = _window_return(sig.stock_id, entry_date, entry_price, 20, _sig_dir)
                 res_rec, res_score = _fetch_research(symbol)
 
-                reasons = sig.reasons or {}
+                reasons = sig.first_buy_sell_reasons or {}
                 outcome = SignalOutcome(
                     signal_id=sig.id,
                     stock_id=sig.stock_id,
                     symbol=symbol,
                     horizon=sig.horizon,
-                    signal_direction=sig.signal.value,
+                    signal_direction=sig.first_buy_sell_signal.value,
                     signal_date=signal_date,
-                    confidence=sig.confidence,
-                    fused_prob=sig.bullish_probability,
+                    confidence=sig.first_buy_sell_confidence,
+                    fused_prob=sig.first_buy_sell_bullish_probability,
                     ta_score=reasons.get("ta_score"),
                     ml_prob=reasons.get("ml_probability"),
                     ml_auc=reasons.get("ml_test_auc"),

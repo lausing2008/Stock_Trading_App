@@ -399,7 +399,21 @@ def _fetch_ml_data(symbol: str, style_key: str = "SWING") -> tuple[float | None,
                     data = r.json()
                     prob = float(data.get("bullish_probability", 0.5))
                     m = data.get("metrics") or {}
-                    test_auc = float(m.get("mean_model_test_auc") or m.get("auc") or m.get("cv_auc_mean") or 0.55)
+                    # AUD-SIGNAL2-FALSYZEROAUC (fixed 2026-09-02): the same falsy-zero bug class
+                    # already fixed 3x in ml-prediction's own trainer.py (AUD-ML1B-NUDGEGATE and
+                    # its 2 siblings) — `or` treats a real, legitimate auc=0.0 (a genuinely
+                    # rank-inverted/untrained model) as absent and silently substitutes the next
+                    # key, ultimately falling back to a fabricated 0.55 "healthy" default. That
+                    # default then defeats the AUC guard below (`if ml_test_auc < 0.50: raw_w =
+                    # 0.0`) that exists specifically to zero out a worthless model's weight —
+                    # a genuine 0.0 AUC should assign 0.0 weight, not the ~20% weight a
+                    # substituted 0.55 produces. `is not None` is the correct presence check.
+                    test_auc = 0.55
+                    for _key in ("mean_model_test_auc", "auc", "cv_auc_mean"):
+                        _val = m.get(_key)
+                        if _val is not None:
+                            test_auc = float(_val)
+                            break
                     ml_meta = {
                         "ml_model": data.get("model", "xgboost"),
                         "ml_agreement": data.get("ensemble_agreement"),

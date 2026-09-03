@@ -268,3 +268,4 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/audits/2026-08-26-metamodel-nan-fix.md`** — AUD232-METAMODEL-MEDIUM-GROUP — Meta-Model NaN-Preserving Fix (2026-08-26)
 - **`docs/audits/2026-08-31-five-part-deep-audit-series.md`** — Deep Audit Series (2026-08-31): AI Signal — 1 of 5; Deep Audit Series (2026-08-31): Short Squeeze / Gamma / Prebreakout alerts — 2 of 5; Deep Audit Series (2...
 - **`docs/audits/2026-09-01-market-pressure-engine-scoping.md`** — Scoping Decision: Market Pressure, Options, Short Squeeze & Margin Risk Engine (2026-09-01)
+- **`docs/audits/2026-09-02-six-part-platform-audit-1-ai-signal.md`** — Deep Audit Series (2026-09-02): AI Signal — 1 of 6 (confidence is meaningless, ground-truth eval selection bias, stale regime vocab, falsy-zero AUC — 2 fixed, 1 fixed+migrated, 1 deferred)

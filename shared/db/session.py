@@ -541,6 +541,27 @@ def _run_migrations() -> None:  # noqa: C901
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS tier usertier NOT NULL DEFAULT 'BASIC'"
         ))
 
+        # AUD-SIGNAL3-EVALSELECTIONBIAS: 4 new nullable columns on the EXISTING signals table —
+        # see Signal model's own docstring (shared/db/models.py) for the full rationale. Reuses
+        # the ALREADY-EXISTING `signaltype` enum (created by create_all() for this table's own
+        # `signal` column) — no new CREATE TYPE needed, confirmed live against production before
+        # writing this migration.
+        conn.execute(text(
+            "ALTER TABLE signals ADD COLUMN IF NOT EXISTS first_buy_sell_at TIMESTAMP"
+        ))
+        conn.execute(text(
+            "ALTER TABLE signals ADD COLUMN IF NOT EXISTS first_buy_sell_signal signaltype"
+        ))
+        conn.execute(text(
+            "ALTER TABLE signals ADD COLUMN IF NOT EXISTS first_buy_sell_confidence FLOAT"
+        ))
+        conn.execute(text(
+            "ALTER TABLE signals ADD COLUMN IF NOT EXISTS first_buy_sell_bullish_probability FLOAT"
+        ))
+        conn.execute(text(
+            "ALTER TABLE signals ADD COLUMN IF NOT EXISTS first_buy_sell_reasons JSON"
+        ))
+
 
 def _seed_admin() -> None:
     try:
