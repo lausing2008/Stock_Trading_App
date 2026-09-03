@@ -365,6 +365,46 @@ def _blend_weights(y: np.ndarray, recency_w: np.ndarray) -> np.ndarray:
     return combined / combined.mean()
 
 
+def _compute_oos_suppression(
+    cv_auc_mean: float | None,
+    recall: float,
+    precision: float,
+    overfit_gap_val: float | None,
+) -> tuple[bool, str | None]:
+    """Decide whether a freshly-trained model's OOS predictions should be suppressed (held at
+    0.5/neutral downstream) — and why, for logging. Pulled out of train_model() as its own pure
+    function so the decision logic is independently testable without a full training run.
+
+    Three independent conditions, checked in order (first true one wins for the log reason,
+    but ANY of them alone is sufficient to suppress):
+
+    1. SA-9: cv_auc_mean < 0.52 — CV performance itself is coin-flip quality.
+    2. AUD-ML2-DEADRECALLNOTSUPPRESSED: recall==0 AND precision==0 on the model's own held-out
+       test slice — the model has NEVER correctly predicted a single positive case, regardless
+       of what its cv_auc_mean or headline test `auc` claims. A tiny final test split (n_test as
+       low as 21 observed in production) lets `auc` hit 1.0 by chance ranking even when the
+       model's actual buy_threshold decision never fires a true positive. Confirmed live:
+       9961.HK's random_forest (auc=1.0, recall=0.0, cv_auc_mean=0.716) and its xgboost sibling
+       (auc=0.875, recall=0.0, cv_auc_mean=0.683) both cleared condition 1 and were serving at
+       high live ML fusion weight despite zero true positives ever observed.
+    3. AUD-ML2-ASYMMETRICOVERFITGAP: abs(overfit_gap) > 0.10 — the existing ML-FIX-4 check only
+       ever fires when CV-AUC is HIGHER than test-AUC (memorized-training-data direction). A
+       large gap in the OPPOSITE direction (test-AUC dramatically higher than CV-AUC) is equally
+       untrustworthy — confirmed live: 16% of all production model artifacts (40/249) show
+       overfit_gap < -0.2, every one with a tiny n_test (21-42 rows), the same small-sample
+       regime that produces the dead-recall pathology above. A symmetric magnitude check
+       (mirroring the existing 0.10 threshold) catches this population without needing
+       degenerate recall specifically.
+    """
+    if cv_auc_mean is not None and cv_auc_mean < 0.52:
+        return True, "cv_auc_below_0.52"
+    if recall == 0.0 and precision == 0.0:
+        return True, "dead_recall"
+    if overfit_gap_val is not None and abs(overfit_gap_val) > 0.10:
+        return True, "overfit_gap_magnitude"
+    return False, None
+
+
 def _load_outcome_features(symbol: str, style: str = "SWING", lookback_days: int = 365) -> tuple[pd.DataFrame, pd.Series]:
     """Load closed signal_outcomes for this symbol and reconstruct feature vectors.
 
@@ -810,14 +850,21 @@ def train_model(
         "label_threshold": label_threshold,
     }
 
-    # SA-9: suppress signals when OOS accuracy < 52% (coin-flip model)
-    oos_suppressed = cv_auc_mean is not None and cv_auc_mean < 0.52
+    # SA-9 + AUD-ML2-DEADRECALLNOTSUPPRESSED + AUD-ML2-ASYMMETRICOVERFITGAP: see
+    # _compute_oos_suppression()'s own docstring for the full rationale of all 3 conditions.
+    oos_suppressed, _suppression_reason = _compute_oos_suppression(
+        cv_auc_mean, metrics["recall"], metrics["precision"], overfit_gap_val,
+    )
     if oos_suppressed:
         log.warning(
             "train.oos_suppressed",
             symbol=symbol,
-            oos_acc=round(oos_acc_mean, 4),
-            note="model OOS AUC < 0.52 (near coin-flip); live predictions will be held at 0.5 (neutral)",
+            reason=_suppression_reason,
+            oos_acc=round(oos_acc_mean, 4) if oos_acc_mean is not None else None,
+            cv_auc=round(cv_auc_mean, 4) if cv_auc_mean is not None else None,
+            test_auc=round(test_auc_val, 4) if test_auc_val is not None else None,
+            overfit_gap=overfit_gap_val,
+            note="model predictions will be held at 0.5 (neutral) downstream",
         )
 
     # ML-FIX-4: overfitting detection — CV-AUC is measured on in-distribution folds;
