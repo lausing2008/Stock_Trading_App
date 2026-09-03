@@ -2247,3 +2247,75 @@ class PaperTradeDecisionLog(Base):
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)  # entry_decision_notes joined, or exit_reason
     details_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # full snapshot at this moment
     logged_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class FixRecord(Base):
+    """T325-FIXEFFECTIVENESS: "did this fix actually work" tracking for significant bug fixes
+    (as opposed to TuneHistory, which tracks TUNING PARAMETER changes with its own before/
+    after realized_ev_pct_after backfill — this is the equivalent for CODE-LEVEL fixes found
+    during an audit, e.g. the AI Signal deep audit's AUD-SIGNAL3-EVALSELECTIONBIAS fix).
+
+    Direct user request (2026-09-02, after the AI Signal deep audit): "I would like to have a
+    dashboard to show the performance after we applied the fix so that we can compare later and
+    see if the fix really works." Deliberately a general mechanism, not a one-off AI-Signal-only
+    table — the AI Signal fix is FixRecord #1, but any future significant fix from this or a
+    later audit domain (Decision-Making, Paper Trading, Model Training, Short Squeeze, Options)
+    registers here the same way.
+
+    One row per tracked fix. baseline_metrics_json is the "before" snapshot — captured ONCE,
+    at fix time, from the exact same queries the audit itself already ran (so the comparison is
+    apples-to-apples against a real, already-published number, not re-derived differently
+    later). Re-measurements over time live in FixSnapshot (1-to-many) — this row itself never
+    changes after creation, matching TuneHistory's own "written once, referenced forever"
+    convention.
+    """
+    __tablename__ = "fix_records"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    fix_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)  # e.g. "AUD-SIGNAL3-EVALSELECTIONBIAS"
+    domain: Mapped[str] = mapped_column(String(32), index=True)  # "ai_signal" | "decision_making" | "paper_trading" | "model_training" | "short_squeeze" | "options"
+    title: Mapped[str] = mapped_column(String(255))
+    fixed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    audit_doc_path: Mapped[str | None] = mapped_column(String(255), nullable=True)  # e.g. "docs/audits/2026-09-02-....md"
+    # The exact metric definitions + baseline values, as a flat dict — deliberately JSON, not
+    # fixed columns, since different fixes measure genuinely different things (AI Signal:
+    # win_rate_5d/avg_return_5d per horizon+direction; a future Paper Trading fix might measure
+    # Sharpe/max-drawdown instead) — forcing every future fix into the SAME fixed schema would
+    # be the same "genuinely different shape forced into an ill-fitting table" mistake this
+    # repo's own OptionsFlowAlertOutcome docstring already warns against.
+    baseline_metrics_json: Mapped[dict] = mapped_column(JSON)
+    # Free-text describing what "success" looks like for this specific fix, set at fix time —
+    # e.g. "win_rate_5d should rise toward 50%+ as the eval-selection-bias correction accumulates
+    # fresh, uncorrupted signal_outcomes rows." Read by a human comparing baseline vs. snapshots;
+    # never programmatically evaluated (no fix is generic enough to auto-grade its own success).
+    success_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recheck_after_days: Mapped[int] = mapped_column(Integer, default=14)  # user's own "couple of weeks" cadence, as a real, adjustable default
+
+    snapshots: Mapped[list["FixSnapshot"]] = relationship(back_populates="fix_record", cascade="all, delete-orphan")
+
+
+class FixSnapshot(Base):
+    """One re-measurement of a FixRecord's own baseline_metrics_json shape, at a later point in
+    time — see FixRecord's own docstring for the full rationale. Written by a scheduled job
+    (signal-engine's own /fix-effectiveness/{fix_id}/snapshot for AI-Signal-domain fixes;
+    future domains' fixes register their own equivalent snapshot-producing endpoint) on a
+    recurring cadence (FixRecord.recheck_after_days), not on every request — a snapshot is a
+    deliberate, timestamped checkpoint, not a live/on-demand query result.
+
+    metrics_json uses the SAME keys as its own FixRecord.baseline_metrics_json (enforced by
+    convention, not a DB constraint, since JSON has no schema to enforce) so a UI can zip the
+    two dicts together directly without a translation layer.
+    """
+    __tablename__ = "fix_snapshots"
+    __table_args__ = (
+        Index("ix_fix_snapshots_fix_record_taken", "fix_record_id", "taken_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    fix_record_id: Mapped[int] = mapped_column(ForeignKey("fix_records.id", ondelete="CASCADE"), index=True)
+    taken_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    metrics_json: Mapped[dict] = mapped_column(JSON)
+    sample_size: Mapped[int | None] = mapped_column(Integer, nullable=True)  # e.g. rows this snapshot's metrics are computed over, for eyeballing statistical confidence
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)  # e.g. "still below the 30-sample floor for 3 of 8 buckets"
+
+    fix_record: Mapped["FixRecord"] = relationship(back_populates="snapshots")

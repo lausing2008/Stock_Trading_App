@@ -198,7 +198,7 @@ _NON_ALERT_JOB_IDS = {
     "(f-string prefix='broker_token_renewal_')",
     "data_quality_checks", "value_area_levels_daily", "squeeze_alert_outcome_eval_daily",
     "prebreakout_alert_outcome_eval_daily", "options_flow_alert_outcome_eval_daily",
-    "dark_pool_alert_outcome_eval_daily",
+    "dark_pool_alert_outcome_eval_daily", "fix_effectiveness_recheck_daily",
     "analyst_target_outcomes_daily",
     "live_price_cache_refresh", "avg_volume_cache_refresh", "avg_volume_startup_check",
     "signal_watchdog_daily", "db_purge_weekly", "meta_model_monthly_retrain",

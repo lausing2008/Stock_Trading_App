@@ -69,6 +69,8 @@ from .models import (
     StressTestResult,
     RestrictedSymbol,
     PaperTradeDecisionLog,
+    FixRecord,
+    FixSnapshot,
 )
 from .session import SessionLocal, engine, get_session, init_db
 
@@ -143,6 +145,8 @@ __all__ = [
     "StressTestResult",
     "RestrictedSymbol",
     "PaperTradeDecisionLog",
+    "FixRecord",
+    "FixSnapshot",
     "SessionLocal",
     "engine",
     "get_session",

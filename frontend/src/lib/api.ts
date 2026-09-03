@@ -564,6 +564,10 @@ export const api = {
     const qs = p.toString();
     return request<DarkPoolAlertsRecentResponse>(`/stocks/dark-pool-alerts-recent${qs ? `?${qs}` : ''}`);
   },
+
+  // T325-FIXEFFECTIVENESS
+  getFixRecords: () => request<FixRecordResponse[]>('/fix-effectiveness'),
+  takeFixSnapshot: (fixId: string) => request<FixSnapshotResult>(`/fix-effectiveness/${fixId}/snapshot`, { method: 'POST' }),
   getOptionsExpirations: (symbol: string) => request<OptionsExpirationsResponse>(`/stocks/${symbol}/options-expirations`),
   getOptionsGamePlan: (symbol: string, opts: { stopLoss?: number; takeProfit?: number; shares?: number }) => {
     const params = new URLSearchParams();
@@ -1296,6 +1300,51 @@ export type DarkPoolAlertRecent = {
 export type DarkPoolAlertsRecentResponse = {
   scope: string;
   alerts: DarkPoolAlertRecent[];
+};
+
+// T325-FIXEFFECTIVENESS: "did this fix actually work" tracking. metrics is deliberately a flat
+// Record, not fixed fields — different fixes measure genuinely different things (see
+// FixRecord's own docstring, shared/db/models.py). AI Signal's own shape (the only one
+// implemented so far) is { by_bucket: { "HORIZON|DIRECTION": { win_rate_5d, avg_return_5d_pct,
+// win_rate_base, avg_pct_return_base, resolved_5d, resolved_base, total } }, total_resolved_5d }.
+export type FixMetricBucket = {
+  total: number;
+  resolved_5d: number;
+  win_rate_5d: number | null;
+  avg_return_5d_pct: number | null;
+  resolved_base: number;
+  win_rate_base: number | null;
+  avg_pct_return_base: number | null;
+};
+
+export type FixMetrics = {
+  by_bucket: Record<string, FixMetricBucket>;
+  total_resolved_5d: number;
+};
+
+export type FixSnapshotEntry = {
+  taken_at: string;
+  metrics: FixMetrics;
+  sample_size: number | null;
+  note: string | null;
+};
+
+export type FixRecordResponse = {
+  fix_id: string;
+  domain: string;
+  title: string;
+  fixed_at: string;
+  audit_doc_path: string | null;
+  baseline_metrics: FixMetrics;
+  success_criteria: string | null;
+  recheck_after_days: number;
+  snapshots: FixSnapshotEntry[];
+};
+
+export type FixSnapshotResult = {
+  fix_id: string;
+  taken_at: string;
+  metrics: FixMetrics;
 };
 
 // MPE-03: per-expiration OI/volume rollup, NORMAL/ELEVATED/HIGH/EXTREME relative to the other

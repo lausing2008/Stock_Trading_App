@@ -85,7 +85,7 @@ from sqlalchemy.orm import selectinload, Session
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, AnalystPriceTarget, DarkPoolAlertOutcome, EarningsEvent, EconomicEvent, FundamentalsSnapshot, Market, OptionsFlowAlertOutcome, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
+from db import AlertCondition, AnalystPriceTarget, DarkPoolAlertOutcome, EarningsEvent, EconomicEvent, FixRecord, FixSnapshot, FundamentalsSnapshot, Market, OptionsFlowAlertOutcome, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -5558,6 +5558,61 @@ def evaluate_dark_pool_alert_outcomes() -> None:
             pass
 
 
+_FIX_EFFECTIVENESS_RECHECK_LOCK_KEY = "stockai:lock:recheck_fix_effectiveness"
+_FIX_EFFECTIVENESS_RECHECK_LOCK_TTL = 3600  # generous — daily job, only needs to prevent true overlap
+
+
+def recheck_fix_effectiveness() -> None:
+    """T325-FIXEFFECTIVENESS: daily check for any FixRecord due for a re-measurement, per its
+    own recheck_after_days cadence (user's own "couple of weeks" framing, default 14 days — see
+    FixRecord's own docstring, shared/db/models.py). Runs once/day rather than exactly on the
+    cadence boundary — a FixRecord due "in 14 days" gets its snapshot taken on whichever daily
+    run first finds it overdue, matching every other daily-cadence job's own tolerance for a
+    same-day-not-exact-hour trigger.
+
+    Only AI-Signal-domain fixes have a real snapshot metric implemented today
+    (_compute_ai_signal_win_rate_metrics in signal-engine's fix_effectiveness.py) — a future
+    domain's fix registers its own metric function there, and this job's dispatch (via the
+    generic POST /fix-effectiveness/{fix_id}/snapshot route, which itself checks
+    FixRecord.domain) picks it up automatically with no scheduler-side change needed.
+    """
+    try:
+        acquired = _get_redis().set(_FIX_EFFECTIVENESS_RECHECK_LOCK_KEY, "1", nx=True, ex=_FIX_EFFECTIVENESS_RECHECK_LOCK_TTL)
+        if not acquired:
+            return
+    except Exception:
+        pass
+    _t0 = time.monotonic()
+    try:
+        with SessionLocal() as session:
+            records = session.execute(select(FixRecord)).scalars().all()
+            now = datetime.now(timezone.utc)
+            due = 0
+            for record in records:
+                latest_snapshot_at = session.execute(
+                    select(func.max(FixSnapshot.taken_at)).where(FixSnapshot.fix_record_id == record.id)
+                ).scalar_one_or_none()
+                last_check = latest_snapshot_at or record.fixed_at
+                last_check_utc = last_check if last_check.tzinfo else last_check.replace(tzinfo=timezone.utc)
+                if (now - last_check_utc).days < record.recheck_after_days:
+                    continue
+                due += 1
+                try:
+                    _post(f"{_settings.signal_engine_url}/fix-effectiveness/{record.fix_id}/snapshot")
+                except Exception as exc:
+                    log.warning("fix_effectiveness.recheck_failed", fix_id=record.fix_id, error=str(exc))
+        _record_job_status("recheck_fix_effectiveness", "ok", time.monotonic() - _t0)
+        log.info("fix_effectiveness.recheck_done", total_records=len(records), due=due)
+    except Exception as exc:
+        log.error("fix_effectiveness.recheck_job_failed", error=str(exc), exc_info=True)
+        _record_job_status("recheck_fix_effectiveness", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        try:
+            _get_redis().delete(_FIX_EFFECTIVENESS_RECHECK_LOCK_KEY)
+        except Exception:
+            pass
+
+
 _VALUE_AREA_COMPUTE_LOCK_KEY = "stockai:lock:compute_value_area_levels"
 _VALUE_AREA_COMPUTE_LOCK_TTL = 3600  # generous — daily job, only needs to prevent true overlap
 
@@ -10771,6 +10826,17 @@ def start_scheduler() -> None:
         compute_value_area_levels_daily,
         CronTrigger(hour=18, minute=0, timezone="America/New_York"),
         id="value_area_levels_daily", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── T325-FIXEFFECTIVENESS: fix-effectiveness re-measurement check — daily, 18:05 ET ──
+    # Cheap (a handful of small queries + at most a few HTTP calls, one per overdue
+    # FixRecord — realistically a handful of rows total), no real reason to wait for
+    # post-close specifically, but placed right after signal_outcomes-touching jobs so any
+    # snapshot taken the same day reflects that day's own evaluate_signal_outcomes() run.
+    _scheduler.add_job(
+        recheck_fix_effectiveness,
+        CronTrigger(hour=18, minute=5, timezone="America/New_York"),
+        id="fix_effectiveness_recheck_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── T264-SQUEEZEALERT-PERFORMANCE: squeeze/gamma-unwind alert outcome evaluator — 18:15 ET ──

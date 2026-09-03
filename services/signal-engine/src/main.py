@@ -4,9 +4,10 @@ from .api.routes import router
 from .api.calibration import router as calibration_router
 from .api.outcomes import router as outcomes_router
 from .api.analytics import router as analytics_router
+from .api.fix_effectiveness import router as fix_effectiveness_router
 
-# calibration_router/outcomes_router/analytics_router must be registered BEFORE router —
-# router contains the catch-all GET /{symbol} route, which would otherwise shadow their
-# literal paths (e.g. /confidence-calibration, /tune_status, /accuracy) since FastAPI matches
-# routes in registration order.
-app = create_app("signal-engine", routers=[calibration_router, outcomes_router, analytics_router, router])
+# calibration_router/outcomes_router/analytics_router/fix_effectiveness_router must be
+# registered BEFORE router — router contains the catch-all GET /{symbol} route, which would
+# otherwise shadow their literal paths (e.g. /confidence-calibration, /tune_status, /accuracy,
+# /fix-effectiveness) since FastAPI matches routes in registration order.
+app = create_app("signal-engine", routers=[calibration_router, outcomes_router, analytics_router, fix_effectiveness_router, router])

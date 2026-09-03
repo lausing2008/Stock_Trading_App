@@ -78,6 +78,12 @@ _ROUTES = {
     # entirely, so every request 404'd at the gateway despite the backend fully implementing
     # the feature (admin-health page's RL Agent tile, RL training trigger).
     "rl-agent": _settings.market_data_url,
+    # T325-FIXEFFECTIVENESS: fix_effectiveness.py registers APIRouter(prefix="/fix-effectiveness")
+    # on signal-engine (routes GET /fix-effectiveness, POST /fix-effectiveness/register,
+    # POST /fix-effectiveness/{fix_id}/snapshot) — added here up front, matching the rl-agent
+    # entry's own documented lesson (a genuinely new router prefix must be added to this map
+    # or every request 404s at the gateway despite the backend fully implementing the feature).
+    "fix-effectiveness": _settings.signal_engine_url,
     # T258-NEWS-INTELLIGENCE: new service (port 8011) — real-time headline ingestion.
     "news": _settings.news_intelligence_url,
     # BUG-PROXYGAP-CONDITIONALORDERS: T286-CONDITIONAL-ORDER shipped its own
