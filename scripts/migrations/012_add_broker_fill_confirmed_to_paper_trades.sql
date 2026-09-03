@@ -1,0 +1,13 @@
+-- Migration: add broker_fill_confirmed to paper_trades (AUD-PT1-BROKERPOLLNEVERCLEARS)
+-- Run once: psql -U stockai -d stockai -f 012_add_broker_fill_confirmed_to_paper_trades.sql
+--
+-- poll_broker_order_fills() selected on broker_order_id IS NOT NULL as its "still needs
+-- polling" signal, but broker_order_id is never cleared once a fill is confirmed — it's
+-- separately relied on by _place_broker_exit() to decide whether a position needs a real
+-- broker SELL on exit. Without a distinct flag, every broker-entered position gets silently
+-- re-polled against the real broker API forever, not just until its fill is confirmed.
+--
+-- Defaults false for all existing rows (safe: any currently-open broker-entered position with
+-- broker_order_id set will simply get re-confirmed once on the next poll cycle, at which point
+-- this flag is set true and it stops).
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS broker_fill_confirmed BOOLEAN NOT NULL DEFAULT false;

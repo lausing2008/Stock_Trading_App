@@ -953,6 +953,13 @@ class PaperTrade(Base):
 
     # Real-broker execution tracking (null for paper-only portfolios)
     broker_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # AUD-PT1-BROKERPOLLNEVERCLEARS: broker_order_id's presence is separately relied on by
+    # _place_broker_exit() to decide whether a position needs a real broker SELL on exit, so it
+    # can never be cleared once a fill is confirmed. This flag is the actual "still needs
+    # polling for a fill" signal, consulted by poll_broker_order_fills()'s own query — without
+    # it, every broker-entered position gets silently re-polled against the broker API forever,
+    # not just until its fill is confirmed.
+    broker_fill_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     # Set when a broker-linked portfolio's entry/exit order placement genuinely fails (e.g. a
     # real E*Trade rejection) — distinguishes "attempted and failed" from "never attempted"
     # (both otherwise leave broker_order_id null, making the two indistinguishable without a

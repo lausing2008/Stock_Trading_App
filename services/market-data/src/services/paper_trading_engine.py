@@ -230,6 +230,7 @@ def _place_broker_entry(session, trade: "PaperTrade", portfolio: "PaperPortfolio
                 trade.entry_price   = fill_p
                 trade.current_price = fill_p
                 trade.highest_price = fill_p
+                trade.broker_fill_confirmed = True  # AUD-PT1-BROKERPOLLNEVERCLEARS
                 log.info("broker.entry_filled", symbol=trade.symbol, fill_price=fill_p, delta=delta)
         except Exception:
             pass  # polling job will update fill later
@@ -318,6 +319,11 @@ def poll_broker_order_fills(session=None) -> None:
             select(PaperTrade).where(
                 PaperTrade.stage == "open",
                 PaperTrade.broker_order_id.isnot(None),
+                # AUD-PT1-BROKERPOLLNEVERCLEARS: broker_order_id itself is never cleared (it's
+                # separately relied on at exit-time to route a real broker SELL) — without this,
+                # every broker-entered position gets re-polled against the broker API forever,
+                # not just until its fill is confirmed.
+                PaperTrade.broker_fill_confirmed.is_(False),
             )
         ).scalars().all()
         if not pending:
@@ -348,6 +354,11 @@ def poll_broker_order_fills(session=None) -> None:
                         updated += 1
                         log.info("broker.poll_fill_updated",
                                  symbol=trade.symbol, fill_price=fill_p)
+                    trade.broker_fill_confirmed = True  # AUD-PT1-BROKERPOLLNEVERCLEARS
+                # NOTE: a terminal "cancelled"/"rejected" status is deliberately NOT marked
+                # broker_fill_confirmed here — that's a distinct, not-yet-investigated question
+                # (what should happen to a paper trade whose real broker order never filled at
+                # all) left for a future pass, not silently folded into this fix.
             except Exception as exc:
                 if not _handle_broker_error_if_token_rejected(session, port, exc):
                     log.debug("broker.poll_check_failed",
