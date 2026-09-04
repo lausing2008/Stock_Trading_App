@@ -440,3 +440,72 @@ docker exec stockai-postgres-1 psql -U stockai -d stockai -c "\dt" | grep -iE \
 
 ---
 
+## Recurring Issue: 9 of 10 Backend Containers Ran a Stale `shared/db/` — market-data Crash-Looped on the Next Restart It Actually Took (2026-09-04)
+
+**Symptom:** deploying the `AUD-MISFIREGRACE-OPTIONSFLOW` scheduler fix (`docker cp` of
+`scheduler.py` + `docker restart stockai-market-data-1`) caused the container to crash-loop
+instead of coming back healthy: `ImportError: cannot import name 'AnalystPriceTarget' from
+'db'`. `AnalystPriceTarget` genuinely exists in the current repo's `shared/db/__init__.py` —
+this container's own `/app/shared/db/__init__.py` was simply an older copy that had never been
+`docker cp`'d forward, and had gone unnoticed because market-data itself had not been RESTARTED
+(as opposed to merely having individual files `docker cp`'d into it) since before that model
+was added.
+
+**Root cause:** the same structural gap `docker-deploy-staleness.md`'s own earlier entries
+already document — `docker cp` only updates files inside a container's writable layer; nothing
+about that operation itself verifies every OTHER file that might transitively import the
+changed one is also current. Fixing the first `ImportError` (copying `shared/db/__init__.py`)
+immediately surfaced a SECOND one one layer deeper (`shared/db/models.py` missing `UserTier`,
+added 2026-09-01 per this repo's own Auth Architecture notes), and fixing THAT surfaced a THIRD,
+structurally different gap — `ModuleNotFoundError: No module named
+'src.services.conditional_orders'` — an entire source FILE that had never been copied to this
+container at all, not merely an outdated one. Copying the full current `services/market-data/
+src` + `shared` trees (rather than continuing to patch individual missing symbols one crash at
+a time) resolved all three at once.
+
+**Wider blast radius, confirmed by checking every OTHER backend container BEFORE any of them
+needed a restart:** `docker exec <container> grep -c 'AnalystPriceTarget'
+/app/shared/db/__init__.py` and `grep -c 'class UserTier' /app/shared/db/models.py` came back
+`0` (stale) on **9 of the other 10 backend containers** — signal-engine, strategy-engine,
+portfolio-optimizer, research-engine, decision-engine, event-intelligence, news-intelligence,
+technical-analysis, ml-prediction, and api-gateway. Only ranking-engine had a current
+`shared/db/__init__.py`. None of these 9 had crashed YET — they were all still running on
+whatever in-memory Python objects their own process had loaded at its last real start — but
+every one of them carried the identical latent risk market-data just hit: the next time ANY of
+them restarts for ANY reason (a future `docker restart`, an unplanned reboot, an OOM kill), it
+would very likely crash-loop on the exact same class of stale-shared-file `ImportError`.
+
+**Fixed:** swept the current `shared/` directory (`docker cp shared <container>:/app/`) to all
+10 of the other backend containers — proactively, before any of them needed a restart, so the
+fix lands silently the next time each one DOES restart rather than causing a fresh incident
+then. `docker cp` alone does not restart a running process, so none of these 9 containers were
+restarted as part of this fix (confirmed via unchanged `docker ps` uptimes) — this closes the
+risk for their NEXT restart, it does not (and does not need to) change their current in-memory
+behavior.
+
+**What to check if a container crash-loops on restart with an ImportError**:
+```bash
+# The exact symptom: container stuck cycling "Up N seconds" -> restarting, never "healthy"
+docker ps --filter name=stockai-<service>-1 --format 'table {{.Names}}\t{{.Status}}'
+docker logs stockai-<service>-1 --tail 40   # find the real ImportError/ModuleNotFoundError
+
+# Sweep the FULL current src/ + shared/ trees for that service, not just the one file that
+# happened to be docker cp'd most recently — a single missing symbol is rarely the only gap:
+docker cp services/<service>/src stockai-<service>-1:/app/
+docker cp shared stockai-<service>-1:/app/
+docker restart stockai-<service>-1
+
+# Proactively check every OTHER container for the SAME staleness before it becomes an
+# incident on its own next restart — this is the check that found the 9-container gap above:
+for c in $(docker ps --format '{{.Names}}' | grep stockai); do
+  echo "=== $c ==="
+  docker exec "$c" grep -c 'AnalystPriceTarget' /app/shared/db/__init__.py 2>&1
+done
+```
+This is a recurring risk class, not a one-time fix — any future `shared/db/` or `shared/
+common/` change should be swept to ALL 11 backend containers immediately (per this file's own
+Deployment Pattern in CLAUDE.md), not just the one container whose feature actually needed the
+change that day.
+
+---
+
