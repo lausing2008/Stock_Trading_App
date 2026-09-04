@@ -371,6 +371,98 @@ export default function OptionTradingGuidePage() {
         away&quot; than guessing from the stock chart alone.
       </Callout>
 
+      <Section title="Full case study — 100 shares of AAPL, three ways it could go">
+        <p style={{ marginBottom: 16 }}>
+          Everything above explained the pieces separately. Here they are together, on one real
+          position, with every number carried through to a final dollar P&amp;L — using AAPL&apos;s
+          real quoted price and real listed option premiums from a live chain, not invented
+          numbers.
+        </p>
+
+        <div style={{ padding: '14px 16px', borderRadius: '10px', border: '1px solid #1e293b', background: '#0b1420', marginBottom: 16 }}>
+          <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#38bdf8', marginBottom: 8 }}>The setup</div>
+          <ul style={{ paddingLeft: 18, lineHeight: 1.9, margin: 0, color: '#94a3b8' }}>
+            <li>AI Signal fires <b style={{ color: '#4ade80' }}>BUY</b> on <b style={{ color: '#e2e8f0' }}>AAPL</b> at <Code>$328.21</Code> — you buy <Code>100 shares</Code> for <Code>$32,821</Code>.</li>
+            <li>ATR(14) is <Code>$6.98</Code>. The SWING-style game plan&apos;s stop is <Code>max(price − 2×ATR, price × 0.945)</Code> = <Code>max($314.25, $310.16)</Code> = <b style={{ color: '#e2e8f0' }}>$314.25</b>.</li>
+            <li>A realistic take-profit target is <b style={{ color: '#e2e8f0' }}>$345</b> (roughly a 5% move — the kind of target a real expected-move reading, not a generic fixed percentage, would suggest for a 30-45 day window).</li>
+            <li>Real listed options, ~36 days out: a <Code>$315 put</Code> trading at <Code>$4.65</Code>, and a <Code>$345 call</Code> trading at <Code>$4.06</Code> — both close to the stop and target above.</li>
+          </ul>
+        </div>
+
+        <SubSection title="Scenario A — the stock gaps down hard (buy a protective put)">
+          <p style={{ marginBottom: 10 }}>
+            Say AAPL gaps overnight on bad news to <Code>$290</Code> — well past your $314.25 stop,
+            the exact scenario a protective put exists for (a stop-loss ORDER can&apos;t protect you
+            from a gap; it only protects you from a decline you can actually sell into).
+          </p>
+          <div style={{ padding: '12px 14px', borderRadius: '8px', background: '#0a1120', fontFamily: 'monospace', fontSize: '13px', lineHeight: 1.8, color: '#94a3b8', marginBottom: 10 }}>
+            Without a put: ($290.00 − $328.21) × 100 = <b style={{ color: '#f87171' }}>−$3,821.00</b><br/>
+            Put cost: $4.65 × 100 = <b style={{ color: '#e2e8f0' }}>$465.00</b><br/>
+            Put payout at expiry: max($315.00 − $290.00, 0) × 100 = <b style={{ color: '#4ade80' }}>$2,500.00</b><br/>
+            Net P&amp;L: −$3,821.00 + $2,500.00 − $465.00 = <b style={{ color: '#f87171' }}>−$1,786.00</b> (−5.4% of cost basis)
+          </div>
+          <p style={{ margin: 0 }}>
+            The put didn&apos;t prevent a loss — it capped it. Without it you&apos;re down 11.6%;
+            with it, you&apos;re down 5.4%, for a known, paid-up-front cost of $465. That $465 is
+            the real, quantified price of insurance against exactly this scenario — the same
+            reasoning as the Short Squeeze / Gamma Unwind worked examples earlier in this guide,
+            now with the actual dollars attached.
+          </p>
+        </SubSection>
+
+        <SubSection title="Scenario B — the stock goes nowhere (sell a covered call)">
+          <p style={{ marginBottom: 10 }}>
+            Say AAPL chops sideways around <Code>$328</Code> for the next month — no real move
+            either direction. A long stock position alone earns nothing extra here; a covered call
+            turns that dead time into real, collected income.
+          </p>
+          <div style={{ padding: '12px 14px', borderRadius: '8px', background: '#0a1120', fontFamily: 'monospace', fontSize: '13px', lineHeight: 1.8, color: '#94a3b8', marginBottom: 10 }}>
+            Stock P&amp;L: ($328.00 − $328.21) × 100 = <b style={{ color: '#e2e8f0' }}>−$21.00</b> (essentially flat)<br/>
+            Call premium collected: $4.06 × 100 = <b style={{ color: '#4ade80' }}>$406.00</b><br/>
+            Call expires worthless (stock never reached $345) — you keep the full premium<br/>
+            Net P&amp;L: −$21.00 + $406.00 = <b style={{ color: '#4ade80' }}>+$385.00</b>
+          </div>
+          <p style={{ margin: 0 }}>
+            A flat month that would otherwise be a wash turns into a real +$385 (about +1.2% of
+            cost basis) purely from collecting the call&apos;s premium and having it expire
+            unexercised. This is theta working FOR you, exactly as the earlier Greeks example
+            described — you sold time decay, and time simply passed.
+          </p>
+        </SubSection>
+
+        <SubSection title="Scenario C — the stock rallies past your target (the covered call's real tradeoff)">
+          <p style={{ marginBottom: 10 }}>
+            Say AAPL actually rallies to <Code>$355</Code> — past both your $345 target and your
+            covered call&apos;s strike. This is the scenario a covered call writer has to accept:
+            real upside gets capped in exchange for the premium collected in every other scenario.
+          </p>
+          <div style={{ padding: '12px 14px', borderRadius: '8px', background: '#0a1120', fontFamily: 'monospace', fontSize: '13px', lineHeight: 1.8, color: '#94a3b8', marginBottom: 10 }}>
+            Uncapped stock gain (no call sold): ($355.00 − $328.21) × 100 = <b style={{ color: '#4ade80' }}>$2,679.00</b><br/>
+            With the covered call, shares get called away at $345:<br/>
+            &nbsp;&nbsp;Capped stock gain: ($345.00 − $328.21) × 100 = $1,679.00<br/>
+            &nbsp;&nbsp;Plus premium collected: $406.00<br/>
+            &nbsp;&nbsp;Total capped P&amp;L: <b style={{ color: '#4ade80' }}>$2,085.00</b><br/>
+            Opportunity cost vs. holding uncapped: $2,679.00 − $2,085.00 = <b style={{ color: '#fbbf24' }}>$594.00</b>
+          </div>
+          <p style={{ margin: 0 }}>
+            You still made $2,085 — a genuinely good outcome — but gave up $594 of further upside
+            to get there. This is the real, honest cost of selling a covered call: it converts an
+            uncertain, unlimited upside into a smaller, certain-once-triggered one. Whether that
+            trade is worth it depends on how much you actually expected the stock to run past your
+            own target versus how much you valued the guaranteed premium income in scenario B.
+          </p>
+        </SubSection>
+
+        <Callout tone="good" title="What this case study is actually showing">
+          The same $32,821 position, the same two option legs ($465 put cost, $406 call premium
+          collected), produce three completely different outcomes depending on what the stock
+          actually does — and every one of those outcomes was knowable in advance from the
+          contract&apos;s own strike and premium, before the stock made its move. That is the real
+          value of doing the math: not predicting which scenario happens, but knowing exactly what
+          each one costs or pays before you&apos;re in it.
+        </Callout>
+      </Section>
+
       <Section title="Reading this app's own alerts into an actual entry">
         <p style={{ marginBottom: 16 }}>
           The AI Signal BUY badge on a stock page is a starting point, not the whole picture — this
