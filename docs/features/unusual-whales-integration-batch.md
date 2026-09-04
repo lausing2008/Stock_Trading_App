@@ -432,3 +432,68 @@ one field, forced `get_nope()`'s own `nope` field to always parse `None`) — bo
 both restored byte-identical. Full market-data suite: 2612 passed; frontend `tsc --noEmit`/
 `next build` clean, confirmed shipped in the compiled `option-trading-guide`/`stock/[symbol]`
 bundles via grep.
+
+---
+
+### AUD-EARNINGSMOVE — Real historical expected-move / post-earnings-move data on the Earnings
+### Calendar (2026-09-04)
+
+**User request**: fourth feature from the UW API design review, item #4 of 7 in the agreed build
+order. Real field shape confirmed via WebFetch against UW's own published operation doc for
+`GET /api/earnings/{ticker}` (fetched 2026-09-04): per-historical-report `expected_move`/
+`expected_move_perc` (the pre-report, options-market-implied forecast) paired with
+`post_earnings_move_1d`/`1w`/`2w`/`3d` and `pre_earnings_move_1d`/`1w`/`2w`/`3d` (what the stock
+actually did) — every value a string in the real response.
+
+**Conceptual distinction from AUD-DECIDE4-EXPECTEDMOVE** (documented inline): that earlier work's
+`expected_move_pct` is a GENERIC 30-day reference-window figure derived from `get_iv_rank()`,
+computed for any symbol on any day, feeding the paper-trading engine's stop/target math. This is
+a real, EARNINGS-SPECIFIC expected move for one specific historical report, paired with the
+actual outcome — "was the options market's fear justified THIS time," a genuinely different
+question the Earnings Calendar previously had no answer for at all (it only had backward-looking
+EPS beat-rate/surprise stats, nothing about the stock's own PRICE reaction to a report).
+
+**New UW function**: `get_historical_earnings_moves(symbol, limit=8)` /
+`HistoricalEarningsMoveRow` (`unusual_whales.py`) — list-returning, fail-open (never `None`,
+matching `get_max_pain()`'s own contract), sorted most-recent-first, capped at `limit` (default 8,
+matching this app's own existing `eps_beat_rate` 8-quarter-lookback convention). Deliberately
+kept only 7 of the real response's 20+ fields (report_date/report_time/expected_move/
+expected_move_perc/post_earnings_move_1d/1w/source) rather than surfacing every raw field —
+those are the ones that actually answer the "was the fear justified" question; the rest (2w/3d
+variants, straddle pricing) were left unmapped as not yet needed. **New TTL**: `_EARNINGS_MOVE_TTL
+= 21600` (6h, matching `_SHORT_INTEREST_TTL`'s own rationale) — this is historical per-report
+data that only grows once per quarter per symbol, not a fast-moving reading like GEX/NOPE.
+
+**Wiring**: `events_calendar()` (`routes.py`) — the same function AUD-EARNINGSCAL-MARKETESTIMATES
+already extended with `eps_beat_rate`/analyst consensus — gained a new call to
+`get_historical_earnings_moves()`, scoped identically to the existing analyst-consensus call
+(only for symbols with a real near-term earnings event in the requested window, never the full
+active-stock universe this loop otherwise iterates). `earnings_expected_move_perc` (the next
+report's forecast, taken from the most recent historical row since UW doesn't publish a separate
+forward-only forecast endpoint) and `earnings_move_history` (the full capped list) both added to
+the earnings event dict.
+
+**Rendering**: `earnings.tsx` gained an "Expected move: ±X.X%" chip next to the existing analyst-
+target/beat-history row, plus a new "Past moves (expected → actual)" strip showing up to 4 prior
+quarters, colored by whether the actual 1-day move was positive or negative.
+`option-trading-guide.tsx` gained a new subsection explaining the concept and its distinct value
+from the existing beat-rate stat — explicitly framed as "was the market's own fear historically
+accurate for this stock," relevant context before paying for a pre-earnings straddle or
+protective put at the currently-quoted premium.
+
+**Types**: `frontend/src/lib/api.ts`'s `EventCalendarItem`-equivalent type extended with
+`earnings_expected_move_perc`/`earnings_move_history`; new `EarningsMoveHistoryRow` type added.
+
+**Tests**: 16 new — `test_unusual_whales.py` gained 10 (not-available, cache-hit, real-response
+parsing, most-recent-first sorting, limit-capping at both a custom value and the default 8,
+malformed-row (no `report_date`) skipping without crashing, non-list response, fetch exception,
+own 6h TTL distinct from NOPE's 60s), `test_earnings_calendar_market_estimates.py` gained 6
+(called only inside the earnings block — not once per stock in the outer loop — call happens
+before the event dict is appended, both new fields present, the expected-move field reads the
+most recent row rather than a hardcoded value, the history list correctly maps all 3 sub-fields,
+the `unusual_whales` module is imported before the symbol loop rather than inside it).
+Adversarially verified via 2 sabotage cycles (both new response fields hardcoded to
+empty/`None` — 3 tests failed correctly; the sort call removed from `get_historical_earnings_
+moves()` — 1 test failed correctly), both restored byte-identical. Full market-data suite: 2628
+passed; frontend `tsc --noEmit`/`next build` clean, confirmed shipped in the compiled
+`earnings`/`option-trading-guide` bundles via grep.

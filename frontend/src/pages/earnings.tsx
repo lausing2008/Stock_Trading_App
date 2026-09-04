@@ -209,6 +209,30 @@ function EventCard({ ev, subs, onSubsChanged, onOpenForecast }: { ev: CalendarEv
                   )}
                 </span>
               )}
+              {ev.earnings_expected_move_perc != null && (
+                <span style={{ fontSize: 11 }} title="The options market's own implied move for this report, from Unusual Whales">
+                  <span style={{ color: '#475569' }}>Expected move: </span>
+                  <span style={{ color: '#a78bfa', fontWeight: 700 }}>±{ev.earnings_expected_move_perc.toFixed(1)}%</span>
+                </span>
+              )}
+            </div>
+          )}
+          {/* AUD-EARNINGSMOVE: real per-report track record -- was the options market's own
+              pre-report fear ever actually justified for THIS stock? A genuinely different
+              question from eps_beat_rate above (that's about EPS accuracy; this is about the
+              stock's own PRICE reaction magnitude relative to what was priced in). */}
+          {ev.earnings_move_history != null && ev.earnings_move_history.length > 0 && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingTop: 2 }}>
+              <span style={{ fontSize: 10, color: '#475569' }}>Past moves (expected → actual):</span>
+              {ev.earnings_move_history.slice(0, 4).map(h => (
+                <span key={h.report_date} style={{ fontSize: 10, fontFamily: 'monospace', color: '#64748b' }}>
+                  {h.expected_move_perc != null ? `±${h.expected_move_perc.toFixed(1)}%` : '—'}
+                  {' → '}
+                  <span style={{ color: h.post_earnings_move_1d != null && h.post_earnings_move_1d >= 0 ? '#4ade80' : '#f87171' }}>
+                    {h.post_earnings_move_1d != null ? `${h.post_earnings_move_1d >= 0 ? '+' : ''}${h.post_earnings_move_1d.toFixed(1)}%` : '—'}
+                  </span>
+                </span>
+              ))}
             </div>
           )}
         </>

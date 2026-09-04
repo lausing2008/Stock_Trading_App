@@ -519,6 +519,26 @@ export default function OptionTradingGuidePage() {
             better; when they broadly agree, that&apos;s a small extra piece of corroboration.
           </p>
         </SubSection>
+
+        <SubSection title="Real historical expected move — was the options market's fear justified?">
+          <p style={{ marginBottom: 10 }}>
+            The Earnings Calendar page shows an &quot;Expected move&quot; figure next to each
+            upcoming report — the options market&apos;s own real, live implied move for THAT
+            specific report, not a generic estimate. Underneath it, a &quot;Past moves&quot; strip
+            shows up to 4 of this stock&apos;s own prior quarters: what the market expected each
+            time (left of the arrow) versus what the stock actually did the next day (right of
+            the arrow, colored by direction).
+          </p>
+          <p style={{ margin: 0 }}>
+            This answers a genuinely different question than the existing EPS beat-rate history
+            next to it: beat rate is about whether the COMPANY tends to beat analyst estimates;
+            this is about whether the MARKET&apos;s own pre-report fear (or complacency) tends to
+            be accurate for this specific stock. A stock that consistently moves LESS than its own
+            expected move suggests the market has historically over-priced its earnings risk —
+            useful context before deciding whether buying a pre-earnings straddle or protective
+            put at the currently-quoted premium is likely worth what it costs.
+          </p>
+        </SubSection>
       </Section>
 
       <Section title="Reading this app's own alerts into an actual entry">

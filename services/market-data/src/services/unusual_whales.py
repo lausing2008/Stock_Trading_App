@@ -34,6 +34,9 @@ https://api.unusualwhales.com/api/openapi spec (not guessed/assumed) before bein
   - /api/stock/{ticker}/nope — call_delta, call_fill_delta, call_vol, nope, nope_fill,
     put_delta, put_fill_delta, put_vol, stock_vol, timestamp. Published per-MINUTE (the only
     field this app consumes at that cadence) — AUD-NOPE: see get_nope() below.
+  - /api/earnings/{ticker} — per-historical-report expected_move/expected_move_perc (the
+    pre-report options-implied move) paired with post_earnings_move_1d/1w (what actually
+    happened). AUD-EARNINGSMOVE: see get_historical_earnings_moves() below.
   - /api/shorts/{ticker}/interest-float/v2 — days_to_cover, fee_rate, rebate_rate,
     short_interest, short_shares_available, si_float, total_float
   - /api/shorts/{ticker}/data           — fee_rate, rebate_rate, short_shares_available
@@ -103,6 +106,9 @@ _NOPE_TTL = 60          # 1 min ONLY — NOPE is UW's own per-minute reading; th
 # real cache (not zero) so a symbol looked up twice within the same minute — e.g. this route's
 # own gex/max-pain/oi-per-strike/nope calls all hitting the same page load — doesn't spend two
 # API calls for data guaranteed to be identical.
+_EARNINGS_MOVE_TTL = 21600  # 6h, matching _SHORT_INTEREST_TTL's own rationale — this is
+# HISTORICAL per-report data that only grows (a new row) once per quarter per symbol; no reason
+# to re-fetch it as often as GEX/NOPE.
 
 
 class UnusualWhalesRateLimitError(Exception):
@@ -211,6 +217,31 @@ class NopeReading:
     put_vol: float | None
     stock_vol: float | None
     timestamp: str | None
+
+
+@dataclass
+class HistoricalEarningsMoveRow:
+    """AUD-EARNINGSMOVE: one historical earnings report's real, options-market-implied expected
+    move alongside what the stock ACTUALLY did afterward, from Unusual Whales'
+    /api/earnings/{ticker} — confirmed field shape via WebFetch against UW's own published API
+    operation doc, fetched 2026-09-04 (every value a string in the real response; converted to
+    float here). Genuinely different from AUD-DECIDE4-EXPECTEDMOVE's own expected_move_pct: that
+    one is a GENERIC 30-day reference-window figure derived from get_iv_rank() for the paper-
+    trading engine's stop/target math, computed for ANY symbol on ANY day. This is a real,
+    EARNINGS-SPECIFIC expected move for one specific historical report, paired with the actual
+    outcome — "was the options market's fear justified THIS time" — a ready-made per-symbol
+    track record the Earnings Calendar previously had no equivalent for (it only had backward-
+    looking EPS beat-rate/surprise stats, never anything about the stock's own PRICE reaction).
+    report_time distinguishes before-market/after-market/unknown, needed to correctly interpret
+    which post_earnings_move window actually captures the market's first real reaction.
+    """
+    report_date: str | None
+    report_time: str | None
+    expected_move: float | None
+    expected_move_perc: float | None
+    post_earnings_move_1d: float | None
+    post_earnings_move_1w: float | None
+    source: str | None
 
 
 @dataclass
@@ -496,6 +527,61 @@ def get_nope(symbol: str) -> NopeReading | None:
         import json
         from dataclasses import asdict
         _get_redis().setex(cache_key, _NOPE_TTL, json.dumps(asdict(result) if result else None))
+    except Exception:
+        pass
+    return result
+
+
+def get_historical_earnings_moves(symbol: str, *, limit: int = 8) -> list[HistoricalEarningsMoveRow]:
+    """AUD-EARNINGSMOVE: real historical earnings-move track record for `symbol` from Unusual
+    Whales' /api/earnings/{ticker} — confirmed real response shape via WebFetch against UW's own
+    published API operation doc, fetched 2026-09-04 (every value a real string in the response;
+    converted to float/int here). Returns most-recent-first, capped at `limit` (default 8 —
+    matching this app's own existing eps_beat_rate convention of an 8-quarter lookback). Empty
+    list (never None) on any failure/unavailability, matching get_max_pain()'s own list-returning
+    contract. Redis-cached 6h (_EARNINGS_MOVE_TTL) — this is historical per-report data that only
+    grows once per quarter per symbol, not a fast-moving live reading like NOPE/GEX.
+    """
+    if not is_available():
+        return []
+    sym = symbol.upper()
+    cache_key = f"stockai:uw:earnings_moves:{sym}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            import json
+            rows = json.loads(cached)
+            return [HistoricalEarningsMoveRow(**r) for r in rows]
+    except Exception:
+        pass
+
+    try:
+        data = _get(f"/api/earnings/{sym}")
+    except Exception as exc:
+        log.warning("unusual_whales.earnings_moves_failed", symbol=sym, error=str(exc))
+        return []
+
+    result: list[HistoricalEarningsMoveRow] = []
+    if isinstance(data, list):
+        rows_sorted = sorted(
+            (r for r in data if r.get("report_date")),
+            key=lambda r: r["report_date"], reverse=True,
+        )
+        for row in rows_sorted[:limit]:
+            result.append(HistoricalEarningsMoveRow(
+                report_date=row.get("report_date"),
+                report_time=row.get("report_time"),
+                expected_move=_to_float(row.get("expected_move")),
+                expected_move_perc=_to_float(row.get("expected_move_perc")),
+                post_earnings_move_1d=_to_float(row.get("post_earnings_move_1d")),
+                post_earnings_move_1w=_to_float(row.get("post_earnings_move_1w")),
+                source=row.get("source"),
+            ))
+
+    try:
+        import json
+        from dataclasses import asdict
+        _get_redis().setex(cache_key, _EARNINGS_MOVE_TTL, json.dumps([asdict(r) for r in result]))
     except Exception:
         pass
     return result

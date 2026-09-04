@@ -588,6 +588,140 @@ def test_nope_writes_a_negative_cache_entry_too():
     assert "stockai:uw:nope:ZZZZ" in fake_redis.store
 
 
+# ── get_historical_earnings_moves() — parsing/caching (AUD-EARNINGSMOVE) ────────────────────
+
+def test_earnings_moves_returns_empty_list_when_not_available():
+    with patch.object(uw, "is_available", return_value=False), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_historical_earnings_moves("AAPL")
+    assert result == []
+    mock_get.assert_not_called()
+
+
+def test_earnings_moves_reads_from_cache_when_present():
+    fake_redis = _FakeRedis()
+    cached_rows = [uw.HistoricalEarningsMoveRow(
+        report_date="2026-07-31", report_time="postmarket", expected_move=8.5,
+        expected_move_perc=4.2, post_earnings_move_1d=3.1, post_earnings_move_1w=5.0,
+        source="company",
+    )]
+    import json
+    from dataclasses import asdict
+    fake_redis.store["stockai:uw:earnings_moves:AAPL"] = json.dumps([asdict(r) for r in cached_rows])
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_historical_earnings_moves("AAPL")
+    assert result == cached_rows
+    mock_get.assert_not_called()
+
+
+def test_earnings_moves_parses_a_real_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {
+                 "report_date": "2026-07-31", "report_time": "postmarket",
+                 "expected_move": "8.5", "expected_move_perc": "4.2",
+                 "post_earnings_move_1d": "3.1", "post_earnings_move_1w": "5.0",
+                 "source": "company",
+             },
+         ]):
+        result = uw.get_historical_earnings_moves("AAPL")
+    assert len(result) == 1
+    row = result[0]
+    assert row.report_date == "2026-07-31"
+    assert row.report_time == "postmarket"
+    assert row.expected_move == 8.5
+    assert row.expected_move_perc == 4.2
+    assert row.post_earnings_move_1d == 3.1
+    assert row.post_earnings_move_1w == 5.0
+    assert row.source == "company"
+
+
+def test_earnings_moves_sorts_most_recent_first():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"report_date": "2026-01-30", "expected_move_perc": "3.0"},
+             {"report_date": "2026-07-31", "expected_move_perc": "4.2"},
+             {"report_date": "2026-04-30", "expected_move_perc": "3.5"},
+         ]):
+        result = uw.get_historical_earnings_moves("AAPL")
+    assert [r.report_date for r in result] == ["2026-07-31", "2026-04-30", "2026-01-30"]
+
+
+def test_earnings_moves_caps_at_the_given_limit():
+    fake_redis = _FakeRedis()
+    rows = [{"report_date": f"2026-0{i}-01", "expected_move_perc": "1.0"} for i in range(1, 9)]
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=rows):
+        result = uw.get_historical_earnings_moves("AAPL", limit=3)
+    assert len(result) == 3
+
+
+def test_earnings_moves_default_limit_is_8():
+    fake_redis = _FakeRedis()
+    rows = [{"report_date": f"2020-{i:02d}-01", "expected_move_perc": "1.0"} for i in range(1, 13)]
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=rows):
+        result = uw.get_historical_earnings_moves("AAPL")
+    assert len(result) == 8
+
+
+def test_earnings_moves_skips_rows_with_no_report_date():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"report_date": "2026-07-31", "expected_move_perc": "4.2"},
+             {"expected_move_perc": "9.9"},  # no report_date -- must be dropped, not crash
+         ]):
+        result = uw.get_historical_earnings_moves("AAPL")
+    assert len(result) == 1
+    assert result[0].report_date == "2026-07-31"
+
+
+def test_earnings_moves_returns_empty_list_for_a_non_list_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=None):
+        result = uw.get_historical_earnings_moves("XYZ")
+    assert result == []
+
+
+def test_earnings_moves_returns_empty_list_on_a_fetch_exception():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", side_effect=RuntimeError("boom")):
+        result = uw.get_historical_earnings_moves("AAPL")
+    assert result == []
+
+
+def test_earnings_moves_uses_its_own_6h_ttl():
+    class _SpyRedis(_FakeRedis):
+        def __init__(self):
+            super().__init__()
+            self.setex_calls = []
+        def setex(self, key, ttl, value):
+            self.setex_calls.append((key, ttl))
+            super().setex(key, ttl, value)
+    spy = _SpyRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=spy), \
+         patch.object(uw, "_get", return_value=[{"report_date": "2026-07-31"}]):
+        uw.get_historical_earnings_moves("AAPL")
+    assert len(spy.setex_calls) == 1
+    assert spy.setex_calls[0][1] == uw._EARNINGS_MOVE_TTL
+    assert spy.setex_calls[0][1] != uw._NOPE_TTL
+
+
 # ── get_greeks() — parsing/caching, with _get() mocked directly (AUD-GREEKS) ────────────────
 
 def test_greeks_returns_empty_list_when_not_available():

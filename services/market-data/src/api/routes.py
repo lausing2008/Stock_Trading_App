@@ -2222,6 +2222,8 @@ def events_calendar(
             })
 
     # ── Stock events: earnings + ex-dividends ─────────────────────────────────
+    from ..services import unusual_whales as _uw
+
     r = _get_redis()
     stocks = session.execute(select(Stock).where(Stock.active.is_(True))).scalars().all()
 
@@ -2250,6 +2252,16 @@ def events_calendar(
                         # symbols that actually have a near-term earnings event in this window —
                         # never for the full active-stock universe this loop otherwise iterates.
                         _consensus = _compute_weighted_analyst_consensus(session, stock.symbol)
+                        # AUD-EARNINGSMOVE: real, options-market-implied expected move for the
+                        # NEXT report, backed by up to 8 quarters of "was the market's fear
+                        # justified" history for THIS symbol — a genuinely different, forward-
+                        # looking complement to eps_beat_rate/eps_avg_surprise_pct above (those
+                        # are about EPS accuracy, this is about PRICE reaction magnitude). Scoped
+                        # to only near-term-earnings symbols, same as _consensus above — never
+                        # the full active-stock universe this loop otherwise iterates. Redis-
+                        # cached 6h inside get_historical_earnings_moves() itself, so repeated
+                        # requests for the same symbol within that window cost nothing extra.
+                        _earnings_moves = _uw.get_historical_earnings_moves(stock.symbol, limit=8)
                         events.append({
                             "type": "earnings",
                             "date": ned,
@@ -2271,6 +2283,20 @@ def events_calendar(
                             "analyst_price_target_mean": _consensus.get("simple_mean"),
                             "analyst_price_target_weighted": _consensus.get("weighted_mean"),
                             "analyst_n_firms": _consensus.get("n_firms"),
+                            # AUD-EARNINGSMOVE: next-report forecast (from this symbol's most
+                            # recent historical row, since UW doesn't publish a forward-only
+                            # forecast endpoint separately) + up to 8 quarters of real
+                            # pre-report-forecast-vs-actual-outcome track record.
+                            "earnings_expected_move_perc": (
+                                _earnings_moves[0].expected_move_perc if _earnings_moves else None
+                            ),
+                            "earnings_move_history": [
+                                {
+                                    "report_date": r.report_date,
+                                    "expected_move_perc": r.expected_move_perc,
+                                    "post_earnings_move_1d": r.post_earnings_move_1d,
+                                } for r in _earnings_moves
+                            ],
                         })
                 except Exception:
                     pass

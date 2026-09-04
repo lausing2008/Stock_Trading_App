@@ -82,3 +82,54 @@ def test_preexisting_fields_are_still_present_not_accidentally_removed():
     block = _earnings_block()
     for field in ("eps_estimate", "trailing_eps", "revenue_growth", "earnings_growth", "market_cap"):
         assert f'"{field}": data.get(' in block, f"missing pre-existing field: {field}"
+
+
+# ── AUD-EARNINGSMOVE: real historical expected-move / post-earnings-move data ───────────────
+
+def test_computes_earnings_moves_only_inside_the_earnings_block():
+    """get_historical_earnings_moves() is a real Unusual Whales fetch (Redis-cached, but still
+    a real external call on a cache miss) — must only be called for symbols with a near-term
+    earnings event, never once per stock in the outer active-stock-universe loop."""
+    full_body = _events_calendar_body()
+    assert full_body.count("_uw.get_historical_earnings_moves(") == 1
+    block = _earnings_block()
+    assert "_uw.get_historical_earnings_moves(stock.symbol, limit=8)" in block
+
+
+def test_earnings_moves_call_happens_before_the_events_append():
+    block = _earnings_block()
+    call_idx = block.index("_uw.get_historical_earnings_moves(stock.symbol, limit=8)")
+    append_idx = block.index("events.append(")
+    assert call_idx < append_idx
+
+
+def test_earnings_expected_move_and_history_fields_are_present():
+    block = _earnings_block()
+    assert '"earnings_expected_move_perc": (' in block
+    assert '"earnings_move_history": [' in block
+
+
+def test_expected_move_reads_the_most_recent_row_not_hardcoded():
+    block = _earnings_block()
+    idx = block.index('"earnings_expected_move_perc": (')
+    segment = block[idx:idx + 150]
+    assert "_earnings_moves[0].expected_move_perc" in segment
+    assert "if _earnings_moves else None" in segment
+
+
+def test_earnings_move_history_maps_report_date_and_both_move_fields():
+    block = _earnings_block()
+    idx = block.index('"earnings_move_history": [')
+    segment = block[idx:idx + 300]
+    assert "r.report_date" in segment
+    assert "r.expected_move_perc" in segment
+    assert "r.post_earnings_move_1d" in segment
+
+
+def test_unusual_whales_module_is_imported_before_the_stock_loop():
+    """_uw must be imported before the loop that calls it, not inside the loop body itself
+    (which would re-import on every iteration for no reason) and not missing entirely."""
+    body = _events_calendar_body()
+    import_idx = body.index("from ..services import unusual_whales as _uw")
+    loop_idx = body.index("for stock in stocks:")
+    assert import_idx < loop_idx

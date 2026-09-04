@@ -1663,6 +1663,18 @@ export type CalendarEvent = {
   analyst_price_target_weighted?: number | null; // accuracy-weighted mean (same source as /analyst-consensus)
   analyst_n_firms?: number | null;
   market_cap?: number | null;
+  // AUD-EARNINGSMOVE: real, options-market-implied expected move for the NEXT report (from
+  // this symbol's most recent historical row) plus up to 8 quarters of real pre-report-
+  // forecast-vs-actual-outcome track record. Genuinely different from eps_beat_rate above —
+  // that's about EPS accuracy, this is about the stock's own PRICE reaction magnitude.
+  earnings_expected_move_perc?: number | null;
+  earnings_move_history?: EarningsMoveHistoryRow[];
+};
+
+export type EarningsMoveHistoryRow = {
+  report_date: string | null;
+  expected_move_perc: number | null;
+  post_earnings_move_1d: number | null;
 };
 
 // AUD-EARNINGSFORECAST: on-demand, LLM-generated PRE-report forecast — one combined Claude
