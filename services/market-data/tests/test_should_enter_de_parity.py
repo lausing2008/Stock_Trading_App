@@ -641,3 +641,67 @@ def test_unknown_research_recommendation_string_adds_no_points():
     _, score_none, _ = _score_only_with_research(_FakeResearchResponse(status_code=500))
     assert score == score_none
     assert not any(n.startswith("Research:") for n in notes)
+
+
+# ── AUD-GAPCHASE-EARNINGSVOL: gap-up + elevated volume combined hard reject ───────────
+
+def _gap_inputs(gap_pct, volume_z, max_entry_gap_pct=0.04):
+    """live_price fixed at 100.0; signal_close derived so live_price/signal_close - 1 == gap_pct."""
+    live_price, game_plan, signal_data, cfg = _neutral_inputs()
+    signal_close = live_price / (1 + gap_pct)
+    signal_data["reasons"] = {"macro_blackout": False, "last_price": signal_close, "volume_z": volume_z}
+    cfg["max_entry_gap_pct"] = max_entry_gap_pct
+    return live_price, game_plan, signal_data, cfg
+
+
+def test_large_gap_alone_still_hard_rejects_as_before():
+    """The pre-existing T171 behavior must be unchanged: a gap alone, above the full
+    threshold, rejects regardless of volume."""
+    live_price, game_plan, signal_data, cfg = _gap_inputs(gap_pct=0.05, volume_z=None)
+    should_enter, score, notes = _should_enter("TEST", signal_data, live_price, game_plan, cfg, None)
+    assert should_enter is False
+    assert score == -99
+    assert any("exceeds limit" in n for n in notes)
+
+
+def test_small_gap_with_normal_volume_is_not_rejected():
+    """Half-threshold gap with normal (low) volume must NOT trip the new combined check —
+    it's specifically the pairing with elevated volume that's suspicious."""
+    live_price, game_plan, signal_data, cfg = _gap_inputs(gap_pct=0.03, volume_z=0.5)
+    should_enter, score, notes = _should_enter("TEST", signal_data, live_price, game_plan, cfg, None)
+    assert not any("chasing a fresh spike" in n for n in notes)
+
+
+def test_moderate_gap_with_elevated_volume_is_rejected():
+    """The exact SNOW/DELL pattern this fix targets: a gap that clears half the threshold
+    (but not the full threshold) combined with clearly-elevated same-day volume (z >= 1.5)."""
+    live_price, game_plan, signal_data, cfg = _gap_inputs(gap_pct=0.03, volume_z=1.78, max_entry_gap_pct=0.04)
+    should_enter, score, notes = _should_enter("TEST", signal_data, live_price, game_plan, cfg, None)
+    assert should_enter is False
+    assert score == -99
+    assert any("chasing a fresh spike" in n for n in notes)
+
+
+def test_moderate_gap_with_volume_just_under_threshold_is_not_rejected():
+    """volume_z just below the 1.5 cutoff must not trip the combined reject — confirms the
+    threshold is a real boundary, not a low bar that fires on any positive volume_z."""
+    live_price, game_plan, signal_data, cfg = _gap_inputs(gap_pct=0.03, volume_z=1.4, max_entry_gap_pct=0.04)
+    should_enter, score, notes = _should_enter("TEST", signal_data, live_price, game_plan, cfg, None)
+    assert not any("chasing a fresh spike" in n for n in notes)
+
+
+def test_gap_just_under_half_threshold_with_high_volume_is_not_rejected():
+    """The gap side of the combined check must also be a real boundary — high volume alone,
+    with a gap below half the max, must not trip it."""
+    live_price, game_plan, signal_data, cfg = _gap_inputs(gap_pct=0.015, volume_z=3.0, max_entry_gap_pct=0.04)
+    should_enter, score, notes = _should_enter("TEST", signal_data, live_price, game_plan, cfg, None)
+    assert not any("chasing a fresh spike" in n for n in notes)
+
+
+def test_missing_volume_z_does_not_crash_the_combined_check():
+    """volume_z absent from reasons entirely (not just None) must fail open — no crash, no
+    spurious reject — matching every other optional-reasons-field read in this function."""
+    live_price, game_plan, signal_data, cfg = _gap_inputs(gap_pct=0.03, volume_z=None)
+    del signal_data["reasons"]["volume_z"]
+    should_enter, score, notes = _should_enter("TEST", signal_data, live_price, game_plan, cfg, None)
+    assert not any("chasing a fresh spike" in n for n in notes)

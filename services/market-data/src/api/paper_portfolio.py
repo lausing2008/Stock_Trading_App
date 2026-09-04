@@ -2312,6 +2312,21 @@ def calibrate_min_rr_ratio() -> dict:
     to _MIN_RR_MIN_CANDIDATE_N, so a threshold surviving on 3 lucky trades can't win), then only
     applies it if it ALSO beats the CURRENT default threshold's own validation-slice EV — the
     same held-out-data discipline as calibrate_entry_weights(), not an in-sample pick.
+
+    AUD-MINRR-MARKETBLIND: this sweep pools every closed trade across ALL markets — with HK
+    trading far less often than US (confirmed live: 19 HK vs 97 US qualifying trades), the
+    resulting min_rr_ratio/regime_min_rr_ratio is effectively a US-only calibration, silently
+    applied to HK portfolios too via _default_min_rr_ratio()'s global fallback. HK's own
+    achievable R:R ceiling (bounded by _HK_MARKET_OVERRIDES' own stop/target parameters) sits
+    measurably lower than US's — a HK candidate was confirmed rejected against a pooled
+    regime_min_rr_ratio=3.38 floor essentially every time the regime sat in choppy/risk_off for
+    weeks straight, well below what HK's own historical R:R distribution could ever clear.
+    `by_market` now records each market's own qualifying-trade count and its own observed R:R
+    ceiling (the 90th percentile of that market's rr_ratio_at_entry values) purely for
+    visibility/future calibration — deliberately NOT a full independent per-market sweep (HK's
+    19 trades is nowhere near _MIN_RR_MIN_TRADES, so a real per-market EV-maximizing threshold
+    isn't trustworthy yet), but enough to cap regime_min_rr_ratio at what each market can
+    actually achieve rather than blindly applying the pooled (US-dominated) value everywhere.
     """
     from ..services.paper_trading_engine import _default_min_rr_ratio, reload_min_rr_override
 
@@ -2323,6 +2338,15 @@ def calibrate_min_rr_ratio() -> dict:
                 PaperTrade.pnl.is_not(None),
                 PaperTrade.rr_ratio_at_entry.is_not(None),
             ).order_by(PaperTrade.entry_date)
+        ).all()
+        market_rows = session.execute(
+            select(PaperTrade.rr_ratio_at_entry, PaperPortfolio.config)
+            .join(PaperPortfolio, PaperPortfolio.id == PaperTrade.portfolio_id)
+            .where(
+                PaperTrade.stage == "closed",
+                PaperTrade.pnl.is_not(None),
+                PaperTrade.rr_ratio_at_entry.is_not(None),
+            )
         ).all()
 
     if len(rows) < _MIN_RR_MIN_TRADES:
@@ -2377,12 +2401,49 @@ def calibrate_min_rr_ratio() -> dict:
             "curve": curve,
         }
 
+    # AUD-MINRR-MARKETBLIND: per-market qualifying-trade counts + each market's own observed
+    # R:R ceiling (90th percentile of its rr_ratio_at_entry values) — used below to cap the
+    # pooled regime_min_rr_ratio for any market too thin to trust a real independent sweep on
+    # (see this function's own docstring for why HK specifically needed this).
+    _by_market_rr: dict[str, list[float]] = {}
+    for r in market_rows:
+        _mkt = (r[1] or {}).get("market") or "US"
+        _by_market_rr.setdefault(_mkt, []).append(float(r[0]))
+
+    def _pct90(values: list[float]) -> float | None:
+        if not values:
+            return None
+        s = sorted(values)
+        idx = min(len(s) - 1, int(round(0.90 * (len(s) - 1))))
+        return s[idx]
+
+    by_market = {
+        mkt: {"n_trades": len(vals), "observed_rr_ceiling_p90": round(_pct90(vals), 2)}
+        for mkt, vals in _by_market_rr.items()
+    }
+
+    _pooled_regime_rr = round(best_threshold * 1.5, 2)
+    for _mkt, _info in by_market.items():
+        _ceiling = _info["observed_rr_ceiling_p90"]
+        # A market whose own trades rarely if ever reach the pooled floor gets that floor
+        # capped at its own observed ceiling instead — otherwise a thinly-traded market is
+        # held to a threshold calibrated almost entirely off a DIFFERENT market's volume,
+        # which is exactly the bug this fix exists to close (confirmed live for HK: pooled
+        # regime_min_rr_ratio=3.38 vs HK's own observed ceiling ~2.9).
+        if _ceiling is not None and _ceiling < _pooled_regime_rr:
+            _info["regime_min_rr_ratio"] = round(min(_pooled_regime_rr, max(_ceiling, baseline_threshold)), 2)
+        else:
+            _info["regime_min_rr_ratio"] = _pooled_regime_rr
+
     result = {
         "min_rr_ratio": best_threshold,
         # T190's regime-stiffened floor keeps its own +50% relative bump over the calibrated
         # base rather than a second independent sweep — no real per-regime R:R/PnL volume
-        # exists yet to calibrate choppy/risk_off separately from neutral.
-        "regime_min_rr_ratio": round(best_threshold * 1.5, 2),
+        # exists yet to calibrate choppy/risk_off separately from neutral. Per-market entries
+        # in by_market below cap this pooled value for any market that can't realistically
+        # reach it (see this function's own docstring).
+        "regime_min_rr_ratio": _pooled_regime_rr,
+        "by_market": by_market,
         "n_trades": len(rows),
         "validation_n": len(val_rows),
         "candidate_validation_ev": round(candidate_ev, 4),

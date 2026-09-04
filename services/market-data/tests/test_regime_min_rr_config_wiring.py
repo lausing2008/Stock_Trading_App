@@ -37,12 +37,17 @@ _decision_body = _decision_call_body()
 
 
 def test_min_rr_ratio_routes_through_the_calibrated_default_not_a_bare_literal():
-    """The exact fix for gap 1: min_rr_ratio's fallback must call _default_min_rr_ratio("neutral"),
-    not a hardcoded 2.0 literal that would silently bypass calibration forever."""
+    """The exact fix for gap 1: min_rr_ratio's fallback must call _default_min_rr_ratio("neutral", ...),
+    not a hardcoded 2.0 literal that would silently bypass calibration forever.
+
+    AUD-MINRR-MARKETBLIND: _default_min_rr_ratio() now also takes this portfolio's own market
+    (cfg.get("market", "US")) so a HK candidate isn't checked against a floor calibrated almost
+    entirely off US trade volume — the assertion below is updated to match that real, still-
+    calibration-routed call shape, not reverted back to the pre-fix single-argument form."""
     assert '"min_rr_ratio":' in _decision_body
     start = _decision_body.index('"min_rr_ratio":')
     line = _decision_body[start:_decision_body.index("\n", start)]
-    assert '_default_min_rr_ratio("neutral")' in line
+    assert '_default_min_rr_ratio("neutral", cfg.get("market", "US"))' in line
     assert "2.0" not in line, "must not fall back to a bare hardcoded literal — that bypasses calibration"
 
 
@@ -54,12 +59,15 @@ def test_regime_min_rr_ratio_is_threaded_into_config_overrides():
 
 
 def test_regime_min_rr_ratio_falls_back_to_the_calibrated_default_via_regime_state():
-    """Must resolve through _default_min_rr_ratio(regime_state) — using the ACTUAL regime_state
-    parameter, not a hardcoded "neutral"/"choppy" literal that could silently drift from the
-    real regime the candidate is being evaluated under."""
+    """Must resolve through _default_min_rr_ratio(regime_state, ...) — using the ACTUAL
+    regime_state parameter, not a hardcoded "neutral"/"choppy" literal that could silently
+    drift from the real regime the candidate is being evaluated under.
+
+    AUD-MINRR-MARKETBLIND: also must pass this portfolio's own market — see the sibling
+    min_rr_ratio test's docstring above for why."""
     start = _decision_body.index('"regime_min_rr_ratio":')
     line = _decision_body[start:_decision_body.index("\n", start)]
-    assert "_default_min_rr_ratio(regime_state)" in line
+    assert '_default_min_rr_ratio(regime_state, cfg.get("market", "US"))' in line
     assert "3.0" not in line, "must not fall back to a bare hardcoded literal — that bypasses calibration"
 
 

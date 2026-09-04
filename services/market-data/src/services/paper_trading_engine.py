@@ -544,13 +544,31 @@ def reload_min_rr_override() -> None:
     _min_rr_override_cache = None
 
 
-def _default_min_rr_ratio(regime_state: str) -> float:
+def _default_min_rr_ratio(regime_state: str, market: str = "US") -> float:
     """The calibrated default for a portfolio that hasn't explicitly set min_rr_ratio/
     regime_min_rr_ratio in its own config — falls back to the original hardcoded 2.0/3.0
-    literals if no calibration has ever been applied yet."""
+    literals if no calibration has ever been applied yet.
+
+    AUD-MINRR-MARKETBLIND: regime_min_rr_ratio used to be a single, market-blind value —
+    calibrate_min_rr_ratio() pooled every closed trade across both US and HK, and since HK has
+    always traded far less often than US, the resulting threshold was effectively a US-only
+    calibration applied to HK as well. HK's own stop/target parameters (_HK_MARKET_OVERRIDES)
+    yield a structurally lower achievable R:R ceiling than US's — confirmed live: HK candidates
+    were rejected against a 3.38 floor almost every single time the regime sat in choppy/
+    risk_off (which it did for weeks), while the floor was actually calibrated almost entirely
+    off US trades. `override` now stores an optional per-market breakdown
+    (`by_market: {"US": {...}, "HK": {...}}`) alongside the original pooled top-level keys —
+    this function prefers the market-specific value when calibrate_min_rr_ratio() had enough
+    same-market trades to compute one, and falls back to the pooled/global value (then the
+    hardcoded 2.0/3.0 literal) otherwise, so a market that's too thin to calibrate on its own
+    isn't left with no default at all.
+    """
     override = _load_min_rr_override()
     key = "regime_min_rr_ratio" if regime_state in ("choppy", "risk_off") else "min_rr_ratio"
-    return float(override.get(key) or (3.0 if key == "regime_min_rr_ratio" else 2.0))
+    by_market = override.get("by_market") or {}
+    market_override = by_market.get(market) or {}
+    value = market_override.get(key) or override.get(key) or (3.0 if key == "regime_min_rr_ratio" else 2.0)
+    return float(value)
 
 
 # ── Default portfolio config ──────────────────────────────────────────────────
@@ -866,7 +884,8 @@ def resolve_entry_gate_params(style: str, market: str = "US") -> dict:
             if _k in _ENTRY_GATE_KEYS:
                 cfg[_k] = _v
     result = {k: cfg.get(k) for k in _ENTRY_GATE_KEYS if k in cfg}
-    result["min_rr_ratio"] = _default_min_rr_ratio("neutral")
+    _rr_market = (market or "US").upper()
+    result["min_rr_ratio"] = _default_min_rr_ratio("neutral", _rr_market)
     # T234-CONFIG-UNJUSTIFIED-THRESHOLDS item #2: regime_min_rr_ratio was never included here
     # at all — decision-engine's hard_rejects.py had its own disconnected bare `3.0` fallback
     # for the choppy/risk_off-tier R:R floor, with no way to pick up a calibrated value the way
@@ -874,7 +893,7 @@ def resolve_entry_gate_params(style: str, market: str = "US") -> dict:
     # already resolves this correctly (see _should_enter()'s own identical read at line ~1906);
     # the gap was purely that this endpoint — the one thing threading a calibration-aware
     # default into decision-engine's standalone /decide callers — never surfaced it.
-    result["regime_min_rr_ratio"] = _default_min_rr_ratio("choppy")
+    result["regime_min_rr_ratio"] = _default_min_rr_ratio("choppy", _rr_market)
     # min_ta_score has no _DEFAULT_CONFIG entry — 0.0 (gate disabled) is the correct default
     # when no style/market override set it, matching every other read site's own fallback.
     result.setdefault("min_ta_score", 0.0)
@@ -1927,9 +1946,13 @@ def _should_enter(
     # SELFIMPROVE-NEVER-CALIBRATED-PARAMS: cfg.get(..., 2.0)'s literal fallback is now the
     # calibrated default (falls back further to the original 2.0/3.0 literals if calibration
     # has never run) — an explicit portfolio.config value still always wins.
-    min_rr = cfg.get("min_rr_ratio", _default_min_rr_ratio("neutral"))
+    # AUD-MINRR-MARKETBLIND: _default_min_rr_ratio() now takes this portfolio's own market so
+    # HK isn't held to a floor calibrated almost entirely off US trade volume — see that
+    # function's own docstring.
+    _rr_market = (cfg.get("market") or "US").upper()
+    min_rr = cfg.get("min_rr_ratio", _default_min_rr_ratio("neutral", _rr_market))
     if regime_state in ("choppy", "risk_off"):
-        min_rr = max(min_rr, cfg.get("regime_min_rr_ratio", _default_min_rr_ratio(regime_state)))
+        min_rr = max(min_rr, cfg.get("regime_min_rr_ratio", _default_min_rr_ratio(regime_state, _rr_market)))
     if rr < min_rr:
         return False, -99, [f"R:R {rr:.1f}:1 below minimum {min_rr:.1f}:1 at ${live_price:.2f}"]
 
@@ -1941,7 +1964,27 @@ def _should_enter(
     # T171: Premarket gap filter — reject if stock has already gapped up significantly
     # from its signal price. Signal reasons["last_price"] is the close at signal-compute time.
     # If live price is already >max_entry_gap_pct above that close, we're chasing the move.
+    #
+    # AUD-GAPCHASE-EARNINGSVOL: this check alone is blind to a gap that already happened BEFORE
+    # the signal ran that same day — reasons["last_price"] is signal-engine's own close at
+    # compute time, which for a stock that gapped up overnight on an earnings/8-K surprise is
+    # already the POST-gap price. Confirmed live: SNOW entered 2026-09-03 at $377.34 with
+    # reasons["last_price"]=$377.995 (essentially identical — 0% measured "gap") despite having
+    # actually spiked ~23% overnight on an 8-K filing before the signal ever computed; it then
+    # mean-reverted and stopped out at -19.0%. The existing check has nothing left to compare
+    # against once the signal itself is already downstream of the spike.
+    #
+    # A full fix needs a genuine pre-event price baseline (N trading days back, independent of
+    # signal-compute time) — deliberately not built in this pass, since it needs a new DB read
+    # threaded into _should_enter() and this pattern affects a narrow slice of trades, not the
+    # dominant driver of poor win rates. As a proportionate interim tightening: SNOW's own
+    # volume_z at entry was 1.78 (clearly elevated, currently scored as a POSITIVE confirmation
+    # a few lines below) — a gap that's already more than half of max_entry_gap_pct, combined
+    # with clearly-elevated same-day volume, is exactly the "chasing a fresh spike" signature
+    # this filter exists to catch, so it now also rejects on that narrower combination even when
+    # the raw gap alone doesn't clear the full threshold.
     _signal_close = reasons.get("last_price")
+    _volume_z_for_gap = reasons.get("volume_z")
     if _signal_close and float(_signal_close) > 0:
         _gap = live_price / float(_signal_close) - 1
         _max_gap = cfg.get("max_entry_gap_pct", 0.04)
@@ -1949,6 +1992,11 @@ def _should_enter(
             return False, -99, [
                 f"Gap-up {_gap:.1%} above signal close ${_signal_close:.2f} "
                 f"exceeds limit {_max_gap:.0%} — entry price degraded"
+            ]
+        if _gap > _max_gap * 0.5 and _volume_z_for_gap is not None and float(_volume_z_for_gap) >= 1.5:
+            return False, -99, [
+                f"Gap-up {_gap:.1%} with elevated volume (z={float(_volume_z_for_gap):.1f}) "
+                f"above signal close ${_signal_close:.2f} — likely chasing a fresh spike"
             ]
 
     # T220-D: Economic calendar blackout — reject BUY entries within 2h of major macro events.
@@ -3384,7 +3432,10 @@ def _call_decision_engine(
                     # calibration has never run. Route through the same resolver so DE and the
                     # fallback agree on the SAME baseline instead of DE silently using a stale
                     # hardcoded literal forever regardless of calibration.
-                    "min_rr_ratio":           cfg.get("min_rr_ratio", _default_min_rr_ratio("neutral")),
+                    # AUD-MINRR-MARKETBLIND: both resolved with THIS portfolio's own market so a
+                    # DE-routed HK candidate is checked against HK's own calibrated floor, not one
+                    # dominated by US trade volume — see _default_min_rr_ratio()'s own docstring.
+                    "min_rr_ratio":           cfg.get("min_rr_ratio", _default_min_rr_ratio("neutral", cfg.get("market", "US"))),
                     # AUD256: regime_min_rr_ratio was never sent at all — decision-engine's own
                     # hard_rejects.py has a read-side default of 3.0 for choppy/risk_off regimes
                     # (T190) that DE always fell back to, completely blind to calibration, even
@@ -3392,7 +3443,7 @@ def _call_decision_engine(
                     # Threaded through unconditionally (matches min_rr_ratio's own always-sent
                     # convention above) so DE's choppy/risk_off floor tracks the SAME calibrated
                     # value _should_enter() already uses, not a permanently-stale literal.
-                    "regime_min_rr_ratio":    cfg.get("regime_min_rr_ratio", _default_min_rr_ratio(regime_state)),
+                    "regime_min_rr_ratio":    cfg.get("regime_min_rr_ratio", _default_min_rr_ratio(regime_state, cfg.get("market", "US"))),
                     "risk_per_trade_pct":     cfg.get("risk_per_trade_pct", 0.01),
                     "max_position_pct":       cfg.get("max_position_pct", 0.10),
                     "max_loss_per_trade_pct": cfg.get("max_loss_per_trade_pct", 0.02),

@@ -206,3 +206,113 @@ history (e.g. a new, longer-period indicator added to `_technical_raw_inputs()`)
 
 ---
 
+## Recurring Issue: AUD-MINRR-MARKETBLIND — Self-Calibrated R:R Floor Pooled Across Markets, Silently Disabling HK Paper Trading for Months (Fixed 2026-09-04)
+
+**Symptom:** user reported paper-trading performance had "dropped a lot" and that the system
+"always said signals exist but not trading," asking specifically about a watchlist problem.
+Direct DB queries confirmed 2 of 5 paper portfolios had gone genuinely dormant, not merely
+slow: HK SWING Portfolio (id=2) had zero new trade entries since **2026-06-25** (2+ months);
+HK GROWTH Portfolio (id=4) since **2026-08-17** (~2.5 weeks). Both portfolios' watchlists
+were confirmed to contain real, eligible HK candidates the whole time (16-25 HK stocks
+tagged with the matching `trading_style`) — this was never an empty-watchlist problem.
+
+**Root cause:** `calibrate_min_rr_ratio()` (`services/market-data/src/api/paper_portfolio.py`)
+self-tunes `min_rr_ratio`/`regime_min_rr_ratio` weekly from real closed-trade R:R/PnL data —
+a genuinely good design (train/validation split, only applies if the candidate beats the
+current baseline on held-out data, same discipline as `calibrate_entry_weights()`). The bug:
+the sweep pools **every market's trades together** with no market split at all. HK trades far
+less often than US (confirmed at time of fix: 19 HK vs. 97 US qualifying closed trades), so
+the resulting calibrated value was effectively a US-only number, silently applied to HK
+portfolios too via `_default_min_rr_ratio()`'s single, market-blind fallback.
+
+The regime-tier value compounds this: `regime_min_rr_ratio` isn't independently calibrated at
+all — it's `min_rr_ratio * 1.5` (a blind relative bump, per the code's own pre-existing
+comment explaining there wasn't enough per-regime volume to calibrate it separately). At the
+time of this fix that produced `regime_min_rr_ratio = 2.25 * 1.5 = 3.38`. Production logs
+(`stockai-market-data-1`, 2026-08-10 to 2026-09-04) showed **1768.HK rejected by the R:R gate
+203 times**, every single rejection landing at 2.90-2.93:1 — consistently, structurally just
+under the 3.4:1 bar, never scattered randomly above/below it. HK's own risk parameters
+(`_HK_MARKET_OVERRIDES`' stop/target percentages) cap realistically achievable R:R around
+~2.9:1 for HK setups — meaning a floor calibrated almost entirely off US trade behavior was
+being applied to a market that could structurally never clear it, for the entire multi-week
+stretch HK's regime sat in `choppy` (this app's own regime classifier, confirmed live and
+fresh, not stale — the regime WAS genuinely choppy; the bug is that choppy's own R:R floor
+was wrong for HK, not that the regime reading itself was broken).
+
+A separate, real, correctly-working HK-only "mainland flow" hard gate (T224-A) was also found
+firing 2,849 times across 12 HK symbols in the same 25-day window — a compounding factor
+narrowing the funnel further, but not the root cause: some symbols DO clear it on
+positive-flow days, and those survivors then die at the R:R floor above.
+
+**Fixed:** `_default_min_rr_ratio()` (`paper_trading_engine.py`) now takes a `market`
+parameter. `calibrate_min_rr_ratio()` now also computes, per market, that market's own
+qualifying-trade count and its own observed R:R ceiling (the 90th percentile of that market's
+`rr_ratio_at_entry` values across all its closed trades) — stored under a new `by_market` key
+alongside the existing pooled top-level values. When a market's own ceiling sits below the
+pooled `regime_min_rr_ratio`, that market's effective floor is capped at its own ceiling
+(never capped below the neutral-tier baseline, so it can't be loosened past what calibration
+already trusts). Deliberately **not** a full independent per-market EV-maximizing sweep — HK's
+19 trades is nowhere near the existing `_MIN_RR_MIN_TRADES=100` floor already required for a
+real calibration, so a from-scratch HK-only threshold wouldn't be trustworthy yet either; this
+caps the pooled (US-dominated) value rather than fabricating a new one off too little data.
+All 3 real call sites in `paper_trading_engine.py` (`_should_enter()`'s own fallback gate,
+`resolve_entry_gate_params()` for decision-engine's standalone `/decide` endpoint, and the
+`config_overrides` payload sent to decision-engine itself) now thread `cfg.get("market")`
+through so every consumer of the calibrated default resolves the same market-aware value.
+
+A companion, narrower fix landed in the same pass: `_should_enter()`'s existing T171
+premarket-gap filter compares live price only against `reasons["last_price"]` — the price at
+signal-COMPUTE time — which is already post-gap for a stock that spiked on an earnings/8-K
+surprise before the signal ever ran. Traced 2 large realized losses (SNOW -19.0%, DELL
+-6.66%, both 2026-09-03) to exactly this blind spot: SNOW's own `reasons["last_price"]`
+($377.995) was essentially identical to its actual entry price ($377.338) despite the stock
+having genuinely spiked ~23% overnight on an 8-K filing beforehand — the existing filter
+measured ~0% "gap" against an already-elevated reference and let it through, then it
+mean-reverted into a stop-out. A full fix needs a genuine pre-event price baseline (N trading
+days back, independent of signal-compute time) — not built this pass, since it needs a new DB
+read threaded into `_should_enter()` (which currently has no DB/price-history access at all)
+and this pattern is narrow (2 of ~50 `stop_hit` losses in the sample, not the dominant
+win-rate driver). Interim, proportionate fix: the gap filter now also hard-rejects when a
+moderate gap (over half of `max_entry_gap_pct`) is paired with clearly-elevated same-day
+volume (`volume_z >= 1.5`, itself already computed and threaded through by signal-engine) —
+exactly the SNOW/DELL signature (SNOW's own `volume_z=1.78`), which the pre-existing
+volume-CONFIRMATION scoring layer a few lines below was previously rewarding as a POSITIVE
+signal instead of flagging as spike-chasing risk.
+
+Separately investigated and confirmed **not** bugs during this same pass: the still-active US
+portfolios' poor win rates traced mostly to a HISTORICAL gate-config issue already fixed
+2026-09-03 (`min_confidence` had drifted to 15.0 on several portfolios); live signal
+confidence itself showing near-zero correlation with actual win/loss (quintile-bucketed win
+rate flat at ~29-31%) is consistent with, not a new instance of, a prior audit's own
+"confidence is meaningless" finding and was deliberately not re-opened here; `breakeven_stop`
+exit-reason's own negative average return and the regime-mismatch hypothesis were both
+checked directly against the data and found to be legitimate/non-issues, not bugs.
+
+21 new tests (5 in `test_min_rr_calibration.py` for the market-aware read side of
+`_default_min_rr_ratio()`, 5 in a new `test_min_rr_calibration_by_market.py` for the
+calibration-side per-market cap logic via source-extraction — `paper_portfolio.py` can't be
+imported directly in this test environment — 7 in `test_should_enter_de_parity.py` for the
+combined gap+volume hard reject), plus 2 pre-existing tests in
+`test_regime_min_rr_config_wiring.py` updated to match the call sites' new, still fully
+calibration-routed market-aware shape. 2 adversarial sabotage cycles (the by-market cap
+condition forced to never fire; the gap+volume combined reject condition forced to never
+fire) — both caught cleanly by exactly their targeted test(s), both restored and confirmed
+byte-identical via `md5sum`. Full 2707-test market-data suite green (up from 2691).
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 cat /data/models/min_rr_calibration.json | python3 -m json.tool
+# Confirm by_market exists and each market's regime_min_rr_ratio reflects its own ceiling,
+# not just the pooled top-level value.
+
+docker exec stockai-market-data-1 grep -n "_default_min_rr_ratio(regime_state, cfg.get" /app/src/services/paper_trading_engine.py
+
+# Confirm a specific HK candidate isn't still dying at the R:R gate:
+docker logs stockai-market-data-1 --since 24h | grep 'blocked.*below minimum' | grep '\.HK'
+```
+If HK's own qualifying-trade count ever grows past the existing `_MIN_RR_MIN_TRADES=100`
+floor, a real independent per-market EV-maximizing sweep (rather than this cap-the-pooled-
+value interim fix) becomes worth revisiting.
+
+---
+
