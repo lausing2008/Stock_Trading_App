@@ -1106,9 +1106,20 @@ def _build_game_plan(
             d = days_to_earnings or "?"
             earnings_line = f"No earnings until {next_earnings} ({d}d) — clean runway" if (days_to_earnings or 99) > 10 else f"⚠ Earnings {next_earnings} ({d}d) — position size accordingly"
 
+        # AUD-GAMEPLAN-NONERECOMMENDATION: .get("recommendation", "")'s "" default only applies
+        # when the key is MISSING — an ETF (e.g. GDX) has no individual analyst rating at all,
+        # so fundamentals["recommendation"] is a real, present key whose VALUE is None, and
+        # .get() returns that None straight through, unaffected by the "" default. Confirmed
+        # live: GDX's real /stocks/GDX/fundamentals response has "recommendation": null,
+        # crashing this line with "'NoneType' object has no attribute 'lower'" and aborting the
+        # whole game plan (caught by this function's own outer except, silently returning None
+        # — the alert still fires, just with no game plan section at all). `or ""` after the
+        # .get() catches the value being None even when the key exists, which the .get()
+        # default alone cannot.
+        _recommendation = ((fundamentals or {}).get("recommendation") or "").lower()
         catalysts = [c for c in [
             earnings_line or None,
-            "Analyst consensus bullish — upgrade potential if momentum holds" if (fundamentals or {}).get("recommendation", "").lower() in ("buy", "strong_buy") else None,
+            "Analyst consensus bullish — upgrade potential if momentum holds" if _recommendation in ("buy", "strong_buy") else None,
             "SMA50 > SMA200 golden-cross structure intact" if sma50_above_sma200 else None,
             f"RSI {float(rsi):.0f} — recovering from oversold territory" if rsi is not None and float(rsi) < 50 else None,
             "MACD histogram rising — short-term momentum confirming" if reasons.get("macd_rising") else None,
