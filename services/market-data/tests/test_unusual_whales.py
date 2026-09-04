@@ -331,6 +331,153 @@ def test_iv_rank_uses_its_own_ttl_constant():
     assert spy.setex_calls[0][1] == uw._IV_RANK_TTL
 
 
+# ── get_max_pain() — parsing/caching, with _get() mocked directly (AUD-MAXPAIN) ─────────────
+
+def test_max_pain_returns_empty_list_when_not_available():
+    with patch.object(uw, "is_available", return_value=False), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_max_pain("AAPL")
+    assert result == []
+    mock_get.assert_not_called()
+
+
+def test_max_pain_reads_from_cache_when_present():
+    fake_redis = _FakeRedis()
+    cached_rows = [uw.MaxPainRow(expiry="2026-10-02", max_pain=325.0)]
+    import json
+    from dataclasses import asdict
+    fake_redis.store["stockai:uw:max_pain:AAPL"] = json.dumps([asdict(r) for r in cached_rows])
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_max_pain("AAPL")
+    assert result == cached_rows
+    mock_get.assert_not_called()
+
+
+def test_max_pain_parses_a_real_response_with_multiple_expiries():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"expiry": "2026-10-02", "max_pain": "325.0"},
+             {"expiry": "2026-10-09", "max_pain": "330.0"},
+         ]):
+        result = uw.get_max_pain("AAPL")
+    assert len(result) == 2
+    assert result[0].expiry == "2026-10-02"
+    assert result[0].max_pain == 325.0
+    assert result[1].expiry == "2026-10-09"
+    assert result[1].max_pain == 330.0
+
+
+def test_max_pain_returns_empty_list_for_a_non_list_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=None):
+        result = uw.get_max_pain("XYZ")
+    assert result == []
+
+
+def test_max_pain_returns_empty_list_on_a_fetch_exception():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", side_effect=RuntimeError("boom")):
+        result = uw.get_max_pain("AAPL")
+    assert result == []
+
+
+def test_max_pain_uses_its_own_ttl_constant():
+    class _SpyRedis(_FakeRedis):
+        def __init__(self):
+            super().__init__()
+            self.setex_calls = []
+        def setex(self, key, ttl, value):
+            self.setex_calls.append((key, ttl))
+            super().setex(key, ttl, value)
+    spy = _SpyRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=spy), \
+         patch.object(uw, "_get", return_value=[{"expiry": "2026-10-02", "max_pain": "325.0"}]):
+        uw.get_max_pain("AAPL")
+    assert len(spy.setex_calls) == 1
+    assert spy.setex_calls[0][1] == uw._MAX_PAIN_TTL
+
+
+# ── get_oi_per_strike() — parsing/caching, with _get() mocked directly (AUD-MAXPAIN) ────────
+
+def test_oi_per_strike_returns_empty_list_when_not_available():
+    with patch.object(uw, "is_available", return_value=False), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_oi_per_strike("AAPL")
+    assert result == []
+    mock_get.assert_not_called()
+
+
+def test_oi_per_strike_parses_a_real_response_with_multiple_strikes():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"strike": "320.0", "call_oi": "1200", "put_oi": "800"},
+             {"strike": "330.0", "call_oi": "2400", "put_oi": "500"},
+         ]):
+        result = uw.get_oi_per_strike("AAPL")
+    assert len(result) == 2
+    assert result[0].strike == 320.0
+    assert result[0].call_oi == 1200.0
+    assert result[0].put_oi == 800.0
+    assert result[1].strike == 330.0
+
+
+def test_oi_per_strike_returns_empty_list_for_a_non_list_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=None):
+        result = uw.get_oi_per_strike("XYZ")
+    assert result == []
+
+
+def test_oi_per_strike_returns_empty_list_on_a_fetch_exception():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", side_effect=RuntimeError("boom")):
+        result = uw.get_oi_per_strike("AAPL")
+    assert result == []
+
+
+def test_oi_per_strike_uses_its_own_ttl_constant():
+    class _SpyRedis(_FakeRedis):
+        def __init__(self):
+            super().__init__()
+            self.setex_calls = []
+        def setex(self, key, ttl, value):
+            self.setex_calls.append((key, ttl))
+            super().setex(key, ttl, value)
+    spy = _SpyRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=spy), \
+         patch.object(uw, "_get", return_value=[{"strike": "320.0"}]):
+        uw.get_oi_per_strike("AAPL")
+    assert len(spy.setex_calls) == 1
+    assert spy.setex_calls[0][1] == uw._OI_PER_STRIKE_TTL
+
+
+def test_oi_per_strike_cache_key_is_symbol_scoped():
+    """Unlike get_greeks() (per-expiry), oi-per-strike is a whole-chain rollup — the cache key
+    is correctly symbol-only, not symbol+expiry."""
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[{"strike": "320.0"}]):
+        uw.get_oi_per_strike("AAPL")
+    assert "stockai:uw:oi_per_strike:AAPL" in fake_redis.store
+
+
 # ── get_greeks() — parsing/caching, with _get() mocked directly (AUD-GREEKS) ────────────────
 
 def test_greeks_returns_empty_list_when_not_available():

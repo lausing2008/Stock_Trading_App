@@ -656,6 +656,18 @@ export default function StockDetail() {
     { revalidateOnFocus: false },
   );
 
+  // AUD-MAXPAIN: same SWR key as MarketPressurePanel's own gamma-exposure fetch — SWR dedupes
+  // identical concurrent keys to one real network call, so this doesn't double the request.
+  // Fetched here (not just inside MarketPressurePanel) because the chart needs the nearest-
+  // expiry max_pain value as a prop, and MarketPressurePanel doesn't expose its own fetch result
+  // to its parent.
+  const { data: gexForChart } = useSWR(
+    symbol ? `gamma-exposure-${symbol}` : null,
+    () => api.getGammaExposure(symbol as string),
+    { revalidateOnFocus: false },
+  );
+  const nearestMaxPain = gexForChart?.max_pain?.[0]?.max_pain ?? null;
+
   const { data: allRankings } = useSWR(
     'rankings-all',
     () => api.rankings(),
@@ -1668,6 +1680,7 @@ Return ONLY valid JSON — no markdown, no prose:
                     stopLoss: gamePlan.stop_loss?.price ?? null,
                     target1: gamePlan.take_profit?.price ?? null,
                   } : null}
+                  maxPainLevel={chartTf === '1d' ? nearestMaxPain : null}
                   riskRewardLevels={chartTf === '1d' ? (() => {
                     const lpChart = allPrices?.find(p => p.symbol === symbol);
                     const chartCurPx = lpChart?.price ?? data.prices?.at(-1)?.close ?? null;

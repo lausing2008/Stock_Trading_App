@@ -27,6 +27,10 @@ https://api.unusualwhales.com/api/openapi spec (not guessed/assumed) before bein
     from greek-exposure above (which is already-aggregated across the whole chain). AUD-GREEKS:
     see get_greeks() below.
   - /api/stock/{ticker}/iv-rank — volatility, iv_rank_1y, close, date. See get_iv_rank() below.
+  - /api/stock/{ticker}/max-pain — per-expiry {expiry, max_pain} array. AUD-MAXPAIN: see
+    get_max_pain() below.
+  - /api/stock/{ticker}/oi-per-strike — per-strike {strike, call_oi, put_oi}, across all
+    expiries. AUD-MAXPAIN: see get_oi_per_strike() below.
   - /api/shorts/{ticker}/interest-float/v2 — days_to_cover, fee_rate, rebate_rate,
     short_interest, short_shares_available, si_float, total_float
   - /api/shorts/{ticker}/data           — fee_rate, rebate_rate, short_shares_available
@@ -87,6 +91,9 @@ _IV_RANK_TTL = 900      # 15 min, matching _GEX_TTL — this app's only consumer
 _GREEKS_TTL = 900       # 15 min, same rationale as _IV_RANK_TTL — this app's only consumer
 # (the daily Options Game Plan batch snapshot, AUD-GREEKS) reads a specific (expiry, strike)
 # pair once/day per symbol.
+_MAX_PAIN_TTL = 900     # 15 min, matching _GEX_TTL — AUD-MAXPAIN's consumer is the live
+# /gamma-exposure route (a per-page-view fetch, same cadence as get_gex_levels() itself).
+_OI_PER_STRIKE_TTL = 900  # 15 min, same rationale as _MAX_PAIN_TTL.
 
 
 class UnusualWhalesRateLimitError(Exception):
@@ -145,6 +152,31 @@ class GexLevels:
     gamma_flip: float | None
     gamma_magnet: float | None
     as_of_date: str | None
+
+
+@dataclass
+class MaxPainRow:
+    """AUD-MAXPAIN: one expiry's real max-pain strike from Unusual Whales'
+    /api/stock/{ticker}/max-pain — confirmed field shape via UW's own published API operation
+    doc, fetched 2026-09-03 (data: [{expiry, max_pain}], date). Max pain is the strike where,
+    in aggregate, option WRITERS (not holders) lose the least money at expiry — a real, distinct
+    concept from GEX's call_wall/put_wall/gamma_flip (which describe dealer HEDGING pressure,
+    not option-writer P&L), and a genuinely different magnet-effect theory some traders watch
+    for expiry-week price action."""
+    expiry: str | None
+    max_pain: float | None
+
+
+@dataclass
+class OIPerStrikeRow:
+    """AUD-MAXPAIN: one strike's aggregate call/put open interest from Unusual Whales'
+    /api/stock/{ticker}/oi-per-strike — confirmed field shape via UW's own published API
+    operation doc, fetched 2026-09-03. The raw OI distribution GEX's own call_wall/put_wall
+    only imply indirectly (those are gamma-weighted, not a plain OI count) — this is the actual
+    number of open contracts at each strike, the same data an "OI wall" reading is built from."""
+    strike: float | None
+    call_oi: float | None
+    put_oi: float | None
 
 
 @dataclass
@@ -290,6 +322,92 @@ def get_gex_levels(symbol: str) -> GexLevels | None:
         import json
         from dataclasses import asdict
         _get_redis().setex(cache_key, _GEX_TTL, json.dumps(asdict(result) if result else None))
+    except Exception:
+        pass
+    return result
+
+
+def get_max_pain(symbol: str) -> list[MaxPainRow]:
+    """AUD-MAXPAIN: real, per-expiry max-pain strikes for `symbol` from Unusual Whales'
+    /api/stock/{ticker}/max-pain — one row per listed expiry (confirmed real response shape via
+    UW's own published API operation doc, fetched 2026-09-03). Returns an empty list (never
+    None) on any failure/unavailability, matching get_flow_alerts()'s own list-returning
+    contract. Redis-cached 15 min.
+    """
+    if not is_available():
+        return []
+    sym = symbol.upper()
+    cache_key = f"stockai:uw:max_pain:{sym}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            import json
+            rows = json.loads(cached)
+            return [MaxPainRow(**r) for r in rows]
+    except Exception:
+        pass
+
+    try:
+        data = _get(f"/api/stock/{sym}/max-pain")
+    except Exception as exc:
+        log.warning("unusual_whales.max_pain_failed", symbol=sym, error=str(exc))
+        return []
+
+    result: list[MaxPainRow] = []
+    if isinstance(data, list):
+        for row in data:
+            result.append(MaxPainRow(
+                expiry=row.get("expiry"),
+                max_pain=_to_float(row.get("max_pain")),
+            ))
+
+    try:
+        import json
+        from dataclasses import asdict
+        _get_redis().setex(cache_key, _MAX_PAIN_TTL, json.dumps([asdict(r) for r in result]))
+    except Exception:
+        pass
+    return result
+
+
+def get_oi_per_strike(symbol: str) -> list[OIPerStrikeRow]:
+    """AUD-MAXPAIN: real aggregate call/put open interest per strike for `symbol` (across all
+    expiries) from Unusual Whales' /api/stock/{ticker}/oi-per-strike — confirmed real response
+    shape via UW's own published API operation doc, fetched 2026-09-03. Returns an empty list
+    (never None) on any failure/unavailability. Redis-cached 15 min.
+    """
+    if not is_available():
+        return []
+    sym = symbol.upper()
+    cache_key = f"stockai:uw:oi_per_strike:{sym}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            import json
+            rows = json.loads(cached)
+            return [OIPerStrikeRow(**r) for r in rows]
+    except Exception:
+        pass
+
+    try:
+        data = _get(f"/api/stock/{sym}/oi-per-strike")
+    except Exception as exc:
+        log.warning("unusual_whales.oi_per_strike_failed", symbol=sym, error=str(exc))
+        return []
+
+    result: list[OIPerStrikeRow] = []
+    if isinstance(data, list):
+        for row in data:
+            result.append(OIPerStrikeRow(
+                strike=_to_float(row.get("strike")),
+                call_oi=_to_float(row.get("call_oi")),
+                put_oi=_to_float(row.get("put_oi")),
+            ))
+
+    try:
+        import json
+        from dataclasses import asdict
+        _get_redis().setex(cache_key, _OI_PER_STRIKE_TTL, json.dumps([asdict(r) for r in result]))
     except Exception:
         pass
     return result

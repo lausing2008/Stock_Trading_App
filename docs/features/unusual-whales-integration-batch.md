@@ -308,3 +308,65 @@ and 2 more on the email suffix (function renamed, guard condition disabled — b
 correctly), all restored byte-identical. Full market-data suite: 2582 passed; frontend
 `tsc --noEmit`/`next build` clean, confirmed shipped in the compiled `option-trading-guide`/
 `screener` bundles via grep.
+
+---
+
+### AUD-MAXPAIN — Real Max Pain + OI-per-strike wired into the price chart and Market
+### Pressure panel (2026-09-03)
+
+**User request**: second feature from the Unusual Whales API design review, in the agreed build
+order — "Real Max Pain + OI-wall levels on the price chart." Real field shapes confirmed via
+direct WebFetch against UW's own published operation docs (fetched 2026-09-03):
+`/api/stock/{ticker}/max-pain` (per-expiry `{expiry, max_pain}` array) and
+`/api/stock/{ticker}/oi-per-strike` (per-strike `{strike, call_oi, put_oi}`, across all
+expiries).
+
+**Conceptual distinction from existing GEX fields** (documented inline at every layer): max pain
+is the strike where option WRITERS, in aggregate, lose the least at expiry — a real, independent
+magnet-effect theory, distinct from `call_wall`/`put_wall`/`gamma_flip` (which describe dealer
+HEDGING pressure, not option-writer P&L). OI-per-strike is the raw, unweighted open-interest
+count per strike — the actual number `call_wall`/`put_wall` only imply indirectly (those are
+gamma-weighted, not a plain OI count).
+
+**New UW functions**: `get_max_pain(symbol)` / `MaxPainRow` and `get_oi_per_strike(symbol)` /
+`OIPerStrikeRow` (`unusual_whales.py`) — both list-returning, fail-open (never `None`, matching
+`get_flow_alerts()`'s/`get_greeks()`'s own contract), 15-min Redis cache
+(`_MAX_PAIN_TTL`/`_OI_PER_STRIKE_TTL`).
+
+**Wiring**: unlike items #1-3 (which live in the daily `OptionsGamePlanSnapshot` batch), this
+route (`GET /{symbol}/gamma-exposure`) was already a **live, per-request** UW fetch with no
+existing DB persistence — so both new fields were added directly to that same live route rather
+than introducing a new batch job, matching its existing architecture exactly. Both fetches happen
+independently after the existing GEX availability gate; a max-pain/OI-per-strike fetch failure
+never blocks the GEX fields from still being returned (each list simply comes back empty).
+
+**Rendering**:
+- `PriceChart.tsx` gained a new `maxPainLevel` prop, rendered as a distinct dotted purple
+  `createPriceLine` (daily mode only) — the same mechanism already used for every other flat
+  level on this chart (S/R, FVGs, game-plan entry/stop/target). Drawn even when a Game Plan
+  overlay is active, since max pain is a genuinely different KIND of level (an options-market
+  structural reading, not a trade plan), not a competing entry/stop/target.
+- `stock/[symbol].tsx` added its own `useSWR` fetch for gamma exposure (same cache key as
+  `MarketPressurePanel`'s own fetch — SWR dedupes identical concurrent keys, so this doesn't
+  double the real network call) specifically to extract the nearest-expiry `max_pain` value as a
+  prop for the chart, since `MarketPressurePanel` doesn't expose its own fetch result to its
+  parent.
+- `MarketPressurePanel.tsx`'s existing GEX numbers card gained a 5th row ("Max pain (expiry)"),
+  plus a new sibling card showing the top 6 strikes by total (call+put) open interest — real,
+  unweighted OI counts, distinct from the existing per-expiration OI-concentration table already
+  on this panel (that one's a different, already-existing free-tier proxy).
+
+**Types**: `frontend/src/lib/api.ts`'s `GammaExposure` type extended with `max_pain: MaxPainRow[]`
+and `oi_per_strike: OIPerStrikeRow[]`.
+
+**Tests**: 17 new — `test_unusual_whales.py` gained 12 (6 each for `get_max_pain()`/
+`get_oi_per_strike()`: not-available, cache-hit, multi-row parsing, non-list response, fetch
+exception, own TTL constant — plus a cache-key-scoping check for OI-per-strike), and
+`test_gamma_exposure_route.py` gained 5 (both functions called via the real UW module path,
+fetched only after the availability gate, both new list fields present in the response, both
+correctly filter out null-valued rows rather than passing through fabricated-looking nulls).
+Adversarially verified via 2 sabotage cycles (removed the null-filtering guards on both new
+response fields — 2 tests failed correctly; forced `max_pain` to always parse as `None` — 1 test
+failed correctly), both restored byte-identical. Full market-data suite: 2599 passed; frontend
+`tsc --noEmit`/`next build` clean, confirmed shipped in the compiled `stock/[symbol]` page
+bundle via grep.

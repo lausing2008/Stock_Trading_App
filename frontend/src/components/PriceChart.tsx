@@ -51,6 +51,10 @@ type Props = {
     stop?: number | null;
     target?: number | null;
   } | null;
+  /** AUD-MAXPAIN: the nearest-expiry real max-pain strike (Unusual Whales) — where option
+   * writers, in aggregate, lose the least at expiry. Rendered as one distinct price line,
+   * daily mode only, same createPriceLine mechanism as every other flat level on this chart. */
+  maxPainLevel?: number | null;
   /** T230: External intraday bars (15m/1h/4h) — when provided, forces intraday rendering mode */
   intradayOverride?: Price[] | null;
   /** T230: Comparison overlay data (daily bars for a second symbol, e.g. SPY) */
@@ -129,7 +133,7 @@ function computeVolMA(priceData: Price[], period = 20): (number | null)[] {
 type SmaVals  = { sma_20: number|null; sma_50: number|null; sma_200: number|null; ema_20: number|null; ema_50: number|null; ema_200: number|null };
 type MacdVals = { macd: number|null; signal: number|null; hist: number|null };
 
-export default function PriceChart({ symbol, prices, indicators, levels, signalMarkers, patterns, gamePlanLevels, riskRewardLevels, intradayOverride, compareData }: Props) {
+export default function PriceChart({ symbol, prices, indicators, levels, signalMarkers, patterns, gamePlanLevels, riskRewardLevels, maxPainLevel, intradayOverride, compareData }: Props) {
   const mainRef = useRef<HTMLDivElement>(null);
   const rsiRef  = useRef<HTMLDivElement>(null);
   const macdRef = useRef<HTMLDivElement>(null);
@@ -703,6 +707,18 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       }
     }
 
+    // ── AUD-MAXPAIN: real max-pain level (Unusual Whales), nearest expiry — a distinct
+    // magnet-effect theory from GEX's call_wall/put_wall above (those describe dealer HEDGING
+    // pressure; max pain describes where option WRITERS lose the least at expiry). Drawn even
+    // when a Game Plan overlay is active, since it's a genuinely different kind of level (an
+    // options-market structural reading, not a trade plan), not a competing entry/stop/target.
+    if (!isIntraday && maxPainLevel && maxPainLevel > 0) {
+      candles.createPriceLine({
+        price: maxPainLevel, color: '#c084fc', lineWidth: 1 as const, lineStyle: LineStyle.Dotted,
+        axisLabelVisible: true, title: 'Max Pain',
+      });
+    }
+
     // ── T252: Risk/Reward levels — ATR stop / nearest support / analyst target, the same
     // values already shown as numbers in the Position Sizer card, drawn on the chart itself.
     // Only shown when there's no active LLM game plan overlay (gamePlanLevels) — the two
@@ -895,7 +911,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       chartRef.current = null;
       setSrLabels([]);
     };
-  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, riskRewardLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showAnchoredVwap, anchoredVwapIdx, showRSI, showMACD, showSignals, showFVG, showSR, show52W, showSwingPivots, swingPivots, drawings, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
+  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, riskRewardLevels, maxPainLevel, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showAnchoredVwap, anchoredVwapIdx, showRSI, showMACD, showSignals, showFVG, showSR, show52W, showSwingPivots, swingPivots, drawings, isIntraday, intradayOverride, compareData, volumeProfileMode, volumeProfile, fixedRangeSelection]);
 
   // ── Fixed Range VP: click-to-pick start/end selection ───────────────────
   // Deliberately a SEPARATE, lightweight effect from the main chart-rebuild effect above —

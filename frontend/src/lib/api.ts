@@ -1193,6 +1193,9 @@ export type OptionsChain = { symbol: string; available: boolean; reason?: string
 // MPE-06: real, calculated dealer gamma exposure via Unusual Whales. `source` distinguishes a
 // real GEX read ("unusual_whales") from the free-tier's own OI-concentration proxy elsewhere
 // in this app — never silently presented as the same thing.
+export type MaxPainRow = { expiry: string | null; max_pain: number | null };
+export type OIPerStrikeRow = { strike: number | null; call_oi: number | null; put_oi: number | null };
+
 export type GammaExposure = {
   symbol: string;
   available: boolean;
@@ -1203,6 +1206,12 @@ export type GammaExposure = {
   gamma_flip?: number | null;
   gamma_magnet?: number | null;
   as_of_date?: string | null;
+  // AUD-MAXPAIN: max_pain is the strike where option WRITERS lose the least at expiry (a
+  // distinct concept from the dealer-hedging-pressure walls above); oi_per_strike is the raw
+  // call/put open-interest distribution across strikes, which call_wall/put_wall only imply
+  // indirectly (those are gamma-weighted, not a plain OI count).
+  max_pain?: MaxPainRow[];
+  oi_per_strike?: OIPerStrikeRow[];
 };
 
 // T323-DARKPOOL: real off-exchange block trades via Unusual Whales — genuinely new capability,

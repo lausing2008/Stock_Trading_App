@@ -88,9 +88,50 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
                   <span style={{ fontWeight: 700, color: '#e2e8f0', fontVariantNumeric: 'tabular-nums' }}>${gex.gamma_magnet?.toFixed(2)}</span>
                 </div>
               )}
+              {gex.max_pain?.[0]?.max_pain != null && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }} title="Where option WRITERS lose the least at expiry -- a different concept from the dealer-hedging walls above">
+                  <span style={{ color: '#c084fc' }}>Max pain ({gex.max_pain[0].expiry})</span>
+                  <span style={{ fontWeight: 700, color: '#e2e8f0', fontVariantNumeric: 'tabular-nums' }}>${gex.max_pain[0].max_pain.toFixed(2)}</span>
+                </div>
+              )}
             </div>
           </div>
         )}
+
+        {hasGex && (gex.oi_per_strike?.length ?? 0) > 0 && (() => {
+          // AUD-MAXPAIN: top strikes by total (call+put) open interest -- the raw OI
+          // distribution GEX's own gamma-weighted call_wall/put_wall only imply indirectly.
+          const topOi = [...(gex.oi_per_strike ?? [])]
+            .filter(r => r.strike != null)
+            .sort((a, b) => ((b.call_oi ?? 0) + (b.put_oi ?? 0)) - ((a.call_oi ?? 0) + (a.put_oi ?? 0)))
+            .slice(0, 6)
+            .sort((a, b) => (a.strike ?? 0) - (b.strike ?? 0));
+          return (
+            <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+              <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>
+                Open interest by strike (top {topOi.length} by total OI, across all expiries) — an &quot;OI wall&quot; is a strike with unusually heavy interest on one side.
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                    {['Strike', 'Call OI', 'Put OI'].map(h => (
+                      <th key={h} style={{ padding: '4px 6px', textAlign: h === 'Strike' ? 'left' : 'right', color: '#475569', fontWeight: 500 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {topOi.map(row => (
+                    <tr key={row.strike} style={{ borderBottom: '1px solid #0f172a' }}>
+                      <td style={{ padding: '5px 6px', color: '#e2e8f0', fontVariantNumeric: 'tabular-nums' }}>${row.strike?.toFixed(2)}</td>
+                      <td style={{ padding: '5px 6px', textAlign: 'right', color: '#4ade80', fontVariantNumeric: 'tabular-nums' }}>{row.call_oi != null ? row.call_oi.toLocaleString() : '—'}</td>
+                      <td style={{ padding: '5px 6px', textAlign: 'right', color: '#f87171', fontVariantNumeric: 'tabular-nums' }}>{row.put_oi != null ? row.put_oi.toLocaleString() : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        })()}
 
         {hasExpirations && (
           <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>

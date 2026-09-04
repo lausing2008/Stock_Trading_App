@@ -3915,6 +3915,13 @@ def get_gamma_exposure(symbol: str):
     Unusual Whales is disabled/unconfigured or the symbol has no real GEX data — a caller
     should treat that the same as "keep using the existing squeeze/gamma alert family's own
     free proxy," not as an error.
+
+    AUD-MAXPAIN: also includes real max_pain (per-expiry, the strike where option WRITERS in
+    aggregate lose the least at expiry — a distinct concept from GEX's own dealer-hedging-
+    pressure walls above) and oi_per_strike (the raw call/put open-interest distribution across
+    strikes, which GEX's gamma-WEIGHTED walls only imply indirectly). Both independently
+    fail-open to an empty list — a max-pain/OI fetch failure never blocks the GEX fields above
+    from still being returned.
     """
     from ..services import unusual_whales as _uw
 
@@ -3926,6 +3933,9 @@ def get_gamma_exposure(symbol: str):
     if levels is None:
         return {"symbol": sym, "available": False, "source": "none", "reason": "no_data"}
 
+    max_pain_rows = _uw.get_max_pain(sym)
+    oi_rows = _uw.get_oi_per_strike(sym)
+
     return {
         "symbol": sym,
         "available": True,
@@ -3935,6 +3945,13 @@ def get_gamma_exposure(symbol: str):
         "gamma_flip": levels.gamma_flip,
         "gamma_magnet": levels.gamma_magnet,
         "as_of_date": levels.as_of_date,
+        "max_pain": [
+            {"expiry": r.expiry, "max_pain": r.max_pain} for r in max_pain_rows if r.max_pain is not None
+        ],
+        "oi_per_strike": [
+            {"strike": r.strike, "call_oi": r.call_oi, "put_oi": r.put_oi}
+            for r in oi_rows if r.strike is not None
+        ],
     }
 
 

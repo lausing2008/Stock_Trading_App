@@ -84,3 +84,39 @@ def test_all_gex_fields_come_from_the_real_levels_object_not_hardcoded():
     returned by get_gex_levels(), never a literal placeholder value."""
     for field in ("call_wall", "put_wall", "gamma_flip", "gamma_magnet", "as_of_date"):
         assert f"levels.{field}" in _FUNC_SOURCE
+
+
+# ── AUD-MAXPAIN: max_pain / oi_per_strike wiring ─────────────────────────────────────────────
+
+def test_max_pain_and_oi_per_strike_are_fetched_via_the_real_unusual_whales_functions():
+    assert "_uw.get_max_pain(sym)" in _FUNC_SOURCE
+    assert "_uw.get_oi_per_strike(sym)" in _FUNC_SOURCE
+
+
+def test_max_pain_and_oi_per_strike_fetched_only_after_the_gex_availability_gate():
+    """Must not attempt these fetches when Unusual Whales is disabled/unconfigured — same
+    availability-gate discipline as get_gex_levels() itself."""
+    avail_idx = _FUNC_SOURCE.index("_uw.is_available()")
+    max_pain_idx = _FUNC_SOURCE.index("_uw.get_max_pain(")
+    oi_idx = _FUNC_SOURCE.index("_uw.get_oi_per_strike(")
+    assert avail_idx < max_pain_idx
+    assert avail_idx < oi_idx
+
+
+def test_response_includes_max_pain_and_oi_per_strike_lists():
+    assert '"max_pain": [' in _FUNC_SOURCE
+    assert '"oi_per_strike": [' in _FUNC_SOURCE
+
+
+def test_max_pain_rows_filter_out_null_max_pain_values():
+    """A row with max_pain=None (a real, possible UW response for some expiries) must be
+    dropped, not passed through as a fabricated-looking null entry in the array."""
+    idx = _FUNC_SOURCE.index('"max_pain": [')
+    segment = _FUNC_SOURCE[idx:idx + 200]
+    assert "if r.max_pain is not None" in segment
+
+
+def test_oi_per_strike_rows_filter_out_null_strike_values():
+    idx = _FUNC_SOURCE.index('"oi_per_strike": [')
+    segment = _FUNC_SOURCE[idx:idx + 250]
+    assert "if r.strike is not None" in segment
