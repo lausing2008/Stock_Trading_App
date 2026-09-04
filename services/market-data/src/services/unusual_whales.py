@@ -336,6 +336,29 @@ class FlowAlert:
     created_at: str | None
 
 
+# AUD-DQCHECKS-VISIBILITY: rolling 48h counter of real 429 rate-limit responses from UW's own
+# API — surfaced as a "gauge" _DQ_CHECK entry (scheduler.py) for admin visibility, matching the
+# existing squeeze_fund_cache_miss-style counters' own convention exactly. Deliberately a plain
+# INCR+expire-once-on-first-write (not imported from scheduler.py's own _incr_rolling_counter,
+# to avoid a circular import — scheduler.py imports things that transitively reach this module)
+# rather than raising/blocking anything: a rate-limit event already fails open everywhere it's
+# called from (every real caller already handles UnusualWhalesRateLimitError or an unavailable
+# result), this counter exists purely so a sustained rate-limit PATTERN — as opposed to one
+# isolated 429 — is visible somewhere other than grepping logs.
+_RATE_LIMIT_COUNTER_KEY = "stockai:metric:uw_rate_limit_count_48h"
+_RATE_LIMIT_COUNTER_TTL_S = 48 * 3600
+
+
+def _incr_rate_limit_counter() -> None:
+    try:
+        r = _get_redis()
+        r.incr(_RATE_LIMIT_COUNTER_KEY)
+        if r.ttl(_RATE_LIMIT_COUNTER_KEY) == -1:
+            r.expire(_RATE_LIMIT_COUNTER_KEY, _RATE_LIMIT_COUNTER_TTL_S)
+    except Exception:
+        pass
+
+
 def _get_redis():
     from common.redis_client import get_redis as _get_pool_redis
     return _get_pool_redis()
@@ -377,6 +400,7 @@ def _get(path: str, params: dict | None = None) -> dict | None:
         )
         if r.status_code == 429:
             log.warning("unusual_whales.rate_limit", path=path)
+            _incr_rate_limit_counter()
             raise UnusualWhalesRateLimitError(f"Unusual Whales rate limit on {path}")
         if r.status_code in (401, 403):
             log.warning("unusual_whales.auth_error", path=path, status=r.status_code)

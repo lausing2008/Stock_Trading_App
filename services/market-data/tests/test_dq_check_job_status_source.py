@@ -34,6 +34,29 @@ _ALERT_JOB_NAMES = [
     "check_macro_reaction_alerts",
 ]
 
+# AUD-DQCHECKS-VISIBILITY: 12 more minute-cadence jobs given job_status DQ checks in the same
+# pass that fixed AUD-MISFIREGRACE-OPTIONSFLOW (2 of these — check_options_flow_alerts and
+# check_dark_pool_alerts — were the exact jobs confirmed silently dead in production; a 3rd,
+# check_sr_watch_reverts, was found with the identical live symptom during that investigation).
+# Each maps its DQ-check "name" to the REAL Redis key it reads — check_portfolio_drawdown_alerts
+# is the one exception: that job already called _record_job_status() correctly, just under its
+# scheduler `id=` string ("portfolio_drawdown_alert_check") rather than its function name, so
+# its DQ check's job_name intentionally does NOT match its own check "name" key.
+_NEW_MINUTE_JOB_CHECKS = {
+    "check_volume_anomalies": "check_volume_anomalies",
+    "check_conditional_orders": "check_conditional_orders",
+    "check_short_squeeze_alerts": "check_short_squeeze_alerts",
+    "check_squeeze_ignition_alerts": "check_squeeze_ignition_alerts",
+    "check_squeeze_watch_reverts": "check_squeeze_watch_reverts",
+    "check_options_flow_alerts": "check_options_flow_alerts",
+    "check_dark_pool_alerts": "check_dark_pool_alerts",
+    "check_sr_watch_reverts": "check_sr_watch_reverts",
+    "check_value_area_breakdown": "check_value_area_breakdown",
+    "check_portfolio_drawdown_alerts": "portfolio_drawdown_alert_check",
+    "check_early_earnings_news_alerts": "check_early_earnings_news_alerts",
+    "check_top3_conviction": "check_top3_conviction",
+}
+
 
 def _resolve_job_status_check(raw_status: str | None):
     """Pulls the real `if check.get("source") == "job_status": ...` branch out of
@@ -116,3 +139,80 @@ def test_job_status_checks_are_gated_before_the_sql_query_branch():
     source_check_idx = _SOURCE.index('if check.get("source") == "job_status":')
     sql_query_idx = _SOURCE.index('result = session.execute(text(check["query"]))')
     assert source_check_idx < sql_query_idx
+
+
+# ── AUD-DQCHECKS-VISIBILITY: 12 more minute jobs given job_status DQ checks ──────────────────
+
+def test_all_12_new_minute_jobs_have_a_job_status_dq_check_entry_with_the_right_key():
+    for check_name, job_name in _NEW_MINUTE_JOB_CHECKS.items():
+        entry_idx = _SOURCE.index(f'"job_name": "{job_name}", "source": "job_status"')
+        assert entry_idx > 0, f"missing job_status DQ check entry for {check_name} (job_name={job_name})"
+
+
+def test_new_job_status_entries_have_no_sql_query_field():
+    checks_start = _SOURCE.index("_DQ_CHECKS: list[dict] = [")
+    checks_end = _SOURCE.index("\n]\n\n\ndef run_data_quality_checks", checks_start)
+    checks_block = _SOURCE[checks_start:checks_end]
+    for check_name, job_name in _NEW_MINUTE_JOB_CHECKS.items():
+        entry_start = checks_block.index(f'"job_name": "{job_name}"')
+        dict_start = checks_block.rindex("{", 0, entry_start)
+        dict_end = checks_block.index("}", entry_start) + 1
+        entry_dict_text = checks_block[dict_start:dict_end]
+        assert '"query"' not in entry_dict_text, f"{check_name}'s entry unexpectedly has a query key"
+
+
+def test_the_two_confirmed_silently_dead_jobs_have_dq_checks():
+    """The exact 2 jobs this whole investigation started from — confirm they're not just
+    listed in _NEW_MINUTE_JOB_CHECKS (the test fixture) but genuinely present in the real
+    _DQ_CHECKS source."""
+    for job_name in ("check_options_flow_alerts", "check_dark_pool_alerts"):
+        assert f'"job_name": "{job_name}", "source": "job_status"' in _SOURCE
+
+
+def test_portfolio_drawdown_check_uses_its_real_existing_redis_key_not_its_function_name():
+    """check_portfolio_drawdown_alerts() already calls _record_job_status() under the id=
+    string "portfolio_drawdown_alert_check", not its own function name — the DQ check's
+    job_name must match the key that's ACTUALLY written, or this check would silently never
+    find real data and always report ok=False/stale."""
+    assert '"job_name": "portfolio_drawdown_alert_check", "source": "job_status"' in _SOURCE
+    # And must NOT have accidentally used the (wrong, never-written) function-name key instead.
+    assert '"job_name": "check_portfolio_drawdown_alerts"' not in _SOURCE
+
+
+def test_conditional_orders_now_records_job_status_in_its_own_module():
+    """check_conditional_orders() lives in conditional_orders.py, not scheduler.py — confirm
+    the _record_job_status() calls this pass added actually exist there, not just that
+    scheduler.py's _DQ_CHECKS entry expects them to."""
+    cond_orders_path = (
+        pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "conditional_orders.py"
+    )
+    body = cond_orders_path.read_text()
+    assert '_record_job_status("check_conditional_orders", "ok"' in body
+    assert '_record_job_status("check_conditional_orders", "error"' in body
+
+
+# ── AUD-DQCHECKS-VISIBILITY: Unusual Whales rate-limit gauge ─────────────────────────────────
+
+def test_uw_rate_limit_gauge_entry_exists_and_has_no_pass_fail_concept():
+    """Must be a "gauge" source (like the 3 fundamentals-cache-miss counters), not a "query" or
+    "job_status" check — a nonzero rate-limit count is expected background noise sometimes, not
+    inherently a failure, matching every other gauge's own established framing."""
+    checks_start = _SOURCE.index("_DQ_CHECKS: list[dict] = [")
+    checks_end = _SOURCE.index("\n]\n\n\ndef run_data_quality_checks", checks_start)
+    checks_block = _SOURCE[checks_start:checks_end]
+    entry_start = checks_block.index('"name": "uw_rate_limit_events_48h"')
+    dict_start = checks_block.rindex("{", 0, entry_start)
+    dict_end = checks_block.index("}", entry_start) + 1
+    entry_dict_text = checks_block[dict_start:dict_end]
+    assert '"source": "gauge"' in entry_dict_text
+    assert '"query"' not in entry_dict_text
+    assert '"job_name"' not in entry_dict_text
+
+
+def test_uw_rate_limit_gauge_reads_the_real_counter_key_from_unusual_whales_module():
+    """The gauge's counter_key must reference the SAME constant unusual_whales.py's
+    _incr_rate_limit_counter() actually increments — imported at module level (a plain
+    constant, not a function, so no circular-import risk), not a separately-defined literal
+    string that could silently drift from the real key."""
+    assert "from .unusual_whales import _RATE_LIMIT_COUNTER_KEY as _UW_RATE_LIMIT_COUNTER_KEY" in _SOURCE
+    assert '"counter_key": _UW_RATE_LIMIT_COUNTER_KEY' in _SOURCE

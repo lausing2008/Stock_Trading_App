@@ -1823,6 +1823,67 @@ class TestGetFunctionRealHttpBehavior:
             except self.real_uw.UnusualWhalesRateLimitError:
                 pass
 
+    def test_a_429_increments_the_dq_check_rate_limit_counter(self):
+        """AUD-DQCHECKS-VISIBILITY: a 429 must also increment the rolling counter the new
+        uw_rate_limit_events_48h DQ gauge reads — before this fix, a rate-limit event was only
+        ever visible in logs (unusual_whales.rate_limit), with no admin-visible rollup at all."""
+        class _FakeResp:
+            status_code = 429
+        class _FakeClient:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def get(self, *a, **kw):
+                return _FakeResp()
+
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value="real-token"), \
+             patch.object(self.real_uw.httpx, "Client", return_value=_FakeClient()), \
+             patch.object(self.real_uw, "_incr_rate_limit_counter") as mock_incr:
+            try:
+                self.real_uw._get("/api/stock/AAPL/gex-levels")
+            except self.real_uw.UnusualWhalesRateLimitError:
+                pass
+            mock_incr.assert_called_once()
+
+    def test_incr_rate_limit_counter_uses_the_real_redis_client_and_fails_open(self):
+        """_incr_rate_limit_counter() itself: must INCR the real counter key, set a TTL only on
+        first write (matching scheduler.py's own _incr_rolling_counter idiom exactly), and never
+        raise even if Redis itself is unavailable — a metrics-counter failure must never be able
+        to break a real UW call path."""
+        class _FakeRedis:
+            def __init__(self):
+                self.incr_calls = []
+                self.expire_calls = []
+                self._ttl = -1
+            def incr(self, key):
+                self.incr_calls.append(key)
+            def ttl(self, key):
+                return self._ttl
+            def expire(self, key, seconds):
+                self.expire_calls.append((key, seconds))
+                self._ttl = seconds
+
+        fake_redis = _FakeRedis()
+        with patch.object(self.real_uw, "_get_redis", return_value=fake_redis):
+            self.real_uw._incr_rate_limit_counter()
+            assert fake_redis.incr_calls == [self.real_uw._RATE_LIMIT_COUNTER_KEY]
+            assert fake_redis.expire_calls == [(self.real_uw._RATE_LIMIT_COUNTER_KEY, self.real_uw._RATE_LIMIT_COUNTER_TTL_S)]
+
+            # A second call must NOT reset the TTL (ttl() no longer returns -1) — matches the
+            # "expire only on first write" idiom this counter is explicitly modeled on.
+            self.real_uw._incr_rate_limit_counter()
+            assert fake_redis.incr_calls == [self.real_uw._RATE_LIMIT_COUNTER_KEY] * 2
+            assert len(fake_redis.expire_calls) == 1
+
+    def test_incr_rate_limit_counter_fails_open_on_a_redis_exception(self):
+        class _BrokenRedis:
+            def incr(self, key):
+                raise ConnectionError("redis unavailable")
+
+        with patch.object(self.real_uw, "_get_redis", return_value=_BrokenRedis()):
+            self.real_uw._incr_rate_limit_counter()  # must not raise
+
     def test_a_401_raises_the_dedicated_auth_error_and_is_never_retried(self):
         """The auth-error path must be excluded from tenacity's own retry — retrying a bad key
         wastes the request budget on an error that can never self-resolve. Verified by

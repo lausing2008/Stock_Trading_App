@@ -512,9 +512,18 @@ def check_conditional_orders() -> None:
     """1-minute evaluator for every pending ConditionalOrder — fail-CLOSED on a lock-acquire
     failure (unlike check_price_alerts' fail-open), matching this feature's real-money-adjacent
     risk profile: skipping one cycle is always safer than risking a double-fire.
+
+    AUD-DQCHECKS-VISIBILITY: previously made zero _record_job_status() calls at all — the same
+    AUD266-FIVE-ALERT-JOBS-RECORD-NO-STATUS gap already fixed for 5 other alert jobs, found
+    again while adding new data-quality-check coverage for the minute-cadence job family (this
+    session's own AUD-MISFIREGRACE-OPTIONSFLOW investigation). Local import (not module-level)
+    to avoid conditional_orders.py importing scheduler.py at module load time, since scheduler.py
+    already imports FROM this file (`from .conditional_orders import check_conditional_orders`)
+    — a top-level import here would be circular.
     """
     import json as _json
     from db import SessionLocal
+    from .scheduler import _record_job_status
 
     _t0 = time.monotonic()
     try:
@@ -532,6 +541,7 @@ def check_conditional_orders() -> None:
                 select(ConditionalOrder).where(ConditionalOrder.status == "pending")
             ).scalars().all()
             if not orders:
+                _record_job_status("check_conditional_orders", "ok", time.monotonic() - _t0)
                 return
 
             now = datetime.now(timezone.utc)
@@ -581,5 +591,7 @@ def check_conditional_orders() -> None:
             session.commit()
             log.info("conditional_order.check_done", checked=len(orders), fired=fired,
                      elapsed_s=round(time.monotonic() - _t0, 2))
+            _record_job_status("check_conditional_orders", "ok", time.monotonic() - _t0)
     except Exception as exc:
         log.error("conditional_order.check_failed", error=str(exc), exc_info=True)
+        _record_job_status("check_conditional_orders", "error", time.monotonic() - _t0, str(exc))

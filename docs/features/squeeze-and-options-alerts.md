@@ -922,3 +922,102 @@ docker logs stockai-signal-engine-1 --since 1h | grep 'short_interest_uw'
 
 ---
 
+## Feature Reference: AUD-DQCHECKS-VISIBILITY — 12 More Scheduler-Job Liveness Checks + a Unusual Whales Rate-Limit Gauge (2026-09-04)
+
+**User request:** "let's create more data quality checks for monitoring" — "you can decide...I
+wanna have a full visibility on the server health and caught every error beforehand" — surfaced
+directly out of the same session's `AUD-MISFIREGRACE-OPTIONSFLOW` investigation (see
+`docs/incidents/self-tuning-job-performance-bugs.md`), which found 3 real-time alert jobs had
+silently stopped re-firing with zero visible symptom short of directly querying Redis.
+
+Built entirely on the existing declarative `_DQ_CHECKS` framework (`services/market-data/src/
+services/scheduler.py`) rather than a new mechanism — that framework already had 4 check shapes
+(`query` for table freshness, `job_status` for scheduler-job liveness, `ratio` for two-counter
+comparisons, `gauge` for pure observability counters), one scheduled job (`run_data_quality_
+checks`), Redis persistence (`dq_check:{name}`), and an email-on-failure path.
+
+### 1. `job_status` liveness checks for 12 more 1-minute jobs
+
+Before this pass, only 5 of the platform's ~17 genuinely-1-minute scheduler jobs had any
+liveness check at all (`check_price_alerts`, `check_signal_alerts`, `check_earnings_reactions`,
+`check_earnings_impact_alerts`, `check_macro_reaction_alerts` — added by an earlier
+`AUD266-FIVE-ALERT-JOBS-RECORD-NO-STATUS` / `AUD266-ALERT-JOBS-LACK-STATUS-CONSEQUENCE-DQ`
+fix). Added 12 more, closing the gap for the exact 3 jobs `AUD-MISFIREGRACE-OPTIONSFLOW` found
+silently dead (`check_options_flow_alerts`, `check_dark_pool_alerts`, `check_sr_watch_reverts`)
+plus 9 others sharing the same latent risk: `check_volume_anomalies`,
+`check_conditional_orders`, `check_short_squeeze_alerts`, `check_squeeze_ignition_alerts`,
+`check_squeeze_watch_reverts`, `check_value_area_breakdown`,
+`check_portfolio_drawdown_alerts`, `check_early_earnings_news_alerts`,
+`check_top3_conviction`.
+
+Two of these twelve needed a companion fix before a `job_status` check could work at all:
+- **`check_conditional_orders`** (`services/market-data/src/services/conditional_orders.py`)
+  made **zero** `_record_job_status()` calls anywhere in its body — the same
+  `AUD266-FIVE-ALERT-JOBS-RECORD-NO-STATUS` gap class found again. Fixed by adding the calls
+  directly (a local `from .scheduler import _record_job_status` import, not module-level, since
+  `scheduler.py` already imports `check_conditional_orders` FROM this file — a top-level import
+  the other direction would be circular).
+- **`check_portfolio_drawdown_alerts`** already called `_record_job_status()` correctly on
+  every path — just under its scheduler `id=` string (`"portfolio_drawdown_alert_check"`)
+  rather than its own function name, an inconsistency with the majority convention but not
+  itself a bug. The new DQ check's `job_name` intentionally matches that real, already-written
+  key rather than "fixing" a naming mismatch that was never actually broken — changing it would
+  have been the one thing that COULD have broken it (the check would then read a key nothing
+  writes to).
+
+### 2. A new gauge: `uw_rate_limit_events_48h`
+
+The platform had **no admin-visible signal at all** for Unusual Whales rate-limiting before this
+— only a per-call log line (`unusual_whales.rate_limit`, `services/market-data/src/services/
+unusual_whales.py`'s `_get()`), with no rollup anywhere, despite this same session's own UW
+API-volume audit finding real 429 events on production.
+
+New `_incr_rate_limit_counter()` in `unusual_whales.py` itself (self-contained — a plain
+INCR-then-expire-once-on-first-write, the same idiom `scheduler.py`'s own
+`_incr_rolling_counter()` uses, but not imported from there to avoid a circular import since
+`unusual_whales.py` has no reason to otherwise depend on `scheduler.py`) increments a rolling
+48h Redis counter (`stockai:metric:uw_rate_limit_count_48h`) every time `_get()` sees a real 429.
+`scheduler.py` imports just the counter's Redis-key constant at module level (`from
+.unusual_whales import _RATE_LIMIT_COUNTER_KEY as _UW_RATE_LIMIT_COUNTER_KEY` — a plain string
+constant carries none of the circularity risk a function import into a hot module-load path
+would) rather than duplicating the literal key string, so the two can never silently drift
+apart. Same "gauge, no pass/fail concept" framing as the 3 pre-existing fundamentals-cache-miss
+counters (squeeze/squeeze-watch/squeeze-ignition) — a nonzero count is expected background
+noise some of the time (real 429s happen even in healthy operation, already handled by
+`tenacity`-based retry/backoff elsewhere in `_get()`), not itself proof of a problem; this is
+purely observability so a *sustained* pattern is visible somewhere other than grepping logs.
+
+### Testing
+
+27 new/updated tests: 4 in `test_unusual_whales.py` (a 429 triggers the counter increment;
+the counter itself INCRs the real key, sets a TTL only on first write, never resets that TTL on
+a later increment, and fails open on a Redis exception without ever raising); 13 in
+`test_dq_check_job_status_source.py` (all 12 new `job_status` entries exist with the correct
+`job_name` — including the `check_portfolio_drawdown_alerts` naming exception — none carry a
+stray `query` key, the 2 jobs confirmed dead in tier 343 specifically have checks now, and
+`conditional_orders.py` genuinely has the new `_record_job_status()` calls rather than just
+`scheduler.py`'s own `_DQ_CHECKS` entry assuming they exist) plus 2 new tests there for the UW
+gauge (a `gauge` source with no `query`/`job_name` key; `counter_key` correctly imports the real
+constant rather than a literal that could drift); 1 pre-existing test in
+`test_squeeze_audit_20260725_fixes.py` updated for the new gauge count (3 → 4, matching that
+test's own established "bump this number when a gauge is added" precedent from its prior 2 → 3
+update). 1 adversarial sabotage cycle (`check_portfolio_drawdown_alerts`'s `job_name` reverted
+to its wrong, never-actually-written function-name form) — caught cleanly by exactly the 3
+tests targeting that specific wiring, restored and confirmed byte-identical via `md5sum`. Full
+2721-test market-data suite green.
+
+**What to check if this looks wrong**:
+```bash
+# Confirm a specific new job_status check is reading real, fresh data:
+docker exec stockai-redis-1 redis-cli get dq_check:check_options_flow_alerts
+
+# Confirm the UW rate-limit gauge is wired to the real counter:
+docker exec stockai-redis-1 redis-cli get stockai:metric:uw_rate_limit_count_48h
+docker exec stockai-redis-1 redis-cli get dq_check:uw_rate_limit_events_48h
+
+# Confirm check_conditional_orders now genuinely records status:
+docker exec stockai-market-data-1 grep -n '_record_job_status("check_conditional_orders"' /app/src/services/conditional_orders.py
+```
+
+---
+

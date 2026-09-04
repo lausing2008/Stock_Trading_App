@@ -92,6 +92,12 @@ from .ingestion import ingest_universe
 from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification, send_post_open_digest_email, send_data_quality_alert_email, is_quota_exceeded
 from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists, poll_broker_order_fills, sync_broker_positions
 from ..api.routes import refresh_live_price_cache, refresh_avg_volume_cache, _AVG_VOLUME_KEY
+# AUD-DQCHECKS-VISIBILITY: a plain constant (not a function with side effects), so importing it
+# at module level carries none of the circularity/import-order risk every OTHER cross-service
+# reference to unusual_whales.py in this file avoids by using a local `from . import
+# unusual_whales as _uw` inside a function body instead — confirmed unusual_whales.py itself
+# never imports scheduler.py (no cycle exists either direction).
+from .unusual_whales import _RATE_LIMIT_COUNTER_KEY as _UW_RATE_LIMIT_COUNTER_KEY
 
 log = get_logger("scheduler")
 _settings = get_settings()
@@ -10307,6 +10313,84 @@ _DQ_CHECKS: list[dict] = [
         "job_name": "check_macro_reaction_alerts", "source": "job_status",
         "max_age_hours": 1, "is_date": False,
     },
+    # AUD-DQCHECKS-VISIBILITY: 12 more 1-minute jobs with NO liveness check at all before this —
+    # found while investigating AUD-MISFIREGRACE-OPTIONSFLOW (options_flow_alert_check/
+    # dark_pool_alert_check/sr_watch_check silently stopped re-firing after their first
+    # execution post-restart, with zero visible symptom until Redis job-status state was
+    # checked directly). That fix closed the SCHEDULING gap (misfire_grace_time); these checks
+    # close the MONITORING gap — the same class of "a job going silently dead is invisible"
+    # risk AUD266-FIVE-ALERT-JOBS-RECORD-NO-STATUS already fixed for 5 sibling jobs, extended
+    # to the rest of the minute-cadence family. check_conditional_orders and
+    # check_portfolio_drawdown_alerts needed a companion fix first (see this session's other
+    # changes) — check_conditional_orders made ZERO _record_job_status() calls before this pass
+    # (the same AUD266 gap class, found again); check_portfolio_drawdown_alerts already called
+    # _record_job_status() correctly, just under its scheduler `id=` string
+    # ("portfolio_drawdown_alert_check") rather than its function name — the job_name value
+    # below matches that existing key exactly rather than "fixing" a naming inconsistency that
+    # isn't actually broken.
+    {
+        "name": "check_volume_anomalies", "description": "Universe-wide abnormal-volume scan liveness (per-minute cron)",
+        "job_name": "check_volume_anomalies", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
+    {
+        "name": "check_conditional_orders", "description": "Conditional (\"if TRIGGER then ACTION\") order evaluator liveness (per-minute cron) — real-money-adjacent",
+        "job_name": "check_conditional_orders", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
+    {
+        "name": "check_short_squeeze_alerts", "description": "Short-squeeze prime-candidate alert liveness (per-minute cron)",
+        "job_name": "check_short_squeeze_alerts", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
+    {
+        "name": "check_squeeze_ignition_alerts", "description": "Squeeze-ignition early-warning alert liveness (per-minute cron)",
+        "job_name": "check_squeeze_ignition_alerts", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
+    {
+        "name": "check_squeeze_watch_reverts", "description": "Squeeze-watch (bearish puts) revert checker liveness (per-minute cron)",
+        "job_name": "check_squeeze_watch_reverts", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
+    {
+        # The 2 jobs directly confirmed silently dead in production during this same
+        # investigation (AUD-MISFIREGRACE-OPTIONSFLOW) — the exact gap this check exists to
+        # close going forward.
+        "name": "check_options_flow_alerts", "description": "Unusual Whales options-flow alert liveness (per-minute cron) — confirmed silently stopped firing 2026-09-04",
+        "job_name": "check_options_flow_alerts", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
+    {
+        "name": "check_dark_pool_alerts", "description": "Unusual Whales dark-pool block-print alert liveness (per-minute cron) — confirmed silently stopped firing 2026-09-04",
+        "job_name": "check_dark_pool_alerts", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
+    {
+        "name": "check_sr_watch_reverts", "description": "Support/resistance proximity alert liveness (per-minute cron) — confirmed silently stopped firing 2026-09-04",
+        "job_name": "check_sr_watch_reverts", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
+    {
+        "name": "check_value_area_breakdown", "description": "Value-area breakdown/breakout alert liveness (per-minute cron)",
+        "job_name": "check_value_area_breakdown", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
+    {
+        "name": "check_portfolio_drawdown_alerts", "description": "Portfolio-drawdown-breach alert liveness (per-minute cron)",
+        "job_name": "portfolio_drawdown_alert_check", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
+    {
+        "name": "check_early_earnings_news_alerts", "description": "Early (pre-EDGAR) earnings-surprise news alert liveness (per-minute cron)",
+        "job_name": "check_early_earnings_news_alerts", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
+    {
+        "name": "check_top3_conviction", "description": "Top-3 conviction-candidate alert liveness (per-minute cron)",
+        "job_name": "check_top3_conviction", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
     # AUD266-TWO-GATES-CONTRADICTORY-BARS: `source: "ratio"` is a genuinely different check
     # shape from every entry above — those all ask "is this data/job fresh enough," this one
     # asks "did enough conviction-gated candidates actually turn into a real alert." Reuses
@@ -10357,6 +10441,21 @@ _DQ_CHECKS: list[dict] = [
         "description": "squeeze-ignition alert (T260-SQUEEZE-IGNITION): stockai:fundamentals:v2:* cache misses in the last 48h",
         "source": "gauge",
         "counter_key": _SQUEEZE_IGNITION_FUND_CACHE_MISS_COUNTER_KEY,
+    },
+    # AUD-DQCHECKS-VISIBILITY: found while auditing Unusual Whales API call volume/rate-limit
+    # headroom (user: "review and consolidate the UW api calls/requests. Are we still below the
+    # limit?") — this platform had NO admin-visible signal at all for UW rate-limiting, only a
+    # per-call log line (unusual_whales.rate_limit) with no rollup. Same "gauge, no pass/fail
+    # concept" shape as the 3 fundamentals-cache-miss counters just above — a nonzero count is
+    # expected background noise some of the time (real 429s do happen even in normal operation,
+    # see unusual_whales.py's own retry/backoff handling), not itself proof of a problem; this
+    # is purely observability so a SUSTAINED pattern is visible somewhere other than grepping
+    # logs, matching this whole gauge section's own established framing.
+    {
+        "name": "uw_rate_limit_events_48h",
+        "description": "Unusual Whales API 429 rate-limit responses in the last 48h (across every UW-backed feature)",
+        "source": "gauge",
+        "counter_key": _UW_RATE_LIMIT_COUNTER_KEY,
     },
 ]
 

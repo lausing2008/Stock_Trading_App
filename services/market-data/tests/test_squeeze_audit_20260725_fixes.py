@@ -230,7 +230,10 @@ def test_gauge_dq_checks_registered_for_both_new_counters():
     # T260-SQUEEZE-IGNITION added a 3rd gauge (its own fundamentals-cache-miss counter,
     # matching this same pattern) — the count below was 2 before that alert existed.
     assert '"counter_key": _SQUEEZE_IGNITION_FUND_CACHE_MISS_COUNTER_KEY' in _scheduler_source
-    assert _scheduler_source.count('"source": "gauge"') == 3
+    # AUD-DQCHECKS-VISIBILITY added a 4th gauge (Unusual Whales 429 rate-limit rollup,
+    # counter_key=_UW_RATE_LIMIT_COUNTER_KEY) — the count below was 3 before that check existed.
+    assert '"counter_key": _UW_RATE_LIMIT_COUNTER_KEY' in _scheduler_source
+    assert _scheduler_source.count('"source": "gauge"') == 4
 
 
 def test_gauge_dq_check_dispatch_branch_always_reports_ok_true():
