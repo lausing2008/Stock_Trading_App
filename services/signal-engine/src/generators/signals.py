@@ -1725,6 +1725,14 @@ def _fetch_kscore(symbol: str) -> float | None:
     return None
 
 
+# AUD-SIGCORROBORATE: how far (as a relative fraction of the free yfinance-derived reading)
+# Unusual Whales' real si_float must diverge from short_pct_float to count as a genuine
+# disagreement worth flagging — matches scheduler.py's own
+# _SQUEEZE_UW_DISAGREEMENT_REL_THRESHOLD exactly, both in value and in the underlying
+# principle (a real UW reading cross-checking a free proxy for the same underlying quantity).
+_SHORT_INTEREST_UW_DISAGREEMENT_REL_THRESHOLD = 0.20
+
+
 def _fetch_short_interest(symbol: str) -> tuple[float | None, float | None]:
     """Return (short_percent_of_float, short_ratio) from market-data fundamentals, or (None, None)."""
     try:
@@ -1739,6 +1747,45 @@ def _fetch_short_interest(symbol: str) -> tuple[float | None, float | None]:
     except Exception:
         pass
     return None, None
+
+
+def _check_uw_short_interest_disagreement(symbol: str, short_pct_float: float | None) -> dict | None:
+    """AUD-SIGCORROBORATE: real Unusual Whales short-interest (si_float) as a corroboration
+    check on short_pct_float — the yfinance-derived reading that alone drives the squeeze-
+    boost gate in _apply_style_signal(). Mirrors market-data's own check_short_squeeze_alerts()
+    AUD-SQUEEZE3-UWSHORTINTERESTCORROBORATION fix exactly: a real disagreement is surfaced for
+    visibility, but short_pct_float itself is never overwritten and the boost gate's own
+    threshold logic is never bypassed — a recipient/caller weighs a disagreement themselves,
+    this function never silently prefers one source over the other.
+
+    Returns None (no flag) on any lookup failure, UW being disabled/unavailable, or
+    short_pct_float being None to begin with (there is nothing to corroborate). Returns
+    {"short_interest_uw_short_percent_of_float": ..., "short_interest_uw_disagrees": True}
+    only when UW's real reading diverges from the free reading by more than
+    _SHORT_INTEREST_UW_DISAGREEMENT_REL_THRESHOLD.
+    """
+    if short_pct_float is None:
+        return None
+    try:
+        url = f"{_settings.market_data_url}/stocks/{symbol}/short-interest-uw"
+        with httpx.Client(timeout=6) as c:
+            r = c.get(url)
+            uw_data = r.json() if r.status_code == 200 else None
+    except Exception:
+        uw_data = None
+    if uw_data is None or not uw_data.get("available"):
+        return None
+    uw_spf_pct = uw_data.get("short_percent_of_float")
+    free_spf_pct = short_pct_float * 100
+    if uw_spf_pct is None or free_spf_pct <= 0:
+        return None
+    rel_diff = abs(uw_spf_pct - free_spf_pct) / free_spf_pct
+    if rel_diff > _SHORT_INTEREST_UW_DISAGREEMENT_REL_THRESHOLD:
+        return {
+            "short_interest_uw_short_percent_of_float": uw_spf_pct,
+            "short_interest_uw_disagrees": True,
+        }
+    return None
 
 
 # T247-SIGNALENGINE-INIT-GRADE: yfinance's own grade vocabulary is free-text per analyst firm
@@ -2669,6 +2716,10 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     kscore = _fetch_kscore(symbol)
     short_pct_float, short_ratio = _fetch_short_interest(symbol)
     analyst_upgrades_7d, analyst_downgrades_7d = _fetch_analyst_momentum(symbol)
+
+    _uw_short_interest_flag = _check_uw_short_interest_disagreement(symbol, short_pct_float)
+    if _uw_short_interest_flag is not None:
+        reasons.update(_uw_short_interest_flag)
 
     # T258-NEWS-INTELLIGENCE: hot_news is a dict ({headline, sentiment_label}) or None.
     reasons["hot_news"]            = hot_news

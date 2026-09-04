@@ -832,3 +832,93 @@ docker exec stockai-redis-1 redis-cli get 'stockai:sr_watch_atr:AAPL'
 
 ---
 
+## Feature Reference: AUD-UWFINDINGS-GEXSHORT — Real UW GEX + Short-Interest Corroboration (2026-09-04)
+
+**Closes the 2 "free wins" identified by the UW Advanced-tier/yfinance comparison review**
+(published artifact, approved via "So API Basic should be enough and let's fix the findings") —
+staying on UW Basic tier while wiring real UW data into 2 places that were previously running on
+free-tier proxies their own code already flagged as imperfect. Both follow the exact
+corroboration-not-replacement pattern `check_short_squeeze_alerts()` established first (its own
+`_SQUEEZE_UW_DISAGREEMENT_REL_THRESHOLD` / `uw_disagrees` flag): a real UW reading only ever
+*annotates* a candidate, never suppresses or replaces the free-tier decision that already drives
+inclusion/scoring.
+
+### Fix 1 — real GEX corroboration for `check_gamma_unwind_alerts()`
+
+**Before**: the gamma-unwind alert's own docstring already discloses its OI-concentration
+"GEX" is a defensible proxy, "NOT a real GEX calculation" — computed from yfinance open
+interest, not genuine dealer-hedging data.
+
+**Now**: for every candidate, a real Unusual Whales GEX reading (`call_wall`/`put_wall`/
+`gamma_flip`, via the already-existing `unusual_whales.get_gex_levels()`) is fetched and checked
+against the current price. A new `_GEX_CORROBORATE_BAND_PCT = 0.03` constant in `scheduler.py`
+sets how close (as a % of price) the price must sit to a real level to count as corroborating —
+a proximity check, not a disagreement-magnitude one, since GEX gives real strike prices while
+the free proxy gives an OI *share*; the two aren't directly comparable, but "is price actually
+near a level where real dealer gamma concentrates" is. On a match, `cand["gex_corroborates"] =
+True` plus the specific nearby level(s) in `cand["gex_nearby_levels"]`. `send_gamma_unwind_email()`
+renders a purple "✓ Real GEX corroborates: price is near {level}" line only when both keys are
+present — never suppresses or adds a candidate, and a UW lookup failure/disabled subscription
+just means no corroboration line ever appears.
+
+### Fix 2 — real UW short-interest corroboration for signal-engine's squeeze-boost gate
+
+**Before**: the SWING/GROWTH squeeze-boost gate in `_apply_style_signal()` (a small confidence
+boost when `short_pct_float >= 0.20`/`0.30`) read exclusively from `_fetch_short_interest()`,
+itself sourced from market-data's yfinance-derived `fundamentals` table — the exact field this
+codebase's own `AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED` comments already flag as lagging real
+exchange settlement by up to ~6 weeks.
+
+**Now**: signal-engine has no direct Python import path to `unusual_whales.py` (separate
+service/container), so a new `GET /{symbol}/short-interest-uw` route was added to market-data —
+a thin, fail-open wrapper around `unusual_whales.get_short_interest()`, mirroring
+`/gamma-exposure`'s own `available: False` contract exactly. A new
+`_check_uw_short_interest_disagreement(symbol, short_pct_float)` in `signals.py` calls this route
+and compares UW's real `si_float` (scaled ×100 to match the free reading's percentage
+convention) against the free value using the *same* 20% relative-difference threshold as
+`check_short_squeeze_alerts()`'s own `_SQUEEZE_UW_DISAGREEMENT_REL_THRESHOLD` (a new,
+independent `_SHORT_INTEREST_UW_DISAGREEMENT_REL_THRESHOLD = 0.20` constant). On real
+disagreement, `reasons["short_interest_uw_disagrees"] = True` plus
+`reasons["short_interest_uw_short_percent_of_float"]` are set — `short_pct_float` itself and the
+boost gate's own `>=0.30`/`>=0.20` threshold logic are never touched.
+
+### Testing
+
+18 new tests total: 10 in `test_gamma_unwind_alert.py` (market-data), 8 in a new
+`test_short_interest_uw_route.py` (market-data), 10 in a new
+`test_uw_short_interest_corroboration.py` (signal-engine) — plus one incidental fix to
+`test_gamma_exposure_route.py`'s own source-extraction end-marker, since the new
+`short-interest-uw` route now sits between `gamma-exposure` and `earnings-transcript` in
+`routes.py` (matching that file's own established "end marker moved again" precedent from
+`AUD-TRANSCRIPT`).
+
+3 adversarial sabotage cycles, all caught cleanly by exactly their targeted test(s) and restored
++ confirmed byte-identical via `md5sum`:
+1. GEX proximity-band filter stripped to "any non-None level counts as nearby" — caught by
+   `test_gex_corroboration_uses_its_own_proximity_band_constant`.
+2. Email rendering guard weakened to check only `gex_nearby_levels`, not also
+   `gex_corroborates` — caught by
+   `test_gex_corroborates_false_renders_no_extra_content_even_with_stale_levels_present`.
+3. Short-interest relative-diff threshold check stripped to always-true — caught by exactly the
+   2 tests verifying threshold-gating (`test_no_flag_when_readings_agree`,
+   `test_boundary_just_under_threshold_no_flag`), no others.
+
+Full 2691-test market-data suite green (up from 2673). signal-engine: 393 relevant tests green
+(1 pre-existing collection error in `test_signal_generator.py` + 4 pre-existing failures in
+`test_analyst_momentum.py`, both confirmed identical with this diff stashed out entirely via
+`git stash` — unrelated to this change). Frontend `tsc --noEmit` clean.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 grep -n "_GEX_CORROBORATE_BAND_PCT\|gex_corroborates" /app/src/services/scheduler.py
+docker exec stockai-market-data-1 grep -n "short-interest-uw" /app/src/api/routes.py
+docker exec stockai-signal-engine-1 grep -n "_check_uw_short_interest_disagreement\|_SHORT_INTEREST_UW_DISAGREEMENT_REL_THRESHOLD" /app/src/generators/signals.py
+
+# Confirm the new route responds for a real symbol:
+docker exec stockai-market-data-1 curl -s http://localhost:8001/stocks/AAPL/short-interest-uw
+
+docker logs stockai-signal-engine-1 --since 1h | grep 'short_interest_uw'
+```
+
+---
+

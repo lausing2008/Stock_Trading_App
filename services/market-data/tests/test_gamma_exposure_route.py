@@ -18,10 +18,10 @@ _ROUTES_SOURCE = _ROUTES_PATH.read_text()
 
 def _extract_gamma_exposure_source() -> str:
     start = _ROUTES_SOURCE.index('@router.get("/{symbol}/gamma-exposure")')
-    # AUD-TRANSCRIPT: end marker moved again — get_earnings_transcript_route() now sits between
-    # this function and dark-pool-prints, and its own source is tested independently below, so
-    # it must not leak into THIS function's extracted source.
-    end = _ROUTES_SOURCE.index('@router.get("/{symbol}/earnings-transcript")', start)
+    # AUD-SIGCORROBORATE: end marker moved again — get_short_interest_uw() now sits between
+    # this function and get_earnings_transcript_route(), and it has no route of its own tested
+    # in this file, so it must not leak into THIS function's extracted source.
+    end = _ROUTES_SOURCE.index('@router.get("/{symbol}/short-interest-uw")', start)
     return _ROUTES_SOURCE[start:end]
 
 

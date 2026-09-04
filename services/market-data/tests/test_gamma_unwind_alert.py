@@ -255,3 +255,113 @@ def test_near_expiries_is_explicitly_sorted_not_left_in_yfinance_order():
     # The indexing itself must still be present (this is a sort-before-index fix, not a
     # removal of the "take the first one" behavior).
     assert "exp = near_expiries[0]" in body
+
+
+# ── AUD-GEXCORROBORATE: real UW GEX levels cross-checking the free OI-concentration proxy ────
+
+def test_gex_corroboration_reads_the_real_unusual_whales_function():
+    body = _check_gamma_unwind_alerts_body()
+    assert "_uw.get_gex_levels(sym)" in body
+
+
+def test_gex_corroboration_checks_all_three_real_levels():
+    body = _check_gamma_unwind_alerts_body()
+    assert '"call_wall": _gex.call_wall' in body
+    assert '"put_wall": _gex.put_wall' in body
+    assert '"gamma_flip": _gex.gamma_flip' in body
+
+
+def test_gex_corroboration_is_wired_after_the_candidates_dict_is_built():
+    body = _check_gamma_unwind_alerts_body()
+    candidates_idx = body.index("if not candidates:")
+    gex_idx = body.index("_uw.get_gex_levels(sym)")
+    assert candidates_idx < gex_idx
+
+
+def test_gex_corroboration_never_suppresses_a_candidate_only_annotates_it():
+    """The real OI-concentration proxy alone must still drive every candidate's inclusion —
+    a missing/failed GEX lookup must never remove a candidate, only skip annotating it."""
+    body = _check_gamma_unwind_alerts_body()
+    gex_idx = body.index("_uw.get_gex_levels(sym)")
+    segment = body[gex_idx:gex_idx + 800]
+    assert "continue" in segment  # skips annotation on a None GEX result
+    assert "del candidates" not in segment
+    assert "candidates.pop" not in segment
+
+
+def test_gex_lookup_failure_fails_open_never_crashes_the_whole_scan():
+    body = _check_gamma_unwind_alerts_body()
+    gex_block_idx = body.index("from . import unusual_whales as _uw\n                    _gex = _uw.get_gex_levels(sym)")
+    segment = body[max(0, gex_block_idx - 60):gex_block_idx + 120]
+    assert "except Exception" in segment
+
+
+def test_gex_corroboration_uses_its_own_proximity_band_constant():
+    body = _check_gamma_unwind_alerts_body()
+    assert "_GEX_CORROBORATE_BAND_PCT" in body
+
+
+# ── send_gamma_unwind_email() — GEX corroboration rendering ──────────────────────────────────
+
+def test_gex_corroboration_renders_when_present():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_gamma_unwind_email("user@example.com", [
+            {"symbol": "TSLA", "expiry": "2026-08-07", "days_to_expiry": 2,
+             "dominant_side": "calls", "concentration_pct": 68.5,
+             "total_oi_near_money": 45000, "price": 250.0,
+             "gex_corroborates": True,
+             "gex_nearby_levels": [{"name": "call_wall", "level": 252.0}]},
+        ])
+    html, text = calls[0]["html"], calls[0]["text"]
+    assert "Real GEX corroborates" in html
+    assert "call wall $252.00" in html
+    assert "Unusual Whales" in html
+    assert "Real GEX corroborates" in text
+
+
+def test_gex_corroboration_renders_multiple_nearby_levels():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_gamma_unwind_email("user@example.com", [
+            {"symbol": "TSLA", "expiry": "2026-08-07", "days_to_expiry": 2,
+             "dominant_side": "calls", "concentration_pct": 68.5,
+             "total_oi_near_money": 45000, "price": 250.0,
+             "gex_corroborates": True,
+             "gex_nearby_levels": [
+                 {"name": "call_wall", "level": 252.0},
+                 {"name": "gamma_flip", "level": 249.0},
+             ]},
+        ])
+    html = calls[0]["html"]
+    assert "call wall $252.00" in html
+    assert "gamma flip $249.00" in html
+
+
+def test_no_gex_corroboration_renders_no_extra_content():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_gamma_unwind_email("user@example.com", [
+            {"symbol": "TSLA", "expiry": "2026-08-07", "days_to_expiry": 2,
+             "dominant_side": "calls", "concentration_pct": 68.5,
+             "total_oi_near_money": 45000, "price": 250.0},
+        ])
+    html, text = calls[0]["html"], calls[0]["text"]
+    assert "Real GEX corroborates" not in html
+    assert "Real GEX corroborates" not in text
+
+
+def test_gex_corroborates_false_renders_no_extra_content_even_with_stale_levels_present():
+    """gex_corroborates must gate the rendering, not just the presence of gex_nearby_levels —
+    a defensive guard in case the two ever get out of sync."""
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_gamma_unwind_email("user@example.com", [
+            {"symbol": "TSLA", "expiry": "2026-08-07", "days_to_expiry": 2,
+             "dominant_side": "calls", "concentration_pct": 68.5,
+             "total_oi_near_money": 45000, "price": 250.0,
+             "gex_corroborates": False,
+             "gex_nearby_levels": [{"name": "call_wall", "level": 252.0}]},
+        ])
+    html = calls[0]["html"]
+    assert "Real GEX corroborates" not in html

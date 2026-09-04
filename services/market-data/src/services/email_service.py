@@ -1683,6 +1683,19 @@ def send_gamma_unwind_email(to: str, candidates: list[dict]) -> bool:
             cal_html = '<div style="font-size:11px;color:#94a3b8;margin-top:4px">Not enough resolved history yet for a measured win rate</div>'
             cal_text = "    Not enough resolved history yet for a measured win rate\n"
         regime_html, regime_text = _regime_warning_lines(c.get("market_regime"))
+        # AUD-GEXCORROBORATE: real Unusual Whales GEX levels sitting close to the current price
+        # — genuine, independently-computed corroboration of this alert's own free OI-
+        # concentration proxy, never a replacement of it (the proxy still drove this candidate's
+        # inclusion regardless of whether real GEX data is available at all).
+        gex_html = ""
+        gex_text = ""
+        if c.get("gex_corroborates") and c.get("gex_nearby_levels"):
+            _gex_parts = [f'{lvl["name"].replace("_", " ")} ${lvl["level"]:.2f}' for lvl in c["gex_nearby_levels"]]
+            gex_html = (
+                f'<div style="font-size:11px;color:#a78bfa;margin-top:4px">'
+                f'✓ Real GEX corroborates: price is near {", ".join(_gex_parts)} (Unusual Whales)</div>'
+            )
+            gex_text = f'    Real GEX corroborates: price is near {", ".join(_gex_parts)} (Unusual Whales)\n'
         row_border = (
             "border:1px solid rgba(217,119,6,0.35);border-radius:8px;padding:10px 12px;margin-bottom:6px"
             if is_zero_dte else "padding:10px 0;border-bottom:1px solid #f1f5f9"
@@ -1694,10 +1707,10 @@ def send_gamma_unwind_email(to: str, candidates: list[dict]) -> bool:
             f'<span style="font-size:13px;color:{side_color};font-weight:700">{conc:.0f}% {side}</span>'
             f'</div>'
             f'<div style="font-size:12px;color:#64748b;margin-top:2px">{price_str} · {oi:,} contracts near the money · {dte_str} ({c["expiry"]})</div>'
-            f'{cal_html}{regime_html}'
+            f'{cal_html}{regime_html}{gex_html}'
             f'</div>'
         )
-        rows_text += f"  {sym}: {price_str}, {conc:.0f}% {side}-dominant, {oi:,} near-money OI, {dte_str} ({c['expiry']})\n" + cal_text + regime_text
+        rows_text += f"  {sym}: {price_str}, {conc:.0f}% {side}-dominant, {oi:,} near-money OI, {dte_str} ({c['expiry']})\n" + cal_text + regime_text + gex_text
 
     body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
   <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">

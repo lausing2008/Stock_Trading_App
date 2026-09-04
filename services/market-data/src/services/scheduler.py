@@ -4040,6 +4040,16 @@ _GAMMA_UNWIND_STRIKE_BAND_PCT = 0.05  # "near the money" = within 5% of current 
 # 100 shares, so total_oi * 100 * price approximates the notional stock exposure market makers
 # would need to hedge/unwind — a genuinely price-scaled floor instead of a flat contract count.
 _GAMMA_UNWIND_MIN_NOTIONAL_USD = 5_000_000  # floor so a thin/illiquid OR low-notional chain doesn't produce a false signal
+# AUD-GEXCORROBORATE: how close (as a % of price) the current price must sit to a REAL GEX
+# level (call_wall/put_wall/gamma_flip) to count as corroborating this alert's own free OI-
+# concentration proxy — mirrors check_short_squeeze_alerts()'s own _SQUEEZE_UW_DISAGREEMENT_
+# REL_THRESHOLD in spirit (a real UW reading cross-checking a free proxy), but this is a
+# PROXIMITY check, not a disagreement-magnitude one, since GEX levels and OI-concentration
+# aren't the same UNIT to compare directly — GEX gives real strike PRICES a dealer-hedging
+# inflection sits at; the proxy gives a call/put OI SHARE. What they can genuinely corroborate
+# is "is price actually near a level where real dealer gamma concentrates," independent of
+# which side (calls/puts) is more numerous in this app's own coarser proxy.
+_GEX_CORROBORATE_BAND_PCT = 0.03
 
 
 def check_gamma_unwind_alerts() -> None:
@@ -4214,6 +4224,36 @@ def check_gamma_unwind_alerts() -> None:
             if not candidates:
                 _record_job_status("check_gamma_unwind_alerts", "ok", time.monotonic() - _t0)
                 return
+
+            # AUD-GEXCORROBORATE: real, independently-computed Unusual Whales GEX levels
+            # (call_wall/put_wall/gamma_flip) as a corroboration check on this alert's own free
+            # OI-concentration proxy — this function's own docstring already discloses the proxy
+            # is NOT a real GEX calculation ("What IS built here is a defensible PROXY"); a real
+            # GEX reading sitting close to the current price is genuine, independent evidence the
+            # proxy's "elevated hedge-unwind risk here" read is corroborated, not a replacement of
+            # the proxy (which still gates/drives every candidate above regardless). Same fail-
+            # open, additive-only, never-suppresses convention as check_short_squeeze_alerts()'s
+            # own UW cross-check — a lookup failure or UW being disabled just means no
+            # corroboration line appears, never blocks the alert.
+            for sym, cand in candidates.items():
+                try:
+                    from . import unusual_whales as _uw
+                    _gex = _uw.get_gex_levels(sym)
+                except Exception:
+                    _gex = None
+                if _gex is None:
+                    continue
+                _price = float(cand["price"])
+                _levels = {
+                    "call_wall": _gex.call_wall, "put_wall": _gex.put_wall, "gamma_flip": _gex.gamma_flip,
+                }
+                _nearby = [
+                    (name, lvl) for name, lvl in _levels.items()
+                    if lvl is not None and lvl > 0 and abs(lvl - _price) / _price <= _GEX_CORROBORATE_BAND_PCT
+                ]
+                if _nearby:
+                    cand["gex_corroborates"] = True
+                    cand["gex_nearby_levels"] = [{"name": name, "level": lvl} for name, lvl in _nearby]
 
             # T264-SQUEEZEALERT-PERFORMANCE: split by dominant_side, matching the user's own
             # framing of the puts-dominant read as the closest equivalent to "option sell" this

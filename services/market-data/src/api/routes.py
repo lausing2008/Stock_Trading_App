@@ -4040,6 +4040,34 @@ def get_gamma_exposure(symbol: str):
     }
 
 
+@router.get("/{symbol}/short-interest-uw")
+def get_short_interest_uw(symbol: str):
+    """AUD-SIGCORROBORATE: real Unusual Whales short-interest (si_float), for cross-service
+    callers that have no direct Python import path to unusual_whales.py — specifically
+    signal-engine's squeeze-boost gate in generators/signals.py, which has only ever read
+    fundamentals()'s yfinance-derived short_percent_of_float (the same free/lagging field
+    check_short_squeeze_alerts()'s own AUD-SQUEEZE3-UWSHORTINTERESTCORROBORATION fix already
+    flagged as materially staler than UW's reading). Mirrors get_gamma_exposure()'s own
+    fail-open contract exactly: `available: False` (never a fabricated reading) when UW is
+    disabled/unconfigured or the symbol has no short-interest data at all.
+    """
+    from ..services import unusual_whales as _uw
+
+    sym = symbol.upper()
+    if not _uw.is_available():
+        return {"symbol": sym, "available": False, "reason": "unusual_whales_disabled"}
+
+    si = _uw.get_short_interest(sym)
+    if si is None or si.si_float is None:
+        return {"symbol": sym, "available": False, "reason": "no_data"}
+
+    return {
+        "symbol": sym,
+        "available": True,
+        "short_percent_of_float": round(si.si_float * 100, 2),
+    }
+
+
 @router.get("/{symbol}/earnings-transcript")
 def get_earnings_transcript_route(symbol: str, report_date: str):
     """AUD-TRANSCRIPT: real earnings-call transcript statements for `symbol`, for the report
