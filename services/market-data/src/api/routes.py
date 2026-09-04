@@ -4381,6 +4381,15 @@ def get_options_game_plan_batch(
     game-plan route above. A symbol with no snapshot yet (outside the bounded EOD symbol set,
     or the job hasn't run since it became a BUY candidate) returns available: False, reason:
     "no_snapshot" — never a fabricated plan.
+
+    Also surfaces expected_move_pct/expected_move_dte (AUD-DECIDE4-EXPECTEDMOVE) and iv_rank_1y
+    — both from the SAME daily Unusual Whales IV read the snapshot job already makes, no extra
+    fetch. iv_rank_1y is the "IV Rank" concept (0-100, where today's IV sits within this
+    symbol's own trailing 1-year range) — a complementary read to expected_move_pct: the
+    latter says how far the market expects the stock to move, iv_rank_1y says whether that IV
+    reading is cheap or expensive relative to this symbol's own history. Either/both may be
+    None when Unusual Whales was unavailable/had no data for this symbol on the snapshot's own
+    as_of date.
     """
     from .options_game_plan_snapshot import get_latest_options_game_plan
 
@@ -4409,6 +4418,9 @@ def get_options_game_plan_batch(
             "underlying_close": snap.underlying_close,
             "stop_loss": snap.stop_loss,
             "take_profit": snap.take_profit,
+            "expected_move_pct": snap.expected_move_pct,
+            "expected_move_dte": snap.expected_move_dte,
+            "iv_rank_1y": snap.iv_rank_1y,
             "protective_put": (
                 {
                     "strike": snap.put_strike, "expiry": snap.put_expiry,

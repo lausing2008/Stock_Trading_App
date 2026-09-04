@@ -478,6 +478,26 @@ Key Risk: {risk}
                 f'</td></tr>'
             )
             _ogp_rows_text += f"  Covered Call: ${_ogp.call_strike:.2f} exp {_ogp.call_expiry}, mid ${_ogp.call_mid_price:.2f}\n"
+        _ogp_expected_move = getattr(_ogp, "expected_move_pct", None)
+        _ogp_expected_move_dte = getattr(_ogp, "expected_move_dte", None)
+        _ogp_iv_rank = getattr(_ogp, "iv_rank_1y", None)
+        if _ogp_expected_move is not None or _ogp_iv_rank is not None:
+            _iv_parts_html = []
+            _iv_parts_text = []
+            if _ogp_expected_move is not None:
+                _iv_parts_html.append(f"Expected move &plusmn;{_ogp_expected_move:.1f}% ({_ogp_expected_move_dte}d)")
+                _iv_parts_text.append(f"Expected move +/-{_ogp_expected_move:.1f}% ({_ogp_expected_move_dte}d)")
+            if _ogp_iv_rank is not None:
+                _iv_read = "options relatively expensive" if _ogp_iv_rank >= 70 else "options relatively cheap" if _ogp_iv_rank <= 30 else "mid-range"
+                _iv_parts_html.append(f"IV Rank {_ogp_iv_rank:.0f}/100 ({_iv_read})")
+                _iv_parts_text.append(f"IV Rank {_ogp_iv_rank:.0f}/100 ({_iv_read})")
+            _ogp_rows_html += (
+                f'<tr><td style="padding:6px 10px;font-size:12px;color:#166534;font-weight:600">📈 Implied Volatility</td>'
+                f'<td style="padding:6px 10px;font-size:12px;color:#64748b;font-family:monospace">'
+                f'{" · ".join(_iv_parts_html)}'
+                f'</td></tr>'
+            )
+            _ogp_rows_text += f"  Implied Volatility: {' · '.join(_iv_parts_text)}\n"
         if _ogp_rows_html:
             options_game_plan_html = f"""
     <div style="margin-top:16px">

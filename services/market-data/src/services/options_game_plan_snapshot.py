@@ -37,6 +37,13 @@ rather than any specific listed contract's own expiry, since IV rank is a contin
 reading, not tied to one contract. NULL when Unusual Whales is unavailable or has no IV data for
 this symbol — the existing fixed-percentage fallback remains the free-tier default, never a
 fabricated expected move standing in for a missing real one.
+
+Also persists iv_rank_1y from the SAME get_iv_rank() call (no extra fetch) — a genuinely
+different, complementary signal from expected_move_pct: expected_move_pct says HOW FAR the
+market expects this symbol to move; iv_rank_1y says whether that IV reading is CHEAP OR
+EXPENSIVE relative to this symbol's own trailing 1-year IV range (0-100 percentile). Captured
+independently of expected_move_pct's own `volatility > 0` gate, since iv_rank_1y is still a
+real, useful reading even on the rare occasion `volatility` itself comes back null/zero.
 """
 from __future__ import annotations
 
@@ -70,6 +77,7 @@ class OptionsGamePlanResult:
     call_effective_cap_price: float | None
     expected_move_pct: float | None = None
     expected_move_dte: int | None = None
+    iv_rank_1y: float | None = None
 
 
 def compute_options_game_plan_snapshot(session, stock_id: int, symbol: str) -> OptionsGamePlanResult | None:
@@ -163,10 +171,13 @@ def compute_options_game_plan_snapshot(session, stock_id: int, symbol: str) -> O
         # missing UW subscription only costs this one field, never the rest of the snapshot.
         expected_move_pct: float | None = None
         expected_move_dte: int | None = None
+        iv_rank_1y: float | None = None
         try:
             from math import sqrt
             from . import unusual_whales as _uw
             _iv_data = _uw.get_iv_rank(symbol)
+            if _iv_data is not None:
+                iv_rank_1y = _iv_data.iv_rank_1y
             if _iv_data is not None and _iv_data.volatility is not None and _iv_data.volatility > 0:
                 # AUD-DECIDE4-EXPECTEDMOVE-UNITS: UW's own published spec for this endpoint
                 # ("The implied volatility value") does not state whether `volatility` is a
@@ -191,6 +202,7 @@ def compute_options_game_plan_snapshot(session, stock_id: int, symbol: str) -> O
             take_profit=take_profit,
             expected_move_pct=expected_move_pct,
             expected_move_dte=expected_move_dte,
+            iv_rank_1y=iv_rank_1y,
             put_strike=put.get("strike"),
             put_expiry=put.get("expiry"),
             put_mid_price=put.get("mid_price"),
@@ -222,6 +234,7 @@ def upsert_options_game_plan_snapshot(
         take_profit=result.take_profit,
         expected_move_pct=result.expected_move_pct,
         expected_move_dte=result.expected_move_dte,
+        iv_rank_1y=result.iv_rank_1y,
         put_strike=result.put_strike,
         put_expiry=result.put_expiry,
         put_mid_price=result.put_mid_price,

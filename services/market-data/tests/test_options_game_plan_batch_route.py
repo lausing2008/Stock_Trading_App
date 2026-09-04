@@ -54,6 +54,16 @@ def test_empty_symbols_list_returns_empty_results_not_an_error():
     assert 'return {"results": {}}' in body
 
 
+def test_result_surfaces_expected_move_and_iv_rank_fields():
+    """AUD-IVRANK: expected_move_pct/expected_move_dte/iv_rank_1y were computed and persisted
+    by the snapshot job but never actually surfaced through this batch route -- a real gap,
+    not just a missing iv_rank_1y field. All 3 must be read straight from the snapshot row."""
+    body = _function_body()
+    assert '"expected_move_pct": snap.expected_move_pct' in body
+    assert '"expected_move_dte": snap.expected_move_dte' in body
+    assert '"iv_rank_1y": snap.iv_rank_1y' in body
+
+
 def test_route_path_is_a_literal_segment_not_shadowed_by_the_symbol_path_param():
     """AUD-ROUTERORDER class regression guard: /options-game-plan/batch's first path segment
     is the literal 'options-game-plan', never colliding with the sibling /{symbol}/options-

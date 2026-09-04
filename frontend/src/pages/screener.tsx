@@ -948,6 +948,20 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
                             ) : (
                               <div style={{ color: '#334155' }}>No covered call in the target DTE window today.</div>
                             )}
+                            {(gamePlan.expected_move_pct != null || gamePlan.iv_rank_1y != null) && (
+                              <div style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid rgba(99,102,241,0.3)', background: 'rgba(99,102,241,0.05)' }}>
+                                <div style={{ color: '#818cf8', fontWeight: 700, marginBottom: '4px' }}>📈 Implied Volatility (Unusual Whales)</div>
+                                <div style={{ color: '#94a3b8' }}>
+                                  {gamePlan.expected_move_pct != null && (
+                                    <>Expected move ±{gamePlan.expected_move_pct.toFixed(1)}% ({gamePlan.expected_move_dte}d)</>
+                                  )}
+                                  {gamePlan.expected_move_pct != null && gamePlan.iv_rank_1y != null && <> · </>}
+                                  {gamePlan.iv_rank_1y != null && (
+                                    <>IV Rank {gamePlan.iv_rank_1y.toFixed(0)}/100 ({gamePlan.iv_rank_1y >= 70 ? 'options relatively expensive' : gamePlan.iv_rank_1y <= 30 ? 'options relatively cheap' : 'mid-range'})</>
+                                  )}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         </td>
                       </tr>

@@ -179,3 +179,68 @@ all restored byte-identical. Full market-data suite: 2546 passed.
 `/api/stock/{ticker}/iv-rank` response and confirm whether `volatility` is actually a fraction or
 a percent — the `> 10.0` normalization guard in `options_game_plan_snapshot.py` is a defensive
 guess, not a confirmed fact.
+
+---
+
+### AUD-IVRANK — Wire `iv_rank_1y` through the same surfaces, plus a real explainer (2026-09-03)
+
+**User follow-up**: after item #4 above shipped, the user asked what "IV Rank" actually is, then
+asked to both wire it into the UI and document it. UW's own `/iv-rank` endpoint (already fetched
+for `expected_move_pct`, no extra call) also returns `iv_rank_1y` — a 0-100 percentile of where
+today's IV sits within this symbol's own trailing 1-year range. This field had been captured on
+the `IVRankData` dataclass all along but never persisted, never surfaced through any API route,
+and never rendered anywhere — a real gap independent of the `expected_move_pct`/
+`expected_move_dte` work.
+
+**Also found and fixed in the same pass**: `expected_move_pct`/`expected_move_dte` themselves had
+the identical gap — computed and persisted onto `OptionsGamePlanSnapshot` by item #4, but
+`get_options_game_plan_batch()` (the route the screener/email actually read from) never included
+either field in its response shape. Both fields were silently dead on arrival until this fix.
+
+**Model**: new `OptionsGamePlanSnapshot.iv_rank_1y` field (`shared/db/models.py`), captured
+independently of `expected_move_pct`'s own `volatility > 0` gate — `iv_rank_1y` is still a real,
+useful reading even on the rare occasion `volatility` itself comes back null/zero.
+
+**Computation**: `options_game_plan_snapshot.py`'s `compute_options_game_plan_snapshot()` now
+also reads `_iv_data.iv_rank_1y` from the same `get_iv_rank()` call already made for
+`expected_move_pct` — genuinely zero extra API cost.
+
+**API**: `get_options_game_plan_batch()` (`routes.py`) now includes `expected_move_pct`,
+`expected_move_dte`, and `iv_rank_1y` in its per-symbol response shape (previously omitted
+entirely). `frontend/src/lib/api.ts`'s `OptionsGamePlanSnapshotResult` type extended to match.
+
+**Email gate relaxed** (`AUD-IVRANK-EMAILGATE`, `scheduler.py`'s `check_signal_alerts()`): the
+existing gate only passed a snapshot through to the email if it had a real put or call leg. A
+symbol with real IV/IV-Rank data but no listed contract in today's DTE window would have that
+real, useful reading silently dropped along with the (legitimately absent) legs. Gate widened to
+`put_strike is not None or call_strike is not None or expected_move_pct is not None or
+iv_rank_1y is not None` — any one of the four is independently worth showing.
+
+**Rendering**: `email_service.py`'s `send_signal_alert_email()` gained a new "📈 Implied
+Volatility" row (rendered whenever `expected_move_pct` or `iv_rank_1y` is present, independent of
+whether either leg exists) showing `Expected move ±X.X% (Nd)` and/or `IV Rank NN/100 (<reading>)`
+— the reading label is `"options relatively expensive"` at IV Rank ≥70, `"options relatively
+cheap"` at ≤30, `"mid-range"` in between. `screener.tsx`'s expandable row detail gained a matching
+indigo-bordered "📈 Implied Volatility (Unusual Whales)" box using the same thresholds/labels.
+
+**Documentation**: `option-trading-guide.tsx`'s "How the Options Game Plan card works" section
+gained a new subsection, "Implied Volatility and IV Rank (screener + BUY-signal email, Advanced
+tier)," explaining both concepts and their practical use (high IV Rank favors selling premium,
+low IV Rank favors buying it) — explicitly framed as a read on the OPTIONS' own pricing, not a
+buy/sell signal on the underlying stock.
+
+**Tests**: 12 new — `test_options_game_plan_expected_move.py` gained 3 (`iv_rank_1y` captured
+from the same fetch, captured independently of a null/zero `volatility`, `None` when UW has no
+data), `test_options_game_plan_email.py` gained 5 (both fields render alongside legs, correct
+low/high/mid-range labeling, the row renders even with zero legs, the section stays fully absent
+when neither IV data nor legs exist, source-text confirmation of the relaxed scheduler gate),
+`test_options_game_plan_batch_route.py` gained 1 (all 3 new fields present in the route's
+response construction). Also fixed a pre-existing test fixture gap: `test_options_game_plan_
+expected_move.py`'s `_FakeIVRank` mock lacked an `iv_rank_1y` attribute entirely, so the new
+`_iv_data.iv_rank_1y` read raised an uncaught `AttributeError` inside the existing broad
+try/except — silently wiping `expected_move_pct` too on 2 pre-existing tests until the fixture
+was corrected to carry the attribute. Adversarially verified via 3 sabotage cycles (email
+rendering removed, scheduler gate reverted, batch-route fields removed) — all correctly caught,
+all restored byte-identical. Full market-data suite: 2562 passed; frontend `tsc --noEmit` and
+`next build` both clean, confirmed shipped in the compiled `option-trading-guide`/`screener`
+bundles via grep.

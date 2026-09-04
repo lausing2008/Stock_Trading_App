@@ -1862,6 +1862,13 @@ export type OptionsGamePlanSnapshotResult = {
   underlying_close?: number;
   stop_loss?: number | null;
   take_profit?: number | null;
+  // AUD-DECIDE4-EXPECTEDMOVE / IV Rank: both from the same daily Unusual Whales IV read —
+  // expected_move_pct is how far the market expects this stock to move; iv_rank_1y (0-100) is
+  // whether that IV reading is cheap or expensive relative to this symbol's OWN trailing
+  // 1-year range. Either may be null (UW unavailable/no data for this symbol that day).
+  expected_move_pct?: number | null;
+  expected_move_dte?: number | null;
+  iv_rank_1y?: number | null;
   protective_put?: OptionsGamePlanSnapshotLeg | null;
   covered_call?: OptionsGamePlanSnapshotLeg | null;
 };

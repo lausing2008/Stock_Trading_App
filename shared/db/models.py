@@ -1805,6 +1805,15 @@ class OptionsGamePlanSnapshot(Base):
     # logic, never a fabricated expected move).
     expected_move_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     expected_move_dte: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # iv_rank_1y: where TODAY's IV sits within this symbol's own trailing 1-year IV range,
+    # 0-100 (0 = lowest IV all year, 100 = highest). A genuinely different, complementary
+    # signal from expected_move_pct above — expected_move_pct says how far the market expects
+    # this symbol to move; iv_rank_1y says whether that IV reading is cheap or expensive
+    # RELATIVE TO THIS SYMBOL'S OWN HISTORY (e.g. 30% IV could be a high IV Rank for a normally
+    # sleepy utility, or a low IV Rank for a name that's always volatile). Same UW /iv-rank
+    # fetch as expected_move_pct's own volatility field — no extra API call. NULL under the
+    # same fail-open conditions (UW unavailable/no data for this symbol).
+    iv_rank_1y: Mapped[float | None] = mapped_column(Float, nullable=True)
     computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

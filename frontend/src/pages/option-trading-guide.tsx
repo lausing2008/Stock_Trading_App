@@ -258,6 +258,45 @@ export default function OptionTradingGuidePage() {
             </li>
           </ul>
         </SubSection>
+        <SubSection title="Implied Volatility and IV Rank (screener + BUY-signal email, Advanced tier)">
+          <p style={{ marginBottom: 10 }}>
+            On the screener&apos;s expandable row detail and in the BUY-signal email, you may also
+            see an <b style={{ color: '#818cf8' }}>Implied Volatility</b> line showing an{' '}
+            <b style={{ color: '#e2e8f0' }}>expected move</b> and an{' '}
+            <b style={{ color: '#e2e8f0' }}>IV Rank</b> — both sourced from Unusual Whales, computed
+            once daily alongside the rest of that symbol&apos;s Options Game Plan snapshot.
+          </p>
+          <ul style={{ paddingLeft: 18, lineHeight: 1.8, margin: '0 0 10px' }}>
+            <li>
+              <b style={{ color: '#e2e8f0' }}>Expected move</b> is the market&apos;s own forecast of
+              how far this stock is likely to move, backed out of real options prices (implied
+              volatility) rather than guessed — a stock showing &quot;±6.2% (30d)&quot; means the
+              options market is currently pricing in roughly that much movement, either direction,
+              over the next month. This is what replaces a fixed, one-size-fits-all take-profit
+              percentage on a symbol with real Unusual Whales data — see the worked example below.
+            </li>
+            <li>
+              <b style={{ color: '#e2e8f0' }}>IV Rank</b> is a different question: is that implied
+              volatility reading high or low <i>for this specific stock</i>, relative to its own
+              trailing 1-year range? It&apos;s a 0-100 percentile — 0 means today&apos;s IV is the
+              lowest it&apos;s been all year, 100 means it&apos;s the highest. The same 30% IV
+              reading could be an IV Rank of 85 for a normally sleepy utility stock (unusually
+              volatile right now) or an IV Rank of 15 for a stock that&apos;s always volatile
+              (calm by its own standards) — the raw IV number alone can&apos;t tell you which.
+            </li>
+          </ul>
+          <p style={{ margin: 0 }}>
+            The practical use: a <b style={{ color: '#e2e8f0' }}>high IV Rank</b> (roughly 70+)
+            means options on this stock are relatively expensive right now — a real, if imperfect,
+            signal that premium-selling strategies (like the covered call above) collect richer
+            income than usual, while premium-buying strategies (like the protective put above) cost
+            more than usual for the same protection. A <b style={{ color: '#e2e8f0' }}>low IV Rank</b>{' '}
+            (roughly 30 or under) is the mirror image — options are relatively cheap, favoring
+            buying premium over selling it. Neither reading is a buy/sell signal on the STOCK
+            itself — it&apos;s only about whether the OPTIONS on it are currently priced rich or
+            cheap relative to their own recent history.
+          </p>
+        </SubSection>
       </Section>
 
       <Callout tone="example" title="Worked example — protecting a real AI Signal BUY">

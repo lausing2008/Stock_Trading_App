@@ -6539,7 +6539,14 @@ def check_signal_alerts() -> None:
                             if _stock_row is not None:
                                 from .options_game_plan_snapshot import get_latest_options_game_plan
                                 _snap = get_latest_options_game_plan(session, _stock_row)
-                                if _snap is not None and (_snap.put_strike is not None or _snap.call_strike is not None):
+                                # AUD-IVRANK-EMAILGATE: a leg (put/call) or IV data (expected
+                                # move / IV Rank) is each independently useful — a snapshot
+                                # with real IV data but no listed leg in today's DTE window
+                                # should still surface that IV read, not be dropped entirely.
+                                if _snap is not None and (
+                                    _snap.put_strike is not None or _snap.call_strike is not None
+                                    or _snap.expected_move_pct is not None or _snap.iv_rank_1y is not None
+                                ):
                                     options_game_plan = _snap
                         except Exception as _ogp_exc:
                             log.debug("signal_alert.options_game_plan_lookup_failed", symbol=alert.symbol, error=str(_ogp_exc))

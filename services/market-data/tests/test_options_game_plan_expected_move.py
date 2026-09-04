@@ -17,8 +17,9 @@ from src.services import options_game_plan_snapshot as m
 
 
 class _FakeIVRank:
-    def __init__(self, volatility):
+    def __init__(self, volatility, iv_rank_1y=None):
         self.volatility = volatility
+        self.iv_rank_1y = iv_rank_1y
 
 
 def _fake_ticker(current_price=100.0, expiries=("2026-10-01",)):
@@ -109,5 +110,42 @@ def test_iv_rank_failure_fails_open_leaving_the_rest_of_the_snapshot_intact():
         result = m.compute_options_game_plan_snapshot(session, stock_id=1, symbol="AAPL")
     assert result is not None
     assert result.expected_move_pct is None
+    assert result.iv_rank_1y is None
     assert result.put_strike == 95.0
     assert result.call_strike == 105.0
+
+
+# ── iv_rank_1y propagation (wired alongside expected_move_pct, same UW fetch, no extra call) ─
+
+def test_iv_rank_1y_is_captured_from_the_same_iv_rank_fetch():
+    with patch("yfinance.Ticker", return_value=_fake_ticker()), \
+         patch("src.services.unusual_whales.get_iv_rank", return_value=_FakeIVRank(0.35, iv_rank_1y=72.0)):
+        session = MagicMock()
+        session.execute.return_value.scalars.return_value.first.return_value = None
+        result = m.compute_options_game_plan_snapshot(session, stock_id=1, symbol="AAPL")
+    assert result is not None
+    assert result.iv_rank_1y == 72.0
+
+
+def test_iv_rank_1y_captured_even_when_volatility_itself_is_none():
+    """iv_rank_1y is an independent field from the same fetch -- a symbol with a real IV Rank
+    reading but a missing/zero volatility field should still get its IV Rank captured, even
+    though expected_move_pct itself stays None in that case."""
+    with patch("yfinance.Ticker", return_value=_fake_ticker()), \
+         patch("src.services.unusual_whales.get_iv_rank", return_value=_FakeIVRank(None, iv_rank_1y=15.0)):
+        session = MagicMock()
+        session.execute.return_value.scalars.return_value.first.return_value = None
+        result = m.compute_options_game_plan_snapshot(session, stock_id=1, symbol="AAPL")
+    assert result is not None
+    assert result.expected_move_pct is None
+    assert result.iv_rank_1y == 15.0
+
+
+def test_iv_rank_1y_is_none_when_iv_rank_unavailable():
+    with patch("yfinance.Ticker", return_value=_fake_ticker()), \
+         patch("src.services.unusual_whales.get_iv_rank", return_value=None):
+        session = MagicMock()
+        session.execute.return_value.scalars.return_value.first.return_value = None
+        result = m.compute_options_game_plan_snapshot(session, stock_id=1, symbol="AAPL")
+    assert result is not None
+    assert result.iv_rank_1y is None
