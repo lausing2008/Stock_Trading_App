@@ -41,6 +41,9 @@ https://api.unusualwhales.com/api/openapi spec (not guessed/assumed) before bein
     (speaker, title, content, sentiment). Requires UW's own Advanced+ tier (higher than every
     other endpoint here assumes) — a 403 fails open identically to "no transcript yet."
     AUD-TRANSCRIPT: see get_earnings_transcript() below.
+  - /api/seasonality/market — real, multi-year monthly seasonal return stats for UW's own fixed
+    13-ticker sector/index ETF set (with real example data confirmed in UW's own spec).
+    AUD-SEASONALITY: see get_sector_seasonality() below.
   - /api/shorts/{ticker}/interest-float/v2 — days_to_cover, fee_rate, rebate_rate,
     short_interest, short_shares_available, si_float, total_float
   - /api/shorts/{ticker}/data           — fee_rate, rebate_rate, short_shares_available
@@ -116,6 +119,8 @@ _EARNINGS_MOVE_TTL = 21600  # 6h, matching _SHORT_INTEREST_TTL's own rationale �
 _TRANSCRIPT_TTL = 86400  # 24h — once a specific (ticker, quarter) transcript is published it
 # never changes again (a real historical record, not a live reading); a full trading day is a
 # safe, generous cache given this endpoint is only ever read after a report has already landed.
+_SEASONALITY_TTL = 86400  # 24h — genuinely multi-year historical statistics; recomputes on
+# UW's own side at most daily, no reason to re-fetch more often than once per day.
 
 
 class UnusualWhalesRateLimitError(Exception):
@@ -269,6 +274,28 @@ class TranscriptStatement:
     title: str | None
     content: str | None
     sentiment: float | None
+
+
+@dataclass
+class SeasonalityRow:
+    """AUD-SEASONALITY: one (ticker, month) row of real, multi-year seasonal return statistics
+    from Unusual Whales' /api/seasonality/market — confirmed field shape (with real example
+    data) via UW's own full published OpenAPI YAML spec, fetched 2026-09-04. Covers the same 13
+    major sector/index ETFs UW itself computes this for: SPY, QQQ, IWM, XLE, XLC, XLK, XLV, XLP,
+    XLY, XLRE, XLF, XLI, XLB. A genuinely different lens from this app's own existing
+    sector_trajectory.py (K-Score-momentum-based, "who's outperforming right now") — this is
+    calendar-effects-based, "who has historically tended to do well in THIS MONTH, independent
+    of current momentum." avg_change/median_change/min_change/max_change are fractional returns
+    (0.0092 = +0.92%) over `years` years of history for this specific calendar month."""
+    ticker: str | None
+    month: int | None
+    avg_change: float | None
+    median_change: float | None
+    min_change: float | None
+    max_change: float | None
+    positive_closes: int | None
+    positive_months_perc: float | None
+    years: int | None
 
 
 @dataclass
@@ -682,6 +709,61 @@ def get_earnings_transcript(symbol: str, quarter: str) -> list[TranscriptStateme
         import json
         from dataclasses import asdict
         _get_redis().setex(cache_key, _TRANSCRIPT_TTL, json.dumps([asdict(r) for r in result]))
+    except Exception:
+        pass
+    return result
+
+
+def get_sector_seasonality() -> list[SeasonalityRow]:
+    """AUD-SEASONALITY: real, multi-year monthly seasonal return statistics for UW's own fixed
+    13-ticker sector/index ETF set (SPY, QQQ, IWM, XLE, XLC, XLK, XLV, XLP, XLY, XLRE, XLF, XLI,
+    XLB) from Unusual Whales' /api/seasonality/market — confirmed real field shape (with real
+    example data) via UW's own full published OpenAPI YAML spec, fetched 2026-09-04. Takes no
+    parameters — UW returns the full (ticker, month) matrix in one call (13 tickers x 12 months
+    = up to 156 rows); callers filter to the ticker/month they need. List-returning, fail-open
+    to an empty list (never None), matching get_max_pain()'s own contract. Redis-cached 24h
+    (_SEASONALITY_TTL) — genuinely multi-year historical statistics, no reason to re-fetch more
+    than once per day.
+    """
+    if not is_available():
+        return []
+    cache_key = "stockai:uw:seasonality:market"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            import json
+            rows = json.loads(cached)
+            return [SeasonalityRow(**r) for r in rows]
+    except Exception:
+        pass
+
+    try:
+        data = _get("/api/seasonality/market")
+    except Exception as exc:
+        log.warning("unusual_whales.sector_seasonality_failed", error=str(exc))
+        return []
+
+    result: list[SeasonalityRow] = []
+    if isinstance(data, list):
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            result.append(SeasonalityRow(
+                ticker=row.get("ticker"),
+                month=int(row["month"]) if row.get("month") is not None else None,
+                avg_change=_to_float(row.get("avg_change")),
+                median_change=_to_float(row.get("median_change")),
+                min_change=_to_float(row.get("min_change")),
+                max_change=_to_float(row.get("max_change")),
+                positive_closes=int(row["positive_closes"]) if row.get("positive_closes") is not None else None,
+                positive_months_perc=_to_float(row.get("positive_months_perc")),
+                years=int(row["years"]) if row.get("years") is not None else None,
+            ))
+
+    try:
+        import json
+        from dataclasses import asdict
+        _get_redis().setex(cache_key, _SEASONALITY_TTL, json.dumps([asdict(r) for r in result]))
     except Exception:
         pass
     return result

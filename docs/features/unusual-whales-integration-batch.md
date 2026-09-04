@@ -595,3 +595,55 @@ the compiled `option-trading-guide` bundle via grep.
 Statement` shape matches exactly (`speaker`/`title`/`content`/`sentiment`) — this was derived
 from UW's own published OpenAPI spec, not a live sample, so it's a real documented contract but
 not yet confirmed against an actual response.
+
+---
+
+### AUD-SEASONALITY — Sector calendar-effects seasonality panel (2026-09-04)
+
+**User request**: sixth and final feature from the UW API design review, item #6 of 7 — the
+least-verified item at design time (only the category's existence was confirmed, no field
+shapes). Fully verified this pass by pulling UW's own complete published OpenAPI YAML spec
+directly and locating all 4 real seasonality endpoints with exact paths, params, and — for
+`/api/seasonality/market` specifically — a complete schema WITH real example data:
+`GET /api/seasonality/market` returns average/median/min/max return, positive-close count,
+positive-months %, and years of history, per (ticker, month), for UW's own fixed 13-ticker
+sector/index ETF set (SPY, QQQ, IWM, XLE, XLC, XLK, XLV, XLP, XLY, XLRE, XLF, XLI, XLB).
+
+**Conceptual distinction from the existing sector-rotation feature** (documented inline):
+`sector_trajectory.py`/`/sector-rotation` is K-Score-momentum-based — "who's outperforming right
+now." This is calendar-effects-based — "who has historically tended to do well in THIS calendar
+month, independent of current momentum." Genuinely complementary, never a replacement.
+
+**New UW function**: `get_sector_seasonality()` / `SeasonalityRow` (`unusual_whales.py`) — takes
+NO parameters (a real, deliberate API shape difference from every other UW function in this
+codebase — UW returns its full 13-ticker × 12-month matrix, up to 156 rows, in one call), list-
+returning, fail-open, 24h cache (`_SEASONALITY_TTL` — genuinely multi-year historical stats, no
+reason to re-fetch more than daily).
+
+**New route**: `GET /sector-seasonality?month=N` (routes.py) — defaults `month` to the current
+calendar month when omitted (the reading most people actually want), filters the full fetched
+matrix down to just that month, sorts by median return descending, and falls back to
+`available: False` with an honest reason (`unusual_whales_disabled`/`no_data`) rather than a
+fabricated ranking.
+
+**Rendering**: `sector-rotation.tsx` gained a new self-contained `SeasonalityPanel` component
+(own fetch, matching `MarketPressurePanel.tsx`'s own established "renders nothing when
+unavailable" pattern) — a table of median/average return, % positive months, min/max range, and
+years of history per sector, joined to sector NAMES via the existing `SectorRotationEntry.etf`
+field (UW's own ticker naming matches this app's existing ETF map exactly, no translation table
+needed). Gated to `market === 'US'` only — UW's fixed 13-ticker set is entirely US ETFs; showing
+it on the HK sector view would misleadingly imply US seasonality applies there.
+
+**Tests**: 19 new — `test_unusual_whales.py` gained 9 (not-available, cache-hit, real-response
+parsing using UW's own published example row, multi-ticker/multi-month parsing, non-list
+response, fetch exception, non-dict-row skipping, a dedicated check confirming the function
+takes zero arguments — the one real API-shape difference from every sibling function — and its
+own 24h TTL), a new `test_sector_seasonality_route.py` (10 — disabled/no-data both degrading to
+`available: False` with honest reasons, month defaulting to the current calendar month, correct
+month-filtering, ticker-null-row filtering, descending sort by median return, all 8 stat fields
+surfaced, an empty-rows list never passing through as `available: True`, availability checked
+before any fetch). Adversarially verified via 2 sabotage cycles (the route's own filtering/
+no-data-guard logic stripped out entirely — 4 tests failed correctly; `ticker` forced to always
+parse `None` in the UW function itself — 3 tests failed correctly), both restored byte-identical.
+Full market-data suite: 2673 passed; frontend `tsc --noEmit`/`next build` clean, confirmed
+shipped in the compiled `sector-rotation` bundle via grep.

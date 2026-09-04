@@ -66,6 +66,12 @@ export const api = {
   },
   sectorRotation: (market?: string) =>
     request<SectorRotationReport>(`/rankings/sector_rotation${market ? `?market=${market}` : ''}`),
+  // AUD-SEASONALITY: real, multi-year calendar-effects seasonality — a genuinely different
+  // lens from the K-Score-momentum-based sectorRotation() above ("who's outperforming right
+  // now" vs. "who has historically done well in THIS month"). Defaults to the current
+  // calendar month server-side when omitted.
+  getSectorSeasonality: (month?: number) =>
+    request<SectorSeasonalityResponse>(`/stocks/sector-seasonality${month ? `?month=${month}` : ''}`),
   screen: (params: {
     market?: string; sector?: string; signal?: string;
     min_confidence?: number; min_score?: number; max_score?: number;
@@ -1007,6 +1013,24 @@ export type ShortInterestRow = { symbol: string; name: string; market: string; s
 export type SectorRsStock = { symbol: string; name: string; rs_score: number | null; kscore: number | null; past_rs: number | null };
 export type SectorRotationEntry = { sector: string; etf: string; avg_rs: number; rs_change: number | null; stock_count: number; leading: number; lagging: number; leading_pct: number; top_stocks: SectorRsStock[]; bottom_stocks: SectorRsStock[] };
 export type SectorRotationReport = { as_of: string; sectors: SectorRotationEntry[] };
+
+export type SeasonalityStatRow = {
+  ticker: string;
+  avg_change: number | null;
+  median_change: number | null;
+  min_change: number | null;
+  max_change: number | null;
+  positive_closes: number | null;
+  positive_months_perc: number | null;
+  years: number | null;
+};
+
+export type SectorSeasonalityResponse = {
+  available: boolean;
+  reason?: string;
+  month: number | null;
+  rows: SeasonalityStatRow[];
+};
 // T220-G/T258 — momentum: +1 rising / -1 falling / 0 flat vs 4 weeks ago (K-Score delta).
 // trajectory/rank/prior_rank are only present once a prior snapshot ~4 weeks back exists.
 export type SectorRotationKscoreEntry = {

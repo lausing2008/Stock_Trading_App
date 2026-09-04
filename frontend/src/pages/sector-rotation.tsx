@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { api, type SectorRotationEntry, type SectorRsStock } from '@/lib/api';
+import { api, type SectorRotationEntry, type SectorRsStock, type SectorSeasonalityResponse } from '@/lib/api';
+
+const _MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -141,6 +143,75 @@ function SectorCard({ entry, rank }: { entry: SectorRotationEntry; rank: number 
   );
 }
 
+// AUD-SEASONALITY: real, multi-year calendar-effects seasonality (Unusual Whales) — a
+// genuinely different lens from the K-Score-momentum cards above ("who's outperforming right
+// now" vs. "who has historically done well in THIS calendar month, independent of current
+// momentum"). Self-contained (its own fetch), matching MarketPressurePanel's own established
+// pattern for keeping this page's main component from growing further, and rendering nothing
+// when Unusual Whales isn't configured — this is deliberately optional enrichment.
+function SeasonalityPanel({ etfToSector }: { etfToSector: Record<string, string> }) {
+  const [data, setData] = useState<SectorSeasonalityResponse | null>(null);
+
+  useEffect(() => {
+    api.getSectorSeasonality().then(setData).catch(() => setData(null));
+  }, []);
+
+  if (!data?.available || data.rows.length === 0) return null;
+
+  const monthName = _MONTH_NAMES[(data.month ?? 1) - 1];
+
+  return (
+    <div style={{ marginBottom: '24px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+        <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Sector Seasonality — {monthName}</h2>
+        <span style={{ fontSize: 10, fontWeight: 700, color: '#a78bfa', background: 'rgba(167,139,250,0.12)', border: '1px solid rgba(167,139,250,0.3)', borderRadius: 4, padding: '2px 7px' }}>
+          Real, Multi-Year — Unusual Whales
+        </span>
+      </div>
+      <div style={{ fontSize: '11px', color: '#475569', marginBottom: '12px' }}>
+        Real historical median return in {monthName}, across each ETF&apos;s own available years of
+        data — a calendar-effects lens, independent of which sector is winning right now.
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', minWidth: '600px' }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid #1e293b' }}>
+              {['Sector', 'ETF', 'Median', 'Avg', 'Positive Months', 'Range', 'Years'].map((h, i) => (
+                <th key={h} style={{ padding: '6px 8px', textAlign: i === 0 ? 'left' : 'right', color: '#475569', fontWeight: 500, textTransform: 'uppercase', fontSize: 10 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {data.rows.map(row => {
+              const medianColor = row.median_change == null ? '#475569' : row.median_change >= 0 ? '#4ade80' : '#f87171';
+              return (
+                <tr key={row.ticker} style={{ borderBottom: '1px solid #0f172a' }}>
+                  <td style={{ padding: '6px 8px', color: '#e2e8f0' }}>{etfToSector[row.ticker] ?? row.ticker}</td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right', color: '#818cf8', fontFamily: 'ui-monospace,monospace' }}>{row.ticker}</td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right', color: medianColor, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+                    {row.median_change != null ? `${row.median_change >= 0 ? '+' : ''}${(row.median_change * 100).toFixed(1)}%` : '—'}
+                  </td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>
+                    {row.avg_change != null ? `${row.avg_change >= 0 ? '+' : ''}${(row.avg_change * 100).toFixed(1)}%` : '—'}
+                  </td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>
+                    {row.positive_months_perc != null ? `${(row.positive_months_perc * 100).toFixed(0)}%` : '—'}
+                    {row.positive_closes != null && row.years != null && <span style={{ color: '#334155' }}> ({row.positive_closes}/{row.years})</span>}
+                  </td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right', color: '#64748b', fontVariantNumeric: 'tabular-nums', fontSize: 11 }}>
+                    {row.min_change != null && row.max_change != null ? `${(row.min_change * 100).toFixed(0)}% to ${(row.max_change * 100).toFixed(0)}%` : '—'}
+                  </td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right', color: '#475569', fontVariantNumeric: 'tabular-nums' }}>{row.years ?? '—'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ──────────────────────────────────────────────────────────────────
 
 export default function SectorRotationPage() {
@@ -161,6 +232,7 @@ export default function SectorRotationPage() {
   const sectors = report?.sectors ?? [];
   const top3 = sectors.slice(0, 3);
   const bottom3 = sectors.slice(-3).reverse();
+  const etfToSector = Object.fromEntries(sectors.map(s => [s.etf, s.sector]));
 
   return (
     <div style={{ maxWidth: '1100px', margin: '0 auto', paddingBottom: '60px' }}>
@@ -240,6 +312,8 @@ export default function SectorRotationPage() {
             <span style={{ fontSize: '11px', color: '#475569' }}>RS score: avg relative strength vs sector ETF (0–100) · 50 = in-line with ETF</span>
             <span style={{ fontSize: '11px', color: '#475569' }}>↑↑ ↑ → ↓ ↓↓ = momentum vs 5 days ago · click card to expand stocks</span>
           </div>
+
+          {market === 'US' && <SeasonalityPanel etfToSector={etfToSector} />}
 
           {/* Sector cards */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>

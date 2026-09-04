@@ -2452,6 +2452,49 @@ def get_sector_rotation():
         return {}
 
 
+@router.get("/sector-seasonality")
+def get_sector_seasonality_route(month: int | None = Query(None, ge=1, le=12)):
+    """AUD-SEASONALITY: real, multi-year monthly seasonal return statistics for the same 13
+    sector/index ETFs Unusual Whales itself computes this for (SPY, QQQ, IWM, XLE, XLC, XLK,
+    XLV, XLP, XLY, XLRE, XLF, XLI, XLB) — a genuinely different, complementary lens from the
+    existing /sector-rotation endpoint above (that one is K-Score-momentum-based, "who's
+    outperforming right now"; this is calendar-effects-based, "who has historically tended to do
+    well in THIS MONTH, independent of current momentum"). Defaults `month` to the current
+    calendar month when omitted — the one most people actually want when looking at "seasonality
+    right now." Falls back to `available: False` (never fabricated stats) when Unusual Whales is
+    disabled/unconfigured.
+    """
+    from ..services import unusual_whales as _uw
+    from datetime import date as _sdate
+
+    if not _uw.is_available():
+        return {"available": False, "reason": "unusual_whales_disabled", "month": month, "rows": []}
+
+    target_month = month if month is not None else _sdate.today().month
+    all_rows = _uw.get_sector_seasonality()
+    month_rows = [r for r in all_rows if r.month == target_month and r.ticker is not None]
+    if not month_rows:
+        return {"available": False, "reason": "no_data", "month": target_month, "rows": []}
+
+    return {
+        "available": True,
+        "month": target_month,
+        "rows": [
+            {
+                "ticker": r.ticker,
+                "avg_change": r.avg_change,
+                "median_change": r.median_change,
+                "min_change": r.min_change,
+                "max_change": r.max_change,
+                "positive_closes": r.positive_closes,
+                "positive_months_perc": r.positive_months_perc,
+                "years": r.years,
+            }
+            for r in sorted(month_rows, key=lambda r: r.median_change if r.median_change is not None else -999, reverse=True)
+        ],
+    }
+
+
 # ── Short Squeeze Scanner ─────────────────────────────────────────────────────
 
 @router.get("/short_squeeze")

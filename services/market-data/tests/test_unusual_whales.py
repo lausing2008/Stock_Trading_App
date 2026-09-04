@@ -872,6 +872,132 @@ def test_transcript_uses_its_own_24h_ttl():
     assert spy.setex_calls[0][1] == 86400
 
 
+# ── get_sector_seasonality() — parsing/caching, with _get() mocked directly (AUD-SEASONALITY) ─
+
+def test_seasonality_returns_empty_list_when_not_available():
+    with patch.object(uw, "is_available", return_value=False), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_sector_seasonality()
+    assert result == []
+    mock_get.assert_not_called()
+
+
+def test_seasonality_reads_from_cache_when_present():
+    fake_redis = _FakeRedis()
+    cached_rows = [uw.SeasonalityRow(
+        ticker="SPY", month=5, avg_change=0.0038, median_change=0.0115, min_change=-0.0838,
+        max_change=0.0666, positive_closes=13, positive_months_perc=0.8125, years=16,
+    )]
+    import json
+    from dataclasses import asdict
+    fake_redis.store["stockai:uw:seasonality:market"] = json.dumps([asdict(r) for r in cached_rows])
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_sector_seasonality()
+    assert result == cached_rows
+    mock_get.assert_not_called()
+
+
+def test_seasonality_parses_a_real_response():
+    """Uses UW's own real published example row from its OpenAPI spec."""
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {
+                 "avg_change": "0.0038", "max_change": "0.0666", "median_change": "0.0115",
+                 "min_change": "-0.0838", "month": 5, "positive_closes": 13,
+                 "positive_months_perc": "0.8125", "ticker": "SPY", "years": 16,
+             },
+         ]):
+        result = uw.get_sector_seasonality()
+    assert len(result) == 1
+    row = result[0]
+    assert row.ticker == "SPY"
+    assert row.month == 5
+    assert row.avg_change == 0.0038
+    assert row.median_change == 0.0115
+    assert row.min_change == -0.0838
+    assert row.max_change == 0.0666
+    assert row.positive_closes == 13
+    assert row.positive_months_perc == 0.8125
+    assert row.years == 16
+
+
+def test_seasonality_parses_multiple_tickers_and_months():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"ticker": "SPY", "month": 6, "avg_change": "-0.0068"},
+             {"ticker": "XLRE", "month": 3, "avg_change": "0.0092"},
+             {"ticker": "QQQ", "month": 2, "avg_change": "0.0044"},
+         ]):
+        result = uw.get_sector_seasonality()
+    assert len(result) == 3
+    assert {(r.ticker, r.month) for r in result} == {("SPY", 6), ("XLRE", 3), ("QQQ", 2)}
+
+
+def test_seasonality_returns_empty_list_for_a_non_list_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=None):
+        result = uw.get_sector_seasonality()
+    assert result == []
+
+
+def test_seasonality_returns_empty_list_on_a_fetch_exception():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", side_effect=RuntimeError("boom")):
+        result = uw.get_sector_seasonality()
+    assert result == []
+
+
+def test_seasonality_skips_non_dict_rows_without_crashing():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"ticker": "SPY", "month": 5, "avg_change": "0.0038"},
+             "not a dict",
+             None,
+         ]):
+        result = uw.get_sector_seasonality()
+    assert len(result) == 1
+    assert result[0].ticker == "SPY"
+
+
+def test_seasonality_takes_no_arguments():
+    """A real, deliberate API shape difference from get_max_pain()/get_greeks() — UW's own
+    /api/seasonality/market endpoint has zero query/path parameters, always returning its full
+    fixed 13-ticker matrix in one call."""
+    import inspect
+    sig = inspect.signature(uw.get_sector_seasonality)
+    assert len(sig.parameters) == 0
+
+
+def test_seasonality_uses_its_own_24h_ttl():
+    class _SpyRedis(_FakeRedis):
+        def __init__(self):
+            super().__init__()
+            self.setex_calls = []
+        def setex(self, key, ttl, value):
+            self.setex_calls.append((key, ttl))
+            super().setex(key, ttl, value)
+    spy = _SpyRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=spy), \
+         patch.object(uw, "_get", return_value=[{"ticker": "SPY", "month": 5}]):
+        uw.get_sector_seasonality()
+    assert len(spy.setex_calls) == 1
+    assert spy.setex_calls[0][1] == uw._SEASONALITY_TTL
+    assert spy.setex_calls[0][1] == 86400
+
+
 # ── get_greeks() — parsing/caching, with _get() mocked directly (AUD-GREEKS) ────────────────
 
 def test_greeks_returns_empty_list_when_not_available():
