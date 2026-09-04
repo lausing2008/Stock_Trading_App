@@ -99,9 +99,11 @@ def _clean_scenarios(raw: object) -> list[dict] | None:
 _IMPACT_SYSTEM = """You are an equity analyst producing a brief post-earnings impact read for a
 retail trading app. You will receive a company's ticker, sector, EPS actual vs. estimate,
 revenue actual vs. estimate, surprise percentages, and a computed earnings strength score
-(0-100). Respond ONLY with valid JSON (no markdown, no explanation outside JSON) in this exact
-format:
-{"one_paragraph":"<2-3 sentences>","sectors_helped":["Technology"],"sectors_hurt":["Utilities"]}
+(0-100). You may ALSO receive a set of real excerpts from the company's own earnings call
+transcript (management/analyst statements) — when present, use them to inform your read;
+when absent, base your read on the numeric data alone exactly as before. Respond ONLY with
+valid JSON (no markdown, no explanation outside JSON) in this exact format:
+{"one_paragraph":"<2-3 sentences>","sectors_helped":["Technology"],"sectors_hurt":["Utilities"],"management_tone":"<1-2 sentences or empty string>"}
 one_paragraph must be 2-3 plain-English sentences a retail trader can act on, max 400 chars —
 cover what the beat/miss means and any read-through risk (e.g. a weak print from a bellwether
 can pressure its whole sector/peers, a strong print can lift them).
@@ -111,7 +113,13 @@ sectors_helped and sectors_hurt: 0-4 GICS-style sector names each (e.g. "Technol
 report plausibly helps or hurts — almost always includes the company's OWN sector, plus any
 closely-related peer sector if there's a real read-through (e.g. a major chipmaker's earnings
 affecting the broader semiconductor/tech supply chain). Use empty lists if you have no concrete
-basis — never pad these lists to look complete."""
+basis — never pad these lists to look complete.
+management_tone: ONLY fill this in when real transcript excerpts were provided — a genuinely
+qualitative read the numbers alone cannot give (e.g. did management sound confident about
+guidance, defensive about a miss, or notably vague/evasive on a specific topic an analyst
+pressed on). Ground it in the ACTUAL WORDS given, never invent a tone the excerpts don't
+support. Empty string if no transcript excerpts were provided, or if the excerpts genuinely
+don't support a clear read either way — never pad this to look complete."""
 
 
 def _api_key() -> str:
@@ -131,10 +139,45 @@ def _clean_sector_list(raw: object) -> list[str]:
     return cleaned[:6]
 
 
+_TRANSCRIPT_EXCERPT_MAX_STATEMENTS = 20  # AUD-TRANSCRIPT: a full call transcript can run to
+# hundreds of statements — capping keeps the prompt a bounded, predictable size/cost regardless
+# of how long a given call ran, at the cost of only seeing a slice of the full call rather than
+# the complete transcript. Prefers the highest-|sentiment| statements (see _select_transcript_
+# excerpts() below) since those are the ones most likely to carry a genuine tone signal.
+_TRANSCRIPT_EXCERPT_MAX_CHARS = 4000  # a further hard cap on total excerpt text even if 20
+# statements happen to be unusually long — bounds real Claude input-token cost per report.
+
+
+def _select_transcript_excerpts(statements: list[dict]) -> list[dict]:
+    """AUD-TRANSCRIPT: picks a bounded, representative slice of a full transcript to actually
+    send to the LLM — sorted by |sentiment| descending (UW's own per-statement score) so the
+    excerpts sent are the ones most likely to carry a genuine, gradeable tone signal, rather
+    than an arbitrary first-N slice that could land entirely on procedural/introductory remarks.
+    Statements with no real content or no sentiment score are dropped first (nothing to select
+    on, nothing useful to send)."""
+    scored = [
+        s for s in statements
+        if isinstance(s, dict) and s.get("content") and s.get("sentiment") is not None
+    ]
+    scored.sort(key=lambda s: abs(s["sentiment"]), reverse=True)
+    selected = scored[:_TRANSCRIPT_EXCERPT_MAX_STATEMENTS]
+
+    result = []
+    total_chars = 0
+    for s in selected:
+        content = str(s["content"])[:400]
+        if total_chars + len(content) > _TRANSCRIPT_EXCERPT_MAX_CHARS:
+            break
+        result.append({"speaker": s.get("speaker") or "Unknown", "title": s.get("title"), "content": content})
+        total_chars += len(content)
+    return result
+
+
 async def generate_earnings_impact(
     symbol: str, sector: str | None, eps_actual: float, eps_estimate: float | None,
     surprise_pct: float | None, revenue_actual: float | None, revenue_estimate: float | None,
     revenue_surprise_pct: float | None, strength_score: float | None,
+    transcript_statements: list[dict] | None = None,
 ) -> dict | None:
     """LLM-generated earnings impact read — mirrors macro_reaction.py's generate_reaction()
     exactly (same model, same fail-open contract, same sector-impact structure), applied to a
@@ -142,11 +185,26 @@ async def generate_earnings_impact(
     error, matching every other LLM call site in this codebase — a missing reaction just means
     no impact text is available that cycle, never a broken page or a blocked write of the
     already-computed eps_actual/surprise_pct fields.
+
+    AUD-TRANSCRIPT: `transcript_statements` is OPTIONAL and defaults to None — every pre-existing
+    caller is unaffected, and the numeric-only prompt/response shape is byte-identical to before
+    this change when omitted. When real transcript statements ARE provided (from Unusual Whales,
+    requires its own Advanced+ tier — see get_earnings_transcript()'s own docstring for why this
+    will often be empty), a bounded, sentiment-ranked excerpt (see _select_transcript_excerpts())
+    is folded into the SAME prompt/call — no second LLM call, no extra cost when a transcript
+    isn't available. Response gains a `management_tone` field, empty string when no excerpts
+    were provided or the LLM found no clear tone signal in them.
     """
     api_key = _api_key()
     if not api_key:
         log.info("earnings_impact.no_api_key", symbol=symbol)
         return None
+
+    excerpts = _select_transcript_excerpts(transcript_statements) if transcript_statements else []
+    transcript_block = ""
+    if excerpts:
+        lines = [f'  [{e["title"] or "Unknown role"}] {e["speaker"]}: "{e["content"]}"' for e in excerpts]
+        transcript_block = "\nReal earnings call transcript excerpts (sentiment-ranked, may not be in speaking order):\n" + "\n".join(lines) + "\n"
 
     prompt = (
         f"Ticker: {symbol}\n"
@@ -158,10 +216,11 @@ async def generate_earnings_impact(
         f"Revenue estimate: {revenue_estimate if revenue_estimate is not None else 'unavailable'}\n"
         f"Revenue surprise: {f'{revenue_surprise_pct:+.1f}%' if revenue_surprise_pct is not None else 'unavailable'}\n"
         f"Earnings strength score (0-100): {strength_score if strength_score is not None else 'unavailable'}\n"
+        f"{transcript_block}"
     )
     body = {
         "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 300,
+        "max_tokens": 350,
         "temperature": 0.2,
         "system": _IMPACT_SYSTEM,
         "messages": [{"role": "user", "content": prompt}],
@@ -187,6 +246,7 @@ async def generate_earnings_impact(
             "impact_text": impact_text,
             "sectors_helped": _clean_sector_list(data.get("sectors_helped")),
             "sectors_hurt": _clean_sector_list(data.get("sectors_hurt")),
+            "management_tone": (str(data.get("management_tone") or "").strip()[:400]) or None,
         }
     except Exception as exc:
         log.warning("earnings_impact.call_failed", symbol=symbol, error=str(exc))
@@ -215,6 +275,32 @@ def _fetch_fundamentals_sync(symbol: str) -> dict | None:
             return r.json()
     except Exception as exc:
         log.warning("earnings_forecast.fundamentals_fetch_failed", symbol=symbol, error=str(exc))
+    return None
+
+
+def _fetch_transcript_statements_sync(symbol: str, report_date: date) -> list[dict] | None:
+    """AUD-TRANSCRIPT: sync (blocking) fetch of market-data's real earnings-call transcript for
+    this specific report — market-data owns the Unusual Whales client (unusual_whales.py) and
+    event-intelligence has no direct Python import path to it (separate services/containers),
+    so this is a real cross-service HTTP call, matching _fetch_fundamentals_sync()'s own
+    established pattern exactly. Must run inside _executor (see check_earnings_reactions()'s
+    own call site) for the same blocking-event-loop reason as every other sync call here.
+    Returns None (not []) when unavailable/no data — a real, empty transcript is a genuinely
+    different state generate_earnings_impact() distinguishes (an empty list still means "no
+    excerpts to fold in," but None here specifically means "the fetch itself never got a real
+    answer," useful for log/debug clarity even though both currently degrade the same way
+    downstream)."""
+    try:
+        r = httpx.get(
+            f"{_settings.market_data_url}/stocks/{symbol}/earnings-transcript",
+            params={"report_date": report_date.isoformat()}, timeout=15,
+        )
+        if r.status_code == 200:
+            body = r.json()
+            if body.get("available"):
+                return body.get("statements") or []
+    except Exception as exc:
+        log.warning("earnings_impact.transcript_fetch_failed", symbol=symbol, error=str(exc))
     return None
 
 
@@ -403,22 +489,31 @@ async def check_earnings_impact_poll() -> dict:
             )
         ).all()
         checked = len(rows)
+        loop = asyncio.get_event_loop()
         for ev, sym, sector in rows:
             try:
+                # AUD-TRANSCRIPT: best-effort — a fetch failure/no-data (the common case until/
+                # unless an Advanced+ UW subscription is active) degrades to None, and
+                # generate_earnings_impact() itself treats a None/empty transcript exactly like
+                # its own pre-existing numeric-only behavior. Never blocks the impact text.
+                transcript_statements = await loop.run_in_executor(
+                    _executor, _fetch_transcript_statements_sync, sym, ev.report_date,
+                )
                 impact = await generate_earnings_impact(
                     sym, sector, ev.eps_actual, ev.eps_estimate, ev.surprise_pct,
                     ev.revenue_actual, ev.revenue_estimate, ev.revenue_surprise_pct,
-                    ev.earnings_strength_score,
+                    ev.earnings_strength_score, transcript_statements,
                 )
                 if impact is None:
                     continue
                 ev.impact_text = impact["impact_text"]
                 ev.sectors_helped = json.dumps(impact["sectors_helped"])
                 ev.sectors_hurt = json.dumps(impact["sectors_hurt"])
+                ev.management_tone = impact.get("management_tone")
                 ev.impact_generated_at = datetime.now(timezone.utc)
                 s.commit()
                 generated += 1
-                log.info("earnings_impact.generated", symbol=sym)
+                log.info("earnings_impact.generated", symbol=sym, had_transcript=bool(transcript_statements))
             except Exception as exc:
                 log.warning("earnings_impact.poll_error", symbol=sym, error=str(exc))
 

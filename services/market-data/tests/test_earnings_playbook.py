@@ -128,6 +128,28 @@ def test_impact_alerts_position_pct_is_derived_from_current_vs_entry_price():
 
 def test_impact_alerts_playbook_html_is_appended_not_replacing_the_llm_impact_text():
     """The LLM-generated impact_text must still be the FIRST thing in the email body — the
-    mechanical playbook is an ADDITION, never a replacement of the existing LLM section."""
+    mechanical playbook (and, since AUD-TRANSCRIPT, the optional management-tone line) are
+    ADDITIONS, never a replacement of the existing LLM section."""
     body = _func_body("check_earnings_impact_alerts")
-    assert 'body_html = f"<p>{ev.impact_text}</p>{playbook_html}"' in body
+    assert 'body_html = f"<p>{ev.impact_text}</p>{tone_html}{playbook_html}"' in body
+    idx = body.index("body_html = f")
+    assert body.index("{ev.impact_text}", idx) < body.index("{tone_html}", idx) < body.index("{playbook_html}", idx)
+
+
+def test_management_tone_html_only_computed_when_present():
+    """No empty <em>Management tone: </em> placeholder when management_tone is None — the
+    common case until/unless an Advanced+ UW subscription is active. Checked independently for
+    BOTH the html and text variants, since either could regress on its own."""
+    body = _func_body("check_earnings_impact_alerts")
+    html_idx = body.index("tone_html = f")
+    html_line = body[html_idx:body.index("\n", html_idx)]
+    assert 'if ev.management_tone else ""' in html_line
+    text_idx = body.index("tone_text = f")
+    text_line = body[text_idx:body.index("\n", text_idx)]
+    assert 'if ev.management_tone else ""' in text_line
+
+
+def test_management_tone_rendered_in_both_html_and_text_bodies():
+    body = _func_body("check_earnings_impact_alerts")
+    assert "tone_html = f'<p><em>Management tone: {ev.management_tone}</em></p>'" in body
+    assert 'tone_text = f"\\nManagement tone: {ev.management_tone}\\n"' in body

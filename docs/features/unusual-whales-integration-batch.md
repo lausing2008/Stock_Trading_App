@@ -497,3 +497,101 @@ empty/`None` — 3 tests failed correctly; the sort call removed from `get_histo
 moves()` — 1 test failed correctly), both restored byte-identical. Full market-data suite: 2628
 passed; frontend `tsc --noEmit`/`next build` clean, confirmed shipped in the compiled
 `earnings`/`option-trading-guide` bundles via grep.
+
+---
+
+### AUD-TRANSCRIPT — Earnings call transcript → LLM impact analysis (2026-09-04)
+
+**User request**: fifth feature from the UW API design review, item #5 of 7 — the one explicitly
+flagged in the original design doc as needing extra verification (the `statements` array's own
+per-item shape was undocumented on UW's rendered docs page). Real field shape was confirmed by
+pulling UW's own **full published OpenAPI YAML spec directly** (not the rendered docs page, which
+showed only a `[null]` placeholder) — the real `Transcript Statement` schema has exactly 4 fields:
+`content` (statement text), `sentiment` (UW's own per-statement score), `speaker` (name), `title`
+(role, e.g. "CEO").
+
+**Two real risks surfaced during research, both explicitly raised with the user before building**:
+1. This specific UW endpoint's own docs state it **"Requires Advanced+ tier (Advanced, Enterprise,
+   or Enterprise + Kafka)"** — a higher UW subscription level than every other endpoint this app
+   uses assumes. Resolved by building anyway with the existing fail-open pattern: a 403 from an
+   insufficient tier is caught by `_get()`'s own `UnusualWhalesAuthError` handling and degrades
+   to an empty list, indistinguishable at the call site from "no transcript published yet" — this
+   app deliberately never tries to tell the two apart.
+2. UW requires an exact `"YYYYQ[1-4]"` quarter string, but this codebase's own `fiscal_year`/
+   `fiscal_quarter` fields are already documented (AUD264) as "best-effort calendar-month label,"
+   not reliably correct. Resolved by deriving the quarter directly from `report_date` (this
+   codebase's own established reliable identity for a specific earnings event) via simple
+   calendar-quarter math instead — a wrong guess for a company whose fiscal quarters don't align
+   to calendar quarters fails open the same way every other failure mode here does (UW simply
+   returns no transcript for a quarter string it doesn't recognize).
+
+**New UW function**: `get_earnings_transcript(symbol, quarter)` / `TranscriptStatement`
+(`unusual_whales.py`) — list-returning, fail-open, 24h cache (`_TRANSCRIPT_TTL` — a published
+transcript is a fixed historical record, unlike GEX/NOPE's fast-moving readings). New helper
+`earnings_quarter_from_report_date()` derives the quarter string.
+
+**New market-data route**: `GET /{symbol}/earnings-transcript?report_date=YYYY-MM-DD` — the
+cross-service entry point event-intelligence (a separate service/container with no direct Python
+import path to `unusual_whales.py`) calls over HTTP, matching the established
+`_fetch_fundamentals_sync()`-style pattern exactly.
+
+**LLM integration** (`event-intelligence/earnings.py`): `generate_earnings_impact()` gained an
+OPTIONAL `transcript_statements` param (default `None`, fully backward-compatible — every
+pre-existing caller unaffected). New `_select_transcript_excerpts()` picks a bounded,
+sentiment-ranked slice (max 20 statements, max 4000 total chars, each statement capped at 400
+chars) to keep prompt size/cost predictable regardless of how long a call ran — full transcripts
+can run to hundreds of statements. The LLM's existing response schema gained a new
+`management_tone` field: a genuinely qualitative read (confident/defensive/evasive) grounded in
+the actual transcript words, empty string when no excerpts were given or none supported a clear
+read — the system prompt explicitly forbids inventing a tone the excerpts don't support.
+
+**Wiring**: `check_earnings_impact_poll()` now fetches the transcript (via a new
+`_fetch_transcript_statements_sync()` helper, run inside the existing `_executor` like every
+other blocking call in this file) before calling `generate_earnings_impact()`, and writes the
+returned `management_tone` to the new `EarningsEvent.management_tone` column.
+
+**New model field**: `EarningsEvent.management_tone` (nullable `Text`) — needs a manual
+`ALTER TABLE` in every environment (an existing, already-populated table; `create_all()` only
+creates missing tables).
+
+**Delivery**: `check_earnings_impact_alerts()` (scheduler.py) — the email delivery half — gained
+a `Management tone: ...` line, rendered only when present, inserted between the existing
+LLM-generated impact paragraph and the mechanical earnings playbook (never replacing either).
+No frontend rendering exists for this feature at all — matching the pre-existing `impact_text`
+field's own delivery-only-via-email precedent (this app's earnings LLM impact feature has never
+had a frontend surface).
+
+**Guide**: `option-trading-guide.tsx` gained a new subsection explaining what this line is, why
+it's genuinely different from the numeric beat/miss read, and its honest-when-unavailable
+behavior (no placeholder line when a transcript wasn't available).
+
+**Tests**: 24 new in market-data (15 in `test_unusual_whales.py` — 6 for
+`earnings_quarter_from_report_date()`'s calendar-quarter-boundary math including the exact
+month-3/month-4 boundary, 9 for `get_earnings_transcript()`'s parsing/caching/fail-open
+including a dedicated 403/`UnusualWhalesAuthError` case; 9 in a new
+`test_earnings_transcript_route.py` — availability gate ordering, quarter derived from
+`report_date` never `fiscal_year`/`fiscal_quarter`, invalid-date/no-data/disabled all degrading
+to `available: False` with an honest `reason`, an empty statements list never passing through as
+`available: True`) plus 2 more in `test_earnings_playbook.py` for the email's new tone line.
+event-intelligence gained 13 new tests in `test_earnings_impact.py` (8 for
+`_select_transcript_excerpts()` — sentiment-ranking, content/sentiment-missing filtering,
+statement-count cap, total-char cap, per-statement truncation, missing-speaker/title handling,
+empty input, non-dict-row skipping; 3 for `generate_earnings_impact()`'s transcript-augmented
+behavior — omitted param is byte-identical to before, provided excerpts are actually folded into
+the real prompt sent to Claude, an empty list produces no transcript block at all; 3 for the
+poll's own wiring — transcript fetched before the LLM call, passed through correctly, written to
+the new DB column) plus 1 corrected pre-existing test whose hardcoded exact-string assertion
+needed updating for the new intermediate `management_tone` field. Adversarially verified via 4
+sabotage cycles across both services (quarter-math off-by-one on the calendar boundary,
+sentiment-ranking sort key reverted to non-absolute-value, the DB-write line removed entirely,
+the html/text tone-guards both individually removed and re-verified with a tightened test after
+the first sabotage attempt was caught by a still-passing sibling guard rather than the mutated
+one) — all correctly caught, all restored byte-identical. Full suites: market-data 2654 passed,
+event-intelligence 353 passed; frontend `tsc --noEmit`/`next build` clean, confirmed shipped in
+the compiled `option-trading-guide` bundle via grep.
+
+**What to check once a real UW Advanced+ subscription is active**: pull one live
+`GET /api/companies/{ticker}/transcripts/{quarter}` response and confirm the `Transcript
+Statement` shape matches exactly (`speaker`/`title`/`content`/`sentiment`) — this was derived
+from UW's own published OpenAPI spec, not a live sample, so it's a real documented contract but
+not yet confirmed against an actual response.

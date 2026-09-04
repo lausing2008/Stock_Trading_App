@@ -37,6 +37,10 @@ https://api.unusualwhales.com/api/openapi spec (not guessed/assumed) before bein
   - /api/earnings/{ticker} — per-historical-report expected_move/expected_move_perc (the
     pre-report options-implied move) paired with post_earnings_move_1d/1w (what actually
     happened). AUD-EARNINGSMOVE: see get_historical_earnings_moves() below.
+  - /api/companies/{ticker}/transcripts/{quarter} — real earnings-call transcript statements
+    (speaker, title, content, sentiment). Requires UW's own Advanced+ tier (higher than every
+    other endpoint here assumes) — a 403 fails open identically to "no transcript yet."
+    AUD-TRANSCRIPT: see get_earnings_transcript() below.
   - /api/shorts/{ticker}/interest-float/v2 — days_to_cover, fee_rate, rebate_rate,
     short_interest, short_shares_available, si_float, total_float
   - /api/shorts/{ticker}/data           — fee_rate, rebate_rate, short_shares_available
@@ -109,6 +113,9 @@ _NOPE_TTL = 60          # 1 min ONLY — NOPE is UW's own per-minute reading; th
 _EARNINGS_MOVE_TTL = 21600  # 6h, matching _SHORT_INTEREST_TTL's own rationale — this is
 # HISTORICAL per-report data that only grows (a new row) once per quarter per symbol; no reason
 # to re-fetch it as often as GEX/NOPE.
+_TRANSCRIPT_TTL = 86400  # 24h — once a specific (ticker, quarter) transcript is published it
+# never changes again (a real historical record, not a live reading); a full trading day is a
+# safe, generous cache given this endpoint is only ever read after a report has already landed.
 
 
 class UnusualWhalesRateLimitError(Exception):
@@ -242,6 +249,26 @@ class HistoricalEarningsMoveRow:
     post_earnings_move_1d: float | None
     post_earnings_move_1w: float | None
     source: str | None
+
+
+@dataclass
+class TranscriptStatement:
+    """AUD-TRANSCRIPT: one statement from a real earnings-call transcript, from Unusual Whales'
+    /api/companies/{ticker}/transcripts/{quarter}. Confirmed field shape by pulling UW's own
+    full published OpenAPI YAML spec directly (fetched 2026-09-04) after the rendered docs page
+    itself showed the schema as an undocumented placeholder ([null]) — the real "Transcript
+    Statement" schema has exactly 4 fields: content (the statement text), sentiment (UW's own
+    per-statement sentiment score), speaker (name), title (role/position, e.g. "CEO"/"Analyst").
+    NOTE: this endpoint's own docs state it "Requires Advanced+ tier (Advanced, Enterprise, or
+    Enterprise + Kafka)" — a HIGHER UW subscription level than this app otherwise assumes for
+    every other endpoint. Same fail-open contract as everything else here: a 403 from an
+    insufficient tier is caught by _get()'s own UnusualWhalesAuthError handling and degrades to
+    an empty list, exactly like "no transcript exists yet" — this app cannot and does not try to
+    distinguish "wrong tier" from "not available" at the call site."""
+    speaker: str | None
+    title: str | None
+    content: str | None
+    sentiment: float | None
 
 
 @dataclass
@@ -582,6 +609,79 @@ def get_historical_earnings_moves(symbol: str, *, limit: int = 8) -> list[Histor
         import json
         from dataclasses import asdict
         _get_redis().setex(cache_key, _EARNINGS_MOVE_TTL, json.dumps([asdict(r) for r in result]))
+    except Exception:
+        pass
+    return result
+
+
+def earnings_quarter_from_report_date(report_date) -> str:
+    """AUD-TRANSCRIPT: derives UW's required "YYYYQ[1-4]" quarter string (e.g. "2024Q1") from a
+    real report_date (a date or ISO date string) — deliberately NOT from EarningsEvent's own
+    fiscal_year/fiscal_quarter fields, which this codebase's own AUD264-EARNINGS-FISCAL-QUARTER-
+    FROM-ANNOUNCEMENT-MONTH fix already documents as "still only a best-effort calendar-month
+    label," not a reliably correct fiscal quarter (a report's ANNOUNCEMENT date is 1-6 weeks
+    after the fiscal period it actually covers, and can cross a calendar-quarter boundary).
+    report_date is this codebase's own established reliable, unambiguous identity for a specific
+    earnings event (the same reasoning that made it the real uniqueness key for EarningsEvent
+    itself) — using simple calendar-quarter math on it is a plain, deterministic guess, still not
+    guaranteed to match UW's own internal fiscal-quarter labeling for every company (some
+    companies' fiscal quarters don't align with calendar quarters at all), but no worse a guess
+    than the alternative, and a wrong guess fails open exactly the same way (UW returns no
+    transcript for a quarter it doesn't recognize) as this endpoint's every other failure mode.
+    """
+    from datetime import date as _date
+    if isinstance(report_date, str):
+        report_date = _date.fromisoformat(report_date[:10])
+    q = (report_date.month - 1) // 3 + 1
+    return f"{report_date.year}Q{q}"
+
+
+def get_earnings_transcript(symbol: str, quarter: str) -> list[TranscriptStatement]:
+    """AUD-TRANSCRIPT: real earnings-call transcript statements for `symbol`/`quarter` (format
+    "YYYYQ[1-4]", e.g. "2024Q1" — see earnings_quarter_from_report_date() above for how this app
+    derives it) from Unusual Whales' /api/companies/{ticker}/transcripts/{quarter}. Confirmed
+    real field shape (speaker, title, content, sentiment) via UW's own full OpenAPI YAML spec.
+    List-returning, fail-open to an empty list — matching get_max_pain()'s own contract — on
+    ANY failure, including (deliberately indistinguishable at this layer) a 403 from an account
+    not on UW's own required Advanced+ tier for this specific endpoint. Redis-cached 24h
+    (_TRANSCRIPT_TTL) — once published, a transcript is a fixed historical record.
+    """
+    if not is_available():
+        return []
+    sym = symbol.upper()
+    cache_key = f"stockai:uw:transcript:{sym}:{quarter}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            import json
+            rows = json.loads(cached)
+            return [TranscriptStatement(**r) for r in rows]
+    except Exception:
+        pass
+
+    try:
+        data = _get(f"/api/companies/{sym}/transcripts/{quarter}")
+    except Exception as exc:
+        log.warning("unusual_whales.earnings_transcript_failed", symbol=sym, quarter=quarter, error=str(exc))
+        return []
+
+    result: list[TranscriptStatement] = []
+    rows = data.get("statements") if isinstance(data, dict) else None
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            result.append(TranscriptStatement(
+                speaker=row.get("speaker"),
+                title=row.get("title"),
+                content=row.get("content"),
+                sentiment=_to_float(row.get("sentiment")),
+            ))
+
+    try:
+        import json
+        from dataclasses import asdict
+        _get_redis().setex(cache_key, _TRANSCRIPT_TTL, json.dumps([asdict(r) for r in result]))
     except Exception:
         pass
     return result

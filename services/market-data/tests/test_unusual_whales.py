@@ -722,6 +722,156 @@ def test_earnings_moves_uses_its_own_6h_ttl():
     assert spy.setex_calls[0][1] != uw._NOPE_TTL
 
 
+# ── earnings_quarter_from_report_date() (AUD-TRANSCRIPT) ────────────────────────────────────
+
+def test_quarter_from_date_q1():
+    assert uw.earnings_quarter_from_report_date("2026-02-15") == "2026Q1"
+
+
+def test_quarter_from_date_q2():
+    assert uw.earnings_quarter_from_report_date("2026-05-01") == "2026Q2"
+
+
+def test_quarter_from_date_q3():
+    assert uw.earnings_quarter_from_report_date("2026-07-31") == "2026Q3"
+
+
+def test_quarter_from_date_q4():
+    assert uw.earnings_quarter_from_report_date("2026-12-01") == "2026Q4"
+
+
+def test_quarter_from_date_accepts_a_real_date_object_not_just_a_string():
+    from datetime import date
+    assert uw.earnings_quarter_from_report_date(date(2026, 7, 31)) == "2026Q3"
+
+
+def test_quarter_from_date_boundary_months():
+    """The exact month-3/month-4 and similar quarter boundaries — a real off-by-one here would
+    silently request the wrong quarter's transcript from UW."""
+    assert uw.earnings_quarter_from_report_date("2026-03-31") == "2026Q1"
+    assert uw.earnings_quarter_from_report_date("2026-04-01") == "2026Q2"
+    assert uw.earnings_quarter_from_report_date("2026-06-30") == "2026Q2"
+    assert uw.earnings_quarter_from_report_date("2026-09-30") == "2026Q3"
+    assert uw.earnings_quarter_from_report_date("2026-10-01") == "2026Q4"
+
+
+# ── get_earnings_transcript() — parsing/caching, with _get() mocked directly (AUD-TRANSCRIPT) ─
+
+def test_transcript_returns_empty_list_when_not_available():
+    with patch.object(uw, "is_available", return_value=False), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_earnings_transcript("AAPL", "2026Q3")
+    assert result == []
+    mock_get.assert_not_called()
+
+
+def test_transcript_reads_from_cache_when_present():
+    fake_redis = _FakeRedis()
+    cached_rows = [uw.TranscriptStatement(speaker="Tim Cook", title="CEO", content="Revenue grew...", sentiment=0.6)]
+    import json
+    from dataclasses import asdict
+    fake_redis.store["stockai:uw:transcript:AAPL:2026Q3"] = json.dumps([asdict(r) for r in cached_rows])
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_earnings_transcript("AAPL", "2026Q3")
+    assert result == cached_rows
+    mock_get.assert_not_called()
+
+
+def test_transcript_parses_a_real_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value={
+             "quarter": "2026Q3", "ticker": "AAPL",
+             "statements": [
+                 {"speaker": "Tim Cook", "title": "CEO", "content": "Revenue grew 8%.", "sentiment": "0.6"},
+                 {"speaker": "Analyst", "title": None, "content": "What drove the beat?", "sentiment": None},
+             ],
+         }):
+        result = uw.get_earnings_transcript("AAPL", "2026Q3")
+    assert len(result) == 2
+    assert result[0].speaker == "Tim Cook"
+    assert result[0].title == "CEO"
+    assert result[0].content == "Revenue grew 8%."
+    assert result[0].sentiment == 0.6
+    assert result[1].speaker == "Analyst"
+    assert result[1].sentiment is None
+
+
+def test_transcript_returns_empty_list_when_statements_key_is_missing():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value={"quarter": "2026Q3", "ticker": "AAPL"}):
+        result = uw.get_earnings_transcript("AAPL", "2026Q3")
+    assert result == []
+
+
+def test_transcript_returns_empty_list_for_a_non_dict_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=None):
+        result = uw.get_earnings_transcript("XYZ", "2026Q3")
+    assert result == []
+
+
+def test_transcript_skips_non_dict_rows_in_the_statements_list_without_crashing():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value={"statements": [
+             {"speaker": "Tim Cook", "content": "Real statement."},
+             "not a dict",
+             None,
+         ]}):
+        result = uw.get_earnings_transcript("AAPL", "2026Q3")
+    assert len(result) == 1
+    assert result[0].speaker == "Tim Cook"
+
+
+def test_transcript_returns_empty_list_on_a_fetch_exception():
+    """Includes the deliberately-indistinguishable case of a 403 from an account not on UW's
+    own required Advanced+ tier for this endpoint — must fail open exactly like any other
+    failure, never raise or crash the caller."""
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", side_effect=uw.UnusualWhalesAuthError("403")):
+        result = uw.get_earnings_transcript("AAPL", "2026Q3")
+    assert result == []
+
+
+def test_transcript_cache_key_is_scoped_per_quarter_not_just_symbol():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value={"statements": [{"speaker": "x"}]}):
+        uw.get_earnings_transcript("AAPL", "2026Q3")
+    assert "stockai:uw:transcript:AAPL:2026Q3" in fake_redis.store
+    assert "stockai:uw:transcript:AAPL:2026Q2" not in fake_redis.store
+
+
+def test_transcript_uses_its_own_24h_ttl():
+    class _SpyRedis(_FakeRedis):
+        def __init__(self):
+            super().__init__()
+            self.setex_calls = []
+        def setex(self, key, ttl, value):
+            self.setex_calls.append((key, ttl))
+            super().setex(key, ttl, value)
+    spy = _SpyRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=spy), \
+         patch.object(uw, "_get", return_value={"statements": [{"speaker": "x"}]}):
+        uw.get_earnings_transcript("AAPL", "2026Q3")
+    assert len(spy.setex_calls) == 1
+    assert spy.setex_calls[0][1] == uw._TRANSCRIPT_TTL
+    assert spy.setex_calls[0][1] == 86400
+
+
 # ── get_greeks() — parsing/caching, with _get() mocked directly (AUD-GREEKS) ────────────────
 
 def test_greeks_returns_empty_list_when_not_available():

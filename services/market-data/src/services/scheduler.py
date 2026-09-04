@@ -1693,8 +1693,14 @@ def check_earnings_impact_alerts() -> None:
                             continue
                     except Exception:
                         pass
-                    body_html = f"<p>{ev.impact_text}</p>{playbook_html}"
-                    body_text = f"{ev.impact_text}{playbook_text}"
+                    # AUD-TRANSCRIPT: real, transcript-grounded qualitative read, only present
+                    # when a real earnings-call transcript was available (requires Unusual
+                    # Whales' own Advanced+ tier — commonly absent, in which case this is simply
+                    # None and the email is byte-identical to before this feature existed).
+                    tone_html = f'<p><em>Management tone: {ev.management_tone}</em></p>' if ev.management_tone else ""
+                    tone_text = f"\nManagement tone: {ev.management_tone}\n" if ev.management_tone else ""
+                    body_html = f"<p>{ev.impact_text}</p>{tone_html}{playbook_html}"
+                    body_text = f"{ev.impact_text}{tone_text}{playbook_text}"
                     if send_email(u_obj.email, subject, body_html, body_text):
                         any_sent = True
                         try:

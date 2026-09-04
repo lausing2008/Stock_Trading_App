@@ -539,6 +539,24 @@ export default function OptionTradingGuidePage() {
             put at the currently-quoted premium is likely worth what it costs.
           </p>
         </SubSection>
+
+        <SubSection title="Management tone — a qualitative read from the actual earnings call">
+          <p style={{ marginBottom: 10 }}>
+            When a stock you&apos;re subscribed to reports earnings, the post-report impact email
+            (opt-in, Advanced tier) can include a line reading &quot;Management tone: ...&quot; —
+            a genuinely qualitative read grounded in real excerpts from that company&apos;s own
+            earnings call, when Unusual Whales has one available for that specific report. This is
+            a real, different kind of signal from the numeric beat/miss the rest of the email
+            already covers: whether management sounded confident about guidance, defensive about a
+            miss, or notably vague on a topic an analyst pressed on — the sort of read that only
+            comes from the actual words used on the call, not from EPS and revenue numbers alone.
+          </p>
+          <p style={{ margin: 0 }}>
+            This line only appears when a real transcript excerpt was actually available and
+            supported a clear read — no line at all (not a placeholder) otherwise, matching every
+            other UW-sourced field in this app&apos;s own honest-when-unavailable convention.
+          </p>
+        </SubSection>
       </Section>
 
       <Section title="Reading this app's own alerts into an actual entry">

@@ -3997,6 +3997,48 @@ def get_gamma_exposure(symbol: str):
     }
 
 
+@router.get("/{symbol}/earnings-transcript")
+def get_earnings_transcript_route(symbol: str, report_date: str):
+    """AUD-TRANSCRIPT: real earnings-call transcript statements for `symbol`, for the report
+    dated `report_date` (YYYY-MM-DD) — derives Unusual Whales' required "YYYYQ[1-4]" quarter
+    string from that date via earnings_quarter_from_report_date() (deliberately NOT this app's
+    own fiscal_year/fiscal_quarter fields, which AUD264 already documents as best-effort-only —
+    see that function's own docstring for the full reasoning).
+
+    Primary real consumer is event-intelligence's generate_earnings_impact() (cross-service HTTP
+    call, matching this app's own established _fetch_fundamentals_sync()-style pattern — market-
+    data and event-intelligence are separate services/containers with no direct Python import
+    path to each other). Falls back to `available: False` (never a fabricated transcript) when
+    Unusual Whales is disabled/unconfigured, has no transcript for this specific quarter, OR the
+    configured account isn't on UW's own required Advanced+ tier for this endpoint — this route
+    deliberately cannot and does not distinguish which of those three occurred.
+    """
+    from ..services import unusual_whales as _uw
+
+    sym = symbol.upper()
+    if not _uw.is_available():
+        return {"symbol": sym, "available": False, "reason": "unusual_whales_disabled", "statements": []}
+
+    try:
+        quarter = _uw.earnings_quarter_from_report_date(report_date)
+    except Exception:
+        return {"symbol": sym, "available": False, "reason": "invalid_report_date", "statements": []}
+
+    statements = _uw.get_earnings_transcript(sym, quarter)
+    if not statements:
+        return {"symbol": sym, "available": False, "reason": "no_data", "quarter": quarter, "statements": []}
+
+    return {
+        "symbol": sym,
+        "available": True,
+        "quarter": quarter,
+        "statements": [
+            {"speaker": s.speaker, "title": s.title, "content": s.content, "sentiment": s.sentiment}
+            for s in statements
+        ],
+    }
+
+
 @router.get("/{symbol}/dark-pool-prints")
 def get_dark_pool_prints_route(symbol: str):
     """T323-DARKPOOL: real recent off-exchange block trades via Unusual Whales' own

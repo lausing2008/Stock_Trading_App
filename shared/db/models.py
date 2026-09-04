@@ -1162,6 +1162,13 @@ class EarningsEvent(Base):
     impact_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     sectors_helped: Mapped[str | None] = mapped_column(Text, nullable=True)
     sectors_hurt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # AUD-TRANSCRIPT: a genuinely qualitative read (was management confident/defensive/evasive)
+    # from real earnings-call transcript excerpts (Unusual Whales, requires its own Advanced+
+    # tier — see get_earnings_transcript()'s own docstring), grounded in the actual words used,
+    # never invented. NULL when no transcript was available for this report (the common case
+    # until/unless an Advanced+ UW subscription is active) — a missing qualitative read is a
+    # real, different state from an empty one, never silently conflated.
+    management_tone: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         # AUD264-EARNINGS-FISCAL-QUARTER-FROM-ANNOUNCEMENT-MONTH: uniqueness used to be keyed
