@@ -128,3 +128,50 @@ docker logs stockai-technical-analysis-1 --since 8h 2>&1 | grep -c "arrays used 
 
 ---
 
+## BUG-FUNDAMENTALS-STALEDTE — Earnings Reminder Email Said "Reports Today" a Day After the
+## Stock Had Already Reported (Fixed 2026-09-03)
+
+**Symptom** (user report, screenshot of a real received email): "Earnings This Week" digest
+email showed HPE reporting "Today" when HPE had actually reported the PRIOR day.
+
+**Root cause**: `get_fundamentals()` (`services/market-data/src/api/routes.py`) computes
+`days_to_earnings` as a derived, day-relative value (`(next_earnings_date - today).days`) once
+at fetch time, then Redis-caches the WHOLE fundamentals payload — including that now-frozen
+integer — for 24h (`_FUND_TTL`). That TTL is correct for every OTHER field on the payload
+(P/E, margins, analyst ratings — genuinely quarterly-stable data) but `days_to_earnings`
+silently goes stale within the same window: a payload cached the day before a report
+(`days_to_earnings=0`, correct then) is still within its 24h TTL a day later, after the report
+already happened, and keeps being served as "reports today." The scheduler's earnings-reminder
+job (`check_signal_alerts()` → `send_earnings_reminder_digest_email()`) reads this cached field
+directly on every cycle, so the stale value reaches the user's inbox as-is.
+
+**Fix applied**: new `_refresh_days_to_earnings()` helper — `next_earnings_date` (an absolute
+date string) does NOT go stale the same way `days_to_earnings` does, so `days_to_earnings` is
+now always recomputed fresh from it at every point a fundamentals payload is returned (both the
+cache-hit path and the empty-fetch stale-fallback path in `get_fundamentals()`), never trusted
+as a persisted number. A `next_earnings_date` now in the past (the calendar itself is stale —
+yfinance hasn't rolled it to the next quarter's date yet) degrades both fields to `None` rather
+than emitting a negative `days_to_earnings`, since "reports N days ago" isn't a signal any
+caller is built to handle. The 2 other existing readers of this same cached payload
+(`/earnings-calendar`-style bulk endpoints, ~line 1985/2231) were already deriving `days_to_earnings`
+fresh from `next_earnings_date` at read-time themselves and needed no change — only the single
+`get_fundamentals()` HTTP endpoint (and its two scheduler consumers that read its response
+directly) had the bug.
+
+**Tests**: `services/market-data/tests/test_fundamentals_stale_days_to_earnings.py` (7 cases,
+behavioral — `routes.py` imports cleanly under this repo's conftest stubs) — recompute from a
+future date, today-exactly-zero, a past date clearing both fields, no-op when the field is
+missing/None, fail-open on a malformed date string, and a source-text check confirming the fix
+is wired into BOTH the cache-hit and stale-fallback return paths (not just the fresh-fetch path,
+which was never actually buggy). Adversarially verified: reverted the cache-hit wiring, 1 test
+correctly failed, restored + confirmed byte-identical via `md5sum`. Full 2553-test market-data
+suite green.
+
+**What to check if this recurs**:
+```bash
+docker exec stockai-market-data-1 redis-cli get "stockai:fundamentals:v2:HPE" | python3 -m json.tool | grep -E "next_earnings_date|days_to_earnings"
+# next_earnings_date should never be a past date if days_to_earnings is non-null.
+```
+
+---
+

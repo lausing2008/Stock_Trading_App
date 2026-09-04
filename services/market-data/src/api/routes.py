@@ -957,6 +957,40 @@ def _parse_ex_div_date(raw) -> str | None:
 _FUND_TTL = 60 * 60 * 24  # 24 hours — fundamentals change quarterly
 
 
+def _refresh_days_to_earnings(payload: dict) -> dict:
+    """BUG-FUNDAMENTALS-STALEDTE: days_to_earnings is a DERIVED, day-relative value
+    ((next_earnings_date - today).days) computed once at fetch time and then cached
+    alongside the rest of fundamentals for 24h (_FUND_TTL) — a TTL chosen because the
+    underlying fundamentals data itself only changes quarterly, which is true for every
+    OTHER field on this payload but not this one. A payload cached the day before a report
+    (days_to_earnings=0, correct then) is still within its 24h TTL a day later, after the
+    report has already happened, and would otherwise keep reading as "reports today" —
+    exactly the stale "HPE reports Today" email a user received a day after HPE's real
+    earnings date. next_earnings_date (an absolute date string) does NOT go stale this way,
+    so days_to_earnings is always recomputed fresh from it here, at every point a fundamentals
+    payload (cache hit OR fresh fetch) is about to be returned/consumed — never trusted as
+    persisted. A next_earnings_date now in the past means the calendar itself is stale (the
+    company already reported and yfinance hasn't rolled it to the NEXT quarter's date yet) —
+    degrades to None/None rather than emitting a negative days_to_earnings, since "reports
+    N days ago" is not a real signal this app's callers are built to handle.
+    """
+    ned = payload.get("next_earnings_date")
+    if not ned:
+        return payload
+    try:
+        from datetime import date as _date, datetime as _datetime
+        next_ed = _datetime.strptime(ned, "%Y-%m-%d").date()
+        today = _date.today()
+        if next_ed >= today:
+            payload["days_to_earnings"] = (next_ed - today).days
+        else:
+            payload["next_earnings_date"] = None
+            payload["days_to_earnings"] = None
+    except Exception:
+        pass
+    return payload
+
+
 def _safe(info: dict, key: str):
     v = info.get(key)
     if v in (None, "N/A", "None", "", "Infinity", float("inf"), float("-inf")):
@@ -1009,7 +1043,7 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
         try:
             cached = _get_redis().get(cache_key)
             if cached:
-                return json.loads(cached)
+                return _refresh_days_to_earnings(json.loads(cached))
         except Exception:
             pass
 
@@ -1377,7 +1411,7 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
         try:
             stale = _get_redis().get(cache_key)
             if stale:
-                return json.loads(stale)
+                return _refresh_days_to_earnings(json.loads(stale))
         except Exception:
             pass
         return data
