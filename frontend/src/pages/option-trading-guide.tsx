@@ -325,10 +325,16 @@ export default function OptionTradingGuidePage() {
           real delta, gamma, theta, and vega for that EXACT strike/expiry, sourced from Unusual
           Whales and computed daily alongside the rest of the Options Game Plan snapshot.
         </p>
+        <p style={{ marginBottom: 10 }}>
+          The Greeks turn &quot;this option costs $3.00&quot; into &quot;here&apos;s exactly what
+          that $3.00 is exposed to, and by how much.&quot; Two contracts can cost the same and
+          look equally reasonable on strike/expiry alone, yet be very differently exposed once
+          you look at their Greeks — the worked examples below show exactly that.
+        </p>
         <ul style={{ paddingLeft: 18, lineHeight: 1.8, margin: '0 0 10px' }}>
-          <li><b style={{ color: '#e2e8f0' }}>Δ (delta)</b> — roughly how much the option&apos;s own price moves per $1 the stock moves. A put around -0.45 means the option gains about $0.45 for every $1 the stock falls (it&apos;s negative because a put gains value as the stock drops).</li>
-          <li><b style={{ color: '#e2e8f0' }}>Γ (gamma)</b> — how fast delta itself changes as the stock moves. Higher gamma means your hedge&apos;s effectiveness can shift quickly, typically largest for at-the-money contracts close to expiry.</li>
-          <li><b style={{ color: '#e2e8f0' }}>Θ (theta)</b> — how much value the option loses per day, all else equal, just from time passing. A theta of -0.04 means the contract is worth about $0.04 less tomorrow than today if the stock doesn&apos;t move — the real, ongoing cost of holding a hedge or the income a covered call collects for you.</li>
+          <li><b style={{ color: '#e2e8f0' }}>Δ (delta)</b> — roughly how much the option&apos;s own price moves per $1 the stock moves. A put around -0.45 means the option gains about $0.45 for every $1 the stock falls (it&apos;s negative because a put gains value as the stock drops). Delta also doubles as a rough odds-of-finishing-in-the-money estimate (-0.45 ≈ 45% odds) and as your effective share exposure (one contract at delta -0.45 hedges roughly 45 shares).</li>
+          <li><b style={{ color: '#e2e8f0' }}>Γ (gamma)</b> — how fast delta itself changes as the stock moves; the &quot;delta of delta.&quot; Higher gamma means your hedge&apos;s effectiveness can shift quickly as the stock actually starts moving, typically largest for at-the-money contracts close to expiry. For a protective put, high gamma is usually a GOOD thing — it means your protection strengthens fast exactly when the stock starts falling toward your strike, instead of staying weak until it&apos;s nearly too late.</li>
+          <li><b style={{ color: '#e2e8f0' }}>Θ (theta)</b> — how much value the option loses per day, all else equal, just from time passing. A theta of -0.04 means the contract is worth about $0.04 less tomorrow than today if the stock doesn&apos;t move — the real, ongoing cost of holding a hedge, or the income a covered call collects for you (theta works AGAINST an option buyer and FOR an option seller — a protective put buyer pays it, a covered call writer is paid it).</li>
           <li><b style={{ color: '#e2e8f0' }}>V (vega)</b> — how much the option&apos;s price changes if implied volatility itself moves by 1 point, independent of the stock price. Relevant alongside the IV Rank reading above — a high-vega position is more exposed to IV itself calming down or spiking, separate from where the stock goes.</li>
         </ul>
         <p style={{ margin: 0 }}>
@@ -337,6 +343,33 @@ export default function OptionTradingGuidePage() {
           field in this app.
         </p>
       </SubSection>
+
+      <Callout tone="example" title="Worked example — same put price, very different hedge">
+        Two protective puts on the same stock, both quoted around $3.00: <b style={{ color: '#e2e8f0' }}>Put A</b>{' '}
+        (closer to the money, 30 days out) shows <Code>Δ -0.48</Code>, <Code>Γ 0.04</Code>,{' '}
+        <Code>Θ -0.06</Code>. <b style={{ color: '#e2e8f0' }}>Put B</b> (further out-of-the-money,
+        60 days out) shows <Code>Δ -0.22</Code>, <Code>Γ 0.015</Code>, <Code>Θ -0.02</Code>. Same
+        $3.00 cost, very different hedge: Put A moves almost twice as much per $1 the stock falls
+        (delta -0.48 vs -0.22) and its protection strengthens faster as a real decline develops
+        (higher gamma) — but it also bleeds value more than 3x faster every day you hold it
+        (theta -0.06 vs -0.02). Put B is the cheaper-to-hold, slower-reacting hedge; Put A is the
+        expensive-to-hold, fast-reacting one. Neither is &quot;wrong&quot; — Put A suits someone
+        expecting a move soon and wanting strong protection fast; Put B suits someone hedging a
+        position they plan to hold for weeks and wants to minimize the daily bleed. Reading only
+        the price ($3.00 both) would have hidden this entire tradeoff.
+      </Callout>
+
+      <Callout tone="example" title="Worked example — a covered call's theta as real, quantified income">
+        AI Signal shows a BUY with a take-profit at $168; the covered call card finds a $168 call,
+        30 days out, priced at $1.85 with <Code>Δ 0.35</Code>, <Code>Θ -0.03</Code>. Selling it
+        collects that $1.85 premium up front — theta says roughly $0.03/day of that premium is
+        &quot;earned&quot; by time decay alone if the stock sits still, meaning it should be worth
+        about $0.90 less in 30 days purely from time passing (30 × $0.03), separate from
+        whatever the stock itself does. Delta 0.35 also tells you the real odds framing: roughly
+        a 35% chance this call finishes in-the-money and caps your gain at $168 — a genuinely
+        different, more concrete way to think about &quot;how likely am I to actually get called
+        away&quot; than guessing from the stock chart alone.
+      </Callout>
 
       <Section title="Reading this app's own alerts into an actual entry">
         <p style={{ marginBottom: 16 }}>
