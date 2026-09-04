@@ -114,6 +114,7 @@ def send_signal_alert_email(
     signal_data: dict | None = None,
     fundamentals: dict | None = None,
     game_plan: dict | None = None,
+    options_game_plan: object | None = None,
     conviction_layers: list[str] | None = None,
     near_conviction: bool = False,
     near_conviction_failed: list[str] | None = None,
@@ -450,6 +451,44 @@ Catalysts:
 Key Risk: {risk}
 """
 
+    # AUD-OPTIONS4-GAMEPLANBATCH: Advanced-tier-only (the caller already gates this — None here
+    # means either the recipient isn't Advanced-tier, the symbol is outside the bounded daily
+    # snapshot set, or no snapshot exists yet today; all 3 degrade to simply omitting this
+    # section, never a fabricated plan). Uses the SAME real, already-computed daily snapshot the
+    # scan-list row reads — never a live per-recipient fetch.
+    options_game_plan_html = ""
+    options_game_plan_text = ""
+    if options_game_plan is not None and new_signal == "BUY":
+        _ogp = options_game_plan
+        _ogp_rows_html = ""
+        _ogp_rows_text = ""
+        if _ogp.put_strike is not None:
+            _ogp_rows_html += (
+                f'<tr><td style="padding:6px 10px;font-size:12px;color:#166534;font-weight:600">🛡️ Protective Put</td>'
+                f'<td style="padding:6px 10px;font-size:12px;color:#64748b;font-family:monospace">'
+                f'${_ogp.put_strike:.2f} exp {_ogp.put_expiry} · mid ${_ogp.put_mid_price:.2f}'
+                f'</td></tr>'
+            )
+            _ogp_rows_text += f"  Protective Put: ${_ogp.put_strike:.2f} exp {_ogp.put_expiry}, mid ${_ogp.put_mid_price:.2f}\n"
+        if _ogp.call_strike is not None:
+            _ogp_rows_html += (
+                f'<tr><td style="padding:6px 10px;font-size:12px;color:#166534;font-weight:600">💰 Covered Call</td>'
+                f'<td style="padding:6px 10px;font-size:12px;color:#64748b;font-family:monospace">'
+                f'${_ogp.call_strike:.2f} exp {_ogp.call_expiry} · mid ${_ogp.call_mid_price:.2f}'
+                f'</td></tr>'
+            )
+            _ogp_rows_text += f"  Covered Call: ${_ogp.call_strike:.2f} exp {_ogp.call_expiry}, mid ${_ogp.call_mid_price:.2f}\n"
+        if _ogp_rows_html:
+            options_game_plan_html = f"""
+    <div style="margin-top:16px">
+      <div style="font-size:11px;font-weight:700;color:#38bdf8;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">📊 Options Game Plan — {symbol} (Advanced tier)</div>
+      <table style="width:100%;border-collapse:collapse;background:#eff6ff;border-radius:8px;overflow:hidden;border:1px solid #bfdbfe">
+        {_ogp_rows_html}
+      </table>
+      <div style="font-size:10px;color:#64748b;margin-top:4px">As of {_ogp.as_of.isoformat() if hasattr(_ogp.as_of, "isoformat") else _ogp.as_of} — real, currently-listed contract prices, not a prediction.</div>
+    </div>"""
+            options_game_plan_text = f"\n--- Options Game Plan for {symbol} (Advanced tier) ---\n{_ogp_rows_text}"
+
     is_exit_alert = mood == "bearish"
     if new_signal == "SELL":
         subject_prefix = "⚠ SELL Alert"
@@ -540,11 +579,13 @@ Key Risk: {risk}
     {conviction_html}
     {suppression_html}
     {game_plan_html}
+    {options_game_plan_html}
     <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:16px">
       Not personalised financial advice. Always do your own research before acting.
     </p>
   </div>
 </body></html>"""
+    body_text += options_game_plan_text
     return send_email(to, subject, body_html, body_text)
 
 
@@ -1370,6 +1411,21 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
             cal_html = '<div style="font-size:11px;color:#94a3b8;margin-top:4px">Not enough resolved history yet for a measured win rate</div>'
             cal_text = "    Not enough resolved history yet for a measured win rate\n"
         regime_html, regime_text = _regime_warning_lines(c.get("market_regime"))
+        # AUD-SQUEEZE3-UWSHORTINTERESTCORROBORATION: a real, material disagreement between the
+        # free-tier short_percent_of_float (already shown above) and Unusual Whales' own
+        # independently-sourced reading — surfaced as extra context for the recipient to weigh,
+        # never used to suppress the alert (see the scheduler's own comment for why).
+        uw_disagree_html = ""
+        uw_disagree_text = ""
+        if c.get("uw_disagrees"):
+            _uw_spf = c["uw_short_percent_of_float"]
+            uw_disagree_html = (
+                f'<div style="font-size:11px;color:#b45309;margin-top:4px">'
+                f'⚠️ Unusual Whales reports a different short-float reading: <strong>{_uw_spf:.1f}%</strong> '
+                f'(vs. {spf:.1f}% above) — the two sources disagree materially, worth checking before acting.'
+                f'</div>'
+            )
+            uw_disagree_text = f"    UW disagrees: reports {_uw_spf:.1f}% short of float (vs. {spf:.1f}% above)\n"
         row_border = "border:1px solid rgba(220,38,38,0.3);border-radius:8px;padding:10px 12px;margin-bottom:6px" if is_critical else "padding:10px 0;border-bottom:1px solid #f1f5f9"
         rows_html += (
             f'<div style="{row_border}">'
@@ -1378,11 +1434,11 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
             f'<span style="font-size:13px;color:#22c55e;font-weight:700">{chg_str}</span>'
             f'</div>'
             f'<div style="font-size:12px;color:#64748b;margin-top:2px">{price_str} · <strong style="color:#ef4444">{spf:.1f}%</strong> of float short{rvol_str}{si_str}{dtc_str}</div>'
-            f'{plan_html}{cal_html}{regime_html}'
+            f'{plan_html}{cal_html}{regime_html}{uw_disagree_html}'
             f'</div>'
         )
         dtc_text = f", {short_ratio:.1f}d to cover" + (" [CRITICAL]" if is_critical else "") if short_ratio is not None else ""
-        rows_text += f"  {sym}: {price_str}, {chg_str} today, {spf:.1f}% of float short{rvol_str}{si_str}{dtc_text}\n" + plan_text + cal_text + regime_text
+        rows_text += f"  {sym}: {price_str}, {chg_str} today, {spf:.1f}% of float short{rvol_str}{si_str}{dtc_text}\n" + plan_text + cal_text + regime_text + uw_disagree_text
 
     critical_note = (
         f'<p style="font-size:12px;color:#dc2626;font-weight:600;margin-top:-4px">'

@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import { api, type RankingRow, type SignalSummary, type LatestPrice, type WatchlistItem } from '@/lib/api';
@@ -131,7 +131,11 @@ function NumInput({ label, value, onChange, placeholder }: {
 
 export default function Screener() {
   const router = useRouter();
-  const isAdmin = getSession()?.role === 'admin';
+  const session = getSession();
+  const isAdmin = session?.role === 'admin';
+  // AUD-OPTIONS4-GAMEPLANBATCH: mirrors the stock detail page's own Advanced-tier gate for the
+  // Options Game Plan feature (get_advanced_user) — admin always passes regardless of tier.
+  const isAdvancedTier = isAdmin || session?.tier === 'advanced';
 
   const { data: rankData } = useSWR('rankings-all', () => api.rankings());
   const { data: signals }  = useSWR('signals-' + getSignalStyle(),  () => api.allSignals(getSignalStyle()));
@@ -140,6 +144,7 @@ export default function Screener() {
 
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'score', dir: 'desc' });
+  const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
 
   // AI natural language screener
   const [nlQuery, setNlQuery] = useState('');
@@ -351,6 +356,20 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
   function toggleSort(key: SortKey) {
     setSort(s => s.key === key ? { key, dir: s.dir === 'desc' ? 'asc' : 'desc' } : { key, dir: 'desc' });
   }
+
+  // AUD-OPTIONS4-GAMEPLANBATCH: one batch call for every BUY-signal symbol currently VISIBLE in
+  // the sorted/filtered table — never the whole screener universe, and never a per-row live
+  // fetch. Advanced-tier only (the backend enforces this too; skipping the call entirely for a
+  // non-Advanced viewer avoids a guaranteed 403 on every page load).
+  const buySymbolsVisible = useMemo(
+    () => sorted.filter(r => r.signal === 'BUY').map(r => r.symbol),
+    [sorted],
+  );
+  const { data: gamePlanBatch } = useSWR(
+    isAdvancedTier && buySymbolsVisible.length > 0 ? ['options-game-plan-batch', buySymbolsVisible.join(',')] : null,
+    () => api.getOptionsGamePlanBatch(buySymbolsVisible),
+    { revalidateOnFocus: false },
+  );
 
   function toggleSignal(sig: string) {
     setFilters(f => {
@@ -734,20 +753,23 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
                     <Th label="Rev Grw"   col="revenue_growth" sort={sort} onSort={toggleSort} />
                     <Th label="PEG"       col="peg_ratio"      sort={sort} onSort={toggleSort} />
                   </>}
+                  {isAdvancedTier && <th style={{ padding: '8px 10px', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#475569', borderBottom: '1px solid #1e293b', background: '#080f1e', whiteSpace: 'nowrap' }}>Options Plan</th>}
                   <th style={{ padding: '8px 10px', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#475569', borderBottom: '1px solid #1e293b', background: '#080f1e' }} />
                 </tr>
               </thead>
               <tbody>
                 {sorted.map((row, i) => {
                   const chgColor = (row.change_pct ?? 0) >= 0 ? '#22c55e' : '#ef4444';
+                  const gamePlan = gamePlanBatch?.results?.[row.symbol];
+                  const isExpanded = expandedSymbol === row.symbol;
                   return (
+                  <React.Fragment key={row.symbol}>
                     <tr
-                      key={row.symbol}
                       onClick={() => router.push(`/stock/${row.symbol}`)}
                       style={{
                         cursor: 'pointer',
                         background: i % 2 === 0 ? '#080f1e' : '#09101f',
-                        borderBottom: '1px solid rgba(30,41,59,0.5)',
+                        borderBottom: isExpanded ? 'none' : '1px solid rgba(30,41,59,0.5)',
                         transition: 'background 0.1s',
                       }}
                       onMouseEnter={e => (e.currentTarget.style.background = '#0f1e35')}
@@ -861,11 +883,76 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
                         </td>
                       </>}
 
+                      {/* AUD-OPTIONS4-GAMEPLANBATCH: Options Plan — a real, already-computed
+                          daily game plan for BUY-signal symbols only, never a per-row live
+                          fetch. Advanced-tier only (column itself is hidden for other viewers,
+                          matching the batch API call being skipped entirely for them above). */}
+                      {isAdvancedTier && (
+                        <td style={{ padding: '8px 10px' }} onClick={e => e.stopPropagation()}>
+                          {row.signal !== 'BUY' ? (
+                            <span style={{ color: '#334155' }}>—</span>
+                          ) : gamePlan === undefined ? (
+                            <span style={{ color: '#334155', fontSize: '11px' }}>…</span>
+                          ) : !gamePlan.available ? (
+                            <span style={{ color: '#334155', fontSize: '11px' }}>—</span>
+                          ) : (
+                            <button
+                              onClick={() => setExpandedSymbol(isExpanded ? null : row.symbol)}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: '4px', padding: '3px 8px',
+                                borderRadius: '4px', fontSize: '11px', fontWeight: 600, cursor: 'pointer',
+                                background: isExpanded ? 'rgba(56,189,248,0.15)' : 'rgba(56,189,248,0.08)',
+                                border: '1px solid rgba(56,189,248,0.3)', color: '#38bdf8',
+                              }}
+                            >
+                              📊 Plan {isExpanded ? '▲' : '▼'}
+                            </button>
+                          )}
+                        </td>
+                      )}
+
                       {/* Actions */}
                       <td style={{ padding: '8px 10px' }} onClick={e => e.stopPropagation()}>
                         <WatchlistPickerButton symbol={row.symbol} size="xs" />
                       </td>
                     </tr>
+                    {isExpanded && gamePlan?.available && (
+                      <tr key={`${row.symbol}-expanded`} style={{ borderBottom: '1px solid rgba(30,41,59,0.5)' }}>
+                        <td colSpan={20} style={{ padding: '12px 16px', background: '#0a1120' }}>
+                          <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', fontSize: '12px' }}>
+                            <div style={{ color: '#475569' }}>
+                              Options Game Plan for <b style={{ color: '#e2e8f0' }}>{row.symbol}</b>
+                              {' '}as of {gamePlan.as_of} — ATR-based SWING stop/target
+                              {gamePlan.stop_loss != null && <> (stop ${gamePlan.stop_loss.toFixed(2)}</>}
+                              {gamePlan.take_profit != null && <>, target ${gamePlan.take_profit.toFixed(2)})</>}
+                            </div>
+                            {gamePlan.protective_put ? (
+                              <div style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid rgba(248,113,113,0.3)', background: 'rgba(248,113,113,0.05)' }}>
+                                <div style={{ color: '#f87171', fontWeight: 700, marginBottom: '4px' }}>🛡️ Protective Put</div>
+                                <div style={{ color: '#94a3b8' }}>
+                                  ${gamePlan.protective_put.strike} exp {gamePlan.protective_put.expiry} · mid ${gamePlan.protective_put.mid_price.toFixed(2)}
+                                  {gamePlan.protective_put.effective_floor_price != null && <> · floor ${gamePlan.protective_put.effective_floor_price.toFixed(2)}</>}
+                                </div>
+                              </div>
+                            ) : (
+                              <div style={{ color: '#334155' }}>No protective put in the target DTE window today.</div>
+                            )}
+                            {gamePlan.covered_call ? (
+                              <div style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid rgba(74,222,128,0.3)', background: 'rgba(74,222,128,0.05)' }}>
+                                <div style={{ color: '#4ade80', fontWeight: 700, marginBottom: '4px' }}>💰 Covered Call</div>
+                                <div style={{ color: '#94a3b8' }}>
+                                  ${gamePlan.covered_call.strike} exp {gamePlan.covered_call.expiry} · mid ${gamePlan.covered_call.mid_price.toFixed(2)}
+                                  {gamePlan.covered_call.effective_cap_price != null && <> · cap ${gamePlan.covered_call.effective_cap_price.toFixed(2)}</>}
+                                </div>
+                              </div>
+                            ) : (
+                              <div style={{ color: '#334155' }}>No covered call in the target DTE window today.</div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                   );
                 })}
               </tbody>

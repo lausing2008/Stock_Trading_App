@@ -577,6 +577,11 @@ export const api = {
     const qs = params.toString();
     return request<OptionsGamePlan>(`/stocks/${symbol}/options-game-plan${qs ? `?${qs}` : ''}`);
   },
+  // AUD-OPTIONS4-GAMEPLANBATCH: one call for many symbols' already-computed daily snapshots —
+  // for a scan-list/signals-table row, never a per-row live fetch. Advanced-tier gated
+  // server-side (403 for a non-Advanced viewer), same as getOptionsGamePlan above.
+  getOptionsGamePlanBatch: (symbols: string[]) =>
+    request<OptionsGamePlanBatchResponse>(`/stocks/options-game-plan/batch?symbols=${symbols.map(s => encodeURIComponent(s)).join(',')}`),
   getDividends: (symbol: string) => request<DividendData>(`/stocks/${symbol}/dividends`),
 
   // Institutional holders
@@ -1836,6 +1841,33 @@ export type OptionsGamePlan = {
   signal?: string | null;
   protective_put: ProtectivePutLeg | null;
   covered_call: CoveredCallLeg | null;
+};
+
+// AUD-OPTIONS4-GAMEPLANBATCH: the compact snapshot shape a scan-list/signals-table row reads —
+// deliberately a NARROWER field set than OptionsGamePlan/ProtectivePutLeg/CoveredCallLeg above
+// (no iv/oi/cost_pct_of_position — this is a daily batch snapshot, not the live per-request
+// computation), matching what OptionsGamePlanSnapshot (shared/db/models.py) actually persists.
+export type OptionsGamePlanSnapshotLeg = {
+  strike: number;
+  expiry: string;
+  mid_price: number;
+  effective_floor_price?: number;
+  effective_cap_price?: number;
+};
+
+export type OptionsGamePlanSnapshotResult = {
+  available: boolean;
+  reason?: string;
+  as_of?: string;
+  underlying_close?: number;
+  stop_loss?: number | null;
+  take_profit?: number | null;
+  protective_put?: OptionsGamePlanSnapshotLeg | null;
+  covered_call?: OptionsGamePlanSnapshotLeg | null;
+};
+
+export type OptionsGamePlanBatchResponse = {
+  results: Record<string, OptionsGamePlanSnapshotResult>;
 };
 
 export type EarningsAlertSub = {

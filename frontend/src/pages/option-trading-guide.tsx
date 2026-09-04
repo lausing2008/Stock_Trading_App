@@ -278,6 +278,94 @@ export default function OptionTradingGuidePage() {
           <li>No real per-contract Greeks (delta/theta/vega) beyond implied volatility are shown — this app doesn&apos;t compute or source true option Greeks; the game plan card is deliberately limited to strike/expiry/price/floor-or-cap math that doesn&apos;t need them.</li>
         </ul>
       </Callout>
+
+      <Section title="Reading this app's own alerts into an actual entry">
+        <p style={{ marginBottom: 16 }}>
+          The AI Signal BUY badge on a stock page is a starting point, not the whole picture — this
+          app's other real-time alerts each tell you something different about what's happening in
+          the options/short market right now. Here's how to read each one, worked from a real
+          example, and where the Options Game Plan card fits once you've decided to act.
+        </p>
+
+        <SubSection title="Short Squeeze alert -> entry">
+          <p style={{ marginBottom: 10 }}>
+            You get an email: a stock is <Code>18.5%</Code> short of float, up <Code>+4.2%</Code>{' '}
+            intraday, on <Code>3.1x</Code> its normal volume (the RVOL confirmation this alert
+            requires — see the{' '}
+            <a href="/alerts-guide" style={{ color: '#38bdf8', textDecoration: 'none' }}>Alerts Guide</a>{' '}
+            for exactly how that threshold is computed). This is a real, already-confirmed BUY-direction
+            thesis: shorts are being forced to cover into a move that's already happening on real volume,
+            not a prediction of a future move.
+          </p>
+          <ol style={{ paddingLeft: 18, lineHeight: 1.8, margin: '0 0 10px' }}>
+            <li><b style={{ color: '#e2e8f0' }}>Check the chart context first.</b> A squeeze alert fires on the move itself — it doesn&apos;t know whether the stock is breaking out from a base or already extended several days into a rally. A move that&apos;s already run hard before the alert fires has less room left and a real risk of reverting fast (this app&apos;s own audit history has found exactly this pattern in past squeeze alerts — see the alerts guide&apos;s own known-limitations notes).</li>
+            <li><b style={{ color: '#e2e8f0' }}>Cross-check the AI Signal for the same stock.</b> A squeeze alert with an independent BUY signal already active is a real confluence — two different mechanisms agreeing, not just one.</li>
+            <li><b style={{ color: '#e2e8f0' }}>If you decide to enter, size the risk with a protective put.</b> Since the whole thesis is a fast, forced move, a hard gap against you is a real risk a normal stop-loss order might not survive overnight — this is exactly the scenario a protective put (above) is built for: buy shares, then buy a put near your stop-loss level so a gap-down is capped at a known cost, not an open-ended loss.</li>
+          </ol>
+        </SubSection>
+
+        <SubSection title="Gamma Unwind alert -> entry">
+          <p style={{ marginBottom: 10 }}>
+            You get an email: a stock has a large options-open-interest block concentrated near its
+            current price, <Code>2 days</Code> from expiry, calls-dominant at <Code>88%</Code>. This
+            is a <b style={{ color: '#e2e8f0' }}>directional WATCH, not a BUY/SELL call</b> (see the{' '}
+            <a href="/alerts-guide" style={{ color: '#38bdf8', textDecoration: 'none' }}>Alerts Guide</a>{' '}
+            for the full calls/puts-dominant thresholds) — market makers hedging that block as it
+            expires can push price sharply either way, and this data alone can&apos;t tell you which.
+          </p>
+          <Callout tone="info" title="What is gamma?">
+            Gamma measures how fast an option&apos;s <b style={{ color: '#e2e8f0' }}>delta</b>{' '}
+            (its price sensitivity to the stock moving $1) changes as the stock price moves. A
+            deep-in-the-money option barely changes its delta as price moves further — low gamma.
+            An option sitting right <b style={{ color: '#e2e8f0' }}>at-the-money</b>, close to
+            expiry, has the opposite problem: its delta swings hard with even a small stock move —
+            high gamma. Market makers who sold that option don&apos;t want directional risk, so they
+            hedge by buying/selling shares as delta shifts — and near expiry, at-the-money, that
+            hedging has to happen fast and in size. That forced hedging flow is the actual mechanism
+            behind a Gamma Unwind alert: a large block of options expiring soon, near the current
+            price, means a lot of that fast re-hedging is about to happen at once, and it can push
+            the underlying stock sharply in either direction depending on which way dealers are
+            positioned. This is also exactly what <Code>gamma_flip</Code> (mentioned below) is
+            locating — the price level where the market&apos;s aggregate dealer hedging flips from
+            stabilizing price (dampening moves) to destabilizing it (amplifying them).
+          </Callout>
+          <ol style={{ paddingLeft: 18, lineHeight: 1.8, margin: '0 0 10px' }}>
+            <li><b style={{ color: '#e2e8f0' }}>Read it as a volatility warning, not a direction.</b> The honest, defensible use of this alert is knowing a sharp move is more likely soon — not betting on which way.</li>
+            <li><b style={{ color: '#e2e8f0' }}>If a Real GEX subscription is active</b>, check the stock&apos;s own <Code>gamma_flip</Code> level (shown on the Options Chain / Gamma Exposure panel) — price sitting close to that level is where dealer hedging tends to be most reactive, the same real signal this alert&apos;s calls/puts-dominant proxy is approximating for free-tier users.</li>
+            <li><b style={{ color: '#e2e8f0' }}>If you already hold a position going into the expiry window</b>, this is a real, concrete reason to consider a collar (both legs together, above) — you don&apos;t know which way the unwind will push the stock, so capping both sides can be the more honest response than picking a direction you can&apos;t actually predict from this data.</li>
+          </ol>
+        </SubSection>
+
+        <SubSection title="Dark Pool print -> entry">
+          <p style={{ marginBottom: 10 }}>
+            You see a large block trade on the Dark Pool tab. See the{' '}
+            <a href="/dark-pool-guide" style={{ color: '#38bdf8', textDecoration: 'none' }}>Dark Pool Guide</a>{' '}
+            for the full explanation of what this data is and, importantly, what it is{' '}
+            <b style={{ color: '#e2e8f0' }}>not</b> — a large print by itself is not a bullish or
+            bearish signal, and treating it as one is a common, real misreading this app&apos;s own
+            guide warns against directly.
+          </p>
+          <p style={{ margin: 0 }}>
+            The honest use here is as one more piece of context alongside an AI Signal or squeeze
+            alert you&apos;re already looking at — a large recent print on a stock you&apos;re
+            already considering is worth noting, but it should never be the reason to enter on its
+            own.
+          </p>
+        </SubSection>
+
+        <Callout tone="example" title="Worked example — combining three real signals into one entry">
+          A stock shows an AI Signal <b style={{ color: '#4ade80' }}>BUY</b> (confidence 68), fired a{' '}
+          <b style={{ color: '#f87171' }}>Short Squeeze alert</b> the same morning (17% short of
+          float, +3.8% on 2.4x volume), and has a recent large Dark Pool print noted from the day
+          before. None of these alone would be a strong enough reason to act — together, they&apos;re
+          a real confluence: an independent AI model, a live forced-covering thesis on real volume,
+          and recent large-size interest, all pointing the same direction at the same time. Entering
+          here, then immediately checking the Options Game Plan card for a protective put near the
+          signal&apos;s own stop-loss level, is the concrete workflow this section is describing —
+          confluence to decide whether to enter, the game plan to decide how much you&apos;re risking
+          if you&apos;re wrong.
+        </Callout>
+      </Section>
     </div>
   );
 }

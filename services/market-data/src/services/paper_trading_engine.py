@@ -2325,10 +2325,27 @@ def _build_game_plan_for_style(
     current_price: float,
     signal_reasons: dict,
     atr: float | None,
+    session=None,
+    stock_id: int | None = None,
 ) -> dict:
     """Derive entry/stop/target for paper trading from signal reasons + price.
 
     Falls back to style % defaults if ATR is unavailable.
+
+    AUD-DECIDE4-EXPECTEDMOVE: `session`/`stock_id` are OPTIONAL and default to None — every
+    pre-existing caller (the squeeze alert, conditional_orders.py) is unaffected. When both are
+    given, take_profit (always fixed-percentage before this fix, regardless of ATR
+    availability — the real "fabricated 2.00:1 R:R" gap Domain 2's audit found) and a
+    still-missing stop (only when ATR itself was unavailable) are instead derived from a real,
+    market-implied expected move — the daily OptionsGamePlanSnapshot's own expected_move_pct,
+    computed from Unusual Whales' real per-symbol IV (see options_game_plan_snapshot.py's own
+    module docstring for the full rationale and formula). Reads YESTERDAY's snapshot — this
+    function runs inside the entry-scan HOT LOOP, so a live per-candidate options/UW fetch here
+    would repeat the exact rate-limit-amplification shape this app's own incident history
+    already warns against; falls back to the existing fixed-percentage logic whenever no
+    snapshot exists yet (a new listing, outside the bounded EOD symbol set, or the batch job
+    simply hasn't run since this symbol qualified) — never a fabricated expected move standing
+    in for a missing real one.
     """
     params = _STYLE_PARAMS.get(style.upper(), _STYLE_PARAMS["SWING"])
     step = _round_step(current_price)
@@ -2337,7 +2354,19 @@ def _build_game_plan_for_style(
     entry2   = round(current_price * params["entry2_pct"]   / step) * step
     breakout = round(current_price * params["breakout_pct"] / step) * step
 
-    # Stop: ATR-based is more adaptive than fixed %
+    expected_move_pct: float | None = None
+    if session is not None and stock_id is not None:
+        try:
+            from .options_game_plan_snapshot import get_latest_options_game_plan
+            _snap = get_latest_options_game_plan(session, stock_id)
+            if _snap is not None and _snap.expected_move_pct is not None:
+                expected_move_pct = _snap.expected_move_pct
+        except Exception:
+            expected_move_pct = None
+
+    # Stop: ATR-based is more adaptive than fixed %; a real expected move is a further real
+    # improvement over the fixed-percentage floor specifically (never over a real ATR reading,
+    # which already reflects this symbol's own actual recent price behavior).
     if atr and atr > 0:
         # GROWTH stocks are high-volatility; wider ATR multiplier avoids premature stops.
         # AUD-DUPLOGIC: now reads from _STYLE_PARAMS (the single source of truth) instead of
@@ -2345,10 +2374,24 @@ def _build_game_plan_for_style(
         atr_mult = params.get("atr_stop_mult", 2.0)
         stop = round((current_price - atr * atr_mult) / step) * step
         stop = max(stop, round(current_price * params["stop_pct"] / step) * step)
+    elif expected_move_pct is not None:
+        stop = round((current_price * (1 - expected_move_pct / 100)) / step) * step
+        stop = max(stop, round(current_price * params["stop_pct"] / step) * step)
     else:
         stop = round(current_price * params["stop_pct"] / step) * step
 
-    take_profit = round(current_price * params["default_tp_pct"] / step) * step
+    # Take-profit: was ALWAYS the fixed style percentage regardless of ATR/expected-move
+    # availability before this fix — the real gap Domain 2's audit flagged. Deliberately
+    # REPLACES the fixed target outright when real data exists (no max() floor against the
+    # fixed default, unlike stop's own safety-floor treatment above) — a genuinely low-IV
+    # stock should get an honestly closer, more probable target, not have its real, more
+    # conservative number overridden by a more aggressive fixed guess; a high-IV stock
+    # symmetrically gets an honestly farther one. The fixed percentage remains the true
+    # fallback only when no real expected move exists at all.
+    if expected_move_pct is not None:
+        take_profit = round((current_price * (1 + expected_move_pct / 100)) / step) * step
+    else:
+        take_profit = round(current_price * params["default_tp_pct"] / step) * step
 
     return {
         "entry1": entry1,
@@ -5585,8 +5628,13 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             "ts": sig.ts,               # SA-24: freshness scoring
             "confidence_delta": confidence_delta,  # SA-26: trajectory scoring
         }
+        # AUD-DECIDE4-EXPECTEDMOVE: passes session/stock_id so a real, UW-derived expected move
+        # can replace the fixed-percentage take-profit / no-ATR-stop fallback when a daily
+        # snapshot exists — see _build_game_plan_for_style()'s own docstring for the full
+        # rationale (reads yesterday's snapshot, never a live per-candidate fetch).
         game_plan = _build_game_plan_for_style(
-            stock.symbol, style, live_price, sig.reasons or {}, atr
+            stock.symbol, style, live_price, sig.reasons or {}, atr,
+            session=session, stock_id=stock.id,
         )
 
         # ── Game plan feasibility check ───────────────────────────────────────

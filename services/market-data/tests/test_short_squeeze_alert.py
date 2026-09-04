@@ -110,6 +110,68 @@ def test_missing_rvol_degrades_gracefully_no_placeholder_shown():
     assert "avg volume" not in calls[0]["html"]
 
 
+# ── AUD-SQUEEZE3-UWSHORTINTERESTCORROBORATION: UW/free-source disagreement flag ─────────────
+
+def test_uw_disagreement_flag_renders_both_readings_in_html_and_text():
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_short_squeeze_email("user@example.com", [
+            {"symbol": "IMVT", "short_percent_of_float": 18.28, "change_pct": 4.1, "price": 43.09,
+             "uw_disagrees": True, "uw_short_percent_of_float": 8.22},
+        ])
+    html, text = calls[0]["html"], calls[0]["text"]
+    assert "8.2%" in html and "18.3%" in html
+    assert "disagree" in html.lower()
+    assert "8.2%" in text and "18.3%" in text
+
+
+def test_no_uw_disagreement_flag_renders_no_extra_content():
+    """The common case — UW data unavailable, or agrees within tolerance — must not render any
+    disagreement content at all, matching this alert's own established "degrade gracefully,
+    never show a fabricated/empty placeholder" convention."""
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_short_squeeze_email("user@example.com", [
+            {"symbol": "GME", "short_percent_of_float": 22.5, "change_pct": 8.3, "price": 25.10},
+        ])
+    html, text = calls[0]["html"], calls[0]["text"]
+    assert "disagree" not in html.lower()
+    assert "disagree" not in text.lower()
+
+
+def test_uw_corroboration_check_is_wired_after_the_candidate_dict_is_built():
+    """The exact insertion point: after candidates is fully built (so the check only ever runs
+    against symbols that already cleared every other gate), before the game-plan loop."""
+    body = _check_short_squeeze_alerts_body()
+    assert "get_short_interest(sym)" in body
+    assert "_SQUEEZE_UW_DISAGREEMENT_REL_THRESHOLD" in body
+    candidates_built_idx = body.index("if not candidates:")
+    uw_check_idx = body.index("get_short_interest(sym)")
+    game_plan_idx = body.index("_squeeze_game_plan(session, sym, float(cand[\"price\"]))")
+    assert candidates_built_idx < uw_check_idx < game_plan_idx
+
+
+def test_uw_corroboration_never_suppresses_the_candidate_only_flags_it():
+    """A real, material disagreement must never remove a candidate from the dict or `continue`
+    out of the loop — this app's own established design principle (never silently withhold a
+    real setup) means a disagreement is extra context for the recipient, not a suppression."""
+    body = _check_short_squeeze_alerts_body()
+    uw_section_start = body.index("get_short_interest(sym)")
+    uw_section_end = body.index("# Game plan (entry/stop/target)")
+    uw_section = body[uw_section_start:uw_section_end]
+    assert "continue" not in uw_section
+    assert "del candidates[" not in uw_section
+    assert "candidates.pop(" not in uw_section
+
+
+def test_uw_lookup_failure_fails_open_never_crashes_the_whole_scan():
+    body = _check_short_squeeze_alerts_body()
+    uw_section_start = body.index("try:\n                    from . import unusual_whales")
+    uw_section_end = body.index("_uw_si = None", uw_section_start) + len("_uw_si = None")
+    uw_try_block = body[uw_section_start:uw_section_end]
+    assert "except Exception:" in uw_try_block
+
+
 # ── AUD265-SHORT-INTEREST-AGE-NEVER-CHECKED: settlement date surfaced in the email ──────────
 
 def test_short_interest_date_rendered_when_present():

@@ -4330,6 +4330,67 @@ def get_options_game_plan(
         return {"symbol": sym, "available": False, "reason": "fetch_error"}
 
 
+@router.get("/options-game-plan/batch")
+def get_options_game_plan_batch(
+    symbols: str = Query(..., description="Comma-separated symbols, e.g. AAPL,MSFT,NVDA"),
+    session: Session = Depends(get_session),
+    _user=Depends(get_advanced_user),
+):
+    """AUD-OPTIONS4-GAMEPLANBATCH: bulk read of already-computed OptionsGamePlanSnapshot rows —
+    for a scan-list/signals-table row showing many BUY-signal symbols at once, one batch call
+    here replaces what would otherwise be N individual live yfinance fetches (the rate-limit-
+    amplification shape docs/incidents/yfinance-rate-limit-amplification.md already warns
+    against). Reads the most recent snapshot per symbol — computed daily by
+    compute_options_game_plan_snapshots_eod() (scheduler.py) — rather than fetching live.
+
+    Advanced-tier-gated (T322-FEATURE-TIERING), matching the interactive /{symbol}/options-
+    game-plan route above. A symbol with no snapshot yet (outside the bounded EOD symbol set,
+    or the job hasn't run since it became a BUY candidate) returns available: False, reason:
+    "no_snapshot" — never a fabricated plan.
+    """
+    from .options_game_plan_snapshot import get_latest_options_game_plan
+
+    sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not sym_list:
+        return {"results": {}}
+
+    stock_rows = session.execute(
+        select(Stock.id, Stock.symbol).where(Stock.symbol.in_(sym_list))
+    ).all()
+    stock_id_by_symbol = {sym: sid for sid, sym in stock_rows}
+
+    results: dict[str, dict] = {}
+    for sym in sym_list:
+        stock_id = stock_id_by_symbol.get(sym)
+        if stock_id is None:
+            results[sym] = {"available": False, "reason": "unknown_symbol"}
+            continue
+        snap = get_latest_options_game_plan(session, stock_id)
+        if snap is None:
+            results[sym] = {"available": False, "reason": "no_snapshot"}
+            continue
+        results[sym] = {
+            "available": True,
+            "as_of": snap.as_of.isoformat(),
+            "underlying_close": snap.underlying_close,
+            "stop_loss": snap.stop_loss,
+            "take_profit": snap.take_profit,
+            "protective_put": (
+                {
+                    "strike": snap.put_strike, "expiry": snap.put_expiry,
+                    "mid_price": snap.put_mid_price, "effective_floor_price": snap.put_effective_floor_price,
+                } if snap.put_strike is not None else None
+            ),
+            "covered_call": (
+                {
+                    "strike": snap.call_strike, "expiry": snap.call_expiry,
+                    "mid_price": snap.call_mid_price, "effective_cap_price": snap.call_effective_cap_price,
+                } if snap.call_strike is not None else None
+            ),
+        }
+    return {"results": results}
+
+
 # ── Per-symbol Relative Strength ─────────────────────────────────────────────
 
 _SECTOR_ETF_MAP: dict[str, str] = {

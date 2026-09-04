@@ -250,6 +250,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/features/squeeze-and-options-alerts.md`** — AUD-SQUEEZE250725-BATCH — 6 Squeeze-Audit Issues + 2 Performance Items (2026-08-16); AUD288-SQUEEZE-NO-VOLUME-CONFIRM — RVOL Gate for the Classic Short-Squee...
 - **`docs/features/t258-risk-and-postmortem-tools.md`** — T258-WHATCOULDGOWRONG-AGENT — Adversarial Pre-Trade Risk Check (Built 2026-07-18); T258-PORTFOLIO-CORRELATION-PREENTRY — Correlation-Aware Entry Scoring (Bui...
 - **`docs/features/tier287-improvement-batch.md`** — Tier 287 — 5-Item Improvement Batch (Goals, Tiered Pyramid, Drawdown Alert, Trade-Pattern Coach, Earnings Playbook) + 1 Deferred (2026-08-17)
+- **`docs/features/unusual-whales-integration-batch.md`** — Unusual Whales Integration Batch — Guide Examples, Squeeze Corroboration, Options Game Plan Surfacing (screener + email, Advanced-tier gated), AUD-DECIDE4-EXPECTEDMOVE real expected-move replacing the fabricated 2.00:1 R:R (2026-09-03)
 - **`docs/features/watchlist-style-classification.md`** — Watchlist Style Assignment — 64 Untagged Sector-Watchlist Stocks Made Tradeable via Win-Rate + Backtest Cross-Check (2026-09-03); repeatable methodology for re-running as more data accumulates
 
 ### Audits — dated audit/review/session reports (`docs/audits/`)

@@ -75,6 +75,10 @@ _BASE_URL = "https://api.unusualwhales.com"
 # real update cadence.
 _GEX_TTL = 900          # 15 min — matches this app's own options-flow cache cadence exactly
 _SHORT_INTEREST_TTL = 21600  # 6h — short interest itself only updates ~2x/month
+_IV_RANK_TTL = 900      # 15 min, matching _GEX_TTL — this app's only consumer (the daily
+# Options Game Plan batch snapshot, AUD-DECIDE4-EXPECTEDMOVE) reads it at most once/day per
+# symbol anyway; a short TTL just avoids a stale read if the same symbol is looked up twice in
+# one batch run for any reason, not a claim that IV itself is stable at this cadence intraday.
 
 
 class UnusualWhalesRateLimitError(Exception):
@@ -84,6 +88,21 @@ class UnusualWhalesRateLimitError(Exception):
 class UnusualWhalesAuthError(Exception):
     """A 401/403 — the configured key is invalid/expired. Never retried (retrying a bad key
     wastes the request budget on an error that can't self-resolve)."""
+
+
+@dataclass
+class IVRankData:
+    """AUD-DECIDE4-EXPECTEDMOVE: real, per-symbol implied volatility + historical-percentile
+    context from UW's own /api/stock/{ticker}/iv-rank — confirmed field shape (close, date,
+    iv_rank_1y, updated_at, volatility) via UW's own published API operation spec, fetched
+    2026-09-03. `volatility` is the real IV reading itself (used for the expected-move formula);
+    `iv_rank_1y` is where that reading sits relative to its own trailing 1-year range (0-100) —
+    a genuinely different, complementary signal from raw IV (e.g. 30% IV could be historically
+    high for a normally-sleepy utility, or low for a name that's always volatile)."""
+    volatility: float | None
+    iv_rank_1y: float | None
+    close: float | None
+    as_of_date: str | None
 
 
 @dataclass
@@ -238,6 +257,63 @@ def get_gex_levels(symbol: str) -> GexLevels | None:
         import json
         from dataclasses import asdict
         _get_redis().setex(cache_key, _GEX_TTL, json.dumps(asdict(result) if result else None))
+    except Exception:
+        pass
+    return result
+
+
+def get_iv_rank(symbol: str) -> IVRankData | None:
+    """AUD-DECIDE4-EXPECTEDMOVE: real, per-symbol implied volatility + 1-year percentile from
+    Unusual Whales' /api/stock/{ticker}/iv-rank — confirmed field shape via UW's own published
+    API spec (fetched 2026-09-03), same fail-open contract as get_gex_levels()/
+    get_short_interest(). Built specifically to replace paper_trading_engine.py's
+    _build_game_plan_for_style() fixed-percentage take-profit/no-ATR-stop fallback with a real,
+    market-implied expected move — see OptionsGamePlanSnapshot's own model docstring
+    (shared/db/models.py) for the full rationale and why this is computed via the daily batch
+    snapshot rather than a live per-candidate call.
+
+    Response is a list of daily rows (most recent first, per UW's own `timespan`/`date` params
+    — this call takes neither, so UW's own default window applies); the most recent row is what
+    a caller wants. Redis-cached 15 min.
+    """
+    if not is_available():
+        return None
+    sym = symbol.upper()
+    cache_key = f"stockai:uw:iv_rank:{sym}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            import json
+            d = json.loads(cached)
+            return IVRankData(**d) if d else None
+    except Exception:
+        pass
+
+    try:
+        data = _get(f"/api/stock/{sym}/iv-rank")
+    except Exception as exc:
+        log.warning("unusual_whales.iv_rank_failed", symbol=sym, error=str(exc))
+        return None
+
+    result: IVRankData | None
+    # _get() already unwraps UW's real {"data": [...]} envelope once (see its own docstring) —
+    # `data` here is already the row list, matching get_gex_levels()'s own handling exactly.
+    rows = data
+    if not rows or not isinstance(rows, list):
+        result = None
+    else:
+        row = rows[0]
+        result = IVRankData(
+            volatility=_to_float(row.get("volatility")),
+            iv_rank_1y=_to_float(row.get("iv_rank_1y")),
+            close=_to_float(row.get("close")),
+            as_of_date=row.get("date"),
+        )
+
+    try:
+        import json
+        from dataclasses import asdict
+        _get_redis().setex(cache_key, _IV_RANK_TTL, json.dumps(asdict(result) if result else None))
     except Exception:
         pass
     return result

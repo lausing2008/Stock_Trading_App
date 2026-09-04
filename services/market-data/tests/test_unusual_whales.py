@@ -226,6 +226,111 @@ def test_short_interest_uses_the_6h_ttl_not_the_gex_15min_ttl():
     assert spy.setex_calls[0][1] != uw._GEX_TTL
 
 
+# ── get_iv_rank() — parsing/caching, with _get() mocked directly (AUD-DECIDE4-EXPECTEDMOVE) ─
+
+def test_iv_rank_returns_none_when_not_available():
+    with patch.object(uw, "is_available", return_value=False), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_iv_rank("AAPL")
+    assert result is None
+    mock_get.assert_not_called()
+
+
+def test_iv_rank_reads_from_cache_when_present():
+    fake_redis = _FakeRedis()
+    cached_row = uw.IVRankData(volatility=0.35, iv_rank_1y=62.0, close=190.0, as_of_date="2026-09-02")
+    import json
+    fake_redis.store["stockai:uw:iv_rank:AAPL"] = json.dumps(asdict(cached_row))
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_iv_rank("AAPL")
+    assert result == cached_row
+    mock_get.assert_not_called()
+
+
+def test_iv_rank_parses_a_real_response():
+    """_get() already unwraps UW's real {"data": [...]} envelope once — get_iv_rank() must
+    treat what it receives as already the row list, not re-unwrap a second "data" key."""
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"volatility": "0.35", "iv_rank_1y": "62.0", "close": "190.0", "date": "2026-09-02"},
+         ]):
+        result = uw.get_iv_rank("AAPL")
+    assert result.volatility == 0.35
+    assert result.iv_rank_1y == 62.0
+    assert result.close == 190.0
+    assert result.as_of_date == "2026-09-02"
+
+
+def test_iv_rank_uses_the_first_row_of_multiple():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"volatility": "0.35", "iv_rank_1y": "62.0", "close": "190.0", "date": "2026-09-02"},
+             {"volatility": "0.99", "iv_rank_1y": "99.0", "close": "999.0", "date": "2026-08-01"},
+         ]):
+        result = uw.get_iv_rank("AAPL")
+    assert result.volatility == 0.35
+    assert result.as_of_date == "2026-09-02"
+
+
+def test_iv_rank_returns_none_for_an_empty_list_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[]):
+        result = uw.get_iv_rank("XYZ")
+    assert result is None
+
+
+def test_iv_rank_returns_none_for_a_non_list_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=None):
+        result = uw.get_iv_rank("XYZ")
+    assert result is None
+
+
+def test_iv_rank_returns_none_on_a_fetch_exception():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", side_effect=RuntimeError("boom")):
+        result = uw.get_iv_rank("AAPL")
+    assert result is None
+
+
+def test_iv_rank_writes_a_negative_cache_entry_too():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[]):
+        uw.get_iv_rank("XYZ")
+    assert "stockai:uw:iv_rank:XYZ" in fake_redis.store
+
+
+def test_iv_rank_uses_its_own_ttl_constant():
+    class _SpyRedis(_FakeRedis):
+        def __init__(self):
+            super().__init__()
+            self.setex_calls = []
+        def setex(self, key, ttl, value):
+            self.setex_calls.append((key, ttl))
+            super().setex(key, ttl, value)
+    spy = _SpyRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=spy), \
+         patch.object(uw, "_get", return_value=[{"volatility": "0.35"}]):
+        uw.get_iv_rank("AAPL")
+    assert len(spy.setex_calls) == 1
+    assert spy.setex_calls[0][1] == uw._IV_RANK_TTL
+
+
 # ── get_flow_alerts() ─────────────────────────────────────────────────────────────────────
 
 def test_flow_alerts_returns_empty_list_when_not_available():

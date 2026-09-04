@@ -1754,6 +1754,60 @@ class GexSnapshot(Base):
     computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class OptionsGamePlanSnapshot(Base):
+    """AUD-OPTIONS4-GAMEPLANBATCH: end-of-day Options Game Plan snapshot, mirroring
+    OptionsFlowSnapshot's/GexSnapshot's own established pattern (bounded symbol set, ON
+    CONFLICT upsert on (stock_id, as_of), one commit per batch job) — built so a BUY signal's
+    options play can be shown on a scan-list row or in the BUY-signal email WITHOUT a live,
+    uncached yfinance options-chain fetch per row/recipient, the exact rate-limit-amplification
+    shape docs/incidents/yfinance-rate-limit-amplification.md already warns against.
+
+    Deliberately computed with different stop-loss/take-profit inputs than
+    compute_options_game_plan()'s own live route (which uses nearest-support/analyst-target,
+    sourced from the requesting frontend page) — this batch job instead reuses
+    _build_game_plan_for_style()'s real ATR-based SWING-style entry/stop/target, the SAME
+    function the Short Squeeze alert's own _squeeze_game_plan() already calls, since that math
+    needs no live yfinance call and is already proven safe at this 1-minute alert's own cadence.
+    Two legitimate, independently-documented methods for two different contexts (one interactive
+    page view vs. one daily batch job over many symbols), not a conflict — the numbers here will
+    not always exactly match what a user sees on the stock detail page for the same symbol.
+
+    NULL protective_put_*/covered_call_* fields mean that leg had no real listed contract in the
+    target DTE window on this run (matches compute_options_game_plan()'s own None-leg contract),
+    not a computation failure.
+    """
+    __tablename__ = "options_game_plan_snapshots"
+    __table_args__ = (UniqueConstraint("stock_id", "as_of", name="uq_options_game_plan_snapshot_stock_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    as_of: Mapped[date] = mapped_column(Date, index=True)
+    underlying_close: Mapped[float] = mapped_column(Float)
+    stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    put_strike: Mapped[float | None] = mapped_column(Float, nullable=True)
+    put_expiry: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    put_mid_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    put_effective_floor_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    call_strike: Mapped[float | None] = mapped_column(Float, nullable=True)
+    call_expiry: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    call_mid_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    call_effective_cap_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # AUD-DECIDE4-EXPECTEDMOVE: a real, market-implied expected-move (nearest-ATM contract's own
+    # implied_volatility, standard expected_move = price * iv * sqrt(dte/365) formula), computed
+    # from the SAME options chain this batch job already fetches for the put/call legs above —
+    # no new fetch. Replaces the fabricated fixed-percentage stop/target
+    # _build_game_plan_for_style() falls back to when reading this snapshot (paper_trading_
+    # engine.py), a real gap Domain 2's audit flagged ("the dominant real reject reason is a
+    # fabricated 2.00:1 R:R from a missing-ATR fallback game plan, not a measured setup
+    # property"). NULL when no near-ATM contract with a real IV was found (same fail-open
+    # contract as the put/call legs — a caller falls back to the existing fixed-percentage
+    # logic, never a fabricated expected move).
+    expected_move_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    expected_move_dte: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class RealtimeNewsItem(Base):
     """New news-intelligence service (port 8011) — real-time financial headline ingestion.
 

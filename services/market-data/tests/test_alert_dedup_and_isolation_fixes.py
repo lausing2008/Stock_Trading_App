@@ -170,7 +170,10 @@ def test_value_area_breakdown_send_call_is_isolated_per_recipient():
 def test_signal_alerts_conviction_email_send_is_isolated_per_recipient():
     body = _function_body("check_signal_alerts")
     try_idx = body.index("try:\n                    email_ok = send_signal_alert_email(")
-    tail = body[try_idx:try_idx + 900]
+    # AUD-OPTIONS4-GAMEPLANBATCH added one more kwarg (options_game_plan=...) to this call —
+    # widened from 900 to keep real slack past the growing kwarg list rather than re-hardcoding
+    # to whatever today's exact line count happens to be.
+    tail = body[try_idx:try_idx + 1100]
     assert "except Exception as _send_exc:" in tail
     assert "email_ok = False" in tail
 

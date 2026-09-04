@@ -85,7 +85,7 @@ from sqlalchemy.orm import selectinload, Session
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, AnalystPriceTarget, DarkPoolAlertOutcome, EarningsEvent, EconomicEvent, FixRecord, FixSnapshot, FundamentalsSnapshot, Market, OptionsFlowAlertOutcome, OptionsFlowSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, VolumeAreaLevel, Watchlist, WatchlistItem
+from db import AlertCondition, AnalystPriceTarget, DarkPoolAlertOutcome, EarningsEvent, EconomicEvent, FixRecord, FixSnapshot, FundamentalsSnapshot, Market, OptionsFlowAlertOutcome, OptionsFlowSnapshot, OptionsGamePlanSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, UserRole, UserTier, VolumeAreaLevel, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -2153,6 +2153,56 @@ def compute_gex_snapshots_eod() -> None:
     _record_job_status("gex_eod", "ok" if failed == 0 else "partial", elapsed)
 
 
+def compute_options_game_plan_snapshots_eod() -> None:
+    """AUD-OPTIONS4-GAMEPLANBATCH: end-of-day Options Game Plan snapshot job — mirrors
+    compute_options_flow_snapshots_eod()/compute_gex_snapshots_eod() exactly (same bounded
+    symbol set, same rate-limit discipline, same upsert-per-batch-commit pattern). Built so a
+    scan-list row or the BUY-signal email can show a real, already-computed options play without
+    a live per-request yfinance fetch — see options_game_plan_snapshot.py's own module docstring
+    for the full rationale, including why this uses ATR-based stop/target rather than the live
+    stock-page route's own nearest-support/analyst-target derivation.
+
+    Advanced-tier gating is enforced where this data is CONSUMED (the scan-list row / email
+    loop), not here — this job computes the same snapshot for every bounded symbol regardless of
+    which viewers are entitled to see it, matching options_flow_snapshots'/gex_snapshots' own
+    "compute once, gate on read" convention.
+    """
+    from .options_game_plan_snapshot import compute_options_game_plan_snapshot, upsert_options_game_plan_snapshot
+
+    _t0 = time.monotonic()
+    ok = failed = 0
+    try:
+        with SessionLocal() as session:
+            symbols = _bounded_options_flow_symbols(session)
+            if not symbols:
+                log.info("scheduler.options_game_plan_eod_done", ok=0, failed=0, note="no_symbols")
+                _record_job_status("options_game_plan_eod", "ok", time.monotonic() - _t0)
+                return
+
+            for stock_id, symbol in symbols:
+                try:
+                    result = compute_options_game_plan_snapshot(session, stock_id, symbol)
+                    if result is not None:
+                        upsert_options_game_plan_snapshot(session, stock_id, result)
+                        ok += 1
+                    else:
+                        failed += 1
+                except Exception as exc:
+                    log.warning("scheduler.options_game_plan_eod.symbol_error", symbol=symbol, error=str(exc))
+                    failed += 1
+                time.sleep(2.0)  # rate-limit discipline, matching compute_options_flow_snapshots_eod
+
+            session.commit()
+    except Exception as exc:
+        log.error("scheduler.options_game_plan_eod_error", error=str(exc))
+        _record_job_status("options_game_plan_eod", "error", time.monotonic() - _t0)
+        return
+
+    elapsed = time.monotonic() - _t0
+    log.info("scheduler.options_game_plan_eod_done", ok=ok, failed=failed, elapsed_s=round(elapsed))
+    _record_job_status("options_game_plan_eod", "ok" if failed == 0 else "partial", elapsed)
+
+
 def _fetch_recent_options_flow(session: Session) -> list[dict]:
     """T257-OVERNIGHT-FLOW-BRIEF Phase 2: yesterday's late-day options flow for the pre-market
     brief — reads only already-persisted OptionsFlowSnapshot rows (no live yfinance call here),
@@ -2760,6 +2810,14 @@ _SQUEEZE_RVOL_BASE = 2.2
 # clears this bar gets flagged "critical" in the email, nothing else about the scan changes.
 _SQUEEZE_CRITICAL_DAYS_TO_COVER = 2.0
 
+# AUD-SQUEEZE3-UWSHORTINTERESTCORROBORATION: relative-difference threshold between the free-tier
+# yfinance-derived short_percent_of_float and Unusual Whales' own real reading before flagging a
+# disagreement in the alert email. 20% chosen as a real, meaningfully-large gap — the two
+# historical alerts Domain 5's audit found genuinely diverging (IMVT: 8.22% vs 18.28%, a ~55%
+# relative gap; CRWV: 12.83% vs 18.89%, a ~32% relative gap) both clear this bar comfortably,
+# while routine measurement noise between two independently-sourced readings should not.
+_SQUEEZE_UW_DISAGREEMENT_REL_THRESHOLD = 0.20
+
 
 def _squeeze_game_plan(session, symbol: str, price: float) -> dict | None:
     """Entry/stop/target for a short-squeeze candidate — reuses paper_trading_engine.py's own
@@ -3086,6 +3144,37 @@ def check_short_squeeze_alerts() -> None:
                              fundamentals_cache_misses=_fundamentals_cache_misses)
                 _record_job_status("check_short_squeeze_alerts", "ok", time.monotonic() - _t0)
                 return
+
+            # AUD-SQUEEZE3-UWSHORTINTERESTCORROBORATION: Unusual Whales' get_short_interest()
+            # is a materially richer, faster-updating real short-interest source than the
+            # yfinance-derived free-tier fundamentals cache this alert has relied on exclusively
+            # (see get_short_interest()'s own docstring) — already live-called for the same
+            # candidate set by the /short_squeeze screener endpoint, so wiring it in here costs
+            # near-zero incremental API volume (6h-cached, and by this point in the function the
+            # candidate set is already narrowed to a handful of symbols per cycle). Domain 5 of
+            # the 2026-09-03 audit series found real divergence on 2 of 11 historical alerts
+            # (both among the worst-performing) between this free source and UW's own reading —
+            # flagged here as a real disagreement for the recipient to see, NOT used to suppress
+            # the alert outright: the free-tier reading already cleared every other gate in this
+            # function (staleness, floor, RVOL), and this app's own established short-squeeze
+            # design principle is to never silently withhold a real setup (see
+            # check_short_squeeze_alerts()'s own module docstring) — a disagreement is exactly
+            # the kind of extra context a recipient should be trusted to weigh themselves, not a
+            # reason to hide the alert from them.
+            for sym, cand in candidates.items():
+                try:
+                    from . import unusual_whales as _uw
+                    _uw_si = _uw.get_short_interest(sym)
+                except Exception:
+                    _uw_si = None
+                if _uw_si is not None and _uw_si.si_float is not None:
+                    _uw_spf_pct = round(_uw_si.si_float * 100, 2)
+                    _free_spf_pct = cand["short_percent_of_float"]
+                    if _free_spf_pct > 0:
+                        _rel_diff = abs(_uw_spf_pct - _free_spf_pct) / _free_spf_pct
+                        if _rel_diff > _SQUEEZE_UW_DISAGREEMENT_REL_THRESHOLD:
+                            cand["uw_short_percent_of_float"] = _uw_spf_pct
+                            cand["uw_disagrees"] = True
 
             # Game plan (entry/stop/target) only computed for symbols that actually cleared
             # every filter above — never wasted on a candidate that got discarded earlier in
@@ -6429,6 +6518,32 @@ def check_signal_alerts() -> None:
                         style=style,
                     )
 
+                # AUD-OPTIONS4-GAMEPLANBATCH: Advanced-tier-only, per the user's own explicit
+                # request that this stays gated even in email. Reads the daily-batch-computed
+                # OptionsGamePlanSnapshot (compute_options_game_plan_snapshots_eod()) — NEVER a
+                # live per-recipient yfinance fetch, the exact rate-limit-amplification shape
+                # docs/incidents/yfinance-rate-limit-amplification.md already warns against.
+                # None for a BASIC-tier recipient, a symbol outside the bounded EOD snapshot
+                # set, or a symbol whose snapshot hasn't been computed yet today — all 3 cases
+                # degrade to "no options plan shown," never a fabricated one.
+                options_game_plan = None
+                if current == "BUY":
+                    _recipient_is_advanced = bool(
+                        alert.user and (alert.user.role == UserRole.ADMIN or alert.user.tier == UserTier.ADVANCED)
+                    )
+                    if _recipient_is_advanced:
+                        try:
+                            _stock_row = session.execute(
+                                select(Stock.id).where(Stock.symbol == alert.symbol)
+                            ).scalar_one_or_none()
+                            if _stock_row is not None:
+                                from .options_game_plan_snapshot import get_latest_options_game_plan
+                                _snap = get_latest_options_game_plan(session, _stock_row)
+                                if _snap is not None and (_snap.put_strike is not None or _snap.call_strike is not None):
+                                    options_game_plan = _snap
+                        except Exception as _ogp_exc:
+                            log.debug("signal_alert.options_game_plan_lookup_failed", symbol=alert.symbol, error=str(_ogp_exc))
+
                 # AUD266-PER-RECIPIENT-ISOLATION-NEVER-PROPAGATED: an uncaught exception from
                 # inside send_signal_alert_email() (a malformed game_plan/signal_data dict)
                 # would otherwise propagate to this function's outer except, aborting the
@@ -6444,6 +6559,7 @@ def check_signal_alerts() -> None:
                         signal_data=signal_details.get(key, {}),
                         fundamentals=fundamentals_cache.get(alert.symbol),
                         game_plan=game_plan,
+                        options_game_plan=options_game_plan,
                         conviction_layers=conviction_passed,
                         near_conviction=near_conviction,
                         near_conviction_failed=near_conviction_failed,
@@ -10627,6 +10743,15 @@ def start_scheduler() -> None:
         compute_gex_snapshots_eod,
         CronTrigger(hour=17, minute=15, day_of_week="mon-fri", timezone="America/New_York"),
         id="gex_eod", replace_existing=True, **_JOB_DEFAULTS,
+    )
+    # AUD-OPTIONS4-GAMEPLANBATCH: EOD Options Game Plan snapshot — 17:30 ET, another 15 min
+    # after the GEX job above, same stagger discipline (this is the 3rd yfinance-options-chain-
+    # touching batch job on this bounded symbol set — each gets its own slot rather than firing
+    # concurrently).
+    _scheduler.add_job(
+        compute_options_game_plan_snapshots_eod,
+        CronTrigger(hour=17, minute=30, day_of_week="mon-fri", timezone="America/New_York"),
+        id="options_game_plan_eod", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── HK Market (Asia/Hong_Kong — UTC+8, no DST) ──────────────────────────
