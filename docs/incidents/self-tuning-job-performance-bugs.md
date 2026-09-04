@@ -316,3 +316,92 @@ value interim fix) becomes worth revisiting.
 
 ---
 
+## Recurring Issue: AUD-MISFIREGRACE-OPTIONSFLOW — 3 of 17 "Every-Minute" Scheduler Jobs Silently Stopped Re-Firing (Fixed 2026-09-04)
+
+**Context:** while auditing Unusual Whales API call volume (user asked "let's...review and
+consolidate the UW api calls/requests. Are we still below the limit?"), a background research
+agent's estimate assumed `check_options_flow_alerts()`/`check_dark_pool_alerts()` genuinely run
+every minute, 24/7 (no market-hours gate found in either job's registration), projecting
+potential UW volume at or over the 30,000/day Trial-tier ceiling. Before accepting that estimate,
+directly verified against live production state — and found something more concrete and
+independently worth fixing.
+
+**Symptom:** `docker exec stockai-redis-1 redis-cli get scheduler:job:check_options_flow_alerts`
+showed a `last_run` timestamp that never advanced across a 19+ minute observation window, despite
+the job being registered on a 1-minute interval. `check_dark_pool_alerts` showed the identical
+symptom (same exact `last_run` second, since both fire from the same scheduler tick). Directly
+confirmed this was NOT a log-visibility artifact from the same-session log-truncation cleanup
+(`AUD-LOGROTATE`, above) — the check queries Redis job-status state, not log files, and a fresh
+25-minute log window (well after truncation) independently confirmed every OTHER 1-minute job
+(`check_price_alerts`, `check_short_squeeze_alerts`, `check_squeeze_watch_reverts`, etc.) fired
+reliably every single minute in that same window, while these two never appeared in APScheduler's
+own "Running job" log line again after their first execution. `check_sr_watch_reverts` was found
+with the identical live symptom (stuck for 20+ minutes) during the same investigation.
+
+**Root cause:** confirmed directly against a real `BackgroundScheduler()` instance
+(`apscheduler==3.10.4`): `scheduler._job_defaults == {'misfire_grace_time': 1, 'coalesce': True,
+'max_instances': 1}` — APScheduler's own scheduler-level default grace window is **1 second**.
+Every 1-minute alert job in `start_scheduler()` passes `max_instances=1, coalesce=True` explicitly
+at its own registration site rather than spreading the file's own `**_JOB_DEFAULTS` dict (which
+DOES include `misfire_grace_time=60`) — meaning any job that omits an explicit
+`misfire_grace_time` silently falls back to the library's 1-second default instead of this file's
+own 60-second convention. `check_options_flow_alerts()`/`check_dark_pool_alerts()` both have a
+real, substantial execution time (~15 seconds each, confirmed via their own recorded
+`duration_s`) — far longer than a 1-second grace window, so once the executor was still busy
+finishing one run, the NEXT scheduled tick's fire time could easily be more than 1 second past due
+by the time a free executor thread got to it, causing APScheduler to treat it as missed and
+silently drop it (with `coalesce=True`, a missed tick is discarded rather than queued/retried).
+`check_price_alerts` (18.0s duration, also missing this config) was observed still firing
+correctly in the same window — this bug is a real, live-confirmed possibility on ANY job this
+shape applies to, not a certainty on every long-running job every time; the exact trigger
+condition depends on real-world timing/jitter, which is why some long-running jobs were caught
+mid-stall and others weren't at the moment of observation.
+
+**Fixed:** added an explicit `misfire_grace_time=60` (matching this file's own `_JOB_DEFAULTS`
+convention used everywhere else) to all 17 genuinely-1-minute job registrations found missing it:
+`price_alert_check`, `volume_anomaly_check`, `conditional_order_check`,
+`short_squeeze_alert_check`, `squeeze_ignition_alert_check`, `squeeze_watch_revert_check`,
+`options_flow_alert_check`, `dark_pool_alert_check`, `sr_watch_check`,
+`value_area_breakdown_check`, `portfolio_drawdown_alert_check`, `top3_conviction_check`,
+`earnings_reaction_check`, `macro_reaction_alert_check`, `earnings_impact_alert_check`,
+`early_earnings_news_alert_check`, `live_price_cache_refresh`. Deliberately did NOT touch
+`gamma_unwind_alert_check`/`prebreakout_alert_check`/`avg_volume_cache_refresh` (all `hours=4` —
+a 1-second default grace window is a materially different risk at that cadence, and this fix is
+scoped to the confirmed bug class, not a blanket "add grace time everywhere" sweep).
+
+New `test_scheduler_minute_job_misfire_grace.py` (4 tests, source-text extraction — scheduler.py
+can't be imported directly in this test environment): every one of the 17 minute jobs has an
+explicit `misfire_grace_time`; the 3 confirmed-live-stuck jobs specifically use `=60` (not just
+"some value," so a future edit setting an unreasonably short grace time is still caught); the
+2 four-hour jobs were confirmed NOT touched by this fix; the fixture's own job-id list is
+cross-checked against the source to confirm every listed id genuinely resolves to a `minutes=1`
+registration (guards against the tests vacuously passing against a stale/renamed id). 1
+adversarial sabotage cycle (removed `misfire_grace_time=60` from one registration) — caught
+cleanly by exactly the targeted test, restored + confirmed byte-identical via `md5sum`. Full
+2711-test market-data suite green (up from 2707).
+
+**On the original UW-volume question this investigation started from:** this fix means real
+observed UW call volume from these two specific jobs is very likely LOWER in practice than the
+worst-case "genuinely fires every minute, 24/7" estimate — because they had, in fact, not been
+reliably firing every minute at all. The broader UW-volume audit (whether the platform sits
+under/near/over the 30,000/day Trial-tier ceiling once these jobs reliably fire on their
+intended cadence again) is a separate, still-open follow-up, not resolved by this fix alone —
+see the UW integration audit for the full function-by-function volume breakdown and the
+still-unaddressed missing-market-hours-gate question on these same two jobs.
+
+**What to check if alerts look dead again**:
+```bash
+# Confirm a specific 1-minute job's last_run is actually advancing minute to minute:
+docker exec stockai-redis-1 redis-cli get scheduler:job:check_options_flow_alerts
+# ...wait 2+ minutes, run again — last_run must have moved forward.
+
+# Confirm misfire_grace_time is actually present in the live container's code (not just the repo):
+docker exec stockai-market-data-1 grep -n 'id="options_flow_alert_check"' -A3 /app/src/services/scheduler.py
+
+# Cross-check the full 17-job list against a fresh log window — every id should appear in
+# "Running job" lines at its own expected cadence:
+docker logs stockai-market-data-1 --since 10m 2>&1 | grep -o 'Running job "[a-z_]*' | sort -u
+```
+
+---
+

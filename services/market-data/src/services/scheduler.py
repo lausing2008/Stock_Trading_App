@@ -11066,7 +11066,7 @@ def start_scheduler() -> None:
             minutes=1,
             id="price_alert_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
         # ── T257-VOLUME-ANOMALY-ALERT: universe-wide abnormal-volume scan — every minute ──
@@ -11078,7 +11078,7 @@ def start_scheduler() -> None:
             minutes=1,
             id="volume_anomaly_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
         # ── T286-CONDITIONAL-ORDER: single-hop "if TRIGGER then ACTION" order evaluator ──
@@ -11092,7 +11092,7 @@ def start_scheduler() -> None:
             minutes=1,
             id="conditional_order_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
         # ── Options-expiry gamma-unwind alert — a few times a day ───────────────
@@ -11130,7 +11130,7 @@ def start_scheduler() -> None:
             minutes=1,
             id="short_squeeze_alert_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
         # ── T260-SQUEEZE-IGNITION: early-warning tier, below the classic alert's 3% move floor
@@ -11145,7 +11145,7 @@ def start_scheduler() -> None:
             minutes=1,
             id="squeeze_ignition_alert_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
         # ── T260-BEARISH-PUTS-WATCHLIST: squeeze-watch revert checker — every minute ────────────
@@ -11157,7 +11157,7 @@ def start_scheduler() -> None:
             minutes=1,
             id="squeeze_watch_revert_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
         # ── MPE-OPTIONS-FLOW-ALERT: real Unusual Whales unusual-options-activity alert —
@@ -11167,13 +11167,29 @@ def start_scheduler() -> None:
         # mechanism, the direction derivation, and why this can safely run on the same fast
         # cadence as the other minute-interval alerts (UW's own REST endpoint is far cheaper
         # per-call than yfinance's options-chain fetch).
+        #
+        # AUD-MISFIREGRACE-OPTIONSFLOW: this registration (and dark_pool_alert_check just below)
+        # omitted misfire_grace_time — every OTHER 1-minute job in this file either spreads
+        # **_JOB_DEFAULTS (misfire_grace_time=60) or is otherwise sub-second, so the gap was
+        # invisible until now. APScheduler's own scheduler-level default is misfire_grace_time=1
+        # (confirmed directly: BackgroundScheduler()._job_defaults == {'misfire_grace_time': 1,
+        # 'coalesce': True, 'max_instances': 1}), but this job's own real execution time is
+        # ~15s (confirmed live via its own scheduler:job: Redis status) — far longer than a
+        # 1-second grace window. Confirmed live in production: this job ran exactly ONCE after
+        # a container restart and then silently never fired again for 20+ minutes, while every
+        # sibling 1-minute job (check_short_squeeze_alerts, check_squeeze_watch_reverts, etc.)
+        # kept firing every single minute without issue in the same window — the only
+        # structural difference between this job and its fine-running siblings is this missing
+        # grace time combined with a two-orders-of-magnitude-longer execution time. Explicit
+        # misfire_grace_time=60 (matching this file's own _JOB_DEFAULTS convention) gives
+        # APScheduler a full interval's worth of slack before treating a late tick as missed.
         _scheduler.add_job(
             check_options_flow_alerts,
             "interval",
             minutes=1,
             id="options_flow_alert_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
         # ── T323-DARKPOOL: real Unusual Whales dark-pool block-print alert — every minute ─────
@@ -11181,26 +11197,40 @@ def start_scheduler() -> None:
         # own docstring for the full mechanism. Same bounded symbol set and cadence as the
         # options-flow-alert job just above (both are per-symbol UW REST calls over the same
         # PriceAlert-subscribed + top-K universe).
+        #
+        # AUD-MISFIREGRACE-OPTIONSFLOW: same missing-misfire_grace_time gap as
+        # options_flow_alert_check just above, same ~15s real execution time, same live-
+        # confirmed silent-stop-firing symptom — see that job's own comment for the full
+        # investigation.
         _scheduler.add_job(
             check_dark_pool_alerts,
             "interval",
             minutes=1,
             id="dark_pool_alert_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
         # ── SR-WATCH-PROXIMITY-ALERT: support/resistance proximity checker — every minute ───────
         # Reads stockai:live_prices + a Redis-cached ATR(14) (4h TTL) + one technical-analysis
         # HTTP call per watched symbol — see check_sr_watch_reverts()'s own docstring for the
         # full proximity/dedup logic.
+        #
+        # AUD-MISFIREGRACE-OPTIONSFLOW: same missing-misfire_grace_time gap found on
+        # options_flow_alert_check/dark_pool_alert_check — this job's own scheduler:job: Redis
+        # status was ALSO confirmed live-stuck (last_run stopped advancing for 20+ minutes)
+        # despite a typical recorded duration under 1s, so the exact trigger condition here
+        # isn't as cleanly explained by duration alone as the options-flow/dark-pool case — but
+        # the fix is the same, safe, low-risk change (an explicit 60s grace window instead of
+        # relying on APScheduler's own 1s scheduler-level default), so it's applied here too
+        # rather than left as a second unresolved instance of the same missing config.
         _scheduler.add_job(
             check_sr_watch_reverts,
             "interval",
             minutes=1,
             id="sr_watch_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
         # ── T252-VALUE-AREA-BREAKDOWN-ALERT: value-area breakdown/breakout checker — every minute ──
@@ -11212,7 +11242,7 @@ def start_scheduler() -> None:
             minutes=1,
             id="value_area_breakdown_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
         # ── T286-DRAWDOWN-ALERT: portfolio drawdown breach checker — every minute ────────
@@ -11226,7 +11256,7 @@ def start_scheduler() -> None:
             minutes=1,
             id="portfolio_drawdown_alert_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
         # ── T257-TOP3-CONVICTION-ALERT: measured-win-rate-gated top-3 scan — every minute ──
@@ -11238,7 +11268,7 @@ def start_scheduler() -> None:
             minutes=1,
             id="top3_conviction_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
         # ── Earnings post-release fast-reaction checker — every minute ──────────
@@ -11250,7 +11280,7 @@ def start_scheduler() -> None:
             minutes=1,
             id="earnings_reaction_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
         # ── Macro fast-reaction alert delivery — every minute ────────────────────
@@ -11263,7 +11293,7 @@ def start_scheduler() -> None:
             minutes=1,
             id="macro_reaction_alert_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
         # ── Earnings LLM impact alert delivery — every minute ────────────────────
@@ -11277,7 +11307,7 @@ def start_scheduler() -> None:
             minutes=1,
             id="earnings_impact_alert_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
         # ── Early earnings news alert — every minute ─────────────────────────────
@@ -11292,7 +11322,7 @@ def start_scheduler() -> None:
             minutes=1,
             id="early_earnings_news_alert_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
     # ── Live price cache refresh — every minute during market hours ──────────
@@ -11318,7 +11348,7 @@ def start_scheduler() -> None:
         minutes=1,
         id="live_price_cache_refresh",
         replace_existing=True,
-        max_instances=1, coalesce=True,
+        max_instances=1, coalesce=True, misfire_grace_time=60,
     )
 
     # ── Average-volume cache refresh — every 4 hours ──────────────────────────
