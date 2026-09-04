@@ -478,6 +478,116 @@ def test_oi_per_strike_cache_key_is_symbol_scoped():
     assert "stockai:uw:oi_per_strike:AAPL" in fake_redis.store
 
 
+# ── get_nope() — parsing/caching, with _get() mocked directly (AUD-NOPE) ────────────────────
+
+def test_nope_returns_none_when_not_available():
+    with patch.object(uw, "is_available", return_value=False), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_nope("AAPL")
+    assert result is None
+    mock_get.assert_not_called()
+
+
+def test_nope_reads_from_cache_when_present():
+    fake_redis = _FakeRedis()
+    cached_row = uw.NopeReading(
+        nope=0.42, nope_fill=0.38, call_delta=1500.0, put_delta=-900.0,
+        call_vol=5000.0, put_vol=3200.0, stock_vol=1200000.0, timestamp="2026-09-04T14:32:00Z",
+    )
+    import json
+    from dataclasses import asdict
+    fake_redis.store["stockai:uw:nope:AAPL"] = json.dumps(asdict(cached_row))
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_nope("AAPL")
+    assert result == cached_row
+    mock_get.assert_not_called()
+
+
+def test_nope_parses_a_real_dict_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value={
+             "nope": "0.42", "nope_fill": "0.38", "call_delta": "1500.0", "put_delta": "-900.0",
+             "call_vol": 5000, "put_vol": 3200, "stock_vol": 1200000,
+             "timestamp": "2026-09-04T14:32:00Z",
+         }):
+        result = uw.get_nope("AAPL")
+    assert result.nope == 0.42
+    assert result.nope_fill == 0.38
+    assert result.call_delta == 1500.0
+    assert result.put_delta == -900.0
+    assert result.call_vol == 5000.0
+    assert result.put_vol == 3200.0
+    assert result.stock_vol == 1200000.0
+    assert result.timestamp == "2026-09-04T14:32:00Z"
+
+
+def test_nope_parses_a_real_list_response_using_the_first_row():
+    """Defensive handling matching get_gex_levels()'s own precedent for a shape UW might return
+    as a list under some conditions, even though the documented contract is a single object."""
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"nope": "0.42", "timestamp": "2026-09-04T14:32:00Z"},
+             {"nope": "0.99", "timestamp": "2026-09-04T14:31:00Z"},
+         ]):
+        result = uw.get_nope("AAPL")
+    assert result.nope == 0.42
+
+
+def test_nope_returns_none_for_a_missing_symbol():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=None):
+        result = uw.get_nope("ZZZZ")
+    assert result is None
+
+
+def test_nope_returns_none_on_a_fetch_exception():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", side_effect=RuntimeError("boom")):
+        result = uw.get_nope("AAPL")
+    assert result is None
+
+
+def test_nope_uses_its_own_short_ttl_not_the_15_minute_default():
+    """The whole point of AUD-NOPE's design: a 60s TTL, not the 15-min TTL every other UW
+    field on this route uses — NOPE is a per-MINUTE reading, and a 15-min cache would serve a
+    stale intraday snapshot for 15x longer than the data itself remains current."""
+    class _SpyRedis(_FakeRedis):
+        def __init__(self):
+            super().__init__()
+            self.setex_calls = []
+        def setex(self, key, ttl, value):
+            self.setex_calls.append((key, ttl))
+            super().setex(key, ttl, value)
+    spy = _SpyRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=spy), \
+         patch.object(uw, "_get", return_value={"nope": "0.42"}):
+        uw.get_nope("AAPL")
+    assert len(spy.setex_calls) == 1
+    assert spy.setex_calls[0][1] == uw._NOPE_TTL
+    assert spy.setex_calls[0][1] == 60
+    assert spy.setex_calls[0][1] != uw._GEX_TTL
+
+
+def test_nope_writes_a_negative_cache_entry_too():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=None):
+        uw.get_nope("ZZZZ")
+    assert "stockai:uw:nope:ZZZZ" in fake_redis.store
+
+
 # ── get_greeks() — parsing/caching, with _get() mocked directly (AUD-GREEKS) ────────────────
 
 def test_greeks_returns_empty_list_when_not_available():

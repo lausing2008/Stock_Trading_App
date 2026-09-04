@@ -31,6 +31,9 @@ https://api.unusualwhales.com/api/openapi spec (not guessed/assumed) before bein
     get_max_pain() below.
   - /api/stock/{ticker}/oi-per-strike — per-strike {strike, call_oi, put_oi}, across all
     expiries. AUD-MAXPAIN: see get_oi_per_strike() below.
+  - /api/stock/{ticker}/nope — call_delta, call_fill_delta, call_vol, nope, nope_fill,
+    put_delta, put_fill_delta, put_vol, stock_vol, timestamp. Published per-MINUTE (the only
+    field this app consumes at that cadence) — AUD-NOPE: see get_nope() below.
   - /api/shorts/{ticker}/interest-float/v2 — days_to_cover, fee_rate, rebate_rate,
     short_interest, short_shares_available, si_float, total_float
   - /api/shorts/{ticker}/data           — fee_rate, rebate_rate, short_shares_available
@@ -94,6 +97,12 @@ _GREEKS_TTL = 900       # 15 min, same rationale as _IV_RANK_TTL — this app's 
 _MAX_PAIN_TTL = 900     # 15 min, matching _GEX_TTL — AUD-MAXPAIN's consumer is the live
 # /gamma-exposure route (a per-page-view fetch, same cadence as get_gex_levels() itself).
 _OI_PER_STRIKE_TTL = 900  # 15 min, same rationale as _MAX_PAIN_TTL.
+_NOPE_TTL = 60          # 1 min ONLY — NOPE is UW's own per-minute reading; the 15-min TTL used
+# for every other UW field here would serve a stale intraday snapshot for 15x longer than the
+# data itself is even valid for, defeating the entire point of a live pressure gauge. Still a
+# real cache (not zero) so a symbol looked up twice within the same minute — e.g. this route's
+# own gex/max-pain/oi-per-strike/nope calls all hitting the same page load — doesn't spend two
+# API calls for data guaranteed to be identical.
 
 
 class UnusualWhalesRateLimitError(Exception):
@@ -177,6 +186,31 @@ class OIPerStrikeRow:
     strike: float | None
     call_oi: float | None
     put_oi: float | None
+
+
+@dataclass
+class NopeReading:
+    """AUD-NOPE: real, delta-weighted directional options pressure ("Net Options Pricing
+    Effect") from Unusual Whales' /api/stock/{ticker}/nope — confirmed field shape via UW's own
+    published API operation doc, fetched 2026-09-03. Genuinely different construction from this
+    app's own homegrown compute_options_pressure_score() (routes.py) — that score is built from
+    raw call/put PREMIUM ratio and volume/OI ratio; NOPE weights by each option's actual DELTA,
+    a more theoretically-grounded read of real directional exposure. Deliberately fetched LIVE
+    per page-view (not a daily batch): NOPE is published per-MINUTE by UW, the only field this
+    app consumes at that cadence — a daily batch would only ever show yesterday's stale close,
+    defeating the entire point of a live intraday pressure gauge. Same live-per-request pattern
+    already used for GEX/max-pain/OI-per-strike on this exact route (GET /gamma-exposure) — no
+    new batch infrastructure, no new operational polling pattern for this codebase.
+    `nope`/`nope_fill` are UW's own two variants (volume-weighted vs. fill-weighted delta) — both
+    surfaced since neither is documented as strictly superior."""
+    nope: float | None
+    nope_fill: float | None
+    call_delta: float | None
+    put_delta: float | None
+    call_vol: float | None
+    put_vol: float | None
+    stock_vol: float | None
+    timestamp: str | None
 
 
 @dataclass
@@ -408,6 +442,60 @@ def get_oi_per_strike(symbol: str) -> list[OIPerStrikeRow]:
         import json
         from dataclasses import asdict
         _get_redis().setex(cache_key, _OI_PER_STRIKE_TTL, json.dumps([asdict(r) for r in result]))
+    except Exception:
+        pass
+    return result
+
+
+def get_nope(symbol: str) -> NopeReading | None:
+    """AUD-NOPE: real, delta-weighted directional options pressure for `symbol` from Unusual
+    Whales' /api/stock/{ticker}/nope — confirmed real response shape via UW's own published API
+    operation doc, fetched 2026-09-03. Unlike get_max_pain()/get_oi_per_strike() above, this
+    endpoint returns a SINGLE object (the most recent minute's reading), not a list — no `date`
+    param is passed, so UW returns its own current/latest snapshot. Cached only 60s
+    (_NOPE_TTL) — see that constant's own comment for why every other field's 15-min TTL would
+    be wrong here. Returns None (never raises) on any failure/unavailability, matching
+    get_gex_levels()'s own single-object fail-open contract.
+    """
+    if not is_available():
+        return None
+    sym = symbol.upper()
+    cache_key = f"stockai:uw:nope:{sym}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            import json
+            d = json.loads(cached)
+            return NopeReading(**d) if d else None
+    except Exception:
+        pass
+
+    try:
+        data = _get(f"/api/stock/{sym}/nope")
+    except Exception as exc:
+        log.warning("unusual_whales.nope_failed", symbol=sym, error=str(exc))
+        return None
+
+    result: NopeReading | None
+    row = data if isinstance(data, dict) else (data[0] if isinstance(data, list) and data else None)
+    if not row:
+        result = None
+    else:
+        result = NopeReading(
+            nope=_to_float(row.get("nope")),
+            nope_fill=_to_float(row.get("nope_fill")),
+            call_delta=_to_float(row.get("call_delta")),
+            put_delta=_to_float(row.get("put_delta")),
+            call_vol=_to_float(row.get("call_vol")),
+            put_vol=_to_float(row.get("put_vol")),
+            stock_vol=_to_float(row.get("stock_vol")),
+            timestamp=row.get("timestamp"),
+        )
+
+    try:
+        import json
+        from dataclasses import asdict
+        _get_redis().setex(cache_key, _NOPE_TTL, json.dumps(asdict(result) if result else None))
     except Exception:
         pass
     return result

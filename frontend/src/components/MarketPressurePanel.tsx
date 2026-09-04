@@ -30,6 +30,7 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
   const hasGex = gex?.available && gex.source === 'unusual_whales';
   const hasExpirations = expirations?.available && (expirations.expirations?.length ?? 0) > 0;
   const hasDarkPool = darkPool?.available && (darkPool.prints?.length ?? 0) > 0;
+  const hasNope = hasGex && gex?.nope?.nope != null;
 
   if (!hasGex && !hasExpirations && !hasDarkPool) return null;
 
@@ -129,6 +130,48 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
                   ))}
                 </tbody>
               </table>
+            </div>
+          );
+        })()}
+
+        {hasNope && (() => {
+          // AUD-NOPE: real, delta-weighted directional pressure -- genuinely different
+          // construction from levelColor()'s own compute_options_pressure_score() (premium/
+          // volume-ratio based). Not bounded to a fixed range by UW's own spec, but real
+          // readings cluster within roughly [-1, 1] -- clamp only the VISUAL bar position,
+          // never the displayed number itself.
+          const n = gex!.nope!.nope!;
+          const isBullish = n > 0;
+          const barPct = Math.max(0, Math.min(100, 50 + n * 50));
+          return (
+            <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+              <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>
+                NOPE — real-time, delta-weighted options pressure (updates roughly every minute).
+                {gex!.nope!.timestamp && <span style={{ color: '#334155' }}> As of {new Date(gex!.nope!.timestamp).toLocaleTimeString()}.</span>}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
+                <span style={{ fontSize: 11, color: isBullish ? '#4ade80' : '#f87171', fontWeight: 700 }}>
+                  {isBullish ? 'Bullish pressure' : 'Bearish pressure'}
+                </span>
+                <span style={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0', fontVariantNumeric: 'tabular-nums' }}>{n.toFixed(3)}</span>
+              </div>
+              <div style={{ position: 'relative', height: 6, borderRadius: 3, background: '#1e293b', marginBottom: 10 }}>
+                <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 1, background: '#334155' }} />
+                <div
+                  style={{
+                    position: 'absolute', top: 0, bottom: 0, borderRadius: 3,
+                    background: isBullish ? '#4ade80' : '#f87171',
+                    left: isBullish ? '50%' : `${barPct}%`,
+                    right: isBullish ? `${100 - barPct}%` : '50%',
+                  }}
+                />
+              </div>
+              {gex!.nope!.nope_fill != null && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#64748b' }}>
+                  <span>Fill-weighted variant</span>
+                  <span style={{ fontVariantNumeric: 'tabular-nums' }}>{gex!.nope!.nope_fill.toFixed(3)}</span>
+                </div>
+              )}
             </div>
           );
         })()}

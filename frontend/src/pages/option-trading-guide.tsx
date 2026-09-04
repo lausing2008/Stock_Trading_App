@@ -463,6 +463,64 @@ export default function OptionTradingGuidePage() {
         </Callout>
       </Section>
 
+      <Section title="The Market Pressure panel — Max Pain, OI walls, and NOPE">
+        <p style={{ marginBottom: 16 }}>
+          A stock&apos;s own page has a Market Pressure panel (Advanced tier, real Unusual Whales
+          data) with the GEX dealer-hedging levels covered above, plus three more real readings —
+          each a genuinely different lens on the same options market, not duplicates of each other.
+        </p>
+
+        <SubSection title="Max Pain — a different magnet theory than GEX's own walls">
+          <p style={{ marginBottom: 10 }}>
+            GEX&apos;s call wall/put wall/gamma flip describe where DEALERS are hedging — real
+            positions market makers hold and actively manage. Max Pain is a completely different
+            calculation: for each expiry, it&apos;s the single strike price where, if the stock
+            closed there, option WRITERS in aggregate would owe the least money to option holders.
+            Some traders watch it because there&apos;s a real (though contested) theory that price
+            can drift toward this level into expiry — not because dealers are defending it the way
+            they defend a gamma wall, but because option writers as a group have some incentive
+            structure pulling toward it. Shown as a distinct purple dotted line on the daily chart.
+          </p>
+          <p style={{ margin: 0 }}>
+            Treat it the same way this guide treats every other structural level: a real, honest
+            number worth knowing, not a guaranteed price target. A stock can and does close far
+            from its own max pain strike routinely.
+          </p>
+        </SubSection>
+
+        <SubSection title="OI walls — the raw open-interest count GEX only implies">
+          <p style={{ marginBottom: 10 }}>
+            GEX&apos;s call_wall/put_wall are GAMMA-weighted — they tell you where dealer hedging
+            pressure concentrates, which factors in each contract&apos;s own sensitivity to price
+            moves, not just how many contracts exist. The Market Pressure panel&apos;s OI table
+            shows the actual, unweighted number of open call/put contracts at each strike across
+            all expiries — the raw material an &quot;OI wall&quot; reading is built from. A strike
+            with heavy put OI sitting just below the current price is sometimes read as a level
+            where put sellers have a real incentive to defend price from falling further (they lose
+            money if it does) — again a real, watchable pattern, not a guarantee.
+          </p>
+        </SubSection>
+
+        <SubSection title="NOPE — a live, delta-weighted read on which way options flow is pushing">
+          <p style={{ marginBottom: 10 }}>
+            Unlike every other Unusual Whales field in this app (all computed once daily), NOPE
+            updates roughly every minute — it&apos;s meant to answer &quot;is there real
+            directional pressure building in this stock&apos;s options RIGHT NOW,&quot; a
+            same-day question a daily snapshot can&apos;t answer. It&apos;s built differently from
+            this app&apos;s own homegrown Pressure score too: where that score uses raw call/put
+            premium and volume/OI ratios, NOPE weights by each option&apos;s actual DELTA — a more
+            theoretically-grounded measure of real directional exposure building up in the chain.
+          </p>
+          <p style={{ margin: 0 }}>
+            A positive reading leans bullish (net call-side delta pressure), negative leans
+            bearish. UW publishes two variants — the standard <Code>nope</Code> (volume-weighted)
+            and <Code>nope_fill</Code> (fill-weighted, using actual executed trade sizes instead of
+            posted volume) — both shown side by side since neither is documented as strictly
+            better; when they broadly agree, that&apos;s a small extra piece of corroboration.
+          </p>
+        </SubSection>
+      </Section>
+
       <Section title="Reading this app's own alerts into an actual entry">
         <p style={{ marginBottom: 16 }}>
           The AI Signal BUY badge on a stock page is a starting point, not the whole picture — this

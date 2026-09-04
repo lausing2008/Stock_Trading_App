@@ -3922,6 +3922,13 @@ def get_gamma_exposure(symbol: str):
     strikes, which GEX's gamma-WEIGHTED walls only imply indirectly). Both independently
     fail-open to an empty list — a max-pain/OI fetch failure never blocks the GEX fields above
     from still being returned.
+
+    AUD-NOPE: also includes a live nope reading — real, delta-weighted directional options
+    pressure, genuinely different from this app's own homegrown compute_options_pressure_score()
+    (premium/volume-ratio based, not delta-weighted). Deliberately fetched fresh on every call
+    (60s cache, not the 15-min TTL the other UW fields on this route use) since NOPE is
+    published per-MINUTE by UW — the only field this app consumes at that cadence. Fails open to
+    null, same as every other optional UW enrichment here.
     """
     from ..services import unusual_whales as _uw
 
@@ -3935,6 +3942,7 @@ def get_gamma_exposure(symbol: str):
 
     max_pain_rows = _uw.get_max_pain(sym)
     oi_rows = _uw.get_oi_per_strike(sym)
+    nope = _uw.get_nope(sym)
 
     return {
         "symbol": sym,
@@ -3952,6 +3960,14 @@ def get_gamma_exposure(symbol: str):
             {"strike": r.strike, "call_oi": r.call_oi, "put_oi": r.put_oi}
             for r in oi_rows if r.strike is not None
         ],
+        "nope": (
+            {
+                "nope": nope.nope, "nope_fill": nope.nope_fill,
+                "call_delta": nope.call_delta, "put_delta": nope.put_delta,
+                "call_vol": nope.call_vol, "put_vol": nope.put_vol,
+                "stock_vol": nope.stock_vol, "timestamp": nope.timestamp,
+            } if nope is not None and nope.nope is not None else None
+        ),
     }
 
 

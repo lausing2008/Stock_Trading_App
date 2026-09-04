@@ -1212,6 +1212,22 @@ export type GammaExposure = {
   // indirectly (those are gamma-weighted, not a plain OI count).
   max_pain?: MaxPainRow[];
   oi_per_strike?: OIPerStrikeRow[];
+  // AUD-NOPE: real, delta-weighted directional options pressure (Unusual Whales' own
+  // construction) — a genuinely different measure from this app's own homegrown Pressure
+  // score. Fetched live, refreshed roughly once/minute server-side (UW's own publish cadence),
+  // null when Unusual Whales has no current reading for this symbol.
+  nope?: NopeReading | null;
+};
+
+export type NopeReading = {
+  nope: number | null;
+  nope_fill: number | null;
+  call_delta: number | null;
+  put_delta: number | null;
+  call_vol: number | null;
+  put_vol: number | null;
+  stock_vol: number | null;
+  timestamp: string | null;
 };
 
 // T323-DARKPOOL: real off-exchange block trades via Unusual Whales — genuinely new capability,

@@ -120,3 +120,37 @@ def test_oi_per_strike_rows_filter_out_null_strike_values():
     idx = _FUNC_SOURCE.index('"oi_per_strike": [')
     segment = _FUNC_SOURCE[idx:idx + 250]
     assert "if r.strike is not None" in segment
+
+
+# ── AUD-NOPE: nope wiring ────────────────────────────────────────────────────────────────────
+
+def test_nope_is_fetched_via_the_real_unusual_whales_function():
+    assert "_uw.get_nope(sym)" in _FUNC_SOURCE
+
+
+def test_nope_fetched_only_after_the_gex_availability_gate():
+    avail_idx = _FUNC_SOURCE.index("_uw.is_available()")
+    nope_idx = _FUNC_SOURCE.index("_uw.get_nope(")
+    assert avail_idx < nope_idx
+
+
+def test_response_includes_a_nope_field():
+    assert '"nope": (' in _FUNC_SOURCE
+
+
+def test_nope_field_is_null_when_the_reading_itself_has_no_nope_value():
+    """A None NopeReading OR a real reading whose own `nope` field is null must both degrade
+    to a null nope in the response, never a fabricated/placeholder object."""
+    idx = _FUNC_SOURCE.index('"nope": (')
+    segment = _FUNC_SOURCE[idx:idx + 400]
+    assert "nope is not None and nope.nope is not None" in segment
+
+
+def test_nope_object_surfaces_both_variants_and_the_raw_deltas():
+    """UW publishes both nope and nope_fill (volume-weighted vs. fill-weighted delta) — neither
+    is documented as strictly superior, so both must be surfaced, plus the raw call/put delta
+    and volume figures the metric itself is built from."""
+    idx = _FUNC_SOURCE.index('"nope": (')
+    segment = _FUNC_SOURCE[idx:idx + 400]
+    for field in ("nope.nope", "nope.nope_fill", "nope.call_delta", "nope.put_delta", "nope.call_vol", "nope.put_vol", "nope.stock_vol", "nope.timestamp"):
+        assert field in segment

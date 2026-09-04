@@ -370,3 +370,65 @@ response fields — 2 tests failed correctly; forced `max_pain` to always parse 
 failed correctly), both restored byte-identical. Full market-data suite: 2599 passed; frontend
 `tsc --noEmit`/`next build` clean, confirmed shipped in the compiled `stock/[symbol]` page
 bundle via grep.
+
+---
+
+### AUD-NOPE — Real, live delta-weighted directional options pressure (2026-09-03)
+
+**User request**: third feature from the UW API design review, item #3 of 7 in the agreed build
+order. This one carried an open design question flagged in the original review: NOPE is
+published per-MINUTE by UW, unlike every other field this app consumes (all daily-batch) — the
+cadence had to be resolved before building. User asked for the recommendation that best serves
+them; the answer was **live per-page-view fetch**, not a daily batch and not a new polling job:
+NOPE only matters when someone is actually looking at a stock's page right now (same reasoning
+already applied to GEX/Max Pain/OI-per-strike on this exact route), a daily batch would only ever
+show yesterday's stale reading (defeating the entire point of a live intraday gauge), and a
+polling job would burn API budget refreshing symbols nobody is currently viewing.
+
+**Real field shape** confirmed via WebFetch against UW's own published operation doc (fetched
+2026-09-03): `GET /api/stock/{ticker}/nope`, single-object response (not an array, unlike
+max-pain/oi-per-strike) — `call_delta`, `call_fill_delta`, `call_vol` (int), `nope` (string),
+`nope_fill` (string), `put_delta`, `put_fill_delta`, `put_vol` (int), `stock_vol` (int),
+`timestamp` (ISO 8601, start-of-minute).
+
+**Conceptual distinction from this app's own existing Pressure score**
+(`compute_options_pressure_score()`, routes.py): that score is built from raw call/put premium
+ratio and volume/OI ratio; NOPE weights by each option's actual DELTA — a more
+theoretically-grounded read of real directional exposure, and a genuine second, independently-
+computed cross-check, not a duplicate.
+
+**New UW function**: `get_nope(symbol)` / `NopeReading` (`unusual_whales.py`) — single-object,
+fail-open to `None` (matching `get_gex_levels()`'s own contract, not the list-returning contract
+of `get_max_pain()`/`get_oi_per_strike()`, since this endpoint returns one current reading).
+**New, deliberately short TTL**: `_NOPE_TTL = 60` (1 minute) — every other UW field on this route
+uses a 15-min TTL, which here would serve a stale intraday snapshot for 15x longer than the data
+itself remains valid; still real caching (not zero), so this route's own multiple UW calls in one
+page load never double-spend API budget on identical data within the same minute.
+
+**Wiring**: added to the same live `GET /{symbol}/gamma-exposure` route as Max Pain/OI-per-strike
+(item #2) — fetched independently after the existing availability gate, fails open to `null`
+without blocking the GEX/Max Pain/OI fields from still returning.
+
+**Rendering**: `MarketPressurePanel.tsx` gained a new card — a bullish/bearish label, the raw
+`nope` value, a visual gauge bar (bidirectional from center, green right / red left), and the
+`nope_fill` variant shown alongside since UW documents neither as strictly superior to the other.
+`option-trading-guide.tsx` gained a new "Market Pressure panel" section explaining Max Pain, OI
+walls, and NOPE together (folding in the item #2 explainers that hadn't been written into the
+guide yet either) — each framed as a genuinely distinct lens, not a duplicate of GEX or of each
+other.
+
+**Types**: `frontend/src/lib/api.ts`'s `GammaExposure` type extended with `nope: NopeReading |
+null`; new `NopeReading` type added.
+
+**Tests**: 13 new — `test_unusual_whales.py` gained 8 (not-available, cache-hit, real dict-shape
+parsing, defensive list-shape parsing matching `get_gex_levels()`'s own precedent, missing-
+symbol, fetch-exception, the short-TTL assertion itself — explicitly checked against both the
+constant and the literal `60`, plus a negative-cache-entry check), `test_gamma_exposure_route.py`
+gained 5 (fetched via the real function, fetched only after the availability gate, the response
+includes a `nope` field, that field degrades to `null` when either the reading itself or its own
+`nope` value is missing, and every one of the 8 sub-fields is surfaced — not just the headline
+number). Adversarially verified via 2 sabotage cycles (collapsed the route's nope object down to
+one field, forced `get_nope()`'s own `nope` field to always parse `None`) — both caught cleanly,
+both restored byte-identical. Full market-data suite: 2612 passed; frontend `tsc --noEmit`/
+`next build` clean, confirmed shipped in the compiled `option-trading-guide`/`stock/[symbol]`
+bundles via grep.
