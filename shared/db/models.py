@@ -1814,6 +1814,25 @@ class OptionsGamePlanSnapshot(Base):
     # fetch as expected_move_pct's own volatility field — no extra API call. NULL under the
     # same fail-open conditions (UW unavailable/no data for this symbol).
     iv_rank_1y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # AUD-GREEKS: real per-strike Greeks (Unusual Whales' /greeks endpoint) for the EXACT put/
+    # call strike this snapshot already selected above — closes a gap this app's own Options
+    # Trading Guide explicitly documents ("no real per-contract Greeks beyond implied
+    # volatility are shown"). vanna/charm are real second-order Greeks (delta's sensitivity to
+    # IV, and to time, respectively) never surfaced anywhere in this app before. NULL under the
+    # same fail-open conditions as every other UW-sourced field on this table (unavailable, no
+    # data for this specific strike/expiry).
+    put_delta: Mapped[float | None] = mapped_column(Float, nullable=True)
+    put_gamma: Mapped[float | None] = mapped_column(Float, nullable=True)
+    put_theta: Mapped[float | None] = mapped_column(Float, nullable=True)
+    put_vega: Mapped[float | None] = mapped_column(Float, nullable=True)
+    put_vanna: Mapped[float | None] = mapped_column(Float, nullable=True)
+    put_charm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    call_delta: Mapped[float | None] = mapped_column(Float, nullable=True)
+    call_gamma: Mapped[float | None] = mapped_column(Float, nullable=True)
+    call_theta: Mapped[float | None] = mapped_column(Float, nullable=True)
+    call_vega: Mapped[float | None] = mapped_column(Float, nullable=True)
+    call_vanna: Mapped[float | None] = mapped_column(Float, nullable=True)
+    call_charm: Mapped[float | None] = mapped_column(Float, nullable=True)
     computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

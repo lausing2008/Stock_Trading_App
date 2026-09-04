@@ -44,6 +44,15 @@ market expects this symbol to move; iv_rank_1y says whether that IV reading is C
 EXPENSIVE relative to this symbol's own trailing 1-year IV range (0-100 percentile). Captured
 independently of expected_move_pct's own `volatility > 0` gate, since iv_rank_1y is still a
 real, useful reading even on the rare occasion `volatility` itself comes back null/zero.
+
+AUD-GREEKS: also persists real per-strike put/call delta/gamma/theta/vega/vanna/charm from
+Unusual Whales' get_greeks(symbol, expiry) — one extra call per DISTINCT expiry actually in use
+(put_exp/call_exp are frequently the same expiry, so usually a single call, never more than 2),
+matched in-memory to the exact strike compute_options_game_plan() already selected. Closes a gap
+this app's own Options Trading Guide explicitly documents ("no real per-contract Greeks beyond
+implied volatility are shown"). Isolated in its own try/except — a failure here only costs these
+12 fields, never the rest of the snapshot (the put/call strike/expiry/price legs above already
+come from the options chain fetch, independent of whether Unusual Whales is even configured).
 """
 from __future__ import annotations
 
@@ -78,6 +87,18 @@ class OptionsGamePlanResult:
     expected_move_pct: float | None = None
     expected_move_dte: int | None = None
     iv_rank_1y: float | None = None
+    put_delta: float | None = None
+    put_gamma: float | None = None
+    put_theta: float | None = None
+    put_vega: float | None = None
+    put_vanna: float | None = None
+    put_charm: float | None = None
+    call_delta: float | None = None
+    call_gamma: float | None = None
+    call_theta: float | None = None
+    call_vega: float | None = None
+    call_vanna: float | None = None
+    call_charm: float | None = None
 
 
 def compute_options_game_plan_snapshot(session, stock_id: int, symbol: str) -> OptionsGamePlanResult | None:
@@ -196,6 +217,47 @@ def compute_options_game_plan_snapshot(session, stock_id: int, symbol: str) -> O
         except Exception as exc:
             log.warning("options_game_plan_snapshot.expected_move_failed", symbol=symbol, error=str(exc))
 
+        # AUD-GREEKS: real per-strike Greeks for the EXACT put/call strike this snapshot
+        # already selected above — one get_greeks() call per distinct expiry actually in use
+        # (put_exp/call_exp are often the same expiry, so this is usually a single extra call,
+        # never more than 2), then a plain in-memory match on strike. Isolated in its own
+        # try/except — a failure here only costs the 12 Greek fields, never the rest of the
+        # snapshot (which already has real put/call strike/expiry/price from the options chain
+        # fetched above regardless of whether Unusual Whales is even configured).
+        put_greeks: dict = {}
+        call_greeks: dict = {}
+        try:
+            from . import unusual_whales as _uw
+
+            def _match_strike(rows: list, strike: float | None) -> dict:
+                if strike is None:
+                    return {}
+                for row in rows:
+                    if row.strike is not None and abs(row.strike - strike) < 0.005:
+                        return row
+                return {}
+
+            _greeks_cache: dict[str, list] = {}
+
+            def _rows_for_expiry(expiry: str) -> list:
+                # NOTE: dict.setdefault()'s default-value argument is evaluated eagerly
+                # regardless of whether the key already exists — using it directly here would
+                # call get_greeks() twice even when put_exp == call_exp (the common real case).
+                # An explicit if/else avoids that.
+                if expiry not in _greeks_cache:
+                    _greeks_cache[expiry] = _uw.get_greeks(symbol, expiry)
+                return _greeks_cache[expiry]
+
+            if put.get("strike") is not None and put_exp:
+                put_greeks = _match_strike(_rows_for_expiry(put_exp), put.get("strike"))
+            if call.get("strike") is not None and call_exp:
+                call_greeks = _match_strike(_rows_for_expiry(call_exp), call.get("strike"))
+        except Exception as exc:
+            log.warning("options_game_plan_snapshot.greeks_failed", symbol=symbol, error=str(exc))
+
+        def _greek(row, side: str, name: str):
+            return getattr(row, f"{side}_{name}", None) if row else None
+
         return OptionsGamePlanResult(
             underlying_close=round(current_price, 4),
             stop_loss=stop_loss,
@@ -203,6 +265,18 @@ def compute_options_game_plan_snapshot(session, stock_id: int, symbol: str) -> O
             expected_move_pct=expected_move_pct,
             expected_move_dte=expected_move_dte,
             iv_rank_1y=iv_rank_1y,
+            put_delta=_greek(put_greeks, "put", "delta"),
+            put_gamma=_greek(put_greeks, "put", "gamma"),
+            put_theta=_greek(put_greeks, "put", "theta"),
+            put_vega=_greek(put_greeks, "put", "vega"),
+            put_vanna=_greek(put_greeks, "put", "vanna"),
+            put_charm=_greek(put_greeks, "put", "charm"),
+            call_delta=_greek(call_greeks, "call", "delta"),
+            call_gamma=_greek(call_greeks, "call", "gamma"),
+            call_theta=_greek(call_greeks, "call", "theta"),
+            call_vega=_greek(call_greeks, "call", "vega"),
+            call_vanna=_greek(call_greeks, "call", "vanna"),
+            call_charm=_greek(call_greeks, "call", "charm"),
             put_strike=put.get("strike"),
             put_expiry=put.get("expiry"),
             put_mid_price=put.get("mid_price"),
@@ -235,6 +309,18 @@ def upsert_options_game_plan_snapshot(
         expected_move_pct=result.expected_move_pct,
         expected_move_dte=result.expected_move_dte,
         iv_rank_1y=result.iv_rank_1y,
+        put_delta=result.put_delta,
+        put_gamma=result.put_gamma,
+        put_theta=result.put_theta,
+        put_vega=result.put_vega,
+        put_vanna=result.put_vanna,
+        put_charm=result.put_charm,
+        call_delta=result.call_delta,
+        call_gamma=result.call_gamma,
+        call_theta=result.call_theta,
+        call_vega=result.call_vega,
+        call_vanna=result.call_vanna,
+        call_charm=result.call_charm,
         put_strike=result.put_strike,
         put_expiry=result.put_expiry,
         put_mid_price=result.put_mid_price,

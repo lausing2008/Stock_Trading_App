@@ -175,6 +175,48 @@ def test_no_iv_data_and_no_legs_still_renders_no_section():
     assert "Options Game Plan" not in calls[0]["html"]
 
 
+# ── Per-contract Greeks suffix (AUD-GREEKS) ────────────────────────────────────────────────
+
+def test_greeks_suffix_renders_when_present_on_a_leg():
+    snap = _fake_snapshot(
+        put_strike=140.0, put_expiry="2026-10-15", put_mid_price=3.0,
+        put_delta=-0.45, put_theta=-0.04, put_vega=0.11,
+    )
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_signal_alert_email("user@example.com", "AAPL", "HOLD", "BUY", "buy", options_game_plan=snap)
+    html, text = calls[0]["html"], calls[0]["text"]
+    assert "-0.45" in html and "-0.04" in html and "0.11" in html
+    assert "-0.45" in text and "-0.04" in text and "0.11" in text
+
+
+def test_greeks_suffix_omitted_entirely_when_all_three_are_none():
+    """No placeholder/empty parens when Unusual Whales had no Greeks for this contract."""
+    snap = _fake_snapshot(put_strike=140.0, put_expiry="2026-10-15", put_mid_price=3.0)
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_signal_alert_email("user@example.com", "AAPL", "HOLD", "BUY", "buy", options_game_plan=snap)
+    html = calls[0]["html"]
+    assert "$140.00" in html
+    assert "()" not in html
+
+
+def test_greeks_suffix_is_independent_per_leg():
+    snap = _fake_snapshot(
+        put_strike=140.0, put_expiry="2026-10-15", put_mid_price=3.0, put_delta=-0.45,
+        call_strike=168.0, call_expiry="2026-09-30", call_mid_price=1.85,
+    )
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_signal_alert_email("user@example.com", "AAPL", "HOLD", "BUY", "buy", options_game_plan=snap)
+    html = calls[0]["html"]
+    assert "-0.45" in html  # put's own delta rendered
+    # call has no Greeks -- must not accidentally inherit the put's suffix
+    call_row_start = html.index("Covered Call")
+    call_row = html[call_row_start:call_row_start + 200]
+    assert "-0.45" not in call_row
+
+
 def test_options_game_plan_is_gated_on_admin_or_advanced_tier():
     body = _check_signal_alerts_body()
     assert "alert.user.role == UserRole.ADMIN or alert.user.tier == UserTier.ADVANCED" in body

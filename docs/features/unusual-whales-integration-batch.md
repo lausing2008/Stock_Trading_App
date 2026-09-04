@@ -244,3 +244,67 @@ rendering removed, scheduler gate reverted, batch-route fields removed) — all 
 all restored byte-identical. Full market-data suite: 2562 passed; frontend `tsc --noEmit` and
 `next build` both clean, confirmed shipped in the compiled `option-trading-guide`/`screener`
 bundles via grep.
+
+---
+
+### AUD-GREEKS — Per-strike Greeks (delta/gamma/theta/vega/vanna/charm) for the Game Plan's
+### exact selected contracts (2026-09-03)
+
+**User request**: after a design review of Unusual Whales' full API surface (published as its
+own artifact), the user asked to build the proposed features one by one, starting with this one
+— closing a gap the app's own Options Trading Guide explicitly documented ("no real per-contract
+Greeks beyond implied volatility are shown"). Real field shape confirmed via a direct WebFetch
+against UW's own published operation doc for `/api/stock/{ticker}/greeks` (fetched 2026-09-03):
+per-strike rows with `call_delta/gamma/theta/vega/vanna/charm` and the put-side equivalents.
+
+**New UW function**: `get_greeks(symbol, expiry)` / `StrikeGreeks` dataclass
+(`unusual_whales.py`) — returns a list of per-strike rows for one expiry (never `None`, matching
+`get_flow_alerts()`'s own list-returning fail-open contract), Redis-cached 15 min per
+`(symbol, expiry)` pair (`_GREEKS_TTL`).
+
+**Computation**: `compute_options_game_plan_snapshot()` (`options_game_plan_snapshot.py`) calls
+`get_greeks()` once per DISTINCT expiry actually in use (put/call legs frequently share the same
+expiry, so usually one call, never more than two), then matches the returned rows in-memory to
+the EXACT strike `compute_options_game_plan()` already selected for each leg. Isolated in its own
+try/except — a failure here only costs the 12 Greek fields, never the rest of the snapshot.
+
+**Bug found and fixed during this work**: the first implementation used
+`_greeks_cache.setdefault(expiry, _uw.get_greeks(symbol, expiry))` to memoize the per-expiry
+fetch — but `dict.setdefault()`'s default-value argument is evaluated eagerly regardless of
+whether the key already exists, so `get_greeks()` was actually called twice even when
+`put_exp == call_exp` (the common real case), defeating the whole point of memoizing it. Caught
+immediately by `test_same_expiry_for_put_and_call_only_fetches_greeks_once` before this ever
+shipped. Fixed with an explicit `if expiry not in cache` check instead of relying on
+`setdefault`'s (non-lazy) default-argument evaluation.
+
+**Model**: 12 new nullable fields on `OptionsGamePlanSnapshot` — `put_delta/gamma/theta/vega/
+vanna/charm` and the `call_*` equivalents.
+
+**API**: `get_options_game_plan_batch()` nests the 6 Greeks inside each leg's own
+`protective_put`/`covered_call` object (not top-level snapshot fields, since they're specific to
+that leg's contract) — `frontend/src/lib/api.ts`'s `OptionsGamePlanSnapshotLeg` type extended
+to match.
+
+**Rendering**: `screener.tsx`'s expandable row detail gained a compact "Δ Γ Θ V" line under each
+leg (only rendered when at least one of delta/theta/vega is present); `email_service.py`'s
+`send_signal_alert_email()` gained a matching `(Δ -0.45 Θ -0.04 V 0.11)` suffix appended to each
+leg's existing HTML/text row. `option-trading-guide.tsx`'s "What this does NOT do" callout —
+which previously said outright "no real Greeks... this app doesn't compute or source true option
+Greeks" — was corrected (that claim is no longer true) and a new subsection added explaining
+delta/gamma/theta/vega in plain terms and how each relates to a protective put/covered call
+specifically.
+
+**Tests**: 20 new — `test_unusual_whales.py` gained 9 (`get_greeks()` parsing/caching/multi-
+strike/fail-open/TTL/cache-key-scoped-per-expiry), a new `test_options_game_plan_greeks.py` (7,
+behavioral: exact-strike matching, single-fetch-for-shared-expiry, two-fetches-for-different-
+expiries, no-match-leaves-null, empty-response, fetch-exception-fails-open, put-only-never-
+fetches-call-side — this file's 2nd test is the one that caught the `setdefault` bug above),
+`test_options_game_plan_batch_route.py` gained 1 (all 12 Greek fields present in both legs'
+response construction), `test_options_game_plan_email.py` gained 3 (suffix renders when present,
+omitted entirely — no empty parens — when absent, independent per leg so one leg's Greeks never
+leak into the other's row). Adversarially verified via 2 sabotage cycles on the strike-matching
+logic (return `rows[0]` unconditionally instead of matching strike — 2 tests failed correctly)
+and 2 more on the email suffix (function renamed, guard condition disabled — both caught
+correctly), all restored byte-identical. Full market-data suite: 2582 passed; frontend
+`tsc --noEmit`/`next build` clean, confirmed shipped in the compiled `option-trading-guide`/
+`screener` bundles via grep.

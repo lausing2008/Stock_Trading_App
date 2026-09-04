@@ -331,6 +331,126 @@ def test_iv_rank_uses_its_own_ttl_constant():
     assert spy.setex_calls[0][1] == uw._IV_RANK_TTL
 
 
+# ── get_greeks() — parsing/caching, with _get() mocked directly (AUD-GREEKS) ────────────────
+
+def test_greeks_returns_empty_list_when_not_available():
+    with patch.object(uw, "is_available", return_value=False), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_greeks("AAPL", "2026-10-01")
+    assert result == []
+    mock_get.assert_not_called()
+
+
+def test_greeks_reads_from_cache_when_present():
+    fake_redis = _FakeRedis()
+    cached_row = uw.StrikeGreeks(
+        strike=190.0, call_delta=0.55, call_gamma=0.02, call_theta=-0.05, call_vega=0.12,
+        call_vanna=0.01, call_charm=-0.001, put_delta=-0.45, put_gamma=0.02, put_theta=-0.04,
+        put_vega=0.11, put_vanna=-0.01, put_charm=0.001,
+    )
+    import json
+    from dataclasses import asdict
+    fake_redis.store["stockai:uw:greeks:AAPL:2026-10-01"] = json.dumps([asdict(cached_row)])
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get") as mock_get:
+        result = uw.get_greeks("AAPL", "2026-10-01")
+    assert result == [cached_row]
+    mock_get.assert_not_called()
+
+
+def test_greeks_parses_a_real_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {
+                 "strike": "190.0", "call_delta": "0.55", "call_gamma": "0.02",
+                 "call_theta": "-0.05", "call_vega": "0.12", "call_vanna": "0.01",
+                 "call_charm": "-0.001", "put_delta": "-0.45", "put_gamma": "0.02",
+                 "put_theta": "-0.04", "put_vega": "0.11", "put_vanna": "-0.01",
+                 "put_charm": "0.001",
+             },
+         ]):
+        result = uw.get_greeks("AAPL", "2026-10-01")
+    assert len(result) == 1
+    row = result[0]
+    assert row.strike == 190.0
+    assert row.call_delta == 0.55
+    assert row.put_delta == -0.45
+    assert row.call_vanna == 0.01
+    assert row.put_charm == 0.001
+
+
+def test_greeks_passes_the_expiry_query_param():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[]) as mock_get:
+        uw.get_greeks("AAPL", "2026-10-01")
+    mock_get.assert_called_once_with("/api/stock/AAPL/greeks", params={"expiry": "2026-10-01"})
+
+
+def test_greeks_returns_multiple_strikes_as_separate_rows():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[
+             {"strike": "185.0", "call_delta": "0.7"},
+             {"strike": "190.0", "call_delta": "0.55"},
+             {"strike": "195.0", "call_delta": "0.4"},
+         ]):
+        result = uw.get_greeks("AAPL", "2026-10-01")
+    assert [r.strike for r in result] == [185.0, 190.0, 195.0]
+
+
+def test_greeks_returns_empty_list_for_a_non_list_response():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=None):
+        result = uw.get_greeks("XYZ", "2026-10-01")
+    assert result == []
+
+
+def test_greeks_returns_empty_list_on_a_fetch_exception():
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", side_effect=RuntimeError("boom")):
+        result = uw.get_greeks("AAPL", "2026-10-01")
+    assert result == []
+
+
+def test_greeks_cache_key_is_scoped_per_expiry_not_just_symbol():
+    """A different expiry for the same symbol must never read the wrong expiry's cached
+    Greeks — the cache key must include expiry, not just the symbol."""
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[{"strike": "190.0", "call_delta": "0.5"}]):
+        uw.get_greeks("AAPL", "2026-10-01")
+    assert "stockai:uw:greeks:AAPL:2026-10-01" in fake_redis.store
+    assert "stockai:uw:greeks:AAPL:2026-11-01" not in fake_redis.store
+
+
+def test_greeks_uses_its_own_ttl_constant():
+    class _SpyRedis(_FakeRedis):
+        def __init__(self):
+            super().__init__()
+            self.setex_calls = []
+        def setex(self, key, ttl, value):
+            self.setex_calls.append((key, ttl))
+            super().setex(key, ttl, value)
+    spy = _SpyRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=spy), \
+         patch.object(uw, "_get", return_value=[{"strike": "190.0"}]):
+        uw.get_greeks("AAPL", "2026-10-01")
+    assert len(spy.setex_calls) == 1
+    assert spy.setex_calls[0][1] == uw._GREEKS_TTL
+
+
 # ── get_flow_alerts() ─────────────────────────────────────────────────────────────────────
 
 def test_flow_alerts_returns_empty_list_when_not_available():

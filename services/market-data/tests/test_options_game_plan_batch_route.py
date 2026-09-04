@@ -64,6 +64,24 @@ def test_result_surfaces_expected_move_and_iv_rank_fields():
     assert '"iv_rank_1y": snap.iv_rank_1y' in body
 
 
+def test_legs_surface_real_per_contract_greeks():
+    """AUD-GREEKS: delta/gamma/theta/vega/vanna/charm for the exact selected strike must be
+    nested inside protective_put/covered_call, not omitted from the response."""
+    body = _function_body()
+    assert '"delta": snap.put_delta' in body
+    assert '"gamma": snap.put_gamma' in body
+    assert '"theta": snap.put_theta' in body
+    assert '"vega": snap.put_vega' in body
+    assert '"vanna": snap.put_vanna' in body
+    assert '"charm": snap.put_charm' in body
+    assert '"delta": snap.call_delta' in body
+    assert '"gamma": snap.call_gamma' in body
+    assert '"theta": snap.call_theta' in body
+    assert '"vega": snap.call_vega' in body
+    assert '"vanna": snap.call_vanna' in body
+    assert '"charm": snap.call_charm' in body
+
+
 def test_route_path_is_a_literal_segment_not_shadowed_by_the_symbol_path_param():
     """AUD-ROUTERORDER class regression guard: /options-game-plan/batch's first path segment
     is the literal 'options-game-plan', never colliding with the sibling /{symbol}/options-

@@ -4390,6 +4390,13 @@ def get_options_game_plan_batch(
     reading is cheap or expensive relative to this symbol's own history. Either/both may be
     None when Unusual Whales was unavailable/had no data for this symbol on the snapshot's own
     as_of date.
+
+    Also surfaces real per-contract Greeks (AUD-GREEKS) nested inside protective_put/
+    covered_call — delta/gamma/theta/vega/vanna/charm for the EXACT strike/expiry each leg
+    already selected, from the same Unusual Whales get_greeks() call the snapshot job makes.
+    Closes a gap this app's own Options Trading Guide explicitly documents ("no real
+    per-contract Greeks beyond implied volatility are shown"). None when Unusual Whales had no
+    Greeks data for this specific strike/expiry.
     """
     from .options_game_plan_snapshot import get_latest_options_game_plan
 
@@ -4425,12 +4432,18 @@ def get_options_game_plan_batch(
                 {
                     "strike": snap.put_strike, "expiry": snap.put_expiry,
                     "mid_price": snap.put_mid_price, "effective_floor_price": snap.put_effective_floor_price,
+                    # AUD-GREEKS: real per-contract Greeks for this exact strike/expiry, None
+                    # when Unusual Whales was unavailable/had no data — never fabricated.
+                    "delta": snap.put_delta, "gamma": snap.put_gamma, "theta": snap.put_theta,
+                    "vega": snap.put_vega, "vanna": snap.put_vanna, "charm": snap.put_charm,
                 } if snap.put_strike is not None else None
             ),
             "covered_call": (
                 {
                     "strike": snap.call_strike, "expiry": snap.call_expiry,
                     "mid_price": snap.call_mid_price, "effective_cap_price": snap.call_effective_cap_price,
+                    "delta": snap.call_delta, "gamma": snap.call_gamma, "theta": snap.call_theta,
+                    "vega": snap.call_vega, "vanna": snap.call_vanna, "charm": snap.call_charm,
                 } if snap.call_strike is not None else None
             ),
         }

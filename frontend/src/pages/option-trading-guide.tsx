@@ -314,9 +314,29 @@ export default function OptionTradingGuidePage() {
           <li>It does not place any options trade for you — this shows real, current prices; you execute the trade yourself with your own broker.</li>
           <li>It is not a prediction of where the stock will go — the reported numbers are simply what insuring or collecting income against your OWN plan currently costs, computed from a real, live options chain.</li>
           <li>It requires you to already hold (or plan to buy) shares of the underlying stock — a protective put or covered call only make sense as a hedge/income overlay on a real stock position, not as a standalone bet.</li>
-          <li>No real per-contract Greeks (delta/theta/vega) beyond implied volatility are shown — this app doesn&apos;t compute or source true option Greeks; the game plan card is deliberately limited to strike/expiry/price/floor-or-cap math that doesn&apos;t need them.</li>
+          <li>This interactive, per-symbol card itself doesn&apos;t show delta/theta/vega — it&apos;s deliberately limited to strike/expiry/price/floor-or-cap math. Real Greeks for the exact same strike/expiry ARE shown elsewhere — see the next subsection.</li>
         </ul>
       </Callout>
+
+      <SubSection title="Real per-contract Greeks (screener + BUY-signal email, Advanced tier)">
+        <p style={{ marginBottom: 10 }}>
+          On the screener&apos;s expandable row detail and in the BUY-signal email, the protective
+          put/covered call legs show a compact <b style={{ color: '#e2e8f0' }}>Δ Γ Θ V</b> line —
+          real delta, gamma, theta, and vega for that EXACT strike/expiry, sourced from Unusual
+          Whales and computed daily alongside the rest of the Options Game Plan snapshot.
+        </p>
+        <ul style={{ paddingLeft: 18, lineHeight: 1.8, margin: '0 0 10px' }}>
+          <li><b style={{ color: '#e2e8f0' }}>Δ (delta)</b> — roughly how much the option&apos;s own price moves per $1 the stock moves. A put around -0.45 means the option gains about $0.45 for every $1 the stock falls (it&apos;s negative because a put gains value as the stock drops).</li>
+          <li><b style={{ color: '#e2e8f0' }}>Γ (gamma)</b> — how fast delta itself changes as the stock moves. Higher gamma means your hedge&apos;s effectiveness can shift quickly, typically largest for at-the-money contracts close to expiry.</li>
+          <li><b style={{ color: '#e2e8f0' }}>Θ (theta)</b> — how much value the option loses per day, all else equal, just from time passing. A theta of -0.04 means the contract is worth about $0.04 less tomorrow than today if the stock doesn&apos;t move — the real, ongoing cost of holding a hedge or the income a covered call collects for you.</li>
+          <li><b style={{ color: '#e2e8f0' }}>V (vega)</b> — how much the option&apos;s price changes if implied volatility itself moves by 1 point, independent of the stock price. Relevant alongside the IV Rank reading above — a high-vega position is more exposed to IV itself calming down or spiking, separate from where the stock goes.</li>
+        </ul>
+        <p style={{ margin: 0 }}>
+          This is shown only when Unusual Whales has real Greeks data for that specific contract
+          — no fabricated numbers if the data isn&apos;t available, matching every other UW-sourced
+          field in this app.
+        </p>
+      </SubSection>
 
       <Section title="Reading this app's own alerts into an actual entry">
         <p style={{ marginBottom: 16 }}>

@@ -22,6 +22,11 @@ Real endpoint shapes below were verified directly against the live
 https://api.unusualwhales.com/api/openapi spec (not guessed/assumed) before being coded against:
   - /api/stock/{ticker}/gex-levels     — call_wall, put_wall, gamma_flip, gamma_magnet
   - /api/stock/{ticker}/greek-exposure — call_gamma, put_gamma, call_delta, put_delta, ...
+  - /api/stock/{ticker}/greeks (per-EXPIRY, per-strike) — call_delta/gamma/theta/vega/vanna/
+    charm and the put-side equivalents, one row per strike — a genuinely different granularity
+    from greek-exposure above (which is already-aggregated across the whole chain). AUD-GREEKS:
+    see get_greeks() below.
+  - /api/stock/{ticker}/iv-rank — volatility, iv_rank_1y, close, date. See get_iv_rank() below.
   - /api/shorts/{ticker}/interest-float/v2 — days_to_cover, fee_rate, rebate_rate,
     short_interest, short_shares_available, si_float, total_float
   - /api/shorts/{ticker}/data           — fee_rate, rebate_rate, short_shares_available
@@ -79,6 +84,9 @@ _IV_RANK_TTL = 900      # 15 min, matching _GEX_TTL — this app's only consumer
 # Options Game Plan batch snapshot, AUD-DECIDE4-EXPECTEDMOVE) reads it at most once/day per
 # symbol anyway; a short TTL just avoids a stale read if the same symbol is looked up twice in
 # one batch run for any reason, not a claim that IV itself is stable at this cadence intraday.
+_GREEKS_TTL = 900       # 15 min, same rationale as _IV_RANK_TTL — this app's only consumer
+# (the daily Options Game Plan batch snapshot, AUD-GREEKS) reads a specific (expiry, strike)
+# pair once/day per symbol.
 
 
 class UnusualWhalesRateLimitError(Exception):
@@ -103,6 +111,31 @@ class IVRankData:
     iv_rank_1y: float | None
     close: float | None
     as_of_date: str | None
+
+
+@dataclass
+class StrikeGreeks:
+    """AUD-GREEKS: real per-strike option Greeks from Unusual Whales'
+    /api/stock/{ticker}/greeks — confirmed field shape via UW's own published API operation
+    spec, fetched 2026-09-03. This app's own guide explicitly documents "no real per-contract
+    Greeks (delta/theta/vega) beyond implied volatility are shown" as a known limitation of the
+    Options Game Plan card — this closes that gap for the SPECIFIC put/call strike the game
+    plan already selected, not a full chain. vanna/charm are real second-order Greeks (delta's
+    sensitivity to IV, and delta's sensitivity to time, respectively) UW exposes that this app
+    has never surfaced anywhere before."""
+    strike: float | None
+    call_delta: float | None
+    call_gamma: float | None
+    call_theta: float | None
+    call_vega: float | None
+    call_vanna: float | None
+    call_charm: float | None
+    put_delta: float | None
+    put_gamma: float | None
+    put_theta: float | None
+    put_vega: float | None
+    put_vanna: float | None
+    put_charm: float | None
 
 
 @dataclass
@@ -314,6 +347,61 @@ def get_iv_rank(symbol: str) -> IVRankData | None:
         import json
         from dataclasses import asdict
         _get_redis().setex(cache_key, _IV_RANK_TTL, json.dumps(asdict(result) if result else None))
+    except Exception:
+        pass
+    return result
+
+
+def get_greeks(symbol: str, expiry: str) -> list[StrikeGreeks]:
+    """AUD-GREEKS: real per-strike call/put Greeks for `symbol` at a single `expiry`
+    (YYYY-MM-DD) from Unusual Whales' /api/stock/{ticker}/greeks — one row per strike, matching
+    UW's own real response shape (confirmed via its published API spec, fetched 2026-09-03).
+    Returns an empty list (never None) on any failure/unavailability, matching
+    get_flow_alerts()'s own list-returning contract — callers select the specific strike(s)
+    they need from the returned list. Redis-cached 15 min per (symbol, expiry) pair.
+    """
+    if not is_available():
+        return []
+    sym = symbol.upper()
+    cache_key = f"stockai:uw:greeks:{sym}:{expiry}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            import json
+            rows = json.loads(cached)
+            return [StrikeGreeks(**r) for r in rows]
+    except Exception:
+        pass
+
+    try:
+        data = _get(f"/api/stock/{sym}/greeks", params={"expiry": expiry})
+    except Exception as exc:
+        log.warning("unusual_whales.greeks_failed", symbol=sym, expiry=expiry, error=str(exc))
+        return []
+
+    result: list[StrikeGreeks] = []
+    if isinstance(data, list):
+        for row in data:
+            result.append(StrikeGreeks(
+                strike=_to_float(row.get("strike")),
+                call_delta=_to_float(row.get("call_delta")),
+                call_gamma=_to_float(row.get("call_gamma")),
+                call_theta=_to_float(row.get("call_theta")),
+                call_vega=_to_float(row.get("call_vega")),
+                call_vanna=_to_float(row.get("call_vanna")),
+                call_charm=_to_float(row.get("call_charm")),
+                put_delta=_to_float(row.get("put_delta")),
+                put_gamma=_to_float(row.get("put_gamma")),
+                put_theta=_to_float(row.get("put_theta")),
+                put_vega=_to_float(row.get("put_vega")),
+                put_vanna=_to_float(row.get("put_vanna")),
+                put_charm=_to_float(row.get("put_charm")),
+            ))
+
+    try:
+        import json
+        from dataclasses import asdict
+        _get_redis().setex(cache_key, _GREEKS_TTL, json.dumps([asdict(r) for r in result]))
     except Exception:
         pass
     return result

@@ -1853,6 +1853,15 @@ export type OptionsGamePlanSnapshotLeg = {
   mid_price: number;
   effective_floor_price?: number;
   effective_cap_price?: number;
+  // AUD-GREEKS: real per-contract Greeks for this exact strike/expiry (null when Unusual
+  // Whales had no data for it) — closes the "no real Greeks beyond IV" gap the Options
+  // Trading Guide used to document as a known limitation.
+  delta?: number | null;
+  gamma?: number | null;
+  theta?: number | null;
+  vega?: number | null;
+  vanna?: number | null;
+  charm?: number | null;
 };
 
 export type OptionsGamePlanSnapshotResult = {

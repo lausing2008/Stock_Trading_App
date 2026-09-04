@@ -933,6 +933,14 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
                                   ${gamePlan.protective_put.strike} exp {gamePlan.protective_put.expiry} · mid ${gamePlan.protective_put.mid_price.toFixed(2)}
                                   {gamePlan.protective_put.effective_floor_price != null && <> · floor ${gamePlan.protective_put.effective_floor_price.toFixed(2)}</>}
                                 </div>
+                                {(gamePlan.protective_put.delta != null || gamePlan.protective_put.theta != null || gamePlan.protective_put.vega != null) && (
+                                  <div style={{ color: '#64748b', fontSize: '11px', marginTop: '4px' }}>
+                                    {gamePlan.protective_put.delta != null && <>Δ {gamePlan.protective_put.delta.toFixed(2)} </>}
+                                    {gamePlan.protective_put.gamma != null && <>Γ {gamePlan.protective_put.gamma.toFixed(3)} </>}
+                                    {gamePlan.protective_put.theta != null && <>Θ {gamePlan.protective_put.theta.toFixed(2)} </>}
+                                    {gamePlan.protective_put.vega != null && <>V {gamePlan.protective_put.vega.toFixed(2)}</>}
+                                  </div>
+                                )}
                               </div>
                             ) : (
                               <div style={{ color: '#334155' }}>No protective put in the target DTE window today.</div>
@@ -944,6 +952,14 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
                                   ${gamePlan.covered_call.strike} exp {gamePlan.covered_call.expiry} · mid ${gamePlan.covered_call.mid_price.toFixed(2)}
                                   {gamePlan.covered_call.effective_cap_price != null && <> · cap ${gamePlan.covered_call.effective_cap_price.toFixed(2)}</>}
                                 </div>
+                                {(gamePlan.covered_call.delta != null || gamePlan.covered_call.theta != null || gamePlan.covered_call.vega != null) && (
+                                  <div style={{ color: '#64748b', fontSize: '11px', marginTop: '4px' }}>
+                                    {gamePlan.covered_call.delta != null && <>Δ {gamePlan.covered_call.delta.toFixed(2)} </>}
+                                    {gamePlan.covered_call.gamma != null && <>Γ {gamePlan.covered_call.gamma.toFixed(3)} </>}
+                                    {gamePlan.covered_call.theta != null && <>Θ {gamePlan.covered_call.theta.toFixed(2)} </>}
+                                    {gamePlan.covered_call.vega != null && <>V {gamePlan.covered_call.vega.toFixed(2)}</>}
+                                  </div>
+                                )}
                               </div>
                             ) : (
                               <div style={{ color: '#334155' }}>No covered call in the target DTE window today.</div>

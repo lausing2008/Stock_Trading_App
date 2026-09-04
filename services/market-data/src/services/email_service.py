@@ -462,22 +462,45 @@ Key Risk: {risk}
         _ogp = options_game_plan
         _ogp_rows_html = ""
         _ogp_rows_text = ""
+        def _greeks_suffix(prefix: str) -> tuple[str, str]:
+            # AUD-GREEKS: a compact delta/theta/vega suffix when Unusual Whales had real
+            # per-contract Greeks for this exact strike/expiry — omitted entirely (not a
+            # placeholder) when unavailable, matching every other UW-sourced field's fail-open
+            # contract on this same object.
+            delta = getattr(_ogp, f"{prefix}_delta", None)
+            theta = getattr(_ogp, f"{prefix}_theta", None)
+            vega = getattr(_ogp, f"{prefix}_vega", None)
+            if delta is None and theta is None and vega is None:
+                return "", ""
+            parts = []
+            if delta is not None:
+                parts.append(f"&Delta; {delta:.2f}")
+            if theta is not None:
+                parts.append(f"&Theta; {theta:.2f}")
+            if vega is not None:
+                parts.append(f"V {vega:.2f}")
+            html_suffix = f' <span style="color:#94a3b8">({" ".join(parts)})</span>'
+            text_suffix = f" ({' '.join(p.replace('&Delta;', 'D').replace('&Theta;', 'T') for p in parts)})"
+            return html_suffix, text_suffix
+
         if _ogp.put_strike is not None:
+            _put_greeks_html, _put_greeks_text = _greeks_suffix("put")
             _ogp_rows_html += (
                 f'<tr><td style="padding:6px 10px;font-size:12px;color:#166534;font-weight:600">🛡️ Protective Put</td>'
                 f'<td style="padding:6px 10px;font-size:12px;color:#64748b;font-family:monospace">'
-                f'${_ogp.put_strike:.2f} exp {_ogp.put_expiry} · mid ${_ogp.put_mid_price:.2f}'
+                f'${_ogp.put_strike:.2f} exp {_ogp.put_expiry} · mid ${_ogp.put_mid_price:.2f}{_put_greeks_html}'
                 f'</td></tr>'
             )
-            _ogp_rows_text += f"  Protective Put: ${_ogp.put_strike:.2f} exp {_ogp.put_expiry}, mid ${_ogp.put_mid_price:.2f}\n"
+            _ogp_rows_text += f"  Protective Put: ${_ogp.put_strike:.2f} exp {_ogp.put_expiry}, mid ${_ogp.put_mid_price:.2f}{_put_greeks_text}\n"
         if _ogp.call_strike is not None:
+            _call_greeks_html, _call_greeks_text = _greeks_suffix("call")
             _ogp_rows_html += (
                 f'<tr><td style="padding:6px 10px;font-size:12px;color:#166534;font-weight:600">💰 Covered Call</td>'
                 f'<td style="padding:6px 10px;font-size:12px;color:#64748b;font-family:monospace">'
-                f'${_ogp.call_strike:.2f} exp {_ogp.call_expiry} · mid ${_ogp.call_mid_price:.2f}'
+                f'${_ogp.call_strike:.2f} exp {_ogp.call_expiry} · mid ${_ogp.call_mid_price:.2f}{_call_greeks_html}'
                 f'</td></tr>'
             )
-            _ogp_rows_text += f"  Covered Call: ${_ogp.call_strike:.2f} exp {_ogp.call_expiry}, mid ${_ogp.call_mid_price:.2f}\n"
+            _ogp_rows_text += f"  Covered Call: ${_ogp.call_strike:.2f} exp {_ogp.call_expiry}, mid ${_ogp.call_mid_price:.2f}{_call_greeks_text}\n"
         _ogp_expected_move = getattr(_ogp, "expected_move_pct", None)
         _ogp_expected_move_dte = getattr(_ogp, "expected_move_dte", None)
         _ogp_iv_rank = getattr(_ogp, "iv_rank_1y", None)
