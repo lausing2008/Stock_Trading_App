@@ -85,3 +85,62 @@ but wasn't needed once `--no-cache` was correctly identified as the actual cause
 
 ---
 
+## Recurring Issue: AUD-LOGROTATE — No Container Log Rotation Configured At All, 54GB Accumulated Platform-Wide (2026-09-04)
+
+**User request:** "let's clear up some of the huge log files on the server to free up some
+spaces." `df -h /` showed 76% used (25GB free of 100GB). `docker system df` broke this down:
+28.14GB reclaimable in dangling images, 22.82GB in stale BuildKit build cache (226 layers, 0
+active — leftover from repeated frontend rebuilds, including a duplicate/BuildKit-vs-legacy
+mess from earlier the same session), and container logs themselves: `docker system df`'s
+Containers row showed 1.17GB, 99% reclaimable.
+
+**Root cause:** `docker-compose.yml` had never configured a `logging:` block on ANY service —
+every container ran on Docker's default `json-file` driver with no `max-size`/`max-file` at
+all, so a container's own log file grows completely unbounded for as long as it stays up. Direct
+inspection (`sudo du -sh /var/lib/docker/containers/*/`) confirmed this concretely:
+market-data's own log file alone had grown to **1.9GB** (the busiest/longest-running container —
+66 scheduled jobs, 5-min-cadence market refreshes), ml-prediction 929MB, news-intelligence 417MB
+(1-2 min RSS/EDGAR polling cadence), signal-engine 245MB, api-gateway 170MB. No `daemon.json`
+existed either, so there was no daemon-level default catching this.
+
+**Fixed, in order:**
+1. `docker image prune -af` — reclaimed 23.45GB of dangling/untagged images (confirmed safe:
+   these are images no running container references, mostly leftover intermediate layers from
+   today's several frontend rebuild attempts).
+2. `docker builder prune -af` — reclaimed 33.19GB of stale BuildKit build cache (0 active
+   layers; this is the LEGACY (`DOCKER_BUILDKIT=0`) build path's own cache store, separate from
+   what a `docker compose build` would use — pruning it does not affect the deployment
+   pattern's own standard `DOCKER_BUILDKIT=0 docker build` command).
+3. Truncated (not deleted) every container's own `*-json.log` file in place via
+   `truncate -s 0 <file>` — the standard safe way to reclaim log space on a LIVE container:
+   Docker keeps writing/appending to the same (now-empty) file handle afterward, unlike deleting
+   the file outright, which can orphan the file descriptor until the container restarts.
+   Confirmed all containers stayed healthy/running through this with zero disruption.
+4. Added a shared `x-logging: &default-logging` anchor (`max-size: "20m"`, `max-file: "5"` —
+   caps any one container's total log footprint at 100MB, generous enough for a real multi-day
+   `docker logs` debugging window, but bounded instead of unbounded) to `docker/docker-compose.yml`.
+   Threaded into the existing `x-py-common` anchor (covers all 11 backend services in one
+   place, matching this file's own established DRY convention) plus `postgres`/`redis`/
+   `frontend` individually, since those 3 don't extend `x-py-common`. Validated via
+   `docker compose config --quiet` (no errors) and a full `docker compose config` grep
+   confirming all 14 real services resolve `max-size: 20m`/`max-file: "5"`.
+
+Net result: disk usage dropped from 76% (25GB free) to 30% (71GB free) on this pass alone.
+The rotation config only takes effect for CONTAINERS RECREATED after this change (a plain
+`docker restart` does not pick up a new `logging:` block — needs `--force-recreate` or the
+container's next natural recreation via a future deploy) — so some containers may still be
+running without rotation until their next recreation.
+
+**What to check if disk fills up again:**
+```bash
+df -h /
+docker system df
+# If Containers row is high-% reclaimable again, either rotation was never picked up by a
+# still-running old container, or a NEW service was added without extending x-py-common /
+# getting its own explicit `logging: *default-logging` line — check docker-compose.yml first.
+docker compose -f docker/docker-compose.yml config --quiet   # validates the anchors resolve
+docker compose -f docker/docker-compose.yml config | grep -c "max-size: 20m"   # should be 14
+```
+
+---
+

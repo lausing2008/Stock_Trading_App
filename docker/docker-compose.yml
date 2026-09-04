@@ -1,5 +1,21 @@
 name: stockai
 
+# AUD-LOGROTATE: no logging driver was ever configured on any service — every container used
+# Docker's default json-file driver with NO size cap and NO rotation, so container logs grew
+# unbounded for as long as a container stayed up. Confirmed live: market-data's own log file
+# alone had grown to 1.9GB (the busiest container — 66 scheduled jobs, 5-min-cadence
+# refreshes), ml-prediction 929MB, news-intelligence 417MB (1-2 min RSS/EDGAR polling) — three
+# containers alone accounted for ~3.2GB of the ~54GB that had accumulated platform-wide by
+# 2026-09-04 (28GB dangling images + 22.8GB stale BuildKit cache + these unbounded logs).
+# max-size=20m/max-file=5 caps any one container's log footprint at 100MB total (5 rotated
+# 20MB files) — generous enough to keep a real multi-day debugging window via `docker logs`,
+# but bounded instead of growing forever.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 x-py-common: &py-common
   env_file: ../.env
   depends_on:
@@ -9,6 +25,7 @@ x-py-common: &py-common
       condition: service_healthy
   networks: [stockai-net]
   restart: unless-stopped
+  logging: *default-logging
 
 services:
   postgres:
@@ -19,6 +36,7 @@ services:
     ports: ["127.0.0.1:5432:5432"]
     networks: [stockai-net]
     restart: unless-stopped
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U stockai -d stockai"]
       interval: 5s
@@ -33,6 +51,7 @@ services:
     networks: [stockai-net]
     volumes:
       - redisdata:/data
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -170,6 +189,7 @@ services:
     depends_on: [api-gateway]
     networks: [stockai-net]
     restart: unless-stopped
+    logging: *default-logging
 
 volumes:
   datavol:
