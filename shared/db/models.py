@@ -1203,6 +1203,22 @@ class InsiderTransaction(Base):
     filing_date: Mapped[date] = mapped_column(Date, index=True)
     accession_number: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # AUD-10B51: Form 4's own real <aff10b5One> boolean tag — the FILER'S OWN attestation to
+    # the SEC of whether this filing's transactions were made under a pre-scheduled Rule 10b5-1
+    # trading plan, confirmed present via 2 real live filings (AAPL, MSFT) before this field was
+    # added, including one whose <remarks> independently corroborated it in free text. A real,
+    # meaningful signal gap this app's insider pipeline had before this: an insider's DISCRETIONARY,
+    # unscheduled sale (a real, timely signal) was previously indistinguishable from the same
+    # insider executing a sale scheduled 6+ months earlier under an existing plan (which reveals
+    # nothing about their view of the stock right now). NULL for pre-existing rows ingested before
+    # this field existed, and for any (rare) filing this tag genuinely can't be parsed from — never
+    # backfilled or guessed, matching this table's own existing nullable-field conventions.
+    # Considered wiring Unusual Whales' own is_10b5_1 field as a second source/cross-check, but its
+    # own documentation gives no derivation method at all, versus this field being the filer's own
+    # direct, first-party attestation on the actual form — shipped as free-source-only for now;
+    # UW's version remains a candidate future cross-check once a live subscription allows directly
+    # comparing the two on real overlapping filings, not assumed to be either the same or different.
+    is_10b5_1: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("accession_number", name="uq_insider_accession"),

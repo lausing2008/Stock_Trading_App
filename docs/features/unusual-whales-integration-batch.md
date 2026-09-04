@@ -647,3 +647,83 @@ no-data-guard logic stripped out entirely — 4 tests failed correctly; `ticker`
 parse `None` in the UW function itself — 3 tests failed correctly), both restored byte-identical.
 Full market-data suite: 2673 passed; frontend `tsc --noEmit`/`next build` clean, confirmed
 shipped in the compiled `sector-rotation` bundle via grep.
+
+---
+
+### AUD-10B51 — Real Rule 10b5-1 trading-plan enrichment for insider transactions,
+### sourced free instead of from Unusual Whales (2026-09-04)
+
+**User request**: seventh and final item from the UW API design review — the one added after
+the user asked "is Insider Trading data the same? No better in UW?" UW's own `/api/insider/
+transactions` was confirmed to have a real `is_10b5_1` field (a flag for whether a sale was
+made under a pre-scheduled trading plan) that this app's existing free SEC-EDGAR-based pipeline
+lacked. The plan was to wire UW for this specific fact.
+
+**A genuine reversal of the original plan, found during implementation**: before wiring UW, a
+direct check of SEC's own real Form 4 XML technical structure (fetched via WebFetch against 2
+real, live, current filings — AAPL accession 0001140361-26-035636 and MSFT accession
+0000789019-26-000161) confirmed that Form 4's own XML **already contains a native, document-
+level `<aff10b5One>` boolean tag** — the exact fact this feature needed, already present for
+free in data this app's own `insider.py` pipeline was already fetching and parsing, just never
+extracting. Both live filings confirmed the tag populated correctly (values `"1"`/`"0"`), with
+one filing's own `<footnote>` and the other's own `<remarks>` independently corroborating the
+flag in free text.
+
+**Explicitly surfaced to the user as a real decision point before building**: UW's own
+documentation for `is_10b5_1` gives no derivation methodology at all ("True if this insider
+trade was part of a 10b5-1 plan" — nothing about how it's computed or sourced), versus SEC's
+`aff10b5One` being the filer's own direct, first-party, legally-attested value on the actual
+form. Without a live UW subscription there was no way to empirically compare the two fields on
+real overlapping data. The user asked to verify whether the two sources would actually agree in
+substance and timing before choosing; given no live UW comparison was possible, the user chose
+to ship the free, first-party SEC field now and leave UW's version as a documented future
+cross-check candidate, not a decided duplicate or disagreement.
+
+**New model field**: `InsiderTransaction.is_10b5_1` (nullable `Boolean`, needs a manual `ALTER
+TABLE` — an existing, already-populated table). `NULL` for every row ingested before this field
+existed, and for the rare filing it can't be parsed from — never backfilled or guessed.
+
+**Extraction**: `_extract_form4_data()` (`insider.py`) now also reads `<aff10b5One>` via the
+same `_tag()` helper already used for every other Form 4 field. Real confirmed SEC values are
+`"1"`/`"0"`; `"true"`/`"false"` string variants are also accepted defensively since this tag's
+literal value space isn't independently documented anywhere UW-adjacent or SEC-adjacent.
+
+**Scoring improvement** (`compute_insider_score()`): a sale's existing 0.4× role-weight discount
+(vs. an equal-weight purchase) is now further discounted by a new `_10B5_1_SALE_WEIGHT_MULT =
+0.4` specifically when `is_10b5_1` is confirmed `True` — a sale locked in months earlier under a
+pre-scheduled plan reveals essentially nothing about an insider's CURRENT view of the stock,
+unlike a genuinely discretionary sale. Critically, `is_10b5_1 = None` (unknown — the common case
+for any row from before this field existed) is treated as the SAME full weight as an explicit
+`False`, never silently treated as "confirmed scheduled" — an unknown status must never
+artificially soften real insider selling pressure just because the data hasn't caught up yet.
+
+**Wiring**: `sync_insider_for_symbol()`'s upsert now writes `is_10b5_1`; `_txn_to_dict()` now
+surfaces it in every API response reading from this table (`GET /events/insider/{symbol}`,
+already exposing it with zero further backend change needed). `frontend/src/lib/api.ts`'s
+`InsiderTransaction` type extended to match — no dedicated frontend rendering surface exists
+yet for this specific per-transaction endpoint (it's currently backend-only/unconsumed by any
+page, same as `management_tone`'s own email-only precedent), so the field is correctly plumbed
+end-to-end and ready for whenever a consumer is built, not left half-wired.
+
+**Tests**: 12 new — a new `test_form4_10b5_1_extraction.py` (6, using real fixture XML
+structurally mirroring the 2 actual live filings checked: SEC's real `"1"`/`"0"` value parsing,
+the defensive `"true"` string variant, a missing tag correctly degrading to `None` rather than a
+fabricated `False`, and a regression guard confirming the other existing field extractions are
+unaffected) plus 6 new tests in `test_insider.py` for the scoring weight (scheduled sales score
+strictly less negative than discretionary ones, the exact documented multiplier applies,
+unknown/`None` status gets full weight identical to an explicit `False` — the single most
+important safety property here — the flag never affects purchases, and a mixed batch of both
+sale types scores each correctly). Adversarially verified via 2 sabotage cycles (the XML
+extraction gutted to always return `None` — 4 tests failed correctly; the scoring's `is True`
+check widened to also match `None` — the exact "unknown treated as scheduled" bug this feature
+was built to avoid — 1 test failed correctly, confirming the safety property actually holds),
+both restored byte-identical. Full event-intelligence suite: 364 passed; frontend `tsc --noEmit`/
+`next build` clean.
+
+**What to check if this looks wrong**: `aff10b5One`'s real value space (`"0"`/`"1"` vs.
+`"true"`/`"false"`) is not independently documented anywhere — the defensive dual-acceptance in
+`_extract_form4_data()` is a reasonable guess, not a confirmed spec; if a filing agent emits
+some third representation, this would currently silently degrade to `False` rather than `None`.
+UW's own `is_10b5_1` remains an open, undecided candidate for a future cross-check once a live
+subscription allows directly comparing the two fields on real overlapping filings — this batch
+deliberately did not build that comparison, since it couldn't be done without live UW access.

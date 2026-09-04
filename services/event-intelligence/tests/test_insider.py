@@ -86,3 +86,44 @@ def test_score_clamped_at_positive_100():
 def test_score_clamped_at_negative_100():
     txns = [{"transaction_type": "sale", "insider_role": "CEO"}] * 20
     assert _score(txns) == -100.0
+
+
+# ── AUD-10B51: is_10b5_1-aware sale weighting ────────────────────────────────────────
+
+def test_10b5_1_sale_weighted_lower_than_a_discretionary_sale():
+    discretionary = [{"transaction_type": "sale", "insider_role": "CEO", "is_10b5_1": False}]
+    scheduled = [{"transaction_type": "sale", "insider_role": "CEO", "is_10b5_1": True}]
+    assert _score(scheduled) > _score(discretionary)  # both negative; scheduled is LESS negative
+    assert abs(_score(scheduled)) < abs(_score(discretionary))
+
+
+def test_10b5_1_sale_uses_the_documented_multiplier():
+    txns = [{"transaction_type": "sale", "insider_role": "CEO", "is_10b5_1": True}]
+    import src.services.insider as ins
+    expected = -30 * 0.4 * ins._10B5_1_SALE_WEIGHT_MULT
+    assert _score(txns) == expected
+
+
+def test_unknown_10b5_1_status_treated_as_full_weight_not_scheduled():
+    """is_10b5_1=None (the common case for rows ingested before this field existed) must NOT
+    be silently treated as "definitely scheduled" -- that would understate real insider
+    selling pressure. It gets the same full weight as an explicit False."""
+    unknown = [{"transaction_type": "sale", "insider_role": "CEO", "is_10b5_1": None}]
+    explicit_false = [{"transaction_type": "sale", "insider_role": "CEO", "is_10b5_1": False}]
+    missing_key = [{"transaction_type": "sale", "insider_role": "CEO"}]
+    assert _score(unknown) == _score(explicit_false) == _score(missing_key) == -30 * 0.4
+
+
+def test_10b5_1_flag_only_affects_sales_never_purchases():
+    txns = [{"transaction_type": "purchase", "insider_role": "CEO", "is_10b5_1": True}]
+    assert _score(txns) == 30  # unaffected -- 10b5-1 plans are a sale-scheduling concept only
+
+
+def test_mixed_scheduled_and_discretionary_sales_both_contribute_correctly():
+    import src.services.insider as ins
+    txns = [
+        {"transaction_type": "sale", "insider_role": "CEO", "is_10b5_1": True},
+        {"transaction_type": "sale", "insider_role": "CEO", "is_10b5_1": False},
+    ]
+    expected = -(30 * 0.4 * ins._10B5_1_SALE_WEIGHT_MULT) - (30 * 0.4)
+    assert _score(txns) == expected

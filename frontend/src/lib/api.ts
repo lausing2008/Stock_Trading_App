@@ -3170,6 +3170,10 @@ export type InsiderTransaction = {
   total_value: number | null;
   transaction_date: string;
   filing_date: string | null;
+  // AUD-10B51: the filer's own real Form 4 attestation (<aff10b5One>) of whether this
+  // transaction was made under a pre-scheduled Rule 10b5-1 trading plan — null for rows
+  // ingested before this field existed, or the rare filing it couldn't be parsed from.
+  is_10b5_1: boolean | null;
 };
 
 export type InsiderResponse = {

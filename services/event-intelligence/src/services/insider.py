@@ -124,6 +124,14 @@ def _extract_form4_data(xml: str, accession: str) -> dict | None:
     shares_str = _tag("transactionShares") or "0"
     price_str = _tag("transactionPricePerShare") or "0"
     date_str = _tag("transactionDate") or _tag("periodOfReport")
+    # AUD-10B51: <aff10b5One> is a real, document-level boolean tag on every Form 4 — the
+    # filer's own attestation of whether these transactions were made under a pre-scheduled
+    # Rule 10b5-1 trading plan, confirmed present on 2 real live filings before this was added.
+    # SEC's own real values are "0"/"1" (confirmed live), not "true"/"false" — checked first;
+    # "true" is also accepted defensively in case a filing agent's software emits it that way,
+    # since this tag's own literal value space isn't independently documented anywhere.
+    aff10b5_raw = _tag("aff10b5One")
+    is_10b5_1 = aff10b5_raw.strip() in ("1", "true") if aff10b5_raw is not None else None
 
     if not insider_name or not date_str:
         return None
@@ -148,6 +156,7 @@ def _extract_form4_data(xml: str, accession: str) -> dict | None:
         "total_value": shares * price if price > 0 else None,
         "transaction_date": txn_date,
         "filing_date": txn_date,  # approximate — actual filing date from index
+        "is_10b5_1": is_10b5_1,
     }
 
 
@@ -189,6 +198,7 @@ async def sync_insider_for_symbol(ticker: str, stock_id: int, days: int = 90) ->
                         transaction_date=data["transaction_date"],
                         filing_date=data["filing_date"],
                         accession_number=data["accession"],
+                        is_10b5_1=data["is_10b5_1"],
                     )
                     .on_conflict_do_nothing(constraint="uq_insider_accession")
                 )
@@ -278,6 +288,15 @@ def get_insider_leaderboard(days: int = 30, limit: int = 20) -> list[dict]:
         return _build_insider_leaderboard(rows, limit)
 
 
+_10B5_1_SALE_WEIGHT_MULT = 0.4  # AUD-10B51: a sale made under a pre-scheduled Rule 10b5-1 plan
+# was decided on and locked in whenever the plan was adopted (often months earlier) — it
+# reveals essentially nothing about the insider's view of the stock RIGHT NOW, unlike a
+# genuinely discretionary sale. Applied on top of the existing 0.4 sale-vs-purchase asymmetry
+# below (0.4 * 0.4 = 0.16 of a same-weight purchase) rather than replacing it — a scheduled
+# sale should weigh less than a discretionary one, not literally zero, since insiders can and
+# do cancel/amend 10b5-1 plans, and the sale still happened.
+
+
 def compute_insider_score(stock_id: int, days: int = 90) -> float:
     """-100 to 100 insider score (negative = net selling).
 
@@ -285,6 +304,15 @@ def compute_insider_score(stock_id: int, days: int = 90) -> float:
     selling" in the same sentence) — matches the real max(-100.0, min(100.0,
     score)) clamp below. Same stale-range docstring class as congress.py's
     compute_congress_score.
+
+    AUD-10B51: a sale's own weight is now reduced further when Form 4's real <aff10b5One>
+    attestation confirms it was made under a pre-scheduled trading plan — a real, previously-
+    missing distinction between a scheduled sale (reveals little about current insider
+    sentiment) and a genuinely discretionary one (a real, timely signal). is_10b5_1=None
+    (unknown — the common case for any row ingested before this field existed) is treated
+    exactly like a discretionary sale (the FULL pre-existing weight, no discount) — an unknown
+    plan status must never be silently treated as "definitely scheduled," which would
+    understate real insider selling pressure whenever the data simply hasn't caught up yet.
     """
     txns = get_insider_for_symbol(stock_id, days)
     if not txns:
@@ -303,7 +331,10 @@ def compute_insider_score(stock_id: int, days: int = 90) -> float:
             score += weight
             purchase_count += 1
         elif t["transaction_type"] == "sale":
-            score -= weight * 0.4
+            sale_weight = weight * 0.4
+            if t.get("is_10b5_1") is True:
+                sale_weight *= _10B5_1_SALE_WEIGHT_MULT
+            score -= sale_weight
 
     # Cluster bonus: 3+ insiders buying
     if purchase_count >= 3:
@@ -322,4 +353,9 @@ def _txn_to_dict(t: InsiderTransaction) -> dict:
         "total_value": t.total_value,
         "transaction_date": t.transaction_date.isoformat(),
         "filing_date": t.filing_date.isoformat(),
+        # AUD-10B51: the filer's own real attestation of whether this transaction was made
+        # under a pre-scheduled Rule 10b5-1 trading plan (from Form 4's own <aff10b5One> tag).
+        # None for rows ingested before this field existed, or the rare filing it couldn't be
+        # parsed from — never backfilled/guessed, matching every other nullable field here.
+        "is_10b5_1": t.is_10b5_1,
     }
