@@ -208,7 +208,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/incidents/ec2-reboot-and-tls-cert-incidents.md`** — INCIDENT 2026-08-05: Full EC2 Reboot Reverted signal-engine to a PRE-SPLIT Image — SA-33 No Longer Live; INCIDENT 2026-08-05 (RESOLVED): TLS Certificate Expi...
 - **`docs/incidents/external-data-source-liveness.md`** — Congress Trading Data Silently Empty — Free Source Domains Permanently Dead; "It's Reachable" ≠ "It's Current" — Always Check Last-Modified, Not Just HTTP 200
 - **`docs/incidents/float-noise-variance-epsilon.md`** — AUD292-SHARPE-VAREPS — paper_portfolio.py's Sharpe/Sortino Had the Exact Float-Noise-Explosion Bug strategy-engine's Own T237-SE1 Fix Already Found and Guard...
-- **`docs/incidents/game-plan-build-failures.md`** — AUD-GAMEPLAN-NONERECOMMENDATION — `_build_game_plan()` Crashed on Every ETF, Silently Dropping the Game Plan From the Signal Alert Email (Fixed 2026-09-04)
+- **`docs/incidents/game-plan-build-failures.md`** — AUD-GAMEPLAN-NONERECOMMENDATION — `_build_game_plan()` Crashed on Every ETF, Silently Dropping the Game Plan From the Signal Alert Email (Fixed 2026-09-04); AUD-GAMEPLANBATCH-WRONGIMPORT — `GET /options-game-plan/batch` Had Never Returned Real Data Since It Shipped, a Wrong Relative Import Path (Fixed 2026-09-04)
 - **`docs/incidents/hk-connect-logging-typeerror.md`** — hk_connect_flows Logging TypeError (BUG-9)
 - **`docs/incidents/improvements-tracker-bugs.md`** — Improvements Page Not Showing New Tiers; BUG-IMPROVEMENTSPAGE-STALESTATUS — Improvements Tracker's "Done" Count Could Get Stuck Forever (Fixed 2026-07-21)
 - **`docs/incidents/login-redirect-loop.md`** — Login Redirect Loop After Deployment

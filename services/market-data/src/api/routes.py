@@ -4570,7 +4570,17 @@ def get_options_game_plan_batch(
     per-contract Greeks beyond implied volatility are shown"). None when Unusual Whales had no
     Greeks data for this specific strike/expiry.
     """
-    from .options_game_plan_snapshot import get_latest_options_game_plan
+    # AUD-GAMEPLANBATCH-WRONGIMPORT: this was `from .options_game_plan_snapshot import ...`
+    # (relative to src/api/, where this route lives) — but options_game_plan_snapshot.py
+    # actually lives in src/services/, one package over. Confirmed live: every real request to
+    # this route 500'd with ModuleNotFoundError: No module named
+    # 'src.api.options_game_plan_snapshot', meaning the Options Game Plan screener column/email
+    # section had NEVER actually returned real data through this batch route since it shipped —
+    # scheduler.py's own two imports of the same module (both `from .options_game_plan_snapshot
+    # import ...`, correctly relative to src/services/ where scheduler.py itself lives) never
+    # exercised this bug, so the EOD batch job that WRITES snapshots worked fine while this
+    # route that READS them for the screener/email never did.
+    from ..services.options_game_plan_snapshot import get_latest_options_game_plan
 
     sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     if not sym_list:

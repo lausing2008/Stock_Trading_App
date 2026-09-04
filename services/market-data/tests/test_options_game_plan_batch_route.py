@@ -90,3 +90,19 @@ def test_route_path_is_a_literal_segment_not_shadowed_by_the_symbol_path_param()
     'options-game-plan', which cannot happen) — this test just pins the route string itself so
     a future refactor can't accidentally rename it into a real collision."""
     assert '@router.get("/options-game-plan/batch")' in _SOURCE
+
+
+def test_imports_options_game_plan_snapshot_via_the_correct_relative_path():
+    """AUD-GAMEPLANBATCH-WRONGIMPORT: this route lives in src/api/routes.py, but
+    options_game_plan_snapshot.py lives in src/services/ — a bare `from
+    .options_game_plan_snapshot import ...` (relative to src/api/) raises ModuleNotFoundError
+    at request time, 500ing every real call to this route. Confirmed live in production: this
+    exact bug meant the Options Game Plan screener column/email section had never actually
+    returned real data, despite the EOD batch job (scheduler.py, a DIFFERENT file whose own
+    correctly-relative `.options_game_plan_snapshot` import never exercised this bug) writing
+    real snapshots successfully every day. Must import via `..services.options_game_plan_snapshot`,
+    matching every other src/api/routes.py cross-package import into src/services/ (e.g.
+    `from ..services.paper_trading_engine import ...`, `from ..services.ingestion import ...`)."""
+    body = _function_body()
+    assert "\n    from ..services.options_game_plan_snapshot import get_latest_options_game_plan" in body
+    assert "\n    from .options_game_plan_snapshot import" not in body
