@@ -5858,6 +5858,21 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             continue
 
         open_symbols.add(stock.symbol)
+        # AUD-GLOBALSYMCAP-STALE: keep the CROSS-portfolio counter in step with the
+        # per-portfolio `open_symbols` set immediately above. _global_sym_open is loaded once
+        # from the DB before the candidate loop and was never incremented as positions actually
+        # opened during the same run, so its "is this symbol already held somewhere?" answer
+        # went stale the instant this scan opened the first position in a symbol — and every
+        # later candidate for that symbol (in this portfolio or another) still read 0.
+        #
+        # Confirmed in production: 2382.HK opened THREE positions on 2026-06-25, all stopped
+        # out the same day, two of them in the SAME portfolio — ~HKD 72k of combined exposure
+        # to one stock from what was really a single idea, losing $5,143. That one symbol is
+        # 64% of the entire paper-trading net loss to date.
+        #
+        # Deliberately mirrors open_symbols.add() rather than re-querying: the DB row is only
+        # committed later, so a re-query inside the loop would still under-count.
+        _global_sym_open[stock.symbol] = _global_sym_open.get(stock.symbol, 0) + 1
         entries_made += 1
         # Recalculate equity after each entry so successive entries in this cycle
         # use the updated cash/position value rather than the stale snapshot
