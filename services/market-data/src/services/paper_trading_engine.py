@@ -5335,7 +5335,29 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
 
                         if _si_fire_level is not None and _si_size_pct:
                             _si_add_value = _si_live * _si_trade.shares * _si_size_pct
-                            if portfolio.current_cash >= _si_add_value * 1.1:
+                            # AUD-SCALEIN-BYPASSES-POSCAP: _size_position() enforces
+                            # max_position_pct on ENTRY, but this scale-in path gated only on
+                            # cash — so a position already at the cap could scale straight past
+                            # it. Confirmed live: JPM reached 13.0% of capital against a 10%
+                            # cap (1.25x confidence multiplier + 1.15x consensus multiplier +
+                            # a SCALE_IN at +5.2%), and HK GROWTH's 0005.HK reached 12.7%.
+                            #
+                            # TRUNCATE rather than skip: a scale-in only fires on an already
+                            # PROFITABLE position, so the add is usually desirable — the
+                            # correct behaviour is to add as much as the cap allows, not to
+                            # forfeit the add entirely. If the position is already at or over
+                            # the cap, _si_add_value goes to 0 and the branch is skipped by the
+                            # `> 0` guard below.
+                            _si_cap_value = _compute_equity(session, portfolio, live_prices) * cfg.get("max_position_pct", 0.10)
+                            _si_current_value = _si_live * _si_trade.shares
+                            _si_headroom = max(0.0, _si_cap_value - _si_current_value)
+                            if _si_add_value > _si_headroom:
+                                log.info("paper.scale_in_capped", symbol=_si_trade.symbol,
+                                         requested=round(_si_add_value, 2),
+                                         allowed=round(_si_headroom, 2),
+                                         cap_pct=cfg.get("max_position_pct", 0.10))
+                                _si_add_value = _si_headroom
+                            if _si_add_value > 0 and portfolio.current_cash >= _si_add_value * 1.1:
                                 _si_base_slippage = cfg.get("entry_slippage_pct", 0.001)
                                 # IF-06: approximate the add-on share count pre-slippage for the
                                 # size-aware lookup (a small circularity — exact shares depend on
