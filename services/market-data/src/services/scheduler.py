@@ -358,11 +358,39 @@ _HK_HOLIDAYS: frozenset[tuple[int, int, int]] = frozenset([
 
 
 def _is_hk_holiday(dt: datetime | None = None) -> bool:
-    """Return True if today is a HKEX public holiday (market is closed)."""
+    """Return True if today is a HKEX public holiday (market is closed).
+
+    NOTE: holidays ONLY — this deliberately does not consider weekends, matching its name.
+    For "is HKEX actually open today", use _is_hk_trading_day() below. Existing callers that
+    pair this with their own `weekday() >= 5` check (the DQ-check market-closed skips) are
+    correct as-is and are left alone.
+    """
     d = (dt or datetime.now(timezone.utc)).astimezone(
         __import__("zoneinfo").ZoneInfo("Asia/Hong_Kong")
     )
     return (d.year, d.month, d.day) in _HK_HOLIDAYS
+
+
+def _is_hk_trading_day(dt: datetime | None = None) -> bool:
+    """Return True if today is a HKEX trading day (weekday and not a holiday).
+
+    AUD-HKWEEKEND: the exact mirror of _is_us_trading_day(), which HK never had. Three
+    scheduling gates asked "is HK closed?" using _is_hk_holiday() alone, which returns False
+    on Saturday/Sunday — so the HK side of _refresh_market(), _refresh_prices_only(), and
+    hk_connect_flows() all ran a full cycle (ingest, signal refresh, alert checks, paper
+    trading) every weekend against a closed market. US was correctly gated the whole time;
+    only HK was exposed. Confirmed live on Saturday 2026-09-05: _is_us_trading_day() False,
+    _is_hk_holiday() False, so the HK refresh proceeded.
+
+    hk_connect_flows()'s own docstring already stated the intended behavior ("HKEX does not
+    publish flow data on weekends or holidays") while its check only covered holidays.
+    """
+    d = (dt or datetime.now(timezone.utc)).astimezone(
+        __import__("zoneinfo").ZoneInfo("Asia/Hong_Kong")
+    )
+    if d.weekday() >= 5:  # Saturday=5, Sunday=6
+        return False
+    return (d.year, d.month, d.day) not in _HK_HOLIDAYS
 
 
 # ── NYSE Public Holiday Calendar ──────────────────────────────────────────────
@@ -548,8 +576,10 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
     Called by every scheduled job (open burst, regular, close burst, post-close).
     post_close=True is only set by the 16:30 job after the final bar has settled.
     """
-    if market == "HK" and _is_hk_holiday():
-        log.info("scheduler.skip", market="HK", reason="hk_public_holiday")
+    # AUD-HKWEEKEND: trading-day check, not holiday-only — this ran a full HK cycle every
+    # Saturday/Sunday (see _is_hk_trading_day's docstring).
+    if market == "HK" and not _is_hk_trading_day():
+        log.info("scheduler.skip", market="HK", reason="hk_market_closed")
         return
     if market == "US" and not _is_us_trading_day():
         log.info("scheduler.skip", market="US", reason="nyse_holiday")
@@ -8001,8 +8031,9 @@ def _ingest_hk_connect_flows() -> None:
     Fail-safe: any single-stock failure is logged and skipped; other stocks
     continue.  The job records its status to Redis for the admin health monitor.
     """
-    if _is_hk_holiday():
-        log.info("hk_connect.skip", reason="hk_public_holiday")
+    # AUD-HKWEEKEND: this function's own docstring already said "weekends or holidays".
+    if not _is_hk_trading_day():
+        log.info("hk_connect.skip", reason="hk_market_closed")
         return
 
     _t0 = time.monotonic()
@@ -9291,7 +9322,8 @@ def _refresh_5m(market: str) -> None:
     5 minutes instead of every 10 during regular hours.
     Rankings and signals are NOT updated here (they use daily bars only).
     """
-    if market == "HK" and _is_hk_holiday():
+    # AUD-HKWEEKEND: mirror the US trading-day gate directly below.
+    if market == "HK" and not _is_hk_trading_day():
         return
     if market == "US" and not _is_us_trading_day():
         return
