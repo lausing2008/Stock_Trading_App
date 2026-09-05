@@ -10304,10 +10304,22 @@ _DQ_CHECKS: list[dict] = [
         "job_name": "check_price_alerts", "source": "job_status",
         "max_age_hours": 1, "is_date": False,
     },
+    # AUD-DQCHECK-WRONGCADENCE: check_signal_alerts() is NOT a per-minute job — unlike its 4
+    # siblings just above (check_price_alerts/check_earnings_reactions/check_earnings_impact_
+    # alerts/check_macro_reaction_alerts, all genuinely 1-minute crons), it's called by
+    # _run_market_refresh() 5x/day (US market-hours cadence, ~9:25am-4pm ET) plus once at
+    # container startup — see its own add_job registrations ("us_open_burst" etc. call
+    # _refresh_market, which calls this) and the "signal_alert_startup" one-shot. This entry's
+    # description and max_age_hours=1 were copied from the 1-minute siblings without adjusting
+    # for this job's real cadence — confirmed live: it correctly reports ok:false every single
+    # evening/overnight/weekend, a guaranteed false positive with zero real liveness problem,
+    # the same false-alarm shape T242-DQ1 already fixed for signals_us/signals_hk (which run on
+    # this SAME 5x/day cadence and correctly use max_age_hours=30 + a "market" tag). Matched to
+    # that established convention rather than inventing a new threshold.
     {
-        "name": "check_signal_alerts", "description": "Signal alert checker liveness (per-minute cron)",
+        "name": "check_signal_alerts", "description": "Signal alert checker liveness (5x/day market-hours cron, not per-minute)",
         "job_name": "check_signal_alerts", "source": "job_status",
-        "max_age_hours": 1, "is_date": False,
+        "max_age_hours": 30, "is_date": False, "market": "US",
     },
     {
         "name": "check_earnings_reactions", "description": "Earnings-reaction alert checker liveness (per-minute cron)",

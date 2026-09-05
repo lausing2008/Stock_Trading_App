@@ -216,3 +216,39 @@ def test_uw_rate_limit_gauge_reads_the_real_counter_key_from_unusual_whales_modu
     string that could silently drift from the real key."""
     assert "from .unusual_whales import _RATE_LIMIT_COUNTER_KEY as _UW_RATE_LIMIT_COUNTER_KEY" in _SOURCE
     assert '"counter_key": _UW_RATE_LIMIT_COUNTER_KEY' in _SOURCE
+
+
+# ── AUD-DQCHECK-WRONGCADENCE: check_signal_alerts' threshold matched to its real cadence ─────
+
+def test_check_signal_alerts_uses_a_market_hours_threshold_not_a_1_minute_one():
+    """check_signal_alerts() is NOT a 1-minute cron — it runs 5x/day via _run_market_refresh()
+    (US market-hours cadence) plus once at container startup. Its DQ entry originally copied
+    max_age_hours=1 from its 4 genuinely-1-minute siblings, causing a guaranteed false "stale"
+    every single evening/overnight/weekend with zero real liveness problem — confirmed live in
+    production. Must match signals_us/signals_hk's own convention for this identical cadence:
+    max_age_hours=30 plus a "market" tag so the weekend/holiday skip logic applies."""
+    checks_start = _SOURCE.index("_DQ_CHECKS: list[dict] = [")
+    checks_end = _SOURCE.index("\n]\n\n\ndef run_data_quality_checks", checks_start)
+    checks_block = _SOURCE[checks_start:checks_end]
+    entry_start = checks_block.index('"job_name": "check_signal_alerts"')
+    dict_start = checks_block.rindex("{", 0, entry_start)
+    dict_end = checks_block.index("}", entry_start) + 1
+    entry_dict_text = checks_block[dict_start:dict_end]
+    assert '"max_age_hours": 30' in entry_dict_text
+    assert '"market": "US"' in entry_dict_text
+    assert '"max_age_hours": 1,' not in entry_dict_text
+
+
+def test_check_signal_alerts_market_tag_is_actually_honored_by_the_job_status_dispatch():
+    """The job_status dispatch branch resolves `result` differently from the query branch, but
+    must still fall through into the SAME shared market-tag skip logic (T242-DQ1) — otherwise
+    adding "market": "US" to a job_status entry would be a silent no-op that never actually
+    prevents a weekend/holiday false positive."""
+    job_status_idx = _SOURCE.index('if check.get("source") == "job_status":')
+    market_check_idx = _SOURCE.index('market = check.get("market")')
+    # The market-tag skip logic must appear AFTER the job_status branch resolves `result`,
+    # in the same shared code path (not a separate, job_status-exclusive branch that could
+    # diverge from the query branch's behavior).
+    assert job_status_idx < market_check_idx
+    us_skip_idx = _SOURCE.index('if market == "US" and not _is_us_trading_day():', market_check_idx)
+    assert market_check_idx < us_skip_idx
