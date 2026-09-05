@@ -8,11 +8,11 @@ import pytest
 
 from src.generators.signals import (
     _adx,
-    _decide,
+    _decide_style,
     _pattern_score_adjustment,
     _stoch_rsi,
     _ta_score,
-    _weekly_ta_score,
+    _weekly_technicals,
 )
 
 
@@ -115,7 +115,9 @@ def test_ta_score_returns_reasons_dict():
         "trend_above_sma50", "sma50_above_sma200",
         "rsi", "macd_hist", "macd_rising",
         "bb_pct_b", "adx", "adx_trending",
-        "obv_bullish", "volume_z",
+        # Renamed from obv_bullish — _TA_WEIGHTS and the reasons dict both use
+        # obv_trend_bullish (the name _flag_map actually looks up).
+        "obv_trend_bullish", "volume_z",
     }
     assert expected_keys.issubset(reasons.keys())
 
@@ -141,24 +143,38 @@ def test_ta_score_handles_short_data():
     assert 0.0 <= score <= 1.0
 
 
-# ── _weekly_ta_score ──────────────────────────────────────────────────────────
+# ── _weekly_technicals ────────────────────────────────────────────────────────
+# Renamed from _weekly_ta_score and now returns a full dict (weekly_rsi/weekly_trend/
+# weekly_macd_bull/weekly_score/weekly_confidence) rather than a bare float, and the
+# insufficient-history cutoff is 15 bars, not 26.
 
 
-def test_weekly_ta_score_range():
-    df = _make_df(n=100)
-    score = _weekly_ta_score(df)
-    assert 0.0 <= score <= 1.0
+def test_weekly_technicals_score_range():
+    tech = _weekly_technicals(_make_df(n=100))
+    assert 0.0 <= tech["weekly_score"] <= 1.0
 
 
-def test_weekly_ta_score_too_few_bars_returns_neutral():
-    """Less than 26 bars → neutral 0.5."""
-    df = _make_df(n=20)
-    score = _weekly_ta_score(df)
-    assert score == pytest.approx(0.5)
+def test_weekly_technicals_reports_its_own_shape():
+    tech = _weekly_technicals(_make_df(n=100))
+    for key in ("weekly_rsi", "weekly_trend", "weekly_macd_bull",
+                "weekly_score", "weekly_confidence"):
+        assert key in tech
+    assert tech["weekly_trend"] in ("up", "down", "neutral")
 
 
-def test_weekly_ta_score_empty_returns_neutral():
-    assert _weekly_ta_score(pd.DataFrame()) == pytest.approx(0.5)
+def test_weekly_technicals_too_few_bars_returns_neutral():
+    """Under 15 bars → the neutral block, including zero confidence so the alignment
+    filter downstream is skipped rather than acting on absent data."""
+    tech = _weekly_technicals(_make_df(n=10))
+    assert tech["weekly_score"] == pytest.approx(0.5)
+    assert tech["weekly_confidence"] == 0.0
+    assert tech["weekly_rsi"] is None
+
+
+def test_weekly_technicals_empty_returns_neutral():
+    tech = _weekly_technicals(pd.DataFrame())
+    assert tech["weekly_score"] == pytest.approx(0.5)
+    assert tech["weekly_confidence"] == 0.0
 
 
 # ── _pattern_score_adjustment ─────────────────────────────────────────────────
@@ -203,33 +219,66 @@ def test_pattern_adjustment_stale_pattern_ignored():
     assert active == []
 
 
-# ── _decide ──────────────────────────────────────────────────────────────────
+# ── _decide_style ─────────────────────────────────────────────────────────────
+# Renamed from _decide. Now takes an explicit style_key and returns a 3-tuple
+# (signal, style_key, threshold_tier) instead of (signal, horizon).
+#
+# The old tests asserted hardcoded probability->label mappings (BUY at 0.65, SELL below
+# 0.35). Those numbers are no longer static: _decide_style reads dynamically-calibrated
+# buy/sell thresholds from Redis (written by POST /outcomes/calibrate/apply) and falls back
+# to per-style, per-regime profile values. Asserting fixed cut-points would make this file
+# fail whenever calibration legitimately moved a threshold. These tests pin the parts that
+# are genuinely invariant: the label vocabulary, the monotonic ordering, and the tier map.
 
 
-@pytest.mark.parametrize("prob,regime,expected_signal", [
-    (0.80, "bull", "BUY"),
-    (0.70, "bull", "BUY"),
-    (0.60, "bull", "HOLD"),
-    (0.45, "bull", "WAIT"),
-    (0.20, "bull", "SELL"),
-    # Bear market raises the BUY threshold
-    (0.70, "bear", "HOLD"),
-    (0.75, "bear", "BUY"),
-    (0.40, "bear", "WAIT"),
+@pytest.mark.parametrize("style", ["SHORT", "SWING", "LONG", "GROWTH"])
+def test_decide_style_returns_three_tuple_with_valid_label(style):
+    signal, style_key, tier = _decide_style(0.70, style, "bull")
+    assert signal in ("BUY", "HOLD", "WAIT", "SELL")
+    assert style_key == style
+    assert tier in ("bull", "bear", "neutral")
+
+
+def test_decide_style_is_monotonic_in_probability():
+    """Higher fused probability must never produce a MORE bearish label — this is the real
+    invariant, independent of where the calibrated thresholds currently sit."""
+    rank = {"SELL": 0, "WAIT": 1, "HOLD": 2, "BUY": 3}
+    labels = [_decide_style(p / 100, "SWING", "bull")[0]
+              for p in range(5, 100, 5)]
+    ranks = [rank[l] for l in labels]
+    assert ranks == sorted(ranks), f"non-monotonic label sequence: {labels}"
+
+
+def test_decide_style_extremes_map_to_extremes():
+    assert _decide_style(0.99, "SWING", "bull")[0] == "BUY"
+    assert _decide_style(0.01, "SWING", "bull")[0] == "SELL"
+
+
+@pytest.mark.parametrize("regime,expected_tier", [
+    ("bull", "bull"),
+    ("bear", "bear"),
+    ("risk_off", "bear"),
+    ("neutral", "neutral"),
+    ("choppy", "neutral"),
+    ("unknown", "neutral"),
 ])
-def test_decide_mapping(prob, regime, expected_signal):
-    signal, horizon = _decide(prob, regime)
-    assert signal == expected_signal
-    assert horizon == "SWING"
+def test_decide_style_tier_mapping(regime, expected_tier):
+    """risk_off shares the bear tier; everything non-bull/non-bear is neutral."""
+    assert _decide_style(0.70, "SWING", regime)[2] == expected_tier
 
 
-def test_decide_boundary_bull():
-    """Exactly at the BUY threshold (0.65) → BUY."""
-    signal, _ = _decide(0.651, "bull")
-    assert signal == "BUY"
+def test_decide_style_unrecognized_regime_falls_back_to_unknown_not_a_crash():
+    """AUD264 kept 'unknown' as the fail-open value _fetch_market_regime() returns on a
+    fetch failure — an unrecognized string must land there, not raise."""
+    signal, _, tier = _decide_style(0.70, "SWING", "not_a_real_regime")
+    assert signal in ("BUY", "HOLD", "WAIT", "SELL")
+    assert tier == "neutral"
 
 
-def test_decide_boundary_sell():
-    """Below 0.35 → SELL."""
-    signal, _ = _decide(0.34, "bull")
-    assert signal == "SELL"
+def test_decide_style_bear_regime_is_no_easier_than_bull():
+    """A bear/risk_off tape must never make BUY easier to reach than in a bull tape."""
+    rank = {"SELL": 0, "WAIT": 1, "HOLD": 2, "BUY": 3}
+    for p in (0.55, 0.65, 0.75, 0.85):
+        bull = rank[_decide_style(p, "SWING", "bull")[0]]
+        bear = rank[_decide_style(p, "SWING", "bear")[0]]
+        assert bear <= bull, f"bear was more bullish than bull at p={p}"
