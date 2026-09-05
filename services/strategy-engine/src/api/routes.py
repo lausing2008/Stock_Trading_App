@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from common.config import get_settings
 from common.jwt_auth import get_current_username
-from db import Backtest, Strategy, TimeFrame, get_session
+from db import Backtest, Stock, Strategy, TimeFrame, get_session
 
 from ..backtest import BacktestEngine
 
@@ -142,6 +142,23 @@ def backtest(
 
     start = body.start or (date.today() - timedelta(days=365 * 3))
     end = body.end or date.today()
+    # AUD-BACKTEST-SURVIVORSHIP: surface delisting status on the result rather than silently
+    # backtesting a dead symbol as if it were tradeable. The engine reads price bars only and
+    # has no concept of delisting, so a delisted symbol would backtest cleanly right up to its
+    # final bar and simply omit the delisting outcome — inflating results in exactly the case
+    # where the real-world result was a total or near-total loss.
+    #
+    # Currently latent, not active: the universe holds 0 delisted stocks of 193 today, which is
+    # why this is a flag rather than a hard block — refusing to backtest is the wrong default
+    # for a research tool, and a caller that knowingly wants the pre-delisting history should
+    # still get it. The flag makes the caveat impossible to miss instead of invisible.
+    _delisted = False
+    try:
+        _delisted = bool(session.execute(
+            select(Stock.delisted).where(Stock.symbol == body.symbol.upper())
+        ).scalar())
+    except Exception:
+        _delisted = False  # fail-open: a lookup failure must never block a real backtest
     df = _fetch_prices_df(body.symbol, start, end)
     if df.empty:
         raise HTTPException(404, f"No data for {body.symbol}")
@@ -204,7 +221,9 @@ def backtest(
     session.add(bt)
     session.commit()
     session.refresh(bt)
-    return {"backtest_id": bt.id, **asdict(result)}
+    # AUD-BACKTEST-SURVIVORSHIP: always present, so a consumer can rely on the key existing
+    # rather than inferring its absence means "not delisted".
+    return {"backtest_id": bt.id, "symbol_delisted": _delisted, **asdict(result)}
 
 
 @router.get("/backtests")
