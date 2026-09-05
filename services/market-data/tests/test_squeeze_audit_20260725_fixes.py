@@ -233,7 +233,15 @@ def test_gauge_dq_checks_registered_for_both_new_counters():
     # AUD-DQCHECKS-VISIBILITY added a 4th gauge (Unusual Whales 429 rate-limit rollup,
     # counter_key=_UW_RATE_LIMIT_COUNTER_KEY) — the count below was 3 before that check existed.
     assert '"counter_key": _UW_RATE_LIMIT_COUNTER_KEY' in _scheduler_source
-    assert _scheduler_source.count('"source": "gauge"') == 4
+    # AUD-IGNITION-NEVERFIRES added 4 more gauges (the squeeze-ignition rejection funnel:
+    # move_band / rvol / short_float / stale_si) — the count below was 4 before those existed.
+    # check_squeeze_ignition_alerts() had fired ZERO times since T260 while reporting
+    # status=ok every minute, so "correctly found nothing" and "silently broken" were
+    # indistinguishable; these gauges expose which bar is actually rejecting candidates.
+    for _k in ("_SQUEEZE_IGNITION_REJECT_MOVE_BAND_KEY", "_SQUEEZE_IGNITION_REJECT_RVOL_KEY",
+               "_SQUEEZE_IGNITION_REJECT_SHORT_FLOAT_KEY", "_SQUEEZE_IGNITION_REJECT_STALE_SI_KEY"):
+        assert f'"counter_key": {_k}' in _scheduler_source
+    assert _scheduler_source.count('"source": "gauge"') == 8
 
 
 def test_gauge_dq_check_dispatch_branch_always_reports_ok_true():

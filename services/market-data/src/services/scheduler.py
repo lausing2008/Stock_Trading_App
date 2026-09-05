@@ -216,6 +216,28 @@ _SQUEEZE_FUND_CACHE_MISS_COUNTER_KEY = "stockai:metric:squeeze_fund_cache_miss_c
 _SQUEEZE_WATCH_FUND_CACHE_MISS_COUNTER_KEY = "stockai:metric:squeeze_watch_fund_cache_miss_count_48h"
 # T260-SQUEEZE-IGNITION: same rolling-48h-counter convention, for the new early-warning tier.
 _SQUEEZE_IGNITION_FUND_CACHE_MISS_COUNTER_KEY = "stockai:metric:squeeze_ignition_fund_cache_miss_count_48h"
+# AUD-IGNITION-NEVERFIRES: check_squeeze_ignition_alerts() has fired ZERO times since T260
+# shipped it — confirmed 2026-09-05: 0 rows in squeeze_alert_outcomes for alert_type
+# "squeeze_ignition", while its job liveness record shows status=ok, duration_s=0.0 every
+# minute. It runs and finds nothing, forever.
+#
+# The cause is the CONJUNCTION, not any single bar: a candidate must clear >=15% short float
+# AND land inside a narrow 1.0%-3.0% move band (bounded on both sides — above 3% the classic
+# alert owns it) AND clear a session-scaled RVOL bar AND have short-interest data <30 days
+# old, all on the same 1-minute tick. Each condition individually passes plenty of symbols
+# (20 of 96 clear the short-float bar; all 20 pass staleness) — the intersection is what is
+# empty.
+#
+# From outside, "correctly found nothing" and "silently broken" are indistinguishable, which
+# is exactly the observability gap this repo's DQ-check framework exists to close. These
+# per-reason rejection counters make the funnel visible: if move_band is rejecting everything
+# the band is wrong; if rvol is, the volume bar is wrong. Same rolling-48h-counter mechanism
+# as the fundamentals-cache-miss gauge above, surfaced the same way (gauge = informational,
+# never enters the failing/email path — a nonzero rejection count is normal, expected work).
+_SQUEEZE_IGNITION_REJECT_MOVE_BAND_KEY = "stockai:metric:squeeze_ignition_reject_move_band_48h"
+_SQUEEZE_IGNITION_REJECT_RVOL_KEY = "stockai:metric:squeeze_ignition_reject_rvol_48h"
+_SQUEEZE_IGNITION_REJECT_SHORT_FLOAT_KEY = "stockai:metric:squeeze_ignition_reject_short_float_48h"
+_SQUEEZE_IGNITION_REJECT_STALE_SI_KEY = "stockai:metric:squeeze_ignition_reject_stale_si_48h"
 
 
 def _incr_rolling_counter(key: str) -> None:
@@ -3532,11 +3554,20 @@ def check_squeeze_ignition_alerts() -> None:
                 if not _is_hk_sym and not _us_market_open:
                     continue
                 change_pct = (float(price) - float(prev_close)) / float(prev_close) * 100
+                # AUD-IGNITION-NEVERFIRES: per-reason rejection counters, so "found nothing"
+                # and "silently broken" stop being indistinguishable from outside. Counted in
+                # this SECOND pass only — the first pass is a cheap pre-filter over the same
+                # rows, so instrumenting both would double-count every rejection. Only symbols
+                # with a real upward move are counted; every flat/down symbol in the universe
+                # would swamp the signal and say nothing about which BAR is too tight.
                 if not (_SQUEEZE_IGNITION_MIN_MOVE_PCT <= change_pct < _SQUEEZE_IGNITION_MAX_MOVE_PCT):
+                    if change_pct > 0:
+                        _incr_rolling_counter(_SQUEEZE_IGNITION_REJECT_MOVE_BAND_KEY)
                     continue
                 rvol_threshold = _hk_rvol_threshold if _is_hk_sym else _us_rvol_threshold
                 rvol = float(vol) / float(avg_vol)
                 if rvol < rvol_threshold:
+                    _incr_rolling_counter(_SQUEEZE_IGNITION_REJECT_RVOL_KEY)
                     continue
                 try:
                     cached = _fund_by_symbol.get(sym)
@@ -3547,9 +3578,11 @@ def check_squeeze_ignition_alerts() -> None:
                     data = _json.loads(cached)
                     spf = data.get("short_percent_of_float")
                     if spf is None or spf * 100 < _SQUEEZE_MIN_SHORT_FLOAT:
+                        _incr_rolling_counter(_SQUEEZE_IGNITION_REJECT_SHORT_FLOAT_KEY)
                         continue
                     _si_date = data.get("short_interest_date")
                     if _si_date is None or _si_date < _sqi_stale_cutoff_str:
+                        _incr_rolling_counter(_SQUEEZE_IGNITION_REJECT_STALE_SI_KEY)
                         continue
                     _short_ratio = data.get("short_ratio")
                 except Exception:
@@ -10681,6 +10714,36 @@ _DQ_CHECKS: list[dict] = [
         "description": "short_squeeze alert: stockai:fundamentals:v2:* cache misses in the last 48h (AUD-SQUEEZE250725-ISSUE1)",
         "source": "gauge",
         "counter_key": _SQUEEZE_FUND_CACHE_MISS_COUNTER_KEY,
+    },
+    # AUD-IGNITION-NEVERFIRES: the squeeze-ignition rejection funnel. This alert has fired ZERO
+    # times since T260 while reporting status=ok every minute — "correctly found nothing" and
+    # "silently broken" were indistinguishable from outside. These four gauges show WHICH bar
+    # is rejecting candidates, so any future loosening is aimed at the binding constraint
+    # rather than guessed. Gauges, so they never enter the failing-list/email path — a nonzero
+    # rejection count is normal, expected work, not a fault.
+    {
+        "name": "squeeze_ignition_reject_move_band_48h",
+        "description": "squeeze-ignition: rising symbols rejected by the 1.0-3.0% move band in the last 48h (AUD-IGNITION-NEVERFIRES)",
+        "source": "gauge",
+        "counter_key": _SQUEEZE_IGNITION_REJECT_MOVE_BAND_KEY,
+    },
+    {
+        "name": "squeeze_ignition_reject_rvol_48h",
+        "description": "squeeze-ignition: in-band symbols rejected by the session-scaled RVOL bar in the last 48h (AUD-IGNITION-NEVERFIRES)",
+        "source": "gauge",
+        "counter_key": _SQUEEZE_IGNITION_REJECT_RVOL_KEY,
+    },
+    {
+        "name": "squeeze_ignition_reject_short_float_48h",
+        "description": "squeeze-ignition: move+volume qualifiers rejected by the 15% short-float floor in the last 48h (AUD-IGNITION-NEVERFIRES)",
+        "source": "gauge",
+        "counter_key": _SQUEEZE_IGNITION_REJECT_SHORT_FLOAT_KEY,
+    },
+    {
+        "name": "squeeze_ignition_reject_stale_si_48h",
+        "description": "squeeze-ignition: candidates rejected for short-interest data older than 30 days in the last 48h (AUD-IGNITION-NEVERFIRES)",
+        "source": "gauge",
+        "counter_key": _SQUEEZE_IGNITION_REJECT_STALE_SI_KEY,
     },
     {
         "name": "squeeze_watch_fund_cache_misses_48h",
