@@ -123,6 +123,91 @@ measured edge. Specifically:
   playbook is the better vehicle: it does not depend on this system having edge, and
   buy-and-hold beat the signals by 0.76% per trade over this window.
 
+---
+
+# FOLLOW-UP (same day): the "defensive skill" finding was WRONG — it was beta
+
+The one positive result above (+5.97% alpha on declining stocks) does not survive scrutiny.
+Regressing per-symbol signal return on the stock's own move over the same window:
+
+| Statistic | Value |
+|---|---|
+| **Beta to stock move** | **0.355** |
+| **Alpha intercept** | **−2.02%** |
+| Correlation | 0.769 |
+| n | 158 symbols |
+
+The system captures ~36% of whatever the stock does, in **both** directions. Alpha by outcome
+bucket is perfectly monotonic, with holding period flat (~11 days) across all four:
+
+| Stock outcome | Symbols | Buy-and-hold | Signal | "Alpha" |
+|---|---|---|---|---|
+| Fell hard | 36 | −18.31% | −8.62% | **+9.69%** |
+| Fell | 49 | −4.98% | −3.33% | +1.64% |
+| Rose | 52 | +4.18% | −0.48% | −4.66% |
+| Rose hard | 21 | +17.95% | +3.30% | **−14.65%** |
+
+That monotonic ramp is the signature of **partial market exposure**, not skill. Being in a
+position ~11 days out of a ~22-day window captures roughly half the move — which *looks* like
+brilliant damage control on a crashing stock and like incompetence on a rallying one. Same
+mechanic, same number, opposite appearance. **There is no defensive skill to build a product
+on.** Retract that conclusion.
+
+## The actual root cause: inverted stock selection
+
+Comparing stocks the system issued BUY signals on against those it did not, over the same
+window:
+
+| Group | Symbols | Avg stock move |
+|---|---|---|
+| **BUY-signaled** | 158 | **−2.08%** |
+| **Not signaled** | 23 | **+1.42%** |
+
+**Apparent finding: the system selects stocks that go down** — a 3.5-point gap that would
+account for essentially the entire −2.02% alpha intercept.
+
+**This one is NOT established. Two checks failed to confirm it, and it is recorded here as a
+hypothesis only:**
+
+1. **No dose-response.** If signal frequency tracked bad selection, more signals should mean
+   worse stocks. It does not: 0 signals → +1.42%, few (≤10) → −7.62%, some (11–30) → −4.20%,
+   many (>30) → **+0.78%**. The most-signaled stocks are among the *better* performers.
+2. **The control group is contaminated and tiny.** Of the 23 unsignaled symbols, **11 are
+   ETFs** (SPY, QQQM, TQQQ, and eight XL\* sector funds) that the system is not designed to
+   issue stock signals on. Comparing single stocks against a basket of index ETFs is not a
+   valid control. Excluding ETFs *widens* the gap (signaled −2.17% / median −1.37%; unsignaled
+   +3.74% / median +2.29%) — but leaves only **11 control symbols**, far too few to support the
+   claim.
+
+**Status: UNPROVEN.** The −2.02% intercept is solid (n=158, corr 0.769); *why* it exists is
+not. A proper test needs a real control — the full tracked universe minus ETFs, with
+signaled/unsignaled matched on sector, market cap, and volatility. That work is not done.
+
+Two candidate explanations, not yet separated (the natural next investigation):
+1. The TA/ML features favor a characteristic (recent weakness, mean-reversion setups,
+   high volatility) that was penalized in this window.
+2. Something in the ranking/screening layer upstream of signal generation is inverted, the
+   same class of defect as `AUD232-BUY-FROM-TOP`.
+
+Supporting evidence that this is selection, not mechanics:
+- **Entry timing is favorable, not slippage-bound.** Entries occur 0.377% *below* the
+  signal-day close (n=4,816) — execution is fine; what's being bought is wrong.
+- **Losses scale with exposure time** (−0.16%/day at 6–10 day holds, −0.23%/day at 11–20),
+  consistent with holding a bad selection longer rather than a fixed per-trade cost.
+
+**What this section does and does not establish:**
+
+- **Established:** the "defensive skill" conclusion is retracted — it was 0.355 beta, not skill.
+  The system captures ~36% of the stock's move in both directions, and after removing that
+  exposure loses ~2% per trade (n=158, corr 0.769).
+- **Established:** it is not an execution problem. Entries are 0.377% *better* than the
+  signal-day close.
+- **NOT established:** why the −2.02% intercept exists. Inverted stock selection is the leading
+  hypothesis but failed two confirmation checks (see above). Do not act on it as fact.
+
+The practical recommendation is unchanged either way: the system has no measured edge, so
+further signal-generation work is not justified until the intercept is explained.
+
 ## Caveats
 
 - One month of post-fix data (5,317 outcomes, 158 symbols). The direction is consistent across
