@@ -27,6 +27,13 @@ from .signals_shared import (
 
 router = APIRouter(prefix="/signals", tags=["signals"])
 
+# AUD-BASELINE-ERASPLIT: the date commit aee6d17 (AUD232-BUY-FROM-TOP) shipped, fixing the
+# signal-generation bug that made the highest-confidence BUYs the worst performers. Outcomes
+# on or after this date come from a materially different system than those before it, so any
+# statistic pooling across this boundary blends two systems. Used by outcomes_summary()'s
+# `by_era` breakdown. See docs/2026-09-04/PHASE_B2_INVERSION_ROOT_CAUSE_FOUND.md.
+_INVERSION_FIX_DATE = date(2026, 8, 4)
+
 @router.get("/accuracy")
 def signal_accuracy(
     lookback_days: int = Query(90, ge=2, le=365),
@@ -1430,6 +1437,45 @@ def outcomes_summary(
     wins = [o for o in outcomes if o.is_correct]
     returns = [_signed_return(o.pct_return, o.signal_direction) for o in outcomes if o.pct_return is not None]
 
+    # AUD-BASELINE-ERASPLIT: any window reaching before 2026-08-04 pools TWO materially
+    # different systems and understates current quality. Commit aee6d17 (AUD232-BUY-FROM-TOP,
+    # 2026-08-03) fixed a real signal-generation bug that made the HIGHEST-confidence BUYs the
+    # WORST performers — the platform's confidence-vs-return relationship was inverted before
+    # it and correctly signed after. Measured at the time of this fix, split on that date:
+    #   before: high-conf (>=80) BUYs -7.19%, 33.5% win  (the inversion)
+    #   after:  high-conf (>=80) BUYs -1.02%, 51.6% win  (correct direction, best bucket)
+    # ~62% of all evaluated BUY outcomes predate the fix, so the default 90-day window is
+    # mostly pre-fix history. See docs/2026-09-04/PHASE_B2_INVERSION_ROOT_CAUSE_FOUND.md.
+    #
+    # Deliberately reported as an ADDITIONAL breakdown rather than by silently changing the
+    # cutoff: dropping pre-fix rows would destroy the only evidence that the bug and its fix
+    # were real, and would make this endpoint quietly disagree with any other view of the same
+    # table. Callers that want post-fix-only numbers read `by_era.post_fix`.
+    def _era_block(subset: list) -> dict | None:
+        if not subset:
+            return None
+        srets = [_signed_return(o.pct_return, o.signal_direction) for o in subset if o.pct_return is not None]
+        return {
+            "count": len(subset),
+            "win_rate": round(sum(1 for o in subset if o.is_correct) / len(subset), 3),
+            "avg_return_pct": round(statistics.mean(srets) * 100, 2) if srets else None,
+        }
+
+    _pre = [o for o in outcomes if o.signal_date < _INVERSION_FIX_DATE]
+    _post = [o for o in outcomes if o.signal_date >= _INVERSION_FIX_DATE]
+    era_stats = {
+        "fix_date": _INVERSION_FIX_DATE.isoformat(),
+        "fix_ref": "aee6d17 / AUD232-BUY-FROM-TOP",
+        "window_spans_fix": bool(_pre and _post),
+        "pre_fix": _era_block(_pre),
+        "post_fix": _era_block(_post),
+    }
+    if _pre and _post:
+        era_stats["note"] = (
+            "This window pools pre- and post-fix signals from two materially different "
+            "systems. Use by_era.post_fix for current-system performance."
+        )
+
     # By confidence band
     bands = [
         (0, 40, "0-40"),
@@ -1666,6 +1712,7 @@ def outcomes_summary(
             "avg_return_pct": round(statistics.mean(returns) * 100, 2) if returns else None,
             "median_return_pct": round(statistics.median(returns) * 100, 2) if returns else None,
         },
+        "by_era": era_stats,
         "by_confidence_band": band_stats,
         "by_horizon": horizon_stats,
         "by_market": by_market,
