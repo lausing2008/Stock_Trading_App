@@ -5222,13 +5222,22 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         if _sr.ts is None or _sk.id in _sig_ref_prices:
             continue
         _sig_date = (_sr.ts.replace(tzinfo=timezone.utc) if _sr.ts.tzinfo is None else _sr.ts).date()
+        # AUD-LIVEBAR-T196: cap the reference bar at the last SETTLED close, never today's.
+        # The D1 row for the current trading day is upserted every ~5 min as it live-updates
+        # (the Price table has no is_final/is_settled column), and `live_price` below reads
+        # from that same continuously-moving row. So for a signal that fired TODAY, the old
+        # `<= _sig_date` bound picked up today's live bar and compared it against itself:
+        # drift computed as ~0% and this anti-chasing gate silently disabled itself in exactly
+        # the case it exists for — a stock that has already run hard today. Bounding the
+        # reference to strictly-before-today makes the drift measure a real, settled baseline.
+        _ref_cutoff = min(_sig_date, date.today() - timedelta(days=1))
         try:
             _ref_close = session.execute(
                 select(Price.close)
                 .where(
                     Price.stock_id == _sk.id,
                     Price.timeframe == TimeFrame.D1,
-                    func.date(Price.ts) <= _sig_date,
+                    func.date(Price.ts) <= _ref_cutoff,
                 )
                 .order_by(Price.ts.desc())
                 .limit(1)

@@ -961,6 +961,29 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
 
     df = _load_prices(symbol, lookback_days=400)
 
+    # AUD-LIVEBAR-INFERENCE: drop any bar timestamped today, exactly as train_model() already
+    # does (see its own "Exclude any bar timestamped today" guard). The D1 row for the CURRENT
+    # trading day is upserted every ~5 min as it live-updates and is indistinguishable from a
+    # settled close (the Price table has no is_final/is_settled column), so every rolling
+    # feature (SMA/RSI/ATR/z-scores) computed here was being derived from a partially-observed
+    # bar — while the model consuming them was TRAINED exclusively on settled bars. That
+    # train/inference asymmetry, not the live bar per se, is the defect: the same nominal
+    # feature meant two different things at fit time and at predict time.
+    #
+    # Deliberately NOT adding a separate live-price feature (the other design considered):
+    # inference pins X to each model's saved feature_columns via X.reindex(columns=saved_cols)
+    # below, so a NEW column would be silently dropped for all 249 existing models until every
+    # one is retrained — shipping a no-op that looks like a fix. Dropping today's bar restores
+    # symmetry with training immediately, with no retrain required.
+    _today = date.today()
+    _pre = len(df)
+    df = df[pd.to_datetime(df["ts"]).dt.date < _today].copy()
+    if len(df) != _pre:
+        _log.info("predict_latest.dropped_today_bar", symbol=symbol, dropped=_pre - len(df))
+    if df.empty:
+        _log.warning("predict_latest.no_settled_bars", symbol=symbol)
+        return {"symbol": symbol, "bullish_probability": 0.5, "confidence": 0}
+
     # Fetch macro features aligned to the stock's price dates (HSI included for HK symbols)
     macro_df = None
     infer_start = None
