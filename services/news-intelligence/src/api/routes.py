@@ -27,6 +27,15 @@ class HotNewsResponse(BaseModel):
     hot: bool
     headline: str | None = None
     sentiment_label: str | None = None
+    # AUD-HOTNEWS-TS-STRIPPED: _mark_hot() writes a "ts" into the Redis flag specifically so
+    # consumers can DECAY the hot-news penalty by age, but this response_model omitted it and
+    # FastAPI silently strips any field not declared here. signal-engine's consumer
+    # (generators/signals.py, `if hot_news and hot_news.get("ts")`) therefore always saw None,
+    # so _hot_news_age_hours was ALWAYS None and the age-decay branch could never fire —
+    # every hot-flagged signal took the full first-hour 0.70 compression forever, including a
+    # 119-minute-old headline that was supposed to get the softer 0.85 second-hour value.
+    # Confirmed against live production: GET /news/hot/AAPL returned no "ts" key at all.
+    ts: str | None = None
 
 
 @router.get("", response_model=list[NewsItemResponse])
@@ -57,4 +66,6 @@ def hot_news(symbol: str):
     return HotNewsResponse(
         symbol=symbol.upper(), hot=True,
         headline=flag.get("headline"), sentiment_label=flag.get("sentiment_label"),
+        # AUD-HOTNEWS-TS-STRIPPED: the field the age-decay consumer actually gates on.
+        ts=flag.get("ts"),
     )

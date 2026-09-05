@@ -819,187 +819,203 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
     else:
         _inflight_research[sym] = asyncio.Event()
 
-    svc_auth = f"Bearer {_svc_token()}"
+    # AUD-RESEARCH-INFLIGHT-LEAK: everything from here to `return report` runs inside a
+    # try/finally so the in-flight marker is ALWAYS released and its waiters ALWAYS woken.
+    # Previously the only pop+set sat on the success path ~175 lines below, so any raise in
+    # between leaked the Event for the life of the process. The 404 at `raise
+    # HTTPException(404, f"Symbol {sym} not found")` makes this trivially reachable: one
+    # request for a bad/delisted ticker permanently poisoned that symbol — every later
+    # request blocked on asyncio.wait_for(..., timeout=60.0) before falling through, and
+    # trigger_research() returned "already_in_flight" forever, so the symbol could never
+    # regenerate. A waiter that is never woken is strictly worse than a slow generation.
+    try:
+        svc_auth = f"Bearer {_svc_token()}"
 
-    # Gather data from all services in parallel
-    async with httpx.AsyncClient(timeout=25) as client:
-        stock_t, fund_t, prices_t, ind_t, levels_t, signal_t, rank_t, live_t, catalyst_t = await asyncio.gather(
-            _get(client, f"{_s.market_data_url}/stocks/{sym}"),
-            _get(client, f"{_s.market_data_url}/stocks/{sym}/fundamentals"),
-            _get(client, f"{_s.market_data_url}/stocks/{sym}/prices?timeframe=1d&limit=260"),
-            _get(client, f"{_s.technical_analysis_url}/ta/{sym}/indicators?days=400"),
-            _get(client, f"{_s.technical_analysis_url}/ta/{sym}/levels"),
-            # T237-RE1: without style=, GET /signals/{sym} returns {"signals": {SHORT:..., SWING:...}},
-            # not a flat {"signal":..., "confidence":..., "horizon":...} shape — this call previously
-            # omitted style=, so signal.get("signal")/get("confidence")/get("horizon") below were
-            # always None on every single report, silently dead-ending the frontend's Signal badge.
-            # style=SWING returns the flat shape directly, matching this app's default-style convention.
-            _get(client, f"{_s.signal_engine_url}/signals/{sym}?style=SWING", svc_auth),
-            _get(client, f"{_s.ranking_engine_url}/rankings/{sym}"),
-            _get(client, f"{_s.market_data_url}/stocks/latest_prices?symbols={sym}"),
-            _get(client, f"{_s.event_intelligence_url}/catalyst/{sym}", svc_auth),
+        # Gather data from all services in parallel
+        async with httpx.AsyncClient(timeout=25) as client:
+            stock_t, fund_t, prices_t, ind_t, levels_t, signal_t, rank_t, live_t, catalyst_t = await asyncio.gather(
+                _get(client, f"{_s.market_data_url}/stocks/{sym}"),
+                _get(client, f"{_s.market_data_url}/stocks/{sym}/fundamentals"),
+                _get(client, f"{_s.market_data_url}/stocks/{sym}/prices?timeframe=1d&limit=260"),
+                _get(client, f"{_s.technical_analysis_url}/ta/{sym}/indicators?days=400"),
+                _get(client, f"{_s.technical_analysis_url}/ta/{sym}/levels"),
+                # T237-RE1: without style=, GET /signals/{sym} returns {"signals": {SHORT:..., SWING:...}},
+                # not a flat {"signal":..., "confidence":..., "horizon":...} shape — this call previously
+                # omitted style=, so signal.get("signal")/get("confidence")/get("horizon") below were
+                # always None on every single report, silently dead-ending the frontend's Signal badge.
+                # style=SWING returns the flat shape directly, matching this app's default-style convention.
+                _get(client, f"{_s.signal_engine_url}/signals/{sym}?style=SWING", svc_auth),
+                _get(client, f"{_s.ranking_engine_url}/rankings/{sym}"),
+                _get(client, f"{_s.market_data_url}/stocks/latest_prices?symbols={sym}"),
+                _get(client, f"{_s.event_intelligence_url}/catalyst/{sym}", svc_auth),
+            )
+
+        stock = stock_t or {}
+        fund = fund_t or {}
+        # RES-FIX-1: when market-data fundamentals cache is cold, fall back to direct yfinance fetch
+        if not fund:
+            loop = asyncio.get_running_loop()
+            fund = await loop.run_in_executor(None, _yf_fundamentals, sym)
+        prices = prices_t or []
+        indicators = ind_t or {"ts": [], "values": {}}
+        levels = levels_t or {}
+        signal = signal_t or {}
+        ranking = rank_t or {}
+        live = (live_t or [{}])[0] if isinstance(live_t, list) else {}
+        catalyst = catalyst_t or {}
+
+        if not stock:
+            # Symbol not in DB — fetch directly from yfinance
+            loop = asyncio.get_running_loop()
+            yf_stock, yf_prices, yf_indicators, yf_price = await loop.run_in_executor(
+                None, _yf_sync_fetch, sym
+            )
+            if not yf_stock:
+                raise HTTPException(404, f"Symbol {sym} not found")
+            stock = yf_stock
+            if not prices:
+                prices = yf_prices
+            if not indicators.get("values"):
+                indicators = yf_indicators
+            if not live:
+                live = {"price": yf_price}
+
+        price = live.get("price") or stock.get("price") or stock.get("last_price") or 0.0
+
+        # Compute scores
+        tech = _score_technical(stock, prices, indicators, levels, live_price=price)
+        fund_scores = _score_fundamental(fund, sector=stock.get("sector", "Unknown"), price=price)
+        dcf = _dcf_fair_value(fund, price, sector=stock.get("sector", "Unknown"))
+
+        # Call Claude for qualitative analysis
+        ai = await _call_claude(req, sym, stock, fund, tech, fund_scores, live_price=price, catalyst=catalyst)
+
+        # Determine report quality
+        missing_services = sum([not fund_t, not signal_t, not rank_t, not ind_t])
+        if ai.get("_is_fallback"):
+            report_quality = "fallback"
+        elif missing_services >= 2:
+            report_quality = "partial"
+        else:
+            report_quality = "full"
+
+        # Overall weighted score
+        scores = {
+            "technical": tech["score"],
+            "fundamental": fund_scores["score"],
+            "company": min(100, max(0, ai.get("company_score", 65))),
+            "industry": min(100, max(0, ai.get("industry_score", 65))),
+            "economic": min(100, max(0, ai.get("economic_score", 65))),
+        }
+        overall = round(
+            scores["technical"] * 0.25
+            + scores["fundamental"] * 0.30
+            + scores["company"] * 0.15
+            + scores["industry"] * 0.15
+            + scores["economic"] * 0.15
         )
 
-    stock = stock_t or {}
-    fund = fund_t or {}
-    # RES-FIX-1: when market-data fundamentals cache is cold, fall back to direct yfinance fetch
-    if not fund:
-        loop = asyncio.get_running_loop()
-        fund = await loop.run_in_executor(None, _yf_fundamentals, sym)
-    prices = prices_t or []
-    indicators = ind_t or {"ts": [], "values": {}}
-    levels = levels_t or {}
-    signal = signal_t or {}
-    ranking = rank_t or {}
-    live = (live_t or [{}])[0] if isinstance(live_t, list) else {}
-    catalyst = catalyst_t or {}
+        if overall >= 90:
+            recommendation = "STRONG BUY"
+        elif overall >= 80:
+            recommendation = "BUY"
+        elif overall >= 65:
+            recommendation = "WATCH"
+        elif overall >= 50:
+            recommendation = "AVOID"
+        else:
+            recommendation = "SELL"
 
-    if not stock:
-        # Symbol not in DB — fetch directly from yfinance
-        loop = asyncio.get_running_loop()
-        yf_stock, yf_prices, yf_indicators, yf_price = await loop.run_in_executor(
-            None, _yf_sync_fetch, sym
-        )
-        if not yf_stock:
-            raise HTTPException(404, f"Symbol {sym} not found")
-        stock = yf_stock
-        if not prices:
-            prices = yf_prices
-        if not indicators.get("values"):
-            indicators = yf_indicators
-        if not live:
-            live = {"price": yf_price}
+        # Override with Claude's verdict if available and score is borderline
+        claude_rec = (ai.get("ai_verdict") or {}).get("final_recommendation")
+        if claude_rec in ("STRONG BUY", "BUY", "WATCH", "AVOID", "SELL") and abs(overall - 65) < 10:
+            recommendation = claude_rec
 
-    price = live.get("price") or stock.get("price") or stock.get("last_price") or 0.0
+        # Fallback reports must never show a real-looking verdict
+        if report_quality == "fallback":
+            recommendation = "INSUFFICIENT DATA"
 
-    # Compute scores
-    tech = _score_technical(stock, prices, indicators, levels, live_price=price)
-    fund_scores = _score_fundamental(fund, sector=stock.get("sector", "Unknown"), price=price)
-    dcf = _dcf_fair_value(fund, price, sector=stock.get("sector", "Unknown"))
+        checklist = _build_checklist(tech, fund_scores, ai, raw_fund=fund)
+        position = _position_size(tech, req.portfolio_size, req.max_risk_pct, price)
 
-    # Call Claude for qualitative analysis
-    ai = await _call_claude(req, sym, stock, fund, tech, fund_scores, live_price=price, catalyst=catalyst)
+        report = {
+            "symbol": sym,
+            "company_name": stock.get("name", sym),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "report_quality": report_quality,
+            "current_price": price,
+            "market_cap": fund.get("market_cap"),
+            "sector": stock.get("sector"),
+            "industry": stock.get("industry") or stock.get("sector"),
+            "recommendation": recommendation,
+            "overall_score": overall,
+            "confidence": 0 if report_quality == "fallback" else min(100, max(0, ai.get("confidence", 65))),
+            "scores": scores,
+            "executive_summary": {
+                "bullish_factors": ai.get("bullish_factors", []),
+                "bearish_factors": ai.get("bearish_factors", []),
+                "key_risks": ai.get("key_risks", []),
+                "key_opportunities": ai.get("key_opportunities", []),
+            },
+            "technical": tech,
+            "fundamental": fund_scores,
+            "company": (ai.get("company") or {}),
+            "industry_analysis": (ai.get("industry") or {}),
+            "economic": (ai.get("economic") or {}),
+            "checklist": checklist,
+            "entry_planning": tech.get("entry_planning", {}),
+            "position_sizing": position,
+            "trade_invalidation": ai.get("trade_invalidation", []),
+            "ai_verdict": (ai.get("ai_verdict") or {}),
+            "signal": {
+                "signal": signal.get("signal"),
+                "confidence": signal.get("confidence"),
+                "horizon": signal.get("horizon"),
+            },
+            "ranking": {
+                "score": ranking.get("score"),
+                # T237-RE2: "rank" removed — GET /rankings/{symbol} (ranking-engine) never returns a
+                # "rank" key (only rs_rank + KScoreComponents: technical/momentum/value/growth/
+                # volatility/score/fair_price/relative_strength), so this was always None. Not
+                # currently rendered anywhere in the frontend — dropped rather than left as a
+                # permanently-null stale contract; re-add for real if a peer-rank display is wanted.
+                "technical": ranking.get("technical"),
+                "momentum": ranking.get("momentum"),
+                "value": ranking.get("value"),
+                "growth": ranking.get("growth"),
+            },
+            "analyst": {
+                "target_price": fund.get("target_price"),
+                "target_high": fund.get("target_high"),
+                "target_low": fund.get("target_low"),
+                "recommendation": fund.get("recommendation"),
+                "num_analysts": fund.get("number_of_analysts"),
+            },
+            "beta": fund.get("beta"),
+            "week_52_high": fund.get("week_52_high"),
+            "week_52_low": fund.get("week_52_low"),
+            "short_float_pct": fund.get("short_percent_of_float"),
+            "next_earnings": fund.get("next_earnings_date"),
+            "days_to_earnings": fund.get("days_to_earnings"),
+            "dcf": dcf,
+        }
 
-    # Determine report quality
-    missing_services = sum([not fund_t, not signal_t, not rank_t, not ind_t])
-    if ai.get("_is_fallback"):
-        report_quality = "fallback"
-    elif missing_services >= 2:
-        report_quality = "partial"
-    else:
-        report_quality = "full"
-
-    # Overall weighted score
-    scores = {
-        "technical": tech["score"],
-        "fundamental": fund_scores["score"],
-        "company": min(100, max(0, ai.get("company_score", 65))),
-        "industry": min(100, max(0, ai.get("industry_score", 65))),
-        "economic": min(100, max(0, ai.get("economic_score", 65))),
-    }
-    overall = round(
-        scores["technical"] * 0.25
-        + scores["fundamental"] * 0.30
-        + scores["company"] * 0.15
-        + scores["industry"] * 0.15
-        + scores["economic"] * 0.15
-    )
-
-    if overall >= 90:
-        recommendation = "STRONG BUY"
-    elif overall >= 80:
-        recommendation = "BUY"
-    elif overall >= 65:
-        recommendation = "WATCH"
-    elif overall >= 50:
-        recommendation = "AVOID"
-    else:
-        recommendation = "SELL"
-
-    # Override with Claude's verdict if available and score is borderline
-    claude_rec = (ai.get("ai_verdict") or {}).get("final_recommendation")
-    if claude_rec in ("STRONG BUY", "BUY", "WATCH", "AVOID", "SELL") and abs(overall - 65) < 10:
-        recommendation = claude_rec
-
-    # Fallback reports must never show a real-looking verdict
-    if report_quality == "fallback":
-        recommendation = "INSUFFICIENT DATA"
-
-    checklist = _build_checklist(tech, fund_scores, ai, raw_fund=fund)
-    position = _position_size(tech, req.portfolio_size, req.max_risk_pct, price)
-
-    report = {
-        "symbol": sym,
-        "company_name": stock.get("name", sym),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "report_quality": report_quality,
-        "current_price": price,
-        "market_cap": fund.get("market_cap"),
-        "sector": stock.get("sector"),
-        "industry": stock.get("industry") or stock.get("sector"),
-        "recommendation": recommendation,
-        "overall_score": overall,
-        "confidence": 0 if report_quality == "fallback" else min(100, max(0, ai.get("confidence", 65))),
-        "scores": scores,
-        "executive_summary": {
-            "bullish_factors": ai.get("bullish_factors", []),
-            "bearish_factors": ai.get("bearish_factors", []),
-            "key_risks": ai.get("key_risks", []),
-            "key_opportunities": ai.get("key_opportunities", []),
-        },
-        "technical": tech,
-        "fundamental": fund_scores,
-        "company": (ai.get("company") or {}),
-        "industry_analysis": (ai.get("industry") or {}),
-        "economic": (ai.get("economic") or {}),
-        "checklist": checklist,
-        "entry_planning": tech.get("entry_planning", {}),
-        "position_sizing": position,
-        "trade_invalidation": ai.get("trade_invalidation", []),
-        "ai_verdict": (ai.get("ai_verdict") or {}),
-        "signal": {
-            "signal": signal.get("signal"),
-            "confidence": signal.get("confidence"),
-            "horizon": signal.get("horizon"),
-        },
-        "ranking": {
-            "score": ranking.get("score"),
-            # T237-RE2: "rank" removed — GET /rankings/{symbol} (ranking-engine) never returns a
-            # "rank" key (only rs_rank + KScoreComponents: technical/momentum/value/growth/
-            # volatility/score/fair_price/relative_strength), so this was always None. Not
-            # currently rendered anywhere in the frontend — dropped rather than left as a
-            # permanently-null stale contract; re-add for real if a peer-rank display is wanted.
-            "technical": ranking.get("technical"),
-            "momentum": ranking.get("momentum"),
-            "value": ranking.get("value"),
-            "growth": ranking.get("growth"),
-        },
-        "analyst": {
-            "target_price": fund.get("target_price"),
-            "target_high": fund.get("target_high"),
-            "target_low": fund.get("target_low"),
-            "recommendation": fund.get("recommendation"),
-            "num_analysts": fund.get("number_of_analysts"),
-        },
-        "beta": fund.get("beta"),
-        "week_52_high": fund.get("week_52_high"),
-        "week_52_low": fund.get("week_52_low"),
-        "short_float_pct": fund.get("short_percent_of_float"),
-        "next_earnings": fund.get("next_earnings_date"),
-        "days_to_earnings": fund.get("days_to_earnings"),
-        "dcf": dcf,
-    }
-
-    _cache[sym] = (report, datetime.now(timezone.utc))
-    _db_save_report(sym, report, req)
-    ttl = CACHE_TTL_FALLBACK_SEC if report_quality == "fallback" else CACHE_TTL_PARTIAL_SEC if report_quality == "partial" else CACHE_TTL_SEC
-    log.info("research.generated", symbol=sym, overall=overall, recommendation=recommendation,
-             quality=report_quality, cache_ttl_s=ttl)
-    # Signal any waiters that the report is now cached, then remove the in-flight marker.
-    ev = _inflight_research.pop(sym, None)
-    if ev:
-        ev.set()
-    return report
+        _cache[sym] = (report, datetime.now(timezone.utc))
+        _db_save_report(sym, report, req)
+        ttl = CACHE_TTL_FALLBACK_SEC if report_quality == "fallback" else CACHE_TTL_PARTIAL_SEC if report_quality == "partial" else CACHE_TTL_SEC
+        log.info("research.generated", symbol=sym, overall=overall, recommendation=recommendation,
+                 quality=report_quality, cache_ttl_s=ttl)
+        # AUD-RESEARCH-INFLIGHT-LEAK: the in-flight marker is released in the `finally` below,
+        # NOT here — releasing only on the success path is what caused the leak. Kept as a plain
+        # return so the finally clause owns cleanup for every exit path uniformly.
+        return report
+    finally:
+        # Wake waiters on EVERY path — success, HTTPException, or unexpected error. They
+        # re-check the cache on wake, so a failed generation simply means they find nothing
+        # and proceed to generate themselves, which is the correct fallback.
+        _ev = _inflight_research.pop(sym, None)
+        if _ev:
+            _ev.set()
 
 
 # ── Chat endpoint ─────────────────────────────────────────────────────────────
