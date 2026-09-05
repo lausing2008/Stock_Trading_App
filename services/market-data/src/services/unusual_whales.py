@@ -113,6 +113,21 @@ _NOPE_TTL = 60          # 1 min ONLY — NOPE is UW's own per-minute reading; th
 # real cache (not zero) so a symbol looked up twice within the same minute — e.g. this route's
 # own gex/max-pain/oi-per-strike/nope calls all hitting the same page load — doesn't spend two
 # API calls for data guaranteed to be identical.
+# AUD-UWRATELIMIT-FLOWALERTS: get_flow_alerts() was documented as "deliberately NOT cached" —
+# fine in isolation, but check_options_flow_alerts() (scheduler.py) calls it once per symbol,
+# every 1-minute tick, over a symbol set that's uncapped on one side (top-20 K-Score UNIONED
+# with every distinct PriceAlert symbol, no LIMIT). Confirmed live: 22,031 real UW 429 responses
+# in 48h, and the math shows this ONE function alone reaches N x 1,440 requests/day — already
+# ~28,800/day (96% of the platform's own assumed 30,000/day trial-tier budget) at N=20 with ZERO
+# PriceAlert symbols, before any other UW-calling code path adds anything. 45s is short enough
+# that "alert on fresh activity" (this function's own stated reason for being uncached) still
+# holds — a real sweep/block that just posted is still "fresh" 45s later — while still turning
+# every symbol that gets checked more than once within that window (the common case at a 60s
+# job interval) into a cache hit instead of a live call. Shorter than _NOPE_TTL's own 60s
+# specifically so a slow job cycle (this one's own docstring notes ~15s observed duration)
+# can't let two consecutive ticks both read a stale cached alert list as if avoiding a real
+# new sweep that occurred in between.
+_FLOW_ALERT_TTL = 45
 _EARNINGS_MOVE_TTL = 21600  # 6h, matching _SHORT_INTEREST_TTL's own rationale — this is
 # HISTORICAL per-report data that only grows (a new row) once per quarter per symbol; no reason
 # to re-fetch it as often as GEX/NOPE.
@@ -986,12 +1001,21 @@ def get_flow_alerts(
     order sweeping across market makers, a real "urgency" signal UW computes for us, not
     something this app derives itself.
 
-    Deliberately NOT cached — unlike GEX/short-interest (slow-moving, real-world data that only
-    changes a few times a day at most), flow alerts are inherently a fast-moving, minute-to-
-    minute feed; caching this would defeat the entire point of an "alert on fresh activity"
-    check. Safe at the trial tier's 30,000 req/day budget as long as the caller stays scoped to
-    a bounded symbol set (see check_options_flow_alerts()'s own docstring in scheduler.py) —
-    never called for the whole tracked universe.
+    AUD-UWRATELIMIT-FLOWALERTS: previously documented as "deliberately NOT cached" on the
+    reasoning that flow alerts are a fast-moving, minute-to-minute feed and caching would defeat
+    the point of an "alert on fresh activity" check — true in isolation, but this function is
+    called once per symbol on every 1-minute scheduler tick (check_options_flow_alerts(),
+    scheduler.py), over a symbol set that's uncapped on one side (see that function's own
+    docstring). Confirmed live: 22,031 real UW 429 responses in 48h, with this single function's
+    own call volume (N symbols x 1,440 ticks/day) alone able to exhaust the platform's entire
+    assumed 30,000/day trial-tier budget at N=20, before any other UW-calling code path adds
+    anything. Now cached _FLOW_ALERT_TTL=45s — short enough that "alert on fresh activity" still
+    holds (a real sweep is still fresh 45s later), long enough that a symbol checked on
+    consecutive 1-minute ticks (the common case) is a cache hit, not a live call, cutting this
+    function's own real request volume by roughly the same proportion its own cadence exceeds
+    the cache window. Safe at the trial tier's 30,000 req/day budget as long as the caller stays
+    scoped to a bounded symbol set (see check_options_flow_alerts()'s own docstring in
+    scheduler.py) — never called for the whole tracked universe.
 
     Filter thresholds are real UW query params (confirmed against the live OpenAPI spec, not
     guessed) — min_premium/min_volume_oi_ratio/is_sweep/max_dte are all genuine server-side
@@ -1019,6 +1043,20 @@ def get_flow_alerts(
     if not is_available():
         return []
     sym = symbol.upper()
+    # AUD-UWRATELIMIT-FLOWALERTS: cache key includes every caller-overridable filter param, not
+    # just the symbol — two callers requesting the SAME symbol with DIFFERENT filters (e.g. a
+    # future caller wanting a looser min_premium) must never share a cached result computed under
+    # the other caller's filters. Only one real caller exists today (check_options_flow_alerts(),
+    # scheduler.py), but that caller already passes its own module-level constants rather than
+    # this function's own defaults, so keying on symbol alone would already be fragile.
+    cache_key = f"stockai:uw:flow_alerts:{sym}:{min_premium}:{min_volume_oi_ratio}:{is_sweep}:{max_dte}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached is not None:
+            import json
+            return [FlowAlert(**row) for row in json.loads(cached)]
+    except Exception:
+        pass
     # UW's own newer_than param silently ignores ANY value with a time component (a full ISO
     # datetime, with or without a "Z"/offset suffix) — confirmed live against production: only
     # a bare unix-epoch integer or a bare YYYY-MM-DD date actually filters server-side; every
@@ -1043,7 +1081,14 @@ def get_flow_alerts(
     except Exception as exc:
         log.warning("unusual_whales.flow_alerts_failed", symbol=sym, error=str(exc))
         return []
-    return _parse_flow_alert_rows(data, sym)
+    result = _parse_flow_alert_rows(data, sym)
+    try:
+        import json
+        from dataclasses import asdict
+        _get_redis().setex(cache_key, _FLOW_ALERT_TTL, json.dumps([asdict(a) for a in result]))
+    except Exception:
+        pass
+    return result
 
 
 def _parse_flow_alert_rows(data, sym: str) -> list["FlowAlert"]:

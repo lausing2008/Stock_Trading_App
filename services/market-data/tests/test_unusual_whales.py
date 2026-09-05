@@ -1192,18 +1192,73 @@ def test_flow_alerts_one_malformed_row_does_not_drop_the_rest():
     assert result[0].option_chain == "AAPL240101C00200000"
 
 
-def test_flow_alerts_is_never_cached_unlike_gex_and_short_interest():
-    """Flow alerts are inherently a fast-moving, minute-to-minute feed — unlike GEX/short-
-    interest, _get_redis() must never be touched by this function at all."""
-    class _ExplodingRedis:
-        def get(self, *a, **kw):
-            raise AssertionError("get_flow_alerts must never read from Redis")
-        def setex(self, *a, **kw):
-            raise AssertionError("get_flow_alerts must never write to Redis")
+def test_flow_alerts_is_now_cached_short_ttl_aud_uwratelimit():
+    """AUD-UWRATELIMIT-FLOWALERTS: reverses the PRIOR "never cached" contract — confirmed live,
+    check_options_flow_alerts() calling this once per symbol every 1-minute tick over an
+    uncapped symbol set produced 22,031 real UW 429s in 48h. Now cached _FLOW_ALERT_TTL=45s: a
+    cache miss must call _get() and then WRITE the result via setex(); a cache hit must return
+    without calling _get() at all."""
+    class _FakeRedis:
+        def __init__(self):
+            self.store = {}
+        def get(self, key):
+            return self.store.get(key)
+        def setex(self, key, ttl, value):
+            self.store[key] = value
+
+    fake_redis = _FakeRedis()
+    good_row = {
+        "ticker": "AAPL", "option_chain": "AAPL240101C00200000", "type": "call",
+        "strike": "200", "expiry": "2024-01-01", "total_size": 100, "has_sweep": False,
+    }
     with patch.object(uw, "is_available", return_value=True), \
-         patch.object(uw, "_get_redis", return_value=_ExplodingRedis()), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[good_row]) as mock_get:
+        first = uw.get_flow_alerts("AAPL")
+        assert len(first) == 1
+        assert mock_get.call_count == 1
+
+        # Second call within the TTL window must be a cache hit — no second _get() call.
+        second = uw.get_flow_alerts("AAPL")
+        assert len(second) == 1
+        assert second[0].option_chain == "AAPL240101C00200000"
+        assert mock_get.call_count == 1, "second call within TTL must not re-fetch from UW"
+
+
+def test_flow_alerts_cache_key_includes_filter_params_not_just_symbol():
+    """Two callers requesting the SAME symbol with DIFFERENT filter params must not share a
+    cached result computed under the other caller's filters — the cache key must encode
+    min_premium/min_volume_oi_ratio/is_sweep/max_dte, not just the symbol."""
+    class _FakeRedis:
+        def __init__(self):
+            self.store = {}
+        def get(self, key):
+            return self.store.get(key)
+        def setex(self, key, ttl, value):
+            self.store[key] = value
+
+    fake_redis = _FakeRedis()
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=fake_redis), \
+         patch.object(uw, "_get", return_value=[]) as mock_get:
+        uw.get_flow_alerts("AAPL", min_premium=50_000)
+        uw.get_flow_alerts("AAPL", min_premium=100_000)
+        assert mock_get.call_count == 2, "different min_premium must not hit the same cache entry"
+
+
+def test_flow_alerts_cache_read_failure_fails_open_to_a_real_fetch():
+    """A Redis exception on the cache READ must not prevent the real UW call from happening —
+    matches every other UW function's own fail-open contract."""
+    class _BrokenRedis:
+        def get(self, *a, **kw):
+            raise ConnectionError("redis unavailable")
+        def setex(self, *a, **kw):
+            raise ConnectionError("redis unavailable")
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get_redis", return_value=_BrokenRedis()), \
          patch.object(uw, "_get", return_value=[]):
-        uw.get_flow_alerts("AAPL")  # must not raise
+        result = uw.get_flow_alerts("AAPL")  # must not raise
+        assert result == []
 
 
 # ── get_historical_flow_alerts() — MPE-OPTIONS-FLOW-ALERT backtest ─────────────────────────
