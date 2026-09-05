@@ -10474,6 +10474,13 @@ _DQ_CHECKS: list[dict] = [
         "denominator_key": _CONVICTION_MET_COUNTER_KEY,
         "min_denominator": 20,
         "min_ratio": 0.001,
+        # AUD-CONVRATIO-WEEKEND: tagged US so the market-closed skip applies. Alert sends only
+        # happen during market hours, but the conviction counter keeps incrementing all
+        # weekend, so this ratio is guaranteed to read 0 every Saturday/Sunday regardless of
+        # pipeline health. US (not HK) because _ALERT_FIRED_COUNTER_KEY is dominated by the US
+        # session and the two markets share one counter pair — a single tag cannot express
+        # "either market open", and US is the stricter, higher-volume window.
+        "market": "US",
     },
     # AUD-SQUEEZE250725-ISSUE1/5: "gauge" is a genuinely different check shape from both
     # "job_status" (age of a liveness record) and "ratio" (two counters compared) above —
@@ -10543,6 +10550,40 @@ def run_data_quality_checks() -> None:
                     # concept at all — handled entirely separately, before the age-based logic
                     # below, and always `continue`s so it never falls through into that logic.
                     if check.get("source") == "ratio":
+                        # AUD-CONVRATIO-WEEKEND: this branch `continue`s before reaching the
+                        # market-closed skip further down, so a market-tagged ratio check never
+                        # got that guard — the exact false-positive-every-weekend failure mode
+                        # T242-DQ1 already fixed for the age-based checks.
+                        #
+                        # conviction_fired_ratio collapses to 0 every weekend by construction:
+                        # _ALERT_FIRED_COUNTER_KEY only increments on a real BUY email send
+                        # (market hours only) and carries a 48h TTL, so by Saturday afternoon
+                        # the last weekday send has aged out and the key EXPIRES to 0 — while
+                        # _CONVICTION_MET_COUNTER_KEY keeps incrementing all weekend, because
+                        # the conviction gate itself has no market-hours check. Verified live
+                        # 2026-09-05 (a Saturday): conviction_met=3347, alert_fired=absent,
+                        # every DE verdict "Market closed: weekend". The alert stream itself was
+                        # healthy — signal_alerts shows 15 BUY sends the prior trading day.
+                        _ratio_market = check.get("market")
+                        _ratio_closed = (
+                            (_ratio_market == "US" and not _is_us_trading_day())
+                            or (_ratio_market == "HK" and (
+                                datetime.now(timezone.utc).astimezone(
+                                    __import__("zoneinfo").ZoneInfo("Asia/Hong_Kong")
+                                ).weekday() >= 5 or _is_hk_holiday()))
+                        )
+                        if _ratio_closed:
+                            redis_client.setex(
+                                f"dq_check:{check['name']}", 86400 * 7,
+                                json.dumps({
+                                    "name": check["name"], "description": check["description"],
+                                    "ok": True, "numerator": None, "denominator": None,
+                                    "ratio": None, "min_ratio": check["min_ratio"],
+                                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                                    "skipped_reason": "market_closed",
+                                }),
+                            )
+                            continue
                         num = redis_client.get(check["numerator_key"])
                         den = redis_client.get(check["denominator_key"])
                         num_v = int(num) if num is not None else 0

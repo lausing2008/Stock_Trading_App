@@ -221,3 +221,85 @@ def test_email_builder_handles_a_ratio_checks_none_max_age_hours_without_crashin
     assert result is True
     assert "0/500" in sent["body_html"]
     assert "0/500" in sent["body_text"]
+
+
+# ── AUD-CONVRATIO-WEEKEND: market-closed skip for ratio checks ───────────────────────
+# The ratio branch `continue`s before reaching the market-closed skip further down in
+# run_data_quality_checks(), so a market-tagged ratio check never got that guard — the exact
+# false-positive-every-weekend failure mode T242-DQ1 already fixed for the age-based checks.
+#
+# conviction_fired_ratio collapses to 0 every weekend BY CONSTRUCTION:
+# _ALERT_FIRED_COUNTER_KEY only increments on a real BUY email send (market hours only) and
+# carries a 48h TTL, so by Saturday afternoon the last weekday send has aged out and the key
+# expires to 0 — while _CONVICTION_MET_COUNTER_KEY keeps incrementing all weekend because the
+# conviction gate has no market-hours check.
+#
+# Verified live on Saturday 2026-09-05: conviction_met=3347, alert_fired absent, every DE
+# verdict "Market closed: weekend". The alert stream itself was healthy (signal_alerts showed
+# 15 BUY sends the prior trading day), confirming this as a pure false positive.
+
+def _dq_source() -> str:
+    start = _SOURCE.index("def run_data_quality_checks(")
+    end = _SOURCE.index("\n\n\ndef ", start)
+    return _SOURCE[start:end]
+
+
+def _ratio_branch() -> str:
+    src = _dq_source()
+    start = src.index('if check.get("source") == "ratio":')
+    end = src.index('if check.get("source") == "gauge":')
+    return src[start:end]
+
+
+def test_conviction_fired_ratio_is_tagged_with_a_market():
+    """Without a market tag the new skip is inert for this check."""
+    start = _SOURCE.index('"name": "conviction_fired_ratio"')
+    entry = _SOURCE[start:_SOURCE.index("},", start)]
+    assert '"market": "US"' in entry
+
+
+def test_ratio_branch_has_a_market_closed_skip():
+    branch = _ratio_branch()
+    assert "_ratio_closed" in branch
+    assert '"skipped_reason": "market_closed"' in branch
+
+
+def test_ratio_market_closed_skip_runs_before_reading_the_counters():
+    """If the counters were read (and judged) first, the skip would be pointless — the
+    false failure is produced by comparing them at all while the market is shut."""
+    branch = _ratio_branch()
+    assert branch.index("if _ratio_closed:") < branch.index('redis_client.get(check["numerator_key"])')
+
+
+def test_ratio_skip_reports_ok_true_so_it_never_emails():
+    """Matches the age-based branches' own convention: a closed market reports ok, it is not
+    a real failure and must not enter the failing-list/alert-email path."""
+    branch = _ratio_branch()
+    skip_block = branch[branch.index("if _ratio_closed:"):branch.index("num = redis_client.get")]
+    assert '"ok": True' in skip_block
+
+
+def test_ratio_skip_payload_avoids_max_age_hours_keyerror():
+    """The age-based skip payloads read check["max_age_hours"], which a ratio check does NOT
+    define — copying that shape verbatim would raise KeyError and get swallowed by the
+    per-check except, silently turning the skip into a 'query_failed' instead."""
+    branch = _ratio_branch()
+    skip_block = branch[branch.index("if _ratio_closed:"):branch.index("num = redis_client.get")]
+    assert "max_age_hours" not in skip_block
+    assert '"min_ratio": check["min_ratio"]' in skip_block
+
+
+def test_ratio_skip_honors_both_us_and_hk_tags():
+    branch = _ratio_branch()
+    assert "_is_us_trading_day()" in branch
+    assert "_is_hk_holiday()" in branch
+
+
+def test_untagged_ratio_check_is_never_skipped():
+    """A ratio check with no market tag must still be evaluated every run — the skip is
+    opt-in via the tag, not a blanket weekend bypass for all ratio checks."""
+    branch = _ratio_branch()
+    closed_expr = branch[branch.index("_ratio_closed = ("):branch.index("if _ratio_closed:")]
+    # Both arms require an explicit market value; None matches neither.
+    assert '_ratio_market == "US"' in closed_expr
+    assert '_ratio_market == "HK"' in closed_expr

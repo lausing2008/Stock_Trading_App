@@ -245,7 +245,11 @@ def test_check_signal_alerts_market_tag_is_actually_honored_by_the_job_status_di
     adding "market": "US" to a job_status entry would be a silent no-op that never actually
     prevents a weekend/holiday false positive."""
     job_status_idx = _SOURCE.index('if check.get("source") == "job_status":')
-    market_check_idx = _SOURCE.index('market = check.get("market")')
+    # AUD-CONVRATIO-WEEKEND: anchor on the newline+indent prefix, not a bare substring.
+    # The ratio branch's own `_ratio_market = check.get("market")` (added earlier in the
+    # function) CONTAINS the bare string `market = check.get("market")`, so a plain .index()
+    # matched that line instead and made this assertion compare unrelated offsets.
+    market_check_idx = _SOURCE.index('\n                    market = check.get("market")')
     # The market-tag skip logic must appear AFTER the job_status branch resolves `result`,
     # in the same shared code path (not a separate, job_status-exclusive branch that could
     # diverge from the query branch's behavior).
