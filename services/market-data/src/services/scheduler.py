@@ -85,7 +85,7 @@ from sqlalchemy.orm import selectinload, Session
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, AnalystPriceTarget, DarkPoolAlertOutcome, EarningsEvent, EconomicEvent, FixRecord, FixSnapshot, FundamentalsSnapshot, Market, OptionsFlowAlertOutcome, OptionsFlowSnapshot, OptionsGamePlanSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, UserRole, UserTier, VolumeAreaLevel, Watchlist, WatchlistItem
+from db import AlertCondition, AnalystPriceTarget, DarkPoolAlertOutcome, DarkPoolPrint, EarningsEvent, EconomicEvent, FixRecord, FixSnapshot, FundamentalsSnapshot, Market, OptionsFlowAlertOutcome, OptionsFlowSnapshot, OptionsGamePlanSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, UserRole, UserTier, VolumeAreaLevel, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -4711,15 +4711,128 @@ _DARK_POOL_ALERT_LOCK_KEY = "stockai:lock:check_dark_pool_alerts"
 _DARK_POOL_ALERT_LOCK_TTL = 55  # every 60s, same cadence as check_options_flow_alerts() — UW's
 # per-symbol REST darkpool endpoint is cheap and the client caches it 15 min on its own, so
 # calling on a 1-min job cycle costs nothing extra beyond the cache's own refresh cadence.
+# AUD-DARKPOOL-ABSTHRESHOLD: a FLAT $1M threshold is not selective. Measured live 2026-09-05,
+# this alert fired on 40-49 symbols per day out of a 55-symbol watched universe — ~85-89% of
+# everything it watches, every single day, one alert per symbol. A $1M block is routine,
+# sub-second background activity in AAPL or NVDA and genuinely large in a mid-cap, so an
+# absolute dollar bar says almost nothing: "a big trade happened in a big stock" is true nearly
+# always. Its own resolved outcomes matched that reading — 49 rows, +0.005% avg 1d, 40.8% up,
+# i.e. noise, exactly as the alert's own honest framing would predict.
+#
+# The fix is a RELATIVE bar: a print must be large *for this symbol*, measured against that
+# symbol's own recent print history (now persisted by _persist_dark_pool_prints()). The
+# absolute floor is retained as a second, simultaneous condition so a relatively-large print in
+# an illiquid name still has to be a real institutional block in dollar terms.
 _DARK_POOL_ALERT_MIN_PREMIUM = 1_000_000  # a real institutional-size block, not routine flow —
 # matches this app's own established "raise the bar until it's genuinely unusual" lesson from
 # AUD-OPTIONSFLOW-FLOODED (that alert's original $50k floor caught routine trades, not unusual
 # ones); a $1M+ notional print is a real, large block by any reasonable retail-investor reading.
+# AUD-DARKPOOL-ABSTHRESHOLD: the relative half of the bar. A print must be at least this many
+# times the symbol's own MEDIAN print premium over the trailing baseline window. Median (not
+# mean) because dark-pool premium distributions are extremely right-skewed — a single 100x
+# outlier drags a mean far above the typical print and would make the bar easier to clear on
+# exactly the symbols that just saw one, the opposite of the intent.
+_DARK_POOL_REL_MULTIPLE = 5.0
+_DARK_POOL_BASELINE_DAYS = 14
+# Below this many historical prints the median is not a meaningful baseline, so the relative
+# test is SKIPPED and the absolute floor alone governs — identical in spirit to
+# conviction_fired_ratio's own min_denominator guard. This also makes the fix safe to deploy
+# against an empty dark_pool_prints table: behavior is exactly the pre-fix behavior until real
+# history accumulates, then the relative bar engages on its own.
+_DARK_POOL_BASELINE_MIN_PRINTS = 20
 _DARK_POOL_ALERT_EMAIL_CAP = 12  # matches _OPTIONS_FLOW_ALERT_EMAIL_CAP exactly
 _DARK_POOL_ALERT_COOLDOWN_MINUTES = 60  # longer than options-flow's 30 — a symbol can see many
 # large dark-pool prints in a single session (unlike a specific options contract sweep), so a
 # shorter cooldown would flood a user's inbox with what's often the same accumulating position
 # printing in pieces over the day.
+
+
+def _dark_pool_premium_baseline(session, symbol: str) -> float | None:
+    """AUD-DARKPOOL-ABSTHRESHOLD: median print premium for `symbol` over the trailing
+    _DARK_POOL_BASELINE_DAYS, or None when there isn't enough history to be meaningful.
+
+    Returning None is a real, load-bearing answer, not an error: the caller then applies the
+    absolute floor ALONE, which is exactly the pre-fix behavior. That is what makes this safe
+    to ship against today's empty table — the relative bar simply switches itself on once each
+    symbol has accumulated _DARK_POOL_BASELINE_MIN_PRINTS prints.
+
+    Median rather than mean — see _DARK_POOL_REL_MULTIPLE's own comment for why a right-skewed
+    premium distribution makes the mean actively counterproductive here.
+    """
+    try:
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=_DARK_POOL_BASELINE_DAYS)
+        row = session.execute(
+            text("""
+                SELECT COUNT(*) AS n,
+                       percentile_cont(0.5) WITHIN GROUP (ORDER BY premium) AS med
+                FROM dark_pool_prints
+                WHERE symbol = :sym AND executed_at >= :cutoff AND premium IS NOT NULL
+            """),
+            {"sym": symbol, "cutoff": cutoff},
+        ).one()
+        if row.n is None or row.n < _DARK_POOL_BASELINE_MIN_PRINTS:
+            return None
+        if row.med is None or float(row.med) <= 0:
+            return None
+        return float(row.med)
+    except Exception as exc:
+        log.warning("dark_pool_baseline.failed", symbol=symbol, error=str(exc))
+        return None
+
+
+def _persist_dark_pool_prints(session, stock_id: int, symbol: str, rows: list) -> int:
+    """AUD-DARKPOOL-NOPERSIST: write the raw prints check_dark_pool_alerts() already fetched.
+
+    The DarkPoolPrint model and its table have existed since T323-DARKPOOL but NOTHING ever
+    wrote them — confirmed live 2026-09-05: 0 rows in production while 184 alerts had already
+    fired. Every consumer (this alert, the API route, the UI card) read live from UW's API
+    instead, so the app kept no history of its own.
+
+    Consequences that made this worth fixing rather than deleting the table:
+      - The alert could never be backtested ("do large blocks predict anything?" was
+        unanswerable), which is a direct violation of this repo's standing rule that no alert
+        ships with no way to check whether it actually helped.
+      - Every view was capped at whatever UW returns right now (last 50 prints per symbol).
+      - AUD-DARKPOOL-ABSTHRESHOLD's relative threshold NEEDS this history — a per-symbol
+        baseline cannot be computed from a single live snapshot.
+
+    Persists EVERY fetched print, not just the ones clearing the alert threshold: the baseline
+    a relative threshold measures against is precisely the distribution of ordinary prints, so
+    filtering here would destroy the very data the threshold needs.
+
+    Idempotent via the model's own uq_dark_pool_print (symbol, executed_at, price, size) —
+    this job runs every 60s over a 15-min-cached UW response, so the same print is re-fetched
+    many times and must not duplicate. Fail-open: persistence must never block a real alert.
+    """
+    if not rows:
+        return 0
+    try:
+        from sqlalchemy.dialects.postgresql import insert as _pg_insert
+        payload = []
+        for r in rows:
+            if r.executed_at is None or r.price is None or r.size is None:
+                continue
+            payload.append({
+                "symbol": symbol, "stock_id": stock_id,
+                "price": float(r.price), "size": int(r.size),
+                "premium": float(r.premium) if r.premium is not None else None,
+                "venue": r.venue, "executed_at": r.executed_at,
+            })
+        if not payload:
+            return 0
+        stmt = _pg_insert(DarkPoolPrint).values(payload).on_conflict_do_nothing(
+            constraint="uq_dark_pool_print"
+        )
+        session.execute(stmt)
+        session.commit()
+        return len(payload)
+    except Exception as exc:
+        log.warning("dark_pool_print.persist_failed", symbol=symbol, error=str(exc))
+        try:
+            session.rollback()
+        except Exception:
+            pass
+        return 0
 
 
 def _record_dark_pool_alert_outcome(session, stock_id: int, symbol: str, price: float, qualifying_metric: float | None) -> None:
@@ -4827,7 +4940,23 @@ def check_dark_pool_alerts() -> None:
                     live = _live_raw.get(symbol)
                     price = live.get("price") if live else None
                     rows = _uw.get_dark_pool_prints(symbol)
-                    qualifying = [r for r in rows if (r.premium or 0) >= _DARK_POOL_ALERT_MIN_PREMIUM]
+                    # AUD-DARKPOOL-NOPERSIST: persist EVERY fetched print before filtering —
+                    # the baseline below is built from ordinary prints, so filtering first
+                    # would destroy the very distribution the relative bar measures against.
+                    _persist_dark_pool_prints(session, stock_id, symbol, rows)
+                    # AUD-DARKPOOL-ABSTHRESHOLD: both bars must clear. The absolute floor keeps
+                    # a relatively-large print in an illiquid name from alerting when it isn't
+                    # a real institutional block in dollar terms; the relative bar keeps routine
+                    # large-cap flow (a $1M print in AAPL) from alerting just for being big.
+                    # baseline is None until a symbol has enough history — then only the
+                    # absolute floor applies, i.e. exactly the pre-fix behavior.
+                    _baseline = _dark_pool_premium_baseline(session, symbol)
+                    _rel_floor = (_baseline * _DARK_POOL_REL_MULTIPLE) if _baseline else 0.0
+                    qualifying = [
+                        r for r in rows
+                        if (r.premium or 0) >= _DARK_POOL_ALERT_MIN_PREMIUM
+                        and (r.premium or 0) >= _rel_floor
+                    ]
                     if not qualifying:
                         continue
                     id_by_symbol[symbol] = stock_id
@@ -4839,6 +4968,13 @@ def check_dark_pool_alerts() -> None:
                         "premium": biggest.premium,
                         "venue": biggest.venue,
                         "executed_at": biggest.executed_at,
+                        # Surfaced so the email can say HOW unusual this print was for this
+                        # symbol, not just its raw dollar size — the whole point of the
+                        # relative bar. None when no baseline exists yet.
+                        "baseline_median": _baseline,
+                        "vs_baseline": (
+                            round((biggest.premium or 0) / _baseline, 1) if _baseline else None
+                        ),
                     }
                 except Exception as exc:
                     log.warning("dark_pool_alert.symbol_error", symbol=symbol, error=str(exc))
