@@ -2017,6 +2017,31 @@ class SqueezeAlertOutcome(Base):
     # Snapshot of the metric that qualified the candidate, for later human review — short %
     # of float for short_squeeze, OI concentration_pct for gamma_unwind_*.
     qualifying_metric: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # AUD-GEXCORROBORATE-UNMEASURED: whether real Unusual Whales GEX levels corroborated this
+    # alert at fire time. check_gamma_unwind_alerts() has computed this since AUD-GEXCORROBORATE
+    # but only ever DISPLAYED it in the email — it was never persisted, so the obvious question
+    # ("do GEX-corroborated alerts actually outperform uncorroborated ones?") could not be
+    # answered from stored data at all, and the free OI-concentration proxy kept gating every
+    # candidate on faith.
+    #
+    # This matters because the proxy is explicitly NOT a real gamma calculation (see
+    # check_gamma_unwind_alerts()'s own HONEST LIMITATION docstring): the same open interest
+    # amplifies moves when dealers are short gamma and DAMPENS them when dealers are long
+    # gamma, and only real GEX (gamma_flip in particular) can distinguish the two. Recording
+    # this makes "should gamma_flip gate the alert rather than decorate it?" a measurement
+    # instead of an argument — see docs/2026-09-05/GAMMA_SQUEEZE_CAPABILITY_REVIEW.md.
+    #
+    # NULL means "not evaluated" (a pre-fix row, UW disabled, or a lookup failure) and is
+    # deliberately distinct from False ("evaluated, no real GEX level sits near price") — the
+    # two must never be pooled when this is analysed, or unmeasured rows would silently count
+    # as negative evidence.
+    gex_corroborated: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Distance from alert_price to the NEAREST corroborating GEX level, as a signed fraction
+    # ((level - price) / price). Kept alongside the boolean because "corroborated" is a
+    # threshold on this underlying continuous quantity — storing only the boolean would bake
+    # today's _GEX_CORROBORATE_BAND_PCT into the historical record and make re-testing a
+    # different band impossible without re-firing every alert.
+    gex_nearest_level_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     entry_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # T+1 trading day close used as the actual entry fill
     entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     # DESIGN_SQUEEZE_ALERT_PERFORMANCE_MEASUREMENT: the 1d/2d/3d windows this table originally

@@ -2945,6 +2945,7 @@ def _squeeze_game_plan(session, symbol: str, price: float) -> dict | None:
 
 def _record_squeeze_alert_outcome(
     session, alert_type: str, symbol: str, price: float, qualifying_metric: float | None,
+    gex_corroborated: bool | None = None, gex_nearest_level_pct: float | None = None,
 ) -> None:
     """T264-SQUEEZEALERT-PERFORMANCE: persists a durable snapshot the moment an alert first
     fires for a symbol on a given calendar day — the exact "if I bought right when the email
@@ -2979,6 +2980,11 @@ def _record_squeeze_alert_outcome(
         session.add(SqueezeAlertOutcome(
             alert_type=alert_type, stock_id=stock.id, symbol=symbol, fired_date=today,
             alert_price=float(price), qualifying_metric=qualifying_metric,
+            # AUD-GEXCORROBORATE-UNMEASURED: default None ("not evaluated"), never False —
+            # short_squeeze/squeeze_ignition callers don't compute GEX at all, and recording
+            # False for them would make them look like measured-but-uncorroborated rows.
+            gex_corroborated=gex_corroborated,
+            gex_nearest_level_pct=gex_nearest_level_pct,
         ))
         session.commit()
     except Exception as exc:
@@ -4333,8 +4339,19 @@ def check_gamma_unwind_alerts() -> None:
                     (name, lvl) for name, lvl in _levels.items()
                     if lvl is not None and lvl > 0 and abs(lvl - _price) / _price <= _GEX_CORROBORATE_BAND_PCT
                 ]
+                # AUD-GEXCORROBORATE-UNMEASURED: record the EVALUATED result either way.
+                # False here means "real GEX was fetched and no level sits near price" — a
+                # genuine negative observation. Candidates that `continue`d above (UW disabled
+                # or lookup failed) never reach this line and stay None = "not evaluated", so
+                # the two are never conflated when this is later analysed.
+                cand["gex_corroborates"] = bool(_nearby)
+                # Signed distance to the NEAREST level as a fraction of price, so a future
+                # analysis can re-test a different corroboration band without re-firing alerts.
+                _all_levels = [lvl for lvl in _levels.values() if lvl is not None and lvl > 0]
+                if _all_levels:
+                    _closest = min(_all_levels, key=lambda lvl: abs(lvl - _price))
+                    cand["gex_nearest_level_pct"] = round((_closest - _price) / _price, 6)
                 if _nearby:
-                    cand["gex_corroborates"] = True
                     cand["gex_nearby_levels"] = [{"name": name, "level": lvl} for name, lvl in _nearby]
 
             # T264-SQUEEZEALERT-PERFORMANCE: split by dominant_side, matching the user's own
@@ -4347,6 +4364,8 @@ def check_gamma_unwind_alerts() -> None:
                 _alert_type = "gamma_unwind_calls" if cand["dominant_side"] == "calls" else "gamma_unwind_puts"
                 _record_squeeze_alert_outcome(
                     session, _alert_type, sym, float(cand["price"]), cand.get("concentration_pct"),
+                    gex_corroborated=cand.get("gex_corroborates"),
+                    gex_nearest_level_pct=cand.get("gex_nearest_level_pct"),
                 )
 
             from .email_service import send_gamma_unwind_email
