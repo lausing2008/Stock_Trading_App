@@ -59,6 +59,12 @@ _namespace = {
     },
     "_CONVICTION_EDGE_NOISE_THRESHOLD_PCT": 2.0,
     "_load_conviction_edges": lambda: {},
+    # AUD-CHASE-ROC10: read the REAL module-level constant out of scheduler.py rather than
+    # hardcoding 10.0 here — same reasoning as _load_constant()'s docstring above. A test that
+    # duplicated the value would keep passing if the production threshold drifted.
+    "_MAX_ROC10_FOR_ENTRY": float(
+        _source.split("_MAX_ROC10_FOR_ENTRY = ")[1].split("\n")[0].strip()
+    ),
 }
 _is_conviction_buy = _load_function("_is_conviction_buy", _namespace)
 
@@ -180,3 +186,80 @@ def test_new_disqualifiers_are_hard_failures_not_soft_tolerated():
     all_passed, tier, passed, failed = _is_conviction_buy(sig, kscore=70.0, regime="bull")
     assert tier == "failed"
     assert all_passed is False
+
+
+# ── AUD-CHASE-ROC10: third overextension disqualifier ────────────────────────────────────
+# Independent of both checks above: neither the stochastic nor the 20-day-high distance
+# catches a stock that has simply run too far too fast (a stock can be 8% below its 20-day
+# high with RSI 58 and still be up 20% in ten days after bouncing off a low).
+#
+# Measured over post-AUD232 outcomes (n=4,770): return by prior 10-day run-up is monotonic in
+# BOTH return and win rate — falling +0.09%/52.9%, mild(0-5) -0.84%/45.4%, strong(5-10)
+# -1.13%/41.1%, hot(10-15) -3.27%/35.0%, parabolic(>15) -4.37%/31.6%.
+
+def test_parabolic_runup_is_blocked():
+    sig = _signal(roc_10=20.0)
+    all_passed, tier, passed, failed = _is_conviction_buy(sig, kscore=70.0, regime="bull")
+    assert all_passed is False
+    assert any("10 days" in f for f in failed)
+
+
+def test_moderate_runup_still_passes():
+    """5% in ten days is normal participation, not chasing — must not block."""
+    all_passed, tier, passed, failed = _is_conviction_buy(
+        _signal(roc_10=5.0), kscore=70.0, regime="bull")
+    assert all_passed is True
+    assert tier == "full"
+
+
+def test_falling_stock_passes_this_check():
+    """The genuinely profitable bucket (+0.09%, 52.9% win) — a real dip entry."""
+    all_passed, tier, passed, failed = _is_conviction_buy(
+        _signal(roc_10=-6.0), kscore=70.0, regime="bull")
+    assert all_passed is True
+    assert not any("10 days" in f for f in failed)
+
+
+def test_threshold_is_inclusive_at_the_limit():
+    """>= 10, so exactly 10.0 blocks — pins the boundary against silent drift."""
+    all_passed, _, _, failed = _is_conviction_buy(
+        _signal(roc_10=10.0), kscore=70.0, regime="bull")
+    assert all_passed is False
+    assert any("10 days" in f for f in failed)
+
+    all_passed_below, _, _, _ = _is_conviction_buy(
+        _signal(roc_10=9.9), kscore=70.0, regime="bull")
+    assert all_passed_below is True
+
+
+def test_missing_roc10_fails_open_and_does_not_block():
+    """Signals generated before roc_10 existed in reasons (and any symbol with <11 bars,
+    where signals.py publishes None) must not be blocked by a value that isn't there."""
+    sig = _signal()
+    sig["reasons"].pop("roc_10", None)
+    all_passed, tier, _, failed = _is_conviction_buy(sig, kscore=70.0, regime="bull")
+    assert all_passed is True
+    assert not any("10 days" in f for f in failed)
+
+    sig_none = _signal(roc_10=None)
+    all_passed_none, _, _, failed_none = _is_conviction_buy(sig_none, kscore=70.0, regime="bull")
+    assert all_passed_none is True
+    assert not any("10 days" in f for f in failed_none)
+
+
+def test_roc10_block_is_a_hard_failure_not_soft_tolerated():
+    all_passed, tier, _, _ = _is_conviction_buy(_signal(roc_10=25.0), kscore=70.0, regime="bull")
+    assert tier == "failed"
+    assert all_passed is False
+
+
+def test_roc10_is_independent_of_the_other_two_overextension_checks():
+    """The whole point of a third check: a stock well off its high, not overbought, with a
+    cool stochastic, that has still run 18% in ten days must be caught."""
+    sig = _signal(roc_10=18.0, pct_from_20d_high=0.08, rsi=58.0,
+                  stoch_rsi_overbought=False, stoch_rsi_still_hot=False,
+                  near_recent_high_hot=False)
+    all_passed, _, _, failed = _is_conviction_buy(sig, kscore=70.0, regime="bull")
+    assert all_passed is False
+    assert any("10 days" in f for f in failed)
+    assert not any("recent peak" in f for f in failed)

@@ -723,6 +723,11 @@ _REGIME_THRESHOLDS: dict[str, dict] = {
 _MIN_CONFIDENCE  = 60.0
 _MIN_CONFLUENCE  = 75
 
+# AUD-CHASE-ROC10: max prior 10-day run-up (%) still eligible for a conviction BUY. See the
+# disqualifier in _is_conviction_buy() for the measured dose-response and the out-of-sample
+# validation that selected 10 over the tighter (in-sample-better, holdout-negative) cuts.
+_MAX_ROC10_FOR_ENTRY = 10.0
+
 
 def _get_current_regime() -> str:
     """Read the cached market regime from Redis. Returns 'bull', 'bear', 'high_vol', or 'unknown'."""
@@ -942,6 +947,36 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
         pct = reasons.get("pct_from_20d_high")
         pct_str = f"{pct * 100:.1f}%" if pct is not None else "?"
         failed.append(f"Price {pct_str} from its 20-day high with RSI still hot — buying near a recent peak, not a pullback")
+    # AUD-CHASE-ROC10: a THIRD overextension disqualifier, independent of both checks above —
+    # neither the stochastic nor the 20-day-high distance catches a stock that has simply run
+    # too far, too fast (a stock can be 8% below its 20-day high, RSI 58, and still be up 20%
+    # in ten days after bouncing off a low).
+    #
+    # Measured 2026-09-05 over post-AUD232 outcomes (n=4,770, DFNS excluded). Return by prior
+    # 10-day run-up is monotonic in BOTH return and win rate:
+    #     falling (<0%)      +0.09%   52.9% win
+    #     mild (0-5%)        -0.84%   45.4%
+    #     strong (5-10%)     -1.13%   41.1%
+    #     hot (10-15%)       -3.27%   35.0%
+    #     parabolic (>15%)   -4.37%   31.6%
+    #
+    # Threshold is 10, not a tighter cut, deliberately. Validated out-of-sample (fit on
+    # <=2026-08-17, tested after): roc10<10 improves BOTH periods (-2.22% -> -0.57% fit,
+    # -0.96% -> -0.79% holdout) while keeping ~83% of signals. The tighter roc10<0 cut looked
+    # best in-sample (+0.77%) but went NEGATIVE in holdout (-0.62%) — it did not generalize,
+    # and is exactly the curve-fit this threshold is chosen to avoid. Filtering on
+    # pct_from_20d_high instead was actively harmful out-of-sample (-1.06% vs -0.96% baseline).
+    #
+    # This does NOT make the system profitable (holdout is still -0.79%); it is a real but
+    # modest ~0.17-point improvement on a genuinely monotonic, non-fitted relationship. See
+    # docs/2026-09-05/WHY_SIGNALS_FIRE_LATE.md for why the underlying defect is architectural
+    # (every pillar is a momentum measure) and cannot be fixed by thresholds alone.
+    _roc10 = reasons.get("roc_10")
+    if _roc10 is not None and float(_roc10) >= _MAX_ROC10_FOR_ENTRY:
+        failed.append(
+            f"Already ran {float(_roc10):.1f}% in 10 days (limit {_MAX_ROC10_FOR_ENTRY:.0f}%) — "
+            "chasing an extended move, not entering early"
+        )
 
     # CB-4: Near-conviction tier — allow 1 soft failure (OBV, ADX, ML, or MACD) to still send.
     # MACD is a lagging indicator; when all other layers (TA structure, RSI, ML, K-Score)
