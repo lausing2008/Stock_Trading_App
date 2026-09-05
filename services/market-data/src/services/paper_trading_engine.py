@@ -1848,6 +1848,13 @@ def _max_correlation_with_open_positions(
 
 # ── Entry qualifier ───────────────────────────────────────────────────────────
 
+# AUD-CHASE-ROC10-PAPERPORT: mirrors scheduler.py's own _MAX_ROC10_FOR_ENTRY (same value,
+# not re-derived — see the guard's own comment inside _should_enter() below for why). Kept as
+# a separate constant rather than a cross-import: scheduler.py imports FROM this module at
+# module level, so importing the other direction would be circular.
+_MAX_ROC10_FOR_ENTRY_PAPER = 10.0
+
+
 def _should_enter(
     symbol: str,
     signal_data: dict,
@@ -1998,6 +2005,30 @@ def _should_enter(
                 f"Gap-up {_gap:.1%} with elevated volume (z={float(_volume_z_for_gap):.1f}) "
                 f"above signal close ${_signal_close:.2f} — likely chasing a fresh spike"
             ]
+
+    # AUD-CHASE-ROC10-PAPERPORT: the gap check right above measures chasing SINCE the signal
+    # fired (minutes to hours) — it is blind to a move that already happened over the prior
+    # 10 TRADING DAYS, which is exactly the SNOW case documented right above it
+    # (AUD-GAPCHASE-EARNINGSVOL): entered at $377.34 with reasons["last_price"]=$377.995 —
+    # ~0% measured "gap" — despite the stock having already run hard before the signal ever
+    # computed. It later stopped out at -19.0%.
+    #
+    # scheduler.py's own AUD-CHASE-ROC10 added exactly this guard to the EMAIL-alert conviction
+    # gate and validated it out-of-sample (fit period -2.22% -> -0.57%, HOLDOUT -0.96% -> -0.79%,
+    # ~83% of signals retained) — but it was never ported to this function, so paper trading's
+    # own entries kept the exposure the audit measured and fixed for alerts. Mirrored here
+    # rather than imported: scheduler.py already imports FROM this module at module level
+    # (get_last_regime, paper_trading_step, ...), so importing back would be circular.
+    #
+    # Deliberately the SAME threshold (10.0), not re-derived — this module's own trades are a
+    # subset of the population the original analysis was run against, not an independent
+    # population that would justify its own separately-fitted cutoff.
+    _roc10_paper = reasons.get("roc_10")
+    if _roc10_paper is not None and float(_roc10_paper) >= _MAX_ROC10_FOR_ENTRY_PAPER:
+        return False, -99, [
+            f"Already ran {float(_roc10_paper):.1f}% in 10 days (limit "
+            f"{_MAX_ROC10_FOR_ENTRY_PAPER:.0f}%) — chasing an extended move, not entering early"
+        ]
 
     # T220-D: Economic calendar blackout — reject BUY entries within 2h of major macro events.
     # FOMC, CPI, NFP, PCE cause unpredictable 1-3% moves; entries in this window have higher failure rates.
