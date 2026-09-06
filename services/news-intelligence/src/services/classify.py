@@ -90,33 +90,6 @@ def classify_headlines(headlines: list[str], api_key: str) -> list[dict | None]:
             usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
             context={"headline_count": len(headlines)},
         )
-        text = _strip_markdown_fence(_resp_json["content"][0]["text"])
-        parsed = json.loads(text)
-        if not isinstance(parsed, list):
-            return [None] * len(headlines)
-        out: list[dict | None] = []
-        for i in range(len(headlines)):
-            if i >= len(parsed) or not isinstance(parsed[i], dict):
-                out.append(None)
-                continue
-            item = parsed[i]
-            try:
-                score = max(0.0, min(100.0, float(item.get("sentiment_score", 50))))
-                label = item.get("sentiment_label") or "neutral"
-                if label not in ("positive", "negative", "neutral"):
-                    label = "neutral"
-                category = item.get("category") or "other"
-                if category not in ("earnings", "fda", "ma", "analyst", "macro", "other"):
-                    category = "other"
-                out.append({
-                    "sentiment_score": score,
-                    "sentiment_label": label,
-                    "is_material": bool(item.get("is_material", False)),
-                    "category": category,
-                })
-            except (TypeError, ValueError):
-                out.append(None)
-        return out
     except Exception as exc:
         log.warning("news_classify.failed", error=str(exc))
         log_llm_call(
@@ -125,6 +98,41 @@ def classify_headlines(headlines: list[str], api_key: str) -> list[dict | None]:
             error=str(exc), context={"headline_count": len(headlines)},
         )
         return [None] * len(headlines)
+
+    # AUD-LLMUSAGE: parsing outside the network-call try — a malformed JSON body here is
+    # an already-billed "ok" call, not an API failure; must not double-log as "error".
+    try:
+        text = _strip_markdown_fence(_resp_json["content"][0]["text"])
+        parsed = json.loads(text)
+        if not isinstance(parsed, list):
+            return [None] * len(headlines)
+    except Exception as exc:
+        log.warning("news_classify.parse_failed", error=str(exc))
+        return [None] * len(headlines)
+
+    out: list[dict | None] = []
+    for i in range(len(headlines)):
+        if i >= len(parsed) or not isinstance(parsed[i], dict):
+            out.append(None)
+            continue
+        item = parsed[i]
+        try:
+            score = max(0.0, min(100.0, float(item.get("sentiment_score", 50))))
+            label = item.get("sentiment_label") or "neutral"
+            if label not in ("positive", "negative", "neutral"):
+                label = "neutral"
+            category = item.get("category") or "other"
+            if category not in ("earnings", "fda", "ma", "analyst", "macro", "other"):
+                category = "other"
+            out.append({
+                "sentiment_score": score,
+                "sentiment_label": label,
+                "is_material": bool(item.get("is_material", False)),
+                "category": category,
+            })
+        except (TypeError, ValueError):
+            out.append(None)
+    return out
 
 
 def classify_in_batches(headlines: list[str], api_key: str) -> list[dict | None]:

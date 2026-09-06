@@ -261,10 +261,6 @@ async def generate_theme_summary(result: ThemeSignalResult) -> str | None:
             usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
             context={"theme": result.theme},
         )
-        raw = _resp_json["content"][0]["text"].strip()
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
-        data = json.loads(raw)
-        return _clean_summary(data.get("summary"))
     except Exception as exc:
         log.warning("theme_signals.call_failed", theme=result.theme, error=str(exc))
         log_llm_call(
@@ -272,4 +268,15 @@ async def generate_theme_summary(result: ThemeSignalResult) -> str | None:
             duration_ms=int((_time.monotonic() - _t0) * 1000), status="error", error=str(exc),
             context={"theme": result.theme},
         )
+        return None
+
+    # AUD-LLMUSAGE: parsing outside the network-call try — a malformed JSON body here is
+    # an already-billed "ok" call, not an API failure; must not double-log as "error".
+    try:
+        raw = _resp_json["content"][0]["text"].strip()
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
+        data = json.loads(raw)
+        return _clean_summary(data.get("summary"))
+    except Exception as exc:
+        log.warning("theme_signals.parse_failed", theme=result.theme, error=str(exc))
         return None

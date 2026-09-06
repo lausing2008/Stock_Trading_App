@@ -252,6 +252,18 @@ async def generate_earnings_impact(
             usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
             context={"symbol": symbol},
         )
+    except Exception as exc:
+        log.warning("earnings_impact.call_failed", symbol=symbol, error=str(exc))
+        log_llm_call(
+            service="event-intelligence", call_site=CALL_SITE_EARNINGS_IMPACT, model=body["model"],
+            duration_ms=int((_time.monotonic() - _t0) * 1000), status="error", error=str(exc),
+            context={"symbol": symbol},
+        )
+        return None
+
+    # AUD-LLMUSAGE: parsing outside the network-call try — a malformed JSON body here is
+    # an already-billed "ok" call, not an API failure; must not double-log as "error".
+    try:
         raw = _resp_json["content"][0]["text"].strip()
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
         data = json.loads(raw)
@@ -265,12 +277,7 @@ async def generate_earnings_impact(
             "management_tone": (str(data.get("management_tone") or "").strip()[:400]) or None,
         }
     except Exception as exc:
-        log.warning("earnings_impact.call_failed", symbol=symbol, error=str(exc))
-        log_llm_call(
-            service="event-intelligence", call_site=CALL_SITE_EARNINGS_IMPACT, model=body["model"],
-            duration_ms=int((_time.monotonic() - _t0) * 1000), status="error", error=str(exc),
-            context={"symbol": symbol},
-        )
+        log.warning("earnings_impact.parse_failed", symbol=symbol, error=str(exc))
         return None
 
 
@@ -469,6 +476,18 @@ async def generate_earnings_forecast(symbol: str, sector: str | None, days_to_ev
             usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
             context={"symbol": symbol},
         )
+    except Exception as exc:
+        log.warning("earnings_forecast.call_failed", symbol=symbol, error=str(exc))
+        log_llm_call(
+            service="event-intelligence", call_site=CALL_SITE_EARNINGS_FORECAST, model=body["model"],
+            duration_ms=int((_time.monotonic() - _t0) * 1000), status="error", error=str(exc),
+            context={"symbol": symbol},
+        )
+        return None
+
+    # AUD-LLMUSAGE: parsing outside the network-call try — a malformed JSON body here is
+    # an already-billed "ok" call, not an API failure; must not double-log as "error".
+    try:
         raw = _resp_json["content"][0]["text"].strip()
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
         data = json.loads(raw)
@@ -489,12 +508,7 @@ async def generate_earnings_forecast(symbol: str, sector: str | None, days_to_ev
             pass  # cache-write failure must never block returning the real, already-computed result
         return result
     except Exception as exc:
-        log.warning("earnings_forecast.call_failed", symbol=symbol, error=str(exc))
-        log_llm_call(
-            service="event-intelligence", call_site=CALL_SITE_EARNINGS_FORECAST, model=body["model"],
-            duration_ms=int((_time.monotonic() - _t0) * 1000), status="error", error=str(exc),
-            context={"symbol": symbol},
-        )
+        log.warning("earnings_forecast.parse_failed", symbol=symbol, error=str(exc))
         return None
 
 

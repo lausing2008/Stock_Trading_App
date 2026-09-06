@@ -67,6 +67,24 @@ function relTime(iso: string): string {
   return `${Math.floor(d / 86400)}d ago`;
 }
 
+// AUD-LLMUSAGE: a few call sites (research-engine's report/chat) accept a client-supplied
+// `model` string with no fixed allowlist — an unrecognized value here is a real possibility,
+// not just a hypothetical, so it must render as neutral/unknown rather than silently falling
+// into the Sonnet-purple bucket (which would misrepresent it as a specific, known model).
+function llmModelPillStyle(model: string): { color: string; background: string; border: string } {
+  const m = model.toLowerCase();
+  if (m.includes('haiku')) {
+    return { color: '#fbbf24', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.2)' };
+  }
+  if (m.includes('sonnet')) {
+    return { color: '#a78bfa', background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.2)' };
+  }
+  if (m.includes('opus')) {
+    return { color: '#f472b6', background: 'rgba(244,114,182,0.08)', border: '1px solid rgba(244,114,182,0.2)' };
+  }
+  return { color: '#94a3b8', background: 'rgba(148,163,184,0.06)', border: '1px solid rgba(148,163,184,0.15)' };
+}
+
 function JobCard({ job }: { job: SchedulerJob }) {
   const meta = JOB_META[job.job] ?? { label: job.job, maxAgeDays: 7, desc: '' };
   const ageDays = (Date.now() - new Date(job.last_run).getTime()) / 86400000;
@@ -822,9 +840,7 @@ export default function AdminHealthPage() {
                           <td style={{ padding: '6px 8px' }}>
                             <span style={{
                               padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 700,
-                              color: row.model.toLowerCase().includes('haiku') ? '#fbbf24' : '#a78bfa',
-                              background: row.model.toLowerCase().includes('haiku') ? 'rgba(251,191,36,0.08)' : 'rgba(167,139,250,0.08)',
-                              border: `1px solid ${row.model.toLowerCase().includes('haiku') ? 'rgba(251,191,36,0.2)' : 'rgba(167,139,250,0.2)'}`,
+                              ...llmModelPillStyle(row.model),
                             }}>
                               {row.model}
                             </span>

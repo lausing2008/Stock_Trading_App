@@ -208,9 +208,6 @@ async def check_risks(
             usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
             context={"symbol": symbol, "style": style},
         )
-        raw = _resp_json["content"][0]["text"].strip()
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
-        data = json.loads(raw)
     except Exception as exc:
         log.warning("de.risk_agent.call_failed symbol=%s error=%s", symbol, exc)
         log_llm_call(
@@ -218,6 +215,16 @@ async def check_risks(
             duration_ms=int((_time.monotonic() - _t0) * 1000), status="error",
             error=str(exc), context={"symbol": symbol, "style": style},
         )
+        return None
+
+    # AUD-LLMUSAGE: parsing outside the network-call try — a malformed JSON body here is
+    # an already-billed "ok" call, not an API failure; must not double-log as "error".
+    try:
+        raw = _resp_json["content"][0]["text"].strip()
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
+        data = json.loads(raw)
+    except Exception as exc:
+        log.warning("de.risk_agent.parse_failed symbol=%s error=%s", symbol, exc)
         return None
 
     raw_risks = data.get("risks", [])

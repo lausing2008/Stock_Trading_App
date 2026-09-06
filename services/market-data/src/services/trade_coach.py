@@ -235,14 +235,21 @@ async def generate_trade_coach_summary(result: TradePatternResult) -> str | None
             service="market-data", call_site=CALL_SITE_TRADE_COACH, model=body["model"],
             usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
         )
-        raw = _resp_json["content"][0]["text"].strip()
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
-        data = json.loads(raw)
-        return _clean_summary(data.get("summary"))
     except Exception as exc:
         log.warning("trade_coach.call_failed", error=str(exc))
         log_llm_call(
             service="market-data", call_site=CALL_SITE_TRADE_COACH, model=body["model"],
             duration_ms=int((_time.monotonic() - _t0) * 1000), status="error", error=str(exc),
         )
+        return None
+
+    # AUD-LLMUSAGE: parsing outside the network-call try — a malformed JSON body here is
+    # an already-billed "ok" call, not an API failure; must not double-log as "error".
+    try:
+        raw = _resp_json["content"][0]["text"].strip()
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
+        data = json.loads(raw)
+        return _clean_summary(data.get("summary"))
+    except Exception as exc:
+        log.warning("trade_coach.parse_failed", error=str(exc))
         return None

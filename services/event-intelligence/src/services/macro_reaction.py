@@ -180,6 +180,18 @@ async def generate_reaction(event_type: str, actual_value: float, expected_value
             usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
             context={"event_type": event_type},
         )
+    except Exception as exc:
+        log.warning("macro_reaction.call_failed", event_type=event_type, error=str(exc))
+        log_llm_call(
+            service="event-intelligence", call_site=CALL_SITE_MACRO_REACTION, model=body["model"],
+            duration_ms=int((_time.monotonic() - _t0) * 1000), status="error", error=str(exc),
+            context={"event_type": event_type},
+        )
+        return None
+
+    # AUD-LLMUSAGE: parsing outside the network-call try — a malformed JSON body here is
+    # an already-billed "ok" call, not an API failure; must not double-log as "error".
+    try:
         raw = _resp_json["content"][0]["text"].strip()
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
         data = json.loads(raw)
@@ -194,12 +206,7 @@ async def generate_reaction(event_type: str, actual_value: float, expected_value
             "sectors_hurt": sectors_hurt,
         }
     except Exception as exc:
-        log.warning("macro_reaction.call_failed", event_type=event_type, error=str(exc))
-        log_llm_call(
-            service="event-intelligence", call_site=CALL_SITE_MACRO_REACTION, model=body["model"],
-            duration_ms=int((_time.monotonic() - _t0) * 1000), status="error", error=str(exc),
-            context={"event_type": event_type},
-        )
+        log.warning("macro_reaction.parse_failed", event_type=event_type, error=str(exc))
         return None
 
 

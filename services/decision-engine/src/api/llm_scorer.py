@@ -208,10 +208,6 @@ async def score_with_llm(
             usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
             context={"symbol": symbol, "style": style},
         )
-        raw = _resp_json["content"][0]["text"].strip()
-        # Strip markdown if present
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
-        data = json.loads(raw)
     except Exception as exc:
         log.warning("de.llm_scorer.call_failed symbol=%s error=%s", symbol, exc)
         log_llm_call(
@@ -219,6 +215,20 @@ async def score_with_llm(
             duration_ms=int((_time.monotonic() - _t0) * 1000), status="error",
             error=str(exc), context={"symbol": symbol, "style": style},
         )
+        return 0, None
+
+    # AUD-LLMUSAGE: parsing happens OUTSIDE the network-call try block above — a malformed/
+    # truncated JSON response here is a real, already-billed "ok" call, not an API failure,
+    # so it must not re-log a duplicate "error" row for the same call (see llm_scorer.py's
+    # note in AUD-LLMUSAGE audit findings: this previously double-logged successful calls
+    # whose JSON body failed to parse, inflating the dashboard's error count).
+    try:
+        raw = _resp_json["content"][0]["text"].strip()
+        # Strip markdown if present
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
+        data = json.loads(raw)
+    except Exception as exc:
+        log.warning("de.llm_scorer.parse_failed symbol=%s error=%s", symbol, exc)
         return 0, None
 
     verdict = data.get("verdict", "HOLD").upper()
