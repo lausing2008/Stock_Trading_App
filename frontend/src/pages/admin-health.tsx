@@ -160,6 +160,52 @@ function MlRow({ m }: { m: MlModelMetric }) {
   );
 }
 
+function MlMarketPanel({ label, color, symbols }: { label: string; color: string; symbols: MlModelMetric[] }) {
+  const all = symbols.filter((m: MlModelMetric) => m.test_auc != null);
+  const top5 = all.slice(0, 5);
+  const bot5 = [...all].reverse().slice(0, 5);
+  const avgAuc = all.reduce((s: number, m: MlModelMetric) => s + (m.test_auc ?? 0), 0) / (all.length || 1);
+  const overfit = all.filter((m: MlModelMetric) => (m.overfit_gap ?? 0) > 0.1);
+
+  return (
+    <div>
+      <div style={{ fontSize: '11px', fontWeight: 700, color, marginBottom: '10px' }}>{label} — {all.length} models</div>
+      {all.length === 0 ? (
+        <div style={{ fontSize: '11px', color: '#334155', padding: '10px', background: '#080f1e', borderRadius: '8px', border: '1px solid #1e293b' }}>
+          No trained models for this market.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
+            <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 700, color: '#94a3b8', background: '#0d1424', border: '1px solid #1e293b' }}>
+              Avg AUC: {avgAuc.toFixed(3)}
+            </span>
+            {overfit.length > 0 && (
+              <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}>
+                ⚠ {overfit.length} overfitting (gap &gt;0.10)
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div>
+              <div style={{ fontSize: '10px', color: '#4ade80', fontWeight: 700, marginBottom: '6px', letterSpacing: '0.04em' }}>TOP 5 — Highest AUC</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {top5.map((m: MlModelMetric) => <MlRow key={m.symbol} m={m} />)}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: '10px', color: '#f87171', fontWeight: 700, marginBottom: '6px', letterSpacing: '0.04em' }}>BOTTOM 5 — Lowest AUC</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {bot5.map((m: MlModelMetric) => <MlRow key={m.symbol} m={m} />)}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function AdminHealthPage() {
   const router = useRouter();
   const [authed, setAuthed] = useState(false);
@@ -696,7 +742,13 @@ export default function AdminHealthPage() {
         </div>
       </div>
 
-      {/* ML Model Metrics */}
+      {/* ML Model Metrics — split US/HK: the two markets' models are trained on different
+          liquidity/volatility regimes (see docs/incidents/market-pulse-dashboard-bugs.md for
+          the recurring bug class of silently mixing HK and US data on one shared view), so a
+          single pooled Avg AUC / Top 5 / Bottom 5 could hide one market's models being
+          systematically worse while the other pulls the blended average back up. HK symbols
+          are identified by the ".HK" ticker suffix (see services/market-data's hk_connect.py
+          normalize_hk_symbol()), the same convention used across the backend. */}
       {mlData && mlData.count > 0 && (
         <div style={{ marginTop: '32px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
@@ -706,40 +758,14 @@ export default function AdminHealthPage() {
             </div>
           </div>
 
-          {/* Bottom 5 — worst AUC */}
           {(() => {
-            const all = mlData.symbols.filter((m: MlModelMetric) => m.test_auc != null);
-            const top5 = all.slice(0, 5);
-            const bot5 = [...all].reverse().slice(0, 5);
-            const avgAuc = all.reduce((s: number, m: MlModelMetric) => s + (m.test_auc ?? 0), 0) / (all.length || 1);
-            const overfit = all.filter((m: MlModelMetric) => (m.overfit_gap ?? 0) > 0.1);
+            const us = mlData.symbols.filter((m: MlModelMetric) => !m.symbol.toUpperCase().endsWith('.HK'));
+            const hk = mlData.symbols.filter((m: MlModelMetric) => m.symbol.toUpperCase().endsWith('.HK'));
             return (
-              <>
-                <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                  <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 700, color: '#94a3b8', background: '#0d1424', border: '1px solid #1e293b' }}>
-                    Avg AUC: {avgAuc.toFixed(3)}
-                  </span>
-                  {overfit.length > 0 && (
-                    <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}>
-                      ⚠ {overfit.length} overfitting (gap &gt;0.10)
-                    </span>
-                  )}
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-                  <div>
-                    <div style={{ fontSize: '10px', color: '#4ade80', fontWeight: 700, marginBottom: '6px', letterSpacing: '0.04em' }}>TOP 5 — Highest AUC</div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      {top5.map((m: MlModelMetric) => <MlRow key={m.symbol} m={m} />)}
-                    </div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: '10px', color: '#f87171', fontWeight: 700, marginBottom: '6px', letterSpacing: '0.04em' }}>BOTTOM 5 — Lowest AUC</div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      {bot5.map((m: MlModelMetric) => <MlRow key={m.symbol} m={m} />)}
-                    </div>
-                  </div>
-                </div>
-              </>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+                <MlMarketPanel label="🇺🇸 US" color="#60a5fa" symbols={us} />
+                <MlMarketPanel label="🇭🇰 HK" color="#f97316" symbols={hk} />
+              </div>
             );
           })()}
         </div>
