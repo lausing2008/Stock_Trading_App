@@ -951,7 +951,12 @@ export default function AdminHealthPage() {
                     <div style={{ height: '100%', width: `${pct}%`, background: barColor, borderRadius: '4px', transition: 'width 0.3s' }} />
                   </div>
                   <div style={{ display: 'flex', gap: '16px', marginTop: '10px', fontSize: '11px', color: '#64748b', flexWrap: 'wrap' }}>
-                    {usingReal && real!.minute_remaining != null && (
+                    {/* AUD-UWUSAGE-REALHEADERS: this account's plan reports x-uw-req-per-
+                        minute-remaining as 1,000,000 (confirmed live, not a bug) — effectively
+                        "no meaningful per-minute cap," so showing it as a headroom figure would
+                        be actively misleading. Only surface it when it's small enough to be a
+                        real constraint worth watching. */}
+                    {usingReal && real!.minute_remaining != null && real!.minute_remaining! < 1000 && (
                       <span>This minute remaining: <strong style={{ color: real!.minute_remaining! < 10 ? '#f87171' : '#94a3b8' }}>{real!.minute_remaining!.toLocaleString()}</strong></span>
                     )}
                     <span>Yesterday (this app&apos;s count): <strong style={{ color: '#94a3b8' }}>{uwUsageData.yesterday_total_calls.toLocaleString()}</strong></span>
