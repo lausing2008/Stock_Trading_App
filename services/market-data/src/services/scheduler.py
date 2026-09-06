@@ -2110,14 +2110,28 @@ def _fetch_premarket_gappers(session: Session) -> list[dict]:
 
 _OPTIONS_FLOW_TOP_K = 20  # top-K by K-Score, unioned with PriceAlert-subscribed symbols
 
+# AUD-UWUSAGE-FLOWALERTCAP (2026-09-06): the PriceAlert-derived side of this union was
+# uncapped on the assumption it would naturally stay small — confirmed live to have grown to
+# 38 distinct symbols from a single user's 78 active alerts, pushing the total bounded set to
+# 55. AUD-UWRATELIMIT-FLOWALERTS originally sized get_flow_alerts()'s 45s cache TTL around an
+# assumed N~20; at 55 symbols with the AUD-MISFIREGRACE-OPTIONSFLOW fix (2026-09-04) restoring
+# this job's true ~60-90s cadence, nearly every symbol expires between ticks, turning every run
+# into a near-full live sweep — live-measured at 47.3 calls/min on just this one endpoint,
+# ~68,100 calls/day projected, 2.27x the entire assumed 30,000/day trial-tier budget by itself.
+# Capped to the most-recently-created alerts (a real recipient cares most about their newest
+# watches) rather than dropping the feature's purpose of covering PriceAlert-subscribed symbols
+# entirely.
+_OPTIONS_FLOW_ALERT_SYMBOLS_CAP = 20
+
 
 def _bounded_options_flow_symbols(session: Session) -> list[tuple[int, str]]:
     """T257-OVERNIGHT-FLOW-BRIEF Phase 2: the bounded symbol set for the EOD options-flow
-    snapshot job — PriceAlert-subscribed US symbols, unioned with the top-K US stocks by
-    K-Score. NOT the whole universe — yfinance's options-chain endpoint is the most rate-
-    limit-fragile call this app makes (see check_volume_anomalies()'s own docstring for the
-    same rate-limit discipline applied to a different feature), so this deliberately stays
-    small: only symbols a real recipient could plausibly see in tomorrow's brief.
+    snapshot job — PriceAlert-subscribed US symbols (capped, see
+    _OPTIONS_FLOW_ALERT_SYMBOLS_CAP), unioned with the top-K US stocks by K-Score. NOT the
+    whole universe — yfinance's options-chain endpoint is the most rate-limit-fragile call this
+    app makes (see check_volume_anomalies()'s own docstring for the same rate-limit discipline
+    applied to a different feature), so this deliberately stays small: only symbols a real
+    recipient could plausibly see in tomorrow's brief.
 
     Returns (stock_id, symbol) pairs, deduplicated by stock_id. US-only — HK has no
     yfinance-listed options coverage in this app (matches every other options-flow call site).
@@ -2125,9 +2139,18 @@ def _bounded_options_flow_symbols(session: Session) -> list[tuple[int, str]]:
     from sqlalchemy import desc as _desc
 
     alerts = session.execute(
-        select(PriceAlert).where(PriceAlert.triggered.is_(False))
+        select(PriceAlert)
+        .where(PriceAlert.triggered.is_(False))
+        .order_by(_desc(PriceAlert.id))
+        .limit(_OPTIONS_FLOW_ALERT_SYMBOLS_CAP * 3)  # some rows will be duplicate/HK symbols
     ).scalars().all()
-    alert_symbols = {a.symbol.upper() for a in alerts if not a.symbol.upper().endswith(".HK")}
+    alert_symbols: set[str] = set()
+    for a in alerts:
+        if len(alert_symbols) >= _OPTIONS_FLOW_ALERT_SYMBOLS_CAP:
+            break
+        sym = a.symbol.upper()
+        if not sym.endswith(".HK"):
+            alert_symbols.add(sym)
 
     by_id: dict[int, str] = {}
     if alert_symbols:

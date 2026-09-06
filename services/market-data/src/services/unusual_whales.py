@@ -119,15 +119,23 @@ _NOPE_TTL = 60          # 1 min ONLY — NOPE is UW's own per-minute reading; th
 # with every distinct PriceAlert symbol, no LIMIT). Confirmed live: 22,031 real UW 429 responses
 # in 48h, and the math shows this ONE function alone reaches N x 1,440 requests/day — already
 # ~28,800/day (96% of the platform's own assumed 30,000/day trial-tier budget) at N=20 with ZERO
-# PriceAlert symbols, before any other UW-calling code path adds anything. 45s is short enough
-# that "alert on fresh activity" (this function's own stated reason for being uncached) still
-# holds — a real sweep/block that just posted is still "fresh" 45s later — while still turning
-# every symbol that gets checked more than once within that window (the common case at a 60s
-# job interval) into a cache hit instead of a live call. Shorter than _NOPE_TTL's own 60s
-# specifically so a slow job cycle (this one's own docstring notes ~15s observed duration)
-# can't let two consecutive ticks both read a stale cached alert list as if avoiding a real
-# new sweep that occurred in between.
-_FLOW_ALERT_TTL = 45
+# PriceAlert symbols, before any other UW-calling code path adds anything. Originally set to 45s
+# on the assumption of a reliable ~60s job cadence.
+#
+# AUD-UWUSAGE-FLOWALERTCAP (2026-09-06): that assumption broke on two fronts at once. (1) the
+# PriceAlert side grew uncapped to 38 real symbols (78 alerts from one user) before being capped
+# at scheduler.py's own _OPTIONS_FLOW_ALERT_SYMBOLS_CAP; (2) AUD-MISFIREGRACE-OPTIONSFLOW
+# (2026-09-04) fixed this job from silently NOT firing to firing reliably, but at an irregular
+# ~60-90s real cadence (misfire_grace_time=60 on a 1-minute interval means a genuinely late tick
+# can land up to ~120s after the prior one) — live-confirmed at 47.3 calls/min from THIS single
+# endpoint alone (~68,100/day projected, 2.27x the entire daily budget) because most symbols
+# were expiring between ticks, turning nearly every run into a full live sweep rather than a
+# cache hit. Raised to 150s — comfortably past the worst-case ~120s tick gap plus buffer, so a
+# symbol checked on any two consecutive real ticks (even a late one) is now reliably a cache hit.
+# Still short enough that "alert on fresh activity" holds: a real sweep/block that just posted
+# is still meaningfully "fresh" 150s (2.5 minutes) later for a scanner meant to catch same-day
+# unusual activity, not sub-minute latency.
+_FLOW_ALERT_TTL = 150
 _EARNINGS_MOVE_TTL = 21600  # 6h, matching _SHORT_INTEREST_TTL's own rationale — this is
 # HISTORICAL per-report data that only grows (a new row) once per quarter per symbol; no reason
 # to re-fetch it as often as GEX/NOPE.
@@ -1047,18 +1055,17 @@ def get_flow_alerts(
     AUD-UWRATELIMIT-FLOWALERTS: previously documented as "deliberately NOT cached" on the
     reasoning that flow alerts are a fast-moving, minute-to-minute feed and caching would defeat
     the point of an "alert on fresh activity" check — true in isolation, but this function is
-    called once per symbol on every 1-minute scheduler tick (check_options_flow_alerts(),
-    scheduler.py), over a symbol set that's uncapped on one side (see that function's own
-    docstring). Confirmed live: 22,031 real UW 429 responses in 48h, with this single function's
-    own call volume (N symbols x 1,440 ticks/day) alone able to exhaust the platform's entire
-    assumed 30,000/day trial-tier budget at N=20, before any other UW-calling code path adds
-    anything. Now cached _FLOW_ALERT_TTL=45s — short enough that "alert on fresh activity" still
-    holds (a real sweep is still fresh 45s later), long enough that a symbol checked on
-    consecutive 1-minute ticks (the common case) is a cache hit, not a live call, cutting this
-    function's own real request volume by roughly the same proportion its own cadence exceeds
-    the cache window. Safe at the trial tier's 30,000 req/day budget as long as the caller stays
-    scoped to a bounded symbol set (see check_options_flow_alerts()'s own docstring in
-    scheduler.py) — never called for the whole tracked universe.
+    called once per symbol on every ~1-minute scheduler tick (check_options_flow_alerts(),
+    scheduler.py), over a symbol set that's now capped on both sides (see that function's own
+    docstring and scheduler.py's _OPTIONS_FLOW_ALERT_SYMBOLS_CAP). Confirmed live: 22,031 real UW
+    429 responses in 48h (original incident), then AGAIN at 109,184/48h (AUD-UWUSAGE-FLOWALERTCAP,
+    2026-09-06) after the symbol cap grew organically and a separate misfire-grace fix restored
+    this job's true firing cadence. Cached at _FLOW_ALERT_TTL=150s — comfortably past the job's
+    real observed ~60-120s inter-tick gap (not just its nominal 60s interval), so a symbol checked
+    on any two consecutive real ticks is reliably a cache hit, while still meaningfully "fresh"
+    for a same-day activity scanner. Safe at the trial tier's 30,000 req/day budget as long as the
+    caller stays scoped to a bounded, CAPPED symbol set (see check_options_flow_alerts()'s own
+    docstring in scheduler.py) — never called for the whole tracked universe.
 
     Filter thresholds are real UW query params (confirmed against the live OpenAPI spec, not
     guessed) — min_premium/min_volume_oi_ratio/is_sweep/max_dte are all genuine server-side

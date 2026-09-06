@@ -150,6 +150,31 @@ def test_compute_options_flow_snapshots_eod_has_a_per_symbol_sleep():
     assert "time.sleep(" in body
 
 
+def test_bounded_options_flow_symbols_caps_the_price_alert_side():
+    """AUD-UWUSAGE-FLOWALERTCAP: the PriceAlert-derived side was previously uncapped and grew
+    to 38 real symbols from one user's 78 active alerts, contributing to a live 109,184-events/
+    48h UW rate-limit incident. Must have a real LIMIT on the alerts query, not just a bare
+    'where triggered is False' with no bound."""
+    start = _SCHEDULER_SOURCE.index("def _bounded_options_flow_symbols(")
+    end = _SCHEDULER_SOURCE.index("\ndef ", start + 1)
+    body = _SCHEDULER_SOURCE[start:end]
+    assert "_OPTIONS_FLOW_ALERT_SYMBOLS_CAP" in body
+    assert ".limit(_OPTIONS_FLOW_ALERT_SYMBOLS_CAP" in body
+    # the len(alert_symbols) >= cap break must exist so the final DEDUPLICATED set (not just
+    # the raw query LIMIT, which over-fetches to survive HK/duplicate-symbol filtering) is
+    # actually bounded by the cap.
+    assert "len(alert_symbols) >= _OPTIONS_FLOW_ALERT_SYMBOLS_CAP" in body
+
+
+def test_options_flow_alert_symbols_cap_is_a_small_bounded_number():
+    """The cap constant itself must be a real, small bound — not accidentally left at some
+    huge placeholder value that defeats the point of capping at all."""
+    assert "_OPTIONS_FLOW_ALERT_SYMBOLS_CAP = " in _SCHEDULER_SOURCE
+    line = next(l for l in _SCHEDULER_SOURCE.splitlines() if l.startswith("_OPTIONS_FLOW_ALERT_SYMBOLS_CAP = "))
+    value = int(line.split("=")[1].strip())
+    assert 0 < value <= 30
+
+
 def test_compute_options_flow_snapshots_eod_isolates_per_symbol_errors():
     """One symbol's fetch failure must not abort the whole batch — matches
     _refresh_fundamentals_batch()'s established per-symbol try/except isolation pattern."""

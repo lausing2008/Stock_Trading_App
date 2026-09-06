@@ -1194,10 +1194,11 @@ def test_flow_alerts_one_malformed_row_does_not_drop_the_rest():
 
 def test_flow_alerts_is_now_cached_short_ttl_aud_uwratelimit():
     """AUD-UWRATELIMIT-FLOWALERTS: reverses the PRIOR "never cached" contract — confirmed live,
-    check_options_flow_alerts() calling this once per symbol every 1-minute tick over an
-    uncapped symbol set produced 22,031 real UW 429s in 48h. Now cached _FLOW_ALERT_TTL=45s: a
-    cache miss must call _get() and then WRITE the result via setex(); a cache hit must return
-    without calling _get() at all."""
+    check_options_flow_alerts() calling this once per symbol every ~1-minute tick over an
+    uncapped symbol set produced 22,031 real UW 429s in 48h (later 109,184/48h, AUD-UWUSAGE-
+    FLOWALERTCAP, once the symbol cap grew and a misfire-grace fix restored the job's true
+    cadence). Now cached _FLOW_ALERT_TTL=150s: a cache miss must call _get() and then WRITE the
+    result via setex(); a cache hit must return without calling _get() at all."""
     class _FakeRedis:
         def __init__(self):
             self.store = {}
@@ -1223,6 +1224,15 @@ def test_flow_alerts_is_now_cached_short_ttl_aud_uwratelimit():
         assert len(second) == 1
         assert second[0].option_chain == "AAPL240101C00200000"
         assert mock_get.call_count == 1, "second call within TTL must not re-fetch from UW"
+
+
+def test_flow_alert_ttl_comfortably_exceeds_the_jobs_worst_case_tick_gap():
+    """AUD-UWUSAGE-FLOWALERTCAP: check_options_flow_alerts() is registered with
+    misfire_grace_time=60 on a 1-minute interval — a genuinely late tick can land up to ~120s
+    after the prior one. If _FLOW_ALERT_TTL sits below that worst-case gap, most symbols expire
+    between ticks and every run becomes a near-full live sweep again, exactly the 109,184-
+    events/48h incident this fix closes. Must stay comfortably above 120s."""
+    assert uw._FLOW_ALERT_TTL >= 120
 
 
 def test_flow_alerts_cache_key_includes_filter_params_not_just_symbol():
