@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
+import useSWR from 'swr';
+import { api, type TuneStatusReport } from '@/lib/api';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -346,10 +348,54 @@ const HORIZON_DESC: Record<Horizon, string> = {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
+// AUD-HORIZONCOMPARE-LIVEWIRE: these are the exact 4 per-style values that GET /tune_status
+// (signal-engine, TIER88) tracks and that the self-tuning system (weekly outcomes sweep,
+// daily watchdog, tune_style_profiles) can silently override in Redis at any time — this page
+// used to show ONLY the hardcoded _STYLE_PROFILES snapshot for these, which can and does
+// diverge materially from what's actually in force (confirmed live: SWING's BUY threshold
+// shown here as 72%/74% vs 65% actually live via the watchdog). Every other row on this page
+// (holding periods, earnings/news gates, HK-specific gates, ensemble weights) has no live
+// Redis-backed override and is safe to keep as a static reference.
+const LIVE_WIRED_LABELS = new Set([
+  'BUY threshold',       // only the Bull-Regime category row — see isLiveWiredRow()
+  'ML weight cap',
+  'ADX minimum',
+  'Breadth compression',
+]);
+
+function isLiveWiredRow(row: DimRow): boolean {
+  if (row.category === 'AI Signal Thresholds (Bull Regime)' && row.label === 'BUY threshold') return true;
+  if (row.category === 'ML Model Weight' && row.label === 'ML weight cap') return true;
+  if (row.category === 'Technical Analysis' && (row.label === 'ADX minimum' || row.label === 'Breadth compression')) return true;
+  return false;
+}
+
+function fmtPct(x: number | null | undefined): string {
+  if (x == null) return '—';
+  return `${Math.round(x * 100)}%`;
+}
+
+function liveValueFor(row: DimRow, h: Horizon, tune: TuneStatusReport | undefined): string | null {
+  if (!tune || !isLiveWiredRow(row)) return null;
+  const s = tune.styles[h];
+  if (!s) return null;
+  if (row.label === 'BUY threshold') return fmtPct(s.effective.buy_threshold_bull);
+  if (row.label === 'ML weight cap') return fmtPct(s.effective.ml_weight_cap);
+  if (row.label === 'ADX minimum') return s.effective.adx_min != null ? String(s.effective.adx_min) : 'None';
+  if (row.label === 'Breadth compression') return s.effective.breadth_compression != null ? `×${s.effective.breadth_compression.toFixed(2)}` : 'None';
+  return null;
+}
+
 export default function HorizonComparePage() {
   const [market, setMarket]           = useState<Market>('US');
   const [filterCat, setFilterCat]     = useState<string>('All');
   const [showHkNote, setShowHkNote]   = useState(false);
+
+  const { data: tuneStatus, error: tuneError } = useSWR<TuneStatusReport>(
+    'tune-status',
+    () => api.tuneStatus(),
+    { revalidateOnFocus: false, refreshInterval: 60_000 },
+  );
 
   const categories = ['All', ...Array.from(new Set(ROWS.map(r => r.category)))];
 
@@ -385,6 +431,13 @@ export default function HorizonComparePage() {
           <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#f1f5f9' }}>Horizon Comparison</h1>
           <p style={{ margin: '6px 0 0', fontSize: 13, color: '#64748b' }}>
             Signal generation parameters across all 4 trading horizons — thresholds, ML weights, TA gates, HK-specific rules.
+          </p>
+          <p style={{ margin: '8px 0 0', fontSize: 11, color: tuneError ? '#f87171' : tuneStatus ? '#4ade80' : '#64748b' }}>
+            {tuneError
+              ? '⚠ Could not load live tuned values — showing hardcoded defaults only.'
+              : tuneStatus
+                ? `● Live — BUY threshold / ML weight cap / ADX minimum / breadth compression reflect current Redis-tuned values (as of ${tuneStatus.as_of}). Struck-through value is the hardcoded default when it differs.`
+                : 'Loading live tuned values…'}
           </p>
         </div>
 
@@ -480,16 +533,34 @@ export default function HorizonComparePage() {
                           </div>
                         )}
                       </td>
-                      {(['SHORT','SWING','LONG','GROWTH'] as Horizon[]).map(h => (
-                        <td key={h} style={{
-                          padding: '7px 8px', textAlign: 'center',
-                          color: row[h].startsWith('None') || row[h] === 'No' ? '#475569' : '#e2e8f0',
-                          borderLeft: '1px solid #1e293b22',
-                          fontVariantNumeric: 'tabular-nums',
-                        }}>
-                          {row[h]}
-                        </td>
-                      ))}
+                      {(['SHORT','SWING','LONG','GROWTH'] as Horizon[]).map(h => {
+                        const live = liveValueFor(row, h, tuneStatus);
+                        const diverges = live != null && live !== 'None' && live !== row[h];
+                        return (
+                          <td key={h} style={{
+                            padding: '7px 8px', textAlign: 'center',
+                            color: row[h].startsWith('None') || row[h] === 'No' ? '#475569' : '#e2e8f0',
+                            borderLeft: '1px solid #1e293b22',
+                            fontVariantNumeric: 'tabular-nums',
+                          }}>
+                            {live != null ? (
+                              <div>
+                                <div style={{
+                                  color: diverges ? '#4ade80' : '#e2e8f0',
+                                  fontWeight: diverges ? 700 : 400,
+                                }}>
+                                  {live}
+                                </div>
+                                {diverges && (
+                                  <div style={{ fontSize: 9, color: '#475569', textDecoration: 'line-through', marginTop: 1 }}>
+                                    {row[h]} default
+                                  </div>
+                                )}
+                              </div>
+                            ) : row[h]}
+                          </td>
+                        );
+                      })}
                     </tr>
                   ))}
                 </React.Fragment>
@@ -518,8 +589,10 @@ export default function HorizonComparePage() {
 
         {/* Legend */}
         <div style={{ maxWidth: 1200, margin: '16px auto 0', fontSize: 11, color: '#475569', textAlign: 'center' }}>
-          All thresholds shown for the standard regime.
-          Dynamic calibration may adjust BUY/SELL thresholds weekly based on live trade outcomes (Redis-backed, 30-day TTL).
+          BUY threshold, ML weight cap, ADX minimum, and breadth compression are fetched live from GET /tune_status —
+          green + bold means the daily watchdog or weekly outcomes sweep has overridden the hardcoded default shown struck through.
+          All other rows are static reference values from signals.py's _STYLE_PROFILES (bear-regime thresholds shown are also
+          hardcoded — the live system currently only auto-tunes the bull-regime BUY threshold).
           Toggle US/HK above to switch market context.
         </div>
       </div>

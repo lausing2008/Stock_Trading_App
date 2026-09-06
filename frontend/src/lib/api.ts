@@ -760,6 +760,7 @@ export const api = {
   schedulerStatus: () => request<{ jobs: SchedulerJob[] }>('/admin/scheduler-status'),
   dqStatus: () => request<{ checks: DataQualityCheck[] }>('/admin/dq-status'),
   llmUsage: (hours: number = 24) => request<LlmUsageReport>(`/admin/llm-usage?hours=${hours}`),
+  tuneStatus: () => request<TuneStatusReport>('/signals/tune_status'),
   promotionHistory: () => request<{
     meta_model_history: MetaModelPromotionEntry[];
     position_scaling_history: PositionScalingPromotionEntry[];
@@ -2796,6 +2797,49 @@ export type LlmUsageReport = {
   breakdown: LlmUsageBreakdownRow[];
   hourly: LlmUsageHourlyPoint[];
   recent_errors: LlmUsageRecentError[];
+};
+
+// TIER88 GET /tune_status (signal-engine) — read-only snapshot of the self-tuning system:
+// hardcoded defaults, live Redis overrides (watchdog/calibrated/tuned), and the effective
+// (currently-in-force) value per style. Used by horizon-compare.tsx so its comparison table
+// reflects what's actually live rather than only the hardcoded _STYLE_PROFILES snapshot.
+export type TuneStatusStyle = {
+  defaults: {
+    buy_threshold_bull: number;
+    ml_weight_cap: number;
+    adx_min: number | null;
+    breadth_compression: number | null;
+  };
+  redis_overrides: {
+    watchdog_threshold: number | null;
+    calibrated_threshold: number | null;
+    ml_weight_cap: number | null;
+    adx_min: number | null;
+    breadth_compression: number | null;
+  };
+  effective: {
+    buy_threshold_bull: number;
+    ml_weight_cap: number;
+    adx_min: number | null;
+    breadth_compression: number | null;
+  };
+  performance: {
+    win_rate_14d: number | null;
+    n_outcomes_14d: number;
+    signals_7d: number;
+  };
+  watchdog: {
+    status: string;
+    tighten_count: number;
+    current_threshold: number | null;
+  };
+  staleness: Record<string, boolean | null>;
+};
+
+export type TuneStatusReport = {
+  as_of: string;
+  styles: Record<'SHORT' | 'SWING' | 'LONG' | 'GROWTH', TuneStatusStyle>;
+  global_staleness: Record<string, boolean | null>;
 };
 
 // SELFIMPROVE-PROMOTION-GATES-INCOMPLETE — see docs/DESIGN_MODEL_PROMOTION_GATES_2026-07-12.md
