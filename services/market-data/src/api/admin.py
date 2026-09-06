@@ -3,6 +3,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select, desc, func, case, delete, text
 from sqlalchemy.orm import Session
+import datetime as _dt
 import json
 import yfinance as yf
 import redis as redis_lib
@@ -50,6 +51,13 @@ def _trigger_new_stock_refresh(symbol: str, market: str) -> None:
     except Exception as exc:
         log.warning("add_stock.refresh_failed", symbol=symbol, market=market, error=str(exc))
 
+
+# AUD-UWUSAGE: not a real published limit from UW — this is the trial-tier budget assumption
+# already documented in unusual_whales.py's own module docstring (confirmed against the
+# AUD-UWRATELIMIT-FLOWALERTS incident's own math), surfaced here purely so the dashboard's
+# progress bar has a denominator; treat it as an estimate; if the account's actual plan differs
+# this constant is the one place to update it.
+_UW_ASSUMED_DAILY_BUDGET = 30_000
 
 _REDIS_CLAUDE_KEY       = "stockai:admin:claude_api_key"
 _REDIS_DEEPSEEK_KEY     = "stockai:admin:deepseek_api_key"
@@ -1545,6 +1553,59 @@ def llm_usage(hours: int = Query(24, ge=1, le=720), _: User = Depends(get_admin_
         "breakdown": breakdown,
         "hourly": hourly,
         "recent_errors": errors,
+    }
+
+
+@router.get("/uw-usage")
+def uw_usage(_: User = Depends(get_admin_user)):
+    """AUD-UWUSAGE dashboard data: Unusual Whales API call volume against its rate-limited
+    (not per-token-billed) budget — a structurally different shape from /admin/llm-usage,
+    since UW has no token/cost concept, only a daily request ceiling (the trial tier's
+    documented ~30,000 req/day, see unusual_whales.py's own module docstring). Reads from
+    Redis rolling counters (unusual_whales.py's _incr_call_counter/_incr_rate_limit_counter),
+    not a DB table — call volume here is a per-endpoint daily headroom gauge, not a
+    per-call audit log, so a lightweight counter is enough and no new table was needed.
+    """
+    r = _get_redis()
+    today = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d")
+    yesterday = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)).strftime("%Y%m%d")
+
+    def _read_day(day: str) -> dict:
+        keys = r.keys(f"stockai:metric:uw_calls:*:{day}")
+        by_endpoint: dict[str, int] = {}
+        for key in keys:
+            raw = r.get(key)
+            if not raw:
+                continue
+            # key shape: stockai:metric:uw_calls:{endpoint...}:{day} — endpoint itself may
+            # contain colons (it's a "/"-joined path), so split off the fixed prefix/suffix
+            # segments rather than assuming a fixed total segment count.
+            body = key[len("stockai:metric:uw_calls:"):-len(f":{day}")]
+            by_endpoint[body] = by_endpoint.get(body, 0) + int(raw)
+        return by_endpoint
+
+    today_by_endpoint = _read_day(today)
+    yesterday_by_endpoint = _read_day(yesterday)
+    today_total = sum(today_by_endpoint.values())
+
+    # Matches unusual_whales.py's own _RATE_LIMIT_COUNTER_KEY literal exactly — duplicated
+    # rather than cross-imported, matching this file's own established convention (see the
+    # Claude/DeepSeek Redis key literals above and CLAUDE.md's note on _AUTO_RESEARCH_ENABLED_KEY).
+    rate_limit_raw = r.get("stockai:metric:uw_rate_limit_count_48h")
+    rate_limit_48h = int(rate_limit_raw) if rate_limit_raw else 0
+
+    breakdown = [
+        {"endpoint": ep, "calls": n}
+        for ep, n in sorted(today_by_endpoint.items(), key=lambda kv: kv[1], reverse=True)
+    ]
+
+    return {
+        "as_of": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "assumed_daily_budget": _UW_ASSUMED_DAILY_BUDGET,
+        "today_total_calls": today_total,
+        "yesterday_total_calls": sum(yesterday_by_endpoint.values()),
+        "rate_limit_events_48h": rate_limit_48h,
+        "breakdown": breakdown,
     }
 
 

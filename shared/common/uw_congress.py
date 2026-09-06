@@ -12,6 +12,7 @@ same implementation.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 
 import httpx
 import structlog
@@ -22,6 +23,26 @@ from .redis_client import get_redis
 log = structlog.get_logger()
 
 _BASE_URL = "https://api.unusualwhales.com"
+
+# AUD-UWUSAGE: mirrors unusual_whales.py's own _incr_call_counter() exactly (same key prefix/
+# format, so both modules' counts aggregate into one per-endpoint daily total on the dashboard)
+# — kept as an independent copy rather than importing from unusual_whales.py, since this module
+# specifically exists to avoid a market-data-only import for event-intelligence's sake (see the
+# module docstring above).
+_CALL_COUNTER_PREFIX = "stockai:metric:uw_calls"
+_CALL_COUNTER_TTL_S = 25 * 3600
+
+
+def _incr_call_counter(path: str) -> None:
+    try:
+        r = get_redis()
+        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        key = f"{_CALL_COUNTER_PREFIX}:{path}:{day}"
+        r.incr(key)
+        if r.ttl(key) == -1:
+            r.expire(key, _CALL_COUNTER_TTL_S)
+    except Exception:
+        pass
 _CONGRESS_TTL = 21600  # 6h — matches unusual_whales.py's own short-interest cadence; congress
 # disclosures have a real multi-day filing lag (STOCK Act gives 45 days), nothing here changes
 # minute to minute the way options flow-alerts does.
@@ -110,6 +131,7 @@ def get_congress_trades(*, since: str, limit: int = 200) -> list[CongressTradeRo
                 params={"date": since, "limit": limit},
                 headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
             )
+            _incr_call_counter("/api/congress/recent-trades")
             if r.status_code in (401, 403, 429):
                 log.warning("uw_congress.auth_or_rate_limit", status=r.status_code)
                 return []

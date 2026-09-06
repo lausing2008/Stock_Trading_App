@@ -374,6 +374,38 @@ def _incr_rate_limit_counter() -> None:
         pass
 
 
+# AUD-UWUSAGE: unlike the 429-only counter above, this tracks EVERY real UW request (any
+# status) — the leading indicator ("how close to today's ~30,000 req/day trial budget are we
+# right now") that a 429-only counter can never show, since it only lights up after headroom
+# is already gone. Bucketed per-endpoint (a fixed template like "/api/stock/{symbol}/gex-levels"
+# — every real call site interpolates a ticker and/or quarter string into its path, so a naive
+# per-path counter would grow one key per traded symbol instead of staying bounded to this
+# module's ~14 real endpoints) AND per calendar day (UTC), since UW's own budget is itself a
+# daily ceiling, not a rolling window. TTL is a little over 24h so "today's" bucket naturally
+# expires rather than accumulating forever, while still being readable for a few hours into the
+# next day for any dashboard poll that catches the day boundary.
+#
+# Deliberately NOT a regex-based path-segment collapse (tried first, rejected): a generic
+# "does this segment look like a ticker" pattern also matches plenty of the FIXED path words
+# themselves (e.g. "api", "v2", short category names), silently mis-collapsing them. Since
+# every real call site already knows its own path template at the point it calls _get(), each
+# one passes its template explicitly — no guessing required.
+_CALL_COUNTER_PREFIX = "stockai:metric:uw_calls"
+_CALL_COUNTER_TTL_S = 25 * 3600
+
+
+def _incr_call_counter(endpoint: str) -> None:
+    try:
+        r = _get_redis()
+        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        key = f"{_CALL_COUNTER_PREFIX}:{endpoint}:{day}"
+        r.incr(key)
+        if r.ttl(key) == -1:
+            r.expire(key, _CALL_COUNTER_TTL_S)
+    except Exception:
+        pass
+
+
 def _get_redis():
     from common.redis_client import get_redis as _get_pool_redis
     return _get_pool_redis()
@@ -392,7 +424,7 @@ def is_available() -> bool:
     reraise=True,
     retry=retry_if_not_exception_type((UnusualWhalesRateLimitError, UnusualWhalesAuthError)),
 )
-def _get(path: str, params: dict | None = None) -> dict | None:
+def _get(path: str, params: dict | None = None, *, endpoint: str | None = None) -> dict | None:
     """A single authenticated GET against the real Unusual Whales API. Returns the parsed
     `data` field of the response (UW's own real response envelope, confirmed live), or `None`
     on any real absence of data. Raises UnusualWhalesRateLimitError/UnusualWhalesAuthError for
@@ -403,6 +435,13 @@ def _get(path: str, params: dict | None = None) -> dict | None:
     `params` is passed straight through to httpx's own query-string encoding (real percent-
     encoding, not manual string interpolation) — every caller with real query parameters
     (get_flow_alerts) uses this rather than building a query string by hand.
+
+    `endpoint` (AUD-UWUSAGE) is the fixed per-endpoint template used for the call-volume
+    counter (e.g. "/api/stock/{symbol}/gex-levels") — every real caller passes its own static
+    template explicitly rather than this function trying to derive one from the interpolated
+    `path` (see _incr_call_counter's own docstring for why deriving it generically was
+    rejected). Defaults to `path` itself for the few callers with no variable segments at all
+    (already a stable template as-is, e.g. "/api/seasonality/market").
     """
     key = get_unusual_whales_key()
     if not key:
@@ -413,6 +452,10 @@ def _get(path: str, params: dict | None = None) -> dict | None:
             params=params,
             headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
         )
+        # AUD-UWUSAGE: count every real request against the daily budget regardless of outcome
+        # (a 429/401/403/404 still consumed one of today's ~30,000 allotted requests) — placed
+        # right after the real network call completes, before any status-code branch below.
+        _incr_call_counter(endpoint or path)
         if r.status_code == 429:
             log.warning("unusual_whales.rate_limit", path=path)
             _incr_rate_limit_counter()
@@ -452,7 +495,7 @@ def get_gex_levels(symbol: str) -> GexLevels | None:
         pass
 
     try:
-        data = _get(f"/api/stock/{sym}/gex-levels")
+        data = _get(f"/api/stock/{sym}/gex-levels", endpoint="/api/stock/{symbol}/gex-levels")
     except Exception as exc:
         log.warning("unusual_whales.gex_levels_failed", symbol=sym, error=str(exc))
         return None
@@ -506,7 +549,7 @@ def get_max_pain(symbol: str) -> list[MaxPainRow]:
         pass
 
     try:
-        data = _get(f"/api/stock/{sym}/max-pain")
+        data = _get(f"/api/stock/{sym}/max-pain", endpoint="/api/stock/{symbol}/max-pain")
     except Exception as exc:
         log.warning("unusual_whales.max_pain_failed", symbol=sym, error=str(exc))
         return []
@@ -548,7 +591,7 @@ def get_oi_per_strike(symbol: str) -> list[OIPerStrikeRow]:
         pass
 
     try:
-        data = _get(f"/api/stock/{sym}/oi-per-strike")
+        data = _get(f"/api/stock/{sym}/oi-per-strike", endpoint="/api/stock/{symbol}/oi-per-strike")
     except Exception as exc:
         log.warning("unusual_whales.oi_per_strike_failed", symbol=sym, error=str(exc))
         return []
@@ -595,7 +638,7 @@ def get_nope(symbol: str) -> NopeReading | None:
         pass
 
     try:
-        data = _get(f"/api/stock/{sym}/nope")
+        data = _get(f"/api/stock/{sym}/nope", endpoint="/api/stock/{symbol}/nope")
     except Exception as exc:
         log.warning("unusual_whales.nope_failed", symbol=sym, error=str(exc))
         return None
@@ -649,7 +692,7 @@ def get_historical_earnings_moves(symbol: str, *, limit: int = 8) -> list[Histor
         pass
 
     try:
-        data = _get(f"/api/earnings/{sym}")
+        data = _get(f"/api/earnings/{sym}", endpoint="/api/earnings/{symbol}")
     except Exception as exc:
         log.warning("unusual_whales.earnings_moves_failed", symbol=sym, error=str(exc))
         return []
@@ -726,7 +769,7 @@ def get_earnings_transcript(symbol: str, quarter: str) -> list[TranscriptStateme
         pass
 
     try:
-        data = _get(f"/api/companies/{sym}/transcripts/{quarter}")
+        data = _get(f"/api/companies/{sym}/transcripts/{quarter}", endpoint="/api/companies/{symbol}/transcripts/{quarter}")
     except Exception as exc:
         log.warning("unusual_whales.earnings_transcript_failed", symbol=sym, quarter=quarter, error=str(exc))
         return []
@@ -777,7 +820,7 @@ def get_sector_seasonality() -> list[SeasonalityRow]:
         pass
 
     try:
-        data = _get("/api/seasonality/market")
+        data = _get("/api/seasonality/market", endpoint="/api/seasonality/market")
     except Exception as exc:
         log.warning("unusual_whales.sector_seasonality_failed", error=str(exc))
         return []
@@ -836,7 +879,7 @@ def get_iv_rank(symbol: str) -> IVRankData | None:
         pass
 
     try:
-        data = _get(f"/api/stock/{sym}/iv-rank")
+        data = _get(f"/api/stock/{sym}/iv-rank", endpoint="/api/stock/{symbol}/iv-rank")
     except Exception as exc:
         log.warning("unusual_whales.iv_rank_failed", symbol=sym, error=str(exc))
         return None
@@ -887,7 +930,7 @@ def get_greeks(symbol: str, expiry: str) -> list[StrikeGreeks]:
         pass
 
     try:
-        data = _get(f"/api/stock/{sym}/greeks", params={"expiry": expiry})
+        data = _get(f"/api/stock/{sym}/greeks", params={"expiry": expiry}, endpoint="/api/stock/{symbol}/greeks")
     except Exception as exc:
         log.warning("unusual_whales.greeks_failed", symbol=sym, expiry=expiry, error=str(exc))
         return []
@@ -942,7 +985,7 @@ def get_short_interest(symbol: str) -> ShortInterestData | None:
         pass
 
     try:
-        data = _get(f"/api/shorts/{sym}/interest-float/v2")
+        data = _get(f"/api/shorts/{sym}/interest-float/v2", endpoint="/api/shorts/{symbol}/interest-float/v2")
     except Exception as exc:
         log.warning("unusual_whales.short_interest_failed", symbol=sym, error=str(exc))
         return None
@@ -1077,6 +1120,7 @@ def get_flow_alerts(
                 "newer_than": newer_than,
                 "limit": 50,
             },
+            endpoint="/api/option-trades/flow-alerts",
         )
     except Exception as exc:
         log.warning("unusual_whales.flow_alerts_failed", symbol=sym, error=str(exc))
@@ -1186,6 +1230,7 @@ def get_historical_flow_alerts(
             data = _get(
                 "/api/option-trades/flow-alerts",
                 params={**params, "older_than": cursor_older_than},
+                endpoint="/api/option-trades/flow-alerts",
             )
         except Exception as exc:
             log.warning("unusual_whales.historical_flow_alerts_failed", symbol=sym, error=str(exc))
@@ -1247,7 +1292,7 @@ def get_dark_pool_prints(symbol: str, *, limit: int = 50) -> list[DarkPoolPrintR
         pass
 
     try:
-        data = _get(f"/api/darkpool/{sym}", params={"limit": limit})
+        data = _get(f"/api/darkpool/{sym}", params={"limit": limit}, endpoint="/api/darkpool/{symbol}")
     except Exception as exc:
         log.warning("unusual_whales.dark_pool_failed", symbol=sym, error=str(exc))
         return []
@@ -1395,7 +1440,7 @@ def get_options_screener(
         params["min_volume"] = min_volume
 
     try:
-        data = _get("/api/screener/option-contracts", params=params)
+        data = _get("/api/screener/option-contracts", params=params, endpoint="/api/screener/option-contracts")
     except Exception as exc:
         log.warning("unusual_whales.options_screener_failed", error=str(exc))
         return []
@@ -1466,7 +1511,7 @@ def get_option_trades(
         params["min_volume"] = min_volume
 
     try:
-        data = _get("/api/option-trades", params=params)
+        data = _get("/api/option-trades", params=params, endpoint="/api/option-trades")
     except Exception as exc:
         log.warning("unusual_whales.option_trades_failed", error=str(exc))
         return []
@@ -1522,7 +1567,7 @@ def get_market_tide(*, interval_5m: bool = False) -> list[MarketTideRow]:
         pass
 
     try:
-        data = _get("/api/market/market-tide", params={"interval_5m": "true" if interval_5m else "false"})
+        data = _get("/api/market/market-tide", params={"interval_5m": "true" if interval_5m else "false"}, endpoint="/api/market/market-tide")
     except Exception as exc:
         log.warning("unusual_whales.market_tide_failed", error=str(exc))
         return []

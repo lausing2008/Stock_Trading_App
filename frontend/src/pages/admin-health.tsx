@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
-import { api, type SchedulerJob, type MlModelMetric, type SignalSummary, type ServiceHealthReport, type LlmUsageReport } from '@/lib/api';
+import { api, type SchedulerJob, type MlModelMetric, type SignalSummary, type ServiceHealthReport, type LlmUsageReport, type UwUsageReport } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 const JOB_META: Record<string, { label: string; maxAgeDays: number; desc: string }> = {
@@ -254,6 +254,12 @@ export default function AdminHealthPage() {
     { revalidateOnFocus: false, refreshInterval: 60_000 },
   );
 
+  const { data: uwUsageData } = useSWR<UwUsageReport>(
+    authed ? 'uw-usage' : null,
+    () => api.uwUsage(),
+    { revalidateOnFocus: false, refreshInterval: 60_000 },
+  );
+
   const signalCounts = useMemo(() => {
     const counts: Record<string, number> = { BUY: 0, SELL: 0, WAIT: 0, HOLD: 0 };
     for (const s of signalsData ?? []) {
@@ -356,12 +362,16 @@ export default function AdminHealthPage() {
                 <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '8px' }}>
                   {c.skipped_reason === 'market_closed' ? (
                     <span style={{ color: '#64748b' }}>Market closed — check paused until next trading session</span>
+                  ) : c.count_48h != null ? (
+                    <>
+                      Count (last 48h): <strong style={{ color: '#e2e8f0' }}>{c.count_48h.toLocaleString()}</strong>
+                    </>
                   ) : (
                     <>
                       Last updated: <strong style={{ color: c.ok ? '#e2e8f0' : '#f87171' }}>
                         {c.age_hours != null ? `${c.age_hours.toFixed(1)}h ago` : 'never'}
                       </strong>
-                      <span style={{ color: '#475569' }}> (max {c.max_age_hours}h)</span>
+                      {c.max_age_hours != null && <span style={{ color: '#475569' }}> (max {c.max_age_hours}h)</span>}
                     </>
                   )}
                 </div>
@@ -898,6 +908,74 @@ export default function AdminHealthPage() {
                 </div>
               </div>
             )}
+          </>
+        )}
+      </div>
+
+      {/* AUD-UWUSAGE: Unusual Whales API usage — a rate-limited daily budget (~30k req/day,
+          see unusual_whales.py's own module docstring), NOT a per-token-billed API like Claude,
+          so this shows request-volume headroom rather than a token/cost breakdown. Backed by
+          Redis rolling counters (_incr_call_counter/_incr_rate_limit_counter), not a DB table. */}
+      <div style={{ marginTop: '32px' }}>
+        <div style={{ marginBottom: '12px' }}>
+          <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em', marginBottom: '4px' }}>UNUSUAL WHALES API USAGE</div>
+          <div style={{ fontSize: '11px', color: '#334155' }}>Rate-limited daily request budget, not billed per call — across all UW-backed features</div>
+        </div>
+
+        {!uwUsageData ? (
+          <div style={{ fontSize: '12px', color: '#334155' }}>Loading…</div>
+        ) : (
+          <>
+            {(() => {
+              const pct = Math.min(100, (uwUsageData.today_total_calls / uwUsageData.assumed_daily_budget) * 100);
+              const barColor = pct > 90 ? '#f87171' : pct > 70 ? '#fbbf24' : '#4ade80';
+              return (
+                <div style={{ padding: '14px 16px', borderRadius: '10px', background: '#0d1424', border: '1px solid #1e293b', marginBottom: '14px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '8px' }}>
+                    <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', letterSpacing: '0.04em' }}>TODAY&apos;S REQUEST BUDGET (UTC)</div>
+                    <div style={{ fontSize: '12px', fontWeight: 700, color: barColor }}>
+                      {uwUsageData.today_total_calls.toLocaleString()} / ~{uwUsageData.assumed_daily_budget.toLocaleString()}
+                    </div>
+                  </div>
+                  <div style={{ height: '8px', borderRadius: '4px', background: '#080f1e', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${pct}%`, background: barColor, borderRadius: '4px', transition: 'width 0.3s' }} />
+                  </div>
+                  <div style={{ display: 'flex', gap: '16px', marginTop: '10px', fontSize: '11px', color: '#64748b' }}>
+                    <span>Yesterday: <strong style={{ color: '#94a3b8' }}>{uwUsageData.yesterday_total_calls.toLocaleString()}</strong></span>
+                    <span>429s (48h): <strong style={{ color: uwUsageData.rate_limit_events_48h > 0 ? '#f87171' : '#94a3b8' }}>{uwUsageData.rate_limit_events_48h.toLocaleString()}</strong></span>
+                  </div>
+                  <div style={{ fontSize: '10px', color: '#334155', marginTop: '6px' }}>
+                    Budget figure is an estimate from the trial-tier docs, not a live-confirmed account limit — treat the bar as directional headroom, not an exact ceiling.
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div style={{ padding: '14px 16px', borderRadius: '10px', background: '#0d1424', border: '1px solid #1e293b' }}>
+              <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', letterSpacing: '0.04em', marginBottom: '10px' }}>TODAY BY ENDPOINT</div>
+              {uwUsageData.breakdown.length === 0 ? (
+                <div style={{ fontSize: '12px', color: '#334155' }}>No UW calls yet today.</div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                        <th style={{ textAlign: 'left', padding: '6px 8px', color: '#475569', fontWeight: 600, fontSize: '10px', letterSpacing: '0.03em' }}>Endpoint</th>
+                        <th style={{ textAlign: 'right', padding: '6px 8px', color: '#475569', fontWeight: 600, fontSize: '10px', letterSpacing: '0.03em' }}>Calls</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {uwUsageData.breakdown.map(row => (
+                        <tr key={row.endpoint} style={{ borderBottom: '1px solid #131b2e' }}>
+                          <td style={{ padding: '6px 8px', color: '#e2e8f0', fontFamily: 'monospace' }}>{row.endpoint}</td>
+                          <td style={{ padding: '6px 8px', textAlign: 'right', color: '#60a5fa', fontFamily: 'monospace', fontWeight: 700 }}>{row.calls.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </>
         )}
       </div>

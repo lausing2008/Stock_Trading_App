@@ -1055,7 +1055,7 @@ def test_greeks_passes_the_expiry_query_param():
          patch.object(uw, "_get_redis", return_value=fake_redis), \
          patch.object(uw, "_get", return_value=[]) as mock_get:
         uw.get_greeks("AAPL", "2026-10-01")
-    mock_get.assert_called_once_with("/api/stock/AAPL/greeks", params={"expiry": "2026-10-01"})
+    mock_get.assert_called_once_with("/api/stock/AAPL/greeks", params={"expiry": "2026-10-01"}, endpoint="/api/stock/{symbol}/greeks")
 
 
 def test_greeks_returns_multiple_strikes_as_separate_rows():
@@ -1281,7 +1281,7 @@ def test_historical_flow_alerts_single_page_stops_pagination():
     """Fewer than 200 rows in one page means no more history exists — must NOT make a second
     request just because the loop technically allows up to 5 pages."""
     calls = []
-    def _fake_get(path, params=None):
+    def _fake_get(path, params=None, endpoint=None):
         calls.append(params)
         return [_historical_row()]
     with patch.object(uw, "is_available", return_value=True), \
@@ -1297,7 +1297,7 @@ def test_historical_flow_alerts_paginates_backward_via_older_than():
     page1 = [_historical_row(created_at=f"2026-08-{20 - i:02d}T12:00:00Z") for i in range(200)]
     page2 = [_historical_row(created_at="2026-08-01T09:00:00Z")]  # < 200 rows -> stop after this
     calls = []
-    def _fake_get(path, params=None):
+    def _fake_get(path, params=None, endpoint=None):
         calls.append(dict(params))
         return page1 if len(calls) == 1 else page2
     with patch.object(uw, "is_available", return_value=True), \
@@ -1313,7 +1313,7 @@ def test_historical_flow_alerts_caps_at_max_pages_not_infinite_loop():
     """Even if UW kept returning full 200-row pages forever, this must stop at the real,
     disclosed page cap rather than looping until the caller's window is exhausted."""
     calls = []
-    def _fake_get(path, params=None):
+    def _fake_get(path, params=None, endpoint=None):
         calls.append(params)
         return [_historical_row(created_at=f"2026-0{len(calls)}-01T00:00:00Z") for _ in range(200)]
     with patch.object(uw, "is_available", return_value=True), \
@@ -1328,7 +1328,7 @@ def test_historical_flow_alerts_is_sweep_none_omits_the_param_entirely():
     genuine mix (to compare sweep-vs-non-sweep outcomes) must get the key OMITTED, never sent
     as a literal 'false' string, which would silently exclude every real sweep."""
     captured = {}
-    def _fake_get(path, params=None):
+    def _fake_get(path, params=None, endpoint=None):
         captured.update(params)
         return []
     with patch.object(uw, "is_available", return_value=True), \
@@ -1341,7 +1341,7 @@ def test_historical_flow_alerts_is_sweep_true_still_sends_the_param():
     """The default (is_sweep=True) must keep sending the real filter — only an EXPLICIT
     is_sweep=None omits it."""
     captured = {}
-    def _fake_get(path, params=None):
+    def _fake_get(path, params=None, endpoint=None):
         captured.update(params)
         return []
     with patch.object(uw, "is_available", return_value=True), \
@@ -1373,7 +1373,7 @@ def test_flow_alerts_passes_real_filter_params_to_get():
     """The whole point of the default thresholds — confirms they actually reach _get()'s own
     params dict, not silently dropped/ignored."""
     captured = {}
-    def _fake_get(path, params=None):
+    def _fake_get(path, params=None, endpoint=None):
         captured["path"] = path
         captured["params"] = params
         return []
@@ -1401,7 +1401,7 @@ def test_flow_alerts_passes_real_filter_params_to_get():
 def test_flow_alerts_sends_a_real_newer_than_epoch_value():
     import time
     captured = {}
-    def _fake_get(path, params=None):
+    def _fake_get(path, params=None, endpoint=None):
         captured.update(params)
         return []
     before = int(time.time())
@@ -1426,7 +1426,7 @@ def test_flow_alerts_never_sends_an_iso_datetime_string_for_newer_than():
     string (even one that LOOKS more precise/correct) would silently un-fix the staleness bug,
     since UW's backend ignores it entirely rather than raising an error."""
     captured = {}
-    def _fake_get(path, params=None):
+    def _fake_get(path, params=None, endpoint=None):
         captured.update(params)
         return []
     with patch.object(uw, "is_available", return_value=True), \
@@ -1439,7 +1439,7 @@ def test_flow_alerts_never_sends_an_iso_datetime_string_for_newer_than():
 
 def test_flow_alerts_uppercases_the_symbol():
     captured = {}
-    def _fake_get(path, params=None):
+    def _fake_get(path, params=None, endpoint=None):
         captured["params"] = params
         return []
     with patch.object(uw, "is_available", return_value=True), \
@@ -1625,7 +1625,7 @@ def test_options_screener_parses_a_real_response():
 
 def test_options_screener_sends_type_param_only_when_option_type_given():
     captured = {}
-    def _fake_get(path, params=None):
+    def _fake_get(path, params=None, endpoint=None):
         captured["params"] = params
         return []
     with patch.object(uw, "is_available", return_value=True), \
@@ -1695,7 +1695,7 @@ def test_option_trades_sends_max_dte_zero_for_0dte_filter():
     """max_dte=0 must actually be sent as a real query param — 0 is falsy in Python, a naive
     `if max_dte:` guard would silently drop it and turn a 0DTE-only scan into an unfiltered one."""
     captured = {}
-    def _fake_get(path, params=None):
+    def _fake_get(path, params=None, endpoint=None):
         captured["params"] = params
         return []
     with patch.object(uw, "is_available", return_value=True), \
@@ -1706,7 +1706,7 @@ def test_option_trades_sends_max_dte_zero_for_0dte_filter():
 
 def test_option_trades_sends_is_multi_leg_true_for_multileg_filter():
     captured = {}
-    def _fake_get(path, params=None):
+    def _fake_get(path, params=None, endpoint=None):
         captured["params"] = params
         return []
     with patch.object(uw, "is_available", return_value=True), \
@@ -1719,7 +1719,7 @@ def test_option_trades_omits_max_dte_and_is_multi_leg_when_not_given():
     """The Interval Flow view (no extra filter) must not accidentally send a stale/default
     max_dte or is_multi_leg param."""
     captured = {}
-    def _fake_get(path, params=None):
+    def _fake_get(path, params=None, endpoint=None):
         captured["params"] = params
         return []
     with patch.object(uw, "is_available", return_value=True), \
@@ -1767,7 +1767,7 @@ def test_market_tide_parses_a_real_response():
 
 def test_market_tide_sends_interval_5m_param_correctly():
     captured = {}
-    def _fake_get(path, params=None):
+    def _fake_get(path, params=None, endpoint=None):
         captured["params"] = params
         return []
     with patch.object(uw, "is_available", return_value=True), \
@@ -1990,3 +1990,125 @@ class TestGetFunctionRealHttpBehavior:
             except RuntimeError:
                 pass
         assert call_count["n"] == 3
+
+    def test_a_real_200_increments_the_call_volume_counter(self):
+        """AUD-UWUSAGE: every real request against the daily budget must be counted, not just
+        429s — a 200 (the overwhelmingly common case) is exactly the leading-indicator signal
+        a 429-only counter can never show."""
+        class _FakeResp:
+            status_code = 200
+            def json(self):
+                return {"data": {"call_wall": 250.0}}
+            def raise_for_status(self):
+                pass
+        class _FakeClient:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def get(self, *a, **kw):
+                return _FakeResp()
+
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value="real-token"), \
+             patch.object(self.real_uw.httpx, "Client", return_value=_FakeClient()), \
+             patch.object(self.real_uw, "_incr_call_counter") as mock_incr:
+            self.real_uw._get("/api/stock/AAPL/gex-levels", endpoint="/api/stock/{symbol}/gex-levels")
+        mock_incr.assert_called_once_with("/api/stock/{symbol}/gex-levels")
+
+    def test_a_404_still_increments_the_call_volume_counter(self):
+        """A 404 is a real request that consumed budget even though it returned no data —
+        must still count, unlike the rate-limit counter which only tracks 429s specifically."""
+        class _FakeResp:
+            status_code = 404
+        class _FakeClient:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def get(self, *a, **kw):
+                return _FakeResp()
+
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value="real-token"), \
+             patch.object(self.real_uw.httpx, "Client", return_value=_FakeClient()), \
+             patch.object(self.real_uw, "_incr_call_counter") as mock_incr:
+            self.real_uw._get("/api/stock/ZZZZ/gex-levels", endpoint="/api/stock/{symbol}/gex-levels")
+        mock_incr.assert_called_once_with("/api/stock/{symbol}/gex-levels")
+
+    def test_no_endpoint_kwarg_falls_back_to_the_raw_path(self):
+        """A caller that omits endpoint= (none should in real code, but the fallback itself
+        must be correct) counts under the raw, unstripped path rather than silently not
+        counting at all."""
+        class _FakeResp:
+            status_code = 200
+            def json(self):
+                return {"data": {}}
+            def raise_for_status(self):
+                pass
+        class _FakeClient:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def get(self, *a, **kw):
+                return _FakeResp()
+
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value="real-token"), \
+             patch.object(self.real_uw.httpx, "Client", return_value=_FakeClient()), \
+             patch.object(self.real_uw, "_incr_call_counter") as mock_incr:
+            self.real_uw._get("/api/seasonality/market")
+        mock_incr.assert_called_once_with("/api/seasonality/market")
+
+    def test_incr_call_counter_uses_the_real_redis_client_and_fails_open(self):
+        """_incr_call_counter() itself: must INCR a key scoped to both the endpoint AND the
+        calendar day (UW's budget is a daily ceiling), set a TTL only on first write, and never
+        raise even if Redis itself is unavailable."""
+        class _FakeRedis:
+            def __init__(self):
+                self.incr_calls = []
+                self.expire_calls = []
+                self._ttl = -1
+            def incr(self, key):
+                self.incr_calls.append(key)
+            def ttl(self, key):
+                return self._ttl
+            def expire(self, key, seconds):
+                self.expire_calls.append((key, seconds))
+                self._ttl = seconds
+
+        fake_redis = _FakeRedis()
+        with patch.object(self.real_uw, "_get_redis", return_value=fake_redis):
+            self.real_uw._incr_call_counter("/api/stock/{symbol}/gex-levels")
+            assert len(fake_redis.incr_calls) == 1
+            key = fake_redis.incr_calls[0]
+            assert key.startswith(f"{self.real_uw._CALL_COUNTER_PREFIX}:/api/stock/{{symbol}}/gex-levels:")
+            assert fake_redis.expire_calls == [(key, self.real_uw._CALL_COUNTER_TTL_S)]
+
+            # A second call to the SAME endpoint on the SAME day must not reset the TTL.
+            self.real_uw._incr_call_counter("/api/stock/{symbol}/gex-levels")
+            assert fake_redis.incr_calls == [key, key]
+            assert len(fake_redis.expire_calls) == 1
+
+    def test_incr_call_counter_keys_different_endpoints_separately(self):
+        class _FakeRedis:
+            def __init__(self):
+                self.incr_calls = []
+            def incr(self, key):
+                self.incr_calls.append(key)
+            def ttl(self, key):
+                return -1
+            def expire(self, key, seconds):
+                pass
+
+        fake_redis = _FakeRedis()
+        with patch.object(self.real_uw, "_get_redis", return_value=fake_redis):
+            self.real_uw._incr_call_counter("/api/stock/{symbol}/gex-levels")
+            self.real_uw._incr_call_counter("/api/shorts/{symbol}/interest-float/v2")
+        assert len(set(fake_redis.incr_calls)) == 2
+
+    def test_incr_call_counter_fails_open_on_a_redis_exception(self):
+        class _BrokenRedis:
+            def incr(self, key):
+                raise ConnectionError("redis unavailable")
+
+        with patch.object(self.real_uw, "_get_redis", return_value=_BrokenRedis()):
+            self.real_uw._incr_call_counter("/api/stock/{symbol}/gex-levels")  # must not raise

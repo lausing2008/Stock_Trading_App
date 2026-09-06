@@ -761,6 +761,7 @@ export const api = {
   dqStatus: () => request<{ checks: DataQualityCheck[] }>('/admin/dq-status'),
   llmUsage: (hours: number = 24) => request<LlmUsageReport>(`/admin/llm-usage?hours=${hours}`),
   tuneStatus: () => request<TuneStatusReport>('/signals/tune_status'),
+  uwUsage: () => request<UwUsageReport>('/admin/uw-usage'),
   promotionHistory: () => request<{
     meta_model_history: MetaModelPromotionEntry[];
     position_scaling_history: PositionScalingPromotionEntry[];
@@ -2752,9 +2753,14 @@ export type DataQualityCheck = {
   description: string;
   ok: boolean;
   age_hours: number | null;
-  max_age_hours: number;
+  max_age_hours: number | null;
   checked_at: string;
   skipped_reason?: string;
+  // "gauge"-source checks (scheduler.py _DQ_CHECKS) report a rolling counter instead of a
+  // liveness age — age_hours/max_age_hours are always null for these, count_48h is the field
+  // that actually carries data. Rendering must branch on count_48h being present, not treat
+  // a null age_hours as "never updated."
+  count_48h?: number;
 };
 
 // AUD-LLMUSAGE (2026-09-05) — see shared/db/models.py LlmCallLog and
@@ -2840,6 +2846,24 @@ export type TuneStatusReport = {
   as_of: string;
   styles: Record<'SHORT' | 'SWING' | 'LONG' | 'GROWTH', TuneStatusStyle>;
   global_staleness: Record<string, boolean | null>;
+};
+
+// AUD-UWUSAGE: Unusual Whales API call volume — structurally different from LlmUsageReport
+// above (no tokens/cost, since UW is a rate-limited daily-budget API, not billed per call/
+// token). Backed by Redis rolling counters (unusual_whales.py's _incr_call_counter/
+// _incr_rate_limit_counter), not a DB table.
+export type UwUsageBreakdownRow = {
+  endpoint: string;
+  calls: number;
+};
+
+export type UwUsageReport = {
+  as_of: string;
+  assumed_daily_budget: number;
+  today_total_calls: number;
+  yesterday_total_calls: number;
+  rate_limit_events_48h: number;
+  breakdown: UwUsageBreakdownRow[];
 };
 
 // SELFIMPROVE-PROMOTION-GATES-INCOMPLETE — see docs/DESIGN_MODEL_PROMOTION_GATES_2026-07-12.md
