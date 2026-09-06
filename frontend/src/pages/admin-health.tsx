@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
-import { api, type SchedulerJob, type MlModelMetric, type SignalSummary, type ServiceHealthReport } from '@/lib/api';
+import { api, type SchedulerJob, type MlModelMetric, type SignalSummary, type ServiceHealthReport, type LlmUsageReport } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 const JOB_META: Record<string, { label: string; maxAgeDays: number; desc: string }> = {
@@ -180,6 +180,13 @@ export default function AdminHealthPage() {
   const { data: healthData, mutate: mutateHealth } = useSWR<ServiceHealthReport>(
     authed ? 'health-deep' : null,
     () => api.healthDeep(),
+    { revalidateOnFocus: false, refreshInterval: 60_000 },
+  );
+
+  const [llmWindowHours, setLlmWindowHours] = useState(24);
+  const { data: llmUsageData } = useSWR<LlmUsageReport>(
+    authed ? `llm-usage-${llmWindowHours}` : null,
+    () => api.llmUsage(llmWindowHours),
     { revalidateOnFocus: false, refreshInterval: 60_000 },
   );
 
@@ -719,6 +726,139 @@ export default function AdminHealthPage() {
           })()}
         </div>
       )}
+
+      {/* AUD-LLMUSAGE: Claude API usage — see check_llm_usage_spike() in scheduler.py for the
+          spike alert this data feeds, and shared/db/models.py LlmCallLog for the incident
+          this table was built to catch next time (six weeks of undetected reclassification,
+          5.44M Haiku tokens burned on 2026-09-05 alone). */}
+      <div style={{ marginTop: '32px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+          <div>
+            <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em', marginBottom: '4px' }}>CLAUDE API USAGE</div>
+            <div style={{ fontSize: '11px', color: '#334155' }}>Every real Anthropic call this platform makes, across all 9 call sites</div>
+          </div>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            {[6, 24, 72, 168].map(h => (
+              <button
+                key={h}
+                onClick={() => setLlmWindowHours(h)}
+                style={{
+                  padding: '5px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 600, cursor: 'pointer',
+                  color: llmWindowHours === h ? '#e2e8f0' : '#64748b',
+                  background: llmWindowHours === h ? 'rgba(99,102,241,0.15)' : '#0d1424',
+                  border: `1px solid ${llmWindowHours === h ? 'rgba(99,102,241,0.4)' : '#1e293b'}`,
+                }}
+              >
+                {h < 24 ? `${h}h` : `${h / 24}d`}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {!llmUsageData ? (
+          <div style={{ fontSize: '12px', color: '#334155' }}>Loading…</div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '14px', flexWrap: 'wrap' }}>
+              <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 700, color: '#94a3b8', background: '#0d1424', border: '1px solid #1e293b' }}>
+                {llmUsageData.total_calls.toLocaleString()} calls
+              </span>
+              <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 700, color: '#60a5fa', background: 'rgba(96,165,250,0.08)', border: '1px solid rgba(96,165,250,0.2)' }}>
+                {llmUsageData.total_tokens.toLocaleString()} tokens ({llmUsageData.total_input_tokens.toLocaleString()} in / {llmUsageData.total_output_tokens.toLocaleString()} out)
+              </span>
+              {llmUsageData.total_errors > 0 && (
+                <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}>
+                  ⚠ {llmUsageData.total_errors} errors
+                </span>
+              )}
+            </div>
+
+            {/* Hourly token trend, sparkline-style bars */}
+            {llmUsageData.hourly.length > 0 && (
+              <div style={{ padding: '14px 16px', borderRadius: '10px', background: '#0d1424', border: '1px solid #1e293b', marginBottom: '14px' }}>
+                <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', letterSpacing: '0.04em', marginBottom: '10px' }}>TOKENS PER HOUR</div>
+                <div style={{ display: 'flex', alignItems: 'flex-end', gap: '2px', height: '60px', overflowX: 'auto' }}>
+                  {(() => {
+                    const maxTokens = Math.max(...llmUsageData.hourly.map(h => h.tokens), 1);
+                    return llmUsageData.hourly.map(h => {
+                      const pct = Math.max((h.tokens / maxTokens) * 100, h.tokens > 0 ? 3 : 0);
+                      return (
+                        <div
+                          key={h.hour}
+                          title={`${new Date(h.hour).toLocaleString()} — ${h.tokens.toLocaleString()} tokens, ${h.calls} calls`}
+                          style={{
+                            flex: '1 0 3px', minWidth: '3px', height: `${pct}%`,
+                            background: pct > 60 ? '#f87171' : pct > 30 ? '#fbbf24' : '#4ade80',
+                            borderRadius: '1px 1px 0 0',
+                          }}
+                        />
+                      );
+                    });
+                  })()}
+                </div>
+              </div>
+            )}
+
+            {/* Breakdown by service / call site / model */}
+            <div style={{ padding: '14px 16px', borderRadius: '10px', background: '#0d1424', border: '1px solid #1e293b', marginBottom: llmUsageData.recent_errors.length > 0 ? '14px' : 0 }}>
+              <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', letterSpacing: '0.04em', marginBottom: '10px' }}>BY SERVICE / FUNCTION / MODEL</div>
+              {llmUsageData.breakdown.length === 0 ? (
+                <div style={{ fontSize: '12px', color: '#334155' }}>No calls in this window.</div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                        {['Service', 'Call Site', 'Model', 'Calls', 'Tokens', 'Errors'].map(h => (
+                          <th key={h} style={{ textAlign: h === 'Service' || h === 'Call Site' || h === 'Model' ? 'left' : 'right', padding: '6px 8px', color: '#475569', fontWeight: 600, fontSize: '10px', letterSpacing: '0.03em' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {llmUsageData.breakdown.map(row => (
+                        <tr key={`${row.service}-${row.call_site}-${row.model}`} style={{ borderBottom: '1px solid #131b2e' }}>
+                          <td style={{ padding: '6px 8px', color: '#94a3b8' }}>{row.service}</td>
+                          <td style={{ padding: '6px 8px', color: '#e2e8f0', fontFamily: 'monospace' }}>{row.call_site}</td>
+                          <td style={{ padding: '6px 8px' }}>
+                            <span style={{
+                              padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 700,
+                              color: row.model.toLowerCase().includes('haiku') ? '#fbbf24' : '#a78bfa',
+                              background: row.model.toLowerCase().includes('haiku') ? 'rgba(251,191,36,0.08)' : 'rgba(167,139,250,0.08)',
+                              border: `1px solid ${row.model.toLowerCase().includes('haiku') ? 'rgba(251,191,36,0.2)' : 'rgba(167,139,250,0.2)'}`,
+                            }}>
+                              {row.model}
+                            </span>
+                          </td>
+                          <td style={{ padding: '6px 8px', textAlign: 'right', color: '#94a3b8', fontFamily: 'monospace' }}>{row.calls.toLocaleString()}</td>
+                          <td style={{ padding: '6px 8px', textAlign: 'right', color: '#60a5fa', fontFamily: 'monospace', fontWeight: 700 }}>{row.total_tokens.toLocaleString()}</td>
+                          <td style={{ padding: '6px 8px', textAlign: 'right', color: row.errors > 0 ? '#f87171' : '#334155', fontFamily: 'monospace' }}>{row.errors || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Recent errors */}
+            {llmUsageData.recent_errors.length > 0 && (
+              <div style={{ padding: '14px 16px', borderRadius: '10px', background: 'rgba(239,68,68,0.04)', border: '1px solid rgba(239,68,68,0.15)' }}>
+                <div style={{ fontSize: '10px', fontWeight: 700, color: '#f87171', letterSpacing: '0.04em', marginBottom: '10px' }}>RECENT ERRORS</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {llmUsageData.recent_errors.map((e, i) => (
+                    <div key={i} style={{ fontSize: '11px', display: 'flex', gap: '10px', alignItems: 'baseline', flexWrap: 'wrap' }}>
+                      <span style={{ color: '#475569', fontFamily: 'monospace', fontSize: '10px' }}>{relTime(e.created_at)}</span>
+                      <span style={{ color: '#94a3b8' }}>{e.service}/{e.call_site}</span>
+                      <span style={{ color: '#f87171' }}>{e.status}{e.http_status ? ` (${e.http_status})` : ''}</span>
+                      {e.error && <span style={{ color: '#64748b', fontSize: '10px' }}>{e.error.slice(0, 120)}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

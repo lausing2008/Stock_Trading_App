@@ -759,6 +759,7 @@ export const api = {
   calibrateMinRr: () => request<{ status: string }>('/paper-portfolio/calibrate-min-rr', { method: 'POST' }),
   schedulerStatus: () => request<{ jobs: SchedulerJob[] }>('/admin/scheduler-status'),
   dqStatus: () => request<{ checks: DataQualityCheck[] }>('/admin/dq-status'),
+  llmUsage: (hours: number = 24) => request<LlmUsageReport>(`/admin/llm-usage?hours=${hours}`),
   promotionHistory: () => request<{
     meta_model_history: MetaModelPromotionEntry[];
     position_scaling_history: PositionScalingPromotionEntry[];
@@ -2753,6 +2754,48 @@ export type DataQualityCheck = {
   max_age_hours: number;
   checked_at: string;
   skipped_reason?: string;
+};
+
+// AUD-LLMUSAGE (2026-09-05) — see shared/db/models.py LlmCallLog and
+// scheduler.py check_llm_usage_spike() for the incident this was built for
+// (six weeks of undetected news-classify reclassification, 5.44M Haiku tokens in one day).
+export type LlmUsageBreakdownRow = {
+  service: string;
+  call_site: string;
+  model: string;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  errors: number;
+};
+
+export type LlmUsageHourlyPoint = {
+  hour: string;
+  tokens: number;
+  calls: number;
+};
+
+export type LlmUsageRecentError = {
+  created_at: string;
+  service: string;
+  call_site: string;
+  model: string;
+  status: string;
+  http_status: number | null;
+  error: string | null;
+};
+
+export type LlmUsageReport = {
+  window_hours: number;
+  total_calls: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_tokens: number;
+  total_errors: number;
+  breakdown: LlmUsageBreakdownRow[];
+  hourly: LlmUsageHourlyPoint[];
+  recent_errors: LlmUsageRecentError[];
 };
 
 // SELFIMPROVE-PROMOTION-GATES-INCOMPLETE — see docs/DESIGN_MODEL_PROMOTION_GATES_2026-07-12.md

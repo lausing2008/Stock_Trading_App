@@ -1,7 +1,7 @@
 """Admin endpoints: trigger ingestion + seed universe + add individual stock."""
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select, desc, func, case, delete
+from sqlalchemy import select, desc, func, case, delete, text
 from sqlalchemy.orm import Session
 import json
 import yfinance as yf
@@ -14,6 +14,7 @@ from db import (
     Exchange, Market, SessionLocal, Stock, Signal, SignalOutcome, SignalHorizon,
     FundamentalsSnapshot, OptionsFlowAlertOutcome, Price, SqueezeAlertOutcome, TimeFrame,
     Watchlist, WatchlistItem, Ranking, init_db, get_session,
+    LlmCallLog,
 )
 
 from ..adapters.registry import set_runtime_key
@@ -1455,6 +1456,96 @@ def data_quality_status(_: User = Depends(get_admin_user)):
             except Exception:
                 pass
     return {"checks": checks}
+
+
+@router.get("/llm-usage")
+def llm_usage(hours: int = Query(24, ge=1, le=720), _: User = Depends(get_admin_user)):
+    """AUD-LLMUSAGE dashboard data: real Claude/Anthropic API call volume over the trailing
+    `hours` window, broken down by service/call_site/model — the same three axes the
+    2026-09-05 spike alert (check_llm_usage_spike() in scheduler.py) evaluates, so what an
+    admin sees here always matches what triggered (or didn't trigger) that alert.
+
+    Also returns an hourly token-total series so the frontend can render the same kind of
+    trend chart the Claude Console shows, without needing a separate Anthropic API call —
+    this table is this platform's own record, not a proxy to platform.claude.com.
+    """
+    from datetime import datetime, timedelta
+    since_dt = datetime.utcnow() - timedelta(hours=int(hours))
+
+    with SessionLocal() as session:
+        since = since_dt
+
+        totals_row = session.execute(
+            select(
+                func.count(LlmCallLog.id),
+                func.coalesce(func.sum(LlmCallLog.input_tokens), 0),
+                func.coalesce(func.sum(LlmCallLog.output_tokens), 0),
+                func.sum(case((LlmCallLog.status != "ok", 1), else_=0)),
+            ).where(LlmCallLog.created_at >= since)
+        ).one()
+        total_calls, total_input, total_output, total_errors = totals_row
+
+        by_breakdown = session.execute(
+            select(
+                LlmCallLog.service,
+                LlmCallLog.call_site,
+                LlmCallLog.model,
+                func.count(LlmCallLog.id),
+                func.coalesce(func.sum(LlmCallLog.input_tokens), 0),
+                func.coalesce(func.sum(LlmCallLog.output_tokens), 0),
+                func.sum(case((LlmCallLog.status != "ok", 1), else_=0)),
+            )
+            .where(LlmCallLog.created_at >= since)
+            .group_by(LlmCallLog.service, LlmCallLog.call_site, LlmCallLog.model)
+            .order_by(desc(func.coalesce(func.sum(LlmCallLog.input_tokens), 0) + func.coalesce(func.sum(LlmCallLog.output_tokens), 0)))
+        ).all()
+        breakdown = [
+            {
+                "service": row[0], "call_site": row[1], "model": row[2],
+                "calls": row[3], "input_tokens": int(row[4]), "output_tokens": int(row[5]),
+                "total_tokens": int(row[4]) + int(row[5]), "errors": int(row[6] or 0),
+            }
+            for row in by_breakdown
+        ]
+
+        hourly_rows = session.execute(text(
+            """
+            SELECT date_trunc('hour', created_at) AS hr,
+                   COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0) AS tokens,
+                   COUNT(*) AS calls
+            FROM llm_call_log
+            WHERE created_at >= :since
+            GROUP BY hr
+            ORDER BY hr
+            """
+        ), {"since": since_dt}).all()
+        hourly = [{"hour": row[0].isoformat(), "tokens": int(row[1]), "calls": row[2]} for row in hourly_rows]
+
+        recent_errors = session.execute(
+            select(LlmCallLog)
+            .where(LlmCallLog.created_at >= since, LlmCallLog.status != "ok")
+            .order_by(desc(LlmCallLog.created_at))
+            .limit(25)
+        ).scalars().all()
+        errors = [
+            {
+                "created_at": e.created_at.isoformat(), "service": e.service, "call_site": e.call_site,
+                "model": e.model, "status": e.status, "http_status": e.http_status, "error": e.error,
+            }
+            for e in recent_errors
+        ]
+
+    return {
+        "window_hours": hours,
+        "total_calls": total_calls or 0,
+        "total_input_tokens": int(total_input or 0),
+        "total_output_tokens": int(total_output or 0),
+        "total_tokens": int(total_input or 0) + int(total_output or 0),
+        "total_errors": int(total_errors or 0),
+        "breakdown": breakdown,
+        "hourly": hourly,
+        "recent_errors": errors,
+    }
 
 
 @router.post("/backfill-index-membership")
