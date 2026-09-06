@@ -50,12 +50,21 @@ def classify_headlines(headlines: list[str], api_key: str) -> list[dict | None]:
         return [None] * len(headlines)
 
     numbered = "\n".join(f"{i + 1}. {h}" for i, h in enumerate(headlines))
+    # AUD-LLMUSAGE: this is the exact call site BUG-NEWSCLASSIFY-REPEATCOST's undetected
+    # deploy-drift ran unlogged for six weeks (518x reclassification of one filing, confirmed
+    # live) — see llm_usage.py's own module docstring for the full incident. Timed and logged
+    # on every path (success, http_error, exception) so a repeat is caught by
+    # check_llm_usage_spike() within the hour instead of by chance on a billing page.
+    import time as _time
+    from common.llm_usage import CALL_SITE_NEWS_CLASSIFY, log_llm_call
+    _model = "claude-haiku-4-5-20251001"
+    _t0 = _time.monotonic()
     try:
         with httpx.Client(timeout=15) as client:
             r = client.post(
                 "https://api.anthropic.com/v1/messages",
                 json={
-                    "model": "claude-haiku-4-5-20251001",
+                    "model": _model,
                     "max_tokens": 200 * len(headlines),
                     "system": _SYSTEM,
                     "messages": [{"role": "user", "content": numbered}],
@@ -66,10 +75,22 @@ def classify_headlines(headlines: list[str], api_key: str) -> list[dict | None]:
                     "content-type": "application/json",
                 },
             )
+        _duration_ms = int((_time.monotonic() - _t0) * 1000)
         if r.status_code != 200:
             log.warning("news_classify.http_error", status=r.status_code)
+            log_llm_call(
+                service="news-intelligence", call_site=CALL_SITE_NEWS_CLASSIFY, model=_model,
+                duration_ms=_duration_ms, status="http_error", http_status=r.status_code,
+                context={"headline_count": len(headlines)},
+            )
             return [None] * len(headlines)
-        text = _strip_markdown_fence(r.json()["content"][0]["text"])
+        _resp_json = r.json()
+        log_llm_call(
+            service="news-intelligence", call_site=CALL_SITE_NEWS_CLASSIFY, model=_model,
+            usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
+            context={"headline_count": len(headlines)},
+        )
+        text = _strip_markdown_fence(_resp_json["content"][0]["text"])
         parsed = json.loads(text)
         if not isinstance(parsed, list):
             return [None] * len(headlines)
@@ -98,6 +119,11 @@ def classify_headlines(headlines: list[str], api_key: str) -> list[dict | None]:
         return out
     except Exception as exc:
         log.warning("news_classify.failed", error=str(exc))
+        log_llm_call(
+            service="news-intelligence", call_site=CALL_SITE_NEWS_CLASSIFY, model=_model,
+            duration_ms=int((_time.monotonic() - _t0) * 1000), status="error",
+            error=str(exc), context={"headline_count": len(headlines)},
+        )
         return [None] * len(headlines)
 
 

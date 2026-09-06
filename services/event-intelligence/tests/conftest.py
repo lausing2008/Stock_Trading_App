@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 _stubs = [
     "structlog",
     "common", "common.config", "common.logging", "common.redis_client",
-    "common.ai_keys", "common.uw_congress",
+    "common.ai_keys", "common.uw_congress", "common.llm_usage",
     "db", "db.session",
     "sqlalchemy", "sqlalchemy.orm", "sqlalchemy.dialects",
     "sqlalchemy.dialects.postgresql",
@@ -35,8 +35,15 @@ for _m in _stubs:
 # resolves via the identical getattr path) would then silently observe a mock the real import
 # never reaches. Mirrors the identical explicit-link fix already applied for common.indicators
 # in market-data/tests/conftest.py.
-for _m in ("config", "logging", "redis_client", "ai_keys", "uw_congress"):
+for _m in ("config", "logging", "redis_client", "ai_keys", "uw_congress", "llm_usage"):
     setattr(sys.modules["common"], _m, sys.modules[f"common.{_m}"])
+
+# log_llm_call must be a real callable, not a bare MagicMock attribute — every one of this
+# service's 4 real Claude call sites (macro_reaction.py, earnings.py x3-shaped-as-2-slugs)
+# calls it with keyword args on every path (success/http_error/exception); a bare MagicMock
+# attribute would still be callable and return a MagicMock, which is harmless here since no
+# test asserts on its return value, but making it a real no-op keeps the intent explicit.
+sys.modules["common.llm_usage"].log_llm_call = lambda **kw: None
 
 import common.config as _cfg  # noqa: E402
 _cfg.get_settings = MagicMock(return_value=MagicMock())

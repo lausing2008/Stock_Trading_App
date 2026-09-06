@@ -2456,3 +2456,58 @@ class FixSnapshot(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)  # e.g. "still below the 30-sample floor for 3 of 8 buckets"
 
     fix_record: Mapped["FixRecord"] = relationship(back_populates="snapshots")
+
+
+class LlmCallLog(Base):
+    """AUD-LLMUSAGE: every real Anthropic API call this platform makes, across all 9 call
+    sites in 6 services (research-engine, decision-engine x2, market-data x3,
+    event-intelligence x2, news-intelligence), logged via the single shared helper
+    shared/common/llm_usage.py `log_llm_call()` — added specifically because NONE of the 9
+    call sites logged real token usage anywhere before this, and that blind spot let a real
+    incident run for six weeks undetected.
+
+    Root incident this closes the visibility gap on: BUG-NEWSCLASSIFY-REPEATCOST (fixed in git
+    2026-07-27) never actually reached the running news-intelligence container — a `docker cp`
+    deploy-drift, found live 2026-09-05 — so persist_news_items() ran with NO dedup for six
+    weeks. Every 2-minute SEC EDGAR poll re-classified the same ~40-80 filings via Claude Haiku,
+    continuously. Confirmed live: one single Form 4 filing was reclassified 518 times with
+    byte-identical output. Measured externally on the Claude Console usage page: 5.44M Haiku
+    input/output tokens on 2026-09-05 alone, versus a typical daily baseline of a few hundred
+    thousand tokens (see the day-by-day bar chart the user showed directly). The redeploy that
+    fixed the drift also fixed this — confirmed live: `seen: 80, inserted: 0,
+    skipped_already_seen: 80, classified: 0` on every poll since the 2026-09-05 17:14 restart.
+
+    This table cannot retroactively explain a spike that already happened — it exists so the
+    NEXT one is caught in near-real-time via the DQ-check spike alert
+    (services/market-data/src/services/scheduler.py, check_llm_usage_spike()) instead of being
+    discovered by chance days or weeks later on an external billing page.
+    """
+    __tablename__ = "llm_call_log"
+    __table_args__ = (
+        Index("ix_llm_call_log_service_created", "service", "created_at"),
+        Index("ix_llm_call_log_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # Which of the 9 call sites made this call — a short, stable slug, not the raw log event
+    # name, so a renamed log line never silently breaks dashboard grouping. See
+    # shared/common/llm_usage.py's own CALL_SITE constants for the canonical list.
+    service: Mapped[str] = mapped_column(String(32), index=True)
+    call_site: Mapped[str] = mapped_column(String(64), index=True)
+    model: Mapped[str] = mapped_column(String(64))
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Duration and outcome are recorded alongside token counts (not a separate table) because
+    # a spike in ERROR-ing calls with no tokens billed is itself worth seeing on the same
+    # dashboard — a runaway retry loop against a failing endpoint is a real-money risk even
+    # before it succeeds once and starts actually billing tokens.
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(16))  # "ok" | "error" | "http_error"
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Free-form context for the "why did THIS call happen" question during an incident review —
+    # e.g. {"symbol": "AAPL"} for research, {"cik": "...", "headline_count": 8} for EDGAR
+    # classification. Never used for aggregation (service/call_site cover that) — purely for a
+    # human reading a spike's row-level detail.
+    context: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)

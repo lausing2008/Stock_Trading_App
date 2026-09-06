@@ -215,16 +215,34 @@ async def generate_trade_coach_summary(result: TradePatternResult) -> str | None
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
+    # AUD-LLMUSAGE: see shared/common/llm_usage.py's module docstring for the incident.
+    import time as _time
+    from common.llm_usage import CALL_SITE_TRADE_COACH, log_llm_call
+    _t0 = _time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=body)
+        _duration_ms = int((_time.monotonic() - _t0) * 1000)
         if r.status_code != 200:
             log.warning("trade_coach.api_error", status=r.status_code, body=r.text[:200])
+            log_llm_call(
+                service="market-data", call_site=CALL_SITE_TRADE_COACH, model=body["model"],
+                duration_ms=_duration_ms, status="http_error", http_status=r.status_code,
+            )
             return None
-        raw = r.json()["content"][0]["text"].strip()
+        _resp_json = r.json()
+        log_llm_call(
+            service="market-data", call_site=CALL_SITE_TRADE_COACH, model=body["model"],
+            usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
+        )
+        raw = _resp_json["content"][0]["text"].strip()
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
         data = json.loads(raw)
         return _clean_summary(data.get("summary"))
     except Exception as exc:
         log.warning("trade_coach.call_failed", error=str(exc))
+        log_llm_call(
+            service="market-data", call_site=CALL_SITE_TRADE_COACH, model=body["model"],
+            duration_ms=int((_time.monotonic() - _t0) * 1000), status="error", error=str(exc),
+        )
         return None

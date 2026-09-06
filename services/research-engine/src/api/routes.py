@@ -438,6 +438,10 @@ Use your knowledge of {symbol} to fill in qualitative sections accurately. Base 
         "content-type": "application/json",
     }
 
+    # AUD-LLMUSAGE: see shared/common/llm_usage.py's module docstring for the incident.
+    import time as _time
+    from common.llm_usage import CALL_SITE_RESEARCH_REPORT, log_llm_call
+    _t0 = _time.monotonic()
     try:
         # 90s limit: the gateway allows 240s for research POST requests; keeping AI under 90s
         # leaves buffer for data-gather (25s) and response serialisation.
@@ -445,17 +449,39 @@ Use your knowledge of {symbol} to fill in qualitative sections accurately. Base 
             r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=body)
     except Exception as exc:
         log.warning("claude.call.failed", error=str(exc))
+        log_llm_call(
+            service="research-engine", call_site=CALL_SITE_RESEARCH_REPORT, model=req.model,
+            duration_ms=int((_time.monotonic() - _t0) * 1000), status="error", error=str(exc),
+            context={"symbol": symbol},
+        )
         return _fallback_ai()
 
+    _duration_ms = int((_time.monotonic() - _t0) * 1000)
     if r.status_code == 429:
         log.warning("claude.rate_limited", status=r.status_code, body=r.text[:200])
+        log_llm_call(
+            service="research-engine", call_site=CALL_SITE_RESEARCH_REPORT, model=req.model,
+            duration_ms=_duration_ms, status="http_error", http_status=429,
+            context={"symbol": symbol},
+        )
         return _fallback_ai()
     if r.status_code != 200:
         log.warning("claude.error", status=r.status_code, body=r.text[:200])
+        log_llm_call(
+            service="research-engine", call_site=CALL_SITE_RESEARCH_REPORT, model=req.model,
+            duration_ms=_duration_ms, status="http_error", http_status=r.status_code,
+            context={"symbol": symbol},
+        )
         return _fallback_ai()
 
+    _resp_json = r.json()
+    log_llm_call(
+        service="research-engine", call_site=CALL_SITE_RESEARCH_REPORT, model=req.model,
+        usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
+        context={"symbol": symbol},
+    )
     try:
-        text = r.json()["content"][0]["text"].strip()
+        text = _resp_json["content"][0]["text"].strip()
         # Strip markdown code fences if present
         if text.startswith("```"):
             text = text.split("```", 2)[1]
@@ -1114,6 +1140,10 @@ Answer questions concisely and directly. Use the data above. Be honest about unc
         except Exception as exc:
             raise HTTPException(500, f"Chat error: {exc}")
     else:
+        # AUD-LLMUSAGE: see shared/common/llm_usage.py's module docstring for the incident.
+        import time as _time
+        from common.llm_usage import CALL_SITE_RESEARCH_CHAT, log_llm_call
+        _t0 = _time.monotonic()
         url = "https://api.anthropic.com/v1/messages"
         headers = {"x-api-key": chat_api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
         body = {"model": req.model, "max_tokens": 1024, "temperature": 0.3,
@@ -1121,12 +1151,29 @@ Answer questions concisely and directly. Use the data above. Be honest about unc
         try:
             async with httpx.AsyncClient(timeout=60) as client:
                 r = await client.post(url, headers=headers, json=body)
+            _duration_ms = int((_time.monotonic() - _t0) * 1000)
             if r.status_code != 200:
+                log_llm_call(
+                    service="research-engine", call_site=CALL_SITE_RESEARCH_CHAT, model=req.model,
+                    duration_ms=_duration_ms, status="http_error", http_status=r.status_code,
+                    context={"symbol": sym},
+                )
                 raise HTTPException(500, f"AI chat failed: {r.status_code}")
-            text = r.json()["content"][0]["text"]
+            _resp_json = r.json()
+            log_llm_call(
+                service="research-engine", call_site=CALL_SITE_RESEARCH_CHAT, model=req.model,
+                usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
+                context={"symbol": sym},
+            )
+            text = _resp_json["content"][0]["text"]
         except HTTPException:
             raise
         except Exception as exc:
+            log_llm_call(
+                service="research-engine", call_site=CALL_SITE_RESEARCH_CHAT, model=req.model,
+                duration_ms=int((_time.monotonic() - _t0) * 1000), status="error", error=str(exc),
+                context={"symbol": sym},
+            )
             raise HTTPException(500, f"Chat error: {exc}")
 
     return {"role": "assistant", "content": text}

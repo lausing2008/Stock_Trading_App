@@ -24,6 +24,16 @@ _fake_ai_keys = MagicMock()
 _fake_ai_keys.get_admin_ai_key = lambda provider="claude": ""
 sys.modules.setdefault("common.ai_keys", _fake_ai_keys)
 
+# AUD-LLMUSAGE: risk_agent.py now logs every real Claude call via common.llm_usage.log_llm_call
+# — stubbed to a real no-op function (not a bare MagicMock attribute) so it's safely callable
+# with keyword args from every test path without needing to assert on it; these tests are
+# about check_risks()'s own logic, not the logging helper's (which has its own dedicated
+# test_llm_usage_helper.py in market-data).
+_fake_llm_usage = MagicMock()
+_fake_llm_usage.log_llm_call = lambda **kw: None
+_fake_llm_usage.CALL_SITE_DECIDE_RISK_AGENT = "decide_risk_agent"
+sys.modules.setdefault("common.llm_usage", _fake_llm_usage)
+
 import src.api.risk_agent as risk_agent  # noqa: E402
 
 

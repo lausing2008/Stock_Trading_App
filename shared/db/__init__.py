@@ -72,6 +72,7 @@ from .models import (
     PaperTradeDecisionLog,
     FixRecord,
     FixSnapshot,
+    LlmCallLog,
 )
 from .session import SessionLocal, engine, get_session, init_db
 
@@ -149,6 +150,7 @@ __all__ = [
     "PaperTradeDecisionLog",
     "FixRecord",
     "FixSnapshot",
+    "LlmCallLog",
     "SessionLocal",
     "engine",
     "get_session",

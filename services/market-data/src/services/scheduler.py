@@ -85,11 +85,11 @@ from sqlalchemy.orm import selectinload, Session
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, AnalystPriceTarget, DarkPoolAlertOutcome, DarkPoolPrint, EarningsEvent, EconomicEvent, FixRecord, FixSnapshot, FundamentalsSnapshot, Market, OptionsFlowAlertOutcome, OptionsFlowSnapshot, OptionsGamePlanSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, UserRole, UserTier, VolumeAreaLevel, Watchlist, WatchlistItem
+from db import AlertCondition, AnalystPriceTarget, DarkPoolAlertOutcome, DarkPoolPrint, EarningsEvent, EconomicEvent, FixRecord, FixSnapshot, FundamentalsSnapshot, LlmCallLog, Market, OptionsFlowAlertOutcome, OptionsFlowSnapshot, OptionsGamePlanSnapshot, PaperPortfolio, PaperTrade, PreBreakoutAlertOutcome, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, SqueezeAlertOutcome, Stock, ThemeSignalSnapshot, TimeFrame, User, UserRole, UserTier, VolumeAreaLevel, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
-from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification, send_post_open_digest_email, send_data_quality_alert_email, is_quota_exceeded
+from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification, send_post_open_digest_email, send_data_quality_alert_email, send_llm_usage_spike_email, is_quota_exceeded
 from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists, poll_broker_order_fills, sync_broker_positions
 from ..api.routes import refresh_live_price_cache, refresh_avg_volume_cache, _AVG_VOLUME_KEY
 # AUD-DQCHECKS-VISIBILITY: a plain constant (not a function with side effects), so importing it
@@ -8670,6 +8670,173 @@ def check_portfolio_drawdown_alerts() -> None:
         log.error("portfolio_drawdown_alert.failed", error=str(exc), exc_info=True)
 
 
+# AUD-LLMUSAGE: how many trailing 1-hour buckets form the "normal" baseline a new hour is
+# compared against. 24 buckets = the preceding day — long enough to smooth over a single busy
+# news day or a legitimate batch job, short enough that a genuine regime change (e.g. a new
+# feature intentionally shipped that calls Claude far more often) ages out of the baseline
+# within a day rather than being permanently treated as anomalous.
+_LLM_USAGE_BASELINE_HOURS = 24
+# Multiple over the trailing median that counts as a real spike. 5x, not 2x: hourly totals are
+# naturally noisy (a single research report can be 4-6k tokens; ordinary hour-to-hour variance
+# alone can be 2-3x), so a low threshold would fire on normal noise. 5x was chosen to comfortably
+# clear normal variance while still catching BUG-NEWSCLASSIFY-REPEATCOST's real magnitude —
+# that incident's confirmed 5.44M-token day vs. an ordinary few-hundred-thousand-token day is
+# roughly a 15-20x daily ratio, so an hourly 5x threshold has ample margin below the real
+# incident's own scale while staying well above ordinary noise.
+_LLM_USAGE_SPIKE_MULTIPLE = 5.0
+# Below this many total tokens in the current hour, don't evaluate at all — an app that made
+# zero or a handful of real LLM calls this hour (e.g. overnight, or every opt-in feature
+# genuinely idle) has an undefined or meaningless "multiple over baseline" and would produce
+# noisy false alarms on baseline noise alone (e.g. baseline=50 tokens, current=300 tokens is
+# technically "6x" but is not a real incident).
+_LLM_USAGE_MIN_TOKENS_TO_EVALUATE = 50_000
+_LLM_USAGE_ALERT_COOLDOWN_HOURS = 6  # don't re-page every hour while still elevated
+
+
+def check_llm_usage_spike() -> None:
+    """AUD-LLMUSAGE: alerts when total Anthropic token usage in the most recent hour is a large
+    multiple of the recent per-hour baseline, broken down by (service, call_site, model) so the
+    alert itself answers "which function, on which model" — direct user request after
+    discovering BUG-NEWSCLASSIFY-REPEATCOST's fix never reached the running news-intelligence
+    container (a `docker cp` deploy-drift found live 2026-09-05): its EDGAR poller reclassified
+    the same filings via Claude every 2 minutes with NO dedup for six weeks, confirmed at
+    5.44M Haiku tokens burned in a single day and discovered only by chance on the external
+    Claude Console billing page. See LlmCallLog's own docstring (shared/db/models.py) and
+    shared/common/llm_usage.py's module docstring for the full incident writeup.
+
+    Delivered to ADMIN users only (not the PriceAlert-subscribed audience every trading alert
+    in this file uses) — this is an operational/cost concern about the platform itself, not a
+    trading signal, matching the same admin-only audience convention this file already
+    established for e.g. broker-reauth notifications.
+
+    State-transition dedup via a plain cooldown key (not the breach/recovery state-machine
+    check_portfolio_drawdown_alerts() uses just above): a token-usage spike doesn't have a
+    clean single "recovered" instant the way equity-vs-peak does, so this instead re-arms
+    automatically after _LLM_USAGE_ALERT_COOLDOWN_HOURS — a real ongoing incident re-alerts
+    periodically rather than going silent for good after the first email.
+    """
+    _t0 = time.monotonic()
+    try:
+        _rc = _get_redis()
+        cooldown_key = "stockai:llm_usage_spike_alert_cooldown"
+        try:
+            if _rc.exists(cooldown_key):
+                _record_job_status("llm_usage_spike_check", "ok", time.monotonic() - _t0)
+                return
+        except Exception:
+            pass
+
+        with SessionLocal() as session:
+            _now = datetime.now(timezone.utc).replace(tzinfo=None)
+            _hour_start = _now - timedelta(hours=1)
+            _baseline_start = _now - timedelta(hours=1 + _LLM_USAGE_BASELINE_HOURS)
+
+            # Current hour: total tokens (input+output), and the same total broken down by
+            # (service, call_site, model) for the email's own "which function" breakdown.
+            current_rows = session.execute(
+                select(
+                    LlmCallLog.service, LlmCallLog.call_site, LlmCallLog.model,
+                    func.coalesce(func.sum(LlmCallLog.input_tokens), 0)
+                    + func.coalesce(func.sum(LlmCallLog.output_tokens), 0),
+                )
+                .where(LlmCallLog.created_at >= _hour_start, LlmCallLog.created_at < _now)
+                .group_by(LlmCallLog.service, LlmCallLog.call_site, LlmCallLog.model)
+            ).all()
+            current_total = sum(int(r[3]) for r in current_rows)
+
+            if current_total < _LLM_USAGE_MIN_TOKENS_TO_EVALUATE:
+                _record_job_status("llm_usage_spike_check", "ok", time.monotonic() - _t0)
+                return
+
+            # Baseline: per-hour token totals over the preceding _LLM_USAGE_BASELINE_HOURS,
+            # bucketed by hour, then the MEDIAN of those hourly totals — median rather than
+            # mean specifically because a single prior spike hour (a real past incident, or a
+            # legitimate one-off batch) must not silently inflate the baseline and mask a
+            # genuine NEW spike from ever triggering again.
+            hourly_rows = session.execute(
+                text("""
+                    SELECT date_trunc('hour', created_at) AS hr,
+                           COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0) AS tok
+                    FROM llm_call_log
+                    WHERE created_at >= :baseline_start AND created_at < :hour_start
+                    GROUP BY 1
+                """),
+                {"baseline_start": _baseline_start, "hour_start": _hour_start},
+            ).all()
+            hourly_totals = [float(r.tok) for r in hourly_rows]
+            # Hours with zero rows at all (the app made no LLM calls that hour) are real,
+            # informative zeros for the baseline, not missing data — an app whose baseline
+            # hours are mostly idle SHOULD have a low baseline, so a modest current-hour
+            # volume against it correctly reads as a large multiple.
+            _hours_with_data = len(hourly_totals)
+            _expected_hours = _LLM_USAGE_BASELINE_HOURS
+            hourly_totals += [0.0] * max(0, _expected_hours - _hours_with_data)
+
+            if len(hourly_totals) < 6:
+                # Too little history to have a meaningful baseline yet (e.g. right after this
+                # feature first shipped) — skip rather than compare against near-nothing.
+                _record_job_status("llm_usage_spike_check", "ok", time.monotonic() - _t0)
+                return
+
+            hourly_totals.sort()
+            _mid = len(hourly_totals) // 2
+            baseline_median = (
+                hourly_totals[_mid] if len(hourly_totals) % 2
+                else (hourly_totals[_mid - 1] + hourly_totals[_mid]) / 2
+            )
+            # A zero/near-zero baseline makes "multiple" undefined (division by ~0) — floor it
+            # at a small positive value so a previously-idle feature that suddenly makes ANY
+            # real volume of calls still produces a finite, reportable multiple instead of
+            # skipping the check entirely (this is itself often exactly the incident worth
+            # catching — a feature going from silent to active hardly ever happens without a
+            # deliberate flag flip, which is worth a human glancing at either way).
+            baseline_floor = max(baseline_median, 1000.0)
+            multiple = current_total / baseline_floor
+
+            if multiple < _LLM_USAGE_SPIKE_MULTIPLE:
+                _record_job_status("llm_usage_spike_check", "ok", time.monotonic() - _t0)
+                return
+
+            by_call_site = sorted(
+                (
+                    {"service": r[0], "call_site": r[1], "model": r[2], "tokens": int(r[3])}
+                    for r in current_rows
+                ),
+                key=lambda d: d["tokens"], reverse=True,
+            )
+
+            recipients = session.execute(
+                select(User).where(User.role == UserRole.ADMIN, User.email.is_not(None))
+            ).scalars().all()
+            if not recipients:
+                _record_job_status("llm_usage_spike_check", "ok", time.monotonic() - _t0)
+                return
+
+            sent = 0
+            for user in recipients:
+                try:
+                    ok = send_llm_usage_spike_email(
+                        user.email, current_total, baseline_median, multiple, "hour", by_call_site,
+                    )
+                except Exception as _send_exc:
+                    ok = False
+                    log.warning("llm_usage_spike.recipient_send_error", user=user.id, error=str(_send_exc))
+                if ok:
+                    sent += 1
+
+            try:
+                _rc.setex(cooldown_key, _LLM_USAGE_ALERT_COOLDOWN_HOURS * 3600, "1")
+            except Exception:
+                pass
+
+            log.warning("llm_usage_spike.fired", current_total=current_total,
+                        baseline_median=baseline_median, multiple=round(multiple, 1), sent=sent)
+            _record_job_status("llm_usage_spike_check", "ok", time.monotonic() - _t0)
+    except Exception as exc:
+        _record_job_status("llm_usage_spike_check", "error", time.monotonic() - _t0, str(exc))
+        log.error("llm_usage_spike.failed", error=str(exc), exc_info=True)
+
+
 def _run_watchlist_auto_rotation() -> None:
     """WATCHLIST-AUTO-ROTATION: weekly per-watchlist rotation — drop stocks with a reliably
     poor trailing win rate, add top-K-Score candidates not already on that watchlist.
@@ -10660,6 +10827,11 @@ _DQ_CHECKS: list[dict] = [
         "max_age_hours": 1, "is_date": False,
     },
     {
+        "name": "check_llm_usage_spike", "description": "Claude API usage-spike alert liveness (15-min cron, AUD-LLMUSAGE)",
+        "job_name": "llm_usage_spike_check", "source": "job_status",
+        "max_age_hours": 1, "is_date": False,
+    },
+    {
         "name": "check_early_earnings_news_alerts", "description": "Early (pre-EDGAR) earnings-surprise news alert liveness (per-minute cron)",
         "job_name": "check_early_earnings_news_alerts", "source": "job_status",
         "max_age_hours": 1, "is_date": False,
@@ -11705,6 +11877,21 @@ def start_scheduler() -> None:
             id="portfolio_drawdown_alert_check",
             replace_existing=True,
             max_instances=1, coalesce=True, misfire_grace_time=60,
+        )
+
+        # ── AUD-LLMUSAGE: Claude API usage-spike alert — every 15 minutes ────────────────
+        # Not every minute like the trading alerts above: this compares HOURLY token totals
+        # against a rolling baseline, so checking far more often than the bucket size itself
+        # changes adds no new information, just DB load. See check_llm_usage_spike()'s own
+        # docstring for the full incident (BUG-NEWSCLASSIFY-REPEATCOST's fix never reaching
+        # the running news-intelligence container) this exists to catch the next occurrence of.
+        _scheduler.add_job(
+            check_llm_usage_spike,
+            "interval",
+            minutes=15,
+            id="llm_usage_spike_check",
+            replace_existing=True,
+            max_instances=1, coalesce=True, misfire_grace_time=120,
         )
 
         # ── T257-TOP3-CONVICTION-ALERT: measured-win-rate-gated top-3 scan — every minute ──

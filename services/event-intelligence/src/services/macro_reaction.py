@@ -158,13 +158,29 @@ async def generate_reaction(event_type: str, actual_value: float, expected_value
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
+    # AUD-LLMUSAGE: see shared/common/llm_usage.py's module docstring for the incident.
+    import time as _time
+    from common.llm_usage import CALL_SITE_MACRO_REACTION, log_llm_call
+    _t0 = _time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=body)
+        _duration_ms = int((_time.monotonic() - _t0) * 1000)
         if r.status_code != 200:
             log.warning("macro_reaction.api_error", status=r.status_code, body=r.text[:200])
+            log_llm_call(
+                service="event-intelligence", call_site=CALL_SITE_MACRO_REACTION, model=body["model"],
+                duration_ms=_duration_ms, status="http_error", http_status=r.status_code,
+                context={"event_type": event_type},
+            )
             return None
-        raw = r.json()["content"][0]["text"].strip()
+        _resp_json = r.json()
+        log_llm_call(
+            service="event-intelligence", call_site=CALL_SITE_MACRO_REACTION, model=body["model"],
+            usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
+            context={"event_type": event_type},
+        )
+        raw = _resp_json["content"][0]["text"].strip()
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
         data = json.loads(raw)
         reaction_text = (data.get("one_paragraph") or "")[:500] or None
@@ -179,6 +195,11 @@ async def generate_reaction(event_type: str, actual_value: float, expected_value
         }
     except Exception as exc:
         log.warning("macro_reaction.call_failed", event_type=event_type, error=str(exc))
+        log_llm_call(
+            service="event-intelligence", call_site=CALL_SITE_MACRO_REACTION, model=body["model"],
+            duration_ms=int((_time.monotonic() - _t0) * 1000), status="error", error=str(exc),
+            context={"event_type": event_type},
+        )
         return None
 
 

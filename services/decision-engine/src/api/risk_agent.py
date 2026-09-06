@@ -186,17 +186,38 @@ async def check_risks(
         "content-type": "application/json",
     }
 
+    # AUD-LLMUSAGE: see shared/common/llm_usage.py's module docstring for the incident.
+    import time as _time
+    from common.llm_usage import CALL_SITE_DECIDE_RISK_AGENT, log_llm_call
+    _t0 = _time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=body)
+        _duration_ms = int((_time.monotonic() - _t0) * 1000)
         if r.status_code != 200:
             log.warning("de.risk_agent.api_error status=%d body=%s", r.status_code, r.text[:200])
+            log_llm_call(
+                service="decision-engine", call_site=CALL_SITE_DECIDE_RISK_AGENT, model=model,
+                duration_ms=_duration_ms, status="http_error", http_status=r.status_code,
+                context={"symbol": symbol, "style": style},
+            )
             return None
-        raw = r.json()["content"][0]["text"].strip()
+        _resp_json = r.json()
+        log_llm_call(
+            service="decision-engine", call_site=CALL_SITE_DECIDE_RISK_AGENT, model=model,
+            usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
+            context={"symbol": symbol, "style": style},
+        )
+        raw = _resp_json["content"][0]["text"].strip()
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
         data = json.loads(raw)
     except Exception as exc:
         log.warning("de.risk_agent.call_failed symbol=%s error=%s", symbol, exc)
+        log_llm_call(
+            service="decision-engine", call_site=CALL_SITE_DECIDE_RISK_AGENT, model=model,
+            duration_ms=int((_time.monotonic() - _t0) * 1000), status="error",
+            error=str(exc), context={"symbol": symbol, "style": style},
+        )
         return None
 
     raw_risks = data.get("risks", [])

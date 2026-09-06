@@ -230,13 +230,29 @@ async def generate_earnings_impact(
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
+    # AUD-LLMUSAGE: see shared/common/llm_usage.py's module docstring for the incident.
+    import time as _time
+    from common.llm_usage import CALL_SITE_EARNINGS_IMPACT, log_llm_call
+    _t0 = _time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=body)
+        _duration_ms = int((_time.monotonic() - _t0) * 1000)
         if r.status_code != 200:
             log.warning("earnings_impact.api_error", symbol=symbol, status=r.status_code, body=r.text[:200])
+            log_llm_call(
+                service="event-intelligence", call_site=CALL_SITE_EARNINGS_IMPACT, model=body["model"],
+                duration_ms=_duration_ms, status="http_error", http_status=r.status_code,
+                context={"symbol": symbol},
+            )
             return None
-        raw = r.json()["content"][0]["text"].strip()
+        _resp_json = r.json()
+        log_llm_call(
+            service="event-intelligence", call_site=CALL_SITE_EARNINGS_IMPACT, model=body["model"],
+            usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
+            context={"symbol": symbol},
+        )
+        raw = _resp_json["content"][0]["text"].strip()
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
         data = json.loads(raw)
         impact_text = (data.get("one_paragraph") or "")[:500] or None
@@ -250,6 +266,11 @@ async def generate_earnings_impact(
         }
     except Exception as exc:
         log.warning("earnings_impact.call_failed", symbol=symbol, error=str(exc))
+        log_llm_call(
+            service="event-intelligence", call_site=CALL_SITE_EARNINGS_IMPACT, model=body["model"],
+            duration_ms=int((_time.monotonic() - _t0) * 1000), status="error", error=str(exc),
+            context={"symbol": symbol},
+        )
         return None
 
 
@@ -426,13 +447,29 @@ async def generate_earnings_forecast(symbol: str, sector: str | None, days_to_ev
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
+    # AUD-LLMUSAGE: see shared/common/llm_usage.py's module docstring for the incident.
+    import time as _time
+    from common.llm_usage import CALL_SITE_EARNINGS_FORECAST, log_llm_call
+    _t0 = _time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=body)
+        _duration_ms = int((_time.monotonic() - _t0) * 1000)
         if r.status_code != 200:
             log.warning("earnings_forecast.api_error", symbol=symbol, status=r.status_code, body=r.text[:200])
+            log_llm_call(
+                service="event-intelligence", call_site=CALL_SITE_EARNINGS_FORECAST, model=body["model"],
+                duration_ms=_duration_ms, status="http_error", http_status=r.status_code,
+                context={"symbol": symbol},
+            )
             return None
-        raw = r.json()["content"][0]["text"].strip()
+        _resp_json = r.json()
+        log_llm_call(
+            service="event-intelligence", call_site=CALL_SITE_EARNINGS_FORECAST, model=body["model"],
+            usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
+            context={"symbol": symbol},
+        )
+        raw = _resp_json["content"][0]["text"].strip()
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
         data = json.loads(raw)
         watching_for = (data.get("watching_for") or "")[:500] or None
@@ -453,6 +490,11 @@ async def generate_earnings_forecast(symbol: str, sector: str | None, days_to_ev
         return result
     except Exception as exc:
         log.warning("earnings_forecast.call_failed", symbol=symbol, error=str(exc))
+        log_llm_call(
+            service="event-intelligence", call_site=CALL_SITE_EARNINGS_FORECAST, model=body["model"],
+            duration_ms=int((_time.monotonic() - _t0) * 1000), status="error", error=str(exc),
+            context={"symbol": symbol},
+        )
         return None
 
 

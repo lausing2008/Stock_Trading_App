@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 _stubs = [
     "psycopg2",
     "common", "common.config", "common.logging", "common.ai_keys", "common.redis_client",
+    "common.llm_usage",
     "db",
 ]
 for _m in _stubs:

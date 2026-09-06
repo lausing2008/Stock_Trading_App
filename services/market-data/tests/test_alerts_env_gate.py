@@ -189,6 +189,7 @@ _ALERT_JOB_IDS = {
     "theme_forecast_weekly",
     "trade_coach_weekly",
     "signal_alert_startup",
+    "llm_usage_spike_check",
 }
 
 _NON_ALERT_JOB_IDS = {

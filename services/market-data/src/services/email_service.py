@@ -2330,6 +2330,63 @@ def send_portfolio_drawdown_alert_email(to: str, breaches: list[dict]) -> bool:
     return send_email(to, subject, body_html, body_text)
 
 
+def send_llm_usage_spike_email(to: str, current_tokens: int, baseline_tokens: float,
+                                 multiple: float, window_label: str, by_call_site: list[dict]) -> bool:
+    """AUD-LLMUSAGE: alerts when total Anthropic token usage (input+output, across all 9 real
+    call sites) in the most recent window is a large multiple of the recent per-window
+    baseline — the exact shape of incident this closes visibility on: BUG-NEWSCLASSIFY-
+    REPEATCOST's fix was committed 2026-07-27 but never reached the running news-intelligence
+    container (a `docker cp` deploy-drift, found live 2026-09-05), so its EDGAR poller
+    reclassified the same filings via Claude every 2 minutes with NO dedup for six weeks —
+    5.44M Haiku tokens burned in a single day, discovered only by chance on the external Claude
+    Console billing page days later. This email exists so the NEXT spike is caught within the
+    hour instead.
+
+    `by_call_site` breaks the total down per (service, call_site, model) so the email itself
+    answers "which service/function is doing this, on which model" without needing to open the
+    dashboard first — matching the same "the alert should be actionable on its own" convention
+    every other alert email in this file already follows.
+    """
+    subject = f"⚠️ Claude API Usage Spike — {multiple:.1f}x baseline ({window_label})"
+
+    rows_html = ""
+    rows_text = ""
+    for row in by_call_site[:10]:
+        rows_html += (
+            f'<div style="padding:8px 0;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between">'
+            f'<span style="font-size:13px"><strong>{row["service"]}</strong> · {row["call_site"]} '
+            f'<span style="color:#94a3b8">({row["model"]})</span></span>'
+            f'<span style="font-size:13px;font-weight:600">{row["tokens"]:,} tok</span>'
+            f'</div>'
+        )
+        rows_text += f"  {row['service']} / {row['call_site']} ({row['model']}): {row['tokens']:,} tokens\n"
+
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:560px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:#ef4444">⚠️ Claude API Usage Spike</h2>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">
+      {current_tokens:,} tokens in the last {window_label} — {multiple:.1f}&times; the recent
+      baseline of ~{baseline_tokens:,.0f} tokens per equivalent window. Breakdown by
+      service/function below.
+    </p>
+    <div style="margin-top:12px">{rows_html}</div>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">
+      A real spike is not always a bug (e.g. a genuinely busy news day, or a deliberate batch
+      job) — but check the /admin/llm-usage dashboard for the exact call pattern before
+      assuming it's expected. This check exists specifically because a real incident of this
+      shape ran undetected for six weeks. Not financial advice.
+    </p>
+  </div>
+</body></html>"""
+    body_text = (
+        f"Claude API Usage Spike — {multiple:.1f}x baseline ({window_label})\n\n"
+        f"{current_tokens:,} tokens vs baseline ~{baseline_tokens:,.0f}\n\n"
+        + rows_text
+        + "\nCheck /admin/llm-usage for the exact call pattern before assuming it's expected.\n"
+    )
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_conditional_order_email(to: str, order, fired_ok: bool, reason: str) -> bool:
     """T286-CONDITIONAL-ORDER: sent whenever a conditional order's trigger fires — regardless
     of whether the resulting action actually succeeded. A failure (e.g. the entry gate

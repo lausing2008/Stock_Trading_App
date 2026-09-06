@@ -135,12 +135,17 @@ def _claude_sentiment(symbol: str, titles: list[str]) -> float | None:
     except Exception:
         pass
     headlines = "\n".join(f"- {t}" for t in titles[:5])
+    # AUD-LLMUSAGE: see shared/common/llm_usage.py's module docstring for the incident.
+    import time as _time
+    from common.llm_usage import CALL_SITE_NEWS_SENTIMENT, log_llm_call
+    _model = "claude-haiku-4-5-20251001"
+    _t0 = _time.monotonic()
     try:
         with httpx.Client(timeout=10) as client:
             r = client.post(
                 "https://api.anthropic.com/v1/messages",
                 json={
-                    "model": "claude-haiku-4-5-20251001",
+                    "model": _model,
                     "max_tokens": 64,
                     "system": (
                         "You are a financial news analyst. Given stock news headlines, "
@@ -155,8 +160,15 @@ def _claude_sentiment(symbol: str, titles: list[str]) -> float | None:
                     "content-type": "application/json",
                 },
             )
+        _duration_ms = int((_time.monotonic() - _t0) * 1000)
         if r.status_code == 200:
-            text = _strip_markdown_fence(r.json()["content"][0]["text"])
+            _resp_json = r.json()
+            log_llm_call(
+                service="market-data", call_site=CALL_SITE_NEWS_SENTIMENT, model=_model,
+                usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
+                context={"symbol": symbol},
+            )
+            text = _strip_markdown_fence(_resp_json["content"][0]["text"])
             score = float(json.loads(text).get("score", 50))
             score = max(0.0, min(100.0, score))
             try:
@@ -166,8 +178,18 @@ def _claude_sentiment(symbol: str, titles: list[str]) -> float | None:
             log.info("news.claude_sentiment", symbol=symbol, score=score)
             return score
         log.warning("news.claude_sentiment_error", symbol=symbol, status=r.status_code)
+        log_llm_call(
+            service="market-data", call_site=CALL_SITE_NEWS_SENTIMENT, model=_model,
+            duration_ms=_duration_ms, status="http_error", http_status=r.status_code,
+            context={"symbol": symbol},
+        )
     except Exception as exc:
         log.warning("news.claude_sentiment_failed", symbol=symbol, error=str(exc))
+        log_llm_call(
+            service="market-data", call_site=CALL_SITE_NEWS_SENTIMENT, model=_model,
+            duration_ms=int((_time.monotonic() - _t0) * 1000), status="error",
+            error=str(exc), context={"symbol": symbol},
+        )
     return None
 
 
@@ -353,12 +375,17 @@ def _claude_market_themes(titles: list[str]) -> dict | None:
     if not api_key or not titles:
         return None
     headlines = "\n".join(f"- {t}" for t in titles[:10])
+    # AUD-LLMUSAGE: see shared/common/llm_usage.py's module docstring for the incident.
+    import time as _time
+    from common.llm_usage import CALL_SITE_MARKET_PULSE, log_llm_call
+    _model = "claude-haiku-4-5-20251001"
+    _t0 = _time.monotonic()
     try:
         with httpx.Client(timeout=10) as client:
             r = client.post(
                 "https://api.anthropic.com/v1/messages",
                 json={
-                    "model": "claude-haiku-4-5-20251001",
+                    "model": _model,
                     "max_tokens": 150,
                     "system": (
                         "You are a financial news analyst. Given market-level news headlines, "
@@ -376,16 +403,30 @@ def _claude_market_themes(titles: list[str]) -> dict | None:
                     "content-type": "application/json",
                 },
             )
+        _duration_ms = int((_time.monotonic() - _t0) * 1000)
         if r.status_code == 200:
-            text = _strip_markdown_fence(r.json()["content"][0]["text"])
+            _resp_json = r.json()
+            log_llm_call(
+                service="market-data", call_site=CALL_SITE_MARKET_PULSE, model=_model,
+                usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
+            )
+            text = _strip_markdown_fence(_resp_json["content"][0]["text"])
             parsed = json.loads(text)
             score = max(0.0, min(100.0, float(parsed.get("score", 50))))
             themes = [str(t).strip() for t in (parsed.get("themes") or []) if str(t).strip()][:3]
             log.info("news.market_pulse_claude", score=score, themes=themes)
             return {"score": score, "themes": themes}
         log.warning("news.market_pulse_claude_error", status=r.status_code)
+        log_llm_call(
+            service="market-data", call_site=CALL_SITE_MARKET_PULSE, model=_model,
+            duration_ms=_duration_ms, status="http_error", http_status=r.status_code,
+        )
     except Exception as exc:
         log.warning("news.market_pulse_claude_failed", error=str(exc))
+        log_llm_call(
+            service="market-data", call_site=CALL_SITE_MARKET_PULSE, model=_model,
+            duration_ms=int((_time.monotonic() - _t0) * 1000), status="error", error=str(exc),
+        )
     return None
 
 

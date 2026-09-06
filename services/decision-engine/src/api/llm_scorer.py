@@ -183,18 +183,42 @@ async def score_with_llm(
         "content-type": "application/json",
     }
 
+    # AUD-LLMUSAGE: see shared/common/llm_usage.py's own module docstring for why every real
+    # Anthropic call site got this logging added the same day — a 6-week undetected
+    # deploy-drift incident let a different call site (news_classify) run up 5.44M unlogged
+    # Haiku tokens in one day with zero visibility until an external billing page was checked.
+    import time as _time
+    from common.llm_usage import CALL_SITE_DECIDE_LLM_SCORER, log_llm_call
+    _t0 = _time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=12) as client:
             r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=body)
+        _duration_ms = int((_time.monotonic() - _t0) * 1000)
         if r.status_code != 200:
             log.warning("de.llm_scorer.api_error status=%d body=%s", r.status_code, r.text[:200])
+            log_llm_call(
+                service="decision-engine", call_site=CALL_SITE_DECIDE_LLM_SCORER, model=model,
+                duration_ms=_duration_ms, status="http_error", http_status=r.status_code,
+                context={"symbol": symbol, "style": style},
+            )
             return 0, None
-        raw = r.json()["content"][0]["text"].strip()
+        _resp_json = r.json()
+        log_llm_call(
+            service="decision-engine", call_site=CALL_SITE_DECIDE_LLM_SCORER, model=model,
+            usage=_resp_json.get("usage"), duration_ms=_duration_ms, status="ok",
+            context={"symbol": symbol, "style": style},
+        )
+        raw = _resp_json["content"][0]["text"].strip()
         # Strip markdown if present
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
         data = json.loads(raw)
     except Exception as exc:
         log.warning("de.llm_scorer.call_failed symbol=%s error=%s", symbol, exc)
+        log_llm_call(
+            service="decision-engine", call_site=CALL_SITE_DECIDE_LLM_SCORER, model=model,
+            duration_ms=int((_time.monotonic() - _t0) * 1000), status="error",
+            error=str(exc), context={"symbol": symbol, "style": style},
+        )
         return 0, None
 
     verdict = data.get("verdict", "HOLD").upper()
