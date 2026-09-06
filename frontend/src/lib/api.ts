@@ -2857,6 +2857,19 @@ export type UwUsageBreakdownRow = {
   calls: number;
 };
 
+// AUD-UWUSAGE-REALHEADERS: UW's own real, authoritative usage snapshot from its response
+// headers (see unusual_whales.py's _record_usage_headers()) — null when no UW call has
+// completed in the last 2 minutes. Strictly better than the estimate fields above when
+// present; the frontend must fall back to the estimate when null, not treat it as zero usage.
+export type UwRealUsageSnapshot = {
+  daily_count: number | null;
+  daily_limit: number | null;
+  minute_count: number | null;
+  minute_remaining: number | null;
+  minute_reset_ms: number | null;
+  recorded_at: string;
+};
+
 export type UwUsageReport = {
   as_of: string;
   assumed_daily_budget: number;
@@ -2864,6 +2877,7 @@ export type UwUsageReport = {
   yesterday_total_calls: number;
   rate_limit_events_48h: number;
   breakdown: UwUsageBreakdownRow[];
+  real_usage: UwRealUsageSnapshot | null;
 };
 
 // SELFIMPROVE-PROMOTION-GATES-INCOMPLETE — see docs/DESIGN_MODEL_PROMOTION_GATES_2026-07-12.md

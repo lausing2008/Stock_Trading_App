@@ -414,6 +414,42 @@ def _incr_call_counter(endpoint: str) -> None:
         pass
 
 
+# AUD-UWUSAGE-REALHEADERS: UW's own real, authoritative usage snapshot — see _get()'s own
+# comment for the header names and source. A short TTL (2 min, comfortably longer than any
+# single job's own inter-call gap) means the dashboard always reflects a genuinely RECENT real
+# call rather than serving an arbitrarily stale snapshot from hours ago if UW-backed features
+# ever go quiet for a while.
+_USAGE_HEADERS_KEY = "stockai:metric:uw_usage_headers"
+_USAGE_HEADERS_TTL_S = 120
+
+
+def _record_usage_headers(headers) -> None:
+    try:
+        daily_count = headers.get("x-uw-daily-req-count")
+        daily_limit = headers.get("x-uw-token-req-limit")
+        minute_count = headers.get("x-uw-minute-req-counter")
+        minute_remaining = headers.get("x-uw-req-per-minute-remaining")
+        minute_reset_ms = headers.get("x-uw-req-per-minute-reset")
+        if daily_count is None and daily_limit is None:
+            # Real UW responses always send these per the published guide — a response with
+            # neither present is either a non-UW response (shouldn't happen, _BASE_URL is
+            # fixed) or a UW API change; either way there's nothing real to record.
+            return
+        snapshot = {
+            "daily_count": int(daily_count) if daily_count is not None else None,
+            "daily_limit": int(daily_limit) if daily_limit is not None else None,
+            "minute_count": int(minute_count) if minute_count is not None else None,
+            "minute_remaining": int(minute_remaining) if minute_remaining is not None else None,
+            "minute_reset_ms": int(minute_reset_ms) if minute_reset_ms is not None else None,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        r = _get_redis()
+        import json as _json
+        r.setex(_USAGE_HEADERS_KEY, _USAGE_HEADERS_TTL_S, _json.dumps(snapshot))
+    except Exception:
+        pass
+
+
 def _get_redis():
     from common.redis_client import get_redis as _get_pool_redis
     return _get_pool_redis()
@@ -464,6 +500,20 @@ def _get(path: str, params: dict | None = None, *, endpoint: str | None = None) 
         # (a 429/401/403/404 still consumed one of today's ~30,000 allotted requests) — placed
         # right after the real network call completes, before any status-code branch below.
         _incr_call_counter(endpoint or path)
+        # AUD-UWUSAGE-REALHEADERS (2026-09-06): UW's own response headers carry the REAL,
+        # authoritative usage/limit numbers — confirmed via UW's own published guide
+        # (unusualwhales.substack.com/i/188524666/how-to-check-your-api-usage): every response
+        # (any status code) includes x-uw-daily-req-count / x-uw-token-req-limit /
+        # x-uw-minute-req-counter / x-uw-req-per-minute-remaining / x-uw-req-per-minute-reset.
+        # This is strictly better than this module's own Redis call-volume counter (which is
+        # this app's OWN estimate of usage, inferred from the requests it happens to remember
+        # making) and than _UW_ASSUMED_DAILY_BUDGET (a guess of 30,000/day from an incident
+        # writeup, not a confirmed real limit) — UW itself reports both the real daily count
+        # AND the real limit on every single call, no extra request needed. Snapshot the
+        # latest values into Redis so the dashboard can show real headroom, not an estimate.
+        # getattr, not r.headers directly: a real httpx.Response always has .headers, but this
+        # keeps the call defensive against anything else _get() might ever be handed.
+        _record_usage_headers(getattr(r, "headers", None) or {})
         if r.status_code == 429:
             log.warning("unusual_whales.rate_limit", path=path)
             _incr_rate_limit_counter()

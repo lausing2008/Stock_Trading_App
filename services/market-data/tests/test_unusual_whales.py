@@ -2068,6 +2068,117 @@ class TestGetFunctionRealHttpBehavior:
             self.real_uw._get("/api/seasonality/market")
         mock_incr.assert_called_once_with("/api/seasonality/market")
 
+    def test_a_real_response_records_uws_own_usage_headers(self):
+        """AUD-UWUSAGE-REALHEADERS: every real response must have its usage headers captured,
+        not just successful ones with a data body — UW sends these on every response regardless
+        of status code per its own published guide."""
+        class _FakeResp:
+            status_code = 200
+            headers = {
+                "x-uw-daily-req-count": "42",
+                "x-uw-token-req-limit": "15000",
+                "x-uw-minute-req-counter": "3",
+                "x-uw-req-per-minute-remaining": "117",
+                "x-uw-req-per-minute-reset": "45231",
+            }
+            def json(self):
+                return {"data": {}}
+            def raise_for_status(self):
+                pass
+        class _FakeClient:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def get(self, *a, **kw):
+                return _FakeResp()
+
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value="real-token"), \
+             patch.object(self.real_uw.httpx, "Client", return_value=_FakeClient()), \
+             patch.object(self.real_uw, "_record_usage_headers") as mock_record:
+            self.real_uw._get("/api/seasonality/market")
+        mock_record.assert_called_once_with(_FakeResp.headers)
+
+    def test_a_response_with_no_headers_attribute_does_not_crash_get(self):
+        """Defensive against any fake/incomplete response object — a real httpx.Response
+        always has .headers, but _get() itself must never crash even if it didn't."""
+        class _FakeResp:
+            status_code = 200
+            def json(self):
+                return {"data": {}}
+            def raise_for_status(self):
+                pass
+        class _FakeClient:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def get(self, *a, **kw):
+                return _FakeResp()
+
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value="real-token"), \
+             patch.object(self.real_uw.httpx, "Client", return_value=_FakeClient()):
+            result = self.real_uw._get("/api/seasonality/market")  # must not raise
+        assert result == {}
+
+    def test_record_usage_headers_stores_a_real_snapshot_and_fails_open(self):
+        """_record_usage_headers() itself: must write a JSON snapshot with all 5 real fields
+        parsed as ints, with a TTL, and never raise even on a Redis failure."""
+        import json as _json
+
+        class _FakeRedis:
+            def __init__(self):
+                self.store = {}
+            def setex(self, key, ttl, value):
+                self.store[key] = (ttl, value)
+
+        fake_redis = _FakeRedis()
+        headers = {
+            "x-uw-daily-req-count": "42",
+            "x-uw-token-req-limit": "15000",
+            "x-uw-minute-req-counter": "3",
+            "x-uw-req-per-minute-remaining": "117",
+            "x-uw-req-per-minute-reset": "45231",
+        }
+        with patch.object(self.real_uw, "_get_redis", return_value=fake_redis):
+            self.real_uw._record_usage_headers(headers)
+
+        assert self.real_uw._USAGE_HEADERS_KEY in fake_redis.store
+        ttl, raw = fake_redis.store[self.real_uw._USAGE_HEADERS_KEY]
+        assert ttl == self.real_uw._USAGE_HEADERS_TTL_S
+        snapshot = _json.loads(raw)
+        assert snapshot["daily_count"] == 42
+        assert snapshot["daily_limit"] == 15000
+        assert snapshot["minute_count"] == 3
+        assert snapshot["minute_remaining"] == 117
+        assert snapshot["minute_reset_ms"] == 45231
+        assert "recorded_at" in snapshot
+
+    def test_record_usage_headers_skips_when_neither_daily_field_present(self):
+        """A response missing BOTH x-uw-daily-req-count and x-uw-token-req-limit is not a real
+        UW usage response — must not write a bogus all-null snapshot that would make the
+        dashboard render "0 / 0" as if that were real data."""
+        class _FakeRedis:
+            def __init__(self):
+                self.store = {}
+            def setex(self, key, ttl, value):
+                self.store[key] = (ttl, value)
+
+        fake_redis = _FakeRedis()
+        with patch.object(self.real_uw, "_get_redis", return_value=fake_redis):
+            self.real_uw._record_usage_headers({})
+        assert fake_redis.store == {}
+
+    def test_record_usage_headers_fails_open_on_a_redis_exception(self):
+        class _BrokenRedis:
+            def setex(self, key, ttl, value):
+                raise ConnectionError("redis unavailable")
+
+        with patch.object(self.real_uw, "_get_redis", return_value=_BrokenRedis()):
+            self.real_uw._record_usage_headers({
+                "x-uw-daily-req-count": "1", "x-uw-token-req-limit": "15000",
+            })  # must not raise
+
     def test_incr_call_counter_uses_the_real_redis_client_and_fails_open(self):
         """_incr_call_counter() itself: must INCR a key scoped to both the endpoint AND the
         calendar day (UW's budget is a daily ceiling), set a TTL only on first write, and never

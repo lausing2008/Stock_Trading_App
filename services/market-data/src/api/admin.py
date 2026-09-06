@@ -1560,13 +1560,32 @@ def llm_usage(hours: int = Query(24, ge=1, le=720), _: User = Depends(get_admin_
 def uw_usage(_: User = Depends(get_admin_user)):
     """AUD-UWUSAGE dashboard data: Unusual Whales API call volume against its rate-limited
     (not per-token-billed) budget — a structurally different shape from /admin/llm-usage,
-    since UW has no token/cost concept, only a daily request ceiling (the trial tier's
-    documented ~30,000 req/day, see unusual_whales.py's own module docstring). Reads from
-    Redis rolling counters (unusual_whales.py's _incr_call_counter/_incr_rate_limit_counter),
-    not a DB table — call volume here is a per-endpoint daily headroom gauge, not a
-    per-call audit log, so a lightweight counter is enough and no new table was needed.
+    since UW has no token/cost concept, only a daily request ceiling. Reads from Redis rolling
+    counters (unusual_whales.py's _incr_call_counter/_incr_rate_limit_counter), not a DB table
+    — call volume here is a per-endpoint daily headroom gauge, not a per-call audit log, so a
+    lightweight counter is enough and no new table was needed.
+
+    AUD-UWUSAGE-REALHEADERS (2026-09-06): `real_usage` is UW's OWN authoritative usage snapshot
+    (unusualwhales.substack.com/i/188524666/how-to-check-your-api-usage — every real response
+    includes x-uw-daily-req-count/x-uw-token-req-limit/x-uw-minute-req-counter/x-uw-req-per-
+    minute-remaining/x-uw-req-per-minute-reset headers), captured by _record_usage_headers() on
+    every call and snapshotted in Redis with a 2-min TTL. This is the real daily count AND the
+    real daily limit reported by UW itself — strictly better than `assumed_daily_budget` (a
+    guess from an old incident writeup) and than this app's own `today_total_calls` counter
+    (this app's OWN estimate, inferred only from requests it remembers making). Null when no
+    UW call has completed in the last 2 minutes — the frontend must fall back to the estimate
+    fields in that case, not assume UW usage is zero.
     """
     r = _get_redis()
+
+    real_usage = None
+    try:
+        raw = r.get("stockai:metric:uw_usage_headers")
+        if raw:
+            real_usage = json.loads(raw)
+    except Exception:
+        pass
+
     today = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d")
     yesterday = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)).strftime("%Y%m%d")
 
@@ -1606,6 +1625,7 @@ def uw_usage(_: User = Depends(get_admin_user)):
         "yesterday_total_calls": sum(yesterday_by_endpoint.values()),
         "rate_limit_events_48h": rate_limit_48h,
         "breakdown": breakdown,
+        "real_usage": real_usage,
     }
 
 

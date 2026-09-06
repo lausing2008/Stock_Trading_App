@@ -927,25 +927,40 @@ export default function AdminHealthPage() {
         ) : (
           <>
             {(() => {
-              const pct = Math.min(100, (uwUsageData.today_total_calls / uwUsageData.assumed_daily_budget) * 100);
+              // AUD-UWUSAGE-REALHEADERS: prefer UW's own real, authoritative count/limit
+              // (from its response headers) over this app's own estimate whenever a recent
+              // snapshot exists — real_usage is null only when no UW call has completed in
+              // the last 2 minutes, not when usage is genuinely zero.
+              const real = uwUsageData.real_usage;
+              const usingReal = real != null && real.daily_count != null && real.daily_limit != null;
+              const dailyCount = usingReal ? real!.daily_count! : uwUsageData.today_total_calls;
+              const dailyLimit = usingReal ? real!.daily_limit! : uwUsageData.assumed_daily_budget;
+              const pct = Math.min(100, (dailyCount / dailyLimit) * 100);
               const barColor = pct > 90 ? '#f87171' : pct > 70 ? '#fbbf24' : '#4ade80';
               return (
                 <div style={{ padding: '14px 16px', borderRadius: '10px', background: '#0d1424', border: '1px solid #1e293b', marginBottom: '14px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '8px' }}>
-                    <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', letterSpacing: '0.04em' }}>TODAY&apos;S REQUEST BUDGET (UTC)</div>
+                    <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', letterSpacing: '0.04em' }}>
+                      TODAY&apos;S REQUEST BUDGET (UW-REPORTED) {usingReal && <span style={{ color: '#4ade80' }}>● live</span>}
+                    </div>
                     <div style={{ fontSize: '12px', fontWeight: 700, color: barColor }}>
-                      {uwUsageData.today_total_calls.toLocaleString()} / ~{uwUsageData.assumed_daily_budget.toLocaleString()}
+                      {dailyCount.toLocaleString()} / {usingReal ? '' : '~'}{dailyLimit.toLocaleString()}
                     </div>
                   </div>
                   <div style={{ height: '8px', borderRadius: '4px', background: '#080f1e', overflow: 'hidden' }}>
                     <div style={{ height: '100%', width: `${pct}%`, background: barColor, borderRadius: '4px', transition: 'width 0.3s' }} />
                   </div>
-                  <div style={{ display: 'flex', gap: '16px', marginTop: '10px', fontSize: '11px', color: '#64748b' }}>
-                    <span>Yesterday: <strong style={{ color: '#94a3b8' }}>{uwUsageData.yesterday_total_calls.toLocaleString()}</strong></span>
+                  <div style={{ display: 'flex', gap: '16px', marginTop: '10px', fontSize: '11px', color: '#64748b', flexWrap: 'wrap' }}>
+                    {usingReal && real!.minute_remaining != null && (
+                      <span>This minute remaining: <strong style={{ color: real!.minute_remaining! < 10 ? '#f87171' : '#94a3b8' }}>{real!.minute_remaining!.toLocaleString()}</strong></span>
+                    )}
+                    <span>Yesterday (this app&apos;s count): <strong style={{ color: '#94a3b8' }}>{uwUsageData.yesterday_total_calls.toLocaleString()}</strong></span>
                     <span>429s (48h): <strong style={{ color: uwUsageData.rate_limit_events_48h > 0 ? '#f87171' : '#94a3b8' }}>{uwUsageData.rate_limit_events_48h.toLocaleString()}</strong></span>
                   </div>
                   <div style={{ fontSize: '10px', color: '#334155', marginTop: '6px' }}>
-                    Budget figure is an estimate from the trial-tier docs, not a live-confirmed account limit — treat the bar as directional headroom, not an exact ceiling.
+                    {usingReal
+                      ? `Real count + limit from Unusual Whales' own response headers (as of ${relTime(real!.recorded_at)}) — not an estimate.`
+                      : "No UW call completed in the last 2 minutes to read real headers from — showing this app's own estimate against a guessed budget; treat the bar as directional, not an exact ceiling."}
                   </div>
                 </div>
               );
