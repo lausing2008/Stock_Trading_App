@@ -1705,3 +1705,49 @@ def _to_float(v) -> float | None:
         return f if f == f else None  # NaN self-inequality guard, same as _consensus_num()
     except (TypeError, ValueError):
         return None
+
+
+# ── OPTHIST-1: historical option chains ──────────────────────────────────────────────────
+
+def get_historical_option_chain(symbol: str, as_of: str) -> list[dict]:
+    """OPTHIST-1: the full option chain for `symbol` as it existed on `as_of` (YYYY-MM-DD).
+
+    This is the endpoint that makes a historical options backtest possible at all — before it,
+    no historical chain existed anywhere in this platform (see OptionChainHistory's docstring).
+
+    Returns UW's raw rows (dicts) so the persistence layer owns all parsing/coercion in one
+    place; returns an EMPTY LIST on any failure or unavailability, never None and never raising,
+    matching get_greeks()'s own list-returning contract.
+
+    Deliberately NOT Redis-cached, unlike the live-data helpers above: a historical chain for a
+    settled past date is immutable, so a short TTL buys nothing, and each response is thousands
+    of rows — caching them would evict genuinely hot live keys for no benefit. The DB table IS
+    the cache here.
+
+    `greeks=true` asks UW to enrich each row with delta/gamma/theta/vega/rho + implied
+    volatility. Measured on a real response: those arrive for exactly the contracts that traded
+    that day (47.6% of rows, correlating 1:1 with volume>0), so expect them to be sparse — that
+    is UW's behaviour, not a fetch failure.
+
+    Lookback is a ROLLING window and tier-dependent — a date beyond it returns HTTP 403, which
+    surfaces as UnusualWhalesAuthError and is caught here like any other failure. Verified
+    2026-09-07 on API BASIC: real chains back to at least 2024-09-09.
+    """
+    if not is_available():
+        return []
+    sym = symbol.upper()
+    try:
+        raw = _get(
+            f"/api/stock/{sym}/option-chains",
+            params={"date": as_of, "greeks": "true"},
+            endpoint="/api/stock/{ticker}/option-chains",
+        )
+    except Exception as exc:  # incl. UnusualWhalesAuthError for out-of-window dates
+        log.warning("unusual_whales.hist_chain_failed", symbol=sym, as_of=as_of, error=str(exc))
+        return []
+    if raw is None:
+        return []
+    rows = raw if isinstance(raw, list) else raw.get("data", [])
+    if not isinstance(rows, list):
+        return []
+    return [r for r in rows if isinstance(r, dict)]

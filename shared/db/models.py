@@ -1850,6 +1850,73 @@ class GexSnapshot(Base):
     computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class OptionChainHistory(Base):
+    """OPTHIST-1: per-contract historical option chain, captured from Unusual Whales'
+    /api/stock/{ticker}/option-chains?date=&greeks=true.
+
+    WHY THIS EXISTS — see docs/2026-09-06/SCOPE_OPTIONS_SIMULATOR.md. Before this, NO historical
+    options data existed anywhere in this platform: of the 4 options-related tables, none stored
+    a chain (options_flow_snapshots holds EOD aggregates, gex_snapshots holds 4 scalars/day, and
+    options_game_plan_snapshots holds exactly 2 contracts/day). That made any historical options
+    backtest impossible, and it is the gap this closes.
+
+    WHY IT IS TIME-SENSITIVE, not merely useful: UW's history is a ROLLING window, not an
+    archive. On the previous trial tier it reached back ~4 months; on API BASIC it reaches ~2
+    years (verified live 2026-09-07: real chains returned for 2024-09-09; dates beyond the
+    boundary return HTTP 403). Either way the window MOVES — a day not captured eventually falls
+    off the back permanently. Persisting locally is what turns a rolling window into an archive.
+
+    SHAPE, measured against a real response (AAPL 2026-06-02, 3,598 contracts, 26 expiries):
+      - open_interest / volume / nbbo_bid / nbbo_ask: 100% populated
+      - delta/gamma/theta/vega/rho/implied_volatility: 47.6% populated, and the correlation with
+        volume is EXACT — 1,714 rows have both greeks and volume>0; ZERO have greeks without
+        volume, ZERO have volume without greeks. UW computes greeks only for contracts that
+        traded that day.
+      - Filtering to volume>0 would therefore lose no greeks at all, but WOULD drop 1,064
+        OI-bearing rows holding 8.9% of total open interest. Since GEX and max-pain
+        reconstruction need the full OI distribution (traded or not), every row is stored and
+        the greeks columns are simply sparse. That is the deliberate trade: ~2x the rows for a
+        complete OI picture.
+
+    Nullable throughout, and every numeric read must use an explicit `is not None` check rather
+    than truthiness — a genuine 0 bid, 0 volume, or 0 delta is real data and must stay
+    distinguishable from absent. This codebase has fixed that falsy-zero class repeatedly.
+    """
+    __tablename__ = "option_chain_history"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    # The market date this chain snapshot represents (UW's `date` query param).
+    as_of: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    # UW's OCC-style contract id, e.g. "AAPL260918P00095000" — the natural per-contract key and
+    # the join key back to /api/option-contract/{id}/historic for per-contract time series.
+    option_symbol: Mapped[str] = mapped_column(String(40), nullable=False)
+    expiry: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    strike: Mapped[float | None] = mapped_column(Float, nullable=True)
+    option_type: Mapped[str | None] = mapped_column(String(4), nullable=True)  # "call" | "put"
+
+    # Always populated (100% in the measured sample)
+    open_interest: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    nbbo_bid: Mapped[float | None] = mapped_column(Float, nullable=True)
+    nbbo_ask: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Sparse — present only for contracts that traded that day (see the class docstring).
+    implied_volatility: Mapped[float | None] = mapped_column(Float, nullable=True)
+    delta: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gamma: Mapped[float | None] = mapped_column(Float, nullable=True)
+    theta: Mapped[float | None] = mapped_column(Float, nullable=True)
+    vega: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rho: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "as_of", "option_symbol", name="uq_optchain_sym_date_contract"),
+        Index("ix_optchain_sym_asof", "symbol", "as_of"),
+    )
+
+
 class OptionsGamePlanSnapshot(Base):
     """AUD-OPTIONS4-GAMEPLANBATCH: end-of-day Options Game Plan snapshot, mirroring
     OptionsFlowSnapshot's/GexSnapshot's own established pattern (bounded symbol set, ON

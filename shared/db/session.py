@@ -438,6 +438,45 @@ def _run_migrations() -> None:  # noqa: C901
             CREATE INDEX IF NOT EXISTS ix_finstmt_sym
             ON financial_statements (symbol)
         """))
+        # OPTHIST-1: per-contract historical option chains from Unusual Whales. See
+        # OptionChainHistory's own docstring (shared/db/models.py) for why every row is stored
+        # rather than filtering to traded contracts (greeks are sparse but the full OI
+        # distribution is needed for GEX/max-pain reconstruction), and why capture is
+        # time-sensitive (UW's history is a ROLLING window, not an archive).
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS option_chain_history (
+                id BIGSERIAL PRIMARY KEY,
+                symbol VARCHAR(20) NOT NULL,
+                as_of DATE NOT NULL,
+                option_symbol VARCHAR(40) NOT NULL,
+                expiry DATE,
+                strike FLOAT,
+                option_type VARCHAR(4),
+                open_interest INTEGER,
+                volume INTEGER,
+                nbbo_bid FLOAT,
+                nbbo_ask FLOAT,
+                implied_volatility FLOAT,
+                delta FLOAT,
+                gamma FLOAT,
+                theta FLOAT,
+                vega FLOAT,
+                rho FLOAT,
+                fetched_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_optchain_sym_date_contract
+            ON option_chain_history (symbol, as_of, option_symbol)
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_optchain_sym_asof
+            ON option_chain_history (symbol, as_of)
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_optchain_expiry
+            ON option_chain_history (expiry)
+        """))
         # T234-ML-FUND-BROADCAST-LEAKAGE: extend fundamentals_snapshot with the columns
         # builder.py broadcasts today's value for across ALL historical training rows
         # (lookahead bias). Backfilling these lets a future point-in-time merge_asof join

@@ -12520,3 +12520,170 @@ def start_scheduler() -> None:
 
     _scheduler.start()
     log.info("scheduler.started", jobs=20)
+
+
+# ── OPTHIST-1: capture historical option chains ──────────────────────────────────────────
+#
+# See docs/2026-09-06/SCOPE_OPTIONS_SIMULATOR.md and OptionChainHistory's own docstring.
+#
+# TIME-SENSITIVE BY NATURE: Unusual Whales' history is a ROLLING window, not an archive
+# (~2 years on API BASIC, verified 2026-09-07). A day not captured eventually falls off the
+# back permanently. Persisting locally is what converts that rolling window into a real archive.
+#
+# COST SHAPE, measured: ~3,600 contracts per symbol per trading day for a liquid US name. So
+# 10 symbols x 90 trading days is ~900 API calls (trivial against the 120,000/day BASIC budget)
+# but ~3.2M rows. The binding constraint is DB volume, NOT the request budget — which is why
+# this takes an explicit symbol list and date range rather than sweeping the whole universe.
+_OPTHIST_THROTTLE_S = 0.30  # ~3 req/s, matching this file's other UW/yfinance batch loops
+
+
+def capture_option_chain_history(
+    symbols: list[str],
+    start: "date",
+    end: "date",
+    skip_existing: bool = True,
+) -> dict:
+    """OPTHIST-1: persist UW historical option chains for `symbols` over [start, end].
+
+    Idempotent (ON CONFLICT DO UPDATE on symbol/as_of/option_symbol), so a re-run refreshes
+    rather than duplicating and a partial run can simply be resumed.
+
+    `skip_existing=True` skips any (symbol, date) already captured — this is what makes the job
+    resumable and cheap to re-run as the window advances, rather than re-fetching thousands of
+    settled rows for no reason.
+
+    Weekends/holidays are not pre-filtered: UW returns an empty list for a non-trading day, and
+    treating "no rows" as a normal outcome is simpler and more robust than maintaining a
+    market-calendar per exchange here.
+    """
+    from datetime import timedelta as _td
+    from db import SessionLocal as _SL
+    from sqlalchemy import text as _text
+    from . import unusual_whales as _uw
+
+    _t0 = time.monotonic()
+    days_done = days_skipped = days_empty = 0
+    rows_written = 0
+    errors = 0
+
+    for sym in [s.upper() for s in symbols]:
+        cur = start
+        while cur <= end:
+            as_of = cur.isoformat()
+            cur = cur + _td(days=1)
+            try:
+                with _SL() as sess:
+                    if skip_existing:
+                        existing = sess.execute(_text(
+                            "SELECT 1 FROM option_chain_history WHERE symbol=:s AND as_of=:d LIMIT 1"
+                        ), {"s": sym, "d": as_of}).first()
+                        if existing:
+                            days_skipped += 1
+                            continue
+
+                rows = _uw.get_historical_option_chain(sym, as_of)
+                if not rows:
+                    days_empty += 1
+                    time.sleep(_OPTHIST_THROTTLE_S)
+                    continue
+
+                payload = []
+                for r in rows:
+                    osym = r.get("option_symbol")
+                    if not osym:
+                        continue  # no contract key -> no way to dedupe; skip rather than guess
+                    payload.append({
+                        "symbol": sym,
+                        "as_of": as_of,
+                        "option_symbol": osym,
+                        "expiry": r.get("expires") or None,
+                        # UW returns several numerics as STRINGS ("95", "0.21") — coerce here,
+                        # in the one place that owns parsing, and let a bad value become NULL
+                        # rather than poisoning the row or the whole batch.
+                        "strike": _opthist_f(r.get("strike")),
+                        "option_type": (r.get("option_type") or None),
+                        "open_interest": _opthist_i(r.get("open_interest")),
+                        "volume": _opthist_i(r.get("volume")),
+                        "nbbo_bid": _opthist_f(r.get("nbbo_bid")),
+                        "nbbo_ask": _opthist_f(r.get("nbbo_ask")),
+                        "implied_volatility": _opthist_f(r.get("implied_volatility")),
+                        "delta": _opthist_f(r.get("delta")),
+                        "gamma": _opthist_f(r.get("gamma")),
+                        "theta": _opthist_f(r.get("theta")),
+                        "vega": _opthist_f(r.get("vega")),
+                        "rho": _opthist_f(r.get("rho")),
+                    })
+
+                if payload:
+                    with _SL() as sess:
+                        sess.execute(_text("""
+                            INSERT INTO option_chain_history
+                                (symbol, as_of, option_symbol, expiry, strike, option_type,
+                                 open_interest, volume, nbbo_bid, nbbo_ask,
+                                 implied_volatility, delta, gamma, theta, vega, rho)
+                            VALUES
+                                (:symbol, :as_of, :option_symbol, :expiry, :strike, :option_type,
+                                 :open_interest, :volume, :nbbo_bid, :nbbo_ask,
+                                 :implied_volatility, :delta, :gamma, :theta, :vega, :rho)
+                            ON CONFLICT (symbol, as_of, option_symbol) DO UPDATE SET
+                                expiry = EXCLUDED.expiry,
+                                strike = EXCLUDED.strike,
+                                option_type = EXCLUDED.option_type,
+                                open_interest = EXCLUDED.open_interest,
+                                volume = EXCLUDED.volume,
+                                nbbo_bid = EXCLUDED.nbbo_bid,
+                                nbbo_ask = EXCLUDED.nbbo_ask,
+                                implied_volatility = EXCLUDED.implied_volatility,
+                                delta = EXCLUDED.delta,
+                                gamma = EXCLUDED.gamma,
+                                theta = EXCLUDED.theta,
+                                vega = EXCLUDED.vega,
+                                rho = EXCLUDED.rho,
+                                fetched_at = NOW()
+                        """), payload)
+                        sess.commit()
+                    rows_written += len(payload)
+                    days_done += 1
+                time.sleep(_OPTHIST_THROTTLE_S)
+            except Exception as exc:
+                errors += 1
+                log.warning("scheduler.opthist.error", symbol=sym, as_of=as_of, error=str(exc))
+                time.sleep(_OPTHIST_THROTTLE_S)
+
+    elapsed = time.monotonic() - _t0
+    log.info("scheduler.opthist_done", days_done=days_done, days_skipped=days_skipped,
+             days_empty=days_empty, rows=rows_written, errors=errors, elapsed_s=round(elapsed))
+    _record_job_status("option_chain_history_capture",
+                       "ok" if errors == 0 else "partial", elapsed)
+    return {
+        "symbols": len(symbols),
+        "days_captured": days_done,
+        "days_skipped_existing": days_skipped,
+        "days_empty_non_trading": days_empty,
+        "rows_written": rows_written,
+        "errors": errors,
+        "elapsed_s": round(elapsed, 1),
+    }
+
+
+def _opthist_f(v) -> float | None:
+    """Coerce a UW field to float, or None. UW returns several numerics as STRINGS (strike
+    "95", nbbo_ask "0.21") and greeks as real nulls for untraded contracts. A genuine 0.0 must
+    survive as 0.0 — never collapse it to None via a truthiness check."""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f  # NaN -> None
+
+
+def _opthist_i(v) -> int | None:
+    """Integer counterpart of _opthist_f. A genuine 0 open interest / 0 volume is real data."""
+    if v is None:
+        return None
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None

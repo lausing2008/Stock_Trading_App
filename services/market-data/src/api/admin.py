@@ -1638,6 +1638,50 @@ def uw_usage(_: User = Depends(get_admin_user)):
     }
 
 
+@router.post("/capture-option-chain-history")
+def capture_option_chain_history_endpoint(
+    symbols: str,
+    start: str,
+    end: str,
+    skip_existing: bool = True,
+    _: User = Depends(get_admin_user),
+):
+    """OPTHIST-1: persist Unusual Whales historical option chains into option_chain_history.
+
+    This is the prerequisite for any historical options backtest — no historical chain data
+    existed anywhere on this platform before it (see OptionChainHistory's docstring).
+
+    TIME-SENSITIVE: UW's history is a ROLLING window (~2 years on API BASIC), not an archive, so
+    a day not captured eventually falls off the back permanently.
+
+    RUNS SYNCHRONOUSLY and is throttled to ~3 req/s. Cost shape measured at ~3,600 contracts per
+    symbol per trading day, so the binding constraint is DB VOLUME, not the 120k/day request
+    budget — 10 symbols x 90 days is ~900 calls but ~3.2M rows. `symbols` is therefore required
+    and explicit; there is deliberately no "sweep the whole universe" mode.
+
+    Idempotent, and `skip_existing=true` (default) skips already-captured (symbol, date) pairs —
+    so a long backfill can be run in slices and resumed without re-fetching settled data.
+
+    `symbols`: comma-separated, e.g. "AAPL,QQQ,NVDA".
+    `start` / `end`: YYYY-MM-DD, inclusive.
+    """
+    from datetime import date as _date
+    from ..services.scheduler import capture_option_chain_history
+
+    syms = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not syms:
+        raise HTTPException(400, "symbols is required (comma-separated, e.g. AAPL,QQQ)")
+    try:
+        d_start = _date.fromisoformat(start)
+        d_end = _date.fromisoformat(end)
+    except ValueError:
+        raise HTTPException(400, "start and end must be YYYY-MM-DD")
+    if d_end < d_start:
+        raise HTTPException(400, "end must be on or after start")
+
+    return capture_option_chain_history(syms, d_start, d_end, skip_existing=skip_existing)
+
+
 @router.post("/backfill-financial-statements")
 def backfill_financial_statements_endpoint(
     symbols: str | None = None,
