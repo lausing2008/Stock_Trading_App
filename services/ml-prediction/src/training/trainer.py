@@ -365,6 +365,13 @@ def _blend_weights(y: np.ndarray, recency_w: np.ndarray) -> np.ndarray:
     return combined / combined.mean()
 
 
+# AUD-ML3-OUTCOMEDEDUP: the main training set must not be shrunk below train_model()'s own
+# `len(X) < 200` viability floor by outcome de-duplication. If dropping the overlapping rows
+# from X would breach this, we keep X intact and fall back to the old (safe but inert) behaviour
+# of dropping from X_out instead. Set to the same 200 the function already refuses to train on.
+_MIN_ROWS_AFTER_OUTCOME_DEDUP = 200
+
+
 def _compute_oos_suppression(
     cv_auc_mean: float | None,
     recall: float,
@@ -610,9 +617,47 @@ def train_model(
                 # deduplicated. Map X's surviving row positions to their real dates via df["ts"]
                 # (same technique _load_outcome_features already uses) before intersecting.
                 X_dates = pd.DatetimeIndex(pd.to_datetime(df["ts"]).dt.normalize().iloc[X.index].values)
-                overlap_idx = X_out.index[X_out.index.isin(X_dates)]
-                X_out = X_out.drop(index=overlap_idx, errors="ignore")
-                y_out = y_out.drop(index=overlap_idx, errors="ignore")
+                # AUD-ML3-OUTCOMEDEDUP: dedup on the correct SIDE.
+                #
+                # T232-ML3 correctly identified the double-counting (a date present in both X
+                # and X_out contributes twice — once with a synthetic forward-return label,
+                # once with a real live-trade label) but resolved it by dropping from X_out.
+                # That is backwards, and it made the whole Tier 87 feature inert: closed
+                # signal_outcomes are BY CONSTRUCTION >=~2 weeks old, so their dates are almost
+                # always inside the main training window. Measured before this fix: 490 of 548
+                # artifacts had n_outcome_rows == 0, and the 58 nonzero ones had a MEDIAN OF 6
+                # against 37-43 rows actually loaded — only the sliver dated after X's
+                # label-horizon truncation ever survived.
+                #
+                # The REAL outcome label is the better of the two: it is what actually happened
+                # to a live signal, versus a synthetic threshold on a forward return. So on a
+                # collision, keep the outcome row and drop the synthetic one from X.
+                #
+                # Failing safe: if this would remove so much of X that training is no longer
+                # viable, keep X intact and fall back to the old behaviour (drop from X_out)
+                # rather than corrupting the main training set.
+                _overlap_dates = X_dates.isin(X_out.index)
+                _n_overlap = int(_overlap_dates.sum())
+                if _n_overlap and (len(X) - _n_overlap) >= _MIN_ROWS_AFTER_OUTCOME_DEDUP:
+                    # Positional mask, then reset to a contiguous RangeIndex. Everything
+                    # downstream (TimeSeriesSplit, the 70/80/90 split points, X.iloc[...])
+                    # treats X positionally, so leaving a gappy index here would silently
+                    # misalign those splits.
+                    _keep = ~_overlap_dates
+                    X = X[_keep].reset_index(drop=True)
+                    y_dir = y_dir[_keep].reset_index(drop=True)
+                    y_ret = y_ret[_keep].reset_index(drop=True)
+                    log.info("train.outcome_dedup_from_main", symbol=symbol,
+                             dropped_from_X=_n_overlap, remaining_X=len(X))
+                else:
+                    # Not enough main rows would survive — preserve the old, safe behaviour.
+                    overlap_idx = X_out.index[X_out.index.isin(X_dates)]
+                    X_out = X_out.drop(index=overlap_idx, errors="ignore")
+                    y_out = y_out.drop(index=overlap_idx, errors="ignore")
+                    if _n_overlap:
+                        log.warning("train.outcome_dedup_fallback", symbol=symbol,
+                                    overlap=_n_overlap, x_rows=len(X),
+                                    note="dropping from X would leave too few rows; dropped from X_out instead")
                 if len(X_out) >= 5:
                     _X_out_for_fit = X_out
                     _y_out_for_fit = y_out
@@ -1627,4 +1672,97 @@ def validate_walkforward(
             "precision_stability": round(float(np.std(precs)), 3) if len(precs) > 1 else None,
         },
         "windows": windows,
+    }
+
+
+def resweep_oos_suppression(dry_run: bool = True) -> dict:
+    """AUD-ML3-STALESUPPRESSION: re-evaluate `oos_suppressed` on EXISTING artifacts.
+
+    `oos_suppressed` is computed exactly once, inside train_model(), and baked into the .joblib
+    bundle. Every other reference in the codebase is a read — there was NO re-evaluation path.
+    A model therefore keeps whatever flag it was born with until its own retrain overwrites the
+    file, which normally self-heals nightly.
+
+    It did not self-heal, because of AUD-ML3-STYLESTARVATION: the nightly job never reached
+    LONG/GROWTH at all, and SWING was largely served by legacy artifacts. Measured before these
+    fixes: 11 artifacts had test_auc of EXACTLY 0.0 or 1.0 with oos_suppressed=False, and
+    re-running the current logic against their own stored metrics said all 11 should suppress
+    (10 via gap>0.10, 1 via dead recall). test_auc == 0.0 means a PERFECTLY INVERTED ranking —
+    every positive scored below every negative — so those models were contributing actively
+    harmful signal at live ML fusion weight. 45 artifacts were >30 days old AND unsuppressed,
+    the oldest 82 days.
+
+    This recomputes the flag from each bundle's OWN ALREADY-STORED metrics using the current
+    _compute_oos_suppression(). It does NOT retrain and does not recompute any metric — it only
+    re-applies today's decision rule to yesterday's numbers, which is exactly the gap. That
+    makes it cheap (seconds, no model fitting) and safe to run on a schedule.
+
+    Deliberately dry_run=True by default: this rewrites production model artifacts, so the
+    caller must opt in explicitly.
+    """
+    import glob
+    import joblib
+
+    base = Path(_settings.model_dir)
+    changed, unchanged, failed = [], 0, []
+
+    for artifact in sorted(glob.glob(str(base / "*" / "*.joblib"))):
+        try:
+            bundle = joblib.load(artifact)
+        except Exception as exc:
+            failed.append({"artifact": os.path.basename(artifact), "error": str(exc)[:120]})
+            continue
+
+        metrics = bundle.get("metrics") or {}
+        stored = bool(bundle.get("oos_suppressed", False))
+        should, reason = _compute_oos_suppression(
+            metrics.get("cv_auc_mean"),
+            # A missing recall/precision must NOT be read as 0.0 — that would trip the
+            # dead-recall condition and suppress a model we simply have no metric for.
+            # -1.0 is outside the [0,1] range the condition tests, so it cannot match.
+            metrics.get("recall", -1.0),
+            metrics.get("precision", -1.0),
+            metrics.get("overfit_gap"),
+        )
+        if should == stored:
+            unchanged += 1
+            continue
+
+        rec = {
+            "artifact": os.path.relpath(artifact, base),
+            "was": stored, "now": should, "reason": reason,
+            "test_auc": metrics.get("auc"), "cv_auc": metrics.get("cv_auc_mean"),
+            "overfit_gap": metrics.get("overfit_gap"),
+        }
+        changed.append(rec)
+
+        if not dry_run:
+            try:
+                bundle["oos_suppressed"] = should
+                # Same atomic-write discipline as train_model()'s own save (RACE-001):
+                # write to a temp file in the SAME directory, then os.replace, so a concurrent
+                # predict_latest() can never observe a torn bundle.
+                fd, tmp = tempfile.mkstemp(dir=os.path.dirname(artifact), suffix=".tmp")
+                os.close(fd)
+                joblib.dump(bundle, tmp)
+                os.replace(tmp, artifact)
+            except Exception as exc:
+                rec["write_error"] = str(exc)[:120]
+                failed.append({"artifact": rec["artifact"], "error": str(exc)[:120]})
+                try:
+                    if os.path.exists(tmp):
+                        os.unlink(tmp)
+                except Exception:
+                    pass
+
+    log.info("resweep_oos_suppression.done", dry_run=dry_run,
+             changed=len(changed), unchanged=unchanged, failed=len(failed))
+    return {
+        "dry_run": dry_run,
+        "changed_count": len(changed),
+        "unchanged_count": unchanged,
+        "failed_count": len(failed),
+        "newly_suppressed": [c for c in changed if c["now"]],
+        "newly_unsuppressed": [c for c in changed if not c["now"]],
+        "failures": failed[:20],
     }

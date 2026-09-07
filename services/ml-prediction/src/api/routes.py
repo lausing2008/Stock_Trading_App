@@ -1,5 +1,5 @@
 """ML endpoints: list, train, tune, predict."""
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
@@ -415,18 +415,46 @@ def train_all_horizons(tasks: BackgroundTasks, _: str = Depends(get_current_user
             select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
         ).scalars())
 
-    scheduled: list[dict] = []
-    for style, horizon in _HORIZON_BY_STYLE.items():
-        for sym in symbols:
+    # AUD-ML3-STYLESTARVATION: the enqueue order used to be style-outer / symbol-inner —
+    # all SHORT, then all SWING, then all LONG, then all GROWTH. BackgroundTasks runs
+    # SERIALLY in one queue, and at ~173 symbols this is symbols x 4 styles x 2 models =
+    # ~1,384 runs (~2h at the measured ~326 runs/30min). The scheduler re-posts this job
+    # every post-close, so the queue was ALWAYS truncated before reaching the tail — and
+    # because the tail was a whole style, LONG and GROWTH were never trained AT ALL.
+    #
+    # Measured before this fix: zero `_long` artifacts existed anywhere on disk, exactly one
+    # GROWTH artifact (66 days old), and 2,060 live LONG/GROWTH signals over 7 days carried
+    # ZERO ml_weight. Half the platform's styles were running on TA alone, silently.
+    #
+    # Two changes make truncation degrade gracefully instead of starving a style:
+    #
+    # 1. INTERLEAVE symbol-outer / style-inner. A queue cut at any point now covers all four
+    #    styles for the symbols it reached, instead of one style for everything.
+    # 2. ROTATE the symbol order by day-of-year. Interleaving alone would still always
+    #    truncate the same alphabetical tail (the pre-fix run ended at 9961.HK every time),
+    #    so the same symbols would never train. Rotating means every symbol reaches the front
+    #    of the queue within one full cycle.
+    #
+    # This does NOT make the job finish — that needs real parallelism or a smaller universe.
+    # It makes the part that DOES finish uniformly distributed rather than systematically
+    # starving two styles and a fixed alphabetical tail. `train_model` is idempotent, so a
+    # re-post that overlaps a running queue is safe.
+    _rotate = date.today().timetuple().tm_yday % max(len(symbols), 1)
+    ordered_symbols = symbols[_rotate:] + symbols[:_rotate]
+
+    for sym in ordered_symbols:
+        for style, horizon in _HORIZON_BY_STYLE.items():
             tasks.add_task(train_model, sym, "xgboost", horizon, style=style)
             tasks.add_task(train_model, sym, "random_forest", horizon, style=style)
-        scheduled.append({"style": style, "horizon": horizon})
 
+    scheduled = [{"style": s, "horizon": h} for s, h in _HORIZON_BY_STYLE.items()]
     return {
         "status": "scheduled",
         "symbol_count": len(symbols),
         "styles": scheduled,
         "total_tasks": len(symbols) * len(_HORIZON_BY_STYLE) * 2,
+        "enqueue_order": "symbol-outer/style-inner, rotated",
+        "rotation_offset": _rotate,
         "note": "XGBoost + RandomForest per style per symbol. Ensemble uses both.",
     }
 
@@ -599,3 +627,20 @@ def walkforward_oos(
 # GET /stocks/regime-state and POST /stocks/regime-refit. paper_trading_engine was the
 # only consumer anywhere in the codebase; colocating eliminates a real HTTP hop that ran
 # on every regime computation. See services/market-data/src/services/hmm_regime.py.
+
+
+@router.post("/resweep_suppression")
+def resweep_suppression(dry_run: bool = True, _: str = Depends(get_current_username)):
+    """AUD-ML3-STALESUPPRESSION: re-apply the CURRENT suppression rule to existing artifacts.
+
+    `oos_suppressed` was previously computed once at training time and never revisited, so a
+    model kept a stale flag until its own retrain happened to run. Combined with the style
+    starvation (AUD-ML3-STYLESTARVATION), that meant models with a perfectly INVERTED test AUC
+    (0.0) stayed active at live fusion weight for months.
+
+    Recomputes the flag from each bundle's own already-stored metrics — no retraining, no metric
+    recomputation, seconds to run. Defaults to dry_run=True since it rewrites production
+    artifacts; pass dry_run=false to apply.
+    """
+    from ..training import resweep_oos_suppression
+    return resweep_oos_suppression(dry_run=dry_run)
