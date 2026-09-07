@@ -12358,11 +12358,10 @@ def start_scheduler() -> None:
         CronTrigger(hour=17, minute=30, day_of_week="mon-fri", timezone="America/New_York"),
         id="etf_fund_flows_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
-    _scheduler.add_job(
-        capture_fda_catalysts,
-        CronTrigger(hour=17, minute=40, day_of_week="mon-fri", timezone="America/New_York"),
-        id="fda_catalysts_daily", replace_existing=True, **_JOB_DEFAULTS,
-    )
+    # AUD-UWEXPAND-2 NOT SCHEDULED — see capture_fda_catalysts()'s docstring. The endpoint
+    # returns its OLDEST rows first and ignores every pagination/date parameter tried
+    # (limit/page/date/min_date/start_date), so it cannot reach current events. A daily job
+    # would re-fetch the same 2021-2023 rows forever. Kept as an on-demand admin endpoint only.
 
     # ── DB purge — Sunday 15:00 PST (before weekly full refresh) ────────────
     # Deletes prices_5m and scheduler_jobs rows older than 90 days.
@@ -12804,9 +12803,22 @@ def capture_etf_fund_flows(symbols: list[str] | None = None) -> dict:
 def capture_fda_catalysts() -> dict:
     """Persist the FDA catalyst calendar (AUD-UWEXPAND-2). One request, market-wide.
 
+    ⚠️ DELIBERATELY NOT SCHEDULED — this endpoint cannot deliver a forward calendar.
+
+    Measured against the live API 2026-09-07: it returns its OLDEST rows first and IGNORES every
+    filter/pagination parameter tried — `limit` (100/200/500 all start at 2021-04-13), `page`
+    (0/1/5/10 return byte-identical results), `date`, `min_date`, `start_date`. The 500-row
+    maximum reaches only 2023-11-21. There is no reachable path to current events, so the
+    ~100 rows this persists are a 2021-2023 historical archive, NOT upcoming catalysts.
+
+    That makes it useless for the purpose it was built for (anticipating binary biotech events)
+    and it is left as an on-demand endpoint rather than a daily job that would re-fetch the same
+    stale rows forever. Re-test the parameters before wiring any alerting on top of this; if UW
+    later adds working date filters, the persistence path here is already correct.
+
     Rows without UW's `unique_identifier` are SKIPPED rather than synthesising a key: the id is
     the dedup anchor, and a fabricated one would let the same event accumulate duplicates on
-    every daily run.
+    every run.
     """
     from db import SessionLocal
     from db.models import FdaCatalyst

@@ -199,7 +199,7 @@ _NON_ALERT_JOB_IDS = {
     "us_premarket_5m_early", "us_premarket_5m_9am", "us_5m_intraday", "hk_5m_intraday",
     "(f-string prefix='broker_token_renewal_')",
     # AUD-UWEXPAND: pure data-capture jobs (UW -> Postgres), send no email and gate nothing.
-    "etf_fund_flows_daily", "fda_catalysts_daily",
+    "etf_fund_flows_daily",
     "data_quality_checks", "value_area_levels_daily", "squeeze_alert_outcome_eval_daily",
     "prebreakout_alert_outcome_eval_daily", "options_flow_alert_outcome_eval_daily",
     "dark_pool_alert_outcome_eval_daily", "fix_effectiveness_recheck_daily",

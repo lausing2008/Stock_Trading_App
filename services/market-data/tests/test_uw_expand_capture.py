@@ -177,3 +177,22 @@ def test_institutional_capture_has_no_whole_universe_default():
     import inspect
     sig = inspect.signature(sch.capture_institutional_ownership)
     assert sig.parameters["symbols"].default is inspect.Parameter.empty
+
+
+def test_fda_capture_is_not_scheduled_as_a_daily_job():
+    """AUD-UWEXPAND-2: the FDA endpoint returns oldest-rows-first and ignores every pagination
+    and date parameter tried (limit/page/date/min_date/start_date), so it cannot reach current
+    events — measured live 2026-09-07, the 500-row max reaches only 2023-11-21.
+
+    A daily job would therefore re-fetch the same 2021-2023 archive forever while spending a
+    request and implying the platform has catalyst coverage it does not. Guard that it stays
+    on-demand until the endpoint gains working filters.
+    """
+    import inspect
+    src = inspect.getsource(sch)
+    sched_block = src[src.index("def start_scheduler"):]
+    assert 'id="fda_catalysts_daily"' not in sched_block, (
+        "FDA capture must not be scheduled — the endpoint cannot return current events"
+    )
+    # ...but the capture function itself must still exist for on-demand use.
+    assert callable(sch.capture_fda_catalysts)
