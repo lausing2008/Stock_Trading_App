@@ -52,12 +52,16 @@ def _trigger_new_stock_refresh(symbol: str, market: str) -> None:
         log.warning("add_stock.refresh_failed", symbol=symbol, market=market, error=str(exc))
 
 
-# AUD-UWUSAGE: not a real published limit from UW — this is the trial-tier budget assumption
-# already documented in unusual_whales.py's own module docstring (confirmed against the
-# AUD-UWRATELIMIT-FLOWALERTS incident's own math), surfaced here purely so the dashboard's
-# progress bar has a denominator; treat it as an estimate; if the account's actual plan differs
-# this constant is the one place to update it.
-_UW_ASSUMED_DAILY_BUDGET = 30_000
+# AUD-UWUSAGE: a fallback denominator for the dashboard's progress bar, used ONLY when UW's own
+# authoritative header (x-uw-token-req-limit, surfaced as real_usage.daily_limit) isn't
+# available — that header is always the number to trust, and the frontend already prefers it.
+#
+# UPDATED 2026-09-07: the account was upgraded to API BASIC. Verified directly from UW's own
+# response headers, not assumed: {"daily_count": 8781, "daily_limit": 120000}. Was 30_000 on the
+# prior trial tier. Historical lookback also went from ~4 months to 2+ years — verified live by
+# probing /option-chains?date=, which now returns real chains back to at least 2024-09-09
+# (dates that returned HTTP 403 an hour earlier on the old tier).
+_UW_ASSUMED_DAILY_BUDGET = 120_000
 
 _REDIS_CLAUDE_KEY       = "stockai:admin:claude_api_key"
 _REDIS_DEEPSEEK_KEY     = "stockai:admin:deepseek_api_key"

@@ -2865,6 +2865,42 @@ def backtest_replay_fidelity(
         ).to_dict()
 
 
+# ── BT-1: full-history gate replay ─────────────────────────────────────────────
+# Replays CURRENT gates across all persisted signal history (floor 2026-05-25, the first date a
+# sig.reasons snapshot exists). Research tool — writes nothing, promotes nothing. Run
+# /backtest/replay-fidelity FIRST: it establishes how to read these numbers.
+
+@router.get("/backtest/replay-full-history")
+def backtest_replay_full_history(
+    style: str = Query(..., description="SHORT | SWING | LONG | GROWTH"),
+    market: str = Query("US", description="US | HK"),
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """BT-1: what would today's per-signal gates have admitted across all signal history?
+
+    Returns entry counts, win rate, average forward return, AND weekly-clustering metrics —
+    the last of these being the number that decides whether the sample can support anything.
+    A raw count hides correlation; this platform has already been burned by a 9.1% win rate on
+    n=11 where 9 fired inside one 8-day window.
+
+    Output is SYNTHETIC and must not promote a parameter on its own. See the response's
+    `caveats` and `effective_sample_note`.
+    """
+    from ..backtest.gate_harness import replay_full_signal_history
+    from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+
+    style = style.upper()
+    if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
+        raise HTTPException(status_code=400, detail=f"Unknown style: {style}")
+    market = market.upper()
+    if market not in ("US", "HK"):
+        raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
+
+    base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    with SessionLocal() as session:
+        return replay_full_signal_history(session, style, market, base_cfg).to_dict()
+
+
 # ── T233-SELFIMPROVE-PHASE2 (Phase 2a): gate-threshold backtest harness ────────
 # See docs/DESIGN_BACKTEST_HARNESS_PHASE2_2026-07-06.md for full scope/rationale.
 # Manually-triggered research tool — NOT wired to any promotion gate or config write.

@@ -1551,3 +1551,169 @@ def verify_replay_fidelity(
             result.skip_reason_counts[key] = result.skip_reason_counts.get(key, 0) + 1
 
     return result
+
+
+# ── BT-1: replay the gates across ALL persisted signal history ───────────────────────────
+#
+# See docs/2026-09-06/SCOPE_BACKTEST_GENERATED_TRAINING_DATA.md. Paper trading only started
+# 2026-06-16 and only ever acted on signals arriving after that, under whatever cfg was live at
+# the time — 124 real trades against 45,278 persisted signals. This replays the CURRENT gates
+# across the whole persisted signal history to produce a much larger set of
+# (decision, real forward return) pairs.
+#
+# Why this is honest and not circular: every gate input is read from sig.reasons, the ~170-field
+# snapshot frozen at generation time (verified: present on all 45,278 rows, 0 nulls), and every
+# OUTCOME is the real SignalOutcome forward return computed from immutable subsequent price
+# bars. Only the DECISION is recomputed. Nothing here reads a present-day value and pretends it
+# was historical.
+#
+# HARD FLOOR: 2026-05-25. Before that no sig.reasons snapshot exists, so replaying would mean
+# reading today's news sentiment / K-Score / regime and pretending they were historical. This
+# function cannot reach further back and deliberately does not try.
+#
+# What BT-2 already established about interpreting the output (run it first — that ordering is
+# the point): today's gates are materially STRICTER than the ones that produced the existing
+# 124 trades (AUD-CHASE-ROC10 shipped 2026-09-05; max_entry_gap_pct and confidence floors were
+# retuned since). So expect entry counts well below any naive extrapolation from 124, and read
+# the result as "what today's gates would have done", never as "what would have happened".
+
+@dataclass
+class FullHistoryReplayResult:
+    style: str
+    market: str
+    window_start: date
+    window_end: date
+    n_signals_seen: int = 0
+    n_entered: int = 0
+    n_wins: int = 0
+    avg_return_pct: float | None = None
+    win_rate: float | None = None
+    # Weekly clustering — the number that actually matters for whether this sample can support
+    # a promotion decision. This platform has been burned by exactly this: a 9.1% win rate on
+    # n=11 where 9 fired in a single 8-day window, giving an effective independent sample
+    # "closer to 2 than 11". A raw row count hides that; entries_per_week does not.
+    n_distinct_weeks: int = 0
+    max_entries_in_one_week: int = 0
+    skip_reason_counts: dict = field(default_factory=dict)
+    skipped_reason: str | None = None
+
+    @property
+    def effective_sample_note(self) -> str:
+        if self.n_entered == 0 or self.n_distinct_weeks == 0:
+            return "no entries to assess"
+        concentration = self.max_entries_in_one_week / self.n_entered
+        if concentration >= 0.5:
+            return (
+                f"HIGHLY CLUSTERED — {self.max_entries_in_one_week} of {self.n_entered} entries "
+                f"({concentration:.0%}) fell in a single week. Effective independent sample is "
+                f"far below the raw count; do NOT treat this as {self.n_entered} observations."
+            )
+        if self.n_distinct_weeks < 4:
+            return (
+                f"only {self.n_distinct_weeks} distinct weeks — spans too little time to have "
+                f"seen more than one market phase."
+            )
+        return (
+            f"{self.n_entered} entries across {self.n_distinct_weeks} weeks "
+            f"(max {self.max_entries_in_one_week} in any one week)."
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "style": self.style,
+            "market": self.market,
+            "window_start": self.window_start.isoformat(),
+            "window_end": self.window_end.isoformat(),
+            "n_signals_seen": self.n_signals_seen,
+            "n_entered": self.n_entered,
+            "n_wins": self.n_wins,
+            "win_rate": round(self.win_rate, 4) if self.win_rate is not None else None,
+            "avg_return_pct": round(self.avg_return_pct, 4) if self.avg_return_pct is not None else None,
+            "n_distinct_weeks": self.n_distinct_weeks,
+            "max_entries_in_one_week": self.max_entries_in_one_week,
+            "effective_sample_note": self.effective_sample_note,
+            "skip_reason_counts": dict(
+                sorted(self.skip_reason_counts.items(), key=lambda kv: -kv[1])[:12]
+            ),
+            "skipped_reason": self.skipped_reason,
+            "caveats": (
+                "SYNTHETIC — these are replayed decisions, not real trades. Gate inputs come "
+                "from each signal's own frozen sig.reasons snapshot and outcomes from real "
+                "forward returns, so this is not circular; but the replay is regime-blind "
+                "(live_regime=None, a permanent gap) and models NO portfolio-level state "
+                "(max_positions, sector caps, cash, daily-entry caps, circuit breakers), so it "
+                "over-counts entries a real book could not all have taken. Today's gates are "
+                "also stricter than those in force historically. Read as 'what today's "
+                "per-signal gates would have admitted', never as realized performance, and "
+                "never promote a parameter on this alone — see the scope doc's guardrails."
+            ),
+        }
+
+
+def replay_full_signal_history(
+    session: Session,
+    style: str,
+    market: str,
+    cfg: dict,
+    window_start: date | None = None,
+    window_end: date | None = None,
+) -> FullHistoryReplayResult:
+    """BT-1: replay current gates across all persisted signal history for (style, market)."""
+    style = style.upper()
+    bucket = _HORIZON_BUCKET[style]
+    # 2026-05-25 is the first date a sig.reasons snapshot exists — see this section's header.
+    floor = date(2026, 5, 25)
+    ws = max(window_start or floor, floor)
+    we = window_end or date.today()
+
+    result = FullHistoryReplayResult(style=style, market=market, window_start=ws, window_end=we)
+    matched = _fetch_matched_signals(session, style, market, ws, we)
+    result.n_signals_seen = len(matched)
+    if not matched:
+        result.skipped_reason = "no resolved BUY signals in the persisted-history window"
+        return result
+
+    returns: list[float] = []
+    weeks: dict[str, int] = {}
+    for sig, outcome, stock in matched:
+        live_price = outcome.entry_price
+        if not live_price or live_price <= 0:
+            continue
+        atr = _historical_atr(session, stock.id, outcome.signal_date)
+        game_plan = _build_game_plan_for_style(stock.symbol, style, live_price, sig.reasons or {}, atr)
+        confidence_delta = _historical_confidence_delta(
+            session, stock.id, style, outcome.signal_date, sig.confidence,
+        )
+        signal_data = {
+            "signal": sig.signal.value,
+            "confidence": sig.confidence,
+            "bullish_probability": sig.bullish_probability,
+            "reasons": sig.reasons or {},
+            "confidence_delta": confidence_delta,
+        }
+        should, _score, _notes = _should_enter(
+            stock.symbol, signal_data, live_price, game_plan, cfg, live_regime=None, kscore=None,
+            as_of=_entry_as_of(outcome.entry_date or outcome.signal_date, market),
+        )
+        if not should:
+            key = str(_notes)[:120] if _notes else "(no reason given)"
+            result.skip_reason_counts[key] = result.skip_reason_counts.get(key, 0) + 1
+            continue
+        pct_return = getattr(outcome, f"return_{bucket}")
+        is_correct = getattr(outcome, f"is_correct_{bucket}")
+        if pct_return is None:
+            continue
+        returns.append(float(pct_return))
+        if is_correct:
+            result.n_wins += 1
+        d = outcome.signal_date
+        wk = f"{d.isocalendar()[0]}-W{d.isocalendar()[1]:02d}"
+        weeks[wk] = weeks.get(wk, 0) + 1
+
+    result.n_entered = len(returns)
+    result.n_distinct_weeks = len(weeks)
+    result.max_entries_in_one_week = max(weeks.values()) if weeks else 0
+    if returns:
+        result.avg_return_pct = sum(returns) / len(returns)
+        result.win_rate = result.n_wins / len(returns)
+    return result

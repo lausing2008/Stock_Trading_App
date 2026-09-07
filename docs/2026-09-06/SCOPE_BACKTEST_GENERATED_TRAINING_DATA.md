@@ -51,7 +51,40 @@ at the moment the signal fired.
 
 ## 2. What IS safely possible
 
-### 2a. Replay entry gates over persisted signals → far more paper-trade data ✅
+### 2a. Replay entry gates over persisted signals ✅ — **BUILT AND RUN (2026-09-07). Result below.**
+
+`replay_full_signal_history()` + `GET /paper-portfolio/backtest/replay-full-history` are live.
+First production run, US, full persisted history (floor 2026-05-25):
+
+| Style | Signals seen | Entered | Win rate | Avg return | Weeks | **Max in one week** |
+|---|---|---|---|---|---|---|
+| SWING | 2,654 | **402** | 52.0% | +0.30% | 13 | 69 |
+| GROWTH | 2,912 | **1,378** | **47.0%** | **−0.37%** | 11 | **178** |
+
+**Sample expansion is real: 124 real trades → ~1,780 replayed decisions**, roughly 14×. But three
+findings matter more than that headline:
+
+1. **GROWTH's replayed edge is negative.** 47.0% win rate and −0.37% average forward return, on
+   n=1,378 — a far larger sample than anything this platform has judged on before. This is not a
+   promising base to tune on; it's evidence that today's GROWTH gates admit a losing population.
+   (`signal_outcomes.pct_return` is a FRACTION, so −0.0037 = −0.37%.)
+2. **Clustering is severe, exactly as feared.** GROWTH put **178 of 1,378 entries (13%) into a
+   single week**, across only 11 distinct weeks. The raw count overstates independent
+   information substantially — which is precisely the failure mode §4 was written about, and the
+   reason `effective_sample_note` was built into the response rather than left to a reader.
+3. **The dominant skip reason is the earnings blackout**, not the newer gates —
+   `"Earnings in 0-4 days — binary event risk"` occupies the top 4-5 slots for both styles. That's
+   a long-standing, deliberate gate behaving exactly as intended, which is a good sign for replay
+   fidelity.
+
+**What this does NOT license.** The 1,780 rows must not be fed to a tuner as though they were
+1,780 independent observations. Per §4: tag as synthetic, report clustered effective-N, keep a
+real-outcome validation slice, and never let replayed data alone trigger a promotion. Given
+finding (1), the more valuable immediate use of BT-1 is **diagnostic** — "today's GROWTH gates
+would have lost money over the last 3 months" is an actionable finding in its own right, and
+worth more than using the same data to tune.
+
+### 2a-context. Why the expansion is worth having at all ✅
 
 **This is the highest-value, genuinely-safe item, and the infrastructure already exists.**
 `gate_harness.py`'s `replay_should_enter()` was built for exactly this, with point-in-time-safe
