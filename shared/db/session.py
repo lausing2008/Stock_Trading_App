@@ -399,6 +399,45 @@ def _run_migrations() -> None:  # noqa: C901
             CREATE INDEX IF NOT EXISTS ix_fundamentals_snapshot_sym
             ON fundamentals_snapshot (symbol)
         """))
+        # MOAT-1: financial_statements — multi-year filed statements, the prerequisite for a
+        # real ROIC-persistence moat score. See FinancialStatement's own docstring
+        # (shared/db/models.py) and docs/2026-09-06/SCOPING_QUANTITATIVE_MOAT_SCORE.md for why
+        # neither `fundamentals` (~3 months of fetch-date rows) nor `fundamentals_snapshot`
+        # (weekly, forward-accumulating only) can supply multi-year ROIC/margin durability.
+        # All figures nullable: yfinance statement row labels vary by issuer/market, and a
+        # missing line item must read as absent, never as a fabricated zero.
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS financial_statements (
+                id BIGSERIAL PRIMARY KEY,
+                symbol VARCHAR(20) NOT NULL,
+                period_end DATE NOT NULL,
+                period_type VARCHAR(12) NOT NULL,
+                total_revenue FLOAT,
+                gross_profit FLOAT,
+                operating_income FLOAT,
+                ebit FLOAT,
+                net_income FLOAT,
+                tax_provision FLOAT,
+                pretax_income FLOAT,
+                total_assets FLOAT,
+                total_debt FLOAT,
+                total_equity FLOAT,
+                cash_and_equivalents FLOAT,
+                current_liabilities FLOAT,
+                operating_cashflow FLOAT,
+                capital_expenditure FLOAT,
+                free_cashflow FLOAT,
+                fetched_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ix_finstmt_sym_period
+            ON financial_statements (symbol, period_end, period_type)
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_finstmt_sym
+            ON financial_statements (symbol)
+        """))
         # T234-ML-FUND-BROADCAST-LEAKAGE: extend fundamentals_snapshot with the columns
         # builder.py broadcasts today's value for across ALL historical training rows
         # (lookahead bias). Backfilling these lets a future point-in-time merge_asof join

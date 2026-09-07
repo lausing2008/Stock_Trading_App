@@ -8391,6 +8391,220 @@ def _snapshot_fundamentals() -> None:
         log.error("scheduler.fundamentals_snapshot_failed", error=str(exc))
 
 
+# ── MOAT-1: multi-year filed financial statements (ROIC-persistence prerequisite) ──
+#
+# See docs/2026-09-06/SCOPING_QUANTITATIVE_MOAT_SCORE.md. A real economic-moat score needs
+# multi-YEAR ROIC/margin history to measure durability; neither `fundamentals` (~3 months of
+# fetch-date rows) nor `fundamentals_snapshot` (11 weekly rows, forward-accumulating only) can
+# supply that, and neither stores the absolute figures (EBIT, tax, debt, equity, cash) a real
+# ROIC = NOPAT / Invested Capital requires. yfinance returns 4-5 years of ANNUAL statements
+# per ticker immediately — verified live 2026-09-06 for both markets (AAPL/0700.HK/0001.HK all
+# 5 periods, 9988.HK 4, every one with EBIT present) — so this is a one-time BACKFILL that
+# unlocks the score now, not an accumulate-forward wait.
+#
+# Row labels below were read directly off real yfinance DataFrames rather than assumed; they
+# vary by issuer/market, so every lookup is a miss-tolerant helper and every column is
+# nullable. A missing line item must read as absent, NEVER as a fabricated 0.0 — this
+# codebase has fixed that falsy-zero class repeatedly (see kscore.py's own
+# skip-and-renormalize discipline for the same principle applied to scoring).
+_FINSTMT_THROTTLE_S = 0.34  # ~3 req/s, matching _refresh_fundamentals_batch()'s own rate
+
+# Each tuple is (db_column, [candidate yfinance row labels in priority order]). Multiple
+# candidates exist because yfinance's labels genuinely differ across issuers — e.g. some
+# filers report "Stockholders Equity", others only "Total Equity Gross Minority Interest".
+_FINSTMT_INCOME_MAP = [
+    ("total_revenue",    ["Total Revenue", "Operating Revenue"]),
+    ("gross_profit",     ["Gross Profit"]),
+    ("operating_income", ["Operating Income", "Total Operating Income As Reported"]),
+    ("ebit",             ["EBIT"]),
+    ("net_income",       ["Net Income", "Net Income Common Stockholders"]),
+    ("tax_provision",    ["Tax Provision"]),
+    ("pretax_income",    ["Pretax Income"]),
+]
+_FINSTMT_BALANCE_MAP = [
+    ("total_assets",         ["Total Assets"]),
+    ("total_debt",           ["Total Debt"]),
+    ("total_equity",         ["Stockholders Equity", "Total Equity Gross Minority Interest"]),
+    ("cash_and_equivalents", ["Cash And Cash Equivalents",
+                              "Cash Cash Equivalents And Short Term Investments"]),
+    ("current_liabilities",  ["Current Liabilities"]),
+]
+
+# AUD-FINSTMT-DEBTSPLIT: not every issuer reports a single "Total Debt" row. Verified live
+# 2026-09-06: AAPL does, but 0700.HK (Tencent) reports only the split components
+# ("Long Term Debt" + "Current Debt"), so a single-label lookup left total_debt NULL for it —
+# which silently breaks ROIC entirely, since invested capital = debt + equity - cash has no
+# usable denominator without it. These are SUMMED (not first-match-wins like every other
+# field) precisely because they're components rather than alternative names for the same
+# figure. Capital-lease variants are preferred where present since they're the more complete
+# obligation measure, matching how the single "Total Debt" row is itself constructed.
+_FINSTMT_DEBT_COMPONENTS = [
+    ["Long Term Debt And Capital Lease Obligation", "Long Term Debt"],
+    ["Current Debt And Capital Lease Obligation", "Current Debt"],
+]
+_FINSTMT_CASHFLOW_MAP = [
+    ("operating_cashflow",   ["Operating Cash Flow"]),
+    ("capital_expenditure",  ["Capital Expenditure"]),
+    ("free_cashflow",        ["Free Cash Flow"]),
+]
+
+
+def _finstmt_pick(df, labels: list[str], col) -> float | None:
+    """Read the first present label for `col` out of a yfinance statement DataFrame.
+
+    Returns None (never 0.0) when the row is absent, the value is NaN, or the frame doesn't
+    have this period at all — the distinction between "this issuer doesn't report this line"
+    and "this line is genuinely zero" has to survive into the DB for any downstream ratio to
+    be trustworthy.
+    """
+    if df is None or getattr(df, "empty", True):
+        return None
+    for label in labels:
+        if label not in df.index:
+            continue
+        try:
+            val = df.loc[label, col]
+        except Exception:
+            continue
+        if val is None:
+            continue
+        try:
+            fval = float(val)
+        except (TypeError, ValueError):
+            continue
+        if fval != fval:  # NaN — pandas' own NaN != NaN, no numpy import needed here
+            continue
+        return fval
+    return None
+
+
+def backfill_financial_statements(symbols: list[str] | None = None,
+                                  period_types: tuple[str, ...] = ("annual", "quarterly")) -> dict:
+    """MOAT-1: persist yfinance's filed annual/quarterly statements per symbol.
+
+    Idempotent — re-running updates existing (symbol, period_end, period_type) rows rather
+    than duplicating, so this is safe to re-run as new fiscal periods are filed (which is also
+    how it stays current after the initial backfill, with no separate "incremental" path).
+
+    Best-effort per symbol: a failure is logged and skipped, never fatal, matching
+    _refresh_fundamentals_batch()'s own convention. Throttled to ~3 req/s given this
+    codebase's documented yfinance rate-limit-amplification history — deliberately serial,
+    NOT fanned out.
+    """
+    import yfinance as _yf
+    from db import SessionLocal as _SL
+    from sqlalchemy import text as _text
+
+    _t0 = time.monotonic()
+    if symbols is None:
+        symbols = _symbols_for("US") + _symbols_for("HK")
+
+    ok = failed = rows_written = 0
+    for sym in symbols:
+        try:
+            tk = _yf.Ticker(sym)
+            frames = {
+                "annual": (tk.financials, tk.balance_sheet, tk.cashflow),
+                "quarterly": (tk.quarterly_financials, tk.quarterly_balance_sheet,
+                              tk.quarterly_cashflow),
+            }
+            wrote_any = False
+            with _SL() as sess:
+                for ptype in period_types:
+                    inc, bal, cfl = frames.get(ptype, (None, None, None))
+                    # Period columns can differ across the three statements for the same
+                    # issuer; union them so a period present in only one still lands, rather
+                    # than silently dropping it by keying off the income statement alone.
+                    cols: list = []
+                    for df in (inc, bal, cfl):
+                        if df is not None and not getattr(df, "empty", True):
+                            for c in df.columns:
+                                if c not in cols:
+                                    cols.append(c)
+                    for col in cols:
+                        vals: dict = {"symbol": sym, "period_type": ptype}
+                        try:
+                            vals["period_end"] = col.date() if hasattr(col, "date") else col
+                        except Exception:
+                            continue
+                        for dbcol, labels in _FINSTMT_INCOME_MAP:
+                            vals[dbcol] = _finstmt_pick(inc, labels, col)
+                        for dbcol, labels in _FINSTMT_BALANCE_MAP:
+                            vals[dbcol] = _finstmt_pick(bal, labels, col)
+                        for dbcol, labels in _FINSTMT_CASHFLOW_MAP:
+                            vals[dbcol] = _finstmt_pick(cfl, labels, col)
+                        # AUD-FINSTMT-DEBTSPLIT: fall back to summing the split components for
+                        # issuers that report no single "Total Debt" row (see the constant's
+                        # own comment). Only applied when total_debt is genuinely absent, so an
+                        # issuer that DOES report it keeps its own authoritative figure. If
+                        # neither component is present either, this stays None rather than
+                        # becoming a misleading 0.0.
+                        if vals.get("total_debt") is None:
+                            _parts = [_finstmt_pick(bal, labels, col)
+                                      for labels in _FINSTMT_DEBT_COMPONENTS]
+                            _found = [p for p in _parts if p is not None]
+                            if _found:
+                                vals["total_debt"] = sum(_found)
+                        # Skip a period where every single figure came back absent — that's a
+                        # yfinance placeholder column, not a real filing, and writing it would
+                        # create an all-NULL row that any downstream persistence calculation
+                        # would have to special-case anyway.
+                        if all(vals.get(c) is None for c, _ in
+                               (_FINSTMT_INCOME_MAP + _FINSTMT_BALANCE_MAP + _FINSTMT_CASHFLOW_MAP)):
+                            continue
+                        sess.execute(_text("""
+                            INSERT INTO financial_statements
+                                (symbol, period_end, period_type, total_revenue, gross_profit,
+                                 operating_income, ebit, net_income, tax_provision, pretax_income,
+                                 total_assets, total_debt, total_equity, cash_and_equivalents,
+                                 current_liabilities, operating_cashflow, capital_expenditure,
+                                 free_cashflow)
+                            VALUES
+                                (:symbol, :period_end, :period_type, :total_revenue, :gross_profit,
+                                 :operating_income, :ebit, :net_income, :tax_provision, :pretax_income,
+                                 :total_assets, :total_debt, :total_equity, :cash_and_equivalents,
+                                 :current_liabilities, :operating_cashflow, :capital_expenditure,
+                                 :free_cashflow)
+                            ON CONFLICT (symbol, period_end, period_type) DO UPDATE SET
+                                total_revenue = EXCLUDED.total_revenue,
+                                gross_profit = EXCLUDED.gross_profit,
+                                operating_income = EXCLUDED.operating_income,
+                                ebit = EXCLUDED.ebit,
+                                net_income = EXCLUDED.net_income,
+                                tax_provision = EXCLUDED.tax_provision,
+                                pretax_income = EXCLUDED.pretax_income,
+                                total_assets = EXCLUDED.total_assets,
+                                total_debt = EXCLUDED.total_debt,
+                                total_equity = EXCLUDED.total_equity,
+                                cash_and_equivalents = EXCLUDED.cash_and_equivalents,
+                                current_liabilities = EXCLUDED.current_liabilities,
+                                operating_cashflow = EXCLUDED.operating_cashflow,
+                                capital_expenditure = EXCLUDED.capital_expenditure,
+                                free_cashflow = EXCLUDED.free_cashflow,
+                                fetched_at = NOW()
+                        """), vals)
+                        rows_written += 1
+                        wrote_any = True
+                sess.commit()
+            if wrote_any:
+                ok += 1
+            else:
+                log.warning("scheduler.finstmt.no_periods", symbol=sym)
+                failed += 1
+        except Exception as exc:
+            log.warning("scheduler.finstmt.error", symbol=sym, error=str(exc))
+            failed += 1
+        time.sleep(_FINSTMT_THROTTLE_S)
+
+    elapsed = time.monotonic() - _t0
+    log.info("scheduler.finstmt_backfill_done", ok=ok, failed=failed,
+             rows=rows_written, elapsed_s=round(elapsed))
+    _record_job_status("financial_statements_backfill",
+                       "ok" if failed == 0 else "partial", elapsed)
+    return {"symbols_ok": ok, "symbols_failed": failed, "rows_written": rows_written,
+            "elapsed_s": round(elapsed, 1)}
+
+
 # ── wsz-analyst-accuracy-weighting: per-firm price-target accuracy scoring ──────────
 _ANALYST_TARGET_OUTCOME_WINDOW_DAYS = 365  # standard "12-month price target" horizon
 _ANALYST_TARGET_TOLERANCE_PCT = 0.10       # "achieved" = came within 10% of the target

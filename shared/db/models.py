@@ -1531,6 +1531,79 @@ class FundamentalsSnapshot(Base):
     __table_args__ = (UniqueConstraint("symbol", "snapshot_date", name="uq_fundamentals_snapshot_sym_date"),)
 
 
+# ── MOAT-1: Multi-Year Financial Statements (the ROIC-persistence prerequisite) ──
+
+class FinancialStatement(Base):
+    """One row per (symbol, period_end, period_type) annual/quarterly financial statement,
+    backfilled from yfinance's .financials / .balance_sheet / .cashflow DataFrames.
+
+    WHY THIS EXISTS — see docs/2026-09-06/SCOPING_QUANTITATIVE_MOAT_SCORE.md for the full
+    scoping. A quantitative economic-moat score (the Morningstar-Quantitative-style construct:
+    persistence of excess returns on capital) requires MULTI-YEAR ROIC and margin history to
+    measure durability across a cycle. The two pre-existing fundamentals tables cannot supply
+    that, by design, not by accident:
+      - `fundamentals` (Fundamental above) is one row per stock per FETCH date — measured
+        2026-06-16 -> 2026-09-07 in production, ~3 months.
+      - `fundamentals_snapshot` (FundamentalsSnapshot above) is a WEEKLY forward-accumulating
+        snapshot whose own docstring states "History accumulates going forward only" — measured
+        11 weekly rows in production.
+    Neither contains a company's historical FILED statements, and both store ratios
+    (debt_to_equity) rather than the absolute figures (EBIT, tax, total debt, total equity,
+    cash) that a real ROIC = NOPAT / Invested Capital needs. Over a ~3-month window the same
+    trailing-twelve-month figure simply repeats, so any "stability" metric computed from it
+    measures reporting cadence, not moat durability.
+
+    yfinance already returns 4-5 years of annual statements per ticker INCLUDING EBIT, verified
+    live 2026-09-06 against the production container for both markets (AAPL 5 periods,
+    0700.HK 5, 0001.HK 5, 9988.HK 4 — all with EBIT present), which is what makes a one-time
+    backfill the cheap unlock rather than a multi-year wait.
+
+    Deliberately stores RAW filed figures, not derived ratios: ROIC/margin/persistence
+    computations belong in the scoring layer where their assumptions are visible and tunable,
+    matching how kscore.py keeps its own curve constants cfg-driven rather than baked into
+    ingestion. Nullable throughout — yfinance's statement row labels vary by issuer/market and
+    a missing line item must read as absent, never as a fabricated zero (this codebase has
+    fixed that falsy-zero bug class repeatedly).
+    """
+    __tablename__ = "financial_statements"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    # "annual" | "quarterly" — kept as a plain string (not an Enum) to match this file's own
+    # convention for low-cardinality descriptors that may gain values later.
+    period_type: Mapped[str] = mapped_column(String(12), nullable=False)
+
+    # ── Income statement ──
+    total_revenue: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gross_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    operating_income: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ebit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    net_income: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Both are needed to derive an effective tax rate for NOPAT; a hardcoded statutory rate
+    # would silently misstate ROIC for any company with real credits/foreign mix.
+    tax_provision: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pretax_income: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # ── Balance sheet (the invested-capital denominator) ──
+    total_assets: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_debt: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cash_and_equivalents: Mapped[float | None] = mapped_column(Float, nullable=True)
+    current_liabilities: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # ── Cash flow ──
+    operating_cashflow: Mapped[float | None] = mapped_column(Float, nullable=True)
+    capital_expenditure: Mapped[float | None] = mapped_column(Float, nullable=True)
+    free_cashflow: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "period_end", "period_type", name="uq_finstmt_sym_period"),
+    )
+
+
 # ── wsz-analyst-accuracy-weighting: Per-Firm Historical Price Target Tracking ──
 
 class AnalystPriceTarget(Base):

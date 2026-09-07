@@ -1634,6 +1634,38 @@ def uw_usage(_: User = Depends(get_admin_user)):
     }
 
 
+@router.post("/backfill-financial-statements")
+def backfill_financial_statements_endpoint(
+    symbols: str | None = None,
+    period_types: str = "annual,quarterly",
+    _: User = Depends(get_admin_user),
+):
+    """MOAT-1: backfill multi-year filed financial statements from yfinance.
+
+    The prerequisite for a real ROIC-persistence economic-moat score — see
+    docs/2026-09-06/SCOPING_QUANTITATIVE_MOAT_SCORE.md and FinancialStatement's own docstring
+    for why neither existing fundamentals table can supply multi-year ROIC/margin durability.
+
+    Idempotent (ON CONFLICT DO UPDATE on symbol/period_end/period_type), so it doubles as the
+    "pick up newly-filed periods" refresh path with no separate incremental job.
+
+    RUNS SYNCHRONOUSLY and is throttled to ~3 req/s to respect this codebase's documented
+    yfinance rate-limit-amplification history — the full ~173-symbol universe takes roughly
+    2-4 minutes for annual+quarterly, so prefer passing an explicit `symbols` list when
+    testing rather than sweeping everything.
+
+    `symbols`: optional comma-separated list; omit for the full active US+HK universe.
+    `period_types`: comma-separated subset of annual,quarterly.
+    """
+    from ..services.scheduler import backfill_financial_statements
+
+    syms = [s.strip().upper() for s in symbols.split(",") if s.strip()] if symbols else None
+    ptypes = tuple(p.strip() for p in period_types.split(",") if p.strip() in ("annual", "quarterly"))
+    if not ptypes:
+        raise HTTPException(400, "period_types must include at least one of: annual, quarterly")
+    return backfill_financial_statements(symbols=syms, period_types=ptypes)
+
+
 @router.post("/backfill-index-membership")
 def backfill_index_membership(
     session: Session = Depends(get_session),
