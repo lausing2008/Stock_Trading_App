@@ -851,11 +851,24 @@ Validated end-to-end in production: AAPL 2026-06-01..06-05 → **18,190 rows, 0 
 All 5 days genuinely distinct (volume 634k–1.87M, OI rising monotonically 4.98M→5.27M, IV
 varying day to day) — confirming UW returns real per-day chains, not a carried-forward one.
 
-| Unit | Requests | Rows | Disk |
+| Unit | Requests | Rows | Disk (incl. indexes) |
 |---|---|---|---|
-| 1 symbol-day | 1 | ~3,640 | **~285 KB** |
-| 10 symbols × 90 trading days | 900 (0.75% of daily budget) | ~3.3M | **~935 MB** |
-| 10 symbols × 2 years (~500 days) | 5,000 (4%) | ~18M | **~5.2 GB** |
+| 1 symbol-day | 1 | ~4,040 | **~1.05 MB** |
+| 10 symbols × 90 trading days | 900 (0.75% of daily budget) | ~3.6M | **~945 MB** |
+| 10 symbols × 2 years (~500 days) | 5,000 (4%) | ~20M | **~5.2 GB → ~20 GB** |
+
+> **Corrected 2026-09-07, mid-backfill.** The first published figure was **~285 KB/symbol-day**,
+> derived from the 5-day AAPL validation sample — measured *before* the table had enough volume
+> for its indexes to grow proportionally, so it counted heap while indexes were still near-empty.
+> Re-measured live at 496,718 rows / 123 symbol-days: **~1.05 MB/symbol-day, ~3.7× higher.**
+> Indexes are ~40% of total size on this table, which is why the sampling error was so large.
+> Two lessons worth keeping: measure storage cost at realistic volume, not from a smoke-test
+> sample; and quote index-inclusive size, since that is what consumes the disk.
+>
+> **The constraint ordering is unchanged** — a 10-symbol 2-year archive is still disk-bound
+> (~20 GB against 51 GB free) and still only 4% of one day's request quota. But 20 GB is a real
+> commitment on a 100 GB volume, not the rounding error 5.2 GB implied. **Check `df -h` before
+> any large backfill and size the symbol set against measured cost, not the original estimate.**
 
 The 120,000/day request budget is nowhere near binding — even a 2-year sweep is 4% of a single
 day's quota. **Disk is what to scope against.** Hence the endpoint deliberately requires an
@@ -863,6 +876,33 @@ explicit symbol list and has **no whole-universe mode**: a blind sweep is cheap 
 ruinous in disk, exactly the shape of mistake an unguarded convenience flag invites. Check EC2
 headroom before any multi-GB backfill, and prefer narrow-symbol/full-history over
 broad-symbol/shallow — the rolling window only threatens the far end of history.
+
+### Follow-up defect: every index was built TWICE (fixed 2026-09-07, same day)
+
+Found by measuring the live table mid-backfill, not by reading the schema — at 253k rows it
+carried **7 indexes / 32 MB against a 40 MB heap**, ~8 MB of it pure duplication.
+
+**Cause, and the trap worth remembering:** the model declared per-column `index=True` on
+`symbol`/`as_of`/`expiry` *and* explicit composite/unique indexes in `__table_args__`.
+SQLAlchemy's `create_all()` emits its own `ix_option_chain_history_*` for every `index=True`
+flag, on top of the migration's hand-written `ix_optchain_*` — so each index existed twice
+under two different names. Nothing errors, nothing warns; the only symptom is disk.
+
+| Duplicate (dropped) | Already covered by |
+|---|---|
+| `ix_option_chain_history_as_of` | `ix_optchain_sym_asof (symbol, as_of)` |
+| `ix_option_chain_history_expiry` | `ix_optchain_expiry (expiry)` |
+| `ix_option_chain_history_symbol` | leading column of `uq_optchain_sym_date_contract` |
+
+On most tables here this would be a rounding error. On this one it isn't — ~4,040 rows per
+symbol-day means a 10-symbol 2-year archive is ~20M rows, where redundant index maintenance
+costs both disk and write throughput on the exact resource that binds this feature.
+
+Fixed by removing the `index=True` flags (with an in-model comment recording why they must not
+come back) and dropping the three duplicates idempotently in the migration. Dropping a
+redundant index cannot break a query — it can only redirect it to the equivalent remaining one.
+Applied via the normal deploy path rather than directly against production, since that is a
+schema mutation and this repo's standing constraint is SELECT-only production DB access.
 
 ### Where the real risk lives (and why 15 tests target the coercion helpers)
 

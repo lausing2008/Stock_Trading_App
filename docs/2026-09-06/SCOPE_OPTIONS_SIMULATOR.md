@@ -84,11 +84,17 @@ self-contained quant task… closed-form formula, no new data source" — which 
 > **The binding constraint is DB volume, not the request budget** — and now with real measured
 > numbers rather than estimates:
 >
-> | Unit | Requests | Rows | Disk |
+> | Unit | Requests | Rows | Disk (incl. indexes) |
 > |---|---|---|---|
-> | 1 symbol-day | 1 | ~3,640 | **~285 KB** |
-> | 10 symbols × 90 trading days | 900 (0.75% of daily budget) | ~3.3M | **~935 MB** |
-> | 10 symbols × 2 years (~500 days) | 5,000 (4%) | ~18M | **~5.2 GB** |
+> | 1 symbol-day | 1 | ~4,040 | **~1.05 MB** |
+> | 10 symbols × 90 trading days | 900 (0.75% of daily budget) | ~3.6M | **~945 MB** |
+> | 10 symbols × 2 years (~500 days) | 5,000 (4%) | ~20M | **~20 GB** |
+>
+> **(Disk figures corrected 2026-09-07 mid-backfill — the first published ~285 KB/symbol-day came
+> from the 5-day validation sample, taken before indexes had grown proportionally, and was
+> ~3.7× too low. Re-measured at 496,718 rows. Constraint ordering unchanged: still disk-bound,
+> still 4% of one day's quota — but 20 GB on a 100 GB volume is a real commitment. Check `df -h`
+> first.)**
 >
 > So the 120k/day budget is nowhere near binding: even the 2-year sweep is 4% of ONE day's
 > quota. Disk is what to scope against — check EC2 headroom before any multi-GB backfill, and
