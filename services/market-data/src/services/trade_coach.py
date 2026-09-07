@@ -101,7 +101,7 @@ def compute_trade_patterns(session, window_days: int = 90) -> TradePatternResult
     returns = [float(t.pct_return) for t in trades if t.pct_return is not None]
     wins = [r for r in returns if r > 0]
     win_rate = round(len(wins) / len(returns), 3) if returns else None
-    avg_return_pct = round(sum(returns) / len(returns) * 100, 2) if returns else None
+    avg_return_pct = round(sum(returns) / len(returns), 2) if returns else None
 
     # By exit reason: count, win rate, avg return, total pnl.
     by_reason: dict[str, dict] = {}
@@ -121,7 +121,7 @@ def compute_trade_patterns(session, window_days: int = 90) -> TradePatternResult
             "exit_reason": reason,
             "count": b["count"],
             "win_rate": round(b["wins"] / len(b["returns"]), 3) if b["returns"] else None,
-            "avg_return_pct": round(sum(b["returns"]) / len(b["returns"]) * 100, 2) if b["returns"] else None,
+            "avg_return_pct": round(sum(b["returns"]) / len(b["returns"]), 2) if b["returns"] else None,
             "total_pnl": round(b["total_pnl"], 2),
         }
         for reason, b in by_reason.items()

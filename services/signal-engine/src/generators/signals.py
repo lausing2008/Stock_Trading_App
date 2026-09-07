@@ -1454,10 +1454,23 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
 
     # MOMENTUM (bearish) — mirrors p_momentum: RSI breaking down (not just "not bullish"),
     # MACD histogram negative and expanding downward, stochastic RSI overbought-reversing.
+    #
+    # AUD-BEARMOMENTUM-NEUTRALPEAK (2026-09-06): the previous bands (1.0 @ 35-55, 0.8 @ 55-65)
+    # were a literal reflection of p_momentum's bullish bands (1.0 @ 45-65) around RSI 50. That
+    # reflection was mathematically faithful but wrong in effect: the bullish peak zone already
+    # straddles neutral (45-65 leans only slightly bullish-of-center), so reflecting it produced
+    # a bearish peak (35-55) that ALSO straddles neutral — an RSI of exactly 50 scored maximum
+    # bearish conviction (1.0), identical to maximum bullish conviction, and RSI 65-72 — a rally
+    # actually rolling over from strength, the real "breaking down" case this pillar exists to
+    # catch — scored 0.0. Rebanded so the peak sits where RSI is elevated-and-turning (mirroring
+    # the INTENT of the bullish pillar — reward confirmed momentum in your own direction — rather
+    # than its literal numeric bands): full conviction only above neutral turning down, partial
+    # credit fading through neutral, and the existing <=28 kill (extreme oversold = bounce
+    # warning, not confirmation) is unchanged since that boundary was never the bug.
     rsi_bear_score = (
-        1.0 if (rsi_val is not None and 35 < rsi_val < 55) else  # bearish sweet spot
-        0.8 if (rsi_val is not None and 55 <= rsi_val < 65) else  # mild overbought, room to fall
-        0.5 if (rsi_val is not None and 28 <= rsi_val <= 35) else  # oversold but not extreme
+        1.0 if (rsi_val is not None and 55 <= rsi_val < 72) else  # elevated and rolling over
+        0.8 if (rsi_val is not None and 45 <= rsi_val < 55) else  # fading through neutral
+        0.5 if (rsi_val is not None and 28 <= rsi_val < 45) else  # weak, room to fall further
         0.0
     )
     macd_bear_score = (
@@ -1475,11 +1488,22 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
     pb_momentum = rsi_bear_score * 0.35 + macd_bear_score * 0.40 + stoch_bear_score * 0.25
 
     # VOLUME (bearish) — mirrors p_volume: OBV trend bearish + volume expansion together
-    # is full conviction (distribution, not accumulation); either alone is partial.
+    # is full conviction (distribution, not accumulation); OBV bearish alone is partial.
+    #
+    # AUD-BEARVOLUME-DIRECTIONBLIND (2026-09-06): `vol_z_signal` (defined above, shared with the
+    # bullish pillar) is pure volume MAGNITUDE — it says volume is elevated, not that the
+    # elevation is bearish. The bullish pillar pairs it with `obv_signal` via OR, which is
+    # correct there because either bullish OBV or a volume spike is at least weakly bullish
+    # evidence. Mirroring that OR here was wrong: it let a volume spike alone — including one
+    # accompanying BULLISH OBV (textbook accumulation) — count as bearish evidence, and let
+    # "OBV bearish, volume flat" (no bearish evidence at all beyond OBV) score identically to
+    # "OBV bearish, volume confirms." `vol_z_signal` therefore only contributes when OBV has
+    # already established a bearish direction; it can no longer stand in for bearish evidence on
+    # its own.
     obv_bear_signal = not obv_trend_bullish
     if obv_bear_signal and vol_z_signal:
         pb_volume = 1.0
-    elif obv_bear_signal or vol_z_signal:
+    elif obv_bear_signal:
         pb_volume = 0.6
     else:
         pb_volume = 0.0

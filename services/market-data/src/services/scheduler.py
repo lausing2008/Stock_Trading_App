@@ -6706,7 +6706,7 @@ def check_signal_alerts() -> None:
                             sig_data, kscore=kscores.get(alert.symbol), rankings_api_ok=rankings_api_ok
                         )
                         db_sent_at = alert.last_sent_at.isoformat() if alert.last_sent_at else None
-                        _store_conviction(alert.symbol, style, True, passed, failed, current, sent_at=db_sent_at)
+                        _store_conviction(alert.symbol, style, all_pass, passed, failed, current, sent_at=db_sent_at)
                     continue
 
                 # Treat None→BUY as a bullish transition (stock was already at BUY
@@ -11248,8 +11248,8 @@ def send_paper_portfolio_digest() -> None:
     """
     from datetime import date as _date
     from sqlalchemy import select as _sel, desc as _desc
-    from ..db import SessionLocal
-    from ..db.models import User, PaperPortfolio, PaperTrade
+    from db import SessionLocal
+    from db.models import User, PaperPortfolio, PaperTrade
     _t0 = time.monotonic()
     # AUD301-PAPERPORTFOLIODIGEST-SENDLOOP: this loop had the identical unguarded pattern
     # already found and fixed in send_premarket_brief()/send_morning_digest()/
@@ -11292,7 +11292,7 @@ def send_paper_portfolio_digest() -> None:
                             pass
                         try:
                             from ..api.paper_portfolio import _portfolio_risk_metrics
-                            from ..db.models import PaperEquityCurve
+                            from db.models import PaperEquityCurve
                             # Summary metrics
                             curve_rows = session.execute(
                                 _sel(PaperEquityCurve).where(PaperEquityCurve.portfolio_id == p.id).order_by(PaperEquityCurve.date)

@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-# AUD-DEPLOYDRIFT: compares each EC2 backend container's running /app/src against the
-# service's committed source at the current local git HEAD, and flags any mismatch.
+# AUD-DEPLOYDRIFT: compares each EC2 backend container's running /app/src AND /app/shared
+# against the committed source at the current local git HEAD, and flags any mismatch.
+#
+# R2-13 (2026-09-06 deep audit): this script originally checked /app/src only. That gap was
+# not theoretical — it was actively hiding real drift: stockai-ranking-engine-1 was running a
+# stale shared/common/ai_keys.py (where the UW and Claude API keys are resolved) and a stale
+# shared/db/session.py, while this script reported "OK ranking-engine, 0 drifted" the whole
+# time. shared/ is the exact surface the original 3 incidents below were about — a check that
+# doesn't cover it can convert real drift into a false assurance, which is worse than no tool.
 #
 # Motivated by THREE deploy-drift incidents found live in a single session on 2026-09-05:
 #   - news-intelligence ran SIX-WEEK-OLD code (a real fix from 2026-07-27 reverted by a
@@ -57,6 +64,14 @@ checked=0
 echo "Comparing local git HEAD ($(cd "$REPO_ROOT" && git rev-parse --short HEAD)) against EC2 running containers..."
 echo
 
+# shared/ is repo-root-level (not per-service) and gets docker cp'd into EVERY container's
+# /app/shared — compute its local hash once, up front, the same way, for all services.
+shared_local_dir="$REPO_ROOT/shared"
+shared_local_hash=""
+if [ -d "$shared_local_dir" ]; then
+  shared_local_hash=$(LC_ALL=C find "$shared_local_dir" -name '*.py' | LC_ALL=C sort | xargs cat 2>/dev/null | md5sum | cut -d' ' -f1)
+fi
+
 for svc in "${SERVICES[@]}"; do
   local_dir="$REPO_ROOT/services/$svc/src"
   if [ ! -d "$local_dir" ]; then
@@ -75,16 +90,42 @@ for svc in "${SERVICES[@]}"; do
     "docker exec stockai-${svc}-1 sh -c \"LC_ALL=C find /app/src -name '*.py' 2>/dev/null | LC_ALL=C sort | xargs cat 2>/dev/null | md5sum\"" \
     2>/dev/null | cut -d' ' -f1 || echo "")
 
+  shared_remote_hash=""
+  if [ -n "$shared_local_hash" ]; then
+    shared_remote_hash=$(ssh -i "$EC2_KEY" "$EC2_HOST" \
+      "docker exec stockai-${svc}-1 sh -c \"LC_ALL=C find /app/shared -name '*.py' 2>/dev/null | LC_ALL=C sort | xargs cat 2>/dev/null | md5sum\"" \
+      2>/dev/null | cut -d' ' -f1 || echo "")
+  fi
+
   checked=$((checked + 1))
+  src_ok=0
+  shared_ok=0
+
   if [ -z "$remote_hash" ]; then
-    echo "ERROR $svc — could not read from container (is stockai-${svc}-1 running?)"
-    drifted=$((drifted + 1))
+    echo "ERROR $svc — could not read /app/src from container (is stockai-${svc}-1 running?)"
   elif [ "$local_hash" = "$remote_hash" ]; then
-    echo "OK    $svc"
+    src_ok=1
   else
-    echo "DRIFT $svc — running container does NOT match local git HEAD"
+    echo "DRIFT $svc (src)    — running container's /app/src does NOT match local git HEAD"
     echo "        redeploy with:"
     echo "        ssh -i $EC2_KEY $EC2_HOST \"cd /home/ec2-user/Stock_Trading_App && docker cp services/$svc/src stockai-${svc}-1:/app/ && docker restart stockai-${svc}-1\""
+  fi
+
+  if [ -z "$shared_local_hash" ]; then
+    shared_ok=1  # no local shared/ tree to compare against — nothing to flag
+  elif [ -z "$shared_remote_hash" ]; then
+    echo "ERROR $svc — could not read /app/shared from container"
+  elif [ "$shared_local_hash" = "$shared_remote_hash" ]; then
+    shared_ok=1
+  else
+    echo "DRIFT $svc (shared) — running container's /app/shared does NOT match local git HEAD"
+    echo "        redeploy with:"
+    echo "        ssh -i $EC2_KEY $EC2_HOST \"cd /home/ec2-user/Stock_Trading_App && docker cp shared stockai-${svc}-1:/app/ && docker restart stockai-${svc}-1\""
+  fi
+
+  if [ "$src_ok" -eq 1 ] && [ "$shared_ok" -eq 1 ]; then
+    echo "OK    $svc"
+  else
     drifted=$((drifted + 1))
   fi
 done

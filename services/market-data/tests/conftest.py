@@ -7,7 +7,7 @@ _stubs = [
     "structlog",
     "common", "common.config", "common.logging", "common.ai_keys", "common.redis_client",
     "common.uw_congress", "common.llm_usage",
-    "db", "db.session",
+    "db", "db.session", "db.models",
     # DB / cache drivers
     "sqlalchemy", "sqlalchemy.orm", "sqlalchemy.dialects",
     "sqlalchemy.dialects.postgresql",
@@ -17,6 +17,11 @@ _stubs = [
     "alpha_vantage", "alpha_vantage.timeseries",
     "polygon", "polygon.rest",
     "httpx",
+    # apscheduler — declared prod dep, previously never stubbed, which meant scheduler.py
+    # (28 check_*/send_* alert functions) could not be imported by any test at all.
+    "apscheduler", "apscheduler.schedulers", "apscheduler.schedulers.background",
+    "apscheduler.triggers", "apscheduler.triggers.combining", "apscheduler.triggers.cron",
+    "apscheduler.triggers.interval",
 ]
 for _m in _stubs:
     sys.modules.setdefault(_m, MagicMock())

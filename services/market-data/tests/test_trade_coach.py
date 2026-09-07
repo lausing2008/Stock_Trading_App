@@ -72,8 +72,14 @@ _trade_id_counter = {"next": 1}
 
 
 def _add_trade(
+    # pct_return matches paper_trades' real convention: PaperTrade.pct_return is written by
+    # paper_trading_engine.py as `round(total_pnl_pct * 100, 4)` — i.e. ALREADY x100 (10.0 means
+    # +10%, not 0.10). Fixtures must use this same scale or they silently test the wrong thing —
+    # see R2-12/R2-27 in the 2026-09-06 deep audit (trade_coach.py used to multiply by 100 a
+    # second time, and this file's old pct_return=0.10-style fixtures encoded the opposite
+    # convention from production, so the bug passed green).
     session, *, portfolio_id=1, symbol="AAA", style="SWING", exit_reason="target_reached",
-    pct_return=0.10, pnl=500.0, hold_days=10, exit_days_ago=1, entry_price=100.0,
+    pct_return=10.0, pnl=500.0, hold_days=10, exit_days_ago=1, entry_price=100.0,
     exit_price=110.0, highest_price=None,
 ):
     tid = _trade_id_counter["next"]
@@ -134,9 +140,9 @@ def test_excludes_open_trades(session):
 
 def test_win_rate_and_avg_return_computed_from_pct_return(session):
     for _ in range(6):
-        _add_trade(session, symbol=f"W{_}", pct_return=0.10)
+        _add_trade(session, symbol=f"W{_}", pct_return=10.0)
     for _ in range(4):
-        _add_trade(session, symbol=f"L{_}", pct_return=-0.05)
+        _add_trade(session, symbol=f"L{_}", pct_return=-5.0)
     result = trade_coach.compute_trade_patterns(session)
     assert result.win_rate == pytest.approx(0.6)
     assert result.avg_return_pct == pytest.approx((6 * 10 + 4 * -5) / 10, abs=0.01)
@@ -144,9 +150,9 @@ def test_win_rate_and_avg_return_computed_from_pct_return(session):
 
 def test_by_exit_reason_breakdown_is_correct(session):
     for _ in range(6):
-        _add_trade(session, symbol=f"T{_}", exit_reason="target_reached", pct_return=0.10, pnl=100.0)
+        _add_trade(session, symbol=f"T{_}", exit_reason="target_reached", pct_return=10.0, pnl=100.0)
     for _ in range(4):
-        _add_trade(session, symbol=f"S{_}", exit_reason="stop_hit", pct_return=-0.08, pnl=-80.0)
+        _add_trade(session, symbol=f"S{_}", exit_reason="stop_hit", pct_return=-8.0, pnl=-80.0)
     result = trade_coach.compute_trade_patterns(session)
     by_reason = {r["exit_reason"]: r for r in result.by_exit_reason}
     assert by_reason["target_reached"]["count"] == 6
@@ -167,9 +173,9 @@ def test_worst_exit_reason_is_the_one_with_the_most_negative_total_pnl(session):
 
 def test_avg_giveback_only_counted_on_winning_trades_with_a_real_peak_above_exit(session):
     # Winner that gave back 10% from peak: peak=110, exit=99 -> (110-99)/110 = 10%
-    _add_trade(session, symbol="GIVE", pct_return=0.05, exit_price=99.0, highest_price=110.0)
+    _add_trade(session, symbol="GIVE", pct_return=5.0, exit_price=99.0, highest_price=110.0)
     # A loser with a peak above exit must NOT be counted (only winners count)
-    _add_trade(session, symbol="LOSE", pct_return=-0.05, exit_price=90.0, highest_price=110.0)
+    _add_trade(session, symbol="LOSE", pct_return=-5.0, exit_price=90.0, highest_price=110.0)
     _fill_to_min(session, n=8)  # pad to the min-trades floor, no highest_price set on these
     result = trade_coach.compute_trade_patterns(session)
     assert result.avg_giveback_pct_on_winners == pytest.approx(10.0)
@@ -184,7 +190,7 @@ def test_giveback_is_none_when_no_trade_has_a_usable_highest_price(session):
 def test_giveback_ignores_a_winner_whose_exit_is_at_or_above_its_own_peak(session):
     """A trade that closed AT or ABOVE its own tracked peak (exit == highest_price, or a stale
     highest_price below the real exit) must never produce a negative 'giveback' artifact."""
-    _add_trade(session, symbol="ATPEAK", pct_return=0.10, exit_price=110.0, highest_price=110.0)
+    _add_trade(session, symbol="ATPEAK", pct_return=10.0, exit_price=110.0, highest_price=110.0)
     _fill_to_min(session, n=9)
     result = trade_coach.compute_trade_patterns(session)
     assert result.avg_giveback_pct_on_winners is None
