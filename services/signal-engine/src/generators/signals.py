@@ -2557,12 +2557,38 @@ def _apply_style_signal(
     max_ratio = p.get("max_compress_ratio", 0.50)
     orig_dist = fused_before_filters - 0.5
     curr_dist = fused - 0.5
-    if orig_dist != 0 and abs(curr_dist) < abs(orig_dist) * max_ratio:
+    # AUD-SIG3-CAPSIGNFLIP: the cap exists to undo OVER-COMPRESSION, never to reverse
+    # DIRECTION. It restores toward np.sign(orig_dist) — a snapshot taken at :2067, before ~25
+    # subsequent additive adjustments — while the guard compared only MAGNITUDES. If those
+    # adjustments moved `fused` across 0.50, the cap did not restore a compressed signal, it
+    # flipped a bearish one back to bullish and reinstated it at max_ratio strength.
+    #
+    # Concretely: a LONG signal fuses to 0.58 (orig_dist +0.08); analyst_momentum
+    # strong_downgrade (-0.08, :2500) plus a kscore<35 penalty (-0.06, :2524) take it to 0.48 —
+    # correctly bearish on two independent inputs. abs(-0.02) < 0.08*0.65 = 0.052 was true, so
+    # fused was rewritten to 0.552 and confidence restated as 10.4 BULLISH instead of 4.0
+    # bearish. The stored bullish_probability no longer reflected the evidence that produced it.
+    #
+    # Requiring sign agreement keeps the intended behaviour (restoring a genuinely bullish base
+    # signal that stacked filters over-suppressed) while refusing to resurrect a direction the
+    # downstream evidence has since overturned. A sign flip means the filters did not merely
+    # compress the signal — they changed its mind, and that verdict must stand.
+    #
+    # Measured before this fix: the cap fires on 1,129 of 4,120 signals (27% — a hot path), of
+    # which 12 became BUY. The sign-flip subset is narrower still, so this is a small live
+    # blast radius today that would widen immediately if any boost magnitude were increased.
+    _sign_agrees = (curr_dist == 0) or (np.sign(curr_dist) == np.sign(orig_dist))
+    if orig_dist != 0 and abs(curr_dist) < abs(orig_dist) * max_ratio and _sign_agrees:
         fused = 0.5 + float(np.sign(orig_dist)) * abs(orig_dist) * max_ratio
         fused = float(np.clip(fused, 0.0, 1.0))
         reasons["compression_cap_applied"] = True
     else:
         reasons["compression_cap_applied"] = False
+        # Observability: distinguish "cap didn't need to fire" from "cap was SUPPRESSED because
+        # the filters reversed the signal's direction" — otherwise the fix is invisible in the
+        # data and nobody can tell how often it mattered.
+        if orig_dist != 0 and abs(curr_dist) < abs(orig_dist) * max_ratio and not _sign_agrees:
+            reasons["compression_cap_sign_flip_blocked"] = True
 
     # ── Weekly BUY gate — applied AFTER compression cap so it cannot be overridden ──
     # Bearish weekly structure (RSI < 40 AND trend down) is a confirmed downtrend, not a dip.

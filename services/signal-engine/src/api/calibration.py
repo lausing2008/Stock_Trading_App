@@ -2590,6 +2590,38 @@ def signal_watchdog(
 
         floor_threshold = _DEFAULT_THRESHOLDS.get(style, 0.65)
 
+        # AUD-SIG3-WATCHDOGLOOSEN (self-heal): clear any watchdog override that is LOOSER than
+        # the bull baseline it was supposed to tighten toward.
+        #
+        # Such a value can only be an artifact of the pre-fix seeding bug above — a legitimate
+        # tighten now always lands at or above floor_threshold. Left in place it is actively
+        # harmful: it is read with strict priority over the calibrated key, and it loosens every
+        # regime at once.
+        #
+        # This also breaks the DEADLOCK the bug created. Once tighten_count reached
+        # _MAX_TIGHTEN=3 the tighten branch short-circuits to "manual review needed", and the
+        # relax branch cannot help either since it requires signals_7d == 0 (SWING was emitting
+        # 262 BUYs/7d). Without this, only a fresh outcomes_calibrate_apply could ever clear it.
+        # Resetting the counter alongside the value lets the watchdog genuinely try again.
+        if current_adj is not None:
+            try:
+                _adj_val = float(current_adj)
+            except (TypeError, ValueError):
+                _adj_val = None
+            if _adj_val is not None and _adj_val < floor_threshold:
+                redis_client.delete(current_key)
+                redis_client.delete(tighten_count_key)
+                log.warning(
+                    "signal_watchdog.cleared_loosening_override",
+                    style=style, stale_value=_adj_val, bull_baseline=floor_threshold,
+                    prior_tighten_count=tighten_count,
+                    note="watchdog override was looser than the bull baseline (pre-AUD-SIG3 "
+                         "seeding bug); cleared so the calibrated value applies and the "
+                         "watchdog can act again",
+                )
+                current_adj = None
+                tighten_count = 0
+
         # SELFIMPROVE-CROSS-MECHANISM-BLINDNESS: before acting, check whether some OTHER
         # tuning mechanism (calibrate_ta_weights, calibrate_conviction_weights,
         # calibrate_ml_weight, outcomes_calibrate_apply, tune_style_profiles — anything NOT
@@ -2631,7 +2663,33 @@ def signal_watchdog(
                 current_val = float(current_adj) if current_adj else (
                     float(redis_client.get(f"stockai:signal_thresholds:{style}") or 0) or floor_threshold
                 )
-                new_val = min(current_val + 0.03, floor_threshold + 0.12)  # max +12pp above floor
+                # AUD-SIG3-WATCHDOGLOOSEN: a "tighten" must never emit a value LOOSER than the
+                # one already in force — but that is exactly what it did.
+                #
+                # `floor_threshold` is _STYLE_PROFILES[style]["buy_threshold"]["bull"], is named
+                # and documented as a FLOOR, and yet appeared only inside a min() as a CEILING.
+                # It was never applied as a floor. So when the calibrated seed sits BELOW the
+                # bull baseline, every +0.03 step still lands below it, and because
+                # _get_dynamic_buy_threshold() reads the watchdog key with strict priority over
+                # the calibrated key, that looser value wins.
+                #
+                # Measured live before this fix: SWING calibrated 0.56 vs bull base 0.72. Three
+                # "tightenings" walked 0.56 -> 0.59 -> 0.62 -> 0.65 — all still below 0.72 — and
+                # since T232-CAL2 applies the value as a DELTA from the bull base across every
+                # regime, the net effect was a 7-POINT LOOSENING in all regimes (bull
+                # 0.72->0.65, bear 0.76->0.69). The watchdog answered a sub-38% win rate by
+                # making SWING fire BUY *more* readily. SHORT (0.55 vs 0.63) and LONG (0.55 vs
+                # 0.60) were one bad week away from the same outcome.
+                #
+                # Two corrections, both needed:
+                #   1. Seed from the STRICTER of the current adjustment and the bull baseline,
+                #      so a tighten always starts from a value that is not already a loosening.
+                #   2. Apply floor_threshold as an actual floor on the result.
+                # The ceiling (floor+0.12) is kept — it was never the problem here (0.84 for
+                # SWING, it never bound), it just caps how far a legitimate tighten can run.
+                _tighten_base = max(current_val, floor_threshold)
+                new_val = min(_tighten_base + 0.03, floor_threshold + 0.12)  # max +12pp above floor
+                new_val = max(new_val, floor_threshold)                      # ...and never below it
                 redis_client.setex(current_key, _REDIS_TTL_7D, str(round(new_val, 4)))
                 redis_client.setex(tighten_count_key, _REDIS_TTL_7D, str(tighten_count + 1))
                 action = "tightened"
