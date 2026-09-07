@@ -1750,3 +1750,59 @@ def backfill_index_membership(
     session.commit()
     return {"status": "ok", "updated": updated}
 
+
+
+@router.post("/capture-etf-fund-flows")
+def capture_etf_fund_flows_endpoint(
+    symbols: str | None = None,
+    _: User = Depends(get_admin_user),
+):
+    """AUD-UWEXPAND-1: persist ETF creation/redemption flow into etf_fund_flows.
+
+    Optional `symbols` (comma-separated) overrides the default 21-ETF universe. A whole-universe
+    default is safe here — unlike the option-chain capture — because one request returns the
+    ENTIRE ~750-row history for an ETF, so the whole job is 21 requests and a few thousand rows.
+    """
+    from ..services.scheduler import capture_etf_fund_flows
+    syms = [s.strip().upper() for s in symbols.split(",") if s.strip()] if symbols else None
+    return capture_etf_fund_flows(syms)
+
+
+@router.post("/capture-fda-catalysts")
+def capture_fda_catalysts_endpoint(_: User = Depends(get_admin_user)):
+    """AUD-UWEXPAND-2: persist the FDA catalyst calendar into fda_catalysts. One request."""
+    from ..services.scheduler import capture_fda_catalysts
+    return capture_fda_catalysts()
+
+
+@router.post("/capture-institutional-ownership")
+def capture_institutional_ownership_endpoint(
+    symbols: str,
+    _: User = Depends(get_admin_user),
+):
+    """AUD-UWEXPAND-3: persist per-institution 13F holdings into institutional_ownership.
+
+    `symbols` is REQUIRED — 13F data only changes quarterly, so there is deliberately no
+    whole-universe mode that would re-fetch unchanged data daily.
+    """
+    from ..services.scheduler import capture_institutional_ownership
+    syms = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not syms:
+        raise HTTPException(400, "symbols is required (comma-separated)")
+    return capture_institutional_ownership(syms)
+
+
+@router.get("/uw-screener")
+def uw_screener_endpoint(
+    limit: int = 50,
+    _: User = Depends(get_admin_user),
+):
+    """AUD-UWEXPAND-4: UW's server-side stock screener, fetched live.
+
+    Deliberately NOT persisted: the ~70 fields (iv_rank, implied_move_7/30, gex_ratio, net
+    call/put premium, variance_risk_premium) are continuously recomputed, so a stored copy would
+    be a stale mirror of data that is only meaningful fresh.
+    """
+    from ..services.unusual_whales import get_stock_screener
+    rows = get_stock_screener(limit=limit)
+    return {"count": len(rows), "rows": rows}

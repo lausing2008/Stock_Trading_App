@@ -1751,3 +1751,90 @@ def get_historical_option_chain(symbol: str, as_of: str) -> list[dict]:
     if not isinstance(rows, list):
         return []
     return [r for r in rows if isinstance(r, dict)]
+
+
+# ── AUD-UWEXPAND: endpoints the API BASIC tier already grants but nothing consumed ──────────
+#
+# All three follow the same fail-open, list-returning contract as get_max_pain()/get_greeks():
+# ANY failure (network, 403 from an entitlement change, malformed body) yields [] rather than
+# raising or returning None, so callers never branch on which failure occurred.
+#
+# None are Redis-cached: each is fetched by a DAILY batch job and persisted to Postgres, so a
+# cache would add a second staleness layer over data that is already only daily-fresh, while
+# evicting hot live keys. (Contrast get_max_pain(), which IS cached because it serves live
+# per-request page loads.)
+
+def get_etf_fund_flow(symbol: str) -> list[dict]:
+    """Daily creation/redemption flow for an ETF — /api/etfs/{ticker}/in-outflow.
+
+    Returns UW's raw rows (newest first). Verified live 2026-09-07: 21 of 22 probed ETFs return
+    ~750 rows reaching back to 2023-09-08, so one call yields 3 years of history rather than a
+    single day. ARKK was the only empty responder.
+    """
+    if not is_available():
+        return []
+    sym = symbol.upper()
+    try:
+        data = _get(f"/api/etfs/{sym}/in-outflow", endpoint="/api/etfs/{symbol}/in-outflow")
+    except Exception as exc:
+        log.warning("unusual_whales.etf_fund_flow_failed", symbol=sym, error=str(exc))
+        return []
+    return [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
+
+
+def get_fda_calendar() -> list[dict]:
+    """FDA catalyst calendar — /api/market/fda-calendar (market-wide, not per-symbol).
+
+    CAUTION for consumers: `target_date` in these rows is FREE TEXT ("2025-MID", "2025-H2", a
+    quarter, or empty) and the feed carries genuinely old events — the live first page includes
+    2021 rows. Filter on start_date and check recency yourself; do not assume the feed is
+    current or that target_date parses as a date.
+    """
+    if not is_available():
+        return []
+    try:
+        data = _get("/api/market/fda-calendar", endpoint="/api/market/fda-calendar")
+    except Exception as exc:
+        log.warning("unusual_whales.fda_calendar_failed", error=str(exc))
+        return []
+    return [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
+
+
+def get_institutional_ownership(symbol: str) -> list[dict]:
+    """Per-institution 13F holdings for `symbol` — /api/institution/{ticker}/ownership.
+
+    Carries avg_price (the holder's cost basis) and units_changed (delta vs the prior filing),
+    which is what makes this more than the aggregate ownership percentage yfinance already
+    gives. Inherently LAGGED ~45 days by the 13F cycle (observed: report_date 2026-06-30 filed
+    2026-08-07) — never present it as current positioning.
+    """
+    if not is_available():
+        return []
+    sym = symbol.upper()
+    try:
+        data = _get(f"/api/institution/{sym}/ownership",
+                    endpoint="/api/institution/{symbol}/ownership")
+    except Exception as exc:
+        log.warning("unusual_whales.inst_ownership_failed", symbol=sym, error=str(exc))
+        return []
+    return [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
+
+
+def get_stock_screener(limit: int = 50, **filters) -> list[dict]:
+    """UW's server-side stock screener — /api/screener/stocks.
+
+    Deliberately NOT persisted to Postgres, unlike the three above: the response is a live
+    snapshot of ~70 derived fields (iv_rank, implied_move_7/30, gex_ratio, net call/put premium,
+    variance_risk_premium, realized vs implied vol) that are recomputed continuously. Storing it
+    would create a stale mirror of data that is only meaningful fresh. Fetched on demand.
+    """
+    if not is_available():
+        return []
+    qs = "&".join(f"{k}={v}" for k, v in filters.items() if v is not None)
+    path = f"/api/screener/stocks?limit={int(limit)}" + (f"&{qs}" if qs else "")
+    try:
+        data = _get(path, endpoint="/api/screener/stocks")
+    except Exception as exc:
+        log.warning("unusual_whales.screener_failed", error=str(exc))
+        return []
+    return [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []

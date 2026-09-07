@@ -2657,3 +2657,125 @@ class LlmCallLog(Base):
     # human reading a spike's row-level detail.
     context: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class EtfFundFlow(Base):
+    """UW-sourced daily ETF creation/redemption flow (AUD-UWEXPAND-1).
+
+    Genuinely new information for this platform: every other "flow" signal here is DERIVED
+    (options premium ratios, dark-pool prints, southbound turnover). This is the actual
+    creation/redemption mechanic — shares entering or leaving the fund — i.e. real money in or
+    out, not a proxy inferred from trading activity.
+
+    Coverage measured 2026-09-07: 21 of 22 probed ETFs return data (only ARKK was empty),
+    including all 11 sector SPDRs and the HK-relevant FXI/EWH, each with ~750 rows going back
+    to 2023-09-08. So a backfill gives 3 years of history immediately, not a forward-only feed.
+
+    `change` is in SHARES and `change_prem` in DOLLARS; they are separate quantities, not a
+    unit conversion of one another — store both. `is_fomc` is UW's own flag marking an FOMC
+    day, useful because flows around policy dates behave differently.
+    """
+    __tablename__ = "etf_fund_flows"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    as_of: Mapped[date] = mapped_column(Date, nullable=False)
+    # Net share change from creations/redemptions. NEGATIVE = net redemption (money leaving).
+    change_shares: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Net dollar flow. Same sign convention as change_shares.
+    change_premium: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    volume: Mapped[float | None] = mapped_column(Float, nullable=True)
+    expiration_cycle: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    is_fomc: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "as_of", name="uq_etf_flow_symbol_date"),
+        Index("ix_etfflow_sym_asof", "symbol", "as_of"),
+    )
+
+
+class FdaCatalyst(Base):
+    """UW/Benzinga FDA calendar events (AUD-UWEXPAND-2).
+
+    A catalyst class the platform was previously blind to entirely — binary biotech events that
+    move a stock far more than any technical signal, and that none of the existing TA/options
+    pillars can anticipate.
+
+    IMPORTANT, measured on the real feed: `target_date` is FREE TEXT, not a date. Observed
+    values include "2025-MID", "2025-H2", quarters, and empty. It must be stored as text and
+    never parsed into a Date column — doing so would silently drop the majority of rows or, if
+    coerced, invent precision that does not exist. `start_date`/`end_date` ARE real dates and
+    are the only ones safe to filter on.
+
+    Rows can also be years stale (the live feed's first page includes 2021 events still marked
+    with a future target), so any consumer must filter on recency itself rather than assuming
+    the feed is current.
+    """
+    __tablename__ = "fda_catalysts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # UW's own stable id for the event — the dedup key.
+    unique_identifier: Mapped[str] = mapped_column(String(120), nullable=False)
+    ticker: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    catalyst: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    event_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    drug: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    indication: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outcome_brief: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Real dates — safe to filter on.
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # FREE TEXT ("2025-MID", "2025-H2", ...). Deliberately String, never Date. See docstring.
+    target_date_text: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    has_options: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    marketcap: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_link: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("unique_identifier", name="uq_fda_catalyst_uid"),
+        Index("ix_fda_ticker_start", "ticker", "start_date"),
+    )
+
+
+class InstitutionalOwnership(Base):
+    """13F-derived institutional holdings per (ticker, institution, report_date) (AUD-UWEXPAND-3).
+
+    What distinguishes this from the ownership percentages already available via yfinance
+    fundamentals: it is PER-INSTITUTION and carries `avg_price` (the holder's average cost
+    basis) plus `units_changed` (the position delta since the prior filing). That supports
+    questions the aggregate cannot answer — whether large holders are adding or trimming, and
+    whether the current price sits above or below what they paid.
+
+    Inherently LAGGED: 13F filings arrive ~45 days after quarter end (observed: report_date
+    2026-06-30 filed 2026-08-07). Never treat this as real-time positioning — it is a
+    structural, slow-moving view, and any consumer must surface the report_date so the staleness
+    is visible rather than implied.
+    """
+    __tablename__ = "institutional_ownership"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    institution: Mapped[str] = mapped_column(String(255), nullable=False)
+    cik: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    report_date: Mapped[date] = mapped_column(Date, nullable=False)
+    filing_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Shares held, and the change vs the prior filing (NEGATIVE = trimmed).
+    units: Mapped[float | None] = mapped_column(Float, nullable=True)
+    units_changed: Mapped[float | None] = mapped_column(Float, nullable=True)
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The holder's average cost basis — the field that makes this more than a headcount.
+    avg_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    shares_outstanding: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_hedge_fund: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("ticker", "institution", "report_date", name="uq_instown_tkr_inst_date"),
+        Index("ix_instown_ticker_report", "ticker", "report_date"),
+    )

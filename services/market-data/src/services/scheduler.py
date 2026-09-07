@@ -12347,6 +12347,23 @@ def start_scheduler() -> None:
         id="signal_watchdog_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
 
+    # ── AUD-UWEXPAND: daily UW captures, after the US close ─────────────────
+    # 21 requests for ETF flows + 1 for the FDA calendar = 22/day against a 120k budget.
+    # Scheduled post-close because both are end-of-day datasets; running them intraday would
+    # spend requests re-fetching a partial day. Institutional ownership is deliberately NOT
+    # scheduled — 13F data changes quarterly, so a daily sweep would be pure waste; it is
+    # exposed as an on-demand admin endpoint instead.
+    _scheduler.add_job(
+        capture_etf_fund_flows,
+        CronTrigger(hour=17, minute=30, day_of_week="mon-fri", timezone="America/New_York"),
+        id="etf_fund_flows_daily", replace_existing=True, **_JOB_DEFAULTS,
+    )
+    _scheduler.add_job(
+        capture_fda_catalysts,
+        CronTrigger(hour=17, minute=40, day_of_week="mon-fri", timezone="America/New_York"),
+        id="fda_catalysts_daily", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
     # ── DB purge — Sunday 15:00 PST (before weekly full refresh) ────────────
     # Deletes prices_5m and scheduler_jobs rows older than 90 days.
     _scheduler.add_job(
@@ -12687,3 +12704,225 @@ def _opthist_i(v) -> int | None:
         return int(float(v))
     except (TypeError, ValueError):
         return None
+
+
+# ── AUD-UWEXPAND: daily capture jobs for three newly-wired UW endpoints ─────────────────────
+
+def _uwx_date(v) -> "date | None":
+    """Parse a UW date field to a real date, or None.
+
+    Deliberately strict: returns None rather than guessing. The FDA feed in particular carries
+    free-text 'dates' like "2025-MID" that MUST NOT be coerced into a Date column — inventing
+    precision that the source does not have is worse than storing nothing.
+    """
+    if not v or not isinstance(v, str):
+        return None
+    try:
+        return datetime.fromisoformat(v.replace("Z", "+00:00")).date()
+    except (ValueError, TypeError):
+        pass
+    try:
+        return datetime.strptime(v[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+# The ETF universe worth tracking flows for: broad-market, all 11 sector SPDRs, and the
+# HK/EM names this platform actually trades against. Verified 2026-09-07 that every one of
+# these returns real data (ARKK was the only probed ticker that came back empty, so it is
+# deliberately excluded rather than left to fail every day).
+_ETF_FLOW_UNIVERSE = [
+    "SPY", "QQQ", "IWM", "DIA", "SMH", "GLD", "TLT", "EEM", "FXI", "EWH",
+    "XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLU", "XLB", "XLRE", "XLC",
+]
+
+
+def capture_etf_fund_flows(symbols: list[str] | None = None) -> dict:
+    """Persist daily ETF creation/redemption flow (AUD-UWEXPAND-1).
+
+    One request per ETF returns ~750 rows (~3 years), so the FIRST run backfills history and
+    every later run is a cheap idempotent top-up — 21 requests/day against a 120k budget.
+    """
+    from db import SessionLocal
+    from db.models import EtfFundFlow
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from .unusual_whales import get_etf_fund_flow
+
+    syms = [s.upper() for s in (symbols or _ETF_FLOW_UNIVERSE)]
+    written = 0
+    empty: list[str] = []
+    errors = 0
+    with SessionLocal() as session:
+        for sym in syms:
+            try:
+                rows = get_etf_fund_flow(sym)
+            except Exception:
+                errors += 1
+                continue
+            if not rows:
+                empty.append(sym)
+                continue
+            payload = []
+            for r in rows:
+                d = _uwx_date(r.get("date"))
+                if d is None:
+                    continue
+                payload.append({
+                    "symbol": sym,
+                    "as_of": d,
+                    # `change` is SHARES, `change_prem` is DOLLARS — distinct quantities.
+                    "change_shares": _opthist_f(r.get("change")),
+                    "change_premium": _opthist_f(r.get("change_prem")),
+                    "close": _opthist_f(r.get("close")),
+                    "volume": _opthist_f(r.get("volume")),
+                    "expiration_cycle": (r.get("expiration_cycle") or None),
+                    "is_fomc": bool(r.get("is_fomc")) if r.get("is_fomc") is not None else None,
+                })
+            if not payload:
+                continue
+            for chunk in (payload[i:i + 500] for i in range(0, len(payload), 500)):
+                stmt = pg_insert(EtfFundFlow).values(chunk)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["symbol", "as_of"],
+                    set_={
+                        "change_shares": stmt.excluded.change_shares,
+                        "change_premium": stmt.excluded.change_premium,
+                        "close": stmt.excluded.close,
+                        "volume": stmt.excluded.volume,
+                        "is_fomc": stmt.excluded.is_fomc,
+                    },
+                )
+                session.execute(stmt)
+                written += len(chunk)
+            session.commit()
+    if empty:
+        log.warning("etf_fund_flows.empty_symbols", symbols=empty)
+    log.info("etf_fund_flows.captured", symbols=len(syms), rows=written, errors=errors)
+    return {"symbols": len(syms), "rows_written": written, "empty": empty, "errors": errors}
+
+
+def capture_fda_catalysts() -> dict:
+    """Persist the FDA catalyst calendar (AUD-UWEXPAND-2). One request, market-wide.
+
+    Rows without UW's `unique_identifier` are SKIPPED rather than synthesising a key: the id is
+    the dedup anchor, and a fabricated one would let the same event accumulate duplicates on
+    every daily run.
+    """
+    from db import SessionLocal
+    from db.models import FdaCatalyst
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from .unusual_whales import get_fda_calendar
+
+    rows = get_fda_calendar()
+    if not rows:
+        log.warning("fda_catalysts.empty_response")
+        return {"rows_written": 0, "skipped_no_id": 0}
+
+    payload, skipped = [], 0
+    for r in rows:
+        uid = r.get("unique_identifier")
+        if not uid:
+            skipped += 1
+            continue
+        payload.append({
+            "unique_identifier": str(uid)[:120],
+            "ticker": (r.get("ticker") or None),
+            "catalyst": (r.get("catalyst") or None),
+            "event_type": (r.get("event_type") or None),
+            "drug": (r.get("drug") or None),
+            "indication": (r.get("indication") or None),
+            "status": (r.get("status") or None),
+            "description": (r.get("description") or None),
+            "outcome": (r.get("outcome") or None),
+            "outcome_brief": (r.get("outcome_brief") or None),
+            "start_date": _uwx_date(r.get("start_date")),
+            "end_date": _uwx_date(r.get("end_date")),
+            # Stored verbatim as TEXT — "2025-MID" is not a date and must not pretend to be.
+            "target_date_text": (str(r.get("target_date"))[:64] if r.get("target_date") else None),
+            "has_options": bool(r.get("has_options")) if r.get("has_options") is not None else None,
+            "marketcap": _opthist_f(r.get("marketcap")),
+            "source_link": (r.get("source_link") or None),
+        })
+    written = 0
+    with SessionLocal() as session:
+        for chunk in (payload[i:i + 500] for i in range(0, len(payload), 500)):
+            stmt = pg_insert(FdaCatalyst).values(chunk)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["unique_identifier"],
+                set_={
+                    "status": stmt.excluded.status,
+                    "outcome": stmt.excluded.outcome,
+                    "outcome_brief": stmt.excluded.outcome_brief,
+                    "target_date_text": stmt.excluded.target_date_text,
+                    "end_date": stmt.excluded.end_date,
+                },
+            )
+            session.execute(stmt)
+            written += len(chunk)
+        session.commit()
+    log.info("fda_catalysts.captured", rows=written, skipped_no_id=skipped)
+    return {"rows_written": written, "skipped_no_id": skipped}
+
+
+def capture_institutional_ownership(symbols: list[str]) -> dict:
+    """Persist per-institution 13F holdings for the given symbols (AUD-UWEXPAND-3).
+
+    Requires an explicit symbol list — no whole-universe default. 13F data updates only
+    quarterly, so sweeping hundreds of symbols daily would spend requests re-fetching data that
+    cannot have changed.
+    """
+    from db import SessionLocal
+    from db.models import InstitutionalOwnership
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from .unusual_whales import get_institutional_ownership
+
+    written, errors, empty = 0, 0, []
+    with SessionLocal() as session:
+        for sym in [s.upper() for s in symbols]:
+            try:
+                rows = get_institutional_ownership(sym)
+            except Exception:
+                errors += 1
+                continue
+            if not rows:
+                empty.append(sym)
+                continue
+            payload = []
+            for r in rows:
+                rd = _uwx_date(r.get("report_date"))
+                name = r.get("name")
+                if rd is None or not name:
+                    continue          # composite key incomplete — skip rather than fabricate
+                payload.append({
+                    "ticker": sym,
+                    "institution": str(name)[:255],
+                    "cik": (str(r.get("cik"))[:20] if r.get("cik") else None),
+                    "report_date": rd,
+                    "filing_date": _uwx_date(r.get("filing_date")),
+                    "units": _opthist_f(r.get("units")),
+                    "units_changed": _opthist_f(r.get("units_changed")),
+                    "value": _opthist_f(r.get("value")),
+                    "avg_price": _opthist_f(r.get("avg_price")),
+                    "shares_outstanding": _opthist_f(r.get("shares_outstanding")),
+                    "is_hedge_fund": bool(r.get("is_hedge_fund")) if r.get("is_hedge_fund") is not None else None,
+                })
+            if not payload:
+                continue
+            stmt = pg_insert(InstitutionalOwnership).values(payload)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["ticker", "institution", "report_date"],
+                set_={
+                    "units": stmt.excluded.units,
+                    "units_changed": stmt.excluded.units_changed,
+                    "value": stmt.excluded.value,
+                    "avg_price": stmt.excluded.avg_price,
+                    "filing_date": stmt.excluded.filing_date,
+                },
+            )
+            session.execute(stmt)
+            written += len(payload)
+            session.commit()
+    if empty:
+        log.warning("inst_ownership.empty_symbols", symbols=empty)
+    log.info("inst_ownership.captured", symbols=len(symbols), rows=written, errors=errors)
+    return {"symbols": len(symbols), "rows_written": written, "empty": empty, "errors": errors}

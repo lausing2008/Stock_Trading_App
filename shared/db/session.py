@@ -494,6 +494,88 @@ def _run_migrations() -> None:  # noqa: C901
             "ix_option_chain_history_symbol",
         ):
             conn.execute(text(f"DROP INDEX IF EXISTS {_dup_ix}"))
+
+        # AUD-UWEXPAND: three tables for endpoints the API BASIC tier already grants but that
+        # nothing consumed. Deliberately no per-column index=True on any of these — see the
+        # OPTHIST-DUPINDEX comment above for why that duplicates the composite indexes below.
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS etf_fund_flows (
+                id BIGSERIAL PRIMARY KEY,
+                symbol VARCHAR(20) NOT NULL,
+                as_of DATE NOT NULL,
+                change_shares DOUBLE PRECISION,
+                change_premium DOUBLE PRECISION,
+                close DOUBLE PRECISION,
+                volume DOUBLE PRECISION,
+                expiration_cycle VARCHAR(16),
+                is_fomc BOOLEAN,
+                fetched_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_etf_flow_symbol_date
+            ON etf_fund_flows (symbol, as_of)
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_etfflow_sym_asof ON etf_fund_flows (symbol, as_of)
+        """))
+
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS fda_catalysts (
+                id BIGSERIAL PRIMARY KEY,
+                unique_identifier VARCHAR(120) NOT NULL,
+                ticker VARCHAR(20),
+                catalyst VARCHAR(120),
+                event_type VARCHAR(120),
+                drug VARCHAR(255),
+                indication VARCHAR(255),
+                status VARCHAR(64),
+                description TEXT,
+                outcome TEXT,
+                outcome_brief TEXT,
+                start_date DATE,
+                end_date DATE,
+                -- FREE TEXT on purpose ("2025-MID", "2025-H2"). Never a DATE column.
+                target_date_text VARCHAR(64),
+                has_options BOOLEAN,
+                marketcap DOUBLE PRECISION,
+                source_link TEXT,
+                fetched_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_fda_catalyst_uid
+            ON fda_catalysts (unique_identifier)
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_fda_ticker_start ON fda_catalysts (ticker, start_date)
+        """))
+
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS institutional_ownership (
+                id BIGSERIAL PRIMARY KEY,
+                ticker VARCHAR(20) NOT NULL,
+                institution VARCHAR(255) NOT NULL,
+                cik VARCHAR(20),
+                report_date DATE NOT NULL,
+                filing_date DATE,
+                units DOUBLE PRECISION,
+                units_changed DOUBLE PRECISION,
+                value DOUBLE PRECISION,
+                avg_price DOUBLE PRECISION,
+                shares_outstanding DOUBLE PRECISION,
+                is_hedge_fund BOOLEAN,
+                fetched_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_instown_tkr_inst_date
+            ON institutional_ownership (ticker, institution, report_date)
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_instown_ticker_report
+            ON institutional_ownership (ticker, report_date)
+        """))
         # T234-ML-FUND-BROADCAST-LEAKAGE: extend fundamentals_snapshot with the columns
         # builder.py broadcasts today's value for across ALL historical training rows
         # (lookahead bias). Backfilling these lets a future point-in-time merge_asof join
