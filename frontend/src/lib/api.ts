@@ -254,6 +254,22 @@ export const api = {
     return request<SqueezeAlertPerformanceResponse>(`/admin/squeeze-alert-performance${qs ? `?${qs}` : ''}`);
   },
 
+  // BT-1/BT-2: gate-replay backtests. These replay _should_enter() — the DE-OUTAGE FALLBACK
+  // gate — NOT the live authoritative path (decision_engine_mode defaults to "primary", so
+  // decision-engine's own check_hard_rejects()/compute_score() decides real entries). Read
+  // results as "what the fallback gate would have admitted", never as live behaviour.
+  getReplayFidelity: (params: { style: string; market?: string; window_days?: number }) => {
+    const p = new URLSearchParams({ style: params.style });
+    if (params.market) p.set('market', params.market);
+    if (params.window_days != null) p.set('window_days', String(params.window_days));
+    return request<ReplayFidelityResponse>(`/paper-portfolio/backtest/replay-fidelity?${p.toString()}`);
+  },
+  getReplayFullHistory: (params: { style: string; market?: string }) => {
+    const p = new URLSearchParams({ style: params.style });
+    if (params.market) p.set('market', params.market);
+    return request<ReplayFullHistoryResponse>(`/paper-portfolio/backtest/replay-full-history?${p.toString()}`);
+  },
+
   // T264-SQUEEZEALERT-PERFORMANCE backtest follow-up — short_squeeze only, retroactive proxy
   getSqueezeAlertBacktest: (params?: { weeks_back?: number; min_samples?: number }) => {
     const p = new URLSearchParams();
@@ -2335,6 +2351,29 @@ export type OptionsFlowAlertPerformanceResponse = {
   days_back: number;
   by_direction: OptionsFlowAlertDirectionSummary[];
   recent_alerts: OptionsFlowAlertRow[];
+};
+
+// BT-1/BT-2 gate-replay backtests. Both replay _should_enter(), the DE-outage FALLBACK gate.
+export type ReplayFidelityResponse = {
+  style: string; market: string; window_start: string; window_end: string;
+  n_real_trades: number; n_real_matched_in_replay: number;
+  n_replay_entered: number; n_replay_skipped: number;
+  recall_on_real_trades: number | null;
+  skipped_signal_ids: number[];
+  skip_reason_counts: Record<string, number>;
+  skipped_reason: string | null;
+  caveats: string;
+};
+
+export type ReplayFullHistoryResponse = {
+  style: string; market: string; window_start: string; window_end: string;
+  n_signals_seen: number; n_entered: number; n_wins: number;
+  win_rate: number | null; avg_return_pct: number | null;
+  n_distinct_weeks: number; max_entries_in_one_week: number;
+  effective_sample_note: string;
+  skip_reason_counts: Record<string, number>;
+  skipped_reason: string | null;
+  caveats: string;
 };
 
 // MPE-OPTIONS-FLOW-ALERT backtest — a GENUINE historical replay (UW retains real flow-alert

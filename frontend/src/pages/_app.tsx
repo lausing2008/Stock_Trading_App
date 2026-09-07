@@ -161,6 +161,7 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Signal Tuning',    href: '/signal-tuning',    color: '#a78bfa', tag: 'new' },
       { label: 'Trade Performance', href: '/trade-performance', color: '#34d399' },
       { label: 'Watchlist Performance', href: '/watchlist-performance', color: '#f59e0b', tag: 'new' },
+      { label: 'Backtest Results', href: '/backtest-results', color: '#818cf8', tag: 'new' },
       { label: 'Squeeze Alert Performance', href: '/squeeze-alert-performance', color: '#ef4444', tag: 'new' },
       { label: 'Fix Effectiveness', href: '/fix-effectiveness', color: '#4ade80', tag: 'new' },
       { label: 'Options Flow Alerts', href: '/options-flow-alerts', color: '#6d28d9', tag: 'new' },
