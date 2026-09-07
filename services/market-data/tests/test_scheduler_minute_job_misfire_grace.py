@@ -15,9 +15,20 @@ scheduler.py can't be imported directly in this test environment (apscheduler/db
 not stubbed) — source-text regression checks, matching test_alert_jobs_record_status.py's own
 established pattern for this class of function.
 
-Deliberately excludes gamma_unwind_alert_check/prebreakout_alert_check (hours=4 cadence — a
-1-second misfire grace window is not remotely as risky against a 4-hour interval) and
-avg_volume_cache_refresh (also hours=4).
+AUD-MISFIREGRACE-GAMMAUNWIND (2026-09-06 deep audit): this file used to deliberately exclude
+gamma_unwind_alert_check/prebreakout_alert_check with the stated reasoning "a 1-second misfire
+grace window is not remotely as risky against a 4-hour interval." That reasoning was itself
+the bug this audit found: APScheduler's default grace window is a property of the SCHEDULER,
+triggered whenever a job's actual start is delayed past its scheduled time by more than the
+window — a delay caused by a PRIOR run still executing when the next tick comes due (both jobs
+use max_instances=1). The relevant risk factor is each job's own EXECUTION DURATION, not its
+tick interval — and gamma_unwind_alert_check is, by a wide margin, the longest-running job in
+this entire file (up to 40 symbols x a rate-limit-fragile yfinance options-chain fetch plus a
+1s sleep per symbol, then a second per-symbol Unusual Whales loop: floor runtime >=40s, likely
+60-120s+), making it MORE likely to overrun into its own next tick under load, not less. Both
+jobs now carry the same misfire_grace_time=60 as every 1-minute job below — see
+test_gamma_unwind_and_prebreakout_now_have_a_misfire_grace_time below. avg_volume_cache_refresh
+(also hours=4) was not part of this specific fix and remains a separate, still-open item.
 """
 import pathlib
 
@@ -83,14 +94,20 @@ def test_options_flow_and_dark_pool_alert_checks_use_a_60_second_grace_window():
         assert "misfire_grace_time=60" in block, f"{job_id} does not use a 60s grace window"
 
 
-def test_four_hour_jobs_are_unaffected_by_this_fix():
-    """gamma_unwind_alert_check/prebreakout_alert_check run every 4 hours — confirm they were
-    NOT touched by this fix (a 1s default grace window is not the same risk at that cadence,
-    and this test would catch an over-broad find/replace accidentally including them)."""
+def test_gamma_unwind_and_prebreakout_now_have_a_misfire_grace_time():
+    """AUD-MISFIREGRACE-GAMMAUNWIND: these 4-hour jobs must now carry an explicit
+    misfire_grace_time — the same defect class as the 1-minute jobs above, since the risk
+    factor is each job's own execution duration (gamma_unwind_alert_check is the longest-
+    running job in the file, floor runtime >=40s of pure sleep, realistically 60-120s+), not
+    its tick interval. Before this fix, this exact test asserted the OPPOSITE (the guard's
+    absence) — locking the bug in rather than catching it."""
     for job_id in ("gamma_unwind_alert_check", "prebreakout_alert_check"):
         block = _registration_block(job_id)
         assert "hours=4" in block
-        assert "misfire_grace_time=" not in block
+        assert "misfire_grace_time=60" in block, (
+            f"{job_id} is missing misfire_grace_time — this 4-hour job's own execution "
+            f"duration, not its cadence, is what makes the 1s scheduler default risky here."
+        )
 
 
 def test_every_listed_job_id_is_actually_registered_with_minutes_equal_one():

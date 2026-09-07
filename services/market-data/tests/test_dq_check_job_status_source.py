@@ -209,13 +209,17 @@ def test_uw_rate_limit_gauge_entry_exists_and_has_no_pass_fail_concept():
     assert '"job_name"' not in entry_dict_text
 
 
-def test_uw_rate_limit_gauge_reads_the_real_counter_key_from_unusual_whales_module():
-    """The gauge's counter_key must reference the SAME constant unusual_whales.py's
-    _incr_rate_limit_counter() actually increments — imported at module level (a plain
-    constant, not a function, so no circular-import risk), not a separately-defined literal
-    string that could silently drift from the real key."""
-    assert "from .unusual_whales import _RATE_LIMIT_COUNTER_KEY as _UW_RATE_LIMIT_COUNTER_KEY" in _SOURCE
-    assert '"counter_key": _UW_RATE_LIMIT_COUNTER_KEY' in _SOURCE
+def test_uw_rate_limit_gauge_reads_the_real_rolling_window_fn_from_unusual_whales_module():
+    """AUD-UW429SAWTOOTH (2026-09-06 deep audit): the gauge used to read a single Redis key
+    directly (counter_key) — that key was a sawtooth (accumulated from first-increment, then
+    vanished entirely at its own TTL expiry), not a genuine rolling 48h window despite the
+    dashboard's "429s (48h)" label. Now reads via counter_fn, a real function
+    (_read_rate_limit_count_48h) that sums hourly buckets over a true trailing 48h window at
+    read time — imported at module level (no side effects at import time, so no circular-
+    import risk), not a separately-defined literal that could silently drift from the real
+    implementation."""
+    assert "from .unusual_whales import _read_rate_limit_count_48h as _uw_read_rate_limit_count_48h" in _SOURCE
+    assert '"counter_fn": _uw_read_rate_limit_count_48h' in _SOURCE
 
 
 # ── AUD-DQCHECK-WRONGCADENCE: check_signal_alerts' threshold matched to its real cadence ─────

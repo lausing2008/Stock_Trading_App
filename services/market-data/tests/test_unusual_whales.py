@@ -1912,10 +1912,16 @@ class TestGetFunctionRealHttpBehavior:
             mock_incr.assert_called_once()
 
     def test_incr_rate_limit_counter_uses_the_real_redis_client_and_fails_open(self):
-        """_incr_rate_limit_counter() itself: must INCR the real counter key, set a TTL only on
-        first write (matching scheduler.py's own _incr_rolling_counter idiom exactly), and never
-        raise even if Redis itself is unavailable — a metrics-counter failure must never be able
-        to break a real UW call path."""
+        """_incr_rate_limit_counter() itself: must INCR the current hour's real bucket key, set
+        a TTL only on first write (matching scheduler.py's own _incr_rolling_counter idiom
+        exactly), and never raise even if Redis itself is unavailable — a metrics-counter
+        failure must never be able to break a real UW call path.
+
+        AUD-UW429SAWTOOTH (2026-09-06 deep audit): rebuilt as hourly buckets (prefix +
+        %Y%m%d%H) summed at read time into a real rolling 48h window — the old single flat-TTL
+        key was a sawtooth (accumulated from first-increment, then vanished entirely and
+        restarted from zero at ITS OWN TTL expiry), not a genuine rolling window despite the
+        dashboard's "429s (48h)" label."""
         class _FakeRedis:
             def __init__(self):
                 self.incr_calls = []
@@ -1930,15 +1936,17 @@ class TestGetFunctionRealHttpBehavior:
                 self._ttl = seconds
 
         fake_redis = _FakeRedis()
+        from datetime import datetime, timezone
+        expected_key = f"{self.real_uw._RATE_LIMIT_COUNTER_PREFIX}:{datetime.now(timezone.utc).strftime('%Y%m%d%H')}"
         with patch.object(self.real_uw, "_get_redis", return_value=fake_redis):
             self.real_uw._incr_rate_limit_counter()
-            assert fake_redis.incr_calls == [self.real_uw._RATE_LIMIT_COUNTER_KEY]
-            assert fake_redis.expire_calls == [(self.real_uw._RATE_LIMIT_COUNTER_KEY, self.real_uw._RATE_LIMIT_COUNTER_TTL_S)]
+            assert fake_redis.incr_calls == [expected_key]
+            assert fake_redis.expire_calls == [(expected_key, self.real_uw._RATE_LIMIT_COUNTER_BUCKET_TTL_S)]
 
             # A second call must NOT reset the TTL (ttl() no longer returns -1) — matches the
             # "expire only on first write" idiom this counter is explicitly modeled on.
             self.real_uw._incr_rate_limit_counter()
-            assert fake_redis.incr_calls == [self.real_uw._RATE_LIMIT_COUNTER_KEY] * 2
+            assert fake_redis.incr_calls == [expected_key] * 2
             assert len(fake_redis.expire_calls) == 1
 
     def test_incr_rate_limit_counter_fails_open_on_a_redis_exception(self):

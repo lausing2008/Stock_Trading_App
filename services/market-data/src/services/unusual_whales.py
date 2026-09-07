@@ -368,18 +368,53 @@ class FlowAlert:
 # called from (every real caller already handles UnusualWhalesRateLimitError or an unavailable
 # result), this counter exists purely so a sustained rate-limit PATTERN — as opposed to one
 # isolated 429 — is visible somewhere other than grepping logs.
+#
+# AUD-UW429SAWTOOTH (2026-09-06 deep audit): this used to be a SINGLE key with a flat 48h TTL
+# set on first increment — not a rolling 48h window despite the key name and the dashboard's
+# "429s (48h)" label. It accumulated from whenever it was first incremented, then vanished
+# entirely and restarted from zero at that key's own TTL expiry (confirmed live: value 109184,
+# TTL 3021s — within ~50 minutes it would read 0 even with 429s continuing at full rate). An
+# admin checking the dashboard during an ACTIVE rate-limit incident, right after that flip,
+# would see "429s (48h): 0". Rebuilt as hourly buckets (matching check_llm_usage_spike()'s own
+# established hourly-bucket idiom in scheduler.py) summed over the trailing 48 hours at read
+# time — a genuine rolling window, not a sawtooth.
+_RATE_LIMIT_COUNTER_PREFIX = "stockai:metric:uw_rate_limit_count_hourly"
+_RATE_LIMIT_COUNTER_BUCKET_TTL_S = 50 * 3600  # a little over 48h so a bucket outlives its own window
+_RATE_LIMIT_COUNTER_WINDOW_HOURS = 48
+
+# Retained ONLY so any external reader of the old key during the rollout doesn't hard-fail —
+# no code in this module writes to it anymore.
 _RATE_LIMIT_COUNTER_KEY = "stockai:metric:uw_rate_limit_count_48h"
-_RATE_LIMIT_COUNTER_TTL_S = 48 * 3600
 
 
 def _incr_rate_limit_counter() -> None:
     try:
         r = _get_redis()
-        r.incr(_RATE_LIMIT_COUNTER_KEY)
-        if r.ttl(_RATE_LIMIT_COUNTER_KEY) == -1:
-            r.expire(_RATE_LIMIT_COUNTER_KEY, _RATE_LIMIT_COUNTER_TTL_S)
+        hour_bucket = datetime.now(timezone.utc).strftime("%Y%m%d%H")
+        key = f"{_RATE_LIMIT_COUNTER_PREFIX}:{hour_bucket}"
+        r.incr(key)
+        if r.ttl(key) == -1:
+            r.expire(key, _RATE_LIMIT_COUNTER_BUCKET_TTL_S)
     except Exception:
         pass
+
+
+def _read_rate_limit_count_48h() -> int:
+    """Sum the trailing _RATE_LIMIT_COUNTER_WINDOW_HOURS hourly buckets — a genuine rolling
+    window read at query time, so it can never sawtooth back to 0 while an incident is
+    ongoing. Missing buckets (no 429s that hour) are simply absent keys, contributing 0."""
+    try:
+        r = _get_redis()
+        now = datetime.now(timezone.utc)
+        total = 0
+        for i in range(_RATE_LIMIT_COUNTER_WINDOW_HOURS):
+            hour_bucket = (now - timedelta(hours=i)).strftime("%Y%m%d%H")
+            raw = r.get(f"{_RATE_LIMIT_COUNTER_PREFIX}:{hour_bucket}")
+            if raw:
+                total += int(raw)
+        return total
+    except Exception:
+        return 0
 
 
 # AUD-UWUSAGE: unlike the 429-only counter above, this tracks EVERY real UW request (any
@@ -398,8 +433,16 @@ def _incr_rate_limit_counter() -> None:
 # themselves (e.g. "api", "v2", short category names), silently mis-collapsing them. Since
 # every real call site already knows its own path template at the point it calls _get(), each
 # one passes its template explicitly — no guessing required.
+#
+# AUD-UWCACHE-YESTERDAYTTL (2026-09-06 deep audit): this was 25h, set on the FIRST write of
+# each day's bucket — so a bucket first written at 00:00:30 UTC expired at 01:00:30 the NEXT
+# day, meaning the dashboard's "Yesterday (this app's count)" field read 0 for roughly 23 of
+# every 24 hours (verified live: scanning for yesterday's keys at 18:19 UTC returned zero,
+# despite genuinely heavy usage the day before). A displayed "0" reads as "no usage yesterday,"
+# not "the data expired." Extended to 49h so a day's bucket reliably survives the ENTIRE
+# following day before expiring, comfortably covering any dashboard poll time.
 _CALL_COUNTER_PREFIX = "stockai:metric:uw_calls"
-_CALL_COUNTER_TTL_S = 25 * 3600
+_CALL_COUNTER_TTL_S = 49 * 3600
 
 
 def _incr_call_counter(endpoint: str) -> None:

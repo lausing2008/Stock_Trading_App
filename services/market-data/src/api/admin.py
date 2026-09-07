@@ -1607,11 +1607,16 @@ def uw_usage(_: User = Depends(get_admin_user)):
     yesterday_by_endpoint = _read_day(yesterday)
     today_total = sum(today_by_endpoint.values())
 
-    # Matches unusual_whales.py's own _RATE_LIMIT_COUNTER_KEY literal exactly — duplicated
-    # rather than cross-imported, matching this file's own established convention (see the
-    # Claude/DeepSeek Redis key literals above and CLAUDE.md's note on _AUTO_RESEARCH_ENABLED_KEY).
-    rate_limit_raw = r.get("stockai:metric:uw_rate_limit_count_48h")
-    rate_limit_48h = int(rate_limit_raw) if rate_limit_raw else 0
+    # AUD-UW429SAWTOOTH (2026-09-06 deep audit): the old single flat-TTL key
+    # (stockai:metric:uw_rate_limit_count_48h) was a sawtooth, not a rolling window — it
+    # accumulated from whenever first incremented, then vanished entirely and restarted from
+    # zero at ITS OWN TTL expiry, so an admin checking this dashboard shortly after that flip
+    # saw "429s (48h): 0" during an active, ongoing rate-limit incident. Now imported directly
+    # (real multi-bucket summing logic, not a simple literal — unlike the other Redis key
+    # literals in this file that ARE duplicated rather than cross-imported) since it sums
+    # hourly buckets over a genuine trailing 48h window at read time.
+    from ..services.unusual_whales import _read_rate_limit_count_48h
+    rate_limit_48h = _read_rate_limit_count_48h()
 
     breakdown = [
         {"endpoint": ep, "calls": n}

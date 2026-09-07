@@ -92,12 +92,14 @@ from .ingestion import ingest_universe
 from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification, send_post_open_digest_email, send_data_quality_alert_email, send_llm_usage_spike_email, is_quota_exceeded
 from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists, poll_broker_order_fills, sync_broker_positions
 from ..api.routes import refresh_live_price_cache, refresh_avg_volume_cache, _AVG_VOLUME_KEY
-# AUD-DQCHECKS-VISIBILITY: a plain constant (not a function with side effects), so importing it
-# at module level carries none of the circularity/import-order risk every OTHER cross-service
-# reference to unusual_whales.py in this file avoids by using a local `from . import
-# unusual_whales as _uw` inside a function body instead — confirmed unusual_whales.py itself
-# never imports scheduler.py (no cycle exists either direction).
-from .unusual_whales import _RATE_LIMIT_COUNTER_KEY as _UW_RATE_LIMIT_COUNTER_KEY
+# AUD-DQCHECKS-VISIBILITY: a plain constant/function (not something with import-time side
+# effects), so importing it at module level carries none of the circularity/import-order risk
+# every OTHER cross-service reference to unusual_whales.py in this file avoids by using a local
+# `from . import unusual_whales as _uw` inside a function body instead — confirmed
+# unusual_whales.py itself never imports scheduler.py (no cycle exists either direction).
+# AUD-UW429SAWTOOTH: _read_rate_limit_count_48h (a real rolling-window reader) replaces the old
+# _RATE_LIMIT_COUNTER_KEY single-key constant this gauge used to read directly.
+from .unusual_whales import _read_rate_limit_count_48h as _uw_read_rate_limit_count_48h
 
 log = get_logger("scheduler")
 _settings = get_settings()
@@ -10977,7 +10979,12 @@ _DQ_CHECKS: list[dict] = [
         "name": "uw_rate_limit_events_48h",
         "description": "Unusual Whales API 429 rate-limit responses in the last 48h (across every UW-backed feature)",
         "source": "gauge",
-        "counter_key": _UW_RATE_LIMIT_COUNTER_KEY,
+        # AUD-UW429SAWTOOTH (2026-09-06 deep audit): the old single-key counter this gauge used
+        # to read was a sawtooth, not a rolling window — see unusual_whales.py's own comment on
+        # _RATE_LIMIT_COUNTER_KEY. Now backed by real hourly buckets summed at read time via
+        # counter_fn (a real rolling window), not counter_key (a single raw GET) — every other
+        # gauge check above stays on counter_key since none of them changed.
+        "counter_fn": _uw_read_rate_limit_count_48h,
     },
 ]
 
@@ -11077,9 +11084,18 @@ def run_data_quality_checks() -> None:
                     # value with NO pass/fail concept — always ok=True, never appended to
                     # `failing`. Purely observability (admin-visible instead of log-only), per
                     # both audit issues' own framing ("observability gap, not a functional bug").
+                    #
+                    # AUD-UW429SAWTOOTH: a gauge may supply EITHER counter_key (a single Redis
+                    # key read directly — the original, still-used-by-most-gauges shape) OR
+                    # counter_fn (a callable that computes its own real rolling-window sum,
+                    # e.g. across multiple hourly-bucketed keys) — the latter for gauges whose
+                    # underlying counter is no longer a single key.
                     if check.get("source") == "gauge":
-                        _count_raw = redis_client.get(check["counter_key"])
-                        _count_v = int(_count_raw) if _count_raw is not None else 0
+                        if "counter_fn" in check:
+                            _count_v = check["counter_fn"]()
+                        else:
+                            _count_raw = redis_client.get(check["counter_key"])
+                            _count_v = int(_count_raw) if _count_raw is not None else 0
                         redis_client.setex(
                             f"dq_check:{check['name']}", 86400 * 7,
                             json.dumps({
@@ -11753,26 +11769,51 @@ def start_scheduler() -> None:
         # ── Options-expiry gamma-unwind alert — a few times a day ───────────────
         # OI concentration/expiry-proximity data doesn't change minute-to-minute — see
         # check_gamma_unwind_alerts()'s own docstring for the full mechanism + honest limitations.
+        #
+        # AUD-MISFIREGRACE-GAMMAUNWIND (2026-09-06 deep audit): this and prebreakout_alert_check
+        # just below were BOTH previously, deliberately excluded from the misfire_grace_time fix
+        # applied to every 1-minute job elsewhere in this file — the stated reasoning was "a
+        # 1-second default grace window is a materially different risk at a 4-hour cadence than
+        # a 1-minute one." That reasoning inverts the actual failure mechanism: APScheduler's
+        # default grace (1s) is a property of the SCHEDULER, not the job's own interval — it
+        # triggers whenever a job's actual start is delayed past its scheduled time by more than
+        # the grace window, which happens whenever a PRIOR run is still executing at the next
+        # scheduled tick (max_instances=1 makes the next tick wait, then get silently dropped
+        # once the delay exceeds 1s). This job is, by a wide margin, the LONGEST-running job in
+        # this entire file (up to 40 symbols x a yfinance options-chain fetch — described a few
+        # lines below as "this app's most rate-limit-fragile call" — plus an explicit 1-second
+        # sleep per symbol, then a SECOND per-symbol Unusual Whales loop: floor runtime >=40s of
+        # pure sleep, realistically 60-120s+), which makes it MORE likely to overrun into its own
+        # next 4-hour tick under load, not less — a missed tick here costs 4 hours of total
+        # silence on a genuinely rate-limit-fragile, real-money-adjacent alert, with no liveness
+        # check to reveal the stall (unlike the 1-minute siblings, which DO have one).
         _scheduler.add_job(
             check_gamma_unwind_alerts,
             "interval",
             hours=4,
             id="gamma_unwind_alert_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
         # ── T264-SHORTSQUEEZE-PREBREAKOUT: coiling pre-breakout alert — a few times a day ──────
         # Compression state (Bollinger Band width / ATR percentile over a 126-day lookback)
         # doesn't change minute-to-minute — see check_prebreakout_alerts()'s own docstring for
         # the full mechanism, honest RULE-BASED-ONLY scope, and why no trained model backs it yet.
+        #
+        # AUD-MISFIREGRACE-GAMMAUNWIND: same fix and reasoning as gamma_unwind_alert_check just
+        # above — this alert additionally carries extra weight right now: it is the
+        # non-momentum conviction pillar currently AWAITING real outcome data to decide whether
+        # entry timing can be improved (per the 2026-09-05 audit cycle's SESSION_INDEX). A
+        # silent, unlogged stall here doesn't just miss alerts — it corrupts that evaluation as
+        # "the pillar produced no signal," rather than what actually happened ("the job never ran").
         _scheduler.add_job(
             check_prebreakout_alerts,
             "interval",
             hours=4,
             id="prebreakout_alert_check",
             replace_existing=True,
-            max_instances=1, coalesce=True,
+            max_instances=1, coalesce=True, misfire_grace_time=60,
         )
 
         # ── Short-squeeze prime-candidate alert — every minute ──────────────────

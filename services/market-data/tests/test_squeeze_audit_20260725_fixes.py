@@ -230,9 +230,12 @@ def test_gauge_dq_checks_registered_for_both_new_counters():
     # T260-SQUEEZE-IGNITION added a 3rd gauge (its own fundamentals-cache-miss counter,
     # matching this same pattern) — the count below was 2 before that alert existed.
     assert '"counter_key": _SQUEEZE_IGNITION_FUND_CACHE_MISS_COUNTER_KEY' in _scheduler_source
-    # AUD-DQCHECKS-VISIBILITY added a 4th gauge (Unusual Whales 429 rate-limit rollup,
-    # counter_key=_UW_RATE_LIMIT_COUNTER_KEY) — the count below was 3 before that check existed.
-    assert '"counter_key": _UW_RATE_LIMIT_COUNTER_KEY' in _scheduler_source
+    # AUD-DQCHECKS-VISIBILITY added a 4th gauge (Unusual Whales 429 rate-limit rollup) — the
+    # count below was 3 before that check existed. AUD-UW429SAWTOOTH (2026-09-06) switched this
+    # one gauge from counter_key (a single raw Redis GET) to counter_fn (a real rolling-window
+    # sum over hourly buckets), since the old single-key counter was a sawtooth, not a genuine
+    # 48h window — every OTHER gauge above is unaffected and stays on counter_key.
+    assert '"counter_fn": _uw_read_rate_limit_count_48h' in _scheduler_source
     # AUD-IGNITION-NEVERFIRES added 4 more gauges (the squeeze-ignition rejection funnel:
     # move_band / rvol / short_float / stale_si) — the count below was 4 before those existed.
     # check_squeeze_ignition_alerts() had fired ZERO times since T260 while reporting
