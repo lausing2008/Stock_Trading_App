@@ -19422,6 +19422,17 @@ const ITEMS: Item[] = [
     what: 'Self-initiated adversarial audit of same-day work, run immediately after the AUD-LLMUSAGE build and before considering it complete.',
     fix: 'No further action needed.',
   },
+  {
+    id: 'AUD-DEEPAUDIT-0906',
+    tier: 352, severity: 'critical', defaultStatus: 'done',
+    implementedNote: 'Full write-up (all 27 verified findings, priority ordering, what was and was not independently verified) is in docs/2026-09-06/DEEP_SYSTEM_AUDIT.md. All 19 priority fixes were applied and deployed across 4 commits on prod: 9225995, bed7ed9, 50c710f, 0fb74c3.',
+    title: 'AUD-DEEPAUDIT-0906 — full-system deep audit (architecture + trading logic), 27 verified findings, all 19 priority fixes applied and deployed',
+    file: 'docs/2026-09-06/DEEP_SYSTEM_AUDIT.md',
+    effort: 'XL',
+    impact: 'See docs/2026-09-06/DEEP_SYSTEM_AUDIT.md for the full findings and fix-by-fix impact — most notably a conviction-gate hardcode and a false-premise sizer boundary that were both silently neutralizing live entry gates.',
+    what: 'User-requested deep audit ("see everything is working logically and technically, review design and architecture"), followed by "let\'s start fixing them phase by phase" and "yes deploy".',
+    fix: 'No further action needed — all 19 items fixed, each with a regression test, and deployed.',
+  },
 ];
 
 
@@ -19771,6 +19782,7 @@ const TIER_LABEL: Record<Tier, string> = {
   349: 'Tier 349 — AUD-CHASE-ROC10-PAPERPORT: Ported the Validated Anti-Chasing Filter into Paper Trading\'s Own Entry Logic (2026-09-05). User: "also update the entry gates page if anything we have modified." Investigation surfaced AUD-CHASE-ROC10 (rejects entries into a stock already up >=10% in 10 days) existing only in the email-alert gate, never in paper trading\'s own _should_enter() — the exact gap that let a SNOW-style -19% loss happen in paper trading only. User selected "Yes, port it now (recommended)." Implemented with a mirrored constant (circular-import constraint), 12 new tests, adversarially verified.',
   350: 'Tier 350 — AUD-LLMUSAGE: Full Claude API Usage Tracking — DB Logging, Spike Alert, Admin Dashboard (2026-09-05). User spotted an external platform.claude.com/usage spike (5.44M Haiku tokens on Sep 5 alone) and asked to check it was real, whether any logs existed (none did), then asked for a dashboard + alert ("don\'t wanna get any surprises again"), selecting "Full build now (recommended)." Root-caused to a six-week undetected deploy-drift incident (news-intelligence running pre-2026-07-27 code with zero EDGAR-classify dedup — one filing reclassified 518 times). Built: new LlmCallLog table, log_llm_call() wired into all 9 real Anthropic call sites across 6 services, a 15-min median-baseline spike-alert scheduler job, a new GET /admin/llm-usage endpoint, and a new "Claude API Usage" dashboard section on admin-health.tsx.',
   351: 'Tier 351 — AUD-LLMUSAGE-AUDITFIX: Fixed a Double-Logging Bug and a Misleading Model-Pill Default Found by a Same-Day Adversarial Audit (2026-09-05). A self-initiated audit of the AUD-LLMUSAGE build found 2 medium issues: 7 of 9 call sites could double-log a successful, billed call as an error when downstream JSON parsing failed; the dashboard\'s model pill defaulted any non-Haiku model string to Sonnet-styling, misleading for research-engine\'s free-text model field. Both fixed same-day; full suites re-verified green, plus a separate broader platform-wide health sweep came back fully clean.',
+  352: 'Tier 352 — AUD-DEEPAUDIT-0906: Full-System Deep Audit + All 19 Priority Fixes (2026-09-06). See docs/2026-09-06/DEEP_SYSTEM_AUDIT.md for the full write-up; fixed and deployed across commits 9225995/bed7ed9/50c710f/0fb74c3.',
   339: 'Tier 339 — UW API Expansion, Feature 6 of 7: Sector Calendar-Effects Seasonality (2026-09-04). Sixth and final built feature from the ongoing Unusual Whales API build-out -- the one least-verified at design time, fully confirmed this pass by locating all 4 real seasonality endpoints in UW\'s own complete OpenAPI spec including a full schema with real example data. Real, multi-year median/average return by calendar month for the 13 major sector/index ETFs, shown as a new panel on the Sector Rotation page -- a genuinely different, calendar-effects lens from the existing K-Score-momentum-based ranking, not a duplicate of it. Full detail in docs/features/unusual-whales-integration-batch.md.',
   338: 'Tier 338 — UW API Expansion, Feature 5 of 7: Earnings Transcript Management Tone (2026-09-04). Fifth feature from the ongoing Unusual Whales API build-out -- the one flagged in the original design review as needing extra verification (an undocumented response shape) and carrying two real risks (a higher UW subscription tier requirement; an unreliable existing fiscal-quarter field). Both risks were resolved deliberately rather than avoided: the real schema was found in UW\'s own full OpenAPI spec, the tier requirement relies on this app\'s existing fail-open pattern, and the quarter is derived from report_date instead of the known-unreliable fiscal_year/fiscal_quarter fields. Real transcript excerpts, when available, are now folded into the existing post-earnings LLM impact email as a new qualitative "management tone" read -- closing a gap 3 separate places in this codebase had explicitly documented as a missing data source. Full detail in docs/features/unusual-whales-integration-batch.md.',
   337: 'Tier 337 — UW API Expansion, Feature 4 of 7: Real Historical Earnings-Move Track Record (2026-09-04). Fourth feature from the ongoing Unusual Whales API build-out. Real per-report expected-move (the options market\'s own pre-report implied move) paired with the stock\'s actual post-earnings move, up to 8 quarters back, now shown on the Earnings Calendar alongside the existing EPS beat-rate stat — a genuinely different question (was the market\'s own fear historically accurate for this stock, not just did the company beat estimates). Extends events_calendar(), the same function an earlier tier already added analyst-consensus/beat-rate wiring to, following the same scoping discipline (only symbols with a real near-term earnings event, never the full stock universe). Full detail in docs/features/unusual-whales-integration-batch.md.',
@@ -20130,6 +20142,7 @@ const TIER_COLOR: Record<Tier, string> = {
   349: '#38bdf8',
   350: '#c084fc',
   351: '#c084fc',
+  352: '#ef4444',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
