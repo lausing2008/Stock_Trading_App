@@ -1380,3 +1380,164 @@ def walk_forward_scorer_sweep(
             "separate, not-yet-built prerequisite)."
         ),
     }
+
+
+# ── BT-2: replay fidelity — does the replay reproduce what ACTUALLY happened? ─────────────
+#
+# See docs/2026-09-06/SCOPE_BACKTEST_GENERATED_TRAINING_DATA.md. The premise of expanding
+# paper-trade data by replaying entry gates over the 45k persisted signals is only as good as
+# the replay's fidelity — so this measures it directly against ground truth rather than
+# assuming it.
+#
+# The test: over the window where REAL paper trades exist, replay the gates across the same
+# candidate signals and ask how often the replay's enter/skip decision matches what the live
+# engine actually did. A real PaperTrade row with a signal_id IS the record that the live
+# engine decided to enter on that signal.
+#
+# WHY A PERFECT MATCH IS NOT THE TARGET — and treating a mismatch as a bug would be wrong:
+#   1. live_regime is None on every replay call. This is the module's own documented PERMANENT
+#      gap (see the module docstring): the canonical regime classifier has no historical
+#      persistence anywhere, and sig.reasons["market_regime"] is a DIFFERENT classifier with a
+#      different vocabulary, so substituting it would be a worse bug than the gap. Any signal
+#      the live engine gated on regime is expected to diverge here.
+#   2. Portfolio-level state is not replayed at all — max_positions, per-sector caps, cash on
+#      hand, daily-entry caps, circuit breakers. The live engine may have SKIPPED a signal that
+#      passed every per-signal gate purely because the book was full that day.
+#   3. cfg drift — gates have been retuned since these trades were taken, so the replay uses
+#      today's thresholds against decisions made under older ones.
+#
+# Because of (2) especially, the honest asymmetry is: **a replayed ENTER on a signal the live
+# engine skipped is often legitimate** (the book was full), **but a replayed SKIP on a signal
+# the live engine really entered is the genuinely suspicious direction** — it means a
+# per-signal gate rejects something that actually passed. That asymmetry is what
+# `recall_on_real_trades` below measures, and it is the number to judge fidelity on.
+
+@dataclass
+class ReplayFidelityResult:
+    style: str
+    market: str
+    window_start: date
+    window_end: date
+    n_real_trades: int = 0            # real PaperTrade rows with a signal_id in-window
+    n_real_matched_in_replay: int = 0  # ...that the replay universe could even see
+    n_replay_entered: int = 0          # replay said ENTER on a real-traded signal
+    n_replay_skipped: int = 0          # replay said SKIP on a real-traded signal (suspicious)
+    skipped_reason: str | None = None
+    skipped_signal_ids: list[int] = field(default_factory=list)
+
+    @property
+    def recall_on_real_trades(self) -> float | None:
+        """Of the real trades the replay could see, what share did it also enter?
+
+        This is the fidelity number that matters — see the asymmetry note above. None when
+        there was nothing to measure, deliberately NOT 0.0, so "no data" can never be read as
+        "0% fidelity"."""
+        if self.n_real_matched_in_replay == 0:
+            return None
+        return self.n_replay_entered / self.n_real_matched_in_replay
+
+    def to_dict(self) -> dict:
+        return {
+            "style": self.style,
+            "market": self.market,
+            "window_start": self.window_start.isoformat(),
+            "window_end": self.window_end.isoformat(),
+            "n_real_trades": self.n_real_trades,
+            "n_real_matched_in_replay": self.n_real_matched_in_replay,
+            "n_replay_entered": self.n_replay_entered,
+            "n_replay_skipped": self.n_replay_skipped,
+            "recall_on_real_trades": (
+                round(self.recall_on_real_trades, 4) if self.recall_on_real_trades is not None else None
+            ),
+            "skipped_signal_ids": self.skipped_signal_ids[:50],
+            "skipped_reason": self.skipped_reason,
+            "caveats": (
+                "Replay is regime-blind (live_regime=None — a permanent gap, see this module's "
+                "docstring) and does NOT model portfolio-level state (max_positions, sector "
+                "caps, cash, daily-entry caps, circuit breakers). A replayed ENTER on a signal "
+                "the live engine skipped is therefore often legitimate; a replayed SKIP on a "
+                "signal it really entered is the suspicious direction. Judge fidelity on "
+                "recall_on_real_trades, not on exact agreement."
+            ),
+        }
+
+
+def verify_replay_fidelity(
+    session: Session,
+    style: str,
+    market: str,
+    cfg: dict,
+    window_start: date,
+    window_end: date,
+) -> ReplayFidelityResult:
+    """BT-2: measure how well replay_should_enter() reproduces REAL paper-trade decisions.
+
+    Gate BT-3 (wiring replayed data into tuners) on this passing — if the replay can't
+    reproduce the trades that actually happened, it must not be trusted on the ones that
+    didn't.
+    """
+    from db import PaperTrade  # local import: keeps this module's import surface unchanged
+
+    style = style.upper()
+    result = ReplayFidelityResult(
+        style=style, market=market, window_start=window_start, window_end=window_end,
+    )
+
+    # Real trades in-window that came from a signal we can join back to.
+    real_rows = session.execute(
+        select(PaperTrade.signal_id)
+        .where(
+            PaperTrade.trading_style == style,
+            PaperTrade.signal_id.is_not(None),
+            PaperTrade.entry_date >= window_start,
+            PaperTrade.entry_date <= window_end,
+        )
+    ).all()
+    real_signal_ids = {r[0] for r in real_rows}
+    result.n_real_trades = len(real_signal_ids)
+    if not real_signal_ids:
+        result.skipped_reason = "no real paper trades with a signal_id in this window"
+        return result
+
+    # The replay universe: signals this harness can score at all (needs a resolved outcome).
+    matched = _fetch_matched_signals(session, style, market, window_start, window_end)
+    by_id = {sig.id: (sig, outcome, stock) for sig, outcome, stock in matched}
+
+    visible = real_signal_ids & by_id.keys()
+    result.n_real_matched_in_replay = len(visible)
+    if not visible:
+        result.skipped_reason = (
+            f"{len(real_signal_ids)} real trades in window, but none are in the replay universe "
+            f"(a signal needs a RESOLVED outcome for the {_HORIZON_BUCKET[style]} bucket to be "
+            f"scoreable — recent trades may simply not have matured yet)"
+        )
+        return result
+
+    for sig_id in sorted(visible):
+        sig, outcome, stock = by_id[sig_id]
+        live_price = outcome.entry_price
+        if not live_price or live_price <= 0:
+            continue
+        atr = _historical_atr(session, stock.id, outcome.signal_date)
+        game_plan = _build_game_plan_for_style(stock.symbol, style, live_price, sig.reasons or {}, atr)
+        confidence_delta = _historical_confidence_delta(
+            session, stock.id, style, outcome.signal_date, sig.confidence,
+        )
+        signal_data = {
+            "signal": sig.signal.value,
+            "confidence": sig.confidence,
+            "bullish_probability": sig.bullish_probability,
+            "reasons": sig.reasons or {},
+            "confidence_delta": confidence_delta,
+        }
+        should, _score, _notes = _should_enter(
+            stock.symbol, signal_data, live_price, game_plan, cfg, live_regime=None, kscore=None,
+            as_of=_entry_as_of(outcome.entry_date or outcome.signal_date, market),
+        )
+        if should:
+            result.n_replay_entered += 1
+        else:
+            result.n_replay_skipped += 1
+            result.skipped_signal_ids.append(sig_id)
+
+    return result

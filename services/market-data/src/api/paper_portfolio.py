@@ -2821,6 +2821,50 @@ def realized_performance(
     }
 
 
+# ── BT-2: replay fidelity check ────────────────────────────────────────────────
+# See docs/2026-09-06/SCOPE_BACKTEST_GENERATED_TRAINING_DATA.md. Measures how well
+# replay_should_enter() reproduces the entry decisions the live engine ACTUALLY made, over the
+# window where real paper trades exist. This is the gate on trusting replayed data at all: if
+# the replay can't reproduce the trades that really happened, it must not be trusted on the
+# ones that didn't. Research tool — writes nothing, promotes nothing.
+
+@router.get("/backtest/replay-fidelity")
+def backtest_replay_fidelity(
+    style: str = Query(..., description="SHORT | SWING | LONG | GROWTH"),
+    market: str = Query("US", description="US | HK"),
+    window_days: int = Query(120, ge=14, le=365, description="Lookback window in calendar days"),
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """BT-2: does the gate replay reproduce real paper-trade decisions?
+
+    Judge the result on `recall_on_real_trades` — of the real trades the replay could see, what
+    share did it also enter. Exact agreement is deliberately NOT the target: the replay is
+    regime-blind (a documented permanent gap) and models no portfolio-level state
+    (max_positions, sector caps, cash, daily caps), so a replayed ENTER on a signal the live
+    engine skipped is often legitimate — the book may simply have been full. A replayed SKIP on
+    a signal the engine really entered is the suspicious direction. See the response's own
+    `caveats` field and gate_harness.py's module docstring.
+    """
+    from ..backtest.gate_harness import verify_replay_fidelity
+    from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+
+    style = style.upper()
+    if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
+        raise HTTPException(status_code=400, detail=f"Unknown style: {style}")
+    market = market.upper()
+    if market not in ("US", "HK"):
+        raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
+
+    base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    window_end = date.today()
+    window_start = window_end - timedelta(days=window_days)
+
+    with SessionLocal() as session:
+        return verify_replay_fidelity(
+            session, style, market, base_cfg, window_start, window_end,
+        ).to_dict()
+
+
 # ── T233-SELFIMPROVE-PHASE2 (Phase 2a): gate-threshold backtest harness ────────
 # See docs/DESIGN_BACKTEST_HARNESS_PHASE2_2026-07-06.md for full scope/rationale.
 # Manually-triggered research tool — NOT wired to any promotion gate or config write.

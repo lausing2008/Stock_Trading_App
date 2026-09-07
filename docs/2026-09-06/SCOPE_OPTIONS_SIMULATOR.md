@@ -35,7 +35,36 @@ stdlib `math.erf` is sufficient and is the cleanest **zero-new-dependency** rout
 normal CDF. `frontend/src/pages/alerts-guide.tsx:645` already observes that BS gamma is "a
 self-contained quant task… closed-form formula, no new data source" — which is correct.
 
-### There is NO historical options data — at all
+> ## ⚠️ CORRECTION (2026-09-07) — historical options data DOES exist, via Unusual Whales
+>
+> **The "no historical options data" finding below is about this platform's own DATABASE, and
+> that part still stands. But my conclusion that a historical options backtest is hard-blocked
+> was WRONG** — the user pointed out UW has options history, and verified against the live key
+> it does:
+>
+> | Endpoint | What it returns |
+> |---|---|
+> | `/api/stock/{ticker}/option-chains?date=&greeks=true` | **the full chain as it existed on a past date** — strike, expiry, NBBO bid/ask, IV, OI, volume, and delta/gamma/theta/vega/rho |
+> | `/api/option-contract/{id}/historic` | per-contract daily OHLC + **IV high/low** + volume split by ask/bid/mid/neutral |
+> | `/api/option-contract/{id}/intraday`, `/volume-profile` | finer-grained per-contract history |
+>
+> **Verified live (AAPL):** 2026-06-02 → **3,598 contracts** with full greeks; 2026-08-14 →
+> 3,590; 2026-05-01 → 3,240. 2025-09-15, 2026-04-15, 2026-04-01, 2026-03-24, 2026-03-16 all
+> return **HTTP 403**.
+>
+> **The lookback boundary is between 2026-04-15 (403) and 2026-05-01 (OK)** — a **~4-month
+> rolling window** on the current subscription tier, not an archive. Two consequences:
+> 1. **Variant (c) is no longer hard-blocked** — it's feasible within ~4 months of history.
+> 2. **The window ROLLS.** Data older than the boundary is gone permanently unless persisted.
+>    That turns "persist historical chains" from optional into time-sensitive: every day not
+>    captured is a day that eventually falls off the back.
+>
+> Cost note: a full chain is ~3,600 rows/symbol/day. Backfilling even 10 symbols × 90 trading
+> days is ~900 calls (fine against the 30k/day budget) but ~3.2M rows — so this needs a
+> deliberate scope (which symbols, which strikes, daily vs weekly) rather than a blind sweep.
+> See §1 and the revised verdict table for how this changes the recommendation.
+
+### This platform's own DB has NO historical options data
 
 69 tables; only 4 are options-related and **none stores a chain**:
 
@@ -64,7 +93,7 @@ exists anywhere. **Options positions cannot be tracked today.**
 |---|---|---|
 | **(a) Payoff diagram / what-if calculator** | ✅ **Feasible** | Expiry payoff needs only strike + mid price from `/options-chain` — pure intrinsic math, zero new data. **Intermediate-date** curves need Black-Scholes built from scratch; the chain already carries per-contract `iv`, so the *inputs* exist and only the pricing function is missing. |
 | **(b) Multi-leg strategy builder** | ✅ **Most feasible** | Net debit/credit, breakevens, max profit/loss are arithmetic over legs. `compute_options_game_plan()` (`routes.py:4385`) already does 2-leg selection and computes `put_effective_floor_price` / `call_effective_cap_price` — the same shape, generalized. Nothing blocks expiry-payoff. |
-| **(c) Historical backtest of an options strategy** | ❌ **HARD-BLOCKED — do not attempt** | No historical chains, no historical IV, none. Would need months of new chain persistence — a real rate-limit risk (`docs/incidents/yfinance-rate-limit-amplification.md`; the game-plan snapshot job was *specifically* designed to avoid per-row chain fetches) — or a paid historical options vendor. |
+| **(c) Historical backtest of an options strategy** | ✅ **Feasible within ~4 months** *(revised 2026-09-07 — was "hard-blocked")* | UW's `/option-chains?date=&greeks=true` returns real historical chains with greeks (verified: 3,598 AAPL contracts on 2026-06-02). **Constraint is the ~4-month ROLLING lookback**, not availability — so the honest framing is "a 3-4 month options backtest", not a multi-year one, and capturing data is time-sensitive because the window moves. Note the same small-sample caution that applies everywhere on this platform: ~4 months spans one market phase, so a strategy that looks good over it has not been tested across regimes. |
 | **(d) Forward paper-trading of options positions** | ⚠️ **Feasible, largest build, defer** | Needs a new `PaperOptionsTrade` model + migration, a daily marking job (re-fetch precedent exists in `compute_options_game_plan_snapshots_eod()`), and contract-multiplier / assignment / expiry-handling logic with **no precedent here**. Also: `PaperPortfolio` is **cash-only by design** — no margin concept exists anywhere on the platform (CLAUDE.md), so naked-short legs have **no accounting model**. |
 
 ---
