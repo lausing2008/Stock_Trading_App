@@ -3,10 +3,12 @@ import Head from 'next/head';
 import Link from 'next/link';
 import useSWR from 'swr';
 import { api, type TuneStatusReport } from '@/lib/api';
+// AUD-HORIZONCOMPARE-BEARREGIME: the bear-regime derivation lives in lib/ so it is unit-tested
+// (this repo has no component-level React test harness). It reimplements backend logic, so it
+// carries real drift risk — see regimeThresholds.ts.
+import { bearThresholdFor, type Horizon } from '@/lib/regimeThresholds';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-type Horizon = 'SHORT' | 'SWING' | 'LONG' | 'GROWTH';
 type Market  = 'US' | 'HK';
 
 type DimRow = {
@@ -84,6 +86,7 @@ const ROWS: DimRow[] = [
     SWING:  '> 76%',
     LONG:   '> 70%',
     GROWTH: '> 68%',
+    hk_note: 'Live-derived: a Redis BUY override shifts EVERY regime by the same delta, not just bull — see the note under this table.',
   },
   {
     category: 'AI Signal Thresholds (Bear Regime)',
@@ -357,7 +360,7 @@ const HORIZON_DESC: Record<Horizon, string> = {
 // (holding periods, earnings/news gates, HK-specific gates, ensemble weights) has no live
 // Redis-backed override and is safe to keep as a static reference.
 const LIVE_WIRED_LABELS = new Set([
-  'BUY threshold',       // only the Bull-Regime category row — see isLiveWiredRow()
+  'BUY threshold',       // BOTH the Bull- and Bear-Regime rows — see isLiveWiredRow()
   'ML weight cap',
   'ADX minimum',
   'Breadth compression',
@@ -365,6 +368,9 @@ const LIVE_WIRED_LABELS = new Set([
 
 function isLiveWiredRow(row: DimRow): boolean {
   if (row.category === 'AI Signal Thresholds (Bull Regime)' && row.label === 'BUY threshold') return true;
+  // AUD-HORIZONCOMPARE-BEARREGIME: the bear-regime BUY row is live-derived too. See
+  // bearThresholdFor() for why it can be computed from the bull value alone.
+  if (row.category === 'AI Signal Thresholds (Bear Regime)' && row.label === 'BUY threshold') return true;
   if (row.category === 'ML Model Weight' && row.label === 'ML weight cap') return true;
   if (row.category === 'Technical Analysis' && (row.label === 'ADX minimum' || row.label === 'Breadth compression')) return true;
   return false;
@@ -379,7 +385,13 @@ function liveValueFor(row: DimRow, h: Horizon, tune: TuneStatusReport | undefine
   if (!tune || !isLiveWiredRow(row)) return null;
   const s = tune.styles[h];
   if (!s) return null;
-  if (row.label === 'BUY threshold') return fmtPct(s.effective.buy_threshold_bull);
+  if (row.label === 'BUY threshold') {
+    if (row.category === 'AI Signal Thresholds (Bear Regime)') {
+      const bear = bearThresholdFor(h, s.effective.buy_threshold_bull);
+      return bear != null ? `> ${fmtPct(bear)}` : null;
+    }
+    return `> ${fmtPct(s.effective.buy_threshold_bull)}`;
+  }
   if (row.label === 'ML weight cap') return fmtPct(s.effective.ml_weight_cap);
   if (row.label === 'ADX minimum') return s.effective.adx_min != null ? String(s.effective.adx_min) : 'None';
   if (row.label === 'Breadth compression') return s.effective.breadth_compression != null ? `×${s.effective.breadth_compression.toFixed(2)}` : 'None';
@@ -436,7 +448,7 @@ export default function HorizonComparePage() {
             {tuneError
               ? '⚠ Could not load live tuned values — showing hardcoded defaults only.'
               : tuneStatus
-                ? `● Live — BUY threshold / ML weight cap / ADX minimum / breadth compression reflect current Redis-tuned values (as of ${tuneStatus.as_of}). Struck-through value is the hardcoded default when it differs.`
+                ? `● Live — BUY threshold (bull + bear) / ML weight cap / ADX minimum / breadth compression reflect current Redis-tuned values (as of ${tuneStatus.as_of}). Struck-through value is the hardcoded default when it differs.`
                 : 'Loading live tuned values…'}
           </p>
         </div>
@@ -589,10 +601,20 @@ export default function HorizonComparePage() {
 
         {/* Legend */}
         <div style={{ maxWidth: 1200, margin: '16px auto 0', fontSize: 11, color: '#475569', textAlign: 'center' }}>
-          BUY threshold, ML weight cap, ADX minimum, and breadth compression are fetched live from GET /tune_status —
-          green + bold means the daily watchdog or weekly outcomes sweep has overridden the hardcoded default shown struck through.
-          All other rows are static reference values from signals.py's _STYLE_PROFILES (bear-regime thresholds shown are also
-          hardcoded — the live system currently only auto-tunes the bull-regime BUY threshold).
+          BUY threshold (both bull and bear regime), ML weight cap, ADX minimum, and breadth compression reflect live
+          values from GET /tune_status — green + bold means the daily watchdog or weekly outcomes sweep has overridden
+          the hardcoded default shown struck through.
+          <br/><br/>
+          <b style={{ color: '#94a3b8' }}>Why the bear-regime row moves too:</b> a live BUY override is a single number,
+          but signal-engine applies it as a <i>delta from the bull baseline</i> across every regime (so bear stays tighter
+          than bull instead of being flattened to one regime-agnostic value). Any tuning of the bull threshold therefore
+          shifts bear by the same amount — this row derives that shift rather than showing the untuned default.
+          <br/><br/>
+          <b style={{ color: '#94a3b8' }}>Still static:</b> HOLD thresholds are never auto-tuned (confirmed in
+          signals.py&apos;s _decide_style — only BUY and SELL read Redis). The SELL row shows the ×0.35 fallback and does
+          <i> not</i> reflect per-horizon SELL calibration, which is not exposed by /tune_status — check
+          <code style={{ color: '#64748b' }}> stockai:signal_thresholds:SELL:&#123;HORIZON&#125;</code> in Redis for the live value.
+          All other rows are static reference values from signals.py&apos;s _STYLE_PROFILES.
           Toggle US/HK above to switch market context.
         </div>
       </div>
