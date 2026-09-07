@@ -1885,13 +1885,19 @@ class OptionChainHistory(Base):
     __tablename__ = "option_chain_history"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    # NOTE: no per-column index=True on symbol/as_of/expiry. This table is BIG (~4,100 rows per
+    # symbol-day), so index bloat is a real cost, and index=True here duplicated coverage the
+    # composite/unique indexes below already provide — create_all() emits its own
+    # ix_option_chain_history_* alongside the migration's ix_optchain_*, so each was built TWICE.
+    # Measured live at 253k rows: 7 indexes totalling 32MB against a 40MB heap, ~8MB pure
+    # duplication. Add an index here only if a real query needs one these don't cover.
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
     # The market date this chain snapshot represents (UW's `date` query param).
-    as_of: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    as_of: Mapped[date] = mapped_column(Date, nullable=False)
     # UW's OCC-style contract id, e.g. "AAPL260918P00095000" — the natural per-contract key and
     # the join key back to /api/option-contract/{id}/historic for per-contract time series.
     option_symbol: Mapped[str] = mapped_column(String(40), nullable=False)
-    expiry: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
     strike: Mapped[float | None] = mapped_column(Float, nullable=True)
     option_type: Mapped[str | None] = mapped_column(String(4), nullable=True)  # "call" | "put"
 

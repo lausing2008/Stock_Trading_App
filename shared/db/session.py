@@ -477,6 +477,23 @@ def _run_migrations() -> None:  # noqa: C901
             CREATE INDEX IF NOT EXISTS ix_optchain_expiry
             ON option_chain_history (expiry)
         """))
+        # OPTHIST-1 follow-up: drop the duplicate indexes create_all() built from the model's
+        # original per-column index=True flags (now removed). Each of these fully duplicates
+        # coverage the composite/unique indexes above already provide:
+        #   ix_option_chain_history_as_of   <- ix_optchain_sym_asof (symbol, as_of)
+        #   ix_option_chain_history_expiry  <- ix_optchain_expiry (expiry)
+        #   ix_option_chain_history_symbol  <- leading col of uq_optchain_sym_date_contract
+        # Caught by measuring the live table mid-backfill rather than by reading the schema:
+        # at 253k rows the table carried 7 indexes / 32MB against a 40MB heap. On a table that
+        # grows ~4,100 rows per symbol-day this compounds fast, so it is worth dropping rather
+        # than tolerating. Safe/idempotent: IF EXISTS, and dropping a redundant index cannot
+        # break a query, only make it use the equivalent remaining index.
+        for _dup_ix in (
+            "ix_option_chain_history_as_of",
+            "ix_option_chain_history_expiry",
+            "ix_option_chain_history_symbol",
+        ):
+            conn.execute(text(f"DROP INDEX IF EXISTS {_dup_ix}"))
         # T234-ML-FUND-BROADCAST-LEAKAGE: extend fundamentals_snapshot with the columns
         # builder.py broadcasts today's value for across ALL historical training rows
         # (lookahead bias). Backfilling these lets a future point-in-time merge_asof join
