@@ -216,3 +216,85 @@ docker exec stockai-ml-prediction-1 grep -c "log.warning\|log.debug" /app/src/tr
 
 ---
 
+## AUD-MLAGE — Model Training Age Surfaced on the ML Model Accuracy Panel (Built 2026-09-07)
+
+**The gap:** `trained_at` has been written into every model bundle since Tier 21 (2026-06-15),
+but `GET /ml/metrics` — the endpoint backing the one **fleet-wide** ML view — omitted it. So the
+panel showed AUC, CV-AUC and overfit gap for 290 models with no way to tell whether any of them
+was fit today or three months ago. "Which models are stale?" was unanswerable from the UI.
+
+It was visible in exactly two places, neither of them fleet-wide:
+- Stock detail page → feature-importance panel (one symbol, via `GET /ml/features/{symbol}`)
+- Paper Portfolio → ML re-ranker card (a **different** model entirely)
+
+**Shipped:** `trained_at`, `age_days`, and `oos_suppressed` on `/ml/metrics`; fleet stats
+(stale / age-unknown / median / oldest / suppressed) and a per-row Age column with a ⊘ marker
+for suppressed models.
+
+### The three-state null problem (why this got its own lib + 16 tests)
+
+`age_days` has three meanings that must stay distinct:
+
+| Value | Meaning |
+|---|---|
+| a number | real, known age |
+| `null` | **UNKNOWN** — bundle predates `trained_at`, so necessarily older than 2026-06-15 |
+| `0` | genuinely trained **today** |
+
+Collapsing `null → 0` reports the fleet's **oldest** models as the freshest — exactly inverted.
+Collapsing `0 → null` (a truthiness check on a numeric, the falsy-zero class fixed repeatedly
+here) drops every model trained today, which is the most common state right after a retrain.
+
+So `unknown` is its own counted category, never folded into fresh or stale, and is given the
+**same warning colour as stale** — an unknown-age bundle is necessarily old, and showing it
+neutrally would understate a real problem.
+
+Logic lives in `frontend/src/lib/mlFleetAge.ts` because this repo has no component-level React
+harness. One test is anchored to the real measured production shape (581 total / 491 dated /
+90 unknown / 63 stale) rather than invented numbers.
+
+---
+
+## AUD-MLRETRAIN-UNKNOWNAGE — Why a Fleet-Wide Retrain Was the Wrong Answer (2026-09-07)
+
+Asked directly: *do we need to retrain everything?* **No**, and the measurement says a blanket
+retrain would make things worse.
+
+**The decisive number:** the fleet retrain had *already run that day* — 330 models — and **293
+of them (89%) immediately suppressed themselves**. That is what a retrain actually produces
+under current code, not what stale stored metrics imply.
+
+**Staleness pointed the same way** — the stale cohort is marginally *better*:
+
+| Cohort | n | mean AUC | mean CV AUC |
+|---|---|---|---|
+| Fresh (≤30d) | 428 | 0.519 | 0.553 |
+| **Stale (>30d)** | 63 | **0.536** | **0.577** |
+| Unknown age | 90 | 0.499 | 0.568 |
+
+**The real constraint is `n_test` median = 28.** At ~28 held-out rows AUC is noise-dominated —
+exactly the small-sample regime `AUD-ML2` identified. More retraining on the same thin data just
+regenerates the problem with different random draws. Post-fix GEV illustrates it: `test_auc =
+0.975` against `cv_auc = 0.356` on `n_test = 27`.
+
+**What was done instead:** retrained only the **90 unknown-age artifacts** — the sole defensible
+candidates, since they predate both `trained_at` *and* `_compute_oos_suppression()` and had
+never been evaluated under the current gate. Unknown-age went **90 → 4**; fresh went 428 → 513.
+
+**Scoped 90 → 86 jobs** after validating candidates against the DB:
+- `BRK.A` — not in the stocks table at all
+- `5.HK` — a **junk stocks-table row** (name literally `"5.HK"`, **zero price bars**), a
+  pre-zero-padding duplicate of `0005.HK`/HSBC, which has its own current model
+- `1879.HK` — only 91 daily bars
+
+**Two process notes worth keeping.** A throwaway diagnostic stripped 8 characters for `.joblib`
+(7 chars), truncating every ticker (`AMZN`→`AMZ`, `0005.HK`→`5.H`) — never in shipped code, and
+ironically what made `5.HK` visible. And `docker exec -d` ties the process to the exec session,
+killing the run at ~31 jobs; relaunch with `setsid nohup`. No work was lost because the resume
+script re-derives remaining work **from the artifacts themselves**, not a position counter —
+worth copying for any long batch job.
+
+**The 63 stale xgboost models were deliberately not retrained.** Re-check only if `n_test` grows
+materially; sample size, not age, is the binding constraint.
+
+---

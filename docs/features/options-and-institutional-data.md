@@ -932,3 +932,113 @@ is deliberately **NOT Redis-cached** — a settled past chain is immutable, and 
 per call would evict hot live keys for no benefit.
 
 ---
+## AUD-UWEXPAND — Surveyed All 226 UW Endpoints Live, Wired the 4 the Tier Already Paid For (Built 2026-09-07)
+
+**Full survey:** `docs/2026-09-07/UW_API_BASIC_ENDPOINT_SURVEY.md`.
+
+**Method that matters:** parsed UW's own live OpenAPI spec (226 documented paths) and then
+**probed every candidate against the real key**. Documented ≠ entitled — only a real call
+reveals which side of the tier line an endpoint sits on. Every status recorded is measured.
+
+### Direct answers
+
+| Asked | Result |
+|---|---|
+| Earnings call transcripts | ❌ 403 `advanced_tier_required` |
+| Futures (7 endpoints) | ❌ 403 `futures_access_required` |
+| Predictions | ✅ 200 (4 of 5) |
+| Private markets (9) | ❌ 422 `Missing access for private markets` |
+| Stock screener | ✅ 200 (all 3) |
+
+### Finding 1 — entitlements are THREE axes, not one ladder
+
+The error codes differ by kind: `advanced_tier_required` (tier), `futures_access_required` and
+private markets' 422 (product add-ons), `volatility_scope_required` (scope). **An "Advanced"
+upgrade would unlock transcripts and company fundamentals, but futures, private markets, and VIX
+term structure look like separate purchases.** Confirm with UW before assuming one upgrade buys
+all of it.
+
+### Finding 2 — an already-built feature is silently dead
+
+`get_earnings_transcript()` is wired and feeds the post-earnings "management tone" LLM email
+(tier 338). It returns **403 on this tier**, and the fetcher fails open to `[]` — correctly; its
+docstring already names a tier-403 as an anticipated failure. So the feature degrades with **no
+error, no alert, and no visible difference**, and the content it was built for has **never
+rendered**.
+
+Not a bug. But it is the exact shape that survives review indefinitely, and a reason to be
+skeptical of any "we integrated X" claim where X sits behind an entitlement.
+
+### What was built
+
+| Endpoint | Storage | Cadence |
+|---|---|---|
+| `/etfs/{t}/in-outflow` → `etf_fund_flows` | persisted | daily 17:30 ET (21 req) |
+| `/institution/{t}/ownership` → `institutional_ownership` | persisted | **on-demand only** |
+| `/screener/stocks` | **not persisted** | on-demand |
+| `/market/fda-calendar` → `fda_catalysts` | persisted | **unscheduled — see below** |
+
+**ETF fund flows are the standout.** Every other "flow" signal on this platform is *derived*
+(options premium ratios, dark-pool prints, southbound turnover). This is the actual
+creation/redemption mechanic — real money entering or leaving a fund. **15,472 rows / 21 ETFs /
+back to 2023-09-08 from 21 requests**, because one call returns ~750 rows, so the first run
+backfilled three years. ARKK is excluded by name — it measured empty, better than letting a
+known-dead ticker log noise daily.
+
+Live sanity check: money **into** QQQ +$2.6B, GLD +$1.3B, XLE, TLT, XLV; **out of** SPY −$1.0B,
+IWM, SMH, EEM. Tech + defensives + energy in, broad/small-cap/semis/EM out — a readable rotation
+signal.
+
+**Deliberate non-choices, each with a reason:**
+- *Institutional ownership is on-demand and requires an explicit symbol list* — 13F changes
+  quarterly, so a daily sweep re-fetches data that cannot have changed. Lagged ~45 days by the
+  filing cycle (observed: report_date 2026-06-30 filed 2026-08-07); never present as live
+  positioning. Its value over yfinance's aggregate % is `avg_price` (holder cost basis) and
+  `units_changed`.
+- *The screener is not persisted* — its ~70 fields (`iv_rank`, `implied_move_7/30`, `gex_ratio`,
+  `variance_risk_premium`) are continuously recomputed; a stored copy would be a stale mirror.
+- *Prediction markets were NOT built despite full access* — the categories are Sports, Politics,
+  Culture, Weather. A different domain from equities/options with no obvious path to better
+  signals. That would be building because we can.
+
+**Scheduled cost: 21 requests/day** against 120k.
+
+### AUD-UWEXPAND-FDA-UNUSABLE — built, then unscheduled
+
+Flagged as a promising catalyst feed and built. Verifying the live capture showed **every
+persisted row was 2021–2022**. Probing properly rather than writing it off as "a bit stale"
+found a hard constraint — the endpoint returns its **oldest rows first and ignores every filter
+and pagination parameter**:
+
+| Parameter tried | Result |
+|---|---|
+| `limit=100 / 200 / 500` | all start at 2021-04-13; 500-row max reaches only 2023-11-21 |
+| `page=0 / 1 / 5 / 10` | **byte-identical results** — the parameter does nothing |
+| `date`, `min_date`, `start_date=2026-01-01` | no effect whatsoever |
+
+There is **no reachable path to current events**. It is a 2021–2023 historical archive, not the
+forward calendar it was wired for — useless for anticipating binary biotech events.
+
+**Unscheduled** rather than keep a job that re-fetches stale rows forever, spends a request, and
+— worse — implies the platform has FDA catalyst coverage it does not. The capture function and
+admin endpoint are kept with the measurement in the docstring, plus a **guard test asserting the
+job stays unscheduled**, so a future session cannot re-add it without confronting the reason.
+
+**Same lesson as `docs/incidents/external-data-source-liveness.md`, in a new form:** there, an
+endpoint was reachable but its data was frozen; here the data exists but is *unreachable*.
+**"HTTP 200 with plausible rows" is not evidence a feed is usable** — check you can actually get
+to the rows you need.
+
+### Test note
+
+20 tests. 3 adversarial sabotage cycles; **the second initially passed** — an `or None` appended
+to `change_premium` reintroduces the falsy-zero bug, but the tests only exercised `_opthist_f()`
+in isolation, never the payload construction. Added an assertion over the call sites themselves.
+That guard is load-bearing, not theoretical: **2,544 of the 15,472 flow rows are exactly zero**
+and would all have become NULL.
+
+An existing repo guard (`test_alerts_env_gate`) correctly caught both new job IDs as
+unclassified — they were registered as non-alert data-capture jobs rather than weakening the
+guard.
+
+---
