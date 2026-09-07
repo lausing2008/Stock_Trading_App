@@ -240,3 +240,42 @@ constants). **Not independently re-verified here:** the current PIT-join status 
 feature (`T234-ML-FUND-BROADCAST-LEAKAGE` / `T228` `merge_asof`), and the live `n_outcome_rows`
 distribution across model artifacts. Neither changes the recommendation above — §3b rules out ML
 training on replayed labels regardless — but both should be checked before any ML-side work.
+
+---
+
+## 7. WHAT IS ACTUALLY BEING TESTED — and what isn't (added 2026-09-07)
+
+A direct question worth answering precisely, because the answer is narrower than "we're
+backtesting the alerts":
+
+**BT-1 and BT-2 test NEITHER the AI Signal alert NOR any options alert.** They replay
+`_should_enter()`, which is the **AI Signal → paper-trade ENTRY** gate. Three separate paths
+exist and they are easy to conflate:
+
+| Path | Gate function | Outcome table | Rows | Covered by BT-1/BT-2? |
+|---|---|---|---|---|
+| **AI Signal → paper-trade entry** | `_should_enter()` | `signal_outcomes` | 16,732 | ✅ **yes — this is what we built** |
+| **AI Signal email alert** | `_is_conviction_buy()` (`scheduler.py:840`) | `signal_outcomes` (shared) | 16,732 | ❌ no — different gate entirely |
+| **Options alerts** (squeeze / gamma / options-flow) | `check_*_alerts()` | `squeeze_alert_outcomes` (335), `options_flow_alert_outcomes` (1,552) | — | ❌ no — separate tables, separate dashboards |
+
+### ⚠ And a sharper caveat on even the path we DO cover
+
+`_should_enter()` is the **decision-engine-outage FALLBACK gate**, not the live authoritative
+one. `_DEFAULT_CONFIG["decision_engine_mode"] = "primary"`
+(`paper_trading_engine.py:656`) means decision-engine's own `check_hard_rejects()` /
+`compute_score()` decides real entries; `_should_enter()` only runs when DE is unreachable.
+
+**This qualifies the BT-1 GROWTH finding.** "47% win rate, −0.37% avg return" describes what the
+*fallback* gate would have admitted — it is **not** a measurement of live entry quality. Still a
+real and useful signal (the fallback is what runs during any DE outage, and it shares most
+thresholds with DE), but it must not be quoted as "the platform's GROWTH entries lose money."
+
+### What testing the other two paths would require
+
+- **AI Signal alert:** replay `_is_conviction_buy()` over the same 45k persisted signals. Cheap —
+  it's a pure function reading `signal_data`, and `sig.reasons` already carries every input it
+  needs. **This is the natural next backtest and is genuinely low-effort.**
+- **Options alerts:** `options_flow_alert_backtest()` and `squeeze_alert_backtest()` already
+  exist (see `docs/features/squeeze-and-options-alerts.md`) and have their own dashboards at
+  `/squeeze-alert-performance` and `/options-flow-alerts`. Nothing new needed — they're just
+  separate from this work.
