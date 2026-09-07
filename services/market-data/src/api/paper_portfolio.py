@@ -2865,6 +2865,40 @@ def backtest_replay_fidelity(
         ).to_dict()
 
 
+# ── BT-4: AI Signal ALERT gate replay ──────────────────────────────────────────
+# Replays _is_conviction_buy() — the EMAIL ALERT gate, genuinely different from the paper-trade
+# entry gate BT-1/BT-2 cover. Research tool — writes nothing, promotes nothing.
+
+@router.get("/backtest/alert-gate")
+def backtest_alert_gate(
+    style: str = Query(..., description="SHORT | SWING | LONG | GROWTH"),
+    market: str = Query("US", description="US | HK"),
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """BT-4: does the AI Signal alert's conviction gate select better-performing signals?
+
+    Judge on `win_rate_lift` / `avg_return_lift` versus the baseline of ALL resolved BUY signals
+    in the same window — a gate whose alerted population performs no better than baseline isn't
+    adding value however good its absolute win rate looks. Check the clustering fields before
+    trusting any lift figure.
+
+    Unlike BT-1/BT-2 this replay has NO regime-blindness gap: _is_conviction_buy() natively
+    reads regime from the signal's own frozen reasons snapshot, and kscore is taken from the
+    same snapshot rather than a live rankings read.
+    """
+    from ..backtest.gate_harness import replay_alert_gate
+
+    style = style.upper()
+    if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
+        raise HTTPException(status_code=400, detail=f"Unknown style: {style}")
+    market = market.upper()
+    if market not in ("US", "HK"):
+        raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
+
+    with SessionLocal() as session:
+        return replay_alert_gate(session, style, market).to_dict()
+
+
 # ── BT-1: full-history gate replay ─────────────────────────────────────────────
 # Replays CURRENT gates across all persisted signal history (floor 2026-05-25, the first date a
 # sig.reasons snapshot exists). Research tool — writes nothing, promotes nothing. Run

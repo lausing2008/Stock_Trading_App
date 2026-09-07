@@ -279,3 +279,63 @@ thresholds with DE), but it must not be quoted as "the platform's GROWTH entries
   exist (see `docs/features/squeeze-and-options-alerts.md`) and have their own dashboards at
   `/squeeze-alert-performance` and `/options-flow-alerts`. Nothing new needed — they're just
   separate from this work.
+
+---
+
+## 8. BT-4 — the AI Signal ALERT gate, backtested (2026-09-07)
+
+Closes the §7 gap. `replay_alert_gate()` + `GET /paper-portfolio/backtest/alert-gate` replay
+`_is_conviction_buy()` — the **email alert** gate, not the paper-trade entry gate.
+
+**This replay is cleaner than BT-1's.** `_is_conviction_buy()` is a pure function whose own
+docstring says it reads regime from the stored signal's `reasons` dict ("the regime at
+generation time"), so there is **no regime-blindness gap** here — the function natively consumes
+exactly the frozen snapshot a replay supplies. `kscore` likewise comes from
+`reasons["kscore"]` (point-in-time) rather than a live rankings read.
+
+### Result (US, full persisted history)
+
+| Style | Signals | Alerted | Alerted win | Alerted return | Baseline win | Baseline return | **Win lift** | **Return lift** |
+|---|---|---|---|---|---|---|---|---|
+| SWING | 2,654 | 497 (18.7%) | 45.1% | **−0.55%** | 41.5% | −1.41% | **+3.6pp** | **+0.85pp** |
+| GROWTH | 2,912 | 701 (24.1%) | 44.4% | **−0.99%** | 41.7% | −1.57% | **+2.7pp** | **+0.58pp** |
+
+### Two findings, and they point in opposite directions
+
+**1. The conviction gate genuinely works — it is selective and it adds value.** It admits only
+19-24% of BUY signals, and that admitted population beats the all-signals baseline on both win
+rate (+3.6pp / +2.7pp) and average forward return (+0.85pp / +0.58pp). This is the first
+quantified evidence on this platform that `_is_conviction_buy()` earns its place. Tier
+distribution shows it is genuinely discriminating rather than rubber-stamping: only 104 SWING /
+195 GROWTH signals reach `full` conviction, with most rejected outright.
+
+**2. But the alerted population is still net-negative.** −0.55% (SWING) and −0.99% (GROWTH)
+average forward return. **The gate filters toward less-bad, not toward profitable.** Both the
+alerted and baseline populations lose money over this window; conviction filtering reduces the
+loss without reversing its sign.
+
+That is a materially different claim from "the alerts are good" and should not be rounded up to
+it. It is consistent with the 2026-09-05 cycle's own conclusion that entry TIMING is the weak
+component — a gate that better ranks a population of poorly-timed entries still yields
+poorly-timed entries.
+
+### Where the gate rejects (both styles, same ordering)
+
+1. `Uptrend structure not aligned (SMA50/SMA200/price)` — ~1,141 / 1,144
+2. `Stoch RSI overbought — pullback risk elevated` — ~966 / 1,000
+3. `OBV: volume not confirming direction` — ~751 / 673
+4. `MACD: momentum fading` — ~272 / 331
+
+Note (2): the gate is already rejecting ~1,000 signals per style for being *overextended* — the
+same failure mode `AUD-CHASE-ROC10` addresses on the entry side. Two independent gates
+converging on "we fire too late" reinforces the entry-timing finding rather than duplicating it.
+
+### Caveats that bound all of the above
+
+- **Clustering is present**: 80 of 497 SWING alerts and 105 of 701 GROWTH alerts fall in a
+  single week, across 11-12 weeks total. The lift figures rest on far fewer independent
+  observations than the row counts suggest.
+- **~3 months of history, one market phase.** Per §4's standing warning, treat a lift measured
+  here as provisional until it survives a wider sample.
+- Baseline is *all resolved BUY signals*, which is the right comparison for "does the gate
+  select better" but is not a tradeable alternative (nobody trades every BUY).

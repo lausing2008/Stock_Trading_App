@@ -1717,3 +1717,171 @@ def replay_full_signal_history(
         result.avg_return_pct = sum(returns) / len(returns)
         result.win_rate = result.n_wins / len(returns)
     return result
+
+
+# ── BT-4: replay the AI SIGNAL ALERT gate (_is_conviction_buy) ───────────────────────────
+#
+# See docs/2026-09-06/SCOPE_BACKTEST_GENERATED_TRAINING_DATA.md §7. BT-1/BT-2 replay
+# _should_enter() — the PAPER-TRADE ENTRY gate. That is a genuinely different gate from the one
+# deciding whether an AI Signal EMAIL ALERT goes out, which is _is_conviction_buy()
+# (scheduler.py). This closes that gap.
+#
+# This replay is cleaner than BT-1's in one important respect: _is_conviction_buy() is a PURE
+# function whose own docstring states it reads regime from the stored signal's reasons dict
+# ("the regime at generation time"). So unlike _should_enter(), there is NO regime-blindness
+# gap here — the function natively consumes exactly the frozen snapshot a replay can supply.
+#
+# kscore: the LIVE caller passes a value from a live rankings fetch, but for replay the
+# point-in-time-correct source is reasons["kscore"] (the value as of generation; verified 100%
+# coverage on recent signals). Using today's ranking instead would be textbook lookahead.
+#
+# rankings_api_ok=True is passed deliberately: it only changes the WORDING of a failure message
+# when kscore is missing, never the pass/fail outcome (see _is_conviction_buy Layer 2).
+
+@dataclass
+class AlertGateReplayResult:
+    style: str
+    market: str
+    window_start: date
+    window_end: date
+    n_signals_seen: int = 0
+    n_alerted: int = 0          # conviction gate passed -> an alert would have fired
+    n_wins: int = 0
+    win_rate: float | None = None
+    avg_return_pct: float | None = None
+    # Same comparison the gate's own tiering makes — "near" means one SOFT fail (OBV or ADX).
+    tier_counts: dict = field(default_factory=dict)
+    failed_layer_counts: dict = field(default_factory=dict)
+    n_distinct_weeks: int = 0
+    max_alerts_in_one_week: int = 0
+    # The comparison that actually answers "is the alert gate doing anything useful": how the
+    # ALERTED population performed vs. every resolved BUY signal in the same window. A gate that
+    # fires on a population no better than the baseline is not adding value, however good its
+    # absolute win rate looks.
+    baseline_win_rate: float | None = None
+    baseline_avg_return_pct: float | None = None
+    skipped_reason: str | None = None
+
+    def to_dict(self) -> dict:
+        lift_wr = (
+            self.win_rate - self.baseline_win_rate
+            if self.win_rate is not None and self.baseline_win_rate is not None else None
+        )
+        lift_ret = (
+            self.avg_return_pct - self.baseline_avg_return_pct
+            if self.avg_return_pct is not None and self.baseline_avg_return_pct is not None else None
+        )
+        return {
+            "style": self.style,
+            "market": self.market,
+            "window_start": self.window_start.isoformat(),
+            "window_end": self.window_end.isoformat(),
+            "n_signals_seen": self.n_signals_seen,
+            "n_alerted": self.n_alerted,
+            "win_rate": round(self.win_rate, 4) if self.win_rate is not None else None,
+            "avg_return_pct": round(self.avg_return_pct, 4) if self.avg_return_pct is not None else None,
+            "baseline_win_rate": round(self.baseline_win_rate, 4) if self.baseline_win_rate is not None else None,
+            "baseline_avg_return_pct": (
+                round(self.baseline_avg_return_pct, 4) if self.baseline_avg_return_pct is not None else None
+            ),
+            "win_rate_lift": round(lift_wr, 4) if lift_wr is not None else None,
+            "avg_return_lift": round(lift_ret, 4) if lift_ret is not None else None,
+            "tier_counts": self.tier_counts,
+            "failed_layer_counts": dict(
+                sorted(self.failed_layer_counts.items(), key=lambda kv: -kv[1])[:12]
+            ),
+            "n_distinct_weeks": self.n_distinct_weeks,
+            "max_alerts_in_one_week": self.max_alerts_in_one_week,
+            "skipped_reason": self.skipped_reason,
+            "caveats": (
+                "Replays _is_conviction_buy() — the AI Signal EMAIL ALERT gate, NOT the "
+                "paper-trade entry gate (_should_enter(), covered by BT-1/BT-2). Inputs come "
+                "from each signal's own frozen reasons snapshot, including regime and kscore, "
+                "so this replay has no regime-blindness gap. Judge it on win_rate_lift / "
+                "avg_return_lift against the baseline of ALL resolved BUY signals in the same "
+                "window: a gate whose alerted population performs no better than baseline is "
+                "not adding value regardless of its absolute win rate. Check clustering before "
+                "trusting any lift figure."
+            ),
+        }
+
+
+def replay_alert_gate(
+    session: Session,
+    style: str,
+    market: str,
+    window_start: date | None = None,
+    window_end: date | None = None,
+) -> AlertGateReplayResult:
+    """BT-4: replay the AI Signal ALERT conviction gate over persisted signal history."""
+    from ..services.scheduler import _is_conviction_buy
+
+    style = style.upper()
+    bucket = _HORIZON_BUCKET[style]
+    floor = date(2026, 5, 25)  # first date a reasons snapshot exists — see BT-1's header
+    ws = max(window_start or floor, floor)
+    we = window_end or date.today()
+
+    result = AlertGateReplayResult(style=style, market=market, window_start=ws, window_end=we)
+    matched = _fetch_matched_signals(session, style, market, ws, we)
+    result.n_signals_seen = len(matched)
+    if not matched:
+        result.skipped_reason = "no resolved BUY signals in the persisted-history window"
+        return result
+
+    alerted_returns: list[float] = []
+    all_returns: list[float] = []
+    all_wins = 0
+    weeks: dict[str, int] = {}
+
+    for sig, outcome, stock in matched:
+        pct_return = getattr(outcome, f"return_{bucket}")
+        is_correct = getattr(outcome, f"is_correct_{bucket}")
+        if pct_return is None:
+            continue
+        # Baseline population: every resolved BUY signal, gate or no gate.
+        all_returns.append(float(pct_return))
+        if is_correct:
+            all_wins += 1
+
+        reasons = sig.reasons or {}
+        signal_data = {
+            "signal": sig.signal.value,
+            "confidence": sig.confidence,
+            "bullish_probability": sig.bullish_probability,
+            "reasons": reasons,
+        }
+        # Point-in-time kscore from the frozen snapshot, NOT a live rankings read.
+        raw_k = reasons.get("kscore")
+        try:
+            kscore = float(raw_k) if raw_k is not None else None
+        except (TypeError, ValueError):
+            kscore = None
+
+        all_pass, tier, _passed, failed = _is_conviction_buy(
+            signal_data, kscore=kscore, rankings_api_ok=True,
+        )
+        result.tier_counts[tier] = result.tier_counts.get(tier, 0) + 1
+        if not all_pass:
+            for f in failed:
+                key = str(f)[:110]
+                result.failed_layer_counts[key] = result.failed_layer_counts.get(key, 0) + 1
+            continue
+
+        alerted_returns.append(float(pct_return))
+        if is_correct:
+            result.n_wins += 1
+        d = outcome.signal_date
+        wk = f"{d.isocalendar()[0]}-W{d.isocalendar()[1]:02d}"
+        weeks[wk] = weeks.get(wk, 0) + 1
+
+    result.n_alerted = len(alerted_returns)
+    result.n_distinct_weeks = len(weeks)
+    result.max_alerts_in_one_week = max(weeks.values()) if weeks else 0
+    if alerted_returns:
+        result.avg_return_pct = sum(alerted_returns) / len(alerted_returns)
+        result.win_rate = result.n_wins / len(alerted_returns)
+    if all_returns:
+        result.baseline_avg_return_pct = sum(all_returns) / len(all_returns)
+        result.baseline_win_rate = all_wins / len(all_returns)
+    return result
