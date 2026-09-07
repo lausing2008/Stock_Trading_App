@@ -84,17 +84,21 @@ self-contained quant task… closed-form formula, no new data source" — which 
 > **The binding constraint is DB volume, not the request budget** — and now with real measured
 > numbers rather than estimates:
 >
-> | Unit | Requests | Rows | Disk (incl. indexes) |
-> |---|---|---|---|
-> | 1 symbol-day | 1 | ~4,040 | **~1.05 MB** |
-> | 10 symbols × 90 trading days | 900 (0.75% of daily budget) | ~3.6M | **~945 MB** |
-> | 10 symbols × 2 years (~500 days) | 5,000 (4%) | ~20M | **~20 GB** |
+> **Cost splits by SYMBOL CLASS — a single flat average is the wrong model.** Measured across a
+> real 10-symbol × 126-day backfill (2026-09-07):
 >
-> **(Disk figures corrected 2026-09-07 mid-backfill — the first published ~285 KB/symbol-day came
-> from the 5-day validation sample, taken before indexes had grown proportionally, and was
-> ~3.7× too low. Re-measured at 496,718 rows. Constraint ordering unchanged: still disk-bound,
-> still 4% of one day's quota — but 20 GB on a 100 GB volume is a real commitment. Check `df -h`
-> first.)**
+> | Symbol class | Rows/day | Disk/symbol-day | Per symbol-YEAR |
+> |---|---|---|---|
+> | Index ETF (SPY, QQQ) | ~12,400 | **~3.0 MB** | **~0.73 GB** |
+> | Single name (AAPL, NVDA, MSFT) | ~4,350 | **~1.06 MB** | **~0.26 GB** |
+>
+> Index ETFs are ~2.9× heavier (many more strikes/expiries). Requests stay trivial — 1 per
+> symbol-day, so a 10-symbol 2-year sweep is ~5,000 calls, 4% of one day's 120k quota. Only disk
+> binds; check `df -h` first and weight by how many index ETFs are in the set.
+>
+> **(Corrected twice, both times by measuring: the original ~285 KB came from a 5-day sample
+> before indexes grew; the ~1.05 MB replacement was right for single names but published as if
+> universal. See `docs/features/options-and-institutional-data.md` for the full postmortem.)**
 >
 > So the 120k/day budget is nowhere near binding: even the 2-year sweep is 4% of ONE day's
 > quota. Disk is what to scope against — check EC2 headroom before any multi-GB backfill, and

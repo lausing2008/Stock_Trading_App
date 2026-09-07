@@ -851,24 +851,35 @@ Validated end-to-end in production: AAPL 2026-06-01..06-05 → **18,190 rows, 0 
 All 5 days genuinely distinct (volume 634k–1.87M, OI rising monotonically 4.98M→5.27M, IV
 varying day to day) — confirming UW returns real per-day chains, not a carried-forward one.
 
-| Unit | Requests | Rows | Disk (incl. indexes) |
-|---|---|---|---|
-| 1 symbol-day | 1 | ~4,040 | **~1.05 MB** |
-| 10 symbols × 90 trading days | 900 (0.75% of daily budget) | ~3.6M | **~945 MB** |
-| 10 symbols × 2 years (~500 days) | 5,000 (4%) | ~20M | **~5.2 GB → ~20 GB** |
+**Cost depends heavily on the SYMBOL CLASS — do not scope with a single flat average.** Measured
+across a real 10-symbol × 126-day backfill (2026-09-07):
 
-> **Corrected 2026-09-07, mid-backfill.** The first published figure was **~285 KB/symbol-day**,
-> derived from the 5-day AAPL validation sample — measured *before* the table had enough volume
-> for its indexes to grow proportionally, so it counted heap while indexes were still near-empty.
-> Re-measured live at 496,718 rows / 123 symbol-days: **~1.05 MB/symbol-day, ~3.7× higher.**
-> Indexes are ~40% of total size on this table, which is why the sampling error was so large.
-> Two lessons worth keeping: measure storage cost at realistic volume, not from a smoke-test
-> sample; and quote index-inclusive size, since that is what consumes the disk.
+| Symbol class | Rows/day | Disk/symbol-day | Disk per symbol-YEAR (252d) |
+|---|---|---|---|
+| **Index ETF** (SPY, QQQ) | ~12,400 | **~3.0 MB** | **~0.73 GB** |
+| **Single name** (AAPL, NVDA, MSFT, TSLA) | ~4,350 | **~1.06 MB** | **~0.26 GB** |
+
+Index ETFs are **~2.9× heavier** than single names — far more strikes and expiries. Per-symbol
+measured rows/day: SPY 13,618 · QQQ 11,165 · TSLA 6,108 · NVDA 4,022 · MSFT 3,799 · AAPL 3,455.
+
+Requests remain trivial either way: **1 request per symbol-day**, so even a 10-symbol 2-year
+sweep is ~5,000 calls — **4% of one day's 120k quota**. Only disk binds.
+
+> **Disk figures corrected TWICE, both times by measuring rather than projecting** — worth
+> keeping as a caution about this feature's cost model:
 >
-> **The constraint ordering is unchanged** — a 10-symbol 2-year archive is still disk-bound
-> (~20 GB against 51 GB free) and still only 4% of one day's request quota. But 20 GB is a real
-> commitment on a 100 GB volume, not the rounding error 5.2 GB implied. **Check `df -h` before
-> any large backfill and size the symbol set against measured cost, not the original estimate.**
+> 1. **~285 KB/symbol-day** (original) — taken from the 5-day AAPL validation sample, *before*
+>    the table had volume for its indexes to grow proportionally. Counted heap while indexes were
+>    near-empty. **~3.7× too low.**
+> 2. **~1.05 MB/symbol-day** (first correction) — correct for a *single name*, but published as
+>    though it were universal. The backfill then hit SPY/QQQ at ~3 MB/symbol-day and the flat
+>    average broke down. **A single average was the wrong model.**
+>
+> Lessons: measure at realistic volume, quote index-inclusive size, and **check whether cost is
+> actually uniform across the population before publishing one number for it.**
+>
+> **Check `df -h` before any large backfill** and size against the table above, weighting by how
+> many index ETFs are in the symbol set.
 
 The 120,000/day request budget is nowhere near binding — even a 2-year sweep is 4% of a single
 day's quota. **Disk is what to scope against.** Hence the endpoint deliberately requires an

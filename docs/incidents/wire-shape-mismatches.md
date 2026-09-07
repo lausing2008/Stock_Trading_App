@@ -58,3 +58,67 @@ print(r.json()['insider']['top_buys'][0])
 
 ---
 
+## Recurring Issue: A Reference Page Showing a HARDCODED Snapshot of Values the Backend Overrides at Runtime (AUD-HORIZONCOMPARE-BEARREGIME, 2026-09-07)
+
+**Symptom:** none. That is what makes this class dangerous — the page renders cleanly, the
+numbers look plausible and internally consistent, and nothing errors. It was found only because
+the user asked directly whether the displayed thresholds still matched the system.
+
+**Root cause:** `horizon-compare.tsx` presents `_STYLE_PROFILES` as a reference table. Every one
+of its 76 static values was **correct** as a copy of the hardcoded defaults (mechanically diffed
+against `signals.py` — zero mismatches). The bug was that four of those rows describe quantities
+the running system *overrides in Redis*, so "faithful copy of the default" and "what the system
+actually does" are different questions, and the page only answered the first.
+
+A prior fix (`AUD-HORIZONCOMPARE-LIVEWIRE`) had already recognised this and live-wired 4 rows
+from `GET /tune_status`. It missed the bear-regime BUY row because `/tune_status` exposes only
+`buy_threshold_bull` — so bear *looked* un-tunable. It isn't:
+
+```python
+# signals.py _get_dynamic_buy_threshold(), ~line 1909
+delta = dynamic - bull_base                                  # dynamic = the single Redis value
+return float(np.clip(regime_base + delta, lo, hi))           # applied to WHICHEVER regime is live
+```
+
+The single calibrated number is applied as a **delta from the bull baseline to every regime**,
+deliberately (T232-CAL2: the value is fit mostly on bull samples, so a flat override would
+collapse the tiering that keeps bear tighter than bull). Consequence: **tuning bull silently
+moves bear**, and every horizon's bear row was wrong — SHORT 68%→60%, SWING 76%→69%,
+LONG 70%→65%, GROWTH 68%→**76%**. The page's own legend actively asserted the opposite
+("currently only auto-tunes the bull-regime BUY threshold").
+
+GROWTH is the instructive case: the page **understated** the real threshold by 8pp, presenting
+the entry gate as *looser* than the system enforces — the direction that misleads toward
+expecting more signals than will actually fire.
+
+**Second bug, found while fixing the first:** `liveValueFor()` returned `fmtPct(...)` → `"55%"`
+while the static cell holds `"> 63%"`, and the divergence test is `live !== row[h]`. Those can
+never compare equal, so the bull BUY row rendered as green-bold "overridden" with a struck-through
+default **permanently** — including when the live value equalled the default. A highlight that is
+always on carries no information, and it had been masking the very drift it was meant to reveal.
+
+**Fix:** derive bear from bull (the delta is defined against a *known constant*, so the live
+bear value is recoverable from the live bull value alone), and emit the `> ` prefix so the
+equality check becomes meaningful for the first time.
+
+### What to check when adding or reviewing a "reference values" page
+
+1. **For every displayed constant, ask whether anything writes an override for it at runtime** —
+   Redis, DB config, an env var. A value being hardcoded in source does *not* mean it is what the
+   system uses. Grep for the constant's name near `redis`/`_get_dynamic`/`_tuned`.
+2. **A status endpoint exposing only *some* fields is not evidence the rest are static.** Here,
+   bear was fully derivable from what `/tune_status` did expose; the missing field was a gap in
+   the endpoint, not proof of immutability.
+3. **Verify divergence/"changed" indicators can actually go both ways.** Construct the equal case
+   and confirm the highlight turns *off*. An indicator stuck on is as broken as one stuck off, and
+   is harder to notice.
+4. **Frontend code that reimplements a backend formula must live in `lib/` with tests that pin
+   real measured values** — not values recomputed from the same constants the implementation uses,
+   which makes the test vacuous. This repo has no component-level React harness, so logic left
+   inline in a `.tsx` gets no coverage at all and drifts silently.
+
+**Still open (documented in the page legend, not fixed):** the SELL row shows a flat `< 35%`
+fallback, but SELL *is* overridable and GROWTH currently has a live `0.30` override.
+`/tune_status` does not expose SELL at all, so surfacing it needs a backend change.
+
+---
