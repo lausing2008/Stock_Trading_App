@@ -139,6 +139,34 @@ cap when the sign has flipped.
 
 ---
 
+## Post-fix verification (deployed 2026-09-07)
+
+Running the watchdog after deploy, the self-heal fired exactly as intended:
+
+| style | bull | calibrated | watchdog | count | effective |
+|---|---|---|---|---|---|
+| SHORT | 0.63 | 0.55 | — | 0 | −0.08 |
+| **SWING** | 0.72 | 0.56 | **0.75** | **1** | **+0.03 (tighter)** |
+| LONG | 0.60 | 0.55 | — | 0 | −0.05 |
+| GROWTH | 0.60 | 0.65 | 0.71 | 2 | +0.11 (tighter) |
+
+SWING went from a deadlocked **0.65 loosening** to a genuine **0.75 tightening**, with
+`tighten_count` reset 3 → 1 so it can act again.
+
+### An important distinction — SHORT/LONG's negative deltas are NOT a bug
+
+They come from the **calibrated** values (0.55), not from any watchdog override, and a
+calibrated value below the bull baseline is **legitimate by design**:
+`outcomes_calibrate_apply` writes an empirically-swept optimum only where it shows a positive
+EV lift with ≥50 samples, and `_DYNAMIC_BUY_THRESHOLD_BOUNDS = (0.55, 0.85)` explicitly permits
+0.55. That is calibration doing its job — the data says a looser threshold is better for those
+styles.
+
+The bug was never "the effective threshold is below the bull base." It was that the
+**watchdog** — an *emergency tightening* mechanism — could emit such a value while reporting
+that it had tightened. **Do not "fix" SHORT/LONG's calibrated values by forcing them above the
+bull baseline; that would discard real measured evidence.**
+
 ## The through-line
 
 Domain 1 was config that never arrived; Domain 2 was work that never completed. **Domain 3 is a
