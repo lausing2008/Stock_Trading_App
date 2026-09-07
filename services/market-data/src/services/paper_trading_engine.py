@@ -871,12 +871,81 @@ _HK_MARKET_OVERRIDES: dict = {
     "min_ta_score":            0.65,
 }
 
+def resolve_entry_config(portfolio_config: dict | None) -> dict:
+    """Resolve the effective entry config: defaults -> style overrides -> HK overrides -> user.
+
+    AUD-DE1-CONFIGMERGE (2026-09-07). Extracted from _scan_for_entries() so the precedence rule
+    is testable, and FIXED — the previous inline merge had two defects that made deliberately
+    tuned parameters silently inert:
+
+    1. HK OVERRIDES WERE DEFEATED BY ECHOED DEFAULTS. The old guard was
+       `if _k not in portfolio.config`, whose INTENT is "don't clobber a deliberate user
+       choice." But the UI writes the full config back on every save, so a key being present
+       says nothing about intent — a value identical to the generic default is the UI echoing a
+       default, not a choice. Measured live: both HK portfolios stored max_position_pct=0.1 and
+       risk_per_trade_pct=0.01 (the US defaults), so T222-F's HK reduction to 0.07/0.007 had
+       NEVER applied, and real HK positions reached 12.69% / 11.28% / 10.06% of capital against
+       an intended 7% cap.
+
+       Now: an HK override is skipped only when the stored value DIFFERS from the generic
+       default — i.e. only when the user genuinely chose something. A stored value equal to the
+       default is treated as "not chosen" and the HK override wins.
+
+    2. STYLE OVERRIDES WERE DEFEATED THE SAME WAY. `**portfolio.config` came last
+       unconditionally, so a stored min_kscore=48.0 (the generic default) beat SWING's
+       deliberate 52.0. Same rule now applies: a stored value that merely equals the generic
+       default does not suppress a style/market override.
+
+    The precedence a user actually gets, highest first:
+        1. a user value that DIFFERS from the generic default  (a real choice)
+        2. HK market override                                  (T222-A/C/F)
+        3. style override                                      (_STYLE_OVERRIDES)
+        4. generic default                                     (_DEFAULT_CONFIG)
+    """
+    user = dict(portfolio_config or {})
+    style = user.get("trading_style", "GROWTH")
+
+    cfg = dict(_DEFAULT_CONFIG)
+    cfg.update(_STYLE_OVERRIDES.get(style, {}))
+    if user.get("market") == "HK":
+        cfg.update(_HK_MARKET_OVERRIDES)
+
+    # Apply user values, but only where they represent a genuine choice. A stored value that is
+    # byte-equal to the generic default carries no information (the UI round-trips the whole
+    # config), so it must not suppress a style/market override that was tuned on purpose.
+    for k, v in user.items():
+        if k in _DEFAULT_CONFIG and v == _DEFAULT_CONFIG[k] and k in cfg and cfg[k] != _DEFAULT_CONFIG[k]:
+            continue  # echoed default — keep the style/market override
+        cfg[k] = v
+    return cfg
+
+
 # T234-CONFIG-DECIDE-DEFAULT-MISMATCH: the keys _scan_for_entries() actually gates real entries
 # on (min_confidence/min_kscore/min_entry_score/min_ta_score/min_rr_ratio) — exposed via
 # resolve_entry_gate_params() below so decision-engine's standalone /decide/{symbol}/explain
 # path (which never runs _scan_for_entries' own merge, since it's not a real portfolio scan)
 # can resolve the SAME real values instead of a disconnected hardcoded literal.
 _ENTRY_GATE_KEYS = ("min_confidence", "min_kscore", "min_entry_score", "min_ta_score", "min_rr_ratio")
+
+# AUD-DE1-CONFIGDRIFT: every config key that must reach decision-engine's own gates. DE is the
+# AUTHORITATIVE entry gate (decision_engine_mode defaults to "primary"), so a key that is tuned
+# here but never sent is silently inert — DE falls back to its own hardcoded default and the
+# tuning does nothing. That is exactly how max_entry_gap_pct's per-style values (SWING 0.03)
+# were lost: threaded nowhere, DE used 0.04 for every style.
+#
+# test_de_config_threading.py asserts every key here actually appears in _call_decision_engine()'s
+# request body, so the NEXT parameter added cannot repeat this failure silently.
+#
+# DELIBERATELY EXCLUDED — min_kscore and min_ta_score. decision-engine keeps its OWN copy of the
+# per-style table (aggregator.py:266-272) which already carries the correct SWING values
+# (min_kscore 52.0, min_ta_score 0.65), so those resolve correctly on the DE side without being
+# sent. That duplication is its own latent drift risk (two tables to keep in sync by hand), but
+# it is NOT the bug this list guards against and is left for the domain that owns it.
+_DE_THREADED_KEYS = (
+    "min_confidence", "min_entry_score", "min_rr_ratio",
+    "max_entry_gap_pct", "max_breakout_extension_pct", "max_sector_positions",
+    "equity_floor_pct", "max_consecutive_losses", "research_gating_enabled",
+)
 
 
 def resolve_entry_gate_params(style: str, market: str = "US") -> dict:
@@ -3499,6 +3568,34 @@ def _call_decision_engine(
                     "risk_per_trade_pct":     cfg.get("risk_per_trade_pct", 0.01),
                     "max_position_pct":       cfg.get("max_position_pct", 0.10),
                     "max_loss_per_trade_pct": cfg.get("max_loss_per_trade_pct", 0.02),
+                    # AUD-DE1-CONFIGDRIFT: these were tuned per-style/per-market here but NEVER
+                    # sent, so decision-engine — the AUTHORITATIVE gate, since
+                    # decision_engine_mode defaults to "primary" — silently fell back to its own
+                    # hardcoded defaults and the tuning did nothing at all.
+                    #
+                    # max_entry_gap_pct is the one with live impact: T171 sets it per style
+                    # (GROWTH 0.04, SWING 0.03, LONG 0.05), but DE always read its own 0.04
+                    # (hard_rejects.py:432), so SWING's tighter anti-chasing gate was inert on
+                    # every real entry. With stop_hit the dominant exit reason (59 trades, avg
+                    # -2.85%), entering further extended on a 3% stop is directly adverse.
+                    #
+                    # The rest currently match DE's defaults, so they are latent rather than
+                    # live — threaded anyway so a future UI/config change to any of them
+                    # actually reaches DE instead of silently not applying.
+                    # NOTE on the fallback literals below: max_breakout_extension_pct (6.0),
+                    # equity_floor_pct (0.80), max_consecutive_losses (3) and
+                    # research_gating_enabled (True) have NO _DEFAULT_CONFIG entry — they carry
+                    # inline defaults at their own call sites (:2166, :4679, :4375). The SAME
+                    # literals are repeated here deliberately so DE is told exactly what the
+                    # local gate would use. Passing None instead would be worse than not
+                    # sending the key at all, since DE's own `cfg.get(k, default)` would then
+                    # resolve to None rather than falling back to its default.
+                    "max_entry_gap_pct":          cfg.get("max_entry_gap_pct", _DEFAULT_CONFIG["max_entry_gap_pct"]),
+                    "max_sector_positions":       cfg.get("max_sector_positions", _DEFAULT_CONFIG["max_sector_positions"]),
+                    "max_breakout_extension_pct": cfg.get("max_breakout_extension_pct", 6.0),
+                    "equity_floor_pct":           cfg.get("equity_floor_pct", 0.80),
+                    "max_consecutive_losses":     cfg.get("max_consecutive_losses", 3),
+                    "research_gating_enabled":    cfg.get("research_gating_enabled", True),
                     **( {"recent_win_rate": recent_win_rate} if recent_win_rate is not None else {} ),
                     **( {"open_sector_counts": open_sector_counts, "candidate_sector": candidate_sector}
                         if open_sector_counts is not None else {} ),
@@ -4563,17 +4660,12 @@ def _squeeze_score_for(symbol: str, momentum_score: float | None) -> float | Non
 
 def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str, float], live_regime: dict | None = None) -> None:
     """Find fresh BUY signals and evaluate them for entry."""
-    cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(portfolio.config.get("trading_style", "GROWTH"), {}), **portfolio.config}
+    cfg = resolve_entry_config(portfolio.config)
     # T264-ENTRYGATESOVERRIDE: computed once, reused at every "market condition / recent
     # performance" gate below (drawdown, daily_loss, weekly_loss, weekly_gain_lock,
     # consecutive_losses, regime_bear, regime_suspension) — never at max_positions/equity-floor/
     # live-price-sparsity, which stay hard regardless of this flag.
     _gates_override = _entry_gates_override_active(cfg)
-    # Apply HK-specific circuit breaker overrides when not explicitly set in the portfolio config.
-    if cfg.get("market") == "HK":
-        for _k, _v in _HK_MARKET_OVERRIDES.items():
-            if _k not in (portfolio.config or {}):
-                cfg[_k] = _v
     style   = cfg["trading_style"]
     now     = datetime.now(timezone.utc)
     # CB-3 FIX + CB-W1 FIX: signals use dedup-on-change persistence — a persistent BUY never
