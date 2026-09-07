@@ -24,6 +24,9 @@ import {
   type WatchdogSelfTuningReport,
 } from '@/lib/api';
 import { getSession } from '@/lib/auth';
+// AUD-MLAGE: fleet-freshness logic lives in lib/ so its three-state null handling
+// (known age / unknown age / genuine 0) is unit-tested — see mlFleetAge.ts.
+import { summarizeFleetAge, formatAge, ageColor, STALE_AGE_DAYS } from '@/lib/mlFleetAge';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -345,6 +348,7 @@ export default function SignalTuningPage() {
     ? mlWithAuc.reduce((sum, s) => sum + (s.test_auc ?? 0), 0) / mlWithAuc.length
     : null;
   const mlOverfit = mlSymbols.filter(s => (s.overfit_gap ?? 0) > 0.1).length;
+  const fleetAge = summarizeFleetAge(mlSymbols);
 
   // Check if any style has active overrides
   const anyOverrides = data && STYLES.some(s => {
@@ -467,6 +471,14 @@ export default function SignalTuningPage() {
               { label: 'Models trained', value: mlData.count.toString(), color: '#94a3b8' },
               { label: 'Avg test AUC', value: mlAvgAuc != null ? mlAvgAuc.toFixed(3) : '—', color: mlAvgAuc != null && mlAvgAuc >= 0.60 ? '#4ade80' : mlAvgAuc != null && mlAvgAuc >= 0.55 ? '#fbbf24' : '#f87171' },
               { label: 'Overfit (gap>0.10)', value: mlOverfit.toString(), color: mlOverfit > 5 ? '#f87171' : '#4ade80' },
+              // AUD-MLAGE: freshness, previously invisible here despite trained_at already
+              // living in the same bundle this endpoint loads. An AUC is not interpretable
+              // without knowing whether the model was fit today or three months ago.
+              { label: `Stale (>${STALE_AGE_DAYS}d)`, value: fleetAge.stale.toString(), color: fleetAge.stale > 0 ? '#f87171' : '#4ade80' },
+              { label: 'Age unknown', value: fleetAge.unknown.toString(), color: fleetAge.unknown > 0 ? '#fbbf24' : '#4ade80' },
+              { label: 'Median age', value: fleetAge.medianDays != null ? formatAge(fleetAge.medianDays) : '—', color: '#94a3b8' },
+              { label: 'Oldest', value: fleetAge.oldestDays != null ? formatAge(fleetAge.oldestDays) : '—', color: ageColor(fleetAge.oldestDays) },
+              { label: 'Suppressed', value: fleetAge.suppressed.toString(), color: fleetAge.suppressed > 0 ? '#fbbf24' : '#4ade80' },
             ].map(({ label, value, color }) => (
               <div key={label} style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 6, padding: '10px 18px', textAlign: 'center' }}>
                 <div style={{ color, fontWeight: 700, fontSize: 20 }}>{value}</div>
@@ -485,7 +497,7 @@ export default function SignalTuningPage() {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
                     <tr>
-                      {['Symbol', 'Test AUC', 'CV AUC', 'Gap'].map(h => (
+                      {['Symbol', 'Test AUC', 'CV AUC', 'Gap', 'Age'].map(h => (
                         <th key={h} style={{ padding: '3px 8px', color: '#475569', fontWeight: 500, fontSize: 10, textAlign: h === 'Symbol' ? 'left' : 'right', textTransform: 'uppercase' }}>{h}</th>
                       ))}
                     </tr>
@@ -497,6 +509,13 @@ export default function SignalTuningPage() {
                         <td style={{ padding: '4px 8px', textAlign: 'right', color: (m.test_auc ?? 0) >= 0.60 ? '#4ade80' : (m.test_auc ?? 0) >= 0.55 ? '#fbbf24' : '#f87171', fontWeight: 600 }}>{m.test_auc?.toFixed(3) ?? '—'}</td>
                         <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{m.cv_auc?.toFixed(3) ?? '—'}</td>
                         <td style={{ padding: '4px 8px', textAlign: 'right', color: (m.overfit_gap ?? 0) > 0.10 ? '#f87171' : '#475569', fontSize: 10 }}>{m.overfit_gap != null ? (m.overfit_gap > 0 ? '+' : '') + m.overfit_gap.toFixed(3) : '—'}</td>
+                        <td
+                          style={{ padding: '4px 8px', textAlign: 'right', color: ageColor(m.age_days), fontSize: 10 }}
+                          title={m.trained_at ? `Trained ${new Date(m.trained_at).toLocaleString()}` : 'No trained_at recorded — this bundle predates the field (2026-06-15), so it is necessarily older than that'}
+                        >
+                          {formatAge(m.age_days)}
+                          {m.oos_suppressed && <span style={{ color: '#fbbf24', marginLeft: 4 }} title="Suppressed at inference — substituted with a neutral 0.5">⊘</span>}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

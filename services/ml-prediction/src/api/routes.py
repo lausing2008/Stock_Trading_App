@@ -1,4 +1,6 @@
 """ML endpoints: list, train, tune, predict."""
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -493,9 +495,36 @@ def get_feature_importance(symbol: str, model: str = "xgboost", style: str = "SW
     }
 
 
+def _model_age_days(trained_at: str | None) -> int | None:
+    """Days since a bundle's trained_at, or None if absent/unparseable.
+
+    AUD-MLAGE: bundles written before trained_at was introduced (Tier 21, 2026-06-15) simply
+    have no such key — that is a real, expected state for older artifacts, NOT a failure, and
+    must surface as null rather than being coerced to 0 (which would misreport the very oldest
+    models on the fleet as freshly trained — precisely inverted from the truth).
+
+    Naive timestamps are treated as UTC, matching predict_latest()'s own handling in trainer.py.
+    """
+    if not trained_at:
+        return None
+    try:
+        t = datetime.fromisoformat(trained_at)
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - t).days
+    except (ValueError, TypeError):
+        return None
+
+
 @router.get("/metrics")
 def list_all_metrics(model: str = "xgboost"):
-    """Return training metrics for every symbol that has a trained model."""
+    """Return training metrics for every symbol that has a trained model.
+
+    AUD-MLAGE: trained_at / age_days / oos_suppressed are included because they were already
+    sitting in the same bundle this endpoint loads, yet the ML Model Accuracy panel had no way
+    to answer "which models are stale?" — the single most actionable question about a model
+    fleet. A model's AUC is meaningless without knowing whether it was fit 0 or 82 days ago.
+    """
     from pathlib import Path
     from common.config import get_settings
     import joblib
@@ -511,6 +540,7 @@ def list_all_metrics(model: str = "xgboost"):
         try:
             bundle = joblib.load(artifact)
             m = bundle.get("metrics", {})
+            trained_at = bundle.get("trained_at")
             results.append({
                 "symbol": sym,
                 "model": model,
@@ -519,6 +549,12 @@ def list_all_metrics(model: str = "xgboost"):
                 "accuracy": m.get("accuracy"),
                 "overfit_gap": m.get("overfit_gap"),
                 "buy_threshold": bundle.get("buy_threshold"),
+                "trained_at": trained_at,
+                "age_days": _model_age_days(trained_at),
+                # Whether this model is currently contributing at all. A suppressed model is
+                # substituted with a neutral 0.5 at inference, so a high AUC on a suppressed
+                # model is not evidence it is doing any work.
+                "oos_suppressed": bool(bundle.get("oos_suppressed", False)),
             })
         except Exception:
             results.append({"symbol": sym, "model": model, "error": "failed to load"})

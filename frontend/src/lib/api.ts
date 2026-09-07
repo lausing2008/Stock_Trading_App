@@ -3008,6 +3008,13 @@ export type MlModelMetric = {
   accuracy: number | null;
   overfit_gap: number | null;
   buy_threshold: number | null;
+  // AUD-MLAGE: null for bundles written before trained_at existed (Tier 21, 2026-06-15) — an
+  // expected state for the oldest artifacts, never to be rendered as "0 days old".
+  trained_at?: string | null;
+  age_days?: number | null;
+  // A suppressed model is substituted with a neutral 0.5 at inference, so its AUC is not
+  // evidence it is contributing anything.
+  oos_suppressed?: boolean;
   error?: string;
 };
 
