@@ -328,7 +328,7 @@ def test_check_conditional_orders_fails_closed_on_lock_acquire_failure():
     """Unlike check_price_alerts' fail-OPEN convention, this feature fails CLOSED on a lock
     error — real-money-adjacent, so skipping a cycle is safer than risking a double-fire."""
     start = _MODULE_SOURCE.index("def check_conditional_orders(")
-    body = _MODULE_SOURCE[start:start + 1500]
+    body = _MODULE_SOURCE[start:start + 3000]
     assert "fail_closed" in body or "lock_unavailable_skipping_fail_closed" in body
 
 

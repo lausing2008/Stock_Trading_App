@@ -37,6 +37,21 @@ _settings = get_settings()
 _CONDITIONAL_ORDER_LOCK_KEY = "stockai:lock:check_conditional_orders"
 _CONDITIONAL_ORDER_LOCK_TTL = 55  # seconds — job runs every 60s; 55s prevents overlap
 
+# AUD-LOCKLEAK-CONDITIONALORDERS (2026-09-06 deep audit): this lock was never explicitly
+# released — it always held its full 55s TTL against a 60s job interval, leaving only a 5s
+# acquisition window; a slightly-late fire lands inside the still-held TTL and the tick is
+# silently skipped. Fixed with the same token-based compare-and-delete pattern already
+# hardened for _PAPER_TRADING_LOCK_KEY (scheduler.py, T232-PT5) — an atomic Lua script so a
+# run that outlives its own TTL can never delete a DIFFERENT run's lock (the exact cascading
+# race T232-PT5 first found and fixed).
+_LOCK_RELEASE_LUA = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+else
+    return 0
+end
+"""
+
 
 def _get_redis():
     from common.redis_client import get_redis
@@ -522,12 +537,17 @@ def check_conditional_orders() -> None:
     — a top-level import here would be circular.
     """
     import json as _json
+    import uuid as _uuid
     from db import SessionLocal
     from .scheduler import _record_job_status
 
     _t0 = time.monotonic()
+    acquired = False
+    _lock_token = str(_uuid.uuid4())
     try:
-        acquired = _get_redis().set(_CONDITIONAL_ORDER_LOCK_KEY, "1", nx=True, ex=_CONDITIONAL_ORDER_LOCK_TTL)
+        acquired = bool(_get_redis().set(
+            _CONDITIONAL_ORDER_LOCK_KEY, _lock_token, nx=True, ex=_CONDITIONAL_ORDER_LOCK_TTL,
+        ))
         if not acquired:
             log.info("conditional_order.skipped_locked")
             return
@@ -570,6 +590,14 @@ def check_conditional_orders() -> None:
                     if not evaluate_conditions(order, live_price, session):
                         continue
 
+                    # AUD-CASHRACE (2026-09-06 deep audit): take a Postgres row lock right
+                    # before execute_action() mutates current_cash — same fix as
+                    # paper_trading_engine.py's paper_trading_step() and
+                    # paper_portfolio.py's _get_portfolio(..., for_update=True). Kept tight:
+                    # released by the session.commit() a few lines below, no network I/O
+                    # happens while held (live_price was already read from Redis above).
+                    session.refresh(portfolio, with_for_update=True)
+
                     fired_ok, reason, trade_id = execute_action(order, portfolio, live_price, session)
                     order.triggered_at = now
                     order.status = "triggered" if fired_ok else "failed"
@@ -595,3 +623,17 @@ def check_conditional_orders() -> None:
     except Exception as exc:
         log.error("conditional_order.check_failed", error=str(exc), exc_info=True)
         _record_job_status("check_conditional_orders", "error", time.monotonic() - _t0, str(exc))
+    finally:
+        if acquired:
+            try:
+                _released = _get_redis().eval(_LOCK_RELEASE_LUA, 1, _CONDITIONAL_ORDER_LOCK_KEY, _lock_token)
+                if not _released:
+                    # Our TTL expired before we finished and another run already holds the
+                    # lock — log it so a pattern of this (runs regularly exceeding 55s) is
+                    # visible, rather than silently doing nothing and looking identical to a
+                    # normal release.
+                    log.warning("conditional_order.lock_release_stale",
+                                note="lock token mismatch on release — this run exceeded the "
+                                     "TTL; another run already acquired the lock")
+            except Exception:
+                pass

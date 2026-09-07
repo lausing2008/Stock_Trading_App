@@ -2295,8 +2295,15 @@ def _apply_style_signal(
         reasons.setdefault("earnings_warning", None)
 
     # ── News sentiment compression (style-specific) ───────────────────────────
+    # AUD-NEWSCOMPRESS-NOFUSEDGUARD (2026-09-06 deep audit): every sibling compression gate in
+    # this function (hv_fired above, breadth/sector-headwind/hot-news/hsi-bear/hk-southbound
+    # below) requires `fused > 0.5` — negative evidence must only ever compress a BUY toward
+    # neutral, never rescue a SELL by compressing it toward neutral too (that's bearish
+    # confirmation, not something to soften). This gate was missing that guard: a clean SELL
+    # (fused < 0.5) with strongly negative news got compressed UP toward 0.5, i.e. converted
+    # toward WAIT by the exact evidence that should have reinforced the SELL.
     nc = p.get("news_compression")
-    if nc is not None and news_sentiment is not None:
+    if nc is not None and news_sentiment is not None and fused > 0.5:
         if news_sentiment < 25:
             fused = 0.5 + (fused - 0.5) * nc[25]
             reasons["news_sentiment_flag"] = "strongly_negative"
@@ -2305,6 +2312,12 @@ def _apply_style_signal(
             reasons["news_sentiment_flag"] = "negative"
         else:
             reasons["news_sentiment_flag"] = "neutral_or_positive"
+    elif nc is not None and news_sentiment is not None:
+        reasons["news_sentiment_flag"] = (
+            "strongly_negative" if news_sentiment < 25 else
+            "negative" if news_sentiment < 35 else
+            "neutral_or_positive"
+        )
     fused = float(np.clip(fused, 0.0, 1.0))
 
     # ── Relative strength vs sector ───────────────────────────────────────────
@@ -2324,11 +2337,24 @@ def _apply_style_signal(
         _rsi_for_rs is not None and 28 <= _rsi_for_rs <= 45
         and _stoch_cross_up_for_rs
     )
-    if rs_comp is not None and rs_rank is not None and rs_rank < 0.70 and not rs_absolute_floor and not rs_recovery_floor:
+    # AUD-RSCOMPRESS-NOFUSEDGUARD (2026-09-06 deep audit): same missing-guard class as the news
+    # gate above, with a compounding wrinkle — both escape hatches (rs_absolute_floor,
+    # rs_recovery_floor) are bullish-only by construction: they exist to protect a BUY
+    # candidate from being wrongly compressed for lagging RS when it's actually just hot-sector
+    # context or a genuine bottom-turn. Without a fused>0.5 guard they fired BACKWARDS on the
+    # SELL side — rs_absolute_floor is "stock is up >5% in 20 days", which on a SELL candidate
+    # is exactly the stock whose SELL you least want to weaken, yet the floor exempted it from
+    # compression (protecting the SELL) while a genuinely lagging laggard (the real SELL
+    # evidence) got compressed toward neutral instead. Restricted to fused>0.5 so the floors
+    # only ever apply on the BUY side they were designed for; a SELL candidate's lagging RS is
+    # now left uncompressed (correctly reinforcing, not softening, the SELL).
+    if fused > 0.5 and rs_comp is not None and rs_rank is not None and rs_rank < 0.70 and not rs_absolute_floor and not rs_recovery_floor:
         fused = 0.5 + (fused - 0.5) * rs_comp
         reasons["rs_flag"] = "lagging_sector"
-    elif (rs_absolute_floor or rs_recovery_floor) and rs_rank is not None and rs_rank < 0.70:
+    elif fused > 0.5 and (rs_absolute_floor or rs_recovery_floor) and rs_rank is not None and rs_rank < 0.70:
         reasons["rs_flag"] = "lagging_sector_floor_applied"  # lagging but recovery/return floor active
+    elif rs_rank is not None and rs_rank < 0.70:
+        reasons["rs_flag"] = "lagging_sector"  # SELL side: left uncompressed, still correctly labeled
     elif rs_rank is not None:
         reasons["rs_flag"] = "in_line_or_leading"
     fused = float(np.clip(fused, 0.0, 1.0))

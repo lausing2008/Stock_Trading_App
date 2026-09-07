@@ -143,7 +143,11 @@ def _fake_fetch_live_prices(symbols):
     return dict(_fetch_live_prices_return)
 
 
-def _fake_get_portfolio(session, portfolio_id=None):
+def _fake_get_portfolio(session, portfolio_id=None, *, for_update=False):
+    # for_update is accepted (and ignored) to match the real _get_portfolio()'s post-AUD-CASHRACE
+    # signature (services/market-data/src/api/paper_portfolio.py) — this fixture uses a plain
+    # SQLite in-memory session which doesn't need real row locking to test liquidate_portfolio's
+    # own logic in isolation.
     p = session.get(PaperPortfolio, portfolio_id)
     if p is None:
         raise _FakeHTTPException(404, f"Portfolio {portfolio_id} not found")

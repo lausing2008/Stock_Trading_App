@@ -169,13 +169,22 @@ def train_rl_agent(trades: list) -> dict[str, Any]:
     rows: list[list[float]] = []
     rewards: list[float] = []
     for t in trades:
-        rr     = float(t.rr_ratio_at_entry    or 2.0)
-        conf   = float(t.confidence_at_entry   or 50.0)
-        score  = float(t.entry_score           or 3)
-        kscore = float(t.kscore_at_entry       or 50.0)
+        # AUD-RLAGENT-FALSYZERO (2026-09-06 deep audit): rr_ratio_at_entry, confidence_at_entry,
+        # entry_score, and pct_return are ALL already filtered to `is_not(None)` by
+        # run_rl_training()'s own query below — NULL is impossible by the time this loop runs,
+        # so an `or <default>` fallback on any of them can ONLY fire on a genuine 0, corrupting
+        # real data into a fabricated default. A trade entered at confidence 0.0 that lost 20%
+        # would otherwise teach this Ridge model that MEDIOCRE conditions (50/3/50) produce
+        # -20% returns — and that policy adjusts live entry scores. kscore_at_entry is NOT
+        # covered by the query filter (it CAN genuinely be NULL), so its `is not None` check
+        # is the one fallback that stays meaningful rather than provably dead.
+        rr     = float(t.rr_ratio_at_entry)
+        conf   = float(t.confidence_at_entry)
+        score  = float(t.entry_score)
+        kscore = float(t.kscore_at_entry) if t.kscore_at_entry is not None else 50.0
         style  = str(t.trading_style           or "SWING")
         regime = str(t.market_regime_at_entry  or "neutral")
-        reward = float(t.pct_return            or 0.0)
+        reward = float(t.pct_return)
         rows.append(_feature_vector(rr, conf, score, kscore, style, regime))
         rewards.append(reward)
 

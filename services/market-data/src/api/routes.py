@@ -787,9 +787,18 @@ def latest_prices(
     except Exception:
         pass
 
-    # 2. Get all active symbols from DB
+    # 2. Get all active, non-delisted symbols from DB
+    # AUD-CACHEDELISTBLIND (2026-09-06 deep audit): this cache is the sole writer of
+    # stockai:live_prices, which 7 every-minute alert scanners (volume-anomaly, short-squeeze,
+    # squeeze-ignition, prebreakout, value-area, price alerts, post-open digest) read INSTEAD
+    # of querying the DB — so a missing Stock.delisted filter here defeats those scanners' own
+    # correct DB-side filtering. A delisted stock's frozen last price stays live in this cache
+    # forever, letting e.g. check_volume_anomalies fire an abnormal-volume alert every minute
+    # for a stock that can no longer trade.
     stocks = list(session.execute(
-        select(Stock.symbol, Stock.currency).where(Stock.active.is_(True))
+        select(Stock.symbol, Stock.currency).where(
+            Stock.active.is_(True), Stock.delisted.is_(False),
+        )
     ).all())
     if not stocks:
         return []
@@ -821,8 +830,12 @@ def refresh_live_price_cache() -> int:
     from db import SessionLocal
     try:
         with SessionLocal() as session:
+            # AUD-CACHEDELISTBLIND: same fix as the sibling cache-writer above — this feeds
+            # the same stockai:live_prices blob 7 every-minute alert scanners read directly.
             stocks = list(session.execute(
-                select(Stock.symbol, Stock.currency).where(Stock.active.is_(True))
+                select(Stock.symbol, Stock.currency).where(
+                    Stock.active.is_(True), Stock.delisted.is_(False),
+                )
             ).all())
         if not stocks:
             return 0

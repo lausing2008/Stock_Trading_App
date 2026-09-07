@@ -213,21 +213,29 @@ def _compute_alpha_beta(curve_rows: list) -> dict:
     return {"alpha": alpha, "beta": round(beta, 2), "info_ratio": info_ratio}
 
 
-def _get_portfolio(session: Session, portfolio_id: int | None = None) -> PaperPortfolio:
+def _get_portfolio(session: Session, portfolio_id: int | None = None, *, for_update: bool = False) -> PaperPortfolio:
+    """for_update=True takes a Postgres row lock (SELECT ... FOR UPDATE) that is held until the
+    caller's transaction commits or rolls back — REQUIRED before any read-modify-write on
+    current_cash (see the AUD-CASHRACE fix at manual_exit_trade/liquidate_portfolio/
+    reset_portfolio/set_capital below). Without it, `p.current_cash = p.current_cash + delta`
+    followed by session.commit() is a classic lost-update race: two concurrent requests (or a
+    request racing the scheduler's own paper_trading_step()) can both read the same starting
+    cash value, and the second commit silently overwrites the first's credited/debited amount.
+    Defaults to False so every read-only caller (summaries, listings, the compare-portfolios
+    endpoint) is completely unaffected — locking those would add contention with no benefit,
+    since they never write current_cash.
+    """
+    stmt = select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True))
     if portfolio_id is not None:
-        p = session.execute(
-            select(PaperPortfolio).where(
-                PaperPortfolio.id == portfolio_id,
-                PaperPortfolio.is_active.is_(True),
-            )
-        ).scalar_one_or_none()
-        if not p:
-            raise HTTPException(status_code=404, detail=f"Portfolio {portfolio_id} not found")
-        return p
-    p = session.execute(
-        select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True)).order_by(PaperPortfolio.id).limit(1)
-    ).scalar_one_or_none()
+        stmt = stmt.where(PaperPortfolio.id == portfolio_id)
+    else:
+        stmt = stmt.order_by(PaperPortfolio.id).limit(1)
+    if for_update:
+        stmt = stmt.with_for_update()
+    p = session.execute(stmt).scalar_one_or_none()
     if not p:
+        if portfolio_id is not None:
+            raise HTTPException(status_code=404, detail=f"Portfolio {portfolio_id} not found")
         raise HTTPException(status_code=404, detail="No active paper portfolio found")
     return p
 
@@ -517,7 +525,7 @@ def manual_exit_trade(
 ) -> dict:
     """Force-close an open paper trade at the current live price."""
     import yfinance as yf
-    p = _get_portfolio(session, portfolio_id)
+    p = _get_portfolio(session, portfolio_id, for_update=True)
     trade = session.get(PaperTrade, trade_id)
     if not trade or trade.portfolio_id != p.id:
         raise HTTPException(status_code=404, detail="Trade not found")
@@ -575,7 +583,7 @@ def liquidate_portfolio(
     """
     from ..services.paper_trading_engine import _fetch_live_prices
 
-    p = _get_portfolio(session, portfolio_id)
+    p = _get_portfolio(session, portfolio_id, for_update=True)
     if not confirm:
         raise HTTPException(
             status_code=400,
@@ -1182,7 +1190,7 @@ def reset_portfolio(
     session: Session = Depends(get_session),
 ) -> dict:
     """Close all open trades at current_price and reset cash to initial_capital."""
-    p = _get_portfolio(session, portfolio_id)
+    p = _get_portfolio(session, portfolio_id, for_update=True)
     open_trades = session.execute(
         select(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
     ).scalars().all()
@@ -1237,7 +1245,7 @@ def set_capital(
     Body: { initial_capital?: number, current_cash?: number }
     Setting current_cash lets you add/withdraw cash without a full reset.
     """
-    p = _get_portfolio(session, portfolio_id)
+    p = _get_portfolio(session, portfolio_id, for_update=True)
 
     new_initial = body.get("initial_capital")
     new_cash = body.get("current_cash")
@@ -2227,7 +2235,7 @@ def calibrate_entry_weights() -> dict:
 
     # Signal engine to reload weights on next call
     try:
-        from .paper_trading_engine import reload_entry_weights  # type: ignore
+        from ..services.paper_trading_engine import reload_entry_weights
         reload_entry_weights()
     except Exception:
         pass

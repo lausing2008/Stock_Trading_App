@@ -348,13 +348,23 @@ def poll_broker_order_fills(session=None) -> None:
                     fill_p = round(float(filled.filled_avg_price), 4)
                     if abs(fill_p - trade.entry_price) > 0.001:
                         delta = round((trade.entry_price - fill_p) * trade.shares, 2)
+                        # AUD-CASHRACE (2026-09-06 deep audit): lock this portfolio's row
+                        # immediately before the cash mutation, and commit right after —
+                        # deliberately per-portfolio rather than batching into the loop's
+                        # original single final commit, so the lock is never held across a
+                        # SUBSEQUENT iteration's broker.get_order() network call for a
+                        # different portfolio in this same batch.
+                        session.refresh(port, with_for_update=True)
                         port.current_cash   = round(port.current_cash + delta, 2)
                         trade.entry_price   = fill_p
                         trade.current_price = fill_p
+                        trade.broker_fill_confirmed = True  # AUD-PT1-BROKERPOLLNEVERCLEARS
+                        session.commit()
                         updated += 1
                         log.info("broker.poll_fill_updated",
                                  symbol=trade.symbol, fill_price=fill_p)
-                    trade.broker_fill_confirmed = True  # AUD-PT1-BROKERPOLLNEVERCLEARS
+                    else:
+                        trade.broker_fill_confirmed = True  # AUD-PT1-BROKERPOLLNEVERCLEARS
                 # NOTE: a terminal "cancelled"/"rejected" status is deliberately NOT marked
                 # broker_fill_confirmed here — that's a distinct, not-yet-investigated question
                 # (what should happen to a paper trade whose real broker order never filled at
@@ -364,8 +374,9 @@ def poll_broker_order_fills(session=None) -> None:
                     log.debug("broker.poll_check_failed",
                               order_id=trade.broker_order_id, error=str(exc))
         if updated:
-            session.commit()
             log.info("broker.poll_fills_updated", count=updated)
+        else:
+            session.commit()  # persists any broker_fill_confirmed=True set on the no-delta branch
     except Exception as exc:
         log.warning("broker.poll_error", error=str(exc))
     finally:
@@ -6231,6 +6242,17 @@ def paper_trading_step() -> None:
                                         "regime_spy": live_regime.get("spy_price"),
                                         "regime_notes": live_regime.get("notes", [])}
 
+                # AUD-CASHRACE (2026-09-06 deep audit): re-fetch this row WITH a Postgres row
+                # lock immediately before the only point in this cycle that mutates
+                # current_cash, and release it via the commit two lines below — kept tight
+                # since live_prices/live_regime are already fetched above (no network I/O
+                # happens while the lock is held). Without this, a concurrent HTTP request
+                # (manual_exit_trade/liquidate_portfolio/reset_portfolio/set_capital, all of
+                # which now take the SAME row lock via _get_portfolio(..., for_update=True))
+                # could read the same stale current_cash this loop is about to overwrite,
+                # silently losing whichever side commits first.
+                session.refresh(portfolio, with_for_update=True)
+
                 # Monitor + commit first so cash mutations are durable before scanning
                 closed_exits = _monitor_positions(session, portfolio, live_prices, live_regime)
                 session.commit()
@@ -6245,6 +6267,12 @@ def paper_trading_step() -> None:
                     if cfg.get("enforce_market_hours", True) and not _is_market_hours(mkt):
                         log.info("paper.entry_scan_skip", reason="outside_market_hours", market=mkt)
                     else:
+                        # AUD-CASHRACE: this is a SEPARATE transaction scope from the monitor
+                        # step above (that lock was already released by its own commit at
+                        # line 6258) and _scan_for_entries() mutates current_cash on its own
+                        # entry/scale-in paths — needs its own fresh lock, not a reuse of the
+                        # one above.
+                        session.refresh(portfolio, with_for_update=True)
                         _scan_for_entries(session, portfolio, live_prices, live_regime)
                         session.commit()
 
