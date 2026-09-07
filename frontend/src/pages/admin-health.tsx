@@ -758,7 +758,15 @@ export default function AdminHealthPage() {
           single pooled Avg AUC / Top 5 / Bottom 5 could hide one market's models being
           systematically worse while the other pulls the blended average back up. HK symbols
           are identified by the ".HK" ticker suffix (see services/market-data's hk_connect.py
-          normalize_hk_symbol()), the same convention used across the backend. */}
+          normalize_hk_symbol()), the same convention used across the backend.
+
+          AUD-MLPANEL-STYLESUFFIX: GET /ml/metrics's `symbol` field is the model FILENAME's
+          stem (routes.py's `artifact.stem`), not the bare ticker — a non-default-style model
+          file is named "{ticker}_{style}.joblib" (e.g. "0001.HK_short.joblib" ->
+          symbol="0001.HK_short"), so `.toUpperCase().endsWith('.HK')` fails for every HK model
+          that isn't the plain default-style file, misclassifying it into the US panel
+          (confirmed live: 149 _short + 10 _swing + 1 _growth model files exist on disk).
+          Strip any trailing style suffix before checking the ticker itself. */}
       {mlData && mlData.count > 0 && (
         <div style={{ marginTop: '32px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
@@ -769,8 +777,10 @@ export default function AdminHealthPage() {
           </div>
 
           {(() => {
-            const us = mlData.symbols.filter((m: MlModelMetric) => !m.symbol.toUpperCase().endsWith('.HK'));
-            const hk = mlData.symbols.filter((m: MlModelMetric) => m.symbol.toUpperCase().endsWith('.HK'));
+            const isHk = (m: MlModelMetric) =>
+              m.symbol.toUpperCase().replace(/_(SHORT|SWING|LONG|GROWTH)$/, '').endsWith('.HK');
+            const us = mlData.symbols.filter((m: MlModelMetric) => !isHk(m));
+            const hk = mlData.symbols.filter((m: MlModelMetric) => isHk(m));
             return (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
                 <MlMarketPanel label="🇺🇸 US" color="#60a5fa" symbols={us} />
