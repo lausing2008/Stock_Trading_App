@@ -64,6 +64,44 @@ self-contained quant task… closed-form formula, no new data source" — which 
 > deliberate scope (which symbols, which strikes, daily vs weekly) rather than a blind sweep.
 > See §1 and the revised verdict table for how this changes the recommendation.
 
+> ## ✅ SUPERSEDED (2026-09-07, later same day) — tier upgraded, and the capture is now BUILT
+>
+> Both numbers in the correction above are out of date; keep the block for its endpoint table,
+> but read these figures instead:
+>
+> | Was (correction above) | Now |
+> |---|---|
+> | ~4-month rolling window | **~2 years** — verified live back to **2024-09-09** |
+> | 30k requests/day | **120,000/day** (API BASIC) |
+> | "needs a deliberate scope" | **shipped** — see below |
+>
+> **OPTHIST-1 is deployed** (commit `b4be064`): `OptionChainHistory` + migration,
+> `get_historical_option_chain()`, `capture_option_chain_history()`, and
+> `POST /admin/capture-option-chain-history`. Validated end-to-end against production —
+> AAPL 2026-06-01..06-05 → **18,190 rows, 0 errors, 11.5s**, all 5 days genuinely distinct
+> (volume 634k–1.87M, OI rising 4.98M→5.27M, IV varying), greek fill 43–48% as measured.
+>
+> **The binding constraint is DB volume, not the request budget** — and now with real measured
+> numbers rather than estimates:
+>
+> | Unit | Requests | Rows | Disk |
+> |---|---|---|---|
+> | 1 symbol-day | 1 | ~3,640 | **~285 KB** |
+> | 10 symbols × 90 trading days | 900 (0.75% of daily budget) | ~3.3M | **~935 MB** |
+> | 10 symbols × 2 years (~500 days) | 5,000 (4%) | ~18M | **~5.2 GB** |
+>
+> So the 120k/day budget is nowhere near binding: even the 2-year sweep is 4% of ONE day's
+> quota. Disk is what to scope against — check EC2 headroom before any multi-GB backfill, and
+> prefer narrow-symbol/full-history over broad-symbol/shallow, since the rolling window only
+> threatens the far end of history.
+>
+> **Greeks are stored sparse, deliberately.** They're present on exactly the rows with
+> `volume > 0` — a 1:1 correlation with zero exceptions in the measured sample (UW computes
+> greeks only for contracts that traded). Filtering to `volume > 0` would halve the rows and
+> lose no greeks, but would drop 1,064 OI-bearing contracts holding **8.9% of total open
+> interest** — and GEX/max-pain reconstruction needs the complete OI distribution, traded or
+> not. Every row is kept; the greek columns are simply NULL where UW gives nothing.
+
 ### This platform's own DB has NO historical options data
 
 69 tables; only 4 are options-related and **none stores a chain**:

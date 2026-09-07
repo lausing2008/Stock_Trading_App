@@ -803,3 +803,81 @@ docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
 
 ---
 
+## OPTHIST-1 — Historical Option Chain Capture (Built 2026-09-07)
+
+**The gap it closes:** the platform had NO historical options data of any kind. Of the 69 DB
+tables, 4 are options-related and none stored a chain — `options_flow_snapshots` holds EOD
+aggregates (no strikes), `gex_snapshots` holds 4 scalars/day, `options_game_plan_snapshots`
+holds exactly 2 contracts/day. The live chain was Redis-cached only. That is what made a
+historical options backtest impossible, and it is the blocker OPTHIST-1 removes.
+
+**Why this jumped the queue: the data is perishable.** UW's history is a **rolling window, not
+an archive** — ~2 years on the API BASIC tier (verified live back to 2024-09-09; the earlier
+~4-month figure in `docs/2026-09-06/SCOPE_OPTIONS_SIMULATOR.md` was measured before the tier
+upgrade). Every day not captured eventually falls off the back permanently. Persisting locally
+is precisely what converts a rolling window into a real archive, so the value of running the
+capture decays with delay in a way most work here does not.
+
+### What shipped
+
+| Piece | Location |
+|---|---|
+| `OptionChainHistory` model (unique on symbol/as_of/option_symbol) | `shared/db/models.py` |
+| Table + 3 indexes migration | `shared/db/session.py` |
+| `get_historical_option_chain(symbol, as_of)` | `services/market-data/src/services/unusual_whales.py` |
+| `capture_option_chain_history(symbols, start, end, skip_existing=True)` + `_opthist_f()`/`_opthist_i()` | `services/market-data/src/services/scheduler.py` |
+| `POST /admin/capture-option-chain-history` | `services/market-data/src/api/admin.py` |
+| 15 tests | `services/market-data/tests/test_option_chain_history_capture.py` |
+
+### The storage decision, driven by measurement not assumption
+
+Measured against a real response (AAPL 2026-06-02, 3,598 contracts / 26 expiries):
+
+- `open_interest`, `volume`, `nbbo_bid`, `nbbo_ask` — **100% populated**
+- greeks + IV — **47.6% populated**, correlating **EXACTLY 1:1 with `volume > 0`**: 1,714 rows
+  have both, **zero** have greeks without volume, **zero** have volume without greeks. UW
+  computes greeks only for contracts that actually traded that day.
+
+That 1:1 finding is what settled the design. Filtering to `volume > 0` would halve the row
+count and lose **no greeks at all** — tempting. But it would drop 1,064 OI-bearing contracts
+holding **444,025 of 4,998,352 total OI (8.9%)**, and GEX/max-pain reconstruction needs the
+FULL open-interest distribution, traded or not. So **every row is stored and the greek columns
+are simply sparse**: ~2× the rows in exchange for a complete OI picture. The trade is recorded
+in the model's own docstring so it isn't silently "optimized away" later.
+
+### Measured capacity — DB volume is the binding constraint, not requests
+
+Validated end-to-end in production: AAPL 2026-06-01..06-05 → **18,190 rows, 0 errors, 11.5s**.
+All 5 days genuinely distinct (volume 634k–1.87M, OI rising monotonically 4.98M→5.27M, IV
+varying day to day) — confirming UW returns real per-day chains, not a carried-forward one.
+
+| Unit | Requests | Rows | Disk |
+|---|---|---|---|
+| 1 symbol-day | 1 | ~3,640 | **~285 KB** |
+| 10 symbols × 90 trading days | 900 (0.75% of daily budget) | ~3.3M | **~935 MB** |
+| 10 symbols × 2 years (~500 days) | 5,000 (4%) | ~18M | **~5.2 GB** |
+
+The 120,000/day request budget is nowhere near binding — even a 2-year sweep is 4% of a single
+day's quota. **Disk is what to scope against.** Hence the endpoint deliberately requires an
+explicit symbol list and has **no whole-universe mode**: a blind sweep is cheap in requests and
+ruinous in disk, exactly the shape of mistake an unguarded convenience flag invites. Check EC2
+headroom before any multi-GB backfill, and prefer narrow-symbol/full-history over
+broad-symbol/shallow — the rolling window only threatens the far end of history.
+
+### Where the real risk lives (and why 15 tests target the coercion helpers)
+
+UW sends numerics as **strings** (`strike: "95"`, `nbbo_ask: "0.21"`) and genuine **nulls** for
+untraded greeks. A zero bid, zero volume, or zero delta is real data — and `volume = 0` is 52%
+of rows, the very thing distinguishing a contract with greeks from one without. A truthiness
+check anywhere in that path would collapse those to NULL and quietly corrupt every downstream
+payoff/GEX computation. This codebase has fixed that falsy-zero class repeatedly (see
+`docs/incidents/float-noise-variance-epsilon.md` and the AUD-ML1B-NUDGEGATE / AUD-DECIDE
+series), so the tests pin `0`, `"0"`, negative put deltas, NaN, and unparseable input
+explicitly rather than testing the happy path.
+
+`get_historical_option_chain()` is **fail-open**, returning `[]` on every failure path
+(including the HTTP 403 an out-of-window date produces) to match `get_greeks()`'s contract, and
+is deliberately **NOT Redis-cached** — a settled past chain is immutable, and thousands of rows
+per call would evict hot live keys for no benefit.
+
+---
