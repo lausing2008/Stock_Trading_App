@@ -438,6 +438,12 @@ function EarningsHistoryAndEstimates({ f, symbol, sector }: { f: Fundamentals; s
   );
 }
 
+// OPTIONSTAB-A: hoisted to module scope so the ?tab= parser and the tab bar share ONE source
+// of truth — the tab list was previously an inline literal in the JSX, which a URL parser
+// would have had to duplicate (and then silently drift from).
+const PAGE_TABS = ['Overview', 'Options', 'Research', 'Goals'] as const;
+type PageTab = typeof PAGE_TABS[number];
+
 export default function StockDetail() {
   const r = useRouter();
   const symbol = (r.query.symbol as string) ?? '';
@@ -462,7 +468,45 @@ export default function StockDetail() {
   // Overview/Research top-level tab (this page previously had no tab system at all — the
   // research report was only reachable via a small sidebar card + a separate /research/[symbol]
   // URL; a user asked directly for a real 'Research' tab here).
-  const [pageTab, setPageTab] = useState<'Overview' | 'Research' | 'Goals'>('Overview');
+  //
+  // OPTIONSTAB-A: 'Options' added, consolidating this page's four options sections (Game Plan,
+  // Options Flow, Market Pressure, Options Chain) which previously sat inline in Overview. The
+  // platform-wide /options-flow page is deliberately untouched — this is only about the
+  // per-symbol content that already lived here.
+  const [pageTab, setPageTab] = useState<PageTab>('Overview');
+
+  // OPTIONSTAB-A: sync the active tab to ?tab= so an options view is deep-linkable and
+  // survives a refresh. The tabs previously used bare useState with no URL sync at all, so
+  // "send me the options view for NVDA" wasn't expressible as a URL. Mirrors learn.tsx's own
+  // router.isReady + shallow-replace pattern rather than inventing a new one.
+  useEffect(() => {
+    if (!r.isReady) return;
+    const q = r.query.tab;
+    const raw = Array.isArray(q) ? q[0] : q;
+    const match = PAGE_TABS.find(t => t.toLowerCase() === (raw ?? '').toLowerCase());
+    if (match) setPageTab(match);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [r.isReady, r.query.tab]);
+
+  const selectPageTab = (t: PageTab) => {
+    setPageTab(t);
+    if (!symbol) return;
+    // shallow so this doesn't refetch the page's own data just to record the tab. `style` is
+    // preserved because this page's own horizon selector reads it from the URL (see pageStyle
+    // above) — dropping it here would silently reset the user's chosen horizon on a tab click.
+    r.replace(
+      {
+        pathname: '/stock/[symbol]',
+        query: {
+          symbol,
+          ...(r.query.style ? { style: r.query.style } : {}),
+          ...(t === 'Overview' ? {} : { tab: t.toLowerCase() }),
+        },
+      },
+      undefined,
+      { shallow: true },
+    );
+  };
 
   const [watched, setWatched] = useState(false);
   const [watchMenuOpen, setWatchMenuOpen] = useState(false);
@@ -1213,10 +1257,10 @@ Return ONLY valid JSON — no markdown, no prose:
           router.query.symbol, the same param this page's own route already has) rather than
           re-implementing report rendering a second time. */}
       <div style={{ display: 'flex', gap: '4px', borderBottom: '1px solid #1e293b', marginBottom: '4px' }}>
-        {(['Overview', 'Research', 'Goals'] as const).map(t => (
+        {PAGE_TABS.map(t => (
           <button
             key={t}
-            onClick={() => setPageTab(t)}
+            onClick={() => selectPageTab(t)}
             style={{
               padding: '8px 18px', fontSize: '13px', fontWeight: 700, cursor: 'pointer',
               background: 'transparent', border: 'none',
@@ -1229,6 +1273,298 @@ Return ONLY valid JSON — no markdown, no prose:
           </button>
         ))}
       </div>
+
+      {/* OPTIONSTAB-A: all four of this page's options sections, consolidated out of Overview.
+          The max-pain PRICE LINE deliberately stays on the main chart in Overview (it belongs
+          on the price axis, not here), and the platform-wide /options-flow page is untouched.
+          Note the optionsFlow SWR fetch stays at page level: the Squeeze Score in Overview
+          reads optionsFlow.whale_count/cp_ratio, so moving the fetch in here would silently
+          break it. */}
+      {pageTab === 'Options' && (
+        <div className="space-y-4">
+          <div style={{ marginBottom: 4 }}>
+            <h2 style={{ fontSize: 15, fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Options — {symbol}</h2>
+            <p style={{ fontSize: 12, color: '#64748b', margin: '4px 0 0' }}>
+              Flow, dealer positioning, open-interest structure, and the hedge/income game plan.{' '}
+              <a href="/option-trading-guide" style={{ color: '#38bdf8', textDecoration: 'none' }}>Options guide →</a>
+            </p>
+          </div>
+        {/* T322-OPTIONS-GAMEPLAN: Advanced-tier only — reuses the SAME nearest-support/
+            analyst-target values PositionSizer above already computes (not a second,
+            possibly-drifting derivation), so the hedge/income legs line up with what's
+            already shown on this page. */}
+        {(() => {
+          if (getSession()?.tier !== 'advanced' && getSession()?.role !== 'admin') return null;
+          const lp4 = allPrices?.find(p => p.symbol === symbol);
+          const curPx = lp4?.price ?? data.prices?.at(-1)?.close ?? undefined;
+          const nearestSupport = data.levels?.support_resistance
+            ?.filter(l => curPx == null || l.price < curPx)
+            .sort((a, b) => b.price - a.price)[0]?.price ?? undefined;
+          const takeProfit = data.fundamentals?.target_price ?? undefined;
+          const activeSignal = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig?.signal;
+          return (
+            <OptionsGamePlanCard
+              symbol={symbol as string}
+              currentPrice={curPx}
+              stopLoss={nearestSupport}
+              takeProfit={takeProfit}
+              signal={activeSignal}
+            />
+          );
+        })()}
+
+        {/* Options Flow */}
+        {optionsFlow && optionsFlow.available && (
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+              <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Options Flow</h2>
+              {(optionsFlow.whale_count ?? 0) > 0 && (
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b', background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 5, padding: '2px 8px' }}>
+                  🐋 {optionsFlow.whale_count} whale {(optionsFlow.whale_count ?? 0) === 1 ? 'trade' : 'trades'}
+                </span>
+              )}
+              {optionsFlow.pressure_score != null && (
+                <span
+                  title={`Conviction/intensity, not direction (see sentiment badge for direction) — cp_ratio: ${optionsFlow.pressure_score.components.cp_ratio_pts}/40 · whales: ${optionsFlow.pressure_score.components.whale_pts}/30 · volume: ${optionsFlow.pressure_score.components.volume_pts}/10${optionsFlow.pressure_score.components.uw_gex_proximity_pts != null ? ` · GEX proximity (UW): ${optionsFlow.pressure_score.components.uw_gex_proximity_pts}/20` : ''}`}
+                  style={{
+                    fontSize: 11, fontWeight: 700, cursor: 'help', borderRadius: 5, padding: '2px 8px',
+                    color: optionsFlow.pressure_score.score >= 60 ? '#a78bfa' : optionsFlow.pressure_score.score >= 35 ? '#818cf8' : '#64748b',
+                    background: optionsFlow.pressure_score.score >= 60 ? 'rgba(167,139,250,0.12)' : 'rgba(100,116,139,0.1)',
+                    border: `1px solid ${optionsFlow.pressure_score.score >= 60 ? 'rgba(167,139,250,0.3)' : 'rgba(100,116,139,0.25)'}`,
+                  }}
+                >
+                  Pressure {optionsFlow.pressure_score.score.toFixed(0)}
+                </span>
+              )}
+            </div>
+            <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+              {/* C/P ratio bar */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#64748b', marginBottom: 3 }}>
+                    <span>Calls {optionsFlow.call_volume?.toLocaleString()}</span>
+                    <span>C/P {optionsFlow.cp_ratio?.toFixed(2)}</span>
+                    <span>Puts {optionsFlow.put_volume?.toLocaleString()}</span>
+                  </div>
+                  <div style={{ height: 8, borderRadius: 4, background: '#1e293b', overflow: 'hidden', display: 'flex' }}>
+                    {(() => {
+                      const total = (optionsFlow.call_volume ?? 0) + (optionsFlow.put_volume ?? 0);
+                      const callPct = total > 0 ? (optionsFlow.call_volume ?? 0) / total * 100 : 50;
+                      return <>
+                        <div style={{ width: `${callPct}%`, background: '#22c55e', borderRadius: '4px 0 0 4px' }} />
+                        <div style={{ flex: 1, background: '#ef4444', borderRadius: '0 4px 4px 0' }} />
+                      </>;
+                    })()}
+                  </div>
+                </div>
+                <div style={{
+                  padding: '3px 10px', borderRadius: 5, fontSize: 11, fontWeight: 700, flexShrink: 0,
+                  background: optionsFlow.sentiment?.includes('bullish') ? 'rgba(34,197,94,0.15)' : optionsFlow.sentiment?.includes('bearish') ? 'rgba(239,68,68,0.15)' : 'rgba(100,116,139,0.15)',
+                  color: optionsFlow.sentiment?.includes('bullish') ? '#4ade80' : optionsFlow.sentiment?.includes('bearish') ? '#f87171' : '#94a3b8',
+                }}>
+                  {(optionsFlow.sentiment ?? 'neutral').replace(/_/g, ' ')}
+                </div>
+              </div>
+
+              {/* Put-volume spike callout — surfaces whether TODAY's put activity is genuinely
+                  elevated (volume already exceeding existing open interest on the put side),
+                  not just restating the raw put_volume number already shown in the bar above. */}
+              {optionsFlow.unusual && optionsFlow.unusual.length > 0 && (() => {
+                const putUnusual = optionsFlow.unusual.filter(c => c.side === 'put');
+                if (putUnusual.length === 0) return null;
+                const putPremium = putUnusual.reduce((sum, c) => sum + c.premium, 0);
+                const maxVolOi = Math.max(...putUnusual.map(c => c.vol_oi));
+                const putWhales = putUnusual.filter(c => c.is_whale).length;
+                return (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                    background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)',
+                    borderRadius: 6, padding: '8px 12px', marginBottom: 12, fontSize: 11,
+                  }}>
+                    <span style={{ fontWeight: 700, color: '#f87171' }}>📉 Elevated put activity</span>
+                    <span style={{ color: '#94a3b8' }}>
+                      {putUnusual.length} put contract{putUnusual.length !== 1 ? 's' : ''} trading at{' '}
+                      {maxVolOi.toFixed(1)}× today&apos;s volume vs. existing open interest
+                      {putPremium > 0 && ` · $${putPremium >= 1_000_000 ? (putPremium / 1_000_000).toFixed(1) + 'M' : Math.round(putPremium / 1_000) + 'K'} premium`}
+                      {putWhales > 0 && ` · ${putWhales} whale trade${putWhales !== 1 ? 's' : ''}`}
+                    </span>
+                  </div>
+                );
+              })()}
+
+              {/* Unusual contracts table */}
+              {optionsFlow.unusual && optionsFlow.unusual.length > 0 && (
+                <>
+                  <div style={{ fontSize: 10, color: '#475569', fontWeight: 700, letterSpacing: '0.06em', marginBottom: 6 }}>
+                    UNUSUAL ACTIVITY — {optionsFlow.expiries_used?.join(', ')}
+                  </div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                          {['Side', 'Strike', 'Expiry', 'Volume', 'OI', 'Vol/OI', 'IV', 'ITM', 'Premium'].map(h => (
+                            <th key={h} style={{ padding: '4px 8px', textAlign: 'left', color: '#475569', fontWeight: 500 }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {optionsFlow.unusual.map((c, i) => (
+                          <tr key={i} style={{ borderBottom: '1px solid #0f172a', background: c.is_whale ? 'rgba(245,158,11,0.05)' : 'transparent', outline: c.is_whale ? '1px solid rgba(245,158,11,0.2)' : 'none' }}>
+                            <td style={{ padding: '5px 8px' }}>
+                              <span style={{ fontWeight: 700, color: c.side === 'call' ? '#4ade80' : '#f87171' }}>
+                                {c.side.toUpperCase()}
+                              </span>
+                            </td>
+                            <td style={{ padding: '5px 8px', color: '#e2e8f0' }}>${c.strike}</td>
+                            <td style={{ padding: '5px 8px', color: '#64748b' }}>{c.expiry}</td>
+                            <td style={{ padding: '5px 8px', color: '#e2e8f0', fontWeight: 600 }}>{c.volume.toLocaleString()}</td>
+                            <td style={{ padding: '5px 8px', color: '#64748b' }}>{c.oi.toLocaleString()}</td>
+                            <td style={{ padding: '5px 8px', color: c.vol_oi > 1 ? '#f59e0b' : '#94a3b8', fontWeight: c.vol_oi > 1 ? 700 : 400 }}>{c.vol_oi.toFixed(2)}×</td>
+                            <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{c.iv.toFixed(0)}%</td>
+                            <td style={{ padding: '5px 8px', color: c.itm ? '#4ade80' : '#475569' }}>{c.itm ? 'ITM' : 'OTM'}</td>
+                            <td style={{ padding: '5px 8px', color: c.is_whale ? '#f59e0b' : '#475569', fontWeight: c.is_whale ? 700 : 400 }}>
+                              {c.premium >= 1_000_000 ? `$${(c.premium / 1_000_000).toFixed(1)}M` : c.premium >= 1_000 ? `$${Math.round(c.premium / 1_000)}K` : c.premium > 0 ? `$${c.premium}` : '—'}
+                              {c.is_whale && ' 🐋'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* MPE-06/MPE-03: real Unusual Whales GEX + per-expiration OI concentration rollup —
+            self-contained, renders nothing when neither is available. */}
+        <MarketPressurePanel symbol={symbol} />
+
+        {/* T230-DATA-OPTIONS-CHAIN: full strike/expiry matrix, opt-in expand (heavier fetch
+            than the Options Flow summary above) */}
+        {optionsFlow && optionsFlow.available && (
+          <div style={{ marginBottom: 24 }}>
+            <div
+              onClick={() => setChainOpen(o => !o)}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: chainOpen ? 12 : 0, cursor: 'pointer' }}
+            >
+              <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Options Chain</h2>
+              <span style={{ fontSize: 11, color: '#475569' }}>{chainOpen ? '▲ Hide' : '▼ Show full strike matrix'}</span>
+            </div>
+            {chainOpen && (
+              <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                {!optionsChain && <div style={{ fontSize: 12, color: '#475569' }}>Loading options chain…</div>}
+                {optionsChain && !optionsChain.available && (
+                  <div style={{ fontSize: 12, color: '#475569' }}>No options chain available for this symbol.</div>
+                )}
+                {optionsChain && optionsChain.available && (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 11, color: '#64748b' }}>Expiry:</span>
+                      {(optionsChain.expiries ?? []).map(exp => (
+                        <button
+                          key={exp}
+                          onClick={() => setChainExpiry(exp)}
+                          style={{
+                            fontSize: 11, fontWeight: (optionsChain.expiry === exp) ? 700 : 400,
+                            padding: '3px 10px', borderRadius: 5, cursor: 'pointer',
+                            background: optionsChain.expiry === exp ? 'rgba(56,189,248,0.15)' : 'transparent',
+                            border: `1px solid ${optionsChain.expiry === exp ? 'rgba(56,189,248,0.4)' : '#1e293b'}`,
+                            color: optionsChain.expiry === exp ? '#38bdf8' : '#94a3b8',
+                          }}
+                        >
+                          {exp}
+                        </button>
+                      ))}
+                    </div>
+                    {/* IF-05: max pain — the strike at which options writers would owe the
+                        least total intrinsic value at this expiry. Needs only strike + open
+                        interest (no IV/Black-Scholes/dealer-positioning assumption) — a
+                        genuinely different, complementary read from the gamma-unwind alert's own
+                        OI-concentration proxy. null when this expiry has zero real OI to compute
+                        against, rendered as a plain "not enough data" note rather than nothing. */}
+                    {optionsChain.max_pain && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 12, padding: '8px 12px', background: '#0f172a', border: '1px solid #1e293b', borderRadius: 6, flexWrap: 'wrap' }}>
+                        <div>
+                          <span style={{ fontSize: 11, color: '#64748b' }}>Max Pain: </span>
+                          <span style={{ fontSize: 13, fontWeight: 700, color: '#facc15' }}>${optionsChain.max_pain.max_pain_strike.toFixed(2)}</span>
+                        </div>
+                        <div style={{ fontSize: 11, color: '#64748b' }}>
+                          Put/Call OI Ratio: <span style={{ color: '#94a3b8', fontWeight: 600 }}>{optionsChain.max_pain.put_call_oi_ratio != null ? optionsChain.max_pain.put_call_oi_ratio.toFixed(2) : '—'}</span>
+                        </div>
+                        <div style={{ fontSize: 10, color: '#475569' }}>
+                          (measured from open interest alone — not a prediction of where price will land)
+                        </div>
+                      </div>
+                    )}
+                    {!optionsChain.max_pain && (
+                      <div style={{ fontSize: 11, color: '#475569', marginBottom: 12 }}>
+                        Max pain unavailable — no open interest on either side for this expiry yet.
+                      </div>
+                    )}
+                    {/* T270-STOCKDETAIL-CALLPUT-CHART: OI-by-strike bar chart — calls (green)
+                        above zero, puts (red) below zero, sitting alongside (not replacing)
+                        the detailed strike-matrix table below for anyone who wants exact
+                        numbers per contract. */}
+                    <div style={{ marginBottom: 14 }}>
+                      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>
+                        Open Interest by Strike — <span style={{ color: '#4ade80' }}>■ Calls</span>{' '}
+                        <span style={{ color: '#f87171' }}>■ Puts</span>
+                      </div>
+                      <OptionsChainChart calls={optionsChain.calls ?? []} puts={optionsChain.puts ?? []} />
+                    </div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                            {['Bid', 'Ask', 'Last', 'Vol', 'OI', 'IV'].map(h => (
+                              <th key={`c-${h}`} style={{ padding: '4px 8px', textAlign: 'right', color: '#4ade80', fontWeight: 500 }}>{h}</th>
+                            ))}
+                            <th style={{ padding: '4px 12px', textAlign: 'center', color: '#475569', fontWeight: 700 }}>Strike</th>
+                            {['Bid', 'Ask', 'Last', 'Vol', 'OI', 'IV'].map(h => (
+                              <th key={`p-${h}`} style={{ padding: '4px 8px', textAlign: 'left', color: '#f87171', fontWeight: 500 }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(() => {
+                            const calls = optionsChain.calls ?? [];
+                            const puts = optionsChain.puts ?? [];
+                            const strikes = Array.from(new Set([...calls.map(c => c.strike), ...puts.map(p => p.strike)])).sort((a, b) => a - b);
+                            return strikes.map(strike => {
+                              const c = calls.find(x => x.strike === strike);
+                              const p = puts.find(x => x.strike === strike);
+                              return (
+                                <tr key={strike} style={{ borderBottom: '1px solid #0f172a' }}>
+                                  <td style={{ padding: '4px 8px', textAlign: 'right', color: c?.itm ? '#4ade80' : '#94a3b8' }}>{c ? c.bid.toFixed(2) : '—'}</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'right', color: c?.itm ? '#4ade80' : '#94a3b8' }}>{c ? c.ask.toFixed(2) : '—'}</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'right', color: '#94a3b8' }}>{c ? c.last_price.toFixed(2) : '—'}</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'right', color: '#94a3b8' }}>{c ? c.volume.toLocaleString() : '—'}</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{c ? c.oi.toLocaleString() : '—'}</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{c ? `${c.iv.toFixed(0)}%` : '—'}</td>
+                                  <td style={{ padding: '4px 12px', textAlign: 'center', color: '#e2e8f0', fontWeight: 700 }}>${strike}</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'left', color: p?.itm ? '#f87171' : '#94a3b8' }}>{p ? p.bid.toFixed(2) : '—'}</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'left', color: p?.itm ? '#f87171' : '#94a3b8' }}>{p ? p.ask.toFixed(2) : '—'}</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'left', color: '#94a3b8' }}>{p ? p.last_price.toFixed(2) : '—'}</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'left', color: '#94a3b8' }}>{p ? p.volume.toLocaleString() : '—'}</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'left', color: '#64748b' }}>{p ? p.oi.toLocaleString() : '—'}</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'left', color: '#64748b' }}>{p ? `${p.iv.toFixed(0)}%` : '—'}</td>
+                                </tr>
+                              );
+                            });
+                          })()}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+        </div>
+      )}
 
       {pageTab === 'Research' && <ResearchPage />}
 
@@ -2884,29 +3220,6 @@ Return ONLY valid JSON — no markdown, no prose:
             );
           })()}
 
-          {/* T322-OPTIONS-GAMEPLAN: Advanced-tier only — reuses the SAME nearest-support/
-              analyst-target values PositionSizer above already computes (not a second,
-              possibly-drifting derivation), so the hedge/income legs line up with what's
-              already shown on this page. */}
-          {(() => {
-            if (getSession()?.tier !== 'advanced' && getSession()?.role !== 'admin') return null;
-            const lp4 = allPrices?.find(p => p.symbol === symbol);
-            const curPx = lp4?.price ?? data.prices?.at(-1)?.close ?? undefined;
-            const nearestSupport = data.levels?.support_resistance
-              ?.filter(l => curPx == null || l.price < curPx)
-              .sort((a, b) => b.price - a.price)[0]?.price ?? undefined;
-            const takeProfit = data.fundamentals?.target_price ?? undefined;
-            const activeSignal = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig?.signal;
-            return (
-              <OptionsGamePlanCard
-                symbol={symbol as string}
-                currentPrice={curPx}
-                stopLoss={nearestSupport}
-                takeProfit={takeProfit}
-                signal={activeSignal}
-              />
-            );
-          })()}
 
           {/* T258-ACCUM-DIST-BREAKOUT-QUALITY: a volume-PATTERN-based accumulation/distribution
               read + a breakout-quality assessment (real/failed/unconfirmed), replacing what the
@@ -4399,256 +4712,6 @@ Return ONLY valid JSON — no markdown, no prose:
         )}
       </div>
 
-      {/* Options Flow */}
-      {optionsFlow && optionsFlow.available && (
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-            <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Options Flow</h2>
-            {(optionsFlow.whale_count ?? 0) > 0 && (
-              <span style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b', background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 5, padding: '2px 8px' }}>
-                🐋 {optionsFlow.whale_count} whale {(optionsFlow.whale_count ?? 0) === 1 ? 'trade' : 'trades'}
-              </span>
-            )}
-            {optionsFlow.pressure_score != null && (
-              <span
-                title={`Conviction/intensity, not direction (see sentiment badge for direction) — cp_ratio: ${optionsFlow.pressure_score.components.cp_ratio_pts}/40 · whales: ${optionsFlow.pressure_score.components.whale_pts}/30 · volume: ${optionsFlow.pressure_score.components.volume_pts}/10${optionsFlow.pressure_score.components.uw_gex_proximity_pts != null ? ` · GEX proximity (UW): ${optionsFlow.pressure_score.components.uw_gex_proximity_pts}/20` : ''}`}
-                style={{
-                  fontSize: 11, fontWeight: 700, cursor: 'help', borderRadius: 5, padding: '2px 8px',
-                  color: optionsFlow.pressure_score.score >= 60 ? '#a78bfa' : optionsFlow.pressure_score.score >= 35 ? '#818cf8' : '#64748b',
-                  background: optionsFlow.pressure_score.score >= 60 ? 'rgba(167,139,250,0.12)' : 'rgba(100,116,139,0.1)',
-                  border: `1px solid ${optionsFlow.pressure_score.score >= 60 ? 'rgba(167,139,250,0.3)' : 'rgba(100,116,139,0.25)'}`,
-                }}
-              >
-                Pressure {optionsFlow.pressure_score.score.toFixed(0)}
-              </span>
-            )}
-          </div>
-          <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
-            {/* C/P ratio bar */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#64748b', marginBottom: 3 }}>
-                  <span>Calls {optionsFlow.call_volume?.toLocaleString()}</span>
-                  <span>C/P {optionsFlow.cp_ratio?.toFixed(2)}</span>
-                  <span>Puts {optionsFlow.put_volume?.toLocaleString()}</span>
-                </div>
-                <div style={{ height: 8, borderRadius: 4, background: '#1e293b', overflow: 'hidden', display: 'flex' }}>
-                  {(() => {
-                    const total = (optionsFlow.call_volume ?? 0) + (optionsFlow.put_volume ?? 0);
-                    const callPct = total > 0 ? (optionsFlow.call_volume ?? 0) / total * 100 : 50;
-                    return <>
-                      <div style={{ width: `${callPct}%`, background: '#22c55e', borderRadius: '4px 0 0 4px' }} />
-                      <div style={{ flex: 1, background: '#ef4444', borderRadius: '0 4px 4px 0' }} />
-                    </>;
-                  })()}
-                </div>
-              </div>
-              <div style={{
-                padding: '3px 10px', borderRadius: 5, fontSize: 11, fontWeight: 700, flexShrink: 0,
-                background: optionsFlow.sentiment?.includes('bullish') ? 'rgba(34,197,94,0.15)' : optionsFlow.sentiment?.includes('bearish') ? 'rgba(239,68,68,0.15)' : 'rgba(100,116,139,0.15)',
-                color: optionsFlow.sentiment?.includes('bullish') ? '#4ade80' : optionsFlow.sentiment?.includes('bearish') ? '#f87171' : '#94a3b8',
-              }}>
-                {(optionsFlow.sentiment ?? 'neutral').replace(/_/g, ' ')}
-              </div>
-            </div>
-
-            {/* Put-volume spike callout — surfaces whether TODAY's put activity is genuinely
-                elevated (volume already exceeding existing open interest on the put side),
-                not just restating the raw put_volume number already shown in the bar above. */}
-            {optionsFlow.unusual && optionsFlow.unusual.length > 0 && (() => {
-              const putUnusual = optionsFlow.unusual.filter(c => c.side === 'put');
-              if (putUnusual.length === 0) return null;
-              const putPremium = putUnusual.reduce((sum, c) => sum + c.premium, 0);
-              const maxVolOi = Math.max(...putUnusual.map(c => c.vol_oi));
-              const putWhales = putUnusual.filter(c => c.is_whale).length;
-              return (
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
-                  background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)',
-                  borderRadius: 6, padding: '8px 12px', marginBottom: 12, fontSize: 11,
-                }}>
-                  <span style={{ fontWeight: 700, color: '#f87171' }}>📉 Elevated put activity</span>
-                  <span style={{ color: '#94a3b8' }}>
-                    {putUnusual.length} put contract{putUnusual.length !== 1 ? 's' : ''} trading at{' '}
-                    {maxVolOi.toFixed(1)}× today&apos;s volume vs. existing open interest
-                    {putPremium > 0 && ` · $${putPremium >= 1_000_000 ? (putPremium / 1_000_000).toFixed(1) + 'M' : Math.round(putPremium / 1_000) + 'K'} premium`}
-                    {putWhales > 0 && ` · ${putWhales} whale trade${putWhales !== 1 ? 's' : ''}`}
-                  </span>
-                </div>
-              );
-            })()}
-
-            {/* Unusual contracts table */}
-            {optionsFlow.unusual && optionsFlow.unusual.length > 0 && (
-              <>
-                <div style={{ fontSize: 10, color: '#475569', fontWeight: 700, letterSpacing: '0.06em', marginBottom: 6 }}>
-                  UNUSUAL ACTIVITY — {optionsFlow.expiries_used?.join(', ')}
-                </div>
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-                    <thead>
-                      <tr style={{ borderBottom: '1px solid #1e293b' }}>
-                        {['Side', 'Strike', 'Expiry', 'Volume', 'OI', 'Vol/OI', 'IV', 'ITM', 'Premium'].map(h => (
-                          <th key={h} style={{ padding: '4px 8px', textAlign: 'left', color: '#475569', fontWeight: 500 }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {optionsFlow.unusual.map((c, i) => (
-                        <tr key={i} style={{ borderBottom: '1px solid #0f172a', background: c.is_whale ? 'rgba(245,158,11,0.05)' : 'transparent', outline: c.is_whale ? '1px solid rgba(245,158,11,0.2)' : 'none' }}>
-                          <td style={{ padding: '5px 8px' }}>
-                            <span style={{ fontWeight: 700, color: c.side === 'call' ? '#4ade80' : '#f87171' }}>
-                              {c.side.toUpperCase()}
-                            </span>
-                          </td>
-                          <td style={{ padding: '5px 8px', color: '#e2e8f0' }}>${c.strike}</td>
-                          <td style={{ padding: '5px 8px', color: '#64748b' }}>{c.expiry}</td>
-                          <td style={{ padding: '5px 8px', color: '#e2e8f0', fontWeight: 600 }}>{c.volume.toLocaleString()}</td>
-                          <td style={{ padding: '5px 8px', color: '#64748b' }}>{c.oi.toLocaleString()}</td>
-                          <td style={{ padding: '5px 8px', color: c.vol_oi > 1 ? '#f59e0b' : '#94a3b8', fontWeight: c.vol_oi > 1 ? 700 : 400 }}>{c.vol_oi.toFixed(2)}×</td>
-                          <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{c.iv.toFixed(0)}%</td>
-                          <td style={{ padding: '5px 8px', color: c.itm ? '#4ade80' : '#475569' }}>{c.itm ? 'ITM' : 'OTM'}</td>
-                          <td style={{ padding: '5px 8px', color: c.is_whale ? '#f59e0b' : '#475569', fontWeight: c.is_whale ? 700 : 400 }}>
-                            {c.premium >= 1_000_000 ? `$${(c.premium / 1_000_000).toFixed(1)}M` : c.premium >= 1_000 ? `$${Math.round(c.premium / 1_000)}K` : c.premium > 0 ? `$${c.premium}` : '—'}
-                            {c.is_whale && ' 🐋'}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* MPE-06/MPE-03: real Unusual Whales GEX + per-expiration OI concentration rollup —
-          self-contained, renders nothing when neither is available. */}
-      <MarketPressurePanel symbol={symbol} />
-
-      {/* T230-DATA-OPTIONS-CHAIN: full strike/expiry matrix, opt-in expand (heavier fetch
-          than the Options Flow summary above) */}
-      {optionsFlow && optionsFlow.available && (
-        <div style={{ marginBottom: 24 }}>
-          <div
-            onClick={() => setChainOpen(o => !o)}
-            style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: chainOpen ? 12 : 0, cursor: 'pointer' }}
-          >
-            <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Options Chain</h2>
-            <span style={{ fontSize: 11, color: '#475569' }}>{chainOpen ? '▲ Hide' : '▼ Show full strike matrix'}</span>
-          </div>
-          {chainOpen && (
-            <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
-              {!optionsChain && <div style={{ fontSize: 12, color: '#475569' }}>Loading options chain…</div>}
-              {optionsChain && !optionsChain.available && (
-                <div style={{ fontSize: 12, color: '#475569' }}>No options chain available for this symbol.</div>
-              )}
-              {optionsChain && optionsChain.available && (
-                <>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 11, color: '#64748b' }}>Expiry:</span>
-                    {(optionsChain.expiries ?? []).map(exp => (
-                      <button
-                        key={exp}
-                        onClick={() => setChainExpiry(exp)}
-                        style={{
-                          fontSize: 11, fontWeight: (optionsChain.expiry === exp) ? 700 : 400,
-                          padding: '3px 10px', borderRadius: 5, cursor: 'pointer',
-                          background: optionsChain.expiry === exp ? 'rgba(56,189,248,0.15)' : 'transparent',
-                          border: `1px solid ${optionsChain.expiry === exp ? 'rgba(56,189,248,0.4)' : '#1e293b'}`,
-                          color: optionsChain.expiry === exp ? '#38bdf8' : '#94a3b8',
-                        }}
-                      >
-                        {exp}
-                      </button>
-                    ))}
-                  </div>
-                  {/* IF-05: max pain — the strike at which options writers would owe the
-                      least total intrinsic value at this expiry. Needs only strike + open
-                      interest (no IV/Black-Scholes/dealer-positioning assumption) — a
-                      genuinely different, complementary read from the gamma-unwind alert's own
-                      OI-concentration proxy. null when this expiry has zero real OI to compute
-                      against, rendered as a plain "not enough data" note rather than nothing. */}
-                  {optionsChain.max_pain && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 12, padding: '8px 12px', background: '#0f172a', border: '1px solid #1e293b', borderRadius: 6, flexWrap: 'wrap' }}>
-                      <div>
-                        <span style={{ fontSize: 11, color: '#64748b' }}>Max Pain: </span>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: '#facc15' }}>${optionsChain.max_pain.max_pain_strike.toFixed(2)}</span>
-                      </div>
-                      <div style={{ fontSize: 11, color: '#64748b' }}>
-                        Put/Call OI Ratio: <span style={{ color: '#94a3b8', fontWeight: 600 }}>{optionsChain.max_pain.put_call_oi_ratio != null ? optionsChain.max_pain.put_call_oi_ratio.toFixed(2) : '—'}</span>
-                      </div>
-                      <div style={{ fontSize: 10, color: '#475569' }}>
-                        (measured from open interest alone — not a prediction of where price will land)
-                      </div>
-                    </div>
-                  )}
-                  {!optionsChain.max_pain && (
-                    <div style={{ fontSize: 11, color: '#475569', marginBottom: 12 }}>
-                      Max pain unavailable — no open interest on either side for this expiry yet.
-                    </div>
-                  )}
-                  {/* T270-STOCKDETAIL-CALLPUT-CHART: OI-by-strike bar chart — calls (green)
-                      above zero, puts (red) below zero, sitting alongside (not replacing)
-                      the detailed strike-matrix table below for anyone who wants exact
-                      numbers per contract. */}
-                  <div style={{ marginBottom: 14 }}>
-                    <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>
-                      Open Interest by Strike — <span style={{ color: '#4ade80' }}>■ Calls</span>{' '}
-                      <span style={{ color: '#f87171' }}>■ Puts</span>
-                    </div>
-                    <OptionsChainChart calls={optionsChain.calls ?? []} puts={optionsChain.puts ?? []} />
-                  </div>
-                  <div style={{ overflowX: 'auto' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-                      <thead>
-                        <tr style={{ borderBottom: '1px solid #1e293b' }}>
-                          {['Bid', 'Ask', 'Last', 'Vol', 'OI', 'IV'].map(h => (
-                            <th key={`c-${h}`} style={{ padding: '4px 8px', textAlign: 'right', color: '#4ade80', fontWeight: 500 }}>{h}</th>
-                          ))}
-                          <th style={{ padding: '4px 12px', textAlign: 'center', color: '#475569', fontWeight: 700 }}>Strike</th>
-                          {['Bid', 'Ask', 'Last', 'Vol', 'OI', 'IV'].map(h => (
-                            <th key={`p-${h}`} style={{ padding: '4px 8px', textAlign: 'left', color: '#f87171', fontWeight: 500 }}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(() => {
-                          const calls = optionsChain.calls ?? [];
-                          const puts = optionsChain.puts ?? [];
-                          const strikes = Array.from(new Set([...calls.map(c => c.strike), ...puts.map(p => p.strike)])).sort((a, b) => a - b);
-                          return strikes.map(strike => {
-                            const c = calls.find(x => x.strike === strike);
-                            const p = puts.find(x => x.strike === strike);
-                            return (
-                              <tr key={strike} style={{ borderBottom: '1px solid #0f172a' }}>
-                                <td style={{ padding: '4px 8px', textAlign: 'right', color: c?.itm ? '#4ade80' : '#94a3b8' }}>{c ? c.bid.toFixed(2) : '—'}</td>
-                                <td style={{ padding: '4px 8px', textAlign: 'right', color: c?.itm ? '#4ade80' : '#94a3b8' }}>{c ? c.ask.toFixed(2) : '—'}</td>
-                                <td style={{ padding: '4px 8px', textAlign: 'right', color: '#94a3b8' }}>{c ? c.last_price.toFixed(2) : '—'}</td>
-                                <td style={{ padding: '4px 8px', textAlign: 'right', color: '#94a3b8' }}>{c ? c.volume.toLocaleString() : '—'}</td>
-                                <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{c ? c.oi.toLocaleString() : '—'}</td>
-                                <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{c ? `${c.iv.toFixed(0)}%` : '—'}</td>
-                                <td style={{ padding: '4px 12px', textAlign: 'center', color: '#e2e8f0', fontWeight: 700 }}>${strike}</td>
-                                <td style={{ padding: '4px 8px', textAlign: 'left', color: p?.itm ? '#f87171' : '#94a3b8' }}>{p ? p.bid.toFixed(2) : '—'}</td>
-                                <td style={{ padding: '4px 8px', textAlign: 'left', color: p?.itm ? '#f87171' : '#94a3b8' }}>{p ? p.ask.toFixed(2) : '—'}</td>
-                                <td style={{ padding: '4px 8px', textAlign: 'left', color: '#94a3b8' }}>{p ? p.last_price.toFixed(2) : '—'}</td>
-                                <td style={{ padding: '4px 8px', textAlign: 'left', color: '#94a3b8' }}>{p ? p.volume.toLocaleString() : '—'}</td>
-                                <td style={{ padding: '4px 8px', textAlign: 'left', color: '#64748b' }}>{p ? p.oi.toLocaleString() : '—'}</td>
-                                <td style={{ padding: '4px 8px', textAlign: 'left', color: '#64748b' }}>{p ? `${p.iv.toFixed(0)}%` : '—'}</td>
-                              </tr>
-                            );
-                          });
-                        })()}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* News feed — full width below chart */}
       <div>

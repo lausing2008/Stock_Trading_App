@@ -1,5 +1,6 @@
 import useSWR from 'swr';
 import { api } from '@/lib/api';
+import { GexOiByStrikeChart, MaxPainByExpiryChart, OiTermStructureChart } from './OptionsTabCharts';
 
 /** MPE-06/MPE-03: real dealer gamma exposure (Unusual Whales, when configured/enabled) plus
  * a per-expiration open-interest concentration rollup. Self-contained (its own SWR fetches),
@@ -96,6 +97,33 @@ export default function MarketPressurePanel({ symbol }: { symbol: string }) {
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* OPTIONSTAB-B: the full cross-expiry OI distribution as a real chart, with the GEX
+            walls drawn as reference lines on the same axis. The top-6 text table below stays —
+            it gives exact figures the chart can only approximate visually, and the two answer
+            different questions ("what's the shape" vs "what exactly is at these strikes"). */}
+        {hasGex && (gex.oi_per_strike?.length ?? 0) > 0 && (
+          <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+            <GexOiByStrikeChart gex={gex} />
+          </div>
+        )}
+
+        {/* OPTIONSTAB-B: max_pain is an ARRAY across expiries; the stock page's own chart-level
+            max-pain line reads only [0]. Charting the whole series shows where max pain
+            MIGRATES across the term, which a single number cannot. */}
+        {hasGex && (gex.max_pain?.length ?? 0) > 0 && (
+          <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+            <MaxPainByExpiryChart gex={gex} />
+          </div>
+        )}
+
+        {/* OPTIONSTAB-B: OI term structure — the same per-expiration rollup rendered as a text
+            table further down, as a stacked chart so the shape across expiries is visible. */}
+        {hasExpirations && (
+          <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+            <OiTermStructureChart expirations={expirations?.expirations} />
           </div>
         )}
 
