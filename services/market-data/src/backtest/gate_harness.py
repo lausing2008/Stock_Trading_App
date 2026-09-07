@@ -1424,6 +1424,11 @@ class ReplayFidelityResult:
     n_replay_skipped: int = 0          # replay said SKIP on a real-traded signal (suspicious)
     skipped_reason: str | None = None
     skipped_signal_ids: list[int] = field(default_factory=list)
+    # Why the replay rejected real trades, tallied. A bare recall number isn't actionable —
+    # this is what tells you whether a low score is benign cfg drift (gates retuned TIGHTER
+    # since these trades were taken, so of course today's thresholds reject them) or a genuine
+    # replay defect.
+    skip_reason_counts: dict = field(default_factory=dict)
 
     @property
     def recall_on_real_trades(self) -> float | None:
@@ -1450,6 +1455,9 @@ class ReplayFidelityResult:
                 round(self.recall_on_real_trades, 4) if self.recall_on_real_trades is not None else None
             ),
             "skipped_signal_ids": self.skipped_signal_ids[:50],
+            "skip_reason_counts": dict(
+                sorted(self.skip_reason_counts.items(), key=lambda kv: -kv[1])[:10]
+            ),
             "skipped_reason": self.skipped_reason,
             "caveats": (
                 "Replay is regime-blind (live_regime=None — a permanent gap, see this module's "
@@ -1539,5 +1547,7 @@ def verify_replay_fidelity(
         else:
             result.n_replay_skipped += 1
             result.skipped_signal_ids.append(sig_id)
+            key = str(_notes)[:120] if _notes else "(no reason given)"
+            result.skip_reason_counts[key] = result.skip_reason_counts.get(key, 0) + 1
 
     return result

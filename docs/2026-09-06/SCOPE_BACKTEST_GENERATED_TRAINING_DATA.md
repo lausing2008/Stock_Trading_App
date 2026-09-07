@@ -68,7 +68,41 @@ blob rather than from today.
 subsequent price bars, which are immutable historical fact. Only the *decision* is being
 recomputed, from inputs frozen at decision time. That is the definition of an honest backtest.
 
-### 2b. Verify accuracy of the replay ✅
+### 2b. Verify accuracy of the replay ✅ — **BUILT AND RUN (2026-09-07). Result below.**
+
+`verify_replay_fidelity()` + `GET /paper-portfolio/backtest/replay-fidelity` are live. First run
+against production, 120-day window, US:
+
+| Style | Real trades | Visible to replay | Replay entered | **Recall** |
+|---|---|---|---|---|
+| SWING | 54 | 39 | 10 | **25.6%** |
+| GROWTH | 58 | 40 | 24 | **60.0%** |
+
+**Recall looks alarming and is NOT a replay defect.** The skip-reason tally (added precisely
+because a bare recall number isn't actionable) shows the rejections are dominated by gates that
+**did not exist, or were looser, when those trades were taken**:
+
+- `"Already ran 19.6% in 10 days (limit 10%) — chasing an extended move"` — this is
+  **`AUD-CHASE-ROC10`, shipped 2026-09-05**. Every June/July trade predates it.
+- `"Gap-up 3.8% … exceeds limit 3%"` / `"exceeds limit 4%"` — `max_entry_gap_pct`, part of the
+  mirrored-constant family corrected in this same audit cycle.
+- `"Confidence 39.8% below floor 45.0%"` — confidence floors retuned since.
+
+So the replay is faithfully applying **today's** gates to **yesterday's** decisions. That is
+correct backtest behavior, and it is the cfg-drift effect §4 anticipated.
+
+**What this means for BT-3 — and it cuts both ways:**
+
+1. **The replay mechanism is validated.** It reads frozen inputs, reconstructs PIT values, and
+   rejects for substantive, explainable reasons rather than noise or crashes.
+2. **But raw recall is NOT a fidelity metric while gates are in flux.** A future run must
+   compare against the cfg *in force at the time* to isolate genuine replay error from
+   deliberate gate changes — otherwise every tightening looks like a regression.
+3. **Most importantly, this is direct evidence the current gates are much stricter than the
+   ones that produced the existing 124 trades.** Replaying today's gates over the full 45k
+   signal history will therefore yield materially FEWER entries than a naive extrapolation from
+   124 suggests — so the "124 → thousands" expectation in §5 should be treated as an upper
+   bound, not a forecast.
 
 Directly testable: replay the gates over the window where real paper trades exist (2026-06-16 →
 2026-09-04) and check that the replay reproduces those 124 real trades. **If replay can't
