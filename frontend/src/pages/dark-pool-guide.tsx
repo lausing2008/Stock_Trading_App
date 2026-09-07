@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { getSession } from '@/lib/auth';
+import { getSession, hasAdvancedAccess } from '@/lib/auth';
 
 // ── Shared small components — same visual language as option-trading-guide.tsx/alerts-guide.tsx ──
 
@@ -98,6 +98,7 @@ export default function DarkPoolGuidePage() {
   useEffect(() => {
     const session = getSession();
     if (!session) { router.replace('/login'); return; }
+    if (!hasAdvancedAccess(session)) { router.replace('/'); return; }
     setAuthed(true);
   }, [router]);
 

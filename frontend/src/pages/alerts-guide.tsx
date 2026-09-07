@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { getSession } from '@/lib/auth';
+import { getSession, hasAdvancedAccess } from '@/lib/auth';
 
 // ── Static content — kept in sync by hand with services/market-data/src/services/scheduler.py.
 // If you add/change a scheduled job there, update the matching row here too. ─────────────────
@@ -341,6 +341,7 @@ export default function AlertsGuidePage() {
   useEffect(() => {
     const session = getSession();
     if (!session) { router.replace('/login'); return; }
+    if (!hasAdvancedAccess(session)) { router.replace('/'); return; }
     setAuthed(true);
   }, [router]);
 

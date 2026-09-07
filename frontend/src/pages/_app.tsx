@@ -37,6 +37,15 @@ function navPath(href: string): string {
 // by ?tab=) collapsed to the same pathname and ALL highlighted as current simultaneously.
 // This checks the query string too, when the href actually has one — a no-op for every
 // plain-path href elsewhere in NAV_GROUPS (none of them have a '?').
+// Shared visibility predicate for both the desktop and mobile nav filters below — a single
+// source of truth so adminOnly/minTier semantics can't silently drift between the two render
+// paths the way two independently-typed inline filters would risk.
+function isGroupVisible(group: NavGroupDef, role: string | null, tier: string | null): boolean {
+  if (group.adminOnly && role !== 'admin') return false;
+  if (group.minTier === 'advanced' && tier !== 'advanced' && role !== 'admin') return false;
+  return true;
+}
+
 function isItemCurrent(href: string, currentPath: string, currentSearch: string): boolean {
   if (href === '/') return currentPath === '/';
   const [hrefPath, hrefQuery] = href.split('?');
@@ -44,7 +53,12 @@ function isItemCurrent(href: string, currentPath: string, currentSearch: string)
   if (hrefQuery === undefined) return true;
   return currentSearch.replace(/^\?/, '') === hrefQuery;
 }
-type NavGroupDef = { label: string; items: NavItem[]; adminOnly?: boolean };
+// minTier: 'advanced' means visible to UserTier=advanced OR role=admin (admin does not
+// implicitly satisfy a tier check anywhere else in this app — see stock/[symbol].tsx's
+// Options Game Plan gate — so this mirrors that same explicit OR, just at group level).
+// Distinct from adminOnly (role=admin ONLY, no tier escape hatch) — the two are independent
+// axes and a group could in principle use either or neither.
+type NavGroupDef = { label: string; items: NavItem[]; adminOnly?: boolean; minTier?: 'advanced' };
 
 const NAV_GROUPS: NavGroupDef[] = [
   {
@@ -119,12 +133,14 @@ const NAV_GROUPS: NavGroupDef[] = [
   },
   {
     label: 'Learning',
+    minTier: 'advanced',
     items: [
       { label: 'Platform Guide', href: '/learn' },
       { label: 'Alerts Guide',   href: '/alerts-guide', color: '#f59e0b', tag: 'new' },
       { label: 'Watchlist Rotation — How It Works', href: '/watchlist-rotation-explainer', color: '#f59e0b', tag: 'new' },
       { label: 'Conditional Orders Guide', href: '/conditional-orders-guide', color: '#22c55e', tag: 'new' },
       { label: 'Option Trading Guide', href: '/option-trading-guide', color: '#f59e0b', tag: 'new' },
+      { label: 'QQQ LEAPS Playbook', href: '/qqq-leaps-playbook', color: '#a78bfa', tag: 'new' },
       { label: 'Dark Pool Guide', href: '/dark-pool-guide', color: '#38bdf8', tag: 'new' },
       { label: 'Session Changelog', href: '/session-changelog', color: '#a78bfa', tag: 'new' },
     ],
@@ -478,6 +494,9 @@ export default function App({ Component, pageProps }: AppProps) {
   const [role, setRole] = useState<string | null>(() =>
     typeof window !== 'undefined' ? (getSession()?.role ?? null) : null
   );
+  const [tier, setTier] = useState<string | null>(() =>
+    typeof window !== 'undefined' ? (getSession()?.tier ?? null) : null
+  );
   const [checked, setChecked] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     const path = window.location.pathname;
@@ -532,6 +551,7 @@ export default function App({ Component, pageProps }: AppProps) {
       if (session) {
         setUsername(session.username);
         setRole(session.role);
+        setTier(session.tier ?? null);
         setImpersonating(getImpersonatedUser());
         const settings = loadSettings();
         if (!_configPushed && (settings.polygonApiKey || settings.alphaVantageApiKey)) {
@@ -693,7 +713,7 @@ export default function App({ Component, pageProps }: AppProps) {
           {/* Desktop group nav + search + right-side controls — hidden below 768px */}
           <div className="desktop-nav-row" style={{ alignItems: 'center', gap: '32px', flex: 1 }}>
             <nav style={{ display: 'flex', alignItems: 'center', gap: '2px', flex: 1 }}>
-              {NAV_GROUPS.filter(g => !g.adminOnly || role === 'admin').map(group => (
+              {NAV_GROUPS.filter(g => isGroupVisible(g, role, tier)).map(group => (
                 <NavGroup key={group.label} group={group} currentPath={router.pathname} currentSearch={router.asPath.split('?')[1] ?? ''} userRole={role} />
               ))}
             </nav>
@@ -769,7 +789,7 @@ export default function App({ Component, pageProps }: AppProps) {
               <GlobalSearch registerGlobalShortcut={false} />
             </div>
             <MobileNavDrawer
-              groups={NAV_GROUPS.filter(g => !g.adminOnly || role === 'admin')}
+              groups={NAV_GROUPS.filter(g => isGroupVisible(g, role, tier))}
               currentPath={router.pathname}
               currentSearch={router.asPath.split('?')[1] ?? ''}
               onNavigate={() => setMobileMenuOpen(false)}

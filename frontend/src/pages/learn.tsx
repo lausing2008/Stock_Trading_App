@@ -13,7 +13,7 @@
  */
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
-import { getSession } from '@/lib/auth';
+import { getSession, hasAdvancedAccess } from '@/lib/auth';
 
 type Tab = 'start' | 'charttools' | 'signal' | 'reports' | 'selftuning' | 'squeeze';
 
@@ -620,6 +620,10 @@ export default function LearnPage() {
   useEffect(() => {
     const session = getSession();
     if (!session) { router.replace('/login'); return; }
+    // The Learning section is advanced-tier/admin only (nav-hidden below that too, in
+    // _app.tsx's isGroupVisible()) — redirect rather than silently render for a logged-in
+    // but under-tiered user who reaches this URL directly.
+    if (!hasAdvancedAccess(session)) { router.replace('/'); return; }
     setAuthed(true);
   }, [router]);
 

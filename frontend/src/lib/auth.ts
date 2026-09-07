@@ -99,6 +99,16 @@ export function isLoggedIn(): boolean {
   return getSession() !== null;
 }
 
+/** UserTier=advanced OR role=admin — admin does not implicitly satisfy a tier check anywhere
+ * else in this app (see stock/[symbol].tsx's Options Game Plan gate), so this mirrors that
+ * same explicit OR rather than treating admin as a tier level above advanced. Used to gate the
+ * Learning section (nav visibility in _app.tsx's isGroupVisible(), plus a direct page-level
+ * redirect guard on each Learning page so hiding the nav item is a real access restriction,
+ * not just a visibility one). */
+export function hasAdvancedAccess(session: Session | null): boolean {
+  return session?.tier === 'advanced' || session?.role === 'admin';
+}
+
 /** Returns the current username, used to namespace SWR cache keys per user. */
 export function getUsername(): string {
   return getSession()?.username ?? '';

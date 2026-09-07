@@ -10,7 +10,7 @@
  */
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
-import { getSession } from '@/lib/auth';
+import { getSession, hasAdvancedAccess } from '@/lib/auth';
 import Link from 'next/link';
 
 type Tab = 'overview' | 'alerts' | 'signalbugs' | 'decisionengine' | 'observability' | 'positionscaling';
@@ -411,6 +411,7 @@ export default function SessionChangelogPage() {
   useEffect(() => {
     const session = getSession();
     if (!session) { router.replace('/login'); return; }
+    if (!hasAdvancedAccess(session)) { router.replace('/'); return; }
     setAuthed(true);
   }, [router]);
 
