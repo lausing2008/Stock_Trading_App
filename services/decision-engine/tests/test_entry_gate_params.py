@@ -76,13 +76,49 @@ class TestGetEntryGateParamsFetchCacheFallback:
         assert us_result["min_confidence"] == 50.0
         assert hk_result["min_confidence"] == 65.0
 
-    def test_fetch_failure_falls_back_to_the_hardcoded_fallback_dict(self, monkeypatch):
+    def test_fetch_failure_falls_back_to_the_per_style_fallback_dict(self, monkeypatch):
+        """AUD-ENTRYGATEFALLBACK-NOSTYLE (2026-09-06 deep audit): the fallback used to be a
+        single flat dict with min_confidence=62.0 — a value matching no real style. It is now
+        per-style/market-aware, mirroring paper_trading_engine.py's own real merge order. A
+        fetch failure for SWING/US must fall back to SWING's real values (50.0/52.0/0.65/5),
+        not the old disconnected 62.0."""
         _reset_entry_gate_cache()
         monkeypatch.setattr(aggregator.httpx, "get", MagicMock(side_effect=Exception("connection refused")))
 
         result = aggregator._get_entry_gate_params("SWING", "US")
 
-        assert result == aggregator._ENTRY_GATE_FALLBACK
+        assert result == aggregator._entry_gate_fallback_for("SWING", "US")
+        assert result["min_confidence"] == 50.0  # the real SWING value, not the old 62.0
+
+    def test_fetch_failure_falls_back_to_the_correct_value_per_real_style(self, monkeypatch):
+        """Each real style's fallback must match paper_trading_engine.py's own actual
+        min_confidence — this is the concrete scenario the bug produced: a market-data outage
+        used to apply the SAME wrong floor (62.0*0.90=55.8) to every style regardless of which
+        one actually needed a much lower/higher bar."""
+        _reset_entry_gate_cache()
+        monkeypatch.setattr(aggregator.httpx, "get", MagicMock(side_effect=Exception("timeout")))
+
+        assert aggregator._get_entry_gate_params("LONG", "US")["min_confidence"] == 40.0
+        _reset_entry_gate_cache()
+        assert aggregator._get_entry_gate_params("GROWTH", "US")["min_confidence"] == 45.0
+        _reset_entry_gate_cache()
+        assert aggregator._get_entry_gate_params("SHORT", "US")["min_confidence"] == 45.0
+        _reset_entry_gate_cache()
+        assert aggregator._get_entry_gate_params("SWING", "US")["min_confidence"] == 50.0
+
+    def test_fetch_failure_falls_back_to_the_hk_override_for_any_style(self, monkeypatch):
+        """The HK market override (min_confidence=65.0, min_entry_score=6, min_ta_score=0.65)
+        must still apply even on the fallback path, matching resolve_entry_gate_params()'s own
+        real merge order (style override, then HK override on top)."""
+        _reset_entry_gate_cache()
+        monkeypatch.setattr(aggregator.httpx, "get", MagicMock(side_effect=Exception("timeout")))
+
+        result = aggregator._get_entry_gate_params("SWING", "HK")
+        assert result["min_confidence"] == 65.0
+        assert result["min_entry_score"] == 6
+        assert result["min_ta_score"] == 0.65
+        # min_kscore is NOT overridden by HK — SWING's own 52.0 must survive the merge.
+        assert result["min_kscore"] == 52.0
 
     def test_fetch_failure_after_a_prior_success_returns_the_stale_cached_value_not_the_fallback(self, monkeypatch):
         """Fail-open should prefer a stale-but-real cached value over the generic fallback dict
@@ -120,7 +156,9 @@ class TestAsyncWrapperUsesTheDedicatedExecutorNotTheSharedEventLoop:
 class TestFallbackDictHasAllFiveGateKeys:
     def test_fallback_has_every_key_the_real_resolver_returns(self):
         expected_keys = {"min_confidence", "min_kscore", "min_entry_score", "min_ta_score", "min_rr_ratio"}
-        assert set(aggregator._ENTRY_GATE_FALLBACK.keys()) == expected_keys
+        for style in ("SHORT", "GROWTH", "SWING", "LONG"):
+            for market in ("US", "HK"):
+                assert set(aggregator._entry_gate_fallback_for(style, market).keys()) == expected_keys
 
 
 # ── routes.py's _decide() wiring — source-text regression checks ──────────────────────────

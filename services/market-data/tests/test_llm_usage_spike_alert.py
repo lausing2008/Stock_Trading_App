@@ -34,7 +34,13 @@ def test_spike_multiple_is_well_above_normal_hourly_noise():
 
 
 def test_minimum_tokens_floor_exists_to_avoid_noise_on_near_zero_baselines():
-    assert "_LLM_USAGE_MIN_TOKENS_TO_EVALUATE = 50_000" in _SOURCE
+    """AUD-LLMSPIKEFLOOR (2026-09-06 deep audit): lowered from 50_000 to 5_000 — the original
+    value was ~40-160x the real measured production baseline (~250-1,300 tokens/hour), so a
+    regression reintroducing BUG-NEWSCLASSIFY-REPEATCOST at a SLOWER rate (e.g. 49k
+    tokens/hour, ~196x baseline) would never even reach the evaluation. This test now pins the
+    lowered value rather than re-permitting the blind spot."""
+    assert "_LLM_USAGE_MIN_TOKENS_TO_EVALUATE = 5_000" in _SOURCE
+    assert "_LLM_USAGE_MIN_TOKENS_TO_EVALUATE = 50_000" not in _SOURCE
 
 
 def test_job_is_registered_on_a_15_minute_interval_not_every_minute():

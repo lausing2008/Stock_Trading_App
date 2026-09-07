@@ -3341,7 +3341,17 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                      symbol=trade.symbol, entry=entry, pct=round(pnl_pct * 100, 1))
 
     # PA-D1: sector cap monitor — warn if any sector exceeds max_sector_pct on open positions
-    max_sector_pct = cfg.get("max_sector_pct", 0.30)
+    #
+    # AUD-SECTORPCTMIRROR (2026-09-06 deep audit): this fallback was 0.30 while the real
+    # ENFORCING gate at _scan_for_entries() below always reads the true 0.25 (cfg["max_sector_pct"],
+    # no default). In the fallback case, sector concentration between 25% and 30% was hard-
+    # blocked at entry but produced NO paper.sector_cap_exceeded warning here — an operator
+    # watching the alert stream saw a clean book while entries were being silently rejected.
+    # This value also reaches the frontend (watchlist-performance.tsx renders it as the
+    # displayed cap), so the UI could show 30% while the engine enforced 25%. Reading straight
+    # from _DEFAULT_CONFIG (matching the drift-proof pattern already used at :3504/:4433/:1938
+    # in this same file) makes this immune to the next such divergence.
+    max_sector_pct = cfg.get("max_sector_pct", _DEFAULT_CONFIG["max_sector_pct"])
     equity = _compute_equity(session, portfolio, live_prices)
     if equity > 0:
         sector_value: dict[str, float] = {}
@@ -5612,13 +5622,22 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             _skip_tally["kscore"] = _skip_tally.get("kscore", 0) + 1
             continue
 
-        # T195: Signal staleness gate — configurable max age (default 96h / 4 days).
+        # T195: Signal staleness gate — configurable max age (default 72h / 3 days, per
+        # _DEFAULT_CONFIG's own T222-C value below).
         # Tighter than the 5-day query cutoff; handles normal 3-day weekends (≤84h).
         # A human discards a thesis that has sat untouched for days.
+        #
+        # AUD-SIGNALAGEMIRROR (2026-09-06 deep audit): this fallback was still the PRE-T222-C
+        # literal 96 — _DEFAULT_CONFIG's own comment two lines below documents the deliberate
+        # 96->72 change, but this read site (the actual ENFORCING gate) was never updated to
+        # match, so any cfg built without the full _DEFAULT_CONFIG merge silently admitted
+        # signals a full day staler than the documented 72h policy. Reading straight from
+        # _DEFAULT_CONFIG (the drift-proof pattern already used at :1938/:3469 in this same
+        # file) instead of a re-typed literal makes this immune to the next such change.
         if sig.ts is not None:
             _ts_aware = sig.ts.replace(tzinfo=timezone.utc) if sig.ts.tzinfo is None else sig.ts
             _sig_age_h = (datetime.now(timezone.utc) - _ts_aware).total_seconds() / 3600
-            _max_age_h = float(cfg.get("max_signal_age_hours", 96))
+            _max_age_h = float(cfg.get("max_signal_age_hours", _DEFAULT_CONFIG["max_signal_age_hours"]))
             if _sig_age_h > _max_age_h:
                 log.info("paper.skip_stale_signal", symbol=stock.symbol,
                          age_h=round(_sig_age_h, 1), max_age_h=_max_age_h, ts=str(sig.ts)[:19])

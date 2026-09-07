@@ -146,14 +146,29 @@ def compute_position(
         research_mult = 1.00
 
     # Confidence sizing (PT-D2): 0–100 confidence from signal engine.
-    # T232-DE2: the hard-reject floor in hard_rejects.py is min_confidence(62) * 0.90 = 55.8,
-    # so every trade that reaches this function already has confidence >= 55.8 — the old
+    # T232-DE2: the hard-reject floor in hard_rejects.py is min_confidence * 0.90 — the old
     # `>= 50` branch always fired (every position silently 25% oversized with zero variation
     # by conviction) and the 30-49 / <30 tiers below the floor were unreachable dead code.
     # Rescaled to sit entirely above the floor so the tiers are actually reachable.
+    #
+    # AUD-SIZERCONF62-FALSEPREMISE (2026-09-06 deep audit): the rescale above was correct in
+    # PRINCIPLE but hardcoded the boundary as a literal 62, on the premise that
+    # min_confidence(62) is the real floor for every style. It is not — real per-style
+    # min_confidence is LONG=40, GROWTH=45, SWING=50 (only the never-instantiated
+    # decision-engine _DEFAULT_CFG/hard_rejects fallback is 62, itself a documented
+    # T234-CONFIG-DECIDE-DEFAULT-MISMATCH). So the real floor for LONG is 40*0.90=36.0, not
+    # 55.8 — confidence values in 36-61 DO reach this function for LONG/GROWTH, and every one
+    # of them landed in the `else: 0.85` branch, silently under-sizing every LONG and most
+    # GROWTH position by 15% with ZERO variation by conviction — reintroducing exactly the "one
+    # branch always fires" bug this rescale was written to fix, just shifted to the other
+    # branch. Deriving the boundary from cfg (the same source hard_rejects.py's own floor
+    # reads) makes the tiers self-consistent with the REAL floor for whichever style/market
+    # this position actually belongs to, instead of a literal that matches no real style.
+    _min_conf_for_sizing = float(cfg.get("min_confidence", 62.0))
+    _hard_floor_for_sizing = _min_conf_for_sizing * 0.90
     if confidence >= 80:
         confidence_mult = 1.25
-    elif confidence >= 62:
+    elif confidence >= _hard_floor_for_sizing:
         confidence_mult = 1.00
     else:
         confidence_mult = 0.85

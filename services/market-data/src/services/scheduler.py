@@ -8712,7 +8712,19 @@ _LLM_USAGE_SPIKE_MULTIPLE = 5.0
 # genuinely idle) has an undefined or meaningless "multiple over baseline" and would produce
 # noisy false alarms on baseline noise alone (e.g. baseline=50 tokens, current=300 tokens is
 # technically "6x" but is not a real incident).
-_LLM_USAGE_MIN_TOKENS_TO_EVALUATE = 50_000
+#
+# AUD-LLMSPIKEFLOOR (2026-09-06 deep audit): this was 50_000 — ~40-160x the REAL measured
+# production baseline of ~250-1,300 tokens/hour. A regression reintroducing the exact
+# BUG-NEWSCLASSIFY-REPEATCOST pattern at a slower rate (e.g. 49,000 tokens/hour, ~196x
+# baseline, ~1.18M tokens/day — a fifth of the incident that motivated building this detector)
+# would NEVER be evaluated: `current_total < 50_000` returns early before any baseline math
+# runs at all, every single 15-minute check. The false-alarm concern this floor was meant to
+# prevent is ALREADY fully handled by baseline_floor = max(baseline_median, 1000.0) below,
+# which caps the stated example (baseline=50, current=300) at 0.3x, well under the 5.0x
+# trigger — so this outer floor was redundant with the guard that actually works, at the cost
+# of a two-orders-of-magnitude blind spot. Lowered to comfortably clear real noise (a single
+# research report can be 4-6k tokens, per the comment above) while closing that blind spot.
+_LLM_USAGE_MIN_TOKENS_TO_EVALUATE = 5_000
 _LLM_USAGE_ALERT_COOLDOWN_HOURS = 6  # don't re-page every hour while still elevated
 
 

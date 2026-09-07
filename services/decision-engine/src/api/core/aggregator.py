@@ -248,11 +248,41 @@ async def abuild_game_plan(live_price: float, style: str, signal_data: dict | No
 
 
 # ── T234-CONFIG-DECIDE-DEFAULT-MISMATCH: real entry-gate defaults (min_confidence etc.) ──
-
-_ENTRY_GATE_FALLBACK = {
-    "min_confidence": 62.0, "min_kscore": 48.0, "min_entry_score": 4,
+#
+# AUD-ENTRYGATEFALLBACK-NOSTYLE (2026-09-06 deep audit): this used to be a single flat dict
+# with min_confidence=62.0 — a literal matching NO real style (real per-style min_confidence is
+# LONG=40.0, GROWTH=45.0/SHORT=45.0 [both inherit the base default], SWING=50.0, and 65.0 only
+# under the HK market override). The T234 fix above (fetching the real value from market-data)
+# was itself failing CLOSED onto this same disconnected literal: on a market-data timeout with
+# no prior cache, _get_entry_gate_params() returned _ENTRY_GATE_FALLBACK, applying a hard floor
+# of 62.0*0.90=55.8 to every style for the full 900s TTL — a 19.8-point over-tightening for
+# LONG (real floor 36.0) and 15.3 for GROWTH/SHORT (real floor 40.5). Replaced with a per-style
+# (and HK-market-aware) table mirroring paper_trading_engine.py's OWN real merge order
+# (_DEFAULT_CONFIG -> _STYLE_OVERRIDES[style] -> _HK_MARKET_OVERRIDES if market=="HK", the same
+# order resolve_entry_gate_params() uses) — hand-transcribed since decision-engine cannot import
+# market-data's Python module directly (separate service/container), so this needs its OWN
+# correctly-valued fallback, not a single global default.
+_ENTRY_GATE_FALLBACK_BASE = {
+    "min_confidence": 45.0, "min_kscore": 48.0, "min_entry_score": 4,
     "min_ta_score": 0.0, "min_rr_ratio": 2.0,
 }
+_ENTRY_GATE_FALLBACK_STYLE_OVERRIDES: dict[str, dict] = {
+    "GROWTH": {"min_confidence": 45.0, "min_kscore": 48.0},
+    "SWING":  {"min_confidence": 50.0, "min_kscore": 52.0, "min_ta_score": 0.65, "min_entry_score": 5},
+    "LONG":   {"min_confidence": 40.0, "min_kscore": 50.0},
+    "SHORT":  {},  # inherits the base defaults unchanged — no style-specific gate override
+}
+_ENTRY_GATE_FALLBACK_HK_OVERRIDE = {
+    "min_entry_score": 6, "min_confidence": 65.0, "min_ta_score": 0.65,
+}
+
+
+def _entry_gate_fallback_for(style: str, market: str) -> dict:
+    cfg = {**_ENTRY_GATE_FALLBACK_BASE, **_ENTRY_GATE_FALLBACK_STYLE_OVERRIDES.get(style.upper(), {})}
+    if market.upper() == "HK":
+        cfg = {**cfg, **_ENTRY_GATE_FALLBACK_HK_OVERRIDE}
+    return cfg
+
 
 _ENTRY_GATE_CACHE: dict[tuple[str, str], dict] = {}
 _ENTRY_GATE_TS: dict[tuple[str, str], float] = {}
@@ -261,10 +291,11 @@ _ENTRY_GATE_TTL = 900  # matches _get_style_params()'s own 15-minute cache windo
 
 def _get_entry_gate_params(style: str, market: str) -> dict:
     """Fetch the real per-style/market entry-gate defaults from market-data, with a local
-    cache + hardcoded fallback if market-data is unreachable — same fail-open shape as
-    _get_style_params() above (a stale/fallback default is better than blocking the decide
-    endpoint entirely). Cached per (style, market) pair since the resolved values genuinely
-    differ across both dimensions (HK overrides several keys on top of the style baseline)."""
+    cache + a per-style/market-aware fallback if market-data is unreachable — same fail-open
+    shape as _get_style_params() above (a stale/fallback default is better than blocking the
+    decide endpoint entirely). Cached per (style, market) pair since the resolved values
+    genuinely differ across both dimensions (HK overrides several keys on top of the style
+    baseline)."""
     key = (style.upper(), market.upper())
     cached = _ENTRY_GATE_CACHE.get(key)
     if cached and (_time.time() - _ENTRY_GATE_TS.get(key, 0.0)) < _ENTRY_GATE_TTL:
@@ -280,7 +311,7 @@ def _get_entry_gate_params(style: str, market: str) -> dict:
         return _ENTRY_GATE_CACHE[key]
     except Exception as exc:
         log.warning("decision.entry_gate_params_fetch_failed", error=str(exc))
-        return cached if cached else _ENTRY_GATE_FALLBACK
+        return cached if cached else _entry_gate_fallback_for(key[0], key[1])
 
 
 async def aget_entry_gate_params(style: str, market: str) -> dict:
