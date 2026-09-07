@@ -647,6 +647,33 @@ def train_model(
     for tr_idx, val_idx in tscv.split(X.iloc[:split_train]):
         X_cv_tr, X_cv_val = X.iloc[tr_idx].values, X.iloc[val_idx].values
         y_cv_tr, y_cv_val = y_dir.iloc[tr_idx].values, y_dir.iloc[val_idx].values
+
+        # AUD-MLCV-SINGLECLASSFOLD: skip a fold whose TRAINING slice holds only one class.
+        # sklearn happily fits such a model, but its predict_proba returns shape (n, 1) rather
+        # than (n, 2), so the [:, 1] index below raises IndexError and kills the ENTIRE
+        # train_model() call — not just this fold. The validation slice was already guarded one
+        # line below (`if len(np.unique(y_cv_val)) > 1`); the training slice never was.
+        #
+        # This is reachable with real data, not a theoretical edge case: an early TimeSeriesSplit
+        # fold is small, and on a symbol in a sustained one-directional run every label in that
+        # window clears (or fails) the forward-return threshold. Found 2026-09-07 when 5 of 86
+        # retrains died this way (WMT/GEV/EE/AAON random_forest, GEV xgboost) — AAON failed on
+        # its very FIRST fold with an all-positive [1] training set.
+        #
+        # Skipping is correct rather than lossy: a single-class fold can teach nothing about
+        # ranking two classes, and its AUC is undefined anyway. The remaining folds still
+        # produce honest CV metrics, and a symbol where EVERY fold is degenerate now yields
+        # empty cv_aucs -> cv_auc_mean stays None -> the existing suppression gate handles it,
+        # instead of the symbol having no model at all.
+        if len(np.unique(y_cv_tr)) < 2:
+            log.warning(
+                "train.cv_fold_single_class",
+                symbol=symbol, model=model_name,
+                note="CV fold skipped: training slice had only one class",
+                only_class=int(np.unique(y_cv_tr)[0]), n_train_fold=len(tr_idx),
+            )
+            continue
+
         sc = StandardScaler()
         X_cv_tr_s = sc.fit_transform(X_cv_tr)
         X_cv_val_s = sc.transform(X_cv_val)
@@ -710,6 +737,20 @@ def train_model(
     X_es_s    = scaler.transform(X_es.values)
     X_cal_s   = scaler.transform(X_cal.values)
     X_test_s  = scaler.transform(X_test.values)
+
+    # AUD-MLCV-SINGLECLASSFOLD: a final training slice with only one class cannot produce a
+    # binary classifier at all. XGBoost rejects it loudly ("Invalid classes inferred from
+    # unique values of `y`. Expected: [0], got [1]"); sklearn's RandomForest instead fits a
+    # degenerate one-class model whose predict_proba is shape (n, 1) and blows up further
+    # downstream. Neither message names the symbol or the real cause, so this raises early
+    # with one that does. Real, not theoretical: GEV hit exactly this on 2026-09-07.
+    if len(np.unique(y_train.values)) < 2:
+        raise ValueError(
+            f"{symbol}: training slice has a single class "
+            f"({int(np.unique(y_train.values)[0])}) across all {len(y_train)} rows — no binary "
+            f"model can be fit. Usually a sustained one-directional run where every forward "
+            f"{horizon}d return falls on the same side of the label threshold."
+        )
 
     # ML-FIX-2: recency + balanced class weights blended for final training
     _recency_w = _recency_weights(len(X_train), newest_to_oldest_ratio=5.0)
