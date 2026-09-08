@@ -2167,12 +2167,17 @@ def _should_enter(
     except Exception:
         pass  # tz lookup failure → allow entry (fail-open, matching hard_rejects.py)
 
-    if breakout and float(breakout) > 0:
-        _ext_pct = (live_price / float(breakout) - 1) * 100
+    # AUD-ENTRY4-BREAKOUTSELFREF: measure extension against the SIGNAL-ANCHORED level. Using
+    # `breakout` here made ext_pct a constant (see _build_game_plan_for_style), so this guard
+    # could never fire. Falls back to `breakout` when no signal anchor exists, which restores
+    # the old inert behaviour rather than rejecting everything.
+    _breakout_for_ext = game_plan.get("breakout_ref") or breakout
+    if _breakout_for_ext and float(_breakout_for_ext) > 0:
+        _ext_pct = (live_price / float(_breakout_for_ext) - 1) * 100
         _ext_threshold = cfg.get("max_breakout_extension_pct", 6.0)
         if _ext_pct > _ext_threshold:
             return False, -99, [
-                f"Stock {_ext_pct:.1f}% above breakout ${breakout:.2f} — "
+                f"Stock {_ext_pct:.1f}% above breakout ${_breakout_for_ext:.2f} — "
                 f"extended move, wait for pullback (threshold {_ext_threshold:.0f}%)"
             ]
 
@@ -2180,18 +2185,27 @@ def _should_enter(
     # CB-2 FIX: old values (+4/+3) equalled the min_entry_score threshold (3–5), making it a
     # single-factor gate. Capped at +2 max so ≥2 additional factors must align for entry.
 
-    if entry2 <= live_price <= breakout:
+    # AUD-ENTRY4-BREAKOUTSELFREF: judge the price ZONE against the signal-anchored breakout for
+    # the same reason as the extension guard above. With the live-anchored `breakout`, the first
+    # branch was ALWAYS true (entry2 = live_price x 0.94-0.985 is always below live_price, and
+    # breakout = live_price x 1.01-1.035 always above), so this layer handed every candidate a
+    # flat +2 and its -3 "chasing risk" penalty was unreachable. That is a 5-point swing on a
+    # min_entry_score of 4-6 — the main entry-quality discriminator, silently disabled.
+    # Confirmed live: all 111 fallback-path trades took the "optimal entry zone" branch and the
+    # other three recorded zero.
+    _bo = float(_breakout_for_ext) if _breakout_for_ext else breakout
+    if entry2 <= live_price <= _bo:
         score += 2
-        notes.append(f"Price ${live_price:.2f} in optimal entry zone (${entry2:.2f}–${breakout:.2f})")
+        notes.append(f"Price ${live_price:.2f} in optimal entry zone (${entry2:.2f}–${_bo:.2f})")
     elif live_price < entry2:
         score += 2
         notes.append(f"Price ${live_price:.2f} below entry2 ${entry2:.2f} — deep pullback, excellent R:R")
-    elif breakout < live_price <= breakout * 1.03:
+    elif _bo < live_price <= _bo * 1.03:
         score += 1
-        notes.append(f"Price just above breakout (${breakout:.2f}) — momentum confirmed but chasing slightly")
+        notes.append(f"Price just above breakout (${_bo:.2f}) — momentum confirmed but chasing slightly")
     else:
         score -= 3
-        notes.append(f"Price ${live_price:.2f} extended {((live_price/breakout)-1)*100:.1f}% above breakout — chasing risk")
+        notes.append(f"Price ${live_price:.2f} extended {((live_price/_bo)-1)*100:.1f}% above breakout — chasing risk")
 
     # ── R:R quality ──────────────────────────────────────────────────────────
 
@@ -2513,6 +2527,35 @@ def _build_game_plan_for_style(
     entry2   = round(current_price * params["entry2_pct"]   / step) * step
     breakout = round(current_price * params["breakout_pct"] / step) * step
 
+    # AUD-ENTRY4-BREAKOUTSELFREF: `breakout` above is derived FROM current_price, and the entry
+    # scan passes live_price as current_price. So every consumer that then compares live_price
+    # against breakout is comparing a number to itself scaled by a constant:
+    #
+    #     ext_pct = (live_price / (live_price * breakout_pct) - 1) * 100 = (1/breakout_pct - 1)*100
+    #
+    # which is a CONSTANT with no market input — SHORT -0.99%, SWING -1.96%, LONG -2.91%,
+    # GROWTH -3.38%. Against a +6% threshold the extension guard could never fire, and because
+    # every value is negative the price-zone check `entry2 <= live_price <= breakout` was always
+    # true, making its -3 "chasing risk" penalty unreachable. Confirmed live: zero "above
+    # breakout" rejections in 30 days, and all 111 fallback-path trades took the same branch.
+    #
+    # `breakout_ref` fixes that by anchoring to the SIGNAL-TIME close — the price the setup was
+    # actually calibrated against — so the comparison measures real drift between when the
+    # signal computed and when we are about to fill. Falls back to current_price when the
+    # signal carries no last_price, which restores the old (inert) behaviour rather than
+    # failing closed: a missing reference must not start rejecting every candidate.
+    #
+    # Deliberately a SEPARATE field: `breakout` itself still anchors to current_price because
+    # the game plan's stop/target/sizing must track the price we will actually fill at. Only
+    # the EXTENSION judgement needs the signal-time anchor.
+    _sig_close = signal_reasons.get("last_price")
+    try:
+        _sig_close = float(_sig_close) if _sig_close is not None else None
+    except (TypeError, ValueError):
+        _sig_close = None
+    _breakout_anchor = _sig_close if (_sig_close is not None and _sig_close > 0) else current_price
+    breakout_ref = round(_breakout_anchor * params["breakout_pct"] / step) * step
+
     expected_move_pct: float | None = None
     if session is not None and stock_id is not None:
         try:
@@ -2556,6 +2599,9 @@ def _build_game_plan_for_style(
         "entry1": entry1,
         "entry2": entry2,
         "breakout": breakout,
+        # AUD-ENTRY4-BREAKOUTSELFREF: signal-anchored breakout level, for EXTENSION judgements
+        # only. `breakout` above stays live-anchored because stop/target/sizing track the fill.
+        "breakout_ref": breakout_ref,
         "stop": stop,
         "take_profit": take_profit,
         "current_price": current_price,

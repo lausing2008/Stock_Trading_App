@@ -4,6 +4,13 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timezone
 
+# AUD-ENTRY4-CHASEPARITY: 10-day rate-of-change ceiling for a BUY entry. MUST stay equal to
+# paper_trading_engine._MAX_ROC10_FOR_ENTRY_PAPER (10.0) — the two gates screen the same
+# candidates on two different code paths, and a divergence would mean the authoritative gate
+# (this one) and the shadow-logged fallback disagree about the same trade.
+# test_entry4_chase_parity.py asserts they match.
+_MAX_ROC10_FOR_ENTRY = 10.0
+
 # QW-4: NYSE holidays — market-closed guard would block weekends but not holidays.
 # Update annually or replace with a market-calendar library.
 _NYSE_HOLIDAYS: frozenset[date] = frozenset({
@@ -434,6 +441,48 @@ def check_hard_rejects(
             return (
                 f"Gap-up {_gap:.1%} above signal close ${_signal_close:.2f} "
                 f"exceeds limit {_max_gap:.0%} — entry price degraded"
+            )
+        # AUD-ENTRY4-CHASEPARITY: the elevated-volume half of AUD-GAPCHASE-EARNINGSVOL, which
+        # existed only in _should_enter(). A gap past HALF the limit on heavy volume is a fresh
+        # spike being chased, even though it clears the outright gap bar.
+        _vol_z = _reasons.get("volume_z")
+        if _gap > _max_gap * 0.5 and _vol_z is not None and float(_vol_z) >= 1.5:
+            return (
+                f"Gap-up {_gap:.1%} with elevated volume (z={float(_vol_z):.1f}) "
+                f"above signal close ${_signal_close:.2f} — likely chasing a fresh spike"
+            )
+
+    # AUD-ENTRY4-CHASEPARITY: the 10-day rate-of-change anti-chase gate.
+    #
+    # THIS IS THE GATE THAT WAS MISSING FROM THE PATH THAT ACTUALLY DECIDES. AUD-CHASE-ROC10
+    # was validated out-of-sample and ported into paper_trading_engine._should_enter() — but
+    # `decision_engine_mode` defaults to "primary", so _should_enter() is only shadow-logged
+    # and this module's verdict is what opens a trade. `roc_10` appeared NOWHERE in
+    # decision-engine, so the filter had never blocked a single real entry.
+    #
+    # The gap checks above cannot substitute for it: T171 measures against the SIGNAL-TIME
+    # close and T196 against the PRIOR SETTLED close, so a run-up that happened DAYS BEFORE the
+    # signal is invisible to both. Worked example: ANF gapped +35.7% on earnings 2026-08-26,
+    # chopped for a week, then entered 2026-09-04 with roc_10 = 33.0% (3.3x the limit) while
+    # its measured T171 gap was +0.37% — every price-reference gate passed it.
+    #
+    # Measured impact on closed trades: roc_10 >= 10% returned -2.39% at a 16.7% win rate
+    # versus -0.32% at 34.8% for the rest — a 2.07-point return gap and an 18-point win-rate
+    # gap. roc_10 is populated on 1,273 of 1,273 recent BUY signals, so this binds immediately
+    # with no fail-open window.
+    #
+    # Threshold deliberately mirrors _MAX_ROC10_FOR_ENTRY_PAPER (10.0) rather than being
+    # re-derived — the two paths gate the same population and must not disagree.
+    _roc10 = _reasons.get("roc_10")
+    if _roc10 is not None:
+        try:
+            _roc10_val = float(_roc10)
+        except (TypeError, ValueError):
+            _roc10_val = None
+        if _roc10_val is not None and _roc10_val >= _MAX_ROC10_FOR_ENTRY:
+            return (
+                f"Already ran {_roc10_val:.1f}% in 10 days (limit {_MAX_ROC10_FOR_ENTRY:.0f}%) "
+                f"— chasing an extended move, not entering early"
             )
 
     # T220-D: Economic calendar blackout — reject BUY entries within 2h of major macro events.
