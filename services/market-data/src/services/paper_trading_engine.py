@@ -2781,24 +2781,45 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
 
     # PT-H5: Batch-fetch latest RSI-14 for all armed positions to detect overbought peaks.
     # Uses the pre-computed indicators table (cheaper than recomputing from prices).
+    # AUD-EXIT-INDICATORSEMPTY: this map used to read the `indicators` table. That table has
+    # ZERO rows and NO WRITER ANYWHERE in the codebase — `Indicator` is declared in
+    # shared/db/models.py and constructed nowhere (`git log -S` confirms no writer ever
+    # existed). So `_rsi_overbought` was unconditionally `{}`, and the TWO controls that
+    # depend on it were silently dead while reading as enabled:
+    #
+    #   1. the `momentum_fade` exit (T207) — `_rsi_overbought.get(symbol)` is a mandatory
+    #      `and` term, and `momentum_exit_enabled` defaults to True, so it looked like a
+    #      working gate. Production: 0 momentum_fade exits across 116 closed trades. Its
+    #      intent — bank gains when OBV distribution meets an overbought roll — never ran.
+    #   2. PT-H5's RSI-overbought trail tightener — the 1.0xATR lock-in-near-the-peak control.
+    #
+    # The data was never missing, only in the wrong place: `signals.reasons->>'rsi'` is
+    # populated on 43,024 signal rows over 90 days, 388 of them above 75. An empty dict is
+    # indistinguishable from "no symbol is overbought", which is why this survived so long.
+    #
+    # Reads the same source this function already uses twice (see `_dte` and `sig_reasons`
+    # below), as one bulk query rather than per-symbol, matching the original's shape.
     _rsi_overbought: dict[str, bool] = {}
     if armed_symbols:
         try:
-            rsi_rows = session.execute(
-                select(Stock.symbol, Indicator.value)
-                .join(Indicator, Stock.id == Indicator.stock_id)
-                .where(
-                    Stock.symbol.in_(armed_symbols),
-                    Indicator.name == "rsi_14",
-                    Indicator.timeframe == TimeFrame.D1,
-                )
-                .order_by(Stock.symbol, Indicator.ts.desc())
-                .distinct(Stock.symbol)
+            from sqlalchemy import text as sa_text
+            _rsi_rows = session.execute(
+                sa_text(
+                    "SELECT DISTINCT ON (s.symbol) s.symbol, sig.reasons->>'rsi' AS rsi "
+                    "FROM signals sig JOIN stocks s ON s.id = sig.stock_id "
+                    "WHERE s.symbol = ANY(:syms) AND sig.reasons->>'rsi' IS NOT NULL "
+                    "ORDER BY s.symbol, sig.ts DESC"
+                ),
+                {"syms": list(armed_symbols)},
             ).all()
-            for sym, rsi_val in rsi_rows:
+            for sym, rsi_val in _rsi_rows:
+                # Keep the original > 75 threshold. `float()` rather than a truthiness test:
+                # an RSI of 0.0 is a legitimate reading, not "missing".
                 if rsi_val is not None and float(rsi_val) > 75:
                     _rsi_overbought[sym] = True
         except Exception:
+            # Fail CLOSED to an empty map, exactly as before: an unavailable RSI must never
+            # manufacture an "overbought" verdict that force-exits a live position.
             pass
 
     now = datetime.now(timezone.utc)
