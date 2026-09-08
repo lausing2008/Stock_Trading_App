@@ -82,6 +82,43 @@ def _get_style_params() -> dict:
         return _STYLE_PARAMS_CACHE if _STYLE_PARAMS_CACHE else _STYLE_PARAMS_FALLBACK
 
 
+# AUD-SIGALERT-RRUNREACHABLE: how much R:R the default game plan should aim for.
+#
+# Must track the gate's own calibrated `min_rr_ratio`, or the two silently diverge again the
+# next time calibrate_min_rr_ratio() promotes a new floor. _RR_TARGET_MARGIN keeps a candidate
+# sitting exactly at the floor from being rejected by rounding (rr_ratio is round(...,2)).
+_RR_TARGET_MARGIN = 0.15
+_RR_TARGET_FLOOR = 2.0   # never aim LOWER than the historical 2:1, even if the floor drops
+
+
+def _target_rr_multiple(style: str, market: str = "US") -> float:
+    """The reward:risk multiple _default_game_plan aims for, derived from the live gate floor.
+
+    Reads the SAME `min_rr_ratio` the R:R hard reject reads (via the same cached
+    _get_entry_gate_params used elsewhere in this file), so supply and demand cannot silently
+    drift apart the next time calibrate_min_rr_ratio() promotes a new floor.
+
+    `market` defaults to "US" because _default_game_plan() is not given one and threading it
+    through every call site would be a wider change than this fix warrants. That is safe here:
+    this only sets how ambitious the DEFAULT target is, and check_hard_rejects still re-checks
+    the resulting rr_ratio against the caller's own real per-market floor. A US-derived target
+    that is too low for HK is rejected there exactly as it would have been anyway — it cannot
+    let a candidate through that the real floor would refuse.
+
+    Fails safe to the historical 2.0 if params are unavailable: that restores the old behaviour
+    rather than inventing a number, and the gate blocks as it does today rather than passing
+    something unvalidated.
+    """
+    try:
+        params = _get_entry_gate_params(style, market) or {}
+        floor = params.get("min_rr_ratio")
+        if floor is not None and float(floor) > 0:
+            return max(_RR_TARGET_FLOOR, float(floor) + _RR_TARGET_MARGIN)
+    except Exception:  # noqa: BLE001 — never let a params lookup break game-plan construction
+        pass
+    return _RR_TARGET_FLOOR
+
+
 def _default_game_plan(live_price: float, style: str, atr_14: float | None = None) -> dict:
     style_params = _get_style_params()
     p_raw = style_params.get(style.upper(), style_params.get("SWING", _STYLE_PARAMS_FALLBACK["SWING"]))
@@ -99,8 +136,28 @@ def _default_game_plan(live_price: float, style: str, atr_14: float | None = Non
         atr_mult = p_raw.get("atr_stop_mult", 2.0)
         atr_stop = live_price - atr_mult * atr_14
         stop = max(atr_stop, fixed_stop)
-        # Target: 2:1 R:R off the actual stop used
-        rr_target = live_price + 2.0 * (live_price - stop)
+        # AUD-SIGALERT-RRUNREACHABLE: this used to hardcode a 2.0 R:R target:
+        #     rr_target = live_price + 2.0 * (live_price - stop)
+        # which pinned the resulting rr_ratio at <= 2.00 BY CONSTRUCTION (the min() below can
+        # only lower it), with no market input at all. That was fine when min_rr_ratio was also
+        # 2.0 — but `calibrate_min_rr_ratio` later raised the live floor to 2.25 (3.38 in
+        # choppy/risk_off) from real trade data, and NOTHING moved the target. Two independently
+        # correct mechanisms, jointly lethal: 2.00 < 2.25 means check_hard_rejects' R:R gate
+        # rejects EVERY candidate, always.
+        #
+        # This is the path that gates SIGNAL ALERTS: check_signal_alerts() POSTs /decide with
+        # only {style, market} and no game_plan, and DE's build_game_plan() requires
+        # entry2+stop+take_profit in signal reasons — which ZERO of 1,365 production BUY signals
+        # carry — so it always lands here. Measured over 72h: 123 conviction passes, 0 DE-gate
+        # passes, and BUY alerts last actually sent 2026-09-04 while WAIT/HOLD/SELL kept
+        # flowing. A total, silent outage of the platform's primary user-facing output.
+        #
+        # Fixed by deriving the target multiple from the SAME calibrated floor the gate demands,
+        # with a margin so a candidate at exactly the floor is not rejected by float noise. The
+        # style cap below still applies, so this never invents a target the style disallows —
+        # it only stops manufacturing one that is guaranteed to fail.
+        _rr_mult = _target_rr_multiple(style)
+        rr_target = live_price + _rr_mult * (live_price - stop)
         take_profit = min(rr_target, live_price * p["target_pct"])  # cap at style max
     else:
         stop = fixed_stop
