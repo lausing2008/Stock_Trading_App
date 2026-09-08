@@ -150,7 +150,7 @@ Friday's prices as live), `AUD-HOLIDAY-2027GAP` (3 drifted holiday calendars, 2 
 disagreeing in both directions), `AUD-CONVICTION-SOFTDRIFT` (3 small items),
 `AUD-ING6-MARKETINFER` (the tier-364 HK volume fix was bypassable via `ingest_universe`).
 
-### THE ONE THING STILL OPEN — needs a production DB write
+### RESOLVED 2026-09-08 — was the one open item, now applied with user approval
 
 `tune_kscore_weights` runs **Sunday 14:00 PT**, 365-day lookback, reading `rs_score` verbatim
 from persisted `rankings` rows. **1,956 HK rows dated 2026-06-01 onward still hold the fabricated
@@ -168,9 +168,30 @@ funds that genuinely move with their benchmark, which is also independent corrob
 HK values were fabricated. Nulling hands those rows to `_kscore_active_weights_for_row`, which
 already drops the factor when `rs_score IS NULL`.
 
-Blocked by the SELECT-only production DB constraint; **not applied.** Before assuming otherwise,
-check `stockai:kscore_weights` — if `relative_strength` is back near `0.05`, the tuner re-learned
-from the placeholder rows.
+**APPLIED 2026-09-08 with explicit user approval** (it is a production write, and the SELECT-only
+constraint correctly blocked the first attempt — permission was requested rather than worked
+around). Verified inside the transaction before commit:
+
+| Check | Result |
+|---|---|
+| Rows updated | **1,915** (HK placeholder 1915 -> 0) |
+| HK nulls | 629 -> 2,544 — accounts for every changed row |
+| HK total | 3,459 unchanged — nothing deleted |
+| US rows at 50.0 | **6**, preserved (VOO/IGV/GOOG) |
+| Redis `stockai:kscore_weights` | empty -> falls back to the 0.10 default |
+| Live `relative_strength` | **0.1**, weight set sums to exactly 1.0 |
+| HK data the tuner now reads | 2,544 excluded as NULL, **915 real scores** spanning 0-100 |
+
+**A correction worth keeping:** this document and several session messages quoted **1,956** rows.
+The update touched **1,915**. The 41-row gap is the fix already working — once
+`AUD-RANK-RSPLACEHOLDER` deployed, HK rows began being written with a real score or `NULL` instead
+of the placeholder, so that many had already been rewritten. A count moving DOWN between measuring
+and acting is the expected direction here, not a discrepancy to chase.
+
+If a future session needs to re-check this: `stockai:kscore_weights` should be absent or carry
+`relative_strength` near `0.10`. If it is back near `0.05`, the tuner has re-learned from
+placeholder data and something is re-introducing the fabricated value — look at `_rs_score()`'s
+fail direction first.
 
 ### Still not worth doing (unchanged from above)
 
