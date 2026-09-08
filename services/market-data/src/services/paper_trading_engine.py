@@ -1135,52 +1135,12 @@ def _batch_sector_rs_lag(sym_sector_pairs: list[tuple[str, str | None]]) -> dict
 # AUD-M13: NYSE/NASDAQ market holiday calendar 2024–2027.
 # Static list avoids a pandas_market_calendars dependency.
 # Observed dates: when the holiday falls on Sat → Fri observed; Sun → Mon observed.
-_NYSE_HOLIDAYS: frozenset[date] = frozenset([
-    # 2024
-    date(2024,  1,  1),  # New Year's Day
-    date(2024,  1, 15),  # MLK Day
-    date(2024,  2, 19),  # Presidents' Day
-    date(2024,  3, 29),  # Good Friday
-    date(2024,  5, 27),  # Memorial Day
-    date(2024,  6, 19),  # Juneteenth
-    date(2024,  7,  4),  # Independence Day
-    date(2024,  9,  2),  # Labor Day
-    date(2024, 11, 28),  # Thanksgiving
-    date(2024, 12, 25),  # Christmas
-    # 2025
-    date(2025,  1,  1),  # New Year's Day
-    date(2025,  1, 20),  # MLK Day
-    date(2025,  2, 17),  # Presidents' Day
-    date(2025,  4, 18),  # Good Friday
-    date(2025,  5, 26),  # Memorial Day
-    date(2025,  6, 19),  # Juneteenth
-    date(2025,  7,  4),  # Independence Day
-    date(2025,  9,  1),  # Labor Day
-    date(2025, 11, 27),  # Thanksgiving
-    date(2025, 12, 25),  # Christmas
-    # 2026
-    date(2026,  1,  1),  # New Year's Day
-    date(2026,  1, 19),  # MLK Day
-    date(2026,  2, 16),  # Presidents' Day
-    date(2026,  4,  3),  # Good Friday
-    date(2026,  5, 25),  # Memorial Day
-    date(2026,  6, 19),  # Juneteenth
-    date(2026,  7,  3),  # Independence Day (observed, July 4 = Sat)
-    date(2026,  9,  7),  # Labor Day
-    date(2026, 11, 26),  # Thanksgiving
-    date(2026, 12, 25),  # Christmas
-    # 2027
-    date(2027,  1,  1),  # New Year's Day
-    date(2027,  1, 18),  # MLK Day
-    date(2027,  2, 15),  # Presidents' Day
-    date(2027,  3, 26),  # Good Friday
-    date(2027,  5, 31),  # Memorial Day
-    date(2027,  6, 18),  # Juneteenth (observed, June 19 = Sat)
-    date(2027,  7,  5),  # Independence Day (observed, July 4 = Sun)
-    date(2027,  9,  6),  # Labor Day
-    date(2027, 11, 25),  # Thanksgiving
-    date(2027, 12, 24),  # Christmas (observed, Dec 25 = Sat)
-])
+# AUD-HOLIDAY-2027GAP: this was the THIRD independently-maintained copy of the NYSE holiday
+# list (frozenset[date] here, frozenset[tuple] in scheduler.py) and the copies had already
+# drifted — this one covered 2027 while the scheduler's stopped at 2026, so the two subsystems
+# would have disagreed about whether the market was open for all of 2027. Now re-exported from
+# the single shared source; the frozenset[date] shape is preserved for the call site below.
+from common.market_calendar import NYSE_HOLIDAYS as _NYSE_HOLIDAYS
 
 
 def _is_market_hours(market: str = "US", as_of: datetime | None = None) -> bool:

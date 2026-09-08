@@ -341,44 +341,23 @@ def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed:
         pass
 
 
-# ── HK Public Holiday Calendar (HKEX market closure dates) ──────────────────
-# Source: HKEX official holiday list. Extend each year before January.
-# Format: frozenset of (year, month, day) tuples.
-_HK_HOLIDAYS: frozenset[tuple[int, int, int]] = frozenset([
-    # 2025
-    (2025, 1, 1),   # New Year's Day
-    (2025, 1, 29),  # Lunar New Year's Eve
-    (2025, 1, 30),  # Lunar New Year Day 1
-    (2025, 1, 31),  # Lunar New Year Day 2
-    (2025, 2, 3),   # Lunar New Year Day 4 (make-up, day after Sat)
-    (2025, 4, 4),   # Ching Ming Festival
-    (2025, 4, 18),  # Good Friday
-    (2025, 4, 21),  # Easter Monday
-    (2025, 5, 1),   # Labour Day
-    (2025, 5, 5),   # Buddha's Birthday
-    (2025, 6, 2),   # Tuen Ng Festival
-    (2025, 7, 1),   # HKSAR Establishment Day
-    (2025, 10, 1),  # National Day
-    (2025, 10, 7),  # Chung Yeung Festival
-    (2025, 12, 25), # Christmas Day
-    (2025, 12, 26), # Boxing Day
-    # 2026
-    (2026, 1, 1),   # New Year's Day
-    (2026, 2, 17),  # Lunar New Year Day 1
-    (2026, 2, 18),  # Lunar New Year Day 2
-    (2026, 2, 19),  # Lunar New Year Day 3
-    (2026, 2, 20),  # Lunar New Year Day 4 (make-up)
-    (2026, 4, 3),   # Ching Ming Festival + Good Friday (both fall on Apr 3, 2026)
-    (2026, 4, 6),   # Easter Monday
-    (2026, 5, 1),   # Labour Day
-    (2026, 5, 25),  # Buddha's Birthday
-    (2026, 6, 19),  # Tuen Ng Festival
-    (2026, 7, 1),   # HKSAR Establishment Day
-    (2026, 10, 1),  # National Day
-    (2026, 10, 26), # Chung Yeung Festival
-    (2026, 12, 25), # Christmas Day
-    (2026, 12, 28), # Boxing Day observed (Mon after Sat+Sun Christmas)
-])
+# ── Holiday calendars — SINGLE SOURCE OF TRUTH in shared/common/market_calendar.py ──────
+#
+# AUD-HOLIDAY-2027GAP: these two tables used to be defined inline here, and a THIRD, separately
+# maintained copy of the NYSE list lived in paper_trading_engine.py. They drifted: both tables
+# here ended 2026 while paper trading's copy already covered 2027. From 2027-01-01 the guards
+# below would have returned True on every 2027 holiday — un-gating ingest, signal refresh, and
+# alert checks against a closed market — while paper trading kept working off its own table.
+# Two subsystems disagreeing about whether the market is open, with no error anywhere.
+#
+# Now derived from the shared module. The (year, month, day) tuple shape is preserved so the
+# three comparison sites below are unchanged.
+from common.market_calendar import HK_HOLIDAYS as _HK_HOLIDAY_DATES
+from common.market_calendar import NYSE_HOLIDAYS as _NYSE_HOLIDAY_DATES
+
+_HK_HOLIDAYS: frozenset[tuple[int, int, int]] = frozenset(
+    (d.year, d.month, d.day) for d in _HK_HOLIDAY_DATES
+)
 
 
 def _is_hk_holiday(dt: datetime | None = None) -> bool:
@@ -417,32 +396,10 @@ def _is_hk_trading_day(dt: datetime | None = None) -> bool:
     return (d.year, d.month, d.day) not in _HK_HOLIDAYS
 
 
-# ── NYSE Public Holiday Calendar ──────────────────────────────────────────────
-# Source: NYSE official holiday schedule. Extend each year before January.
-_NYSE_HOLIDAYS: frozenset[tuple[int, int, int]] = frozenset([
-    # 2025
-    (2025, 1, 1),   # New Year's Day
-    (2025, 1, 20),  # MLK Day
-    (2025, 2, 17),  # Presidents' Day
-    (2025, 4, 18),  # Good Friday
-    (2025, 5, 26),  # Memorial Day
-    (2025, 6, 19),  # Juneteenth
-    (2025, 7, 4),   # Independence Day
-    (2025, 9, 1),   # Labor Day
-    (2025, 11, 27), # Thanksgiving
-    (2025, 12, 25), # Christmas
-    # 2026
-    (2026, 1, 1),   # New Year's Day
-    (2026, 1, 19),  # MLK Day
-    (2026, 2, 16),  # Presidents' Day
-    (2026, 4, 3),   # Good Friday
-    (2026, 5, 25),  # Memorial Day
-    (2026, 6, 19),  # Juneteenth
-    (2026, 7, 3),   # Independence Day observed (Jul 4 is Saturday)
-    (2026, 9, 7),   # Labor Day
-    (2026, 11, 26), # Thanksgiving
-    (2026, 12, 25), # Christmas
-])
+# ── NYSE holidays — derived from the shared calendar (see AUD-HOLIDAY-2027GAP above) ────
+_NYSE_HOLIDAYS: frozenset[tuple[int, int, int]] = frozenset(
+    (d.year, d.month, d.day) for d in _NYSE_HOLIDAY_DATES
+)
 
 
 def _is_us_trading_day(dt: datetime | None = None) -> bool:
@@ -453,6 +410,35 @@ def _is_us_trading_day(dt: datetime | None = None) -> bool:
     if d.weekday() >= 5:  # Saturday=5, Sunday=6
         return False
     return (d.year, d.month, d.day) not in _NYSE_HOLIDAYS
+
+
+def _is_trading_day_for(market: str, dt: datetime | None = None) -> bool:
+    """Market-dispatching trading-day check — the guard the digest/brief jobs were missing."""
+    return _is_hk_trading_day(dt) if market.upper() == "HK" else _is_us_trading_day(dt)
+
+
+def _open_markets(markets: list[str], job: str) -> list[str]:
+    """Filter a digest job's market list down to those actually trading today.
+
+    AUD-DIGEST-HOLIDAYBLIND: every digest/brief job registers with
+    `CronTrigger(..., day_of_week="mon-fri")` and nothing else. A cron trigger cannot know
+    about holidays, and none of the four functions had an internal trading-day check — while
+    _refresh_market() in this same file gates correctly on the very same helpers.
+
+    Confirmed in production on 2026-09-07 (US Labor Day, present in this file's own
+    _NYSE_HOLIDAYS): 13 digest/brief events fired for a market that never opened, while the
+    same process logged the `nyse_holiday` skip 77 times for the refresh path. There were zero
+    US D1 bars for that date (last: 2026-09-04), so the movers/opportunities sections presented
+    FRIDAY's data as live — confidently false, never an error.
+
+    Filters per-market rather than returning early on the whole job, so a US holiday cannot
+    suppress an HK digest (and vice versa) — the two calendars are independent.
+    """
+    open_ = [m for m in markets if _is_trading_day_for(m)]
+    skipped = [m for m in markets if m not in open_]
+    if skipped:
+        log.info("scheduler.digest_skip_market_closed", job=job, skipped=skipped, sending=open_)
+    return open_
 
 
 def _symbols_for(market: str) -> list[str]:
@@ -2521,6 +2507,11 @@ def send_premarket_brief(markets: list | None = None) -> None:
     """
     if markets is None:
         markets = ["US"]
+    # AUD-DIGEST-HOLIDAYBLIND: on 2026-09-07 this sent 10 "pre-market movers" and 4 "futures"
+    # readings for a market that was shut all day.
+    markets = _open_markets(markets, "premarket_brief")
+    if not markets:
+        return
     _job_name = "premarket_brief_" + "_".join(m.lower() for m in markets)
     _t0 = time.monotonic()
     try:
@@ -10228,6 +10219,10 @@ def send_morning_digest(markets: list | None = None) -> None:
     """
     if markets is None:
         markets = ["HK", "US"]
+    # AUD-DIGEST-HOLIDAYBLIND: the mon-fri cron cannot know about holidays.
+    markets = _open_markets(markets, "morning_digest")
+    if not markets:
+        return
     _t0 = time.monotonic()
     try:
         # Bug found 2026-07-06 (user report): this used to call get_last_regime()
@@ -10568,6 +10563,13 @@ def send_post_open_digest(market: str, window: str) -> None:
     still the most recent real data even if the 30min run had nothing to report.
     """
     market = market.upper()
+    # AUD-DIGEST-HOLIDAYBLIND: 9 post_open_digest events fired on 2026-09-07 (US Labor Day),
+    # including one reporting "39 signal changes" on a day with no trading — its movers query
+    # uses MAX(Price.ts), so it presented Friday's intraday change as today's post-open move.
+    if not _is_trading_day_for(market):
+        log.info("scheduler.digest_skip_market_closed",
+                 job=f"post_open_digest_{market.lower()}_{window}", skipped=[market])
+        return
     _t0 = time.monotonic()
     _job_name = f"post_open_digest_{market.lower()}_{window}"
     try:
@@ -11625,7 +11627,15 @@ def send_paper_portfolio_digest() -> None:
 
     Runs weekdays at 17:00 ET (1h after US close). Covers all active paper
     portfolios. Shows total return, today's closed trades, open positions.
+
+    AUD-DIGEST-HOLIDAYBLIND: sent to 5 recipients on 2026-09-07 (US Labor Day) reporting
+    "today's closed trades" for a day the market never opened. US-only gate — this job is
+    registered at 17:00 ET against the US close.
     """
+    if not _is_us_trading_day():
+        log.info("scheduler.digest_skip_market_closed",
+                 job="paper_portfolio_digest", skipped=["US"])
+        return
     from datetime import date as _date
     from sqlalchemy import select as _sel, desc as _desc
     from db import SessionLocal

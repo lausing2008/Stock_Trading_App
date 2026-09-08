@@ -21,9 +21,10 @@ the three scheduling gates at it. `_is_hk_holiday()` is deliberately left holida
 says so), and the two DQ-check callers that already pair it with their own `weekday() >= 5`
 check are correct as-is.
 
-scheduler.py can't be imported directly here (its import chain pulls in apscheduler, not
-installed locally) — the calendar functions are pure and dependency-free, so they're extracted
-via exec() against the real source, matching this repo's established technique.
+This module originally exec()-extracted the calendar functions from scheduler.py's source
+because scheduler.py could not be imported locally. That is no longer true (conftest stubs
+apscheduler) and the technique broke under AUD-HOLIDAY-2027GAP — see the comment on the import
+below. It now imports the real module.
 """
 import pathlib
 from datetime import datetime, timezone
@@ -33,26 +34,20 @@ _SCHEDULER_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "service
 _SOURCE = _SCHEDULER_PATH.read_text()
 
 
-def _load_calendar_fns():
-    """Extract the real _HK_HOLIDAYS/_NYSE_HOLIDAYS sets and both trading-day predicates."""
-    ns: dict = {"datetime": datetime, "timezone": timezone}
+# AUD-HOLIDAY-2027GAP: this module used to exec()-extract the holiday constants out of
+# scheduler.py's source, because scheduler.py could not be imported locally. That technique
+# broke the moment the constants stopped being self-contained literals: they are now DERIVED
+# from shared/common/market_calendar.py, so the extracted slice referenced a name defined
+# outside it (NameError: _HK_HOLIDAY_DATES).
+#
+# The workaround is no longer needed. conftest.py stubs apscheduler, so scheduler.py imports
+# fine, and importing the real module is strictly better than exec'ing a source slice — it
+# tests what actually runs, and it cannot silently drift from it.
+import src.services.scheduler as _sched  # noqa: E402
 
-    for const in ("_HK_HOLIDAYS", "_NYSE_HOLIDAYS"):
-        start = _SOURCE.index(f"{const}: frozenset")
-        end = _SOURCE.index("])", start) + len("])")
-        exec(_SOURCE[start:end], ns)  # noqa: S102 — isolated eval of one real constant
-
-    for fn in ("_is_hk_holiday", "_is_hk_trading_day", "_is_us_trading_day"):
-        start = _SOURCE.index(f"def {fn}(")
-        end = _SOURCE.index("\n\n\n", start)
-        exec(_SOURCE[start:end], ns)  # noqa: S102 — isolated eval of one pure function
-    return ns
-
-
-_NS = _load_calendar_fns()
-_is_hk_holiday = _NS["_is_hk_holiday"]
-_is_hk_trading_day = _NS["_is_hk_trading_day"]
-_is_us_trading_day = _NS["_is_us_trading_day"]
+_is_hk_holiday = _sched._is_hk_holiday
+_is_hk_trading_day = _sched._is_hk_trading_day
+_is_us_trading_day = _sched._is_us_trading_day
 
 _HKT = ZoneInfo("Asia/Hong_Kong")
 
@@ -88,7 +83,7 @@ def test_holiday_only_helper_still_returns_false_on_a_weekend():
 # ── holidays still work ──────────────────────────────────────────────────────
 
 def test_a_real_hk_holiday_on_a_weekday_is_not_a_trading_day():
-    holidays = _NS["_HK_HOLIDAYS"]
+    holidays = _sched._HK_HOLIDAYS
     weekday_holiday = next(
         (y, m, d) for (y, m, d) in sorted(holidays)
         if datetime(y, m, d, tzinfo=_HKT).weekday() < 5
@@ -100,7 +95,7 @@ def test_a_real_hk_holiday_on_a_weekday_is_not_a_trading_day():
 
 def test_trading_day_requires_both_conditions():
     """Weekday AND not-a-holiday — neither alone is sufficient."""
-    holidays = _NS["_HK_HOLIDAYS"]
+    holidays = _sched._HK_HOLIDAYS
     for (y, m, d) in sorted(holidays):
         dt = _hk(y, m, d)
         assert _is_hk_trading_day(dt) is False, f"{y}-{m}-{d} is a holiday"

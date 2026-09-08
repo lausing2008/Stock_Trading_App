@@ -45,3 +45,15 @@ _indicators_mod = _ilu.module_from_spec(_spec)
 _spec.loader.exec_module(_indicators_mod)
 sys.modules["common.indicators"] = _indicators_mod
 setattr(sys.modules["common"], "indicators", _indicators_mod)
+
+# AUD-HOLIDAY-2027GAP: common.market_calendar must also be REAL, for the same reason as
+# common.indicators above — it carries actual holiday DATA, and every guard built on it is a
+# membership test. Under the blanket "common" MagicMock, `date(...) in NYSE_HOLIDAYS` returns a
+# truthy Mock, so a holiday test would pass no matter what the calendar contained (or whether it
+# contained anything at all). Pure stdlib (datetime/zoneinfo), so there is nothing to stub.
+_calendar_path = _pathlib.Path(__file__).resolve().parents[3] / "shared" / "common" / "market_calendar.py"
+_cal_spec = _ilu.spec_from_file_location("common.market_calendar", _calendar_path)
+_calendar_mod = _ilu.module_from_spec(_cal_spec)
+_cal_spec.loader.exec_module(_calendar_mod)
+sys.modules["common.market_calendar"] = _calendar_mod
+setattr(sys.modules["common"], "market_calendar", _calendar_mod)
