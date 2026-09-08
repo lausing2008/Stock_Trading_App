@@ -48,7 +48,14 @@ def test_the_fix_strips_tzinfo_from_now_before_comparing_to_the_naive_db_value()
     last_non_wait_ts (which is correctly naive, straight from the DB, and must stay that way —
     changing IT instead would risk breaking other naive-DB-field comparisons elsewhere)."""
     body = _wait_decay_block()
-    assert "last_non_wait_ts < now.replace(tzinfo=None) - timedelta(days=wait_days)" in body
+    # AUD-PT5-WAITDECAYFAILOPEN rewrote this block: the comparison now runs against
+    # `_decay_from` (which falls back to the entry-signal anchor when no NEWER non-WAIT signal
+    # exists) rather than `last_non_wait_ts` directly. The tz-safety property this test exists
+    # to guard is UNCHANGED and still asserted: the naive DB value must never be compared to a
+    # tz-aware `now`.
+    assert "_decay_from < now.replace(tzinfo=None) - timedelta(days=wait_days)" in body
+    assert "_decay_from.replace(tzinfo=None)" in body, \
+        "the anchor fallback may itself be tz-aware and must also be stripped"
 
 
 def test_the_old_broken_comparison_is_gone():
@@ -58,6 +65,7 @@ def test_the_old_broken_comparison_is_gone():
     crash whenever that old line executes."""
     body = _wait_decay_block()
     assert "last_non_wait_ts < now - timedelta(days=wait_days)" not in body
+    assert "_decay_from < now - timedelta(days=wait_days)" not in body
 
 
 def test_comparison_is_still_reached_when_last_non_wait_ts_is_a_real_datetime():
@@ -65,7 +73,13 @@ def test_comparison_is_still_reached_when_last_non_wait_ts_is_a_real_datetime():
     `last_non_wait_ts is None or True` or similar) — the real datetime comparison must still be
     the operative check when last_non_wait_ts is not None."""
     body = _wait_decay_block()
-    assert "last_non_wait_ts is None or" in body
+    # AUD-PT5-WAITDECAYFAILOPEN INVERTED this: `last_non_wait_ts is None` used to FAIL OPEN
+    # (treating "no data yet" as "N days of decay elapsed"), which closed positions after holds
+    # of 5-25 minutes with the false message "No non-WAIT signal in N days". It must now fail
+    # CLOSED — assert the old fail-open form is gone and the guarded form is present.
+    assert "last_non_wait_ts is None or" not in body, \
+        "the missing-data fail-open must not return"
+    assert "_decay_from is not None" in body
 
 
 def test_naive_vs_aware_comparison_no_longer_raises_typeerror():

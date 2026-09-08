@@ -3057,6 +3057,31 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
 
         elif sig_type == "WAIT":
             # Check if last non-WAIT signal is older than wait_exit_days — true consecutive decay
+            # AUD-PT5-WAITDECAYFAILOPEN: this used to filter `Signal.ts >= trade.entry_time`,
+            # which EXCLUDES the very BUY that caused the entry — signals are written by the
+            # evening batch (~20:30 UTC) and entries execute on a later scan, so the entry
+            # signal's ts is always BEFORE entry_time. The query then returned None for every
+            # position from entry until the next batch run, and the `is None` disjunct below
+            # fail-OPENED to still_waiting=True, closing the position as "momentum_exit" with
+            # the message "No non-WAIT signal in N days — momentum lost".
+            #
+            # That message was false and no decay had occurred; there was simply no data yet.
+            # Measured: all 4 momentum_exit trades ever recorded fired this way, three of them
+            # after holds of 5.1, 5.5 and 25.3 MINUTES, each booking a guaranteed
+            # entry+exit-slippage loss with essentially no market move. 28 of 115 signal-linked
+            # trades were exposed.
+            #
+            # Fix: anchor the lookback at the ENTRY SIGNAL's own timestamp rather than the fill
+            # time, so the signal that opened the position counts as the most recent non-WAIT
+            # reading until a genuinely newer one arrives. Decay is then measured from when
+            # conviction was last actually observed, which is what the gate always intended.
+            _decay_anchor = trade.entry_time
+            _entry_sig_ts = session.execute(
+                select(Signal.ts).where(Signal.id == trade.signal_id)
+            ).scalar() if trade.signal_id else None
+            if _entry_sig_ts is not None and _entry_sig_ts < _decay_anchor:
+                _decay_anchor = _entry_sig_ts
+
             last_non_wait_ts = session.execute(
                 select(func.max(Signal.ts))
                 .join(Stock, Signal.stock_id == Stock.id)
@@ -3064,7 +3089,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                     Stock.symbol == trade.symbol,
                     Signal.horizon == style,
                     Signal.signal != "WAIT",
-                    Signal.ts >= trade.entry_time,
+                    Signal.ts >= _decay_anchor,
                 )
             ).scalar()
 
@@ -3077,10 +3102,39 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             # the loop), silently killing entries for every portfolio, not just this trade's.
             # Strip tzinfo from `now` for this one naive-vs-naive comparison instead of
             # changing `now`'s type globally.
+            # AUD-PT5-WAITDECAYFAILOPEN: fail CLOSED on missing data, not open.
+            #
+            # `last_non_wait_ts is None` means "we have no non-WAIT reading to measure decay
+            # from" — an absence of evidence. Treating it as "N days of decay have elapsed" is
+            # the codebase's documented missing-data-fail-open class, and here it produced a
+            # confident, factually-false exit message rather than an error. With the anchor fix
+            # above this should now be unreachable for any signal-linked trade, but it is left
+            # explicit and inverted so a future edit cannot silently reintroduce the behaviour.
+            #
+            # The elapsed-days measurement also falls back to the anchor when no NEWER non-WAIT
+            # signal exists yet: decay is time since conviction was last observed, and the entry
+            # signal IS an observation of conviction.
+            _decay_from = last_non_wait_ts if last_non_wait_ts is not None else _decay_anchor
+            if _decay_from is not None and _decay_from.tzinfo is not None:
+                _decay_from = _decay_from.replace(tzinfo=None)
             still_waiting = (
-                last_non_wait_ts is None or
-                last_non_wait_ts < now.replace(tzinfo=None) - timedelta(days=wait_days)
+                _decay_from is not None
+                and _decay_from < now.replace(tzinfo=None) - timedelta(days=wait_days)
             )
+
+            # Belt-and-braces: never let this exit fire before the decay window could plausibly
+            # have elapsed. Three of the four historical misfires closed positions within 30
+            # minutes of opening; a hold shorter than the window is prima facie not decay.
+            if still_waiting and trade.entry_time is not None:
+                _held = now.replace(tzinfo=None) - trade.entry_time.replace(tzinfo=None)
+                if _held < timedelta(days=wait_days):
+                    log.warning(
+                        "paper.wait_decay_suppressed_min_hold",
+                        symbol=trade.symbol, held_hours=round(_held.total_seconds() / 3600, 2),
+                        wait_days=wait_days,
+                        note="WAIT-decay exit suppressed: position held less than the decay window",
+                    )
+                    still_waiting = False
 
             if still_waiting:
                 exit_reason = "momentum_exit"
@@ -4401,10 +4455,43 @@ def _open_paper_trade(
     # Position sizing: risk_dollar / stop_distance = shares
     stop        = game_plan["stop"]
     take_profit = game_plan["take_profit"]
-    stop_distance = live_price - stop
+
+    # AUD-PT5-SLIPPAGEANCHOR: size and score against the price we will ACTUALLY fill at.
+    #
+    # The trade persists cost basis at `slipped_entry` but stop/target were derived from the
+    # unslipped `live_price`, so two different anchors were stored on the same row. True risk
+    # per share at the fill is `slipped_entry - stop`, which EXCEEDS the stop_distance used for
+    # sizing — meaning max_loss_per_trade_pct was enforced against an understated figure and
+    # real dollar risk overshot the cap. Distance to target shrank by the same amount, so the
+    # stored rr_ratio_at_entry was strictly better than the position could deliver.
+    #
+    # Measured, overstated in EVERY portfolio: GROWTH 3.49 stored vs 3.33 true, HK GROWTH 3.48
+    # vs 3.21, ETrade 2.71 vs 2.54, US SWING 2.37 vs 2.28, HK SWING 2.18 vs 2.13. A
+    # one-directional bias of 0.05-0.27 R, read downstream by the tuner and reporting surfaces
+    # as if it were the delivered ratio.
+    #
+    # Uses the BASE slippage, not the size-aware refinement applied at the persist site. That
+    # is deliberate and unavoidable: size-aware slippage is a function of `shares`, and `shares`
+    # is what this block is computing — using it here would be circular. The base rate captures
+    # the bulk of the effect (it is the flat 10bps floor; the size-aware term only widens it for
+    # unusually large positions relative to ADV), so this removes the systematic bias while
+    # leaving a small residual for the largest positions. Erring this way is safe: the residual
+    # makes the stored R:R very slightly optimistic rather than pessimistic on those, which is
+    # the same direction as before but far smaller.
+    _base_slip = cfg.get("entry_slippage_pct", 0.001)
+    entry_fill_price = round(live_price * (1 + _base_slip), 4) if _base_slip else live_price
+
+    # Validate the stop against the UNSLIPPED price too. Slippage moves the fill AWAY from the
+    # stop, so a stop at or above live_price (a degenerate game plan) would otherwise produce a
+    # small POSITIVE stop_distance once slipped — e.g. stop=100.0, live=100.0 gives 0.10 at
+    # 10bps — and size an enormous position off that sliver. Reject on the raw geometry first,
+    # then size off the real fill.
+    if (live_price - stop) <= 0:
+        return None, "invalid_stop_distance"
+    stop_distance = entry_fill_price - stop
     if stop_distance <= 0:
         return None, "invalid_stop_distance"
-    rr = (take_profit - live_price) / max(stop_distance, live_price * 0.005)
+    rr = (take_profit - entry_fill_price) / max(stop_distance, entry_fill_price * 0.005)
 
     # PT-B10: Earnings-graduated sizing — reduce size as earnings approach
     dte = (sig.reasons or {}).get("days_to_earnings")
@@ -4550,7 +4637,19 @@ def _open_paper_trade(
         return None, "min_position"
 
     # Cap position at max_position_pct of equity
-    max_pos = equity * cfg["max_position_pct"] * earnings_size_mult
+    #
+    # AUD-PT5-EARNINGSDOUBLEMULT: `earnings_size_mult` used to be applied HERE as well as inside
+    # risk_dollar (see its computation above), so a near-earnings candidate was de-risked twice
+    # whenever this cap bound — making the effective policy 0.25x/0.5625x rather than the
+    # documented 0.50x/0.75x. The other five size multipliers (regime, confidence, research,
+    # consensus, score) each appear exactly once; only this one was duplicated.
+    #
+    # The multiplier belongs in risk_dollar, which is the RISK budget. This is an independent
+    # POSITION-VALUE ceiling and must stay a pure function of equity and config, or the two
+    # controls stop being independent. Direction of the old bug was conservative (never
+    # over-sized), which is why it went unnoticed — but it silently reported the halved cap as
+    # if it were the configured one.
+    max_pos = equity * cfg["max_position_pct"]
     if position_value > max_pos:
         shares         = round(max_pos / live_price, 4)
         # AUD262-HK-NO-BOARD-LOTS: this branch recomputes a fresh, fractional `shares`
