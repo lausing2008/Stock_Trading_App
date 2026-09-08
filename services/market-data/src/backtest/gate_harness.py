@@ -115,8 +115,13 @@ class BacktestResult:
 
 def _entry_as_of(entry_date: date, market: str) -> datetime:
     """UTC-aware `as_of` for _should_enter()'s replay-mode market-hours/time-of-day/macro-
-    blackout checks — a fixed midday-local-market-time on `entry_date`, comfortably clear of
-    both the market-hours boundary and the time-of-day gate's open/close edge windows.
+    blackout checks — a fixed mid-session local time on `entry_date`, clear of both the
+    market-hours boundaries and the time-of-day gate's open/close edge windows.
+
+    AUD-BT-HKLUNCHBREAK: this used to say "midday" for BOTH markets and claim the instant was
+    "comfortably clear" of the boundaries. That was FALSE for HK — see the inline comment at
+    the bottom of this function. 12:00 HKT is the exclusive end of HKEX's morning session, so
+    it cleared nothing; it sat in the lunch break. US remains 12:00 ET; HK is now 11:00 HKT.
 
     CORRECTION during Phase 2b's own live-verification: an earlier version of this function
     used Signal.ts (the moment the signal was actually GENERATED) directly. Live-checking
@@ -132,8 +137,27 @@ def _entry_as_of(entry_date: date, market: str) -> datetime:
     keeps the constructed instant comfortably inside the time-of-day gate's own safe window
     without needing to reason about exact open/close boundaries.
     """
-    tz = ZoneInfo("Asia/Hong_Kong") if market == "HK" else ZoneInfo("America/New_York")
-    local_midday = datetime(entry_date.year, entry_date.month, entry_date.day, 12, 0, tzinfo=tz)
+    # AUD-BT-HKLUNCHBREAK: "midday" is NOT safe for HK. HKEX has a split session, and
+    # _is_market_hours() defines it as
+    #     (09:30 <= t < 12:00)  or  (13:00 <= t < 16:00)
+    # so 12:00 HKT falls in NEITHER window — the morning close is exclusive and the afternoon
+    # has not opened. Every HK replay therefore landed inside the lunch break and was rejected
+    # by the very first hard gate. Verified live: _is_market_hours("HK", as_of=<12:00 HKT>)
+    # returned False.
+    #
+    # This is INDEPENDENT of AUD-BT-HKCFGDEFAULT (cfg["market"] defaulting to "US"): fixing
+    # either one alone still yields zero HK entries, which is why both had to be found.
+    #
+    # 11:00 HKT sits an hour inside the morning session, clear of the 09:30 open and the 12:00
+    # close, and remains "comfortably clear of both boundaries" in the sense this docstring
+    # promises. US keeps 12:00 ET, which is genuinely mid-session for a 09:30-16:00 market.
+    if market == "HK":
+        tz = ZoneInfo("Asia/Hong_Kong")
+        hour = 11
+    else:
+        tz = ZoneInfo("America/New_York")
+        hour = 12
+    local_midday = datetime(entry_date.year, entry_date.month, entry_date.day, hour, 0, tzinfo=tz)
     return local_midday.astimezone(timezone.utc)
 
 
@@ -1850,6 +1874,21 @@ def replay_alert_gate(
             "confidence": sig.confidence,
             "bullish_probability": sig.bullish_probability,
             "reasons": reasons,
+            # AUD-BT-ALERTHORIZON: `horizon` was MISSING here, and _is_conviction_buy() reads
+            # `style = signal_data.get("horizon", "SWING")`. So every style replayed under
+            # SWING's rules, silently. GROWTH lost both of its exemptions:
+            #   layer 4a — GROWTH needs only trend_above_sma50; SWING requires
+            #              sma50_above_sma200 AND trend_above_sma50
+            #   layer 4b — GROWTH's RSI band is 50-85; SWING's is 45-72
+            # The live caller does supply it (signals_shared.py's _stored_signal_for_style sets
+            # "horizon": style_key), so this was a harness-only omission — the same class as
+            # AUD-BT-HKCFGDEFAULT: a required input silently defaulting to a PLAUSIBLE wrong
+            # value, so nothing raised and the output looked reasonable.
+            #
+            # This invalidated BT-4's published GROWTH figures. The tell was already visible in
+            # the output: the top rejection reason was "Uptrend structure not aligned
+            # (SMA50/SMA200/price)" — that message is the NON-GROWTH branch.
+            "horizon": style,
         }
         # Point-in-time kscore from the frozen snapshot, NOT a live rankings read.
         raw_k = reasons.get("kscore")

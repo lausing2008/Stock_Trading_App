@@ -871,6 +871,37 @@ _HK_MARKET_OVERRIDES: dict = {
     "min_ta_score":            0.65,
 }
 
+def resolve_backtest_config(style: str, market: str, extra: dict | None = None) -> dict:
+    """Build a replay cfg for the backtest harness with market/style ACTUALLY SET.
+
+    AUD-BT-HKCFGDEFAULT: nine harness call sites built their cfg as
+        {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    and passed `market` as a SEPARATE argument that never reached the dict. Since
+    _DEFAULT_CONFIG["market"] = "US" and _STYLE_OVERRIDES carries no market key, every HK
+    replay silently ran with cfg["market"] == "US". Consequences, all silent:
+
+      * `_is_market_hours("US", as_of=<HK midday>)` — HK midday is 00:00 ET, so the FIRST
+        hard reject fired on 100% of HK candidates. Verified live: False.
+      * `_default_min_rr_ratio(..., "US")` bypassed the per-market R:R floor that
+        AUD-MINRR-MARKETBLIND exists to enforce.
+      * the time-of-day gate resolved in the wrong timezone.
+      * _HK_MARKET_OVERRIDES (min_entry_score 6, min_confidence 65, min_ta_score 0.65) were
+        skipped by 8 of the 9 sites.
+
+    Production evidence: every HK row in tune_history carries NULL train/validation and
+    `gate_failures: ["harness_skipped:..."]`, across months of Sunday runs, despite HK having
+    418-752 resolved BUY outcomes per style. Indistinguishable in the DB from "HK has no data".
+
+    Routes through resolve_entry_config() so the harness inherits the SAME precedence the live
+    engine uses (user choice > HK override > style override > default) rather than a fourth
+    hand-rolled merge that can drift again.
+    """
+    base = {"trading_style": style, "market": market}
+    if extra:
+        base.update(extra)
+    return resolve_entry_config(base)
+
+
 def resolve_entry_config(portfolio_config: dict | None) -> dict:
     """Resolve the effective entry config: defaults -> style overrides -> HK overrides -> user.
 

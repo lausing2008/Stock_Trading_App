@@ -246,11 +246,24 @@ def test_constructs_a_us_midday_instant_from_the_entry_date():
     assert et.date() == date(2026, 6, 15)
 
 
-def test_constructs_an_hk_midday_instant_from_the_entry_date():
+def test_constructs_an_hk_in_session_instant_from_the_entry_date():
+    """AUD-BT-HKLUNCHBREAK: this used to assert `hkt.hour == 12` — exactly the weak check the
+    sibling US test's own docstring calls insufficient ("rather than just asserting hour==12").
+    12:00 HKT is the EXCLUSIVE end of HKEX's morning session and the afternoon opens at 13:00,
+    so the asserted value was itself the bug: every HK replay landed in the lunch break and was
+    rejected by the first hard gate. The real boundary math existed for US and was never
+    mirrored for HK's split session.
+
+    Now asserts the instant is genuinely INSIDE a session, using HKEX's real windows:
+        (09:30 <= t < 12:00) or (13:00 <= t < 16:00)
+    """
     result = _entry_as_of(date(2026, 6, 15), "HK")
     hkt = result.astimezone(ZoneInfo("Asia/Hong_Kong"))
-    assert hkt.hour == 12
     assert hkt.date() == date(2026, 6, 15)
+    mins = hkt.hour * 60 + hkt.minute
+    in_session = (570 <= mins < 720) or (780 <= mins < 960)
+    assert in_session, f"{hkt:%H:%M} HKT is not inside an HKEX session"
+    assert not (720 <= mins < 780), "must never land in the 12:00-13:00 lunch break"
 
 
 def test_result_is_timezone_aware_utc():

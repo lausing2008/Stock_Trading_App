@@ -8075,14 +8075,14 @@ def _weekly_full_refresh() -> None:
     try:
         log.info("scheduler.promotion_gate_start")
         from ..backtest.promotion_gate import evaluate_and_record as _promo_eval
-        from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+        from .paper_trading_engine import resolve_backtest_config as _resolve_bt_cfg
         _promo_window_end = date.today()
         _promo_window_start = _promo_window_end - timedelta(days=60)
         _promo_results = []
         with SessionLocal() as _promo_session:
             for _style in ("SHORT", "SWING", "LONG", "GROWTH"):
                 for _market in ("US", "HK"):
-                    _base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(_style, {})}
+                    _base_cfg = _resolve_bt_cfg(_style, _market)  # AUD-BT-HKCFGDEFAULT
                     try:
                         _r = _promo_eval(_promo_session, _style, _market, _base_cfg, _promo_window_start, _promo_window_end, triggered_by="scheduler")
                         _promo_results.append(f"{_style}/{_market}:{'promoted' if _r.get('promoted') else 'not_promoted'}")

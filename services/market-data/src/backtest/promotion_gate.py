@@ -44,9 +44,33 @@ from .gate_harness import (
 # Tolerance for the approximate worst-trade check: reject a candidate whose worst single
 # validation-slice trade is more than this many percentage points worse than the baseline's
 # worst trade. Matches the "10% relative" example tolerance from the original design doc's
-# rule #3 — kept as an absolute percentage-point gap here since these are already pct returns,
-# not a starting-equity-relative figure a true drawdown check would use.
+# rule #3 — an absolute percentage-point gap, not a starting-equity-relative figure a true
+# drawdown check would use.
+#
+# AUD-BT-WORSTTRADESCALE: the comment here used to claim "these are already pct returns". THEY
+# ARE NOT. `GateReplayResult.returns` is populated by `returns.append(float(pct_return))` from
+# SignalOutcome.return_10d, which is a FRACTION (-0.5456 = -54.56%). Comparing a difference of
+# two fractions (bounded by ~1.0 in practice, ~2.0 in theory) against a 10.0 PERCENTAGE-POINT
+# tolerance made `regression <= tolerance` UNCONDITIONALLY TRUE, so rule #3 — the only
+# risk-side check this gate has, with rule #4 already recorded as not_yet_available — was inert
+# and every promotion rested on EV lift alone.
+#
+# Production evidence of the mixed scale sitting in one row (tune_history, 2026-09-06):
+#     train_ev_pct = 0.7961      <- a real percent
+#     approx_worst_trade_pct = -0.5456   <- a fraction, i.e. -54.56%
+# Observed worst-trade values were -0.5456 / -0.4366 / -0.1742 / -0.1314 / -0.0091 / -0.0017,
+# so the largest achievable |regression| was ~0.7 against a 10.0 tolerance.
+#
+# Fixed by converting to percentage points at the comparison, matching what the sibling
+# `_passes_promotion_margin` in gate_harness.py already does explicitly
+# ("sd_pct = (variance ** 0.5) * 100  # returns are stored as fractions"). Two functions in the
+# same promotion path disagreed about the scale of the same list.
 DEFAULT_MAX_WORST_TRADE_REGRESSION_PCT = 10.0
+
+# Multiplier turning a stored fraction into percentage points. Named rather than inlined so the
+# scale conversion is greppable — this codebase has now hit the fraction-vs-percent trap in
+# signal_outcomes vs paper_trades, inside gate_harness itself, and here.
+_FRACTION_TO_PCT = 100.0
 
 
 def evaluate_and_record(
@@ -110,8 +134,11 @@ def evaluate_and_record(
 
     worst_trade_check = None
     if candidate_val.returns and baseline_val.returns:
-        candidate_worst = min(candidate_val.returns)
-        baseline_worst = min(baseline_val.returns)
+        # AUD-BT-WORSTTRADESCALE: `returns` holds FRACTIONS — convert to percentage points
+        # before comparing against a percentage-point tolerance, and before persisting, so
+        # tune_history stops storing 100x-too-small values under a *_pct column name.
+        candidate_worst = min(candidate_val.returns) * _FRACTION_TO_PCT
+        baseline_worst = min(baseline_val.returns) * _FRACTION_TO_PCT
         regression = baseline_worst - candidate_worst  # positive = candidate's worst trade is worse
         worst_trade_check = {
             "candidate_worst_trade_pct": round(candidate_worst, 4),

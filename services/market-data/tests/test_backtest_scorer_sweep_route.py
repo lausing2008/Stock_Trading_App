@@ -43,11 +43,21 @@ def test_route_delegates_to_walk_forward_scorer_sweep_not_a_reimplementation():
 
 
 def test_route_builds_base_cfg_from_the_real_default_config_and_style_overrides():
-    """Must reuse _DEFAULT_CONFIG/_STYLE_OVERRIDES — the SAME real live-trading defaults every
-    other sweep route builds its baseline cfg from, not a hand-picked/hardcoded dict."""
+    """Must reuse the SAME real live-trading defaults every other sweep route uses, not a
+    hand-picked/hardcoded dict.
+
+    AUD-BT-HKCFGDEFAULT: this test's INTENT was right and its MECHANISM was the bug. It pinned
+    `base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}` — which reuses the real
+    defaults but never sets cfg["market"], so _DEFAULT_CONFIG["market"] = "US" leaked into every
+    HK replay and the first hard gate rejected 100% of HK candidates. The route now goes through
+    resolve_backtest_config(), which routes to the live resolve_entry_config() precedence
+    (user > HK override > style > default), so the defaults are still real AND market is set.
+    """
     body = _route_body()
-    assert "from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES" in body
-    assert 'base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}' in body
+    assert "resolve_backtest_config" in body
+    assert 'base_cfg = resolve_backtest_config(style, market)' in body
+    # The old hand-rolled merge must NOT come back — it is the defect, not the contract.
+    assert '{**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}' not in body
 
 
 def test_route_never_writes_to_portfolio_config_or_any_promotion_table():

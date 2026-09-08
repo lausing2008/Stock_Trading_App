@@ -2846,7 +2846,7 @@ def backtest_replay_fidelity(
     `caveats` field and gate_harness.py's module docstring.
     """
     from ..backtest.gate_harness import verify_replay_fidelity
-    from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+    from ..services.paper_trading_engine import resolve_backtest_config
 
     style = style.upper()
     if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
@@ -2855,7 +2855,7 @@ def backtest_replay_fidelity(
     if market not in ("US", "HK"):
         raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
 
-    base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    base_cfg = resolve_backtest_config(style, market)  # AUD-BT-HKCFGDEFAULT: market must reach cfg
     window_end = date.today()
     window_start = window_end - timedelta(days=window_days)
 
@@ -2921,7 +2921,7 @@ def backtest_replay_full_history(
     `caveats` and `effective_sample_note`.
     """
     from ..backtest.gate_harness import replay_full_signal_history
-    from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+    from ..services.paper_trading_engine import resolve_backtest_config
 
     style = style.upper()
     if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
@@ -2930,7 +2930,7 @@ def backtest_replay_full_history(
     if market not in ("US", "HK"):
         raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
 
-    base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    base_cfg = resolve_backtest_config(style, market)  # AUD-BT-HKCFGDEFAULT: market must reach cfg
     with SessionLocal() as session:
         return replay_full_signal_history(session, style, market, base_cfg).to_dict()
 
@@ -2955,7 +2955,7 @@ def backtest_min_entry_score(
     Research tool only — does not write to portfolio.config or any promotion history table.
     """
     from ..backtest.gate_harness import walk_forward_min_entry_score
-    from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+    from ..services.paper_trading_engine import resolve_backtest_config
 
     style = style.upper()
     if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
@@ -2964,7 +2964,7 @@ def backtest_min_entry_score(
     if market not in ("US", "HK"):
         raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
 
-    base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    base_cfg = resolve_backtest_config(style, market)  # AUD-BT-HKCFGDEFAULT: market must reach cfg
     window_end = date.today()
     window_start = window_end - timedelta(days=window_days)
 
@@ -2991,7 +2991,7 @@ def backtest_blocked_entry_scores(
     promotion history table.
     """
     from ..backtest.gate_harness import walk_forward_blocked_entry_scores
-    from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+    from ..services.paper_trading_engine import resolve_backtest_config
 
     style = style.upper()
     if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
@@ -3000,7 +3000,7 @@ def backtest_blocked_entry_scores(
     if market not in ("US", "HK"):
         raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
 
-    base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    base_cfg = resolve_backtest_config(style, market)  # AUD-BT-HKCFGDEFAULT: market must reach cfg
     window_end = date.today()
     window_start = window_end - timedelta(days=window_days)
 
@@ -3032,7 +3032,7 @@ def backtest_calibration_feedback(
     an explicit config change of its own.
     """
     from ..backtest.gate_harness import walk_forward_calibration_feedback
-    from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+    from ..services.paper_trading_engine import resolve_backtest_config
 
     style = style.upper()
     if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
@@ -3041,7 +3041,7 @@ def backtest_calibration_feedback(
     if market not in ("US", "HK"):
         raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
 
-    base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    base_cfg = resolve_backtest_config(style, market)  # AUD-BT-HKCFGDEFAULT: market must reach cfg
     window_end = date.today()
     window_start = window_end - timedelta(days=window_days)
 
@@ -3070,7 +3070,7 @@ def backtest_extended_gate(
     or any promotion history table.
     """
     from ..backtest.gate_harness import walk_forward_extended_gate
-    from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES, _HK_MARKET_OVERRIDES
+    from ..services.paper_trading_engine import resolve_backtest_config
 
     style = style.upper()
     if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
@@ -3081,9 +3081,10 @@ def backtest_extended_gate(
     if param not in ("min_kscore", "min_ta_score", "min_volume_z"):
         raise HTTPException(status_code=400, detail=f"Unknown param: {param}")
 
-    base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
-    if market == "HK":
-        base_cfg = {**base_cfg, **_HK_MARKET_OVERRIDES}
+    # AUD-BT-HKCFGDEFAULT: resolve_backtest_config() already applies _HK_MARKET_OVERRIDES via
+    # resolve_entry_config()'s own precedence, so the hand-rolled `if market == "HK"` merge that
+    # used to sit here (and which only THIS route out of 8 had) is redundant and removed.
+    base_cfg = resolve_backtest_config(style, market)
     window_end = date.today()
     window_start = window_end - timedelta(days=window_days)
 
@@ -3284,7 +3285,7 @@ def backtest_scorer_sweep(
     does and does not model — a research signal only, never an automatic config change.
     """
     from ..backtest.gate_harness import walk_forward_scorer_sweep
-    from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+    from ..services.paper_trading_engine import resolve_backtest_config
 
     style = style.upper()
     if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
@@ -3293,7 +3294,7 @@ def backtest_scorer_sweep(
     if market not in ("US", "HK"):
         raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
 
-    base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    base_cfg = resolve_backtest_config(style, market)  # AUD-BT-HKCFGDEFAULT: market must reach cfg
     window_end = date.today()
     window_start = window_end - timedelta(days=window_days)
 
@@ -3320,7 +3321,7 @@ def promote_min_entry_score(
     a human still decides whether to hand-edit the live config based on this result.
     """
     from ..backtest.promotion_gate import evaluate_and_record
-    from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+    from ..services.paper_trading_engine import resolve_backtest_config
 
     style = style.upper()
     if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
@@ -3329,7 +3330,7 @@ def promote_min_entry_score(
     if market not in ("US", "HK"):
         raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
 
-    base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    base_cfg = resolve_backtest_config(style, market)  # AUD-BT-HKCFGDEFAULT: market must reach cfg
     window_end = date.today()
     window_start = window_end - timedelta(days=window_days)
 
