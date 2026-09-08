@@ -2832,7 +2832,14 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
     for trade in open_trades:
         # PT-B3: hold days in trading days (excludes weekends/holidays)
         # +1 so today counts as day 1 (busday_count is exclusive of end date)
-        days_held = int(np.busday_count(trade.entry_date, _et_date + timedelta(days=1)))
+        #
+        # AUD-EXIT-HKENTRYDATE: the "today" end-date must be resolved in the TRADE'S OWN market,
+        # not always ET. Differencing an HK entry_date against an ET today was the other half of
+        # the same bug — at 21:30-23:59 ET the HK date is already tomorrow, so the two sides
+        # disagreed about which day it is. US is unaffected (_et_date is what it always was).
+        _hold_end = (_trading_date_for("HK", now)
+                     if trade.symbol.upper().endswith(".HK") else _et_date)
+        days_held = int(np.busday_count(trade.entry_date, _hold_end + timedelta(days=1)))
         trade.hold_days = days_held
 
         _price_is_stale_escalated = False
@@ -4521,6 +4528,44 @@ def _write_decision_log(
         log.warning("paper.decision_log_write_failed", symbol=trade.symbol, action=action, error=str(exc))
 
 
+def _market_tz(market: str | None):
+    """Exchange-local timezone for a market code. Mirrors the mapping already used inline at
+    _should_enter()'s time-of-day gate."""
+    from zoneinfo import ZoneInfo as _ZI
+    return _ZI("Asia/Hong_Kong") if (market or "US").upper() == "HK" else _ZI("America/New_York")
+
+
+def _trading_date_for(market: str | None, when: "datetime | None" = None) -> "date":
+    """The TRADING DAY a timestamp belongs to, in the exchange's own timezone.
+
+    AUD-EXIT-HKENTRYDATE. The container runs TZ=UTC (verified: `time.tzname == ('UTC','UTC')`),
+    and `days_held` differenced `entry_date` against the **ET** date for every trade.
+
+    HKEX opens 09:30 HKT = 01:30 UTC = **21:30 ET THE PREVIOUS DAY**. So for an HK position the
+    two sides disagreed about what day it is: entry_date said Sep 8 (correct — the HK trading
+    day) while `_et_date` still said Sep 7, giving `busday_count(Sep 8, Sep 8) = 0` and
+    understating every HK hold by one day.
+
+    NOTE ON WHERE THE BUG ACTUALLY IS — I initially framed this as a write-side defect and it is
+    not. During real HK hours (01:30-08:00 UTC) the UTC date and the HK date always agree, so
+    `date.today()` was already writing the correct trading day. The defect is entirely the
+    read side comparing an HK date against an ET "today".
+
+    Measured in production: 14 of 19 HK trades had entry_date ahead of their entry_time's ET
+    date; 0 of 105 US trades did — exactly the asymmetry the mechanism predicts.
+
+    Damage at the time of the fix was ZERO (all 14 sat at 0-6 days against a 7-day
+    signal_outcomes bucket boundary, so none flipped), but it was on a timer: the boundaries
+    that matter are hold_stall_days (7 for SHORT, 30 default), max_hold_days (10-90 by style),
+    momentum_exit_min_days (3), and the signal_outcomes horizon bucket at 7/14 days — which
+    feeds ML training ground truth.
+    """
+    _when = when or datetime.now(timezone.utc)
+    if _when.tzinfo is None:
+        _when = _when.replace(tzinfo=timezone.utc)
+    return _when.astimezone(_market_tz(market)).date()
+
+
 def _open_paper_trade(
     session, portfolio: PaperPortfolio, stock: Stock, sig: Signal, ranking: "Ranking | None",
     live_price: float, game_plan: dict, score: int, notes: list[str], gate_source: str,
@@ -4864,7 +4909,15 @@ def _open_paper_trade(
         symbol                = stock.symbol,
         signal_id             = sig.id,
         trading_style         = style,
-        entry_date            = date.today(),
+        # AUD-EXIT-HKENTRYDATE: was `date.today()`, i.e. the UTC date (container runs TZ=UTC).
+        # DEFENCE IN DEPTH, NOT THE FIX — measured, this is a NO-OP during real HK hours: the
+        # HK session is 01:30-08:00 UTC, where the UTC date and the HK date always agree, so
+        # entry_date was already correct for every real fill. (The two diverge only at
+        # 16:00-23:59 UTC.) Kept because it makes the field mean "the trading day this fill
+        # belongs to" unconditionally, which stays correct for a late/retried write or a future
+        # extended-hours venue. The ACTUAL bug is on the read side — see the days_held comment
+        # in _monitor_positions.
+        entry_date            = _trading_date_for(cfg.get("market", "US"), now),
         entry_time            = now,
         entry_price           = slipped_entry,   # slippage-adjusted entry
         sector                = stock.sector,    # H-SECTOR FIX: PA-D1 monitor reads trade.sector
