@@ -223,3 +223,57 @@ paper_trading_engine).
 Tokens are 365-day and containers restart far more often, so there is no live symptom — recorded
 because it is a real single-source-of-truth violation in a repo that keeps getting bitten by
 drifted duplicates. Consolidating into `shared/common/` is the fix if it ever matters.
+
+
+---
+
+## Update 2026-09-08 (third pass): image durability closed, one survey claim corrected
+
+**AUD-DEPLOY-IMAGEDRIFT (HIGH, resolved).** Every backend fix from this session existed ONLY
+inside the running containers, not in the images. Measured directly rather than assumed:
+
+```
+                                  running container    image
+shared/common/market_calendar.py        present         ABSENT
+_VOL_SOFT_FLOOR (ranking)               4 refs          0 refs
+```
+
+A single `--force-recreate`, a `down/up`, or an unplanned reboot would have reverted all of it —
+with asymmetric failure modes: the missing calendar module makes market-data fail on IMPORT
+(loud), while the ranking fixes revert to fabricating `rs_score = 50.0` and silently re-corrupt
+the weight tuner (quiet, and exactly the bug this session existed to fix). This is the documented
+`docs/incidents/docker-deploy-staleness.md` class.
+
+**Fixed properly:** `docker compose build market-data ranking-engine`, then verified the fixes are
+in the IMAGES (not just containers), then `--force-recreate` — the very operation that used to
+destroy them — and confirmed all of it survived:
+
+```
+calendar coverage      {'nyse': 2027, 'hkex': 2027}
+Labor Day 2026 US      False
+soft layers            [OBV, ADX, ML probability, MACD, Uptrend]
+2800.HK benchmark      -0.0204   (real DB value, no yfinance)
+rs_score(None)         (None, None)   <- fails closed
+Consumer Cyclical      XLY
+relative_strength      0.1
+vol at 20%/day         0.625     <- used to tie at exactly 0.0
+```
+
+**A CORRECTION to the previous survey's `_service_token()` claim.** It reported "copy-pasted 7
+times, 3 copies never check expiry," naming research-engine, decision-engine and
+paper_trading_engine. Verified directly:
+
+- Only **3 real definitions** of `_service_token` exist, and **all three check expiry** with a
+  token cache. The "7" counted importers as copies.
+- **research-engine has no `_service_token` at all** — it has `_generate_with_service_token`,
+  an unrelated function. The survey conflated two names.
+- The genuine issue is a **second family**, `_svc_token()`, in decision-engine
+  (`aggregator.py:31`) and paper_trading_engine (`:67`). Both do
+  `if _svc_token_cache: return _svc_token_cache` against a 365-day token, so neither refreshes.
+
+**Deliberately NOT fixed, for a measured reason:** the longest container uptime on the box is
+**2 days**. The ~358-day threshold is unreachable in practice, so a fix would be churn with no
+behavioral change. Recorded so it is not re-discovered as a live bug — and so the corrected
+*shape* of it (two `_svc_token`, not three `_service_token`) is on record.
+
+**Also checked, clean:** zero DQ gauge alarms and zero scheduler job failures in 24h.
