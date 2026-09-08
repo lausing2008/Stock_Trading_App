@@ -67,6 +67,39 @@ findings matter more than that headline:
 1. **GROWTH's replayed edge is negative.** 47.0% win rate and −0.37% average forward return, on
    n=1,378 — a far larger sample than anything this platform has judged on before. This is not a
    promising base to tune on; it's evidence that today's GROWTH gates admit a losing population.
+
+   > **⚠️ RETRACTED 2026-09-08 (AUD-BT-HOLDMODELGAP) — do not quote this conclusion forward.**
+   >
+   > The number is arithmetically correct but measures a hold model the live engine does not
+   > use. `return_10d` is a **fixed hold to a calendar horizon, exiting at close** — no stop, no
+   > trailing stop, no partial take-profit, zero slippage. The live engine exits on
+   > stops/targets/trailing at ~6.8 days average with 10bps each way.
+   >
+   > Measured directly against real closed paper trades on the **same signals**:
+   >
+   > | style | n | real avg | harness `return_10d` | gap |
+   > |---|---|---|---|---|
+   > | GROWTH | 50 | **+0.26%** | **−5.45%** | **5.70pp** |
+   > | SWING | 41 | +0.17% | −0.10% | 0.28pp |
+   >
+   > **The same GROWTH signals returned POSITIVE under real exit logic.** The gap localises
+   > entirely to two exit reasons — `breakeven_stop` (real −0.30% vs harness −5.99%) and
+   > `target_reached` (real **+12.22%** vs harness −1.28%). The harness holds through drawdowns
+   > the engine exits, and holds *past* targets the engine banks.
+   >
+   > So "GROWTH gates admit a losing population" is **not supported**. What the data supports is
+   > narrower: *under a fixed 10-day hold with no risk management, GROWTH's entries are
+   > negative* — which is a statement about the hold model, not about the gates.
+   >
+   > Two further consequences: 5.7pp is **11× `_MIN_PROMOTION_EV_LIFT_PCT` (0.5)**, and the bias
+   > is **non-uniform** — it varies with the exit-reason mix, which the gate config being tuned
+   > itself changes. So the harness is not merely pessimistic-but-consistent; treat
+   > `avg_return_pct` as a **relative** ranking signal between candidates, never as an estimate
+   > of realised performance.
+   >
+   > The limitation was disclosed in `portfolio_backtest.py`'s docstring ("exits use the
+   > outcome's own resolved hold-window… NOT a simulated stop/trailing-stop/target exit"). Its
+   > **magnitude** was documented nowhere, which is why the conclusion above got written.
    (`signal_outcomes.pct_return` is a FRACTION, so −0.0037 = −0.37%.)
 2. **Clustering is severe, exactly as feared.** GROWTH put **178 of 1,378 entries (13%) into a
    single week**, across only 11 distinct weeks. The raw count overstates independent
@@ -281,6 +314,14 @@ thresholds with DE), but it must not be quoted as "the platform's GROWTH entries
   separate from this work.
 
 ---
+
+> **⚠️ §8's GROWTH figures are INVALID (AUD-BT-ALERTHORIZON, fixed 2026-09-08).**
+> `replay_alert_gate` omitted `horizon` from `signal_data`, and `_is_conviction_buy` reads
+> `.get("horizon", "SWING")` — so **every style was replayed under SWING's rules**. GROWTH lost
+> both of its exemptions (layer 4a's looser uptrend requirement, layer 4b's RSI 50-85 vs
+> 45-72). The tell was already visible in the published output: the top rejection reason,
+> "Uptrend structure not aligned (SMA50/SMA200/price)", is the **non-GROWTH branch's** message.
+> Re-run BT-4 before quoting any GROWTH number from this section.
 
 ## 8. BT-4 — the AI Signal ALERT gate, backtested (2026-09-07)
 
