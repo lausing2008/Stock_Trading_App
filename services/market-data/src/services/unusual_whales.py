@@ -1226,13 +1226,63 @@ def get_flow_alerts(
         log.warning("unusual_whales.flow_alerts_failed", symbol=sym, error=str(exc))
         return []
     result = _parse_flow_alert_rows(data, sym)
+    result = _drop_expired_flow_alerts(result, sym)
     try:
         import json
         from dataclasses import asdict
+        # Filter BEFORE caching: an expired row cached here would keep being served for the
+        # cache's whole TTL even after this filter is in place.
         _get_redis().setex(cache_key, _FLOW_ALERT_TTL, json.dumps([asdict(a) for a in result]))
     except Exception:
         pass
     return result
+
+
+def _drop_expired_flow_alerts(alerts: list["FlowAlert"], sym: str) -> list["FlowAlert"]:
+    """AUD-OPT6-EXPIREDCONTRACTS: drop alerts whose contract has ALREADY EXPIRED.
+
+    get_flow_alerts() bounds only how recently the ALERT fired (newer_than = now - 48h). The
+    contract's expiry is bounded by max_dte — but UW computes max_dte relative to the ALERT'S
+    OWN created_at, not relative to today. So an alert created 47 hours ago on a 1-DTE contract
+    has an expiry that is now two days in the past, and nothing rejected it: no filter anywhere
+    in this module compared expiry against the current date.
+
+    Measured in production before this fix: 1,102 of 1,552 recorded alerts (71.0%) had
+    expiry < fired_date, averaging 20.9 days stale, worst 62 days — and it was ongoing (14 of 28
+    on 2026-09-05). Real emailed example: SPCX260828C00110000, expiry 2026-08-28, alerted
+    2026-09-02 with $8,784,730 of premium presented as live, actionable positioning. Acting on
+    it was impossible; the contract no longer existed.
+
+    This is AUD-OPTIONSFLOW-STALEALERTS recurring in a narrower form. That fix correctly closed
+    the multi-week case via newer_than, but get_flow_alerts()'s docstring claim that "a genuinely
+    stale alert can never reach a caller at all" was false for anything expiring INSIDE the 48h
+    window. No server-side parameter can express "not yet expired", so it must be done here.
+
+    Fails OPEN on an unparseable/missing expiry: a row we cannot date is kept rather than
+    silently dropped, matching this module's fail-open convention everywhere else. The point is
+    to remove rows we can PROVE are dead, not to reject anything we cannot verify.
+    """
+    if not alerts:
+        return alerts
+    today = datetime.now(timezone.utc).date()
+    kept, dropped = [], 0
+    for a in alerts:
+        exp_raw = getattr(a, "expiry", None)
+        exp = None
+        if exp_raw:
+            try:
+                exp = datetime.strptime(str(exp_raw)[:10], "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                exp = None
+        if exp is not None and exp < today:
+            dropped += 1
+            continue
+        kept.append(a)
+    if dropped:
+        log.info("unusual_whales.flow_alerts_expired_dropped",
+                 symbol=sym, dropped=dropped, kept=len(kept),
+                 note="contract expiry already past — UW's max_dte is created_at-relative")
+    return kept
 
 
 def _parse_flow_alert_rows(data, sym: str) -> list["FlowAlert"]:

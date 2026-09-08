@@ -19,6 +19,15 @@ import sys
 from dataclasses import asdict
 from unittest.mock import patch
 
+# AUD-OPT6-EXPIREDCONTRACTS: get_flow_alerts() now drops alerts whose contract has ALREADY
+# EXPIRED (UW's max_dte is created_at-relative, so it cannot express "not yet expired"; 71% of
+# production alerts were on dead contracts). These fixtures used hardcoded 2023/2024 expiries,
+# which the filter correctly rejects. Use a RELATIVE future date so they can never go stale
+# again — a hardcoded future date would just re-break this test later.
+import datetime as _dt
+_FUTURE_EXPIRY = (_dt.datetime.now(_dt.timezone.utc).date() + _dt.timedelta(days=30)).isoformat()
+
+
 from src.services import unusual_whales as uw
 
 
@@ -1128,7 +1137,7 @@ def test_flow_alerts_returns_empty_list_when_not_available():
 def test_flow_alerts_parses_a_real_response():
     fake_row = {
         "ticker": "MSFT", "option_chain": "MSFT231222C00375000", "type": "call",
-        "strike": "375", "expiry": "2023-12-22", "price": "4.05",
+        "strike": "375", "expiry": _FUTURE_EXPIRY, "price": "4.05",
         "underlying_price": "372.99", "total_premium": "186705",
         "total_ask_side_prem": "151875", "total_bid_side_prem": "405",
         "total_size": 461, "volume": 2442, "open_interest": 7913,
@@ -1144,7 +1153,7 @@ def test_flow_alerts_parses_a_real_response():
     assert a.option_chain == "MSFT231222C00375000"
     assert a.option_type == "call"
     assert a.strike == 375.0
-    assert a.expiry == "2023-12-22"
+    assert a.expiry == _FUTURE_EXPIRY  # AUD-OPT6: fixture is relative, see _FUTURE_EXPIRY
     assert a.total_ask_side_prem == 151875.0
     assert a.total_bid_side_prem == 405.0
     assert a.total_size == 461
@@ -1179,7 +1188,7 @@ def test_flow_alerts_one_malformed_row_does_not_drop_the_rest():
     whole response — every other, well-formed row in the same batch should still come back."""
     good_row = {
         "ticker": "AAPL", "option_chain": "AAPL240101C00200000", "type": "call",
-        "strike": "200", "expiry": "2024-01-01", "total_size": 100, "has_sweep": False,
+        "strike": "200", "expiry": _FUTURE_EXPIRY, "total_size": 100, "has_sweep": False,
     }
     bad_row = {
         "ticker": "AAPL", "option_chain": "AAPL240101P00190000", "type": "put",
@@ -1210,7 +1219,7 @@ def test_flow_alerts_is_now_cached_short_ttl_aud_uwratelimit():
     fake_redis = _FakeRedis()
     good_row = {
         "ticker": "AAPL", "option_chain": "AAPL240101C00200000", "type": "call",
-        "strike": "200", "expiry": "2024-01-01", "total_size": 100, "has_sweep": False,
+        "strike": "200", "expiry": _FUTURE_EXPIRY, "total_size": 100, "has_sweep": False,
     }
     with patch.object(uw, "is_available", return_value=True), \
          patch.object(uw, "_get_redis", return_value=fake_redis), \

@@ -4563,6 +4563,23 @@ def _record_options_flow_alert_outcome(
 
 _OPTIONS_FLOW_ALERT_CAL_MIN_COUNT = 30  # matches _SQUEEZE_FAMILY_CAL_MIN_COUNT exactly
 
+# AUD-OPT6-CALIBRATIONCLUSTERING: a COUNT floor alone cannot tell a real sample from one
+# market day. Alerts fire in bursts across dozens of contracts on a handful of symbols within
+# minutes, so 30+ "outcomes" can easily be a single day's flow — and on a single day every
+# symbol tends to move together, which measures the MARKET, not the alert.
+#
+# Measured before this guard: the entire resolved options-flow dataset (n=1,444) spanned just
+# TWO entry dates across ~49 symbols, and on 2026-09-02 82.6% of everything rose. Both
+# directions showed nearly identical POSITIVE average returns (bearish +2.21%, bullish +2.08%)
+# — a broad two-day rally in which anything labelled bearish loses by construction. Without
+# this floor the builder would have published calibrated_win_rate ~= 0.20 for bearish into real
+# user emails as a "measured historical win rate", when it measured one rally.
+#
+# This is the THIRD time a clustered sample produced a confident wrong conclusion here — see
+# the two retracted findings in docs/2026-09-05/SESSION_INDEX_AND_NEXT_STEPS.md, both of which
+# reversed once the sample was widened.
+_OPTIONS_FLOW_ALERT_CAL_MIN_DATES = 5
+
 
 def _build_options_flow_alert_calibration(session, direction: str) -> dict | None:
     """A MEASURED historical win rate for THIS alert's own resolved outcomes, split by direction
@@ -4572,15 +4589,29 @@ def _build_options_flow_alert_calibration(session, direction: str) -> dict | Non
     direction alone — not a continuous metric like short-float% or OI-concentration% — is what
     this alert's own qualifying condition already is). None (not a fabricated 0.0) below the
     30-resolved-outcomes floor, matching every other calibration function in this file.
+
+    AUD-OPT6-CALIBRATIONCLUSTERING: ALSO returns None below a distinct-fired-date floor. A win
+    rate computed over one or two market days describes that market, not this alert — see the
+    constant's own comment for the measured case that motivated it.
     """
     rows = session.execute(
-        select(OptionsFlowAlertOutcome.is_correct_10d)
+        select(OptionsFlowAlertOutcome.is_correct_10d, OptionsFlowAlertOutcome.fired_date)
         .where(OptionsFlowAlertOutcome.direction == direction, OptionsFlowAlertOutcome.is_correct_10d.is_not(None))
     ).all()
     outcomes = [r[0] for r in rows]
     if len(outcomes) < _OPTIONS_FLOW_ALERT_CAL_MIN_COUNT:
         return None
-    return {"win_rate": round(sum(outcomes) / len(outcomes), 3), "count": len(outcomes)}
+    distinct_dates = len({r[1] for r in rows if r[1] is not None})
+    if distinct_dates < _OPTIONS_FLOW_ALERT_CAL_MIN_DATES:
+        log.info(
+            "options_flow_alert.calibration_suppressed_clustered",
+            direction=direction, outcomes=len(outcomes), distinct_dates=distinct_dates,
+            required_dates=_OPTIONS_FLOW_ALERT_CAL_MIN_DATES,
+            note="enough outcomes but too few distinct days — would measure the market, not the alert",
+        )
+        return None
+    return {"win_rate": round(sum(outcomes) / len(outcomes), 3),
+            "count": len(outcomes), "distinct_dates": distinct_dates}
 
 
 def check_options_flow_alerts() -> None:
@@ -4630,6 +4661,28 @@ def check_options_flow_alerts() -> None:
     except Exception:
         pass
     _t0 = time.monotonic()
+
+    # AUD-OPT6-NOMARKETHOURSGATE: this job runs every minute, 24/7, and had no market-hours
+    # gate — unlike its sibling check_short_squeeze_alerts(), which returns early when both
+    # markets are closed (:3111-3116). Because get_flow_alerts() uses a 48h `newer_than`
+    # window, the SAME UW rows stay eligible all night, and the only thing preventing repeat
+    # overnight email was a 30-minute Redis cooldown that expires ~16 times between close and
+    # open.
+    #
+    # Measured: all 28 alerts on 2026-09-05 fired at 00:01 UTC (~8pm ET, market closed), and
+    # the same on 09-06. Options flow is meaningless when no options are trading, so this is
+    # both user-facing noise and pure UW quota waste — a live concern given the rate-limit
+    # pressure documented in unusual_whales.py.
+    try:
+        from .paper_trading_engine import _is_market_hours
+        if not _is_market_hours("US") and not _is_market_hours("HK"):
+            _record_job_status("check_options_flow_alerts", "ok", time.monotonic() - _t0)
+            return
+    except Exception as _mh_exc:
+        # Fail OPEN, matching this module's convention: a market-calendar lookup failure must
+        # not silently disable a real alert. Logged so it is not invisible.
+        log.warning("options_flow.market_hours_check_failed", error=str(_mh_exc))
+
     try:
         import json as _json
 
