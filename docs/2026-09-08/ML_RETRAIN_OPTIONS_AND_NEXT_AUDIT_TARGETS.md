@@ -55,11 +55,24 @@ Every one of those is a downstream symptom of ~325 usable rows.
 
 ## Recommended actions, in priority order
 
-**1. Shrink the training universe to what is actually used. (Cheapest, biggest schedule win.)**
-173 active stocks all get trained, but only **61 have ever been traded** and 61 in the last 90
-days. Training the 61 traded + a watchlist buffer instead of 173 cuts the job ~65% — from ~1,384
-runs to ~490 — which *does* finish in one pass. No modelling change, no risk to signal quality
-for symbols we never trade.
+**1. ~~Shrink the training universe to what is actually used.~~ RETRACTED — I checked, and it
+is not safe.**
+
+> **This was my own top recommendation and the measurement killed it.** The reasoning was "only
+> 61 of 173 symbols have ever been traded, so train those." But **169 of 173 symbols produced a
+> BUY signal in the last 30 days** — signals span essentially the whole universe, and ML feeds
+> *signals*, not just entries.
+>
+> Even the softer `traded ∪ watchlisted` version (133 of 173, a 23% cut) is a bad trade: the 40
+> symbols it would drop produced **1,588 BUY signals in 30 days — 38% of all signals**. Trimming
+> them buys compute by degrading signal quality on more than a third of live output.
+>
+> (A secondary inference of mine was also wrong: eyeballing the excluded list suggested it was
+> HK-dominated. It is **29 US / 11 HK**. The objection holds on signal volume, not on market mix.)
+>
+> **Conclusion: there is no safe universe trim.** The ~1,384-run job is training the symbols it
+> genuinely needs to. Which makes items 2 and 3 the *only* real levers, and makes parallelism a
+> more legitimate option than I first judged — see the revised item 4.
 
 **2. Backfill more history before touching anything else.** ~667 bars ≈ 2.6 years. Extending to
 5 years of daily bars would roughly double post-warmup rows and is the only change that attacks
@@ -71,9 +84,13 @@ rows. Worth an A/B: train with and without it on the same symbols and compare *c
 AUC, which is noise at n=31). It may well be earning its keep; nobody has checked since n_test
 fell this low.
 
-**4. Do NOT prioritise parallelism.** It makes a job that produces 22 useful models finish
-sooner. Items 1-3 change how many useful models exist. Revisit parallelism only after the
-universe is trimmed and it still does not fit.
+**4. Parallelism — REVISED to a genuine option, since item 1 is retracted.** My original
+argument was "trim the universe first, only parallelise if it still does not fit." With no safe
+trim available, the job legitimately needs to train ~173 symbols x 4 styles x 2 models. Two
+caveats keep it at priority 4 rather than 1: it still produces mostly-suppressed models (items
+2-3 are what change that), and the current interleave+rotation fix means truncation now degrades
+*evenly* rather than starving whole styles — so the job failing to finish is no longer causing
+targeted damage. Worth doing, but after the data problems, not instead of them.
 
 **Explicitly not recommended:** a fleet-wide retrain (established 2026-09-07 — 89% of freshly
 retrained models immediately self-suppress, and stale models measure marginally *better* than
