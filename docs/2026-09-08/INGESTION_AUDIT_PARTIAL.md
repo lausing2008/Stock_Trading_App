@@ -151,9 +151,7 @@ yfinance for one of the affected dates, which I did not do.**
 Severity remains LOW regardless (0.128% avg overshoot, SPY only, 2.5% of its bars) — but the
 mechanism is open, not solved.
 2. ~~**`data_quality_checks` scheduler jobs**~~ — **AUDITED, see Area 2 below.**
-3. **Adjusted-vs-unadjusted consistency across ALL ingest paths** — I verified the main adapter
-   path only. `paper_trading_engine.py` has ~8 separate `yf.download(..., auto_adjust=True)`
-   call sites that were not traced.
+3. ~~**Adjusted-vs-unadjusted consistency**~~ — **AUDITED, see Area 3 below. SPY question CLOSED.**
 4. **`_fetch_live_bulk` and its per-symbol fallback** — `BUG-YFCALLVOL2` previously found the
    fallback amplifying a rate-limit event. Not re-verified.
 5. **HK timezone handling** — a documented past bug stored HK bars at the wrong UTC offset. Not
@@ -227,3 +225,72 @@ Worth stating explicitly: **the DQ framework was never going to.** Every check i
 *freshness/staleness* test — "is the newest row recent enough". None of them validate row
 *content*. An OHLC-ordering violation on a bar from March is perfectly fresh by every check here.
 That is a coverage gap in kind, not a bug: the framework does what it says.
+
+
+---
+
+## Area 3 — adjusted vs unadjusted: **NO live finding, and the SPY question is now CLOSED**
+
+### The SPY anomaly: solved, historical, and already self-healed
+
+After two wrong turns (recorded below), the mechanism is proven by matching values:
+
+```
+yfinance UNADJUSTED, 2026-05-15:  open=741.7900  high=743.4600
+yfinance ADJUSTED,   2026-05-15:  open=739.8839  high=741.5496
+our DB:                           open=741.7900  high=741.5496
+                                       ^unadjusted     ^adjusted
+```
+
+Our stored `open` is **byte-identical to yfinance's UNADJUSTED open**, while `high`/`low`/`close`
+are the **adjusted** values. The row genuinely mixes the two scales — which is exactly the
+original hypothesis, now confirmed with matching numbers rather than inferred from precision.
+
+**It is historical, not live:**
+
+| | |
+|---|---|
+| last bad bar | **2026-05-27** |
+| SPY bars written since | **70** |
+| bad bars among them | **0** |
+| bad bars predating the repo's first commit (2026-04-17) | 6 of 14 |
+
+No current code mixes scales — every fetch site passes `auto_adjust` uniformly for all four OHLC
+columns, and there is no path that fetches both and merges. The writer responsible was removed
+before this repo's history begins or shortly after. **`validate_ohlcv()` would reject such a row
+today**, which is consistent with none having appeared in 70 subsequent bars.
+
+**Action: none needed.** The 14 rows are cosmetically wrong (0.128% avg overshoot) on a symbol
+whose `open` nothing consumes. Rewriting historical prices to fix a self-healed cosmetic defect
+carries more risk than the defect.
+
+### Two wrong turns, recorded so they are not repeated
+
+1. **I retracted the adjusted/unadjusted hypothesis prematurely.** I disproved it by noting the
+   adapter passes `auto_adjust` uniformly — true, but it only rules out *current* code, not a
+   historical writer. Correct conclusion: "not caused by today's code", not "not an adjustment
+   mix".
+2. **I nearly concluded "off-by-one row".** Our 05-15 open (741.79) is yfinance's *unadjusted*
+   05-15 open — not the previous day's (743.65). Checking the actual previous-day value is what
+   killed that theory before it got written down.
+
+### The live paths: consistent, with three benign exceptions
+
+All ~20 yfinance fetch sites were inventoried. Three make real fetches **without** `auto_adjust`
+(yfinance defaults to `False`, i.e. unadjusted):
+
+| site | use | verdict |
+|---|---|---|
+| `scheduler.py:1141` `_build_game_plan` | derives strike/target from its own fetched price | **benign** — self-contained, no cross-scale comparison |
+| `routes.py:4714` sector-ETF momentum | `Close[-1]/Close[-21]`, `Close > SMA50` | **benign** — ratios and self-comparisons are scale-invariant |
+| `routes.py:4503` current price | single latest close | **benign** — see measurement below |
+
+**Measured, rather than argued:** the latest close is **identical** raw vs adjusted for SPY, XLF,
+AAPL and NVDA (diff 0.0000%). Adjustment only moves *historical* bars — AAPL's 21-day return
+differs by 0.088pp raw vs adjusted, SPY/XLF/NVDA by 0.0000pp. So a site reading only the latest
+close cannot be affected, and the one site computing a multi-week ratio uses a scale-invariant
+form.
+
+**Recommendation (low priority):** add `auto_adjust=True` to those three for consistency. It
+changes nothing measurable today, but the next person to compute a longer-horizon return from
+one of them would inherit a silent 0.088pp-class error.
