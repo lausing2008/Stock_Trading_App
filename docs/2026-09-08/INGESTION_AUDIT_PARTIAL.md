@@ -154,8 +154,7 @@ mechanism is open, not solved.
 3. ~~**Adjusted-vs-unadjusted consistency**~~ — **AUDITED, see Area 3 below. SPY question CLOSED.**
 4. ~~**`_fetch_live_bulk` and its per-symbol fallback**~~ — **AUDITED, see Area 4 below. CLEAN.**
 5. ~~**HK timezone handling**~~ — **AUDITED, see Area 5 below. CLEAN.**
-6. **The 21 symbols with <400 bars / 7 with <100** — beyond the two dead tickers, are the rest
-   genuinely new listings or silently under-ingested?
+6. ~~**The 21 symbols with <400 bars**~~ — **AUDITED, see Area 6 below. 1 REAL FINDING.**
 
 
 ---
@@ -388,3 +387,66 @@ and none of the OHLC mixing.
 
 **No action needed.** The dates are right, nothing derives from the hour component of a daily
 bar, and the writer is gone.
+
+
+---
+
+## Area 6 — under-covered symbols: **1 CONFIRMED finding**
+
+Classifying all 21 symbols with <400 daily bars by coverage density (bars per weekday since
+their first bar):
+
+| verdict | count | evidence |
+|---|---|---|
+| **New listing** | 17 | 0.93–1.03 bars/weekday — full coverage since inception |
+| **Stale** | 2 | SSNLF, SKHYV — the known dead tickers |
+| **GAPPY** | **2** | `1671.HK` at **0.36**, `0117.HK` at **0.41** |
+
+### Finding — MEDIUM — `validate_ohlcv`'s `volume > 0` rule silently deletes ~half the history of illiquid HK stocks
+
+I first assumed the two gappy symbols were thinly-traded stocks that genuinely don't trade some
+days. **Checking yfinance disproved that** — it returns 24–28 bars for the exact gap windows.
+The data exists upstream; we were discarding it.
+
+Traced to `validate_ohlcv()` (`ingestion.py:129`):
+
+```python
+if not allow_zero_volume:
+    df = df[df["volume"] > 0]
+```
+
+Running the real 3-year fetch through the real validator:
+
+| symbol | fetched | kept | **dropped** | zero-volume | bad OHLC |
+|---|---|---|---|---|---|
+| `1671.HK` | 735 | 277 | **458 (62%)** | **448** | 10 |
+| `0117.HK` | 735 | 320 | **415 (56%)** | **398** | 17 |
+
+**448 of the 458 dropped bars are zero-volume.** For a thinly-traded HK small cap, a zero-volume
+day is a legitimate no-trade session with a real carried-forward price — not an invalid bar.
+
+**Scope — the rule is right for liquid names and wrong for illiquid ones:**
+
+| symbol | zero-volume share |
+|---|---|
+| 0700.HK, 0005.HK, 9988.HK, 3750.HK | **0.6–1.2%** |
+| `0117.HK` | **26.9%** |
+| `1671.HK` | **48.6%** |
+
+The docstring states the assumption explicitly — *"Regular-session and daily bars keep the strict
+volume>0 check — real trading always has nonzero volume there."* That is true for US liquid
+equities, which is what it was written against (`allow_zero_volume` exists only for yfinance's
+pre/post-market intraday quirk), and false for HK small caps.
+
+**Why it matters:** every rolling feature for these symbols is computed across a series missing
+half its bars, so a "200-day SMA" spans ~400 calendar days. They are in the training universe and
+generate live signals. And it is **self-concealing** — the weekly `force=True` refresh re-fetches
+all 735 bars every week and re-drops the same 458, so the gap can never heal and the only
+symptom is a `ohlcv.drop_invalid` log line nobody reads.
+
+**Recommended fix:** keep the volume gate for US daily bars, but allow zero-volume daily bars for
+HK (or, better, gate on price validity alone for daily bars and keep `volume > 0` only where a
+zero genuinely indicates a bad bar). The `allow_zero_volume` parameter already exists — this is
+plumbing a market-aware value into it, not new machinery.
+
+**Not fixed — reported, per the one-area-at-a-time protocol.**
