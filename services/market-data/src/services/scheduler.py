@@ -456,7 +456,21 @@ def _is_us_trading_day(dt: datetime | None = None) -> bool:
 
 
 def _symbols_for(market: str) -> list[str]:
-    """Return all active stock symbols for the given market ('US' or 'HK')."""
+    """Return all active stock symbols for the given market ('US' or 'HK').
+
+    AUD-ING7-DELISTNEVERFIRES: this DELIBERATELY still includes delisted symbols, and I briefly
+    broke that. Ingestion is what DETECTS and RECONFIRMS delisting (via
+    _record_delisting_signal(), which only ever runs on symbols this function returns), so
+    filtering on the delisted flag here would disable the detection mechanism itself —
+    and would make a mistaken flag permanent, since a symbol wrongly marked delisted could never
+    be re-fetched and cleared. test_delisted_excluded_from_scheduler_jobs.py asserts the
+    absence of that filter for exactly this reason, and it correctly caught the change.
+    (Note the test greps this function for the flag's column reference, so this docstring
+    deliberately describes it in prose rather than naming the attribute.)
+
+    The wasted-quota concern is real but belongs DOWNSTREAM: the consumers that should skip
+    delisted symbols (ML training, ranking, signal generation) filter on the flag themselves.
+    """
     with SessionLocal() as session:
         return list(
             session.execute(

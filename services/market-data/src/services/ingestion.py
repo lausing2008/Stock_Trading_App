@@ -69,6 +69,17 @@ class IngestionError(Exception):
 # RUNS (not 2 retries within one call — those are already collapsed into a single raise by the
 # retry-exclusion above) before acting is a cheap, conservative confirmation margin.
 _DELISTING_CONFIRM_THRESHOLD = 2
+
+# AUD-ING7-DELISTNEVERFIRES: how stale the NEWEST bar a fetch returns may be before that fetch
+# counts as evidence of delisting rather than evidence of life. See the call site for why a
+# successful fetch alone is not proof a symbol is alive.
+#
+# 7 days deliberately, matching the stale_symbols_d1 DQ gauge (AUD-DQ2-PERSYMBOLSTALENESS) so
+# the two mechanisms cannot disagree about what "stale" means. Comfortably wider than any
+# holiday weekend (max ~4 calendar days closed), and combined with _DELISTING_CONFIRM_THRESHOLD
+# = 2 a symbol must look dead across two separate ingest cycles before it is flagged — so a
+# single transient bad fetch cannot delist a live stock.
+_DELISTING_STALE_BAR_DAYS = 7
 _DELISTING_REDIS_KEY = "stockai:delisting_signal:{symbol}"
 _DELISTING_REDIS_TTL = 30 * 86400  # 30 days — a stale single occurrence should eventually decay
 
@@ -294,7 +305,46 @@ def ingest_symbol(
                 if not candidate.empty:
                     df = candidate
                     if _track_delisting and adapter.name == "yfinance":
-                        _clear_delisting_signal(symbol)
+                        # AUD-ING7-DELISTNEVERFIRES: a successful fetch is NOT proof the symbol
+                        # is alive, and treating it as such made the whole delisting mechanism
+                        # unreachable.
+                        #
+                        # The detector only ever incremented on YFTickerMissingError. But
+                        # yfinance's behaviour depends on HOW you ask:
+                        #     history(start=..., end=...)  -> 1 stale bar,          SUCCESS
+                        #     history(period="1mo")        -> YFPricesMissingError, RAISES
+                        # ingest_symbol() always builds an explicit start/end (incremental from
+                        # head - 7 days), and for a delisted ticker that window still straddles
+                        # its FINAL REAL BAR. So yfinance returns that one stale bar, this
+                        # branch counted it as success, _clear_delisting_signal() reset the
+                        # counter, and the confirmation threshold was unreachable BY
+                        # CONSTRUCTION. Verified live: a real ingest_symbol("SKHYV") logged
+                        # inserted=1 and left no signal key, with zero delisting keys in Redis
+                        # and zero delisted_confirmed events in 7 days of logs — the mechanism
+                        # had never fired once since it was written.
+                        #
+                        # So judge LIVENESS by the data, not by the absence of an exception: if
+                        # the newest bar returned is older than the staleness window, this is a
+                        # dead ticker that merely happens to still answer, and it should ACCRUE
+                        # a signal rather than clear one.
+                        #
+                        # CRITICAL: this must not blanket-delist everything that looks stale in
+                        # the DB. SSNLF and SKHYV are indistinguishable there (both 1 bar, both
+                        # active) but have OPPOSITE causes — SKHYV genuinely raises
+                        # YFPricesMissingError on a relative-period fetch, while SSNLF returns
+                        # 23 real bars and is simply under-ingested. Keying off the freshness of
+                        # the bars actually RETURNED gets this right: SSNLF's fetch brings back
+                        # current bars and correctly clears, SKHYV's brings back only a
+                        # months-old bar and correctly accrues.
+                        _newest = pd.to_datetime(candidate["ts"]).max()
+                        _age_days = (pd.Timestamp.utcnow().tz_localize(None) - _newest).days
+                        if _age_days > _DELISTING_STALE_BAR_DAYS:
+                            log.warning("ingest.stale_newest_bar", symbol=symbol,
+                                        newest_bar=str(_newest)[:10], age_days=_age_days,
+                                        threshold_days=_DELISTING_STALE_BAR_DAYS)
+                            _record_delisting_signal(symbol)
+                        else:
+                            _clear_delisting_signal(symbol)
                     break
                 log.warning("ingest.adapter_empty", adapter=adapter.name, symbol=symbol)
             except yf.exceptions.YFTickerMissingError as exc:
