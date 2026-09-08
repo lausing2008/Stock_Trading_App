@@ -150,8 +150,7 @@ yfinance for one of the affected dates, which I did not do.**
 
 Severity remains LOW regardless (0.128% avg overshoot, SPY only, 2.5% of its bars) — but the
 mechanism is open, not solved.
-2. **`data_quality_checks` scheduler jobs** — what do they actually verify? They evidently did
-   not catch the SPY anomaly or the two dead tickers.
+2. ~~**`data_quality_checks` scheduler jobs**~~ — **AUDITED, see Area 2 below.**
 3. **Adjusted-vs-unadjusted consistency across ALL ingest paths** — I verified the main adapter
    path only. `paper_trading_engine.py` has ~8 separate `yf.download(..., auto_adjust=True)`
    call sites that were not traced.
@@ -161,3 +160,70 @@ mechanism is open, not solved.
    re-verified.
 6. **The 21 symbols with <400 bars / 7 with <100** — beyond the two dead tickers, are the rest
    genuinely new listings or silently under-ingested?
+
+
+---
+
+## Area 2 — the `data_quality_checks` job: **2 findings**
+
+The framework itself is mature and well-reasoned — it separates query-errors from staleness
+(T243-DQ5, so a DB outage cannot report "all healthy"), has ratio/gauge check types, and adds a
+market-closed guard (T242-DQ1) to stop false weekend alerts. 16 checks, every 2 hours. **It is
+not a rubber stamp.** Both findings are gaps at its edges, not a broken design.
+
+### Finding 2a — MEDIUM — The price checks use a single `MAX()` across all symbols, so per-symbol death is invisible
+
+```sql
+SELECT MAX(p.ts) FROM prices p JOIN stocks st ON p.stock_id=st.id
+WHERE st.market='US' AND p.timeframe='D1'
+```
+
+One aggregate over the whole market. **If any single US symbol updated in the last 48h, the
+check passes** — regardless of how many others have stopped updating entirely.
+
+That is exactly why it never flagged the two dead tickers:
+
+| symbol | last bar | days stale | visible to the check? |
+|---|---|---|---|
+| `SSNLF` | 2025-11-07 | **305** | ❌ hidden behind `MAX()` |
+| `SKHYV` | 2026-07-17 | **53** | ❌ hidden behind `MAX()` |
+
+Measured blast radius today: **2 of 131 US symbols** are >30d stale and invisible. Small now —
+but the check is structurally incapable of detecting the failure mode it exists to catch, so the
+number could grow to any size without an alert.
+
+**Recommended:** add a per-symbol staleness check — count active symbols whose own latest bar is
+older than N trading days, fail if that count exceeds a small threshold. The existing framework
+supports this shape directly; it needs a new `_DQ_CHECKS` entry, not new machinery.
+
+### Finding 2b — LOW — The two price checks are missing the `market` tag, so they fire false alerts every long weekend
+
+T242-DQ1 added a market-closed guard so a check does not report stale when its market is simply
+shut. The guard keys on `check.get("market")` — and **`prices_us_d1` / `prices_hk_d1` do not
+carry that key**, while their `rankings_*` and `signals_*` siblings do:
+
+| check | `market` tag |
+|---|---|
+| rankings_us / rankings_hk | ✅ |
+| signals_us / signals_hk | ✅ |
+| **prices_us_d1 / prices_hk_d1** | ❌ |
+
+**Caught live during this audit.** `dq_check:prices_us_d1` currently reads
+`{"ok": false, "age_hours": 99.3}` — because the last US bar is Friday 2026-09-04, Monday
+2026-09-07 was Labor Day, and today is Tuesday pre-close. **The data is completely healthy;**
+the check is firing anyway.
+
+> **A false alarm of my own, worth recording.** I first read that 99.3h as an active ingestion
+> outage and started chasing it. It is not — the pipeline is fine and the holiday explains it
+> entirely. The finding is the *missing guard*, not stale data. Checking the holiday calendar
+> before escalating is what separated the two.
+
+The fix is one key per entry (`"market": "US"` / `"market": "HK"`) — the guard logic already
+exists and needs no change.
+
+### Why neither finding caught the SPY anomaly
+
+Worth stating explicitly: **the DQ framework was never going to.** Every check is a
+*freshness/staleness* test — "is the newest row recent enough". None of them validate row
+*content*. An OHLC-ordering violation on a bar from March is perfectly fresh by every check here.
+That is a coverage gap in kind, not a bug: the framework does what it says.
