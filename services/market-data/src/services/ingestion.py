@@ -115,8 +115,16 @@ def validate_ohlcv(df: pd.DataFrame, symbol: str, allow_zero_volume: bool = Fals
     invalid bar the way volume=0 would be on a regular-session bar. Without this, every single
     extended-hours bar was silently dropped, defeating the feature entirely (discovered via a
     real ingest showing 342/576 fetched bars dropped, all zero-volume, all outside 9:30-16:00 ET).
-    Regular-session and daily bars keep the strict volume>0 check — real trading always has
-    nonzero volume there.
+    AUD-ING6-HKZEROVOLUME: the original wording here said "Regular-session and daily bars keep
+    the strict volume>0 check — real trading always has nonzero volume there." That is a
+    US-LIQUID-EQUITY assumption and it is false for thinly-traded HK small caps, where a
+    zero-volume day is a legitimate no-trade session. It silently deleted 62% of 1671.HK's
+    history and 56% of 0117.HK's. US daily bars still keep the strict check (a zero-volume
+    regular-session bar on a liquid US listing really is a bad bar); HK daily/weekly bars now
+    allow zero volume. See the caller's own comment for the measurements.
+
+    Note this ONLY relaxes the volume gate — the OHLC-ordering and positivity invariants above
+    apply to every market and timeframe regardless.
     """
     if df.empty or not {"high", "low", "open", "close", "volume"}.issubset(df.columns):
         return df
@@ -125,8 +133,11 @@ def validate_ohlcv(df: pd.DataFrame, symbol: str, allow_zero_volume: bool = Fals
     df = df[(df["high"] >= df["low"]) & (df["high"] >= df["open"]) & (df["high"] >= df["close"])]
     df = df[(df["low"] <= df["open"]) & (df["low"] <= df["close"])]
     df = df[(df[["open", "high", "low", "close"]] > 0).all(axis=1)]
-    if not allow_zero_volume:
-        df = df[df["volume"] > 0]
+    # AUD-ING6-HKZEROVOLUME: `allow_zero_volume` relaxes the floor from >0 to >=0 — it does NOT
+    # skip the volume check entirely. Skipping it would let a NEGATIVE volume through, which is
+    # corrupt data in any market and was never the thing being permitted. (Caught by a test
+    # while making this change: the naive `if not allow_zero_volume` form kept a volume of -5.)
+    df = df[df["volume"] >= 0] if allow_zero_volume else df[df["volume"] > 0]
     dropped = before - len(df)
     if dropped:
         log.warning("ohlcv.drop_invalid", symbol=symbol, dropped=dropped)
@@ -238,7 +249,34 @@ def ingest_symbol(
         # T230-CHARTING-PREMARKET: only the US-intraday prepost=True path can legitimately
         # produce real zero-volume bars (yfinance's extended-hours quirk) — daily/weekly bars
         # and HK (no extended-hours session) keep the strict volume>0 invariant check.
-        allow_zero_volume = market == "US" and timeframe not in ("1d", "1w")
+        #
+        # AUD-ING6-HKZEROVOLUME: ...EXCEPT that assumption ("real trading always has nonzero
+        # volume") is a US-liquid-equity assumption, and it is FALSE for thinly-traded HK small
+        # caps, where a zero-volume day is a legitimate no-trade session carrying a real price —
+        # not an invalid bar.
+        #
+        # Measured against the real 3-year fetch through the real validator:
+        #     1671.HK  fetched 735  kept 277  DROPPED 458  (448 of them zero-volume)
+        #     0117.HK  fetched 735  kept 320  DROPPED 415  (398 of them zero-volume)
+        # Zero-volume share by liquidity: 0700.HK/0005.HK/9988.HK 0.6-1.2%, 0117.HK 26.9%,
+        # 1671.HK 48.6%. The rule is correct for liquid names and badly wrong for illiquid ones.
+        #
+        # Consequences of dropping them: every rolling feature for these symbols is computed
+        # across a series missing half its bars, so a "200-day SMA" actually spans ~400 calendar
+        # days — and both symbols are in the ML training universe and emit live signals. It was
+        # also SELF-CONCEALING: the weekly force=True refresh re-fetches all 735 bars and
+        # re-drops the same 458 every week, so the gap could never heal and the only symptom was
+        # an ohlcv.drop_invalid log line.
+        #
+        # HK daily/weekly bars now allow zero volume. US daily stays strict: a zero-volume
+        # regular-session bar on a US listing really is a bad bar, and loosening it there would
+        # discard a genuine signal (measured: liquid US names lose ~1% either way, so there is
+        # nothing to gain and a real invariant to lose). The OHLC-ordering and positivity checks
+        # are unaffected in both markets — this only relaxes the volume gate.
+        allow_zero_volume = (
+            (market == "US" and timeframe not in ("1d", "1w"))
+            or market == "HK"
+        )
 
         last_err: Exception | None = None
         df: pd.DataFrame | None = None
