@@ -277,3 +277,56 @@ behavioral change. Recorded so it is not re-discovered as a live bug — and so 
 *shape* of it (two `_svc_token`, not three `_service_token`) is on record.
 
 **Also checked, clean:** zero DQ gauge alarms and zero scheduler job failures in 24h.
+
+---
+
+## Update 2026-09-08 (fourth pass): all-gates audit — 12 findings, 1 CRITICAL fixed (tier 368)
+
+Full detail: `docs/audits/2026-09-08-gate-audit.md`. **Read its pattern section before fixing any
+gate.**
+
+### DEFERRED BY USER DECISION — SHORT-style R:R (revisit later)
+
+`AUD-SIGALERT-RRUNREACHABLE` is fixed for GROWTH and LONG (877 of 1,365 BUY signals, 64%) and
+partially for SWING (low-ATR only). **SHORT remains blocked and the user chose to leave it for
+now.**
+
+This is not a bug. SHORT's own style params — `stop_pct 0.97` / `target_pct 1.05`, i.e. a 3% stop
+and a 5% target — cap R:R at **1.67 by design**, and the style cap binds before the derived
+multiple does. Against a 2.25 floor it cannot pass. Blocking it is now a *correct* answer.
+
+Affects **234 of 1,365 BUY signals (17%)**. Three options when revisiting:
+
+1. **Leave it permanently** — SHORT candidates never alert. Defensible if 1.67:1 genuinely is not
+   worth taking.
+2. **Widen SHORT's target** (5% → ~8%) so its geometry can reach 2.25:1. This is a REAL
+   trading-parameter change and must be validated, not guessed.
+3. **Per-style R:R floors** — judge SHORT at ~1.6, its designed geometry. Most principled, most
+   work.
+
+**Do NOT force it by removing the style target cap.** That would fabricate a target SHORT's tuned
+parameters do not support — the same error class as the original bug.
+
+### Still open from this audit, ranked
+
+1. **`AUD-EXIT-INDICATORSEMPTY` (CRITICAL)** — `momentum_fade` and PT-H5's RSI trail read the
+   `indicators` table: **0 rows, no writer anywhere in the codebase**. Both unconditionally dead
+   while reading as enabled. The RSI data is in `signals.reasons` instead (43,024 rows / 90d, 388
+   above 75), which `_monitor_positions` already reads twice. **Bounded:** only `indicators` and
+   `stock_connect_flows` are truly empty, and the latter is harmless (no readers).
+2. **`AUD-ENTRY-CONSECLOSS-DEADLOCKLOOP` (HIGH)** — the consecutive-loss breaker is permanently
+   bypassed at zero open positions and re-grants **every scan cycle**. Three portfolios are in
+   that state; portfolio 5 took **7 trades under it and all 7 lost, −$452.92**.
+3. **`AUD-ENTRY-BREAKOUTREF-DEONLY` (HIGH)** — the wrong-path pattern; DE's extension guard
+   computes a constant −3.38% and cannot fire.
+4. `AUD-EXIT-HKENTRYDATE` (HIGH, latent) · `AUD-CONVICTION-RSIDIV-NOWRITER` (MEDIUM) ·
+   `AUD-ENTRY-CONFSIZEMULT-HKCONSTANT` + `AUD-ENTRY-SIZEEXCESS-STALEMINSCORE` (MEDIUM — **both
+   raise risk capital on the two portfolios measuring worst**) · `AUD-EXIT-CORRSIGNMASK` ·
+   `AUD-ENTRY-NYSEHOLIDAY-FOURTHCOPY` + 4 LOW.
+
+### Methodology note worth keeping
+
+`pg_stat_user_tables.n_live_tup` is a **stale estimate**, not a count. A sweep using it returned
+**29 "empty" tables** including `users` and `price_alerts` (137 real rows). Only `COUNT(*)`
+answers "is this table empty" — which mattered here because an empty table was the CRITICAL
+finding.
