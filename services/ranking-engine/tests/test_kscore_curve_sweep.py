@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 from src.api.routes import (
     _kscore_curve_candidate_sets,
+    _kscore_curve_is_valid,
     _kscore_curve_raw_cache,
     _KSCORE_CURVE_RAW_CACHE_MAX_WINDOW,
     _KSCORE_CURVE_SWEEP_DELTA,
@@ -41,8 +42,16 @@ _BASE_CURVE = {
 # ── _kscore_curve_candidate_sets ────────────────────────────────────────────────────────────
 
 def test_candidate_generation_produces_two_per_real_delta_key_perturbed_both_directions():
+    """AUD-RANK-CURVEDRIFT: two per key MINUS any that the coherence filter rejects. Against
+    _BASE_CURVE exactly one is genuinely incoherent (rsi_mid +20% = 54.0 clears rsi_low but the
+    -10% rsi_high candidate lands at 63.0, inverting the ladder against it), so the bound is
+    2N-1 rather than 2N. Asserted as an exact count, not an inequality, so a filter that
+    silently started rejecting more would still fail here."""
     candidates = _kscore_curve_candidate_sets(_BASE_CURVE)
-    assert len(candidates) == 2 * len(_KSCORE_CURVE_SWEEP_DELTA)
+    assert len(candidates) == 2 * len(_KSCORE_CURVE_SWEEP_DELTA) - 1
+    # Every surviving candidate must itself be coherent against the base.
+    for c in candidates:
+        assert _kscore_curve_is_valid({**_BASE_CURVE, **c})
 
 
 def test_every_candidate_is_a_single_key_override_not_a_multi_key_grid():
@@ -241,11 +250,14 @@ def test_tune_curve_endpoint_treats_an_unmeasurable_baseline_as_a_skip_not_an_as
 
 def test_tune_curve_endpoint_records_tune_history_on_every_branch_including_rejections():
     """One TuneHistory row per attempt (promoted or not) — matching tune_kscore_weights()'s own
-    audit-trail discipline. Bound is EXACT (== 6): every skip/reject/redis-failure branch plus
-    the promoted branch, scoped strictly to this function's own body."""
+    audit-trail discipline. Bound is EXACT (== 7): every skip/reject/redis-failure branch plus
+    the promoted branch, scoped strictly to this function's own body.
+
+    Raised 6 -> 7 by AUD-RANK-CURVEDRIFT, which added the merged-curve coherence gate. That
+    branch rejects a promotion, so it MUST leave an audit row like every other rejection."""
     start = _ROUTES_SOURCE.index("def tune_kscore_curve(")
     body = _ROUTES_SOURCE[start:]
-    assert body.count("_record_kscore_tune_history(") == 6
+    assert body.count("_record_kscore_tune_history(") == 7
 
 
 def test_tune_curve_endpoint_tags_every_tune_history_call_with_the_curve_parameter_class():
@@ -254,11 +266,12 @@ def test_tune_curve_endpoint_tags_every_tune_history_call_with_the_curve_paramet
     'kscore_weights' (tune_kscore_weights()'s own value) — tune_kscore_curve() must explicitly
     override it at EVERY one of its 6 call sites, or its rows would be silently mistagged as
     weights-sweep rows in the TuneHistory audit trail, indistinguishable from the sibling
-    sweep's own real attempts."""
+    sweep's own real attempts. 7 call sites since AUD-RANK-CURVEDRIFT added the merged-curve
+    coherence gate."""
     start = _ROUTES_SOURCE.index("def tune_kscore_curve(")
     body = _ROUTES_SOURCE[start:]
-    assert body.count('parameter_class="kscore_curve"') == 6
-    assert body.count('parameter_name="curve_shape"') == 6
+    assert body.count('parameter_class="kscore_curve"') == 7
+    assert body.count('parameter_name="curve_shape"') == 7
 
 
 def test_tune_curve_endpoint_never_leaves_a_call_site_on_the_weights_default():

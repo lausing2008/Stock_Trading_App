@@ -1072,6 +1072,16 @@ _SECTOR_ETF_MAP: dict[str, str] = {
     "Utilities":               "XLU",
     "Communication Services":  "XLC",
     "Telecommunications":      "XLC",
+    # AUD-RANK-SECTORLABELS: `stocks.sector` is populated from yfinance, whose taxonomy differs
+    # from the GICS names above. Measured in production: Consumer Cyclical (4), Consumer
+    # Defensive (1), Financial (2) alongside Financial Services (7). Without these keys
+    # _batch_sector_rs_lag() mapped those stocks to NO etf, so PT-M1's sector-relative-weakness
+    # exit gate silently never evaluated them. Same omission existed in ranking-engine's own
+    # copy of this map and in brinson_attribution.SECTOR_ETF_TICKERS.
+    "Consumer Cyclical":       "XLY",
+    "Consumer Defensive":      "XLP",
+    "Financial":               "XLF",
+    "Basic Materials":         "XLB",
 }
 
 

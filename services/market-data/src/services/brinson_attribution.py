@@ -47,6 +47,14 @@ _SECTOR_NAME_ALIASES: dict[str, str] = {
     "Financial": "Financial Services",
     "Health Care": "Healthcare",
     "Telecommunications": "Communication Services",
+    # AUD-RANK-SECTORLABELS: yfinance's own names for the two Consumer sectors. Unlike the
+    # sibling maps in ranking-engine/paper_trading_engine, an unrecognized label here fails
+    # CLOSED and visibly (normalize_sector -> None -> the explicit "unclassified" bucket), so
+    # the effect was lost attribution coverage rather than a wrong benchmark — but every real
+    # Consumer trade was landing in unclassified and being excluded from the effect sums.
+    "Consumer Cyclical": "Consumer Discretionary",
+    "Consumer Defensive": "Consumer Staples",
+    "Basic Materials": "Materials",
 }
 
 # The 11 real SPDR sector-ETF tickers (matches routes.py's own RES-4 _SECTOR_ETFS mapping —

@@ -303,13 +303,37 @@ def _volatility_raw_input(df: pd.DataFrame) -> float | None:
     return None if pd.isna(vol) else float(vol)
 
 
+_VOL_SOFT_FLOOR = 10.0  # linear region bottoms out here; below it, compress instead of clip
+
+
 def _volatility_score_from_raw(vol: float | None, cfg: dict | None = None) -> float:
     """Apply the #19 (volatility scale factor) curve-shape parameter to an already-computed
-    raw realized-vol value."""
+    raw realized-vol value.
+
+    AUD-RANK-VOLSATURATE: the linear form clipped hard at 0, and that floor was not a rare
+    edge — 1,638 of 12,787 all-time ranking rows (12.81%) sat at exactly 0. Past the floor the
+    factor stopped discriminating entirely: at the live volatility_scale of 1200, every stock
+    above 8.33%/day realized vol scored identically 0, so the 18% of composite weight riding on
+    volatility could not distinguish a merely-volatile name from a genuinely wild one. Because
+    all of them tie at the bottom, cross-sectional ranking within that 12.81% was decided
+    entirely by the other factors.
+
+    Fixed by keeping the linear region intact (so calibrated behaviour and volatility_scale's
+    meaning are unchanged for the ~87% of rows above the floor) and replacing the hard clip
+    with a hyperbolic compression below it. The score still approaches 0 asymptotically and
+    stays strictly monotonic in vol, so higher volatility always scores lower — it just never
+    reaches a dead zone where differences vanish.
+    """
     if vol is None:
         return 50.0
     p = _curve_params(cfg)
-    return float(np.clip(100 - vol * p["volatility_scale"], 0, 100))
+    linear = 100 - vol * p["volatility_scale"]
+    if linear >= _VOL_SOFT_FLOOR:
+        return float(np.clip(linear, 0.0, 100.0))
+    # linear < floor: map (-inf, floor) -> (0, floor) monotonically. `overshoot` grows without
+    # bound as vol rises, so the result decays toward 0 but never ties.
+    overshoot = _VOL_SOFT_FLOOR - linear
+    return float(_VOL_SOFT_FLOOR * _VOL_SOFT_FLOOR / (_VOL_SOFT_FLOOR + overshoot))
 
 
 def _volatility_score(df: pd.DataFrame, cfg: dict | None = None) -> float:

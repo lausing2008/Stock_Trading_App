@@ -85,9 +85,56 @@ _SECTOR_ETF: dict[str, str] = {
     "Real Estate": "XLRE",
     "Communication Services": "XLC",
     "Telecommunications": "XLC",
+    # AUD-RANK-SECTORLABELS: the keys above are GICS names, but this platform's `stocks.sector`
+    # is populated from yfinance, which emits its OWN taxonomy. Measured against production:
+    # Consumer Cyclical (4), Financial Services (7), Consumer Defensive (1), Financial (2) —
+    # note "Financial" and "Financial Services" BOTH occur, so the source is not even
+    # internally consistent. "Consumer Discretionary"/"Consumer Staples" matched NOTHING, so
+    # every Consumer name silently benchmarked against SPY while appearing correctly
+    # sector-classified everywhere in the UI.
+    "Consumer Cyclical": "XLY",     # yfinance's name for Consumer Discretionary
+    "Consumer Defensive": "XLP",    # yfinance's name for Consumer Staples
+    "Financial": "XLF",             # occurs alongside "Financial Services"
+    "Basic Materials": "XLB",       # yfinance's name for Materials
 }
+
+
+def _resolve_sector_etf(sector: str | None) -> str:
+    """Map a stock's sector label to its benchmark ETF, tolerating taxonomy drift.
+
+    AUD-RANK-SECTORLABELS: matches case- and whitespace-insensitively so a future label variant
+    lands on the right ETF instead of silently falling through to SPY. An unknown or empty
+    sector (18 US stocks have no sector at all) still resolves to SPY — a broad-market
+    benchmark is the honest choice there — but it is logged, because "benchmarked against SPY
+    by design" and "benchmarked against SPY because the label did not match" were previously
+    indistinguishable.
+    """
+    if not sector or not sector.strip():
+        return _US_FALLBACK
+    key = sector.strip()
+    if key in _SECTOR_ETF:
+        return _SECTOR_ETF[key]
+    folded = {k.casefold(): v for k, v in _SECTOR_ETF.items()}
+    hit = folded.get(key.casefold())
+    if hit:
+        return hit
+    log.warning("ranking.sector_label_unmapped", sector=key, fallback=_US_FALLBACK)
+    return _US_FALLBACK
 _HK_BENCHMARK = "^HSI"   # Hang Seng Index for HK stocks
 _US_FALLBACK  = "SPY"
+
+# AUD-RANK-RSPLACEHOLDER: ^HSI is an INDEX, so _etf_20d_return()'s DB path (which skips any
+# "^"-prefixed ticker) can never serve it — yfinance was its only possible source, and yfinance
+# rate-limits it on essentially every cycle. 2800.HK (Tracker Fund of Hong Kong) tracks the same
+# index, is an ordinary equity, and can therefore be ingested and read from the DB like every
+# sector ETF. Tried in order: DB proxy first, the raw index only as a last resort.
+_HK_BENCHMARK_PROXIES = ("2800.HK", "^HSI")
+
+# AUD-RANK-BENCHSTALE: a benchmark whose newest bar is older than this is treated as UNUSABLE
+# rather than as a real return. XLP sat 102 days stale (active=false, silently dropped from
+# ingestion) while still producing a confidently-wrong Consumer-Staples relative strength.
+# 10 calendar days clears any holiday weekend without admitting a genuinely dead series.
+_BENCHMARK_MAX_STALE_DAYS = 10
 
 
 _ETF_CACHE_TTL = 3600  # 1 hour
@@ -110,6 +157,22 @@ def _etf_20d_return(ticker: str, session: "Session | None" = None) -> float | No
         if stock:
             df = _load_prices(session, stock.id, lookback=60)
             if not df.empty and len(df) >= 21:
+                # AUD-RANK-BENCHSTALE: enough bars is NOT the same as CURRENT bars. XLP had 60+
+                # bars whose newest was 102 days old, which produced a real-looking 20-day
+                # return computed entirely from stale history. Reject it as unusable so the
+                # caller can fail closed instead of publishing a confidently-wrong number.
+                _newest = pd.to_datetime(df["ts"].iloc[-1]) if "ts" in df.columns else None
+                _age = (
+                    (pd.Timestamp.utcnow().tz_localize(None) - _newest.tz_localize(None)).days
+                    if _newest is not None and not pd.isna(_newest) else None
+                )
+                if _age is not None and _age > _BENCHMARK_MAX_STALE_DAYS:
+                    log.warning("ranking.benchmark_stale", ticker=ticker, age_days=_age,
+                                newest_bar=str(_newest.date()),
+                                max_stale_days=_BENCHMARK_MAX_STALE_DAYS)
+                    with _ETF_CACHE_LOCK:
+                        _ETF_CACHE[ticker] = (None, _time.time())
+                    return None
                 ret = float(df["close"].iloc[-1] / df["close"].iloc[-21] - 1)
                 with _ETF_CACHE_LOCK:
                     _ETF_CACHE[ticker] = (ret, _time.time())
@@ -146,18 +209,50 @@ def _etf_20d_return(ticker: str, session: "Session | None" = None) -> float | No
 
 
 def _prewarm_etf_cache(session: "Session") -> None:
-    """Pre-load all sector ETF returns from DB before a bulk refresh."""
+    """Pre-load all sector ETF returns from DB before a bulk refresh.
+
+    AUD-RANK-BENCHSTALE: also reports which benchmarks came back unusable. This function could
+    not previously help with the ^HSI failure at all — it calls the same _etf_20d_return(), so
+    a rate-limited fetch simply cached None for the whole window. Surfacing the count makes a
+    fleet-wide benchmark outage visible instead of silently neutralising relative strength.
+    """
     tickers = list(set(_SECTOR_ETF.values())) + [_US_FALLBACK]
+    _unusable: list[str] = []
     for t in tickers:
-        _etf_20d_return(t, session=session)
-    # ^HSI via yfinance (not in DB)
-    _etf_20d_return(_HK_BENCHMARK)
+        if _etf_20d_return(t, session=session) is None:
+            _unusable.append(t)
+    # HK benchmark: DB-backed proxy first, raw index second (see _HK_BENCHMARK_PROXIES).
+    if not any(
+        _etf_20d_return(c, session=session) is not None for c in _HK_BENCHMARK_PROXIES
+    ):
+        _unusable.extend(_HK_BENCHMARK_PROXIES)
+    if _unusable:
+        log.warning("ranking.benchmarks_unusable", tickers=_unusable,
+                    count=len(_unusable), total=len(tickers) + 1)
 
 
-def _rs_score(stock_ret: float, etf_ret: float | None) -> tuple[float, float]:
-    """Return (rs_score 0-100, rs_rank) given stock and sector 20-day returns."""
+def _rs_score(stock_ret: float, etf_ret: float | None) -> tuple[float | None, float | None]:
+    """Return (rs_score 0-100, rs_rank) given stock and sector 20-day returns.
+
+    AUD-RANK-RSPLACEHOLDER: a missing benchmark now returns (None, None) — FAIL CLOSED — where
+    it used to return a fabricated (50.0, 1.0). The old value was indistinguishable from a
+    genuine "exactly in line with sector" reading, and it was not rare: 1,956 of 3,459 all-time
+    HK ranking rows (56.5%) were exactly 50.0, against 6 of 9,328 (0.1%) for US.
+
+    The real damage was downstream. `tune_kscore_weights` measured a factor that was constant
+    for over half its HK sample, correctly concluded it carried no signal, and demoted
+    `relative_strength` from its 0.10 default to 0.0501 — the largest relative move of any
+    factor. The optimizer was working correctly on corrupt input, which is why this produced no
+    error trail anywhere.
+
+    None is safe end-to-end and was already the contract for a too-short price history:
+    `rankings.rs_score` is nullable, `compute_kscore()` drops the factor and renormalizes the
+    rest, `_fetch_relative_strength()` propagates None, and the thesis-persistence gate skips
+    its check on None. So an absent benchmark now *removes* relative strength from the composite
+    rather than injecting a neutral vote for it.
+    """
     if etf_ret is None:
-        return 50.0, 1.0
+        return None, None
     denom = 1 + etf_ret if abs(etf_ret + 1) > 1e-6 else 1e-6
     rs_rank = (1 + stock_ret) / denom
     score = float(np.clip(50 + (rs_rank - 1.0) * 100, 0, 100))
@@ -218,11 +313,26 @@ def _sector_relative_scores(
     Stocks with fewer than 3 sector peers with valid data fall back to None
     (price proxy will be used instead).
     """
-    # Group symbols by sector
+    # Group symbols by sector.
+    #
+    # AUD-RANK-THINPEERS: grouped by the RAW label, which the same taxonomy drift behind
+    # AUD-RANK-SECTORLABELS fragments — production carries both "Financial" (2 stocks) and
+    # "Financial Services" (7), so what is really one 9-member cohort became two buckets that
+    # can NEVER clear _MIN_PEER_GROUP on any metric. That, not missing fundamentals, is why
+    # value/growth were null for 71 and 86 of 250 rows respectively: 162 of 172 stocks (94%)
+    # have a warm fundamentals cache. Grouping on the canonical benchmark ETF merges the
+    # variants (both map to XLF), which is the same equivalence class the RS benchmark uses.
     by_sector: dict[str, list[str]] = defaultdict(list)
+    _canon: dict[str, str] = {}
     for symbol, sector in stock_sectors.items():
         if symbol in fundamentals:
-            by_sector[sector or "Unknown"].append(symbol)
+            # An unmapped/empty sector resolves to SPY, so all such stocks would otherwise pool
+            # into one meaningless cross-sector cohort. Keep those on their raw label instead —
+            # a thin real sector is better than a large fake one for percentile ranking.
+            _etf = _resolve_sector_etf(sector)
+            _key = _etf if (sector and sector.strip() and _etf != _US_FALLBACK) else (sector or "Unknown")
+            by_sector[_key].append(symbol)
+            _canon[symbol] = _key
 
     result: dict[str, dict[str, float]] = {}
 
@@ -293,6 +403,20 @@ def _sector_relative_scores(
 
             if entry:
                 result[symbol] = entry
+            else:
+                # AUD-RANK-THINPEERS: previously indistinguishable outcomes. compute_kscore()
+                # drops value/growth and renormalizes either way — pushing ~32% of the weight
+                # onto price-derived factors — but "this stock has no fundamentals" and "this
+                # stock's sector cohort is too small to rank against" call for completely
+                # different remedies (ingest fundamentals vs. widen the cohort). Log which.
+                log.info(
+                    "ranking.sector_percentile_unavailable",
+                    symbol=symbol, cohort=sector, cohort_size=len(symbols),
+                    min_peer_group=_MIN_PEER_GROUP,
+                    reason=("cohort_too_thin" if len(funds) < _MIN_PEER_GROUP
+                            else "metrics_missing"),
+                    has_fundamentals=symbol in funds,
+                )
 
     return result
 
@@ -353,10 +477,18 @@ def _stock_rs(stock: "Stock", df: pd.DataFrame, session: "Session | None" = None
         return None, None
     stock_ret = float(df["close"].iloc[-1] / df["close"].iloc[-21] - 1)
     if stock.market and str(stock.market.value).upper() == "HK":
-        etf_ticker = _HK_BENCHMARK
+        # AUD-RANK-RSPLACEHOLDER: try the DB-backed proxy before the raw index.
+        etf_ret = None
+        for _cand in _HK_BENCHMARK_PROXIES:
+            etf_ret = _etf_20d_return(_cand, session=session)
+            if etf_ret is not None:
+                break
+        if etf_ret is None:
+            log.warning("ranking.hk_benchmark_unavailable",
+                        symbol=stock.symbol, tried=list(_HK_BENCHMARK_PROXIES))
     else:
-        etf_ticker = _SECTOR_ETF.get(stock.sector or "", _US_FALLBACK)
-    etf_ret = _etf_20d_return(etf_ticker, session=session)
+        etf_ticker = _resolve_sector_etf(stock.sector)
+        etf_ret = _etf_20d_return(etf_ticker, session=session)
     score, rs_rank = _rs_score(stock_ret, etf_ret)
     return score, rs_rank
 
@@ -445,7 +577,7 @@ def sector_rotation(
 
         sectors.append({
             "sector":       sector,
-            "etf":          _SECTOR_ETF.get(sector, _US_FALLBACK),
+            "etf":          _resolve_sector_etf(sector),
             "avg_rs":       avg_rs,
             "rs_change":    rs_change,
             "stock_count":  len(stocks),
@@ -1272,7 +1404,73 @@ def _kscore_curve_candidate_sets(base_params: dict) -> list[dict]:
             continue  # a genuinely zero-valued base constant has no meaningful relative step
         for sign in (1, -1):
             candidates.append({key: round(base_val + sign * step, 4)})
-    return candidates
+    # AUD-RANK-CURVEDRIFT: nothing previously checked that a candidate was even COHERENT.
+    # Two compounding properties made that dangerous: each step is relative to the live value
+    # (so promotions ratchet — volatility_scale 1500 -> 1200 makes the next candidate 1440,
+    # i.e. 1200x1.2, never returning toward the 1500 default), and the RSI knobs are an ORDERED
+    # ladder that the per-key perturbation can silently invert. A candidate with
+    # rsi_mid > rsi_high does not error — it produces a monotonically WRONG technical curve
+    # that the EV search may still happen to prefer on one train slice.
+    # A candidate is rejected only if IT is what breaks coherence. If `base_params` is already
+    # invalid (an out-of-bounds value promoted under an older, unguarded run), rejecting every
+    # candidate that inherits that flaw would deadlock the tuner permanently — the same
+    # lock-out the calibration watchdog once inflicted on itself. So when the base is already
+    # broken, only the perturbed key itself is judged.
+    base_ok = _kscore_curve_is_valid(base_params)
+    kept: list[dict] = []
+    for c in candidates:
+        if base_ok:
+            if _kscore_curve_is_valid({**base_params, **c}):
+                kept.append(c)
+        elif _kscore_curve_is_valid(c):
+            # Judge the override in isolation: it must at least not be out-of-bounds itself.
+            kept.append(c)
+    return kept
+
+
+# Hard bounds for the curve constants. Deliberately WIDE — these reject incoherence, not
+# aggressiveness; the walk-forward validation gate is what judges whether a coherent candidate
+# is actually better.
+_KSCORE_CURVE_BOUNDS: dict[str, tuple[float, float]] = {
+    "rsi_low": (5.0, 50.0),
+    "rsi_mid": (20.0, 70.0),
+    "rsi_high": (55.0, 95.0),
+    "score_at_low": (0.0, 100.0),
+    "score_at_mid": (0.0, 100.0),
+    "score_at_high": (0.0, 100.0),
+    "rsi_overbought_decay_per_point": (0.0, 20.0),
+    "adx_center": (5.0, 40.0),
+    "adx_divisor": (5.0, 60.0),
+    "adx_boost_scale": (0.0, 30.0),
+    # A 0-100 volatility score is clip(100 - vol*scale, 0, 100), so `scale` sets the daily
+    # volatility at which a stock scores 0. At 1200 that is 8.3%/day; below ~400 (25%/day)
+    # essentially nothing saturates and the factor stops discriminating, above ~4000 (2.5%/day)
+    # almost everything saturates at 0. Both extremes make the factor useless.
+    "volatility_scale": (400.0, 4000.0),
+}
+
+
+def _kscore_curve_is_valid(params: dict) -> bool:
+    """Reject structurally incoherent curve parameter sets (AUD-RANK-CURVEDRIFT).
+
+    Checked against the FULLY-RESOLVED set (live values + the candidate's single override), not
+    the override alone — an ordering invariant is only meaningful across all three RSI knobs.
+    """
+    for key, (lo, hi) in _KSCORE_CURVE_BOUNDS.items():
+        val = params.get(key)
+        if val is None:
+            continue
+        if not (lo <= float(val) <= hi):
+            log.info("ranking.kscore_curve_candidate_rejected", param=key, value=val,
+                     reason="out_of_bounds", bounds=[lo, hi])
+            return False
+    # The RSI ladder must stay strictly ordered, or the piecewise technical curve inverts.
+    lo_, mid_, hi_ = params.get("rsi_low"), params.get("rsi_mid"), params.get("rsi_high")
+    if None not in (lo_, mid_, hi_) and not (float(lo_) < float(mid_) < float(hi_)):
+        log.info("ranking.kscore_curve_candidate_rejected", reason="rsi_ladder_not_ordered",
+                 rsi_low=lo_, rsi_mid=mid_, rsi_high=hi_)
+        return False
+    return True
 
 
 _KSCORE_CURVE_RAW_CACHE_MAX_WINDOW = 300  # see the docstring below for why 300 is safe
@@ -1538,6 +1736,30 @@ def tune_kscore_curve(
         }
 
     new_curve = {**current_curve, **best_curve}
+    # AUD-RANK-CURVEDRIFT: re-validate the MERGED set immediately before persisting. The
+    # candidate filter already rejected incoherent proposals, but this is the value that
+    # actually becomes live for 30 days, and it is the only check that also covers a
+    # current_curve that drifted out of bounds under an older, unguarded promotion.
+    # Only block if the MERGE is what breaks coherence. A current_curve that is already invalid
+    # must not permanently veto every future promotion (that would be a self-inflicted lockout);
+    # in that case the walk-forward EV gate above remains the operative check.
+    if _kscore_curve_is_valid(current_curve) and not _kscore_curve_is_valid(new_curve):
+        _record_kscore_tune_history(
+            session, run_id, old_value=current_curve, new_value=best_curve,
+            train_window=train_window, validation_window=val_window,
+            train_ev_pct=best_ev, validation_ev_pct=candidate_stats["ev_pct"],
+            baseline_validation_ev_pct=baseline_stats["ev_pct"],
+            validation_n=candidate_stats["n_scored"],
+            promoted=False, gate_failures=["merged_curve_invalid"],
+            parameter_class="kscore_curve", parameter_name="curve_shape",
+        )
+        log.warning("ranking.kscore_curve_promotion_blocked", candidate=best_curve,
+                    merged=new_curve, reason="merged_curve_invalid")
+        return {
+            "applied": False,
+            "reason": "merged curve params failed the coherence/bounds invariants",
+            "candidate": best_curve, "current": current_curve,
+        }
     redis_client = None
     try:
         from common.redis_client import get_redis
