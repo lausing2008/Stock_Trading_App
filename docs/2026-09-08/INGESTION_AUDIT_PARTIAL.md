@@ -152,8 +152,7 @@ Severity remains LOW regardless (0.128% avg overshoot, SPY only, 2.5% of its bar
 mechanism is open, not solved.
 2. ~~**`data_quality_checks` scheduler jobs**~~ — **AUDITED, see Area 2 below.**
 3. ~~**Adjusted-vs-unadjusted consistency**~~ — **AUDITED, see Area 3 below. SPY question CLOSED.**
-4. **`_fetch_live_bulk` and its per-symbol fallback** — `BUG-YFCALLVOL2` previously found the
-   fallback amplifying a rate-limit event. Not re-verified.
+4. ~~**`_fetch_live_bulk` and its per-symbol fallback**~~ — **AUDITED, see Area 4 below. CLEAN.**
 5. **HK timezone handling** — a documented past bug stored HK bars at the wrong UTC offset. Not
    re-verified.
 6. **The 21 symbols with <400 bars / 7 with <100** — beyond the two dead tickers, are the rest
@@ -294,3 +293,61 @@ form.
 **Recommendation (low priority):** add `auto_adjust=True` to those three for consistency. It
 changes nothing measurable today, but the next person to compute a longer-horizon return from
 one of them would inherit a silent 0.088pp-class error.
+
+
+---
+
+## Area 4 — `_fetch_live_bulk` rate-limit amplification: **CLEAN, guard held**
+
+`BUG-YFCALLVOL2` (2026-08-17) found the per-symbol fallback amplifying a real Yahoo throttle: the
+bulk call failed for all ~165 symbols, and the fallback then fired 150+ individual requests (up
+to 2 each) into an already-throttled endpoint.
+
+**The guard is present and correctly enforced** (`routes.py:161`, `:267-272`):
+
+```python
+missed = [s for s in stocks if s.symbol not in fetched]
+if missed and len(missed) > _LIVE_BULK_FALLBACK_MAX:      # 20
+    log.warning("live_prices.bulk_fallback_skipped_too_many_misses", ...)
+elif missed:
+    ...individual fetches...
+```
+
+A large miss count means the bulk call *itself* is throttled, so the fallback is skipped
+entirely and the cache carries fewer symbols that cycle rather than amplifying the throttle.
+
+**Verified against 7 days of production logs:**
+
+| | |
+|---|---|
+| `bulk_fallback_skipped_too_many_misses` firings | **0** |
+| yfinance fallback events total | **20** |
+| yfinance rate-limit errors | **0** |
+
+The guard has not needed to fire, and yfinance is not under pressure.
+
+### A large number that turned out to be a different subsystem
+
+The log search initially returned **53,024** rate-limit mentions in 7 days, which looked alarming.
+Breaking it down by source:
+
+| source | count |
+|---|---|
+| `unusual_whales.rate_limit` | 26,394 |
+| `unusual_whales.dark_pool_failed` | 17,433 |
+| `unusual_whales.flow_alerts_failed` | 8,962 |
+| **`yfinance.fast_info.fallback`** | **20** |
+
+**None of it is yfinance.** It is Unusual Whales, a separate subsystem — and it is *already
+fixed*:
+
+- **All 26,394 fell on a single day: 2026-09-05**, between **19:00–23:00 UTC (3–7pm ET, market
+  closed)**.
+- **Zero on 09-06, 09-07 and 09-08.**
+
+That is exactly the window `AUD-OPT6-NOMARKETHOURSGATE` (fixed 2026-09-07, Domain 6 of the
+previous series) now blocks — the options-flow job was running every minute, 24/7, hammering UW
+against a 48h `newer_than` window while no options were trading. The spike stopping dead the day
+after that deploy is independent confirmation the fix worked.
+
+**No action needed for Area 4.**
