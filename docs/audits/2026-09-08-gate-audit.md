@@ -1,4 +1,4 @@
-# Deep Audit (2026-09-08): ALL GATES — 12 findings, 1 fixed (tier 368)
+# Deep Audit (2026-09-08): ALL GATES — 12 findings, 6 FIXED (tier 368)
 
 Run as **three parallel audits** (entry / exit+risk / signal+alert) because the gate surface is
 **158 constants across 14 files** — one agent would have covered all three badly.
@@ -112,6 +112,55 @@ as the original bug.** Affects 234 of 1,365 BUY signals (17%). Options for later
 1. **Leave it** — SHORT never alerts. Honest, if 1.67:1 isn't worth taking.
 2. **Widen SHORT's target** (5% → ~8%) — a real trading-parameter change, needs validation.
 3. **Per-style R:R floors** — judge SHORT at ~1.6, its designed geometry. Most principled.
+
+---
+
+## FIXED after the initial writeup
+
+All four were deployed durably (verified in the **image**, not just the container, and healthy
+after `--force-recreate`).
+
+### AUD-ENTRY-CONSECLOSS-DEADLOCKLOOP — HIGH — the only one actively costing money
+
+A persisted Redis marker **keyed on the streak length**. Keying on the streak preserves the
+escape the branch exists for: if the recovery entry also loses (4 → 5), one fresh attempt is
+earned at the new level rather than a permanent lockout. Cleared on a **non-negative** close,
+matching how `_consec_loss_streak` itself stops counting. Fails **open** on a Redis error — an
+outage must not freeze a portfolio.
+
+> **A correction to my own verification.** I first reported "0 `consecutive_loss_restart` events
+> since deploy" as proof it worked. That was premature — **zero scan cycles had run**, because
+> the market was closed. The 0 was meaningless. Real verification came from exercising the logic
+> against portfolio 5's live streak of 10.
+
+### AUD-EXIT-INDICATORSEMPTY — CRITICAL
+
+Repointed at `signals.reasons->>'rsi'`, which `_monitor_positions` already reads twice in the
+same function. Verified against production first: real values across **171 symbols**, and
+**zero currently above 75** (max 71.9) — so this restores the gate's *capability* without an
+immediate behaviour change, the right property for a control that closes live positions.
+
+### AUD-ENTRY-BREAKOUTREF-DEONLY — HIGH — the wrong-path instance
+
+Both DE consumers now prefer `breakout_ref`. Verified in the container: `breakout_ref=83` vs
+live 100 is **+20.5% → REJECTS**, while a missing anchor computes −3.4% and passes, preserving
+the old inert behaviour rather than becoming a new outage.
+
+**Also fixed the test file that should have caught this.** `test_entry4_chase_parity.py` already
+asserted `"roc_10" in DE_SRC` — the exactly-right lesson — and never applied it to
+`breakout_ref`, in the same commit that fixed both. It now asserts both.
+
+### AUD-ENTRY-CONFSIZEMULT-HKCONSTANT + AUD-ENTRY-SIZEEXCESS-STALEMINSCORE — MEDIUM
+
+Both pushed risk capital **up** on the accounts measuring worst, compounding with the breaker
+bug. Confidence bands now derive from the portfolio's own floor (HK discriminates at 72.2/43.3);
+score excess now measures from DE's real returned floor.
+
+> **Two things I got wrong and caught before shipping.** My first confidence fix used *rounded*
+> ratios (1.235), giving 50.0175 at the US floor — silently demoting a US candidate at exactly
+> 50.0 from 1.25× to 1.0×, precisely the side effect the fix claims to avoid. And threading
+> `de_min_score` would have raised `NameError` on a **DE outage**, since both its assignments sit
+> inside `if de_result is not None` arms.
 
 ---
 
