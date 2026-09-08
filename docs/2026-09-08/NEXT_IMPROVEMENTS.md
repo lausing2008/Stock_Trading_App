@@ -45,8 +45,34 @@ needs no new infrastructure — it changes which branch calls which function.
 
 **Also worth noting: `SSNLF` is NOT delisted.** It returns 23 bars on a relative-period fetch —
 our DB simply has 1 bar from 305 days ago. So it is an *ingest* failure, not a dead ticker, and
-would be fixed by a force re-ingest rather than by delisting. Two symbols that look identical in
-the DB have completely different causes; the fix above must not blanket-delist both.
+two symbols that look identical in the DB have completely different causes; the fix above must
+not blanket-delist both.
+
+### SSNLF follow-up (attempted 2026-09-08) — force re-ingest does NOT fix it
+
+Ran `ingest_symbol("SSNLF", force=True)`: yfinance returned **751 bars** and `validate_ohlcv`
+dropped **750**, leaving the same single bar. Same class as the HK zero-volume finding, but
+SSNLF is `market='US'` so it still gets the strict `volume > 0` gate.
+
+**SSNLF is Samsung Electronics' unsponsored OTC ADR** — a grey-market instrument that trades
+sporadically. Its one surviving bar is `open=high=low=close=65.21` on volume 1,531: a single
+print. The 750 dropped bars are no-trade days.
+
+**Deliberately NOT fixed by loosening the US daily gate.** Two reasons:
+
+1. **The OTC-ADR theory does not generalise.** The only other 5-letter F/Y-suffix ADR in the
+   universe, `AMADY` (Amadeus IT Group), has a healthy **752 bars**. So this is one symbol, not
+   a class — loosening the US invariant for 1 of 131 US symbols is a bad trade, and I kept that
+   gate strict on purpose (liquid US names lose ~1% either way, so there is nothing to gain and
+   a real invariant to lose).
+2. **The impact is cosmetic, not a trading risk.** SSNLF is on 3 watchlists and produced 104
+   signals in 30 days — but **all of them HOLD or WAIT at ~0.8 average confidence, never a
+   BUY**. The stale price generates noise, not actionable output.
+
+**Recommended instead:** remove SSNLF from the universe (`active=false`) or from the 3
+watchlists. It is an untradeable grey-market ADR that no strategy here should be scoring in the
+first place — a data-curation decision, not a code fix. Left for the user, since removing a
+symbol someone deliberately added is their call, not mine.
 
 ---
 
