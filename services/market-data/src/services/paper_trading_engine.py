@@ -4526,6 +4526,7 @@ def _open_paper_trade(
     live_price: float, game_plan: dict, score: int, notes: list[str], gate_source: str,
     cfg: dict, style: str, equity: float, regime_size_mult: float, live_regime: dict | None,
     live_prices: dict[str, float], prefetched_open: list, atr: float | None,
+    de_min_score: int | None = None,
 ) -> tuple["PaperTrade | None", str | None]:
     """T286-CONDITIONAL-ORDER: position-sizing + PaperTrade-opening logic, extracted VERBATIM
     (same variable names, same order of checks, same audit-comment history) out of
@@ -4597,12 +4598,40 @@ def _open_paper_trade(
             earnings_size_mult = 0.75   # 75% size within 11-20 days
             notes = notes + [f"Size reduced 75% — earnings in {dte_int}d"]
 
-    # PT-D2: Confidence-band sizing — scale position proportional to signal conviction
+    # PT-D2: Confidence-band sizing — scale position proportional to signal conviction.
+    #
+    # AUD-ENTRY-CONFSIZEMULT-HKCONSTANT: the bands were hardcoded at 50/30 while the candidate
+    # SQL admits only `confidence >= min_confidence * 0.90`. HK carries min_confidence 65.0
+    # (_HK_MARKET_OVERRIDES), so its floor is 58.5 — meaning `sig_conf >= 50` was ALWAYS TRUE
+    # and the 1.0x / 0.75x branches were UNREACHABLE for HK. A three-way conviction
+    # discriminator collapsed to a constant +25% UPSIZE on exactly the market whose overrides
+    # exist to de-risk it: T222-F cuts HK's max_position_pct to 0.07 and risk_per_trade_pct to
+    # 0.007, and this multiplier gave a quarter of that reduction straight back.
+    #
+    # Production: 17 of 19 real HK entries sized at 1.25x. (The 2 that did not predate the HK
+    # override.) US was unaffected — its floor is 45 * 0.90 = 40.5, so all three bands are
+    # genuinely reachable there, which is why this stayed invisible.
+    #
+    # Fixed by expressing the bands RELATIVE to the portfolio's own floor rather than as
+    # absolute constants, so the discriminator works in every market and cannot be silently
+    # neutralised by a future min_confidence change.
+    #
+    # The ratios are written as the original constants OVER the US default floor (50.0/40.5,
+    # 30.0/40.5) rather than as rounded decimals. That is load-bearing, not stylistic: a
+    # rounded 1.235 gives 50.0175 at the US floor, so a candidate at EXACTLY 50.0 confidence
+    # would silently drop from 1.25x to 1.0x — a real, unintended US behaviour change smuggled
+    # in by a fix that claims to preserve US sizing. Caught by a test asserting the boundary.
+    _US_CONF_FLOOR = 45.0 * 0.90                    # the historical reference floor, 40.5
+    _HI_BAND_RATIO = 50.0 / _US_CONF_FLOOR          # reproduces exactly 50.0 for US
+    _LO_BAND_RATIO = 30.0 / _US_CONF_FLOOR          # reproduces exactly 30.0 for US
     sig_conf = float(sig.confidence or 0.0)
-    if sig_conf >= 50:
+    _conf_floor = float(cfg.get("min_confidence", _DEFAULT_CONFIG["min_confidence"])) * 0.90
+    _hi_band = _conf_floor * _HI_BAND_RATIO
+    _lo_band = _conf_floor * _LO_BAND_RATIO
+    if sig_conf >= _hi_band:
         confidence_size_mult = 1.25
         notes = notes + [f"Size 1.25× (confidence {sig_conf:.0f}% — high conviction)"]
-    elif sig_conf >= 30:
+    elif sig_conf >= _lo_band:
         confidence_size_mult = 1.0
     else:
         confidence_size_mult = 0.75
@@ -4665,7 +4694,25 @@ def _open_paper_trade(
     # a marginal candidate (exactly at min_entry_score) got FULL size on the fallback path
     # (1.0x) but REDUCED size under DE (0.75x) — 33% MORE capital on the weakest-conviction
     # trades specifically during a decision-engine outage, when caution matters most.
-    _min_score_cfg = cfg.get("min_entry_score", 4)
+    # AUD-ENTRY-SIZEEXCESS-STALEMINSCORE: `score` on the DE path was compared against DE's own
+    # regime- AND win-rate-adjusted min_score, but the excess used for sizing was measured from
+    # the STATIC cfg value. The regime component happens to be aligned (_scan_for_entries raises
+    # cfg["min_entry_score"] with the same max() values DE uses), but the WIN-RATE bump is not:
+    # min_score_for_regime() adds +1 when recent_win_rate < 0.30, and nothing mirrors that back
+    # into cfg.
+    #
+    # Consequence, measured: portfolio 5's trailing-20 win rate is 6.7% (1/15), so DE raises its
+    # floor 4 -> 5 while sizing still credited excess from 4. A candidate sitting at exactly
+    # DE's real threshold was sized 0.75 + 1*0.125 = 0.875x instead of 0.75x — +16.7% risk
+    # capital on the marginal trades of the very portfolio whose measured win rate triggered
+    # the tightening. Same direction as AUD-ENTRY-CONFSIZEMULT-HKCONSTANT, and it compounds.
+    #
+    # `de_min_score` is DE's real, returned floor (_call_decision_engine already captures it at
+    # :3946 and it was shadow-logged but never threaded here). Falls back to the cfg value when
+    # absent — the fallback/conditional-order paths have no DE floor, and there `score` really
+    # is measured against cfg.
+    _min_score_cfg = de_min_score if (de_min_score is not None and gate_source == "de") \
+        else cfg.get("min_entry_score", 4)
     _score_excess = score - _min_score_cfg
     score_size_mult = round(max(0.75, min(1.25, 0.75 + _score_excess * 0.125)), 3)
     if score_size_mult != 1.0:
@@ -6229,6 +6276,12 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             kscore=kscore_f, max_open_corr=_max_corr, recent_win_rate=_recent_wr,
         )
 
+        # AUD-ENTRY-SIZEEXCESS-STALEMINSCORE: bind before the branches. Both assignments below
+        # sit inside `if de_result is not None` arms, so on a DE OUTAGE (de_mode == "primary"
+        # and de_result None) neither runs — and _open_paper_trade now reads this, which would
+        # raise NameError on exactly the degraded path where entries must still work.
+        de_min_score: int | None = None
+
         if de_mode == "primary":
             if de_result is not None:
                 should_enter, de_verdict, score, de_blocked, de_min_score = de_result
@@ -6279,6 +6332,10 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             session, portfolio, stock, sig, ranking, live_price, game_plan, score, notes,
             gate_source, cfg, style, equity, regime_size_mult, live_regime, live_prices,
             _prefetched_open, atr,
+            # AUD-ENTRY-SIZEEXCESS-STALEMINSCORE: DE's real, regime- AND win-rate-adjusted
+            # floor. Captured at :3946 and shadow-logged since, but never reached sizing —
+            # so score excess was credited from the static cfg value instead.
+            de_min_score=de_min_score,
         )
         if trade is None:
             _skip_tally[skip_reason] = _skip_tally.get(skip_reason, 0) + 1

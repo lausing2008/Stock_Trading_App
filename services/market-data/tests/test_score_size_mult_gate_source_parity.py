@@ -29,12 +29,16 @@ _ENGINE_PATH = (
 _ENGINE_SOURCE = _ENGINE_PATH.read_text()
 
 
-def _compute_score_size_mult(score: float, min_entry_score: float, gate_source: str = "de") -> float:
+def _compute_score_size_mult(score: float, min_entry_score: float, gate_source: str = "de",
+                             de_min_score: int | None = None) -> float:
     """Pulls the real score_size_mult computation out of _open_paper_trade() and exec()s it
     against synthetic inputs — the exact statements between the T188 comment and the
     risk_dollar computation that consumes score_size_mult, with `notes = notes + [...]`
     stripped since it's a side effect irrelevant to this calculation."""
-    start = _ENGINE_SOURCE.index('_min_score_cfg = cfg.get("min_entry_score", 4)')
+    # AUD-ENTRY-SIZEEXCESS-STALEMINSCORE: the anchor moved. `_min_score_cfg` is now derived
+    # from DE's real returned floor on the DE path (falling back to cfg elsewhere), so the
+    # extraction starts at that assignment rather than the old bare cfg.get() literal.
+    start = _ENGINE_SOURCE.index("    _min_score_cfg = de_min_score if")
     end = _ENGINE_SOURCE.index("_risk_base     = equity", start)
     body = _ENGINE_SOURCE[start:end]
     # T286-CONDITIONAL-ORDER: this snippet moved from _scan_for_entries()'s own for-loop body
@@ -52,14 +56,14 @@ def _compute_score_size_mult(score: float, min_entry_score: float, gate_source: 
         for ln in dedented
     ]
     func_source = (
-        "def _compute(score, min_entry_score, gate_source):\n"
+        "def _compute(score, min_entry_score, gate_source, de_min_score=None):\n"
         "    cfg = {\"min_entry_score\": min_entry_score}\n"
         + "\n".join(reindented)
         + "\n    return score_size_mult\n"
     )
     namespace: dict = {}
     exec(func_source, namespace)  # noqa: S102 — isolated eval of real source
-    return namespace["_compute"](score, min_entry_score, gate_source)
+    return namespace["_compute"](score, min_entry_score, gate_source, de_min_score)
 
 
 def test_de_path_score_at_minimum_gets_the_reduced_floor_multiplier():
@@ -108,3 +112,36 @@ def test_the_write_side_no_longer_branches_on_gate_source_at_all():
     block = _ENGINE_SOURCE[start:end]
     assert 'if gate_source == "de"' not in block
     assert "score_size_mult = 1.0" not in block
+
+
+# ── AUD-ENTRY-SIZEEXCESS-STALEMINSCORE ──────────────────────────────────────────────────
+
+def test_de_path_measures_excess_from_DEs_real_floor_not_the_static_cfg():
+    """THE FIX. `score` on the DE path is compared against DE's regime- AND win-rate-adjusted
+    min_score, but the excess used for sizing came from the static cfg value.
+
+    Measured: portfolio 5's trailing-20 win rate is 6.7% (1/15), so min_score_for_regime() adds
+    +1 and DE's real floor is 5 while cfg still says 4. A candidate at exactly DE's threshold
+    was sized 0.75 + 1*0.125 = 0.875x instead of 0.75x — +16.7% risk capital on the marginal
+    trades of the very portfolio whose measured win rate triggered the tightening.
+    """
+    # score 5 sits exactly at DE's real floor of 5 -> must be the 0.75x floor multiplier.
+    assert _compute_score_size_mult(
+        score=5, min_entry_score=4, gate_source="de", de_min_score=5) == 0.75
+    # Without the fix this credited excess of 1 from cfg's 4:
+    assert _compute_score_size_mult(
+        score=5, min_entry_score=4, gate_source="de", de_min_score=None) == 0.875
+
+
+def test_a_de_outage_falls_back_to_the_cfg_floor():
+    """de_min_score is None on the fallback/legacy paths (and during a DE outage), where `score`
+    genuinely IS measured against cfg. Falling back preserves that."""
+    assert _compute_score_size_mult(
+        score=6, min_entry_score=4, gate_source="fallback", de_min_score=None) == 1.0
+
+
+def test_de_min_score_is_ignored_on_non_de_paths():
+    """A stale de_min_score must not leak into a fallback-path sizing decision — the fallback
+    scored against cfg, so its excess must be measured from cfg."""
+    assert _compute_score_size_mult(
+        score=6, min_entry_score=4, gate_source="fallback", de_min_score=6) == 1.0
