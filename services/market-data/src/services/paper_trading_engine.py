@@ -3197,6 +3197,13 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             trade.exit_reasons        = exit_notes
             trade.pnl                 = total_pnl_dollar
             trade.pct_return          = round(total_pnl_pct * 100, 4)
+            # AUD-ENTRY-CONSECLOSS-DEADLOCKLOOP: a WINNING close genuinely ends the losing
+            # streak (_consec_loss_streak stops counting at the first non-negative pnl), so the
+            # one-recovery-entry marker must be released here. Without this the portfolio would
+            # stay locked out for the marker's full TTL even after it had recovered — trading a
+            # breaker that never stops for a breaker that never restarts.
+            if total_pnl_dollar >= 0:
+                _clear_recovery_grant(trade.portfolio_id)
             _write_decision_log(
                 session, trade, "exit", exit_price, trade.shares, exit_reason,
                 {"pnl_dollar": total_pnl_dollar, "pnl_pct": trade.pct_return,
@@ -4183,6 +4190,69 @@ def resolve_position_scaling_shadow_verdicts(session) -> dict:
     }
 
 
+def _recovery_grant_key(portfolio_id: int) -> str:
+    return f"paper:consec_loss_recovery:{portfolio_id}"
+
+
+# AUD-ENTRY-CONSECLOSS-DEADLOCKLOOP: how long a single recovery grant is remembered.
+# Long enough that the grant cannot be silently re-issued on the next 5-minute scan (which is
+# the whole defect), short enough that a genuinely stuck portfolio is not frozen forever if the
+# marker is never cleared by a winning trade. 7 days ~= one trading week.
+_RECOVERY_GRANT_TTL = 7 * 86400
+
+
+def _recovery_grant_used(portfolio_id: int, streak: int) -> bool:
+    """Has a deadlock-recovery entry already been granted for THIS losing streak?
+
+    AUD-ENTRY-CONSECLOSS-DEADLOCKLOOP: the breaker's escape hatch had no limiter. With
+    `open_count == 0` it set the LOCAL `_consec_losses = 0` and fell through — but
+    `_consec_loss_streak()` recomputes from the DB every cycle and nothing persisted that a
+    grant had been used, so the branch re-fired on EVERY 5-minute scan, indefinitely. Its own
+    comment says "allow one recovery entry"; nothing enforced "one".
+
+    Production at the time of the fix: three portfolios sat at zero open positions with the
+    streak tripped. Portfolio 5 (ETrade Sandbox) had taken 7 trades under this branch since
+    2026-08-17 and ALL SEVEN LOST — DELL -$325.63, BRK-A -$58.59, and 5 more, totalling
+    -$452.92. The control that exists precisely to stop trading during a losing streak had
+    inverted into a licence to keep trading, 3/day, forever.
+
+    Keyed on the streak length so a WORSE streak earns a fresh grant: if the recovery entry
+    also loses (streak 4 -> 5), the portfolio gets one more attempt at the new level rather
+    than being locked out permanently. That preserves the deadlock escape the branch exists for
+    while making it strictly finite.
+
+    Fails OPEN (returns False, i.e. "not yet used") on any Redis error. That is the correct
+    direction here: a Redis outage must not permanently freeze a portfolio, and the worst case
+    degrades to today's behaviour rather than something new.
+    """
+    try:
+        from common.redis_client import get_redis as _get_pool_redis
+        _r = _get_pool_redis()
+        return _r.get(_recovery_grant_key(portfolio_id)) == str(streak)
+    except Exception:
+        return False
+
+
+def _mark_recovery_grant(portfolio_id: int, streak: int) -> None:
+    """Record that this streak level has consumed its one recovery entry."""
+    try:
+        from common.redis_client import get_redis as _get_pool_redis
+        _r = _get_pool_redis()
+        _r.setex(_recovery_grant_key(portfolio_id), _RECOVERY_GRANT_TTL, str(streak))
+    except Exception:
+        pass
+
+
+def _clear_recovery_grant(portfolio_id: int) -> None:
+    """Clear the marker — called when a trade closes POSITIVE, which genuinely ends the streak."""
+    try:
+        from common.redis_client import get_redis as _get_pool_redis
+        _r = _get_pool_redis()
+        _r.delete(_recovery_grant_key(portfolio_id))
+    except Exception:
+        pass
+
+
 def _clear_gate_block(portfolio_id: int) -> None:
     """Delete the Redis gate_block key so the UI no longer shows a block reason."""
     try:
@@ -5043,14 +5113,29 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             _write_gate_block(portfolio.id, "consecutive_losses",
                               f"{_consec_losses} consecutive losses — no new entries until a winning trade")
             return
+        elif _recovery_grant_used(portfolio.id, _consec_losses):
+            # AUD-ENTRY-CONSECLOSS-DEADLOCKLOOP: this streak level has ALREADY consumed its one
+            # recovery entry. Without this arm the branch below re-fired every 5-minute scan
+            # forever, turning the circuit breaker into "trade 3/day indefinitely" for exactly
+            # the portfolios in freefall.
+            log.warning("paper.consecutive_loss_limit",
+                        portfolio=portfolio.name,
+                        consecutive_losses=_consec_losses,
+                        note="recovery entry already used for this streak — entries suspended")
+            _write_gate_block(portfolio.id, "consecutive_losses",
+                              f"{_consec_losses} consecutive losses — recovery entry already used; "
+                              f"no new entries until a winning trade")
+            return
         else:
             # Deadlock: no open trades and consecutive loss limit hit — there is no trade
-            # that can close positive to reset the counter. Allow one recovery entry and
-            # zero out consec_losses for the DE call so hard_rejects doesn't also block.
+            # that can close positive to reset the counter. Allow ONE recovery entry (now
+            # actually enforced, see _recovery_grant_used) and zero out consec_losses for the
+            # DE call so hard_rejects doesn't also block.
             log.warning("paper.consecutive_loss_restart",
                         portfolio=portfolio.name,
                         consecutive_losses=_consec_losses,
                         note="no open trades — allowing one recovery entry to break deadlock")
+            _mark_recovery_grant(portfolio.id, _consec_losses)
             _consec_losses = 0
             _clear_gate_block(portfolio.id)  # remove stale Redis gate so UI clears
 
