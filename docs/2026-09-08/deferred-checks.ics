@@ -1,0 +1,138 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//StockAI//Deferred Checks 2026-09-08//EN
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:StockAI Deferred Checks
+BEGIN:VEVENT
+UID:stockai-kscore-tuner-20260913@lausing.com
+DTSTAMP:20260908T120000Z
+DTSTART;TZID=America/Los_Angeles:20260913T160000
+DTEND;TZID=America/Los_Angeles:20260913T163000
+SUMMARY:StockAI: verify K-Score tuner ran on clean data
+DESCRIPTION:The only item with a real deadline. tune_kscore_weights runs Su
+ nday 14:00 PT - this is its first run since the fabricated rs_score rows w
+ ere nulled (1915 rows) and the corrupted weight override cleared.\n\n1) WE
+ IGHT OVERRIDE\ndocker exec stockai-redis-1 redis-cli GET stockai:kscore_we
+ ights\nPASS: empty, or relative_strength at/near 0.10 (empty = no override
+ , default applies).\nREGRESSION: relative_strength back near 0.05 - the tu
+ ner re-learned from placeholder data. Check _rs_score()'s fail direction f
+ irst; it must return (None, None), never (50.0, 1.0).\n\n2) NEW HK ROWS NO
+ T REVERTING\nSELECT s.market, COUNT(*) FILTER (WHERE r.rs_score = 50.0) AS
+  placeholder, COUNT(*) FILTER (WHERE r.rs_score IS NULL) AS excluded, COUN
+ T(*) FILTER (WHERE r.rs_score IS NOT NULL) AS real_scores FROM rankings r 
+ JOIN stocks s ON s.id = r.stock_id WHERE r.as_of >= CURRENT_DATE - 7 GROUP
+  BY 1;\nPASS: HK placeholder at/near 0 and real_scores growing (baseline w
+ as 915).\n\n3) HK BENCHMARK STILL FRESH\n2800.HK is active=false so only t
+ he HK refresh job feeds it - exactly how XLP went 102 days stale unnoticed
+ .\nSELECT s.symbol, MAX(p.ts)::date AS newest, (CURRENT_DATE - MAX(p.ts)::
+ date) AS age_days FROM stocks s JOIN prices p ON p.stock_id = s.id WHERE s
+ .symbol IN ('2800.HK','XLP','XLK','SPY') GROUP BY 1 ORDER BY 3 DESC;\nPASS
+ : all four within ~4 days of each other (guard rejects >10 days).\n\nALSO:
+  rebuild backend images with docker compose build on the next deploy windo
+ w - shared/common/market_calendar.py currently lives in containers via doc
+ ker cp and reverts on any container recreation.\n\nFull checklist: https:/
+ /claude.ai/code/artifact/f2462c2d-bde6-4f30-99d9-121ede27f411
+BEGIN:VALARM
+TRIGGER:-PT12H
+ACTION:DISPLAY
+DESCRIPTION:StockAI K-Score tuner check tomorrow
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:stockai-pending-outcomes-20260925@lausing.com
+DTSTAMP:20260908T120000Z
+DTSTART;VALUE=DATE:20260925
+DTEND;VALUE=DATE:20260926
+SUMMARY:StockAI: 3-week window opens - 14 features awaiting outcome data
+DESCRIPTION:This checkpoint was already scheduled before the 2026-09-08 ses
+ sion and is the easy one to forget. The 2026-09-05 audit cycle deferred 14
+  shipped features with an explicit "re-check 3-4 weeks" note. Window: 2026
+ -09-25 to 2026-10-03. None need code - they need enough resolved outcomes 
+ to judge.\n\nHIGHEST VALUE - ENTRY TIMING\nThe one genuinely weak componen
+ t. A placebo test showed entering the same stocks 14 days earlier scored ~
+ 6 points better, root-caused to every conviction pillar being a momentum m
+ easure. The non-momentum fix, check_prebreakout_alerts(), ALREADY EXISTS a
+ nd only needed weeks of outcomes.\nCAREFUL: its earlier 0% win rate is NOT
+  failure - effective sample was ~2-3, heavily clustered. Check the count b
+ efore reading the rate.\nDO NOT re-derive the live-bar refactor or the ing
+ estion speed-up; both consciously deferred, and the live-bar fix was forma
+ lly vetoed as high regression risk against the fix that resolved the confi
+ dence inversion.\n\nALSO IN THIS WINDOW\n- Anti-chase roc_10 filter: OOS s
+ howed only +0.33 pts vs +1.6 in-sample. Confirm the ~17% BUY-block rate an
+ d OOS gain hold live.\n- GEX corroboration (gamma_flip gate) and dark-pool
+  relative threshold + persistence.\n\nGATED ON A COUNT, NOT THIS DATE - ch
+ eck the count first and defer again if it has not moved:\n- Options-flow d
+ irection logic: needs >=30 resolved outcomes PER DIRECTION.\n- Squeeze-fam
+ ily short-interest corroboration: only ~107 alerts had fired total.\n- Con
+ fidence-calibration feedback: several bands n<50, some n<10.\n- Squeeze ig
+ nition tier: fired ZERO times ever; 4 rejection gauges now show why. Decis
+ ion is loosen-or-retire, not rebuild.\n- Regime robustness: exactly 1 bear
+  sample; gates any live-automation decision.\n\nRead the project_pending_d
+ ata_verification memory (14 items) before writing code in any of these are
+ as - its whole purpose is preventing re-proposed engineering on things onl
+ y waiting on the calendar.\n\nFull checklist: https://claude.ai/code/artif
+ act/f2462c2d-bde6-4f30-99d9-121ede27f411
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:StockAI 3-week outcome-data window opens tomorrow
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:stockai-quarterly-structural-20261208@lausing.com
+DTSTAMP:20260908T120000Z
+DTSTART;VALUE=DATE:20261208
+DTEND;VALUE=DATE:20261209
+SUMMARY:StockAI: quarterly structural checks
+DESCRIPTION:Longer-horizon items where a quarter of accumulated data change
+ s the answer, plus two guards written 2026-09-08 that are designed to fire
+  on a schedule you will not be watching.\n\n1) DID ANY DIGEST FIRE ON A MA
+ RKET HOLIDAY?\nUS markets closed Thanksgiving 2026-11-26 and Christmas 202
+ 6-12-25 - both weekdays, both in-window. The real test of the new holiday 
+ gate.\ndocker logs stockai-market-data-1 --since 720h 2>&1 | grep -E "dige
+ st.done|brief.done|digest_skip_market_closed" | grep "2026-11-26"\nPASS: d
+ igest_skip_market_closed entries and ZERO digest.done for that date.\nNOTE
+ : HK should STILL send on a US-only holiday - the filter is per-market by 
+ design.\n\n2) 2027 HOLIDAY CALENDAR (hard deadline 2027-01-01)\nassert_cal
+ endar_coverage() is built to fail in October of the final covered year, so
+  tests should start failing on their own and force the extension.\ncd serv
+ ices/market-data && python -m pytest tests/test_aud_digest_holiday_and_cal
+ endar.py -q\nDO: reconcile the HK 2027 LUNAR dates against HKEX's publishe
+ d notice - they are marked PROVISIONAL in the source because Lunar New Yea
+ r, Ching Ming, Buddha's Birthday, Tuen Ng, Mid-Autumn and Chung Yeung cann
+ ot be derived from any weekday rule. They are a reconstruction, not a tran
+ scription.\nWATCH: if tests still pass in Oct 2027 the coverage assertion 
+ is not wired into the run - a guard that exists but never fires is exactly
+  what it was written to prevent.\n\n3) ML SMALL-SAMPLE - THE ONLY LEVER LE
+ FT\nBinding constraint is n_test ~= 31 rows, which produces the extreme 0.
+ 0/1.0 AUCs and the 89% suppression rate.\nDO: backfill price history (~667
+  bars is only 2.6 years; the 5-year lookback is already requested, the dat
+ a is simply absent), and A/B the dead-zone filter on cv_auc - never on tes
+ t AUC, which is noise at n=31.\nDO NOT: run a fleet-wide retrain. 89% of f
+ reshly retrained models immediately self-suppress and stale models measure
+  marginally BETTER than fresh. The lever is data, not scheduling.\n\n4) AD
+ VANCED-TIER GUARD (currently latent)\nThe nav/page guard mismatch is fixed
+  but its dead-link half never activated in prod - only an ADMIN/BASIC and 
+ a USER/BASIC account exist. If anyone is set to ADVANCED, walk the Learnin
+ g section and confirm all 9 items open rather than bouncing to the dashboa
+ rd.\ncd frontend && npx vitest run src/lib/navGuardParity.test.ts  (81 tes
+ ts)\n\nDO NOT RE-DERIVE THESE AS FINDINGS:\n- Stop execution compares agai
+ nst current_stop, not the original stop_loss. Correct as written.\n- HK GR
+ OWTH holding more cash than initial capital: it is simply profitable.\n- P
+ rebreakout's 0% win rate: effective sample ~2-3.\n- Confidence being "mean
+ ingless": the inversion was AUD232-BUY-FROM-TOP, fixed 2026-08-03; post-fi
+ x it is correctly signed. Do not rebuild the formula.\n- Ingestion being b
+ roken: it is the healthiest domain audited - 123,475 bars, zero duplicates
+ , zero high<low, zero out-of-range closes.\n- Alert dedup/cooldown/suppres
+ sion and research-engine LLM cost: both surveyed clean 2026-09-08.\n- Thre
+ shold retuning of any alert: every looser variant measured worse.\n\nFull 
+ checklist: https://claude.ai/code/artifact/f2462c2d-bde6-4f30-99d9-121ede2
+ 7f411
+BEGIN:VALARM
+TRIGGER:-P2D
+ACTION:DISPLAY
+DESCRIPTION:StockAI quarterly structural checks in 2 days
+END:VALARM
+END:VEVENT
+END:VCALENDAR
