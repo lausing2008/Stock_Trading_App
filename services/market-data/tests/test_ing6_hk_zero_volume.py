@@ -126,12 +126,23 @@ def test_hk_intraday_also_allowed():
 
 
 def test_routing_expression_matches_the_source():
-    """Guards the local mirror above against drifting from the real expression."""
+    """Guards the local mirror above against drifting from the real expression.
+
+    AUD-ING6-MARKETINFER updated this: the rule now keys off `_effective_market`, derived from
+    the symbol suffix the same way adapter selection is, instead of the bare `market` parameter.
+    The parameter alone was wrong because ingest_universe() never passes one — so every HK
+    symbol reaching this code through that path was held to the strict US volume gate. The
+    local mirror's semantics for an explicit market are unchanged, which is why the behavioural
+    tests above still pass untouched.
+    """
     import pathlib
     import src.services.ingestion as ing
     src = pathlib.Path(ing.__file__).read_text()
     assert 'or market == "HK"' in src
-    assert '(market == "US" and timeframe not in ("1d", "1w"))' in src
+    assert '(_effective_market == "US" and timeframe not in ("1d", "1w"))' in src
+    assert 'or _effective_market == "HK"' in src
+    # And the effective market must be derived, not assumed.
+    assert '_effective_market = "HK" if (symbol.endswith(".HK") or market == "HK") else market' in src
 
 
 def test_docstring_no_longer_asserts_the_false_claim():

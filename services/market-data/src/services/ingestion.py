@@ -284,9 +284,18 @@ def ingest_symbol(
         # discard a genuine signal (measured: liquid US names lose ~1% either way, so there is
         # nothing to gain and a real invariant to lose). The OHLC-ordering and positivity checks
         # are unaffected in both markets — this only relaxes the volume gate.
+        # AUD-ING6-MARKETINFER: derive the effective market the SAME way adapter selection does
+        # (`symbol.endswith(".HK") or market == "HK"`, a few lines above) rather than trusting
+        # the `market` parameter alone. They disagreed: ingest_universe() calls ingest_symbol()
+        # WITHOUT a market, so it always defaulted to "US" — an HK symbol routed to the correct
+        # HK adapter by suffix while simultaneously being held to the strict US `volume > 0`
+        # rule, silently dropping every zero-volume bar of an illiquid HK name. That is the
+        # exact defect AUD-ING6-HKZEROVOLUME fixed for the explicit-market path, reachable again
+        # through any caller that omits the argument.
+        _effective_market = "HK" if (symbol.endswith(".HK") or market == "HK") else market
         allow_zero_volume = (
-            (market == "US" and timeframe not in ("1d", "1w"))
-            or market == "HK"
+            (_effective_market == "US" and timeframe not in ("1d", "1w"))
+            or _effective_market == "HK"
         )
 
         last_err: Exception | None = None

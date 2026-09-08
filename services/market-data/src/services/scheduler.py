@@ -641,12 +641,30 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
         log.error("scheduler.ingest_failed", market=market, error=str(_ie), exc_info=True)
 
     # TIER94: Keep sector ETF prices fresh for sector_rs ML features (active=False so not in symbols)
+    #
+    # AUD-RANK-BENCHINGEST: this hardcoded list was the FOURTH copy of the sector-ETF set in the
+    # codebase, and it silently omitted XLP. Since `_symbols_for()` filters Stock.active and
+    # every benchmark ETF is active=False, this job is the ONLY thing that ingests them — so
+    # XLP simply never got ingested and sat 102 days stale while ranking-engine kept computing a
+    # confidently-wrong Consumer-Staples relative strength from its ancient bars. Derived from
+    # the canonical map now, so adding a sector cannot leave its benchmark unfed again.
     if market == "US":
-        _SECTOR_ETFS = ["XLK", "XLF", "XLV", "XLE", "XLY", "XLU", "XLI", "XLB", "XLC", "XLRE", "SPY"]
+        from .paper_trading_engine import _SECTOR_ETF_MAP
+        _SECTOR_ETFS = sorted(set(_SECTOR_ETF_MAP.values()) | {"SPY"})
         try:
             ingest_universe(_SECTOR_ETFS, "1d")
         except Exception as _etf_exc:
             log.warning("scheduler.sector_etf_ingest_failed", error=str(_etf_exc))
+
+    # AUD-RANK-RSPLACEHOLDER: 2800.HK (Tracker Fund of Hong Kong) is the DB-backed stand-in for
+    # ^HSI, which ranking-engine cannot read from the DB at all (its DB path skips "^" tickers)
+    # and which yfinance rate-limits on essentially every cycle. It is seeded active=False like
+    # the US benchmark ETFs, so without this it would go stale exactly the way XLP did.
+    if market == "HK":
+        try:
+            ingest_universe(["2800.HK"], "1d")
+        except Exception as _hk_bm_exc:
+            log.warning("scheduler.hk_benchmark_ingest_failed", error=str(_hk_bm_exc))
 
     # Stage 2: Rankings + signals — runs even if ingest partially failed (uses last good bar)
     try:
