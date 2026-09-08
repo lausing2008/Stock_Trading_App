@@ -244,7 +244,12 @@ def test_gauge_dq_checks_registered_for_both_new_counters():
     for _k in ("_SQUEEZE_IGNITION_REJECT_MOVE_BAND_KEY", "_SQUEEZE_IGNITION_REJECT_RVOL_KEY",
                "_SQUEEZE_IGNITION_REJECT_SHORT_FLOAT_KEY", "_SQUEEZE_IGNITION_REJECT_STALE_SI_KEY"):
         assert f'"counter_key": {_k}' in _scheduler_source
-    assert _scheduler_source.count('"source": "gauge"') == 8
+    # AUD-DQ2-PERSYMBOLSTALENESS (2026-09-08) added a 9th gauge: stale_symbols_d1, which counts
+    # ACTIVE symbols whose OWN latest D1 bar is >7 days old. The existing price checks are a
+    # single MAX() across a whole market, so one dead symbol among many healthy ones is invisible
+    # — SSNLF (305 days stale) and SKHYV (53 days) sat unnoticed for months behind that aggregate.
+    # Count was 4 before AUD-IGNITION-NEVERFIRES, 8 after, 9 now.
+    assert _scheduler_source.count('"source": "gauge"') == 9
 
 
 def test_gauge_dq_check_dispatch_branch_always_reports_ok_true():

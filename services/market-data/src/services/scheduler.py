@@ -10876,6 +10876,30 @@ def _fetch_hk_regime_snapshot() -> dict | None:
 #
 # Each check is declarative: a name, a SQL query returning the most recent timestamp
 # for that data, and a max-age threshold. Adding a new check means adding one entry to
+
+def _count_stale_symbols_d1() -> int:
+    """AUD-DQ2-PERSYMBOLSTALENESS: how many ACTIVE symbols have their own latest D1 bar >7 days
+    old. Backs the stale_symbols_d1 gauge — see that entry for why this is a gauge, not an alert.
+
+    Fails to 0 on any error rather than raising: a gauge that raises would be counted as a
+    query_error by the runner and reported as an infrastructure failure, which is a much louder
+    signal than this housekeeping metric warrants.
+    """
+    try:
+        with SessionLocal() as _s:
+            return int(_s.execute(text(
+                "SELECT COUNT(*) FROM ("
+                "  SELECT p.stock_id FROM prices p JOIN stocks st ON st.id = p.stock_id"
+                "  WHERE p.timeframe='D1' AND st.active"
+                "  GROUP BY p.stock_id"
+                "  HAVING MAX(p.ts) < NOW() - INTERVAL '7 days'"
+                ") t"
+            )).scalar() or 0)
+    except Exception as exc:
+        log.warning("dq.stale_symbols_count_failed", error=str(exc))
+        return 0
+
+
 # _DQ_CHECKS — no new scheduler job, no new email template.
 
 _DQ_CHECKS: list[dict] = [
@@ -10916,12 +10940,41 @@ _DQ_CHECKS: list[dict] = [
         # never actually reported real freshness data despite looking configured correctly.
         "name": "prices_us_d1", "description": "US daily price bars",
         "query": "SELECT MAX(p.ts) FROM prices p JOIN stocks st ON p.stock_id=st.id WHERE st.market='US' AND p.timeframe='D1'",
+        # AUD-DQ2-PRICESMARKETTAG: T242-DQ1's market-closed guard keys on check.get("market"),
+        # and these two price checks were the only market-specific staleness checks WITHOUT it —
+        # rankings_us/rankings_hk/signals_us/signals_hk all carry it. So the most fundamental
+        # data in the platform was the one thing crying wolf over every holiday weekend.
+        # Caught live 2026-09-08: prices_us_d1 read ok=false / age_hours=99.3 purely because the
+        # last US bar was Friday 09-04, Monday 09-07 was Labor Day, and it was Tuesday pre-close.
+        # The data was completely healthy.
+        "market": "US",
         "max_age_hours": 48, "is_date": False,
     },
     {
         "name": "prices_hk_d1", "description": "HK daily price bars",
         "query": "SELECT MAX(p.ts) FROM prices p JOIN stocks st ON p.stock_id=st.id WHERE st.market='HK' AND p.timeframe='D1'",
+        "market": "HK",  # AUD-DQ2-PRICESMARKETTAG — see prices_us_d1 above
         "max_age_hours": 48, "is_date": False,
+    },
+    {
+        # AUD-DQ2-PERSYMBOLSTALENESS: every other price check is a single MAX() across the
+        # WHOLE market, so if ANY ONE symbol updated in 48h the check passes no matter how many
+        # others have died. That is structurally incapable of detecting the failure mode it
+        # exists for, and is exactly why SSNLF (305 days stale) and SKHYV (53 days) went
+        # unnoticed — both hidden behind the aggregate.
+        #
+        # A "gauge" deliberately, NOT an age check: gauges report a count and never enter the
+        # failing-list/email path. A stale symbol is a housekeeping signal (a delisted ticker to
+        # retire), not a pipeline outage worth paging on — and the platform already had 2 of
+        # these sitting unnoticed for months without harm. Surfacing the number on the admin
+        # dashboard is the right weight of response.
+        #
+        # Not market-tagged on purpose: a symbol dead for a week is dead whether or not its
+        # market is open right now, so the closed-market skip would only mask it.
+        "name": "stale_symbols_d1",
+        "description": "Active symbols whose own latest daily bar is >7 days old (AUD-DQ2-PERSYMBOLSTALENESS)",
+        "source": "gauge",
+        "counter_fn": _count_stale_symbols_d1,
     },
     {
         "name": "paper_equity_curve", "description": "Paper trading equity snapshots (all portfolios)",
