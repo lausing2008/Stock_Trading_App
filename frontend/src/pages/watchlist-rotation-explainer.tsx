@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { getSession } from '@/lib/auth';
+import { getSession, hasAdvancedAccess } from '@/lib/auth';
 
 // ── Static content ────────────────────────────────────────────────────────────
 
@@ -54,7 +54,12 @@ export default function WatchlistRotationExplainerPage() {
   useEffect(() => {
     const session = getSession();
     if (!session) { router.replace('/login'); return; }
-    if (session.role !== 'admin') { router.replace('/'); return; }
+    // AUD-NAV-ROTATIONEXPLAINER-DEADLINK: this guard used to require role=admin while the nav
+    // item lives in the Learning group (minTier: 'advanced'), so isGroupVisible() advertised
+    // the page to every advanced-tier user and this check then bounced them to the dashboard
+    // with no explanation. Its two sibling Learning pages both use hasAdvancedAccess; the nav
+    // and the page must agree on who may enter.
+    if (!hasAdvancedAccess(session)) { router.replace('/'); return; }
     setAuthed(true);
   }, [router]);
 

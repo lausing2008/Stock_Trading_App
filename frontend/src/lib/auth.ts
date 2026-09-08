@@ -109,6 +109,17 @@ export function hasAdvancedAccess(session: Session | null): boolean {
   return session?.tier === 'advanced' || session?.role === 'admin';
 }
 
+/** AUD-ADMINPAGE-GUARDGAP: role=admin. Pages in _app.tsx's `adminOnly: true` nav group must
+ * call this, because hiding a nav item is a VISIBILITY restriction, not an access one — the
+ * URL stays reachable by anyone who types it. This is the same lesson the Learning-section
+ * tier gating already recorded, and 4 Admin pages (horizon-compare, conditional-orders,
+ * paper-gates, signal-quality) had been left login-only or, in horizon-compare's case, with no
+ * guard at all. Existing inline `session.role !== 'admin'` checks are equivalent; this exists
+ * so the check has one name and cannot drift into a tier comparison. */
+export function isAdmin(session: Session | null): boolean {
+  return session?.role === 'admin';
+}
+
 /** Returns the current username, used to namespace SWR cache keys per user. */
 export function getUsername(): string {
   return getSession()?.username ?? '';

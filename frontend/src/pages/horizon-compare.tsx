@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
 import useSWR from 'swr';
+import { useRouter } from 'next/router';
+import { getSession, isAdmin } from '@/lib/auth';
 import { api, type TuneStatusReport } from '@/lib/api';
 // AUD-HORIZONCOMPARE-BEARREGIME: the bear-regime derivation lives in lib/ so it is unit-tested
 // (this repo has no component-level React test harness). It reimplements backend logic, so it
@@ -399,6 +401,21 @@ function liveValueFor(row: DimRow, h: Horizon, tune: TuneStatusReport | undefine
 }
 
 export default function HorizonComparePage() {
+  const router = useRouter();
+  const [authed, setAuthed] = useState(false);
+
+  // AUD-ADMINPAGE-GUARDGAP: this page had NO guard of any kind — no getSession(), no redirect.
+  // It sits in _app.tsx's `adminOnly: true` nav group, but nav-hiding is only a visibility
+  // restriction, so /horizon-compare rendered a full admin analytics page for any logged-in
+  // user AND for a completely unauthenticated visitor (until its API call happened to 401).
+  // The other 15 Admin pages carry a role check; these 4 had been missed.
+  useEffect(() => {
+    const session = getSession();
+    if (!session) { router.replace('/login'); return; }
+    if (!isAdmin(session)) { router.replace('/'); return; }
+    setAuthed(true);
+  }, [router]);
+
   const [market, setMarket]           = useState<Market>('US');
   const [filterCat, setFilterCat]     = useState<string>('All');
   const [showHkNote, setShowHkNote]   = useState(false);
@@ -426,6 +443,8 @@ export default function HorizonComparePage() {
   }
 
   const COL_W = '15%';
+
+  if (!authed) return null;
 
   return (
     <>

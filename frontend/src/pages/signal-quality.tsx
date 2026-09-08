@@ -25,7 +25,7 @@ import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { api, type CalibrationData, type CalibrationHorizon, type CalibrationBand } from '@/lib/api';
-import { getSession } from '@/lib/auth';
+import { getSession, isAdmin } from '@/lib/auth';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -357,6 +357,11 @@ export default function SignalQualityPage() {
   useEffect(() => {
     const s = getSession();
     if (!s) { router.replace('/login'); return; }
+    // AUD-ADMINPAGE-GUARDGAP: this page sits in _app.tsx's `adminOnly: true` nav group, but
+    // the nav only HIDES it — the URL stayed reachable by any logged-in user, who then got a
+    // fully-rendered admin analytics page (the read endpoints behind it require only
+    // get_current_username). Same lesson the Learning-section tier gating already recorded.
+    if (!isAdmin(s)) { router.replace('/'); return; }
     setAuthed(true);
   }, [router]);
 
