@@ -128,3 +128,77 @@ The two audits covered the trading decision path and ingestion. Remaining, by ex
 - **Rewriting the 14 historical SPY bars** — self-healed, 0.128% overshoot, nothing consumes a
   daily bar's `open`.
 - **Re-auditing the six trading domains** — all 17 findings fixed and deployed.
+
+---
+
+## Update 2026-09-08 (later session): Ranking/K-Score audit + next-improvements pass — 11 findings, all fixed (tier 366)
+
+Two rounds of work after the items above. Full detail:
+`docs/audits/2026-09-08-ranking-kscore-audit.md`,
+`docs/incidents/market-hours-gating-bugs.md`, `docs/incidents/wire-shape-mismatches.md`.
+
+**Ranking/K-Score audit (6):** `AUD-RANK-RSPLACEHOLDER` (HK relative strength was a fabricated
+50.0 on 56.5% of rows, and the weight tuner had already halved the factor's weight from it),
+`AUD-RANK-BENCHINGEST` (XLP 102 days stale — omitted from the only job that feeds benchmark
+ETFs), `AUD-RANK-SECTORLABELS` (sector→ETF map keyed on a taxonomy the data never emits, in 3
+services), `AUD-RANK-THINPEERS` (null value/growth was cohort fragmentation, not missing
+fundamentals), `AUD-RANK-CURVEDRIFT`, `AUD-RANK-VOLSATURATE`.
+
+**Next-improvements pass (5):** `AUD-DIGEST-HOLIDAYBLIND` (13 emails on Labor Day showing
+Friday's prices as live), `AUD-HOLIDAY-2027GAP` (3 drifted holiday calendars, 2 expiring
+2027-01-01), `AUD-ADMINPAGE-GUARDGAP` + `AUD-NAV-ROTATIONEXPLAINER-DEADLINK` (nav/page guards
+disagreeing in both directions), `AUD-CONVICTION-SOFTDRIFT` (3 small items),
+`AUD-ING6-MARKETINFER` (the tier-364 HK volume fix was bypassable via `ingest_universe`).
+
+### THE ONE THING STILL OPEN — needs a production DB write
+
+`tune_kscore_weights` runs **Sunday 14:00 PT**, 365-day lookback, reading `rs_score` verbatim
+from persisted `rankings` rows. **1,956 HK rows dated 2026-06-01 onward still hold the fabricated
+`50.0`.** They are `50.0`, not `NULL`, so the tuner's own exclusion logic will not skip them and a
+run may **re-demote `relative_strength` and undo the reset**.
+
+```sql
+UPDATE rankings r SET rs_score = NULL
+FROM stocks s
+WHERE s.id = r.stock_id AND s.market = 'HK' AND r.rs_score = 50.0;
+```
+
+HK-scoped deliberately: the 6 US rows at exactly 50.0 are **VOO, IGV, GOOG** — index-tracking
+funds that genuinely move with their benchmark, which is also independent corroboration that the
+HK values were fabricated. Nulling hands those rows to `_kscore_active_weights_for_row`, which
+already drops the factor when `rs_score IS NULL`.
+
+Blocked by the SELECT-only production DB constraint; **not applied.** Before assuming otherwise,
+check `stockai:kscore_weights` — if `relative_strength` is back near `0.05`, the tuner re-learned
+from the placeholder rows.
+
+### Still not worth doing (unchanged from above)
+
+The five items listed earlier in this document remain correct. Add one: **do not add an
+`n_factors_used` column to `rankings`** to signal K-Score factor exclusion — it needs a migration
+and touches the write path, and `ranking.sector_percentile_unavailable` logging
+(`cohort_too_thin` vs `metrics_missing`) already closes the diagnostic gap that mattered.
+
+### Next un-audited domains (ranked, unchanged)
+
+1. **Alert delivery / email pipeline** — partially covered now by `AUD-DIGEST-HOLIDAYBLIND`, but
+   the survey found the dedup/cooldown/suppression path itself **clean**, so this dropped in
+   priority.
+2. **Backtest harness** (BT-1/BT-2/BT-4) — deliberately not re-audited in depth; BT-2 fidelity was
+   built and run before BT-1 and the docs already carry two self-corrections.
+3. **Research engine / LLM cost** — surveyed and found **clean**: all 12 `CALL_SITE_*` constants
+   genuinely wired, quality-tiered TTLs, DB read-through surviving restarts, and `log_llm_call()`
+   correctly storing NULL rather than a fabricated 0 on failure paths.
+
+Also confirmed clean in the survey and **not worth re-checking**: api-gateway `_ROUTES`
+completeness (all 28 prefixes present), api-gateway auth edges (path normalization before the auth
+decision, blacklist fails closed), signal-alert wire shapes (`SignalAlertOut` vs `SignalAlertItem`
+match field-for-field with `response_model` set), `check_price_alerts()`'s falsy-zero handling, and
+a fail-open/falsy-zero grep sweep across five services that returned **zero hits**.
+
+One genuinely latent item found and **deliberately NOT fixed** (recorded only): `_service_token()`
+is copy-pasted 7 times and **3 copies never check expiry** (research-engine, decision-engine,
+paper_trading_engine).
+Tokens are 365-day and containers restart far more often, so there is no live symptom — recorded
+because it is a real single-source-of-truth violation in a repo that keeps getting bitten by
+drifted duplicates. Consolidating into `shared/common/` is the fix if it ever matters.

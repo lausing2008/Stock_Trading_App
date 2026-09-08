@@ -122,3 +122,56 @@ fallback, but SELL *is* overridable and GROWTH currently has a live `0.30` overr
 `/tune_status` does not expose SELL at all, so surfacing it needs a backend change.
 
 ---
+
+## AUD-ADMINPAGE-GUARDGAP + AUD-NAV-ROTATIONEXPLAINER-DEADLINK — Nav Visibility and Page Guards Disagreed, in Both Directions (Fixed 2026-09-08)
+
+Not a wire shape, but the same underlying defect: **two declarations of one contract that drifted
+apart.** Here the contract is "who may see this page", declared once in `_app.tsx`'s nav tree and
+again in each page's own guard.
+
+**Too loose.** Four pages in the `adminOnly: true` group had no admin check:
+
+| Page | Guard |
+|---|---|
+| `horizon-compare.tsx` | **none at all** — no `getSession()`, no `useEffect`, no redirect |
+| `conditional-orders.tsx` | login-only |
+| `paper-gates.tsx` | login-only |
+| `signal-quality.tsx` | login-only |
+
+`horizon-compare` therefore rendered a full admin analytics page for any logged-in user **and for
+a completely unauthenticated visitor**, until its API call happened to 401. Nav-hiding is a
+**visibility** restriction, not an access one — the URL stays reachable. This is the same lesson
+the Learning-section tier gating already recorded: *"nav-hiding alone left them URL-reachable."*
+
+**Too strict.** `watchlist-rotation-explainer.tsx` sits in the Learning group
+(`minTier: 'advanced'`) but required `role === 'admin'`, so `isGroupVisible()` advertised it to
+every advanced-tier user and the page then bounced them to the dashboard with no explanation — **a
+dead link the nav itself created.** Its two sibling Learning pages both use `hasAdvancedAccess`.
+
+**Severity is bounded, and this was verified rather than assumed.** The *mutating* endpoint behind
+`paper-gates` (`POST`/`DELETE /paper-portfolio/entry-gates-override`) correctly requires
+`Depends(get_admin_user)`, so no non-admin could change anything. The exposure was read-only admin
+analytics — a consistency defect, not a breach.
+
+Fixed all five, and added `isAdmin()` to `lib/auth.ts` so the check has **one name** and cannot
+drift into a tier comparison.
+
+### The durable part: `frontend/src/lib/navGuardParity.test.ts`
+
+81 tests that walk the **real `_app.tsx` nav tree** against the **real page sources**, so a *new*
+gated page inherits the check automatically instead of relying on a reviewer noticing. Because the
+bug appeared from both directions, it asserts both:
+
+- every `adminOnly` page checks admin (and reads the session at all, and redirects);
+- no `minTier: 'advanced'` page requires `role === 'admin'`.
+
+It also **asserts its own non-vacuity** (`hrefs.length > 15` for Admin, `> 5` for Learning) —
+because a nav-parsing regex that silently matched nothing would make every case pass, which is
+exactly how this bug class survives a test suite.
+
+**The dead-link half is currently latent** and worth saying plainly: prod has only an
+`ADMIN`/`BASIC` and a `USER`/`BASIC` account, so no user is in the affected class today. It
+activates the moment anyone is set to `ADVANCED` — reported as a real defect rather than dismissed
+as unreachable, because the tier axis exists precisely to be used.
+
+---
