@@ -15,13 +15,18 @@ it is the pattern in the next section.
 | | Finding | Status |
 |---|---|---|
 | 1 | `AUD-CHASE-ROC10` — anti-chase filter ported to the fallback, never blocked a real entry | fixed 2026-09-07 |
-| 2 | `AUD-ENTRY-BREAKOUTREF-DEONLY` — `breakout_ref` added to the fallback only | **still open** |
+| 2 | `AUD-ENTRY-BREAKOUTREF-DEONLY` — `breakout_ref` added to the fallback only | fixed 2026-09-08 |
 | 3 | `AUD-SIGALERT-RRUNREACHABLE` — `expected_move` target added to the fallback only | fixed 2026-09-08 |
 
 ```
-grep -rn breakout_ref   services/decision-engine/    ->  0 matches
-grep -rn expected_move  services/decision-engine/    ->  0 matches
+BEFORE the fixes:
+  grep -rn breakout_ref   services/decision-engine/    ->  0 matches
+  grep -rn expected_move  services/decision-engine/    ->  0 matches
 ```
+
+`breakout_ref` now appears in both DE consumers. `expected_move` still does not — that one was
+fixed differently (by deriving the R:R target from the calibrated floor rather than porting the
+expected-move logic), so the grep stays 0 there by design.
 
 **Why it keeps happening.** `paper_trading_engine._should_enter()` is the **shadow-logged
 fallback** — `decision_engine_mode` defaults to `"primary"` — but it is the more readable, more
