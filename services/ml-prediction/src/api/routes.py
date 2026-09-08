@@ -89,12 +89,17 @@ def train_all(tasks: BackgroundTasks, style: str = "SWING", _: str = Depends(get
     # T14-SURVIVORSHIP-REAPPLY: re-applies the training-universe fix originally shipped in
     # e32f9bd (2026-06-19), reverted 2 days later in 399e34e because the `delisted` column's
     # migration hadn't reached production yet, and never re-applied once it did. Stock.delisted
-    # exists and the migration is long since live (shared/db/session.py), but nothing in this
-    # codebase currently sets delisted=True on any row — no external delisted-ticker data
-    # source is wired up yet (Tiingo/Polygon would be needed for that, tracked separately). This
-    # OR is therefore a safe no-op today (matches Stock.active.is_(True) alone until delisted
-    # rows exist) that auto-activates the moment that data source lands, instead of requiring a
-    # second manual re-fix at that point.
+    # exists and the migration is long since live (shared/db/session.py).
+    #
+    # UPDATED 2026-09-08 (AUD-ING7-DELISTNEVERFIRES): the original comment here said "nothing in
+    # this codebase currently sets delisted=True on any row", which made this OR a documented
+    # no-op. THAT IS NO LONGER TRUE — _record_delisting_signal() in market-data's ingestion.py
+    # does set it, and now actually fires (it was previously unreachable because the detector
+    # only incremented on an exception, while ingest_symbol()'s explicit start/end window makes
+    # a delisted ticker's fetch SUCCEED with one stale bar). SKHYV was confirmed delisted this
+    # way on 2026-09-08. So this OR is live behaviour now, not a placeholder: delisted rows are
+    # deliberately KEPT in the training universe (T14-SURVIVORSHIP) so their history still
+    # counts against survivorship bias.
     with SessionLocal() as session:
         symbols = list(session.execute(
             select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
@@ -158,12 +163,17 @@ def tune_all(
     # T14-SURVIVORSHIP-REAPPLY: re-applies the training-universe fix originally shipped in
     # e32f9bd (2026-06-19), reverted 2 days later in 399e34e because the `delisted` column's
     # migration hadn't reached production yet, and never re-applied once it did. Stock.delisted
-    # exists and the migration is long since live (shared/db/session.py), but nothing in this
-    # codebase currently sets delisted=True on any row — no external delisted-ticker data
-    # source is wired up yet (Tiingo/Polygon would be needed for that, tracked separately). This
-    # OR is therefore a safe no-op today (matches Stock.active.is_(True) alone until delisted
-    # rows exist) that auto-activates the moment that data source lands, instead of requiring a
-    # second manual re-fix at that point.
+    # exists and the migration is long since live (shared/db/session.py).
+    #
+    # UPDATED 2026-09-08 (AUD-ING7-DELISTNEVERFIRES): the original comment here said "nothing in
+    # this codebase currently sets delisted=True on any row", which made this OR a documented
+    # no-op. THAT IS NO LONGER TRUE — _record_delisting_signal() in market-data's ingestion.py
+    # does set it, and now actually fires (it was previously unreachable because the detector
+    # only incremented on an exception, while ingest_symbol()'s explicit start/end window makes
+    # a delisted ticker's fetch SUCCEED with one stale bar). SKHYV was confirmed delisted this
+    # way on 2026-09-08. So this OR is live behaviour now, not a placeholder: delisted rows are
+    # deliberately KEPT in the training universe (T14-SURVIVORSHIP) so their history still
+    # counts against survivorship bias.
     with SessionLocal() as session:
         symbols = list(session.execute(
             select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
@@ -324,12 +334,17 @@ def train_all_ensemble_three(tasks: BackgroundTasks, style: str = "SWING", _: st
     # T14-SURVIVORSHIP-REAPPLY: re-applies the training-universe fix originally shipped in
     # e32f9bd (2026-06-19), reverted 2 days later in 399e34e because the `delisted` column's
     # migration hadn't reached production yet, and never re-applied once it did. Stock.delisted
-    # exists and the migration is long since live (shared/db/session.py), but nothing in this
-    # codebase currently sets delisted=True on any row — no external delisted-ticker data
-    # source is wired up yet (Tiingo/Polygon would be needed for that, tracked separately). This
-    # OR is therefore a safe no-op today (matches Stock.active.is_(True) alone until delisted
-    # rows exist) that auto-activates the moment that data source lands, instead of requiring a
-    # second manual re-fix at that point.
+    # exists and the migration is long since live (shared/db/session.py).
+    #
+    # UPDATED 2026-09-08 (AUD-ING7-DELISTNEVERFIRES): the original comment here said "nothing in
+    # this codebase currently sets delisted=True on any row", which made this OR a documented
+    # no-op. THAT IS NO LONGER TRUE — _record_delisting_signal() in market-data's ingestion.py
+    # does set it, and now actually fires (it was previously unreachable because the detector
+    # only incremented on an exception, while ingest_symbol()'s explicit start/end window makes
+    # a delisted ticker's fetch SUCCEED with one stale bar). SKHYV was confirmed delisted this
+    # way on 2026-09-08. So this OR is live behaviour now, not a placeholder: delisted rows are
+    # deliberately KEPT in the training universe (T14-SURVIVORSHIP) so their history still
+    # counts against survivorship bias.
     with SessionLocal() as session:
         symbols = list(session.execute(
             select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
@@ -364,12 +379,17 @@ def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING", _: str = De
     # T14-SURVIVORSHIP-REAPPLY: re-applies the training-universe fix originally shipped in
     # e32f9bd (2026-06-19), reverted 2 days later in 399e34e because the `delisted` column's
     # migration hadn't reached production yet, and never re-applied once it did. Stock.delisted
-    # exists and the migration is long since live (shared/db/session.py), but nothing in this
-    # codebase currently sets delisted=True on any row — no external delisted-ticker data
-    # source is wired up yet (Tiingo/Polygon would be needed for that, tracked separately). This
-    # OR is therefore a safe no-op today (matches Stock.active.is_(True) alone until delisted
-    # rows exist) that auto-activates the moment that data source lands, instead of requiring a
-    # second manual re-fix at that point.
+    # exists and the migration is long since live (shared/db/session.py).
+    #
+    # UPDATED 2026-09-08 (AUD-ING7-DELISTNEVERFIRES): the original comment here said "nothing in
+    # this codebase currently sets delisted=True on any row", which made this OR a documented
+    # no-op. THAT IS NO LONGER TRUE — _record_delisting_signal() in market-data's ingestion.py
+    # does set it, and now actually fires (it was previously unreachable because the detector
+    # only incremented on an exception, while ingest_symbol()'s explicit start/end window makes
+    # a delisted ticker's fetch SUCCEED with one stale bar). SKHYV was confirmed delisted this
+    # way on 2026-09-08. So this OR is live behaviour now, not a placeholder: delisted rows are
+    # deliberately KEPT in the training universe (T14-SURVIVORSHIP) so their history still
+    # counts against survivorship bias.
     with SessionLocal() as session:
         symbols = list(session.execute(
             select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
@@ -404,12 +424,17 @@ def train_all_horizons(tasks: BackgroundTasks, _: str = Depends(get_current_user
     # T14-SURVIVORSHIP-REAPPLY: re-applies the training-universe fix originally shipped in
     # e32f9bd (2026-06-19), reverted 2 days later in 399e34e because the `delisted` column's
     # migration hadn't reached production yet, and never re-applied once it did. Stock.delisted
-    # exists and the migration is long since live (shared/db/session.py), but nothing in this
-    # codebase currently sets delisted=True on any row — no external delisted-ticker data
-    # source is wired up yet (Tiingo/Polygon would be needed for that, tracked separately). This
-    # OR is therefore a safe no-op today (matches Stock.active.is_(True) alone until delisted
-    # rows exist) that auto-activates the moment that data source lands, instead of requiring a
-    # second manual re-fix at that point.
+    # exists and the migration is long since live (shared/db/session.py).
+    #
+    # UPDATED 2026-09-08 (AUD-ING7-DELISTNEVERFIRES): the original comment here said "nothing in
+    # this codebase currently sets delisted=True on any row", which made this OR a documented
+    # no-op. THAT IS NO LONGER TRUE — _record_delisting_signal() in market-data's ingestion.py
+    # does set it, and now actually fires (it was previously unreachable because the detector
+    # only incremented on an exception, while ingest_symbol()'s explicit start/end window makes
+    # a delisted ticker's fetch SUCCEED with one stale bar). SKHYV was confirmed delisted this
+    # way on 2026-09-08. So this OR is live behaviour now, not a placeholder: delisted rows are
+    # deliberately KEPT in the training universe (T14-SURVIVORSHIP) so their history still
+    # counts against survivorship bias.
     with SessionLocal() as session:
         symbols = list(session.execute(
             select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
