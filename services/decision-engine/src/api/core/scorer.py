@@ -73,7 +73,13 @@ def compute_score(
     score = 0
 
     entry2     = game_plan.get("entry2",     live_price * 0.940)
-    breakout   = game_plan.get("breakout",   live_price * 1.035)
+    # AUD-ENTRY-BREAKOUTREF-DEONLY: prefer the SIGNAL-ANCHORED level. Reading `breakout` alone
+    # (live-anchored, and defaulting to live_price * 1.035 right here) made
+    # `live_price <= breakout` ALWAYS TRUE, so every candidate collected a free +2 "optimal
+    # zone" and the -3 "chasing risk" penalty was unreachable — against a min_entry_score of
+    # 4-6, that free +2 is a third of the bar. Same root cause as the extension guard in
+    # hard_rejects.py; both are fixed together because both are on the authoritative path.
+    breakout   = game_plan.get("breakout_ref") or game_plan.get("breakout", live_price * 1.035)
     stop       = game_plan.get("stop",       live_price * 0.880)
     take_profit = game_plan.get("take_profit", live_price * 1.35)
 

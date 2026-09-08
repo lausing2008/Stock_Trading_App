@@ -38,6 +38,23 @@ def test_roc10_gate_exists_in_decision_engine():
     assert "_MAX_ROC10_FOR_ENTRY" in DE_SRC
 
 
+def test_breakout_ref_gate_exists_in_decision_engine():
+    """AUD-ENTRY-BREAKOUTREF-DEONLY — THE ASSERTION THIS FILE SHOULD ALWAYS HAVE HAD.
+
+    The sibling test above encodes exactly the right lesson for roc_10: decision-engine is the
+    authoritative gate, so the fix must be verifiable THERE. The same commit also fixed
+    AUD-ENTRY4-BREAKOUTSELFREF by adding `breakout_ref` — and never applied this assertion to
+    it. `grep -rn breakout_ref services/decision-engine/` returned 0 for weeks afterwards, so
+    DE's extended-move guard kept computing a constant (-3.38%) against a +6% threshold and
+    could never fire, while the fallback's fixed version produced plausible shadow logs.
+
+    Two fixes, one commit, one test file, one lesson applied to only half of it.
+    """
+    assert "breakout_ref" in DE_SRC, (
+        "the signal-anchored breakout level must exist on the path that decides entries"
+    )
+
+
 def test_roc10_threshold_matches_the_fallback_exactly():
     """The two gates screen the same candidates on two paths. A divergence would mean the
     authoritative gate and the shadow-logged fallback disagree about the same trade."""

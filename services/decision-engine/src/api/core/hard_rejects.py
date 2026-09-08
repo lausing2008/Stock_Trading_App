@@ -617,7 +617,23 @@ def check_hard_rejects(
     # Extended-move guard: stock is >6% above the breakout level the signal was
     # calibrated to. A human trader waits for a pullback rather than chasing.
     if game_plan:
-        breakout = game_plan.get("breakout")
+        # AUD-ENTRY-BREAKOUTREF-DEONLY: this used to read `breakout` only. That key is
+        # LIVE-ANCHORED — _build_game_plan_for_style() derives it from the current price, and
+        # DE's own _default_game_plan falls back to `live_price * 1.035` — so
+        # `live_price / breakout` was a CONSTANT with no market input (SWING -1.96%,
+        # GROWTH -3.38%) against a +6% threshold. The guard could never fire.
+        #
+        # AUD-ENTRY4-BREAKOUTSELFREF fixed exactly this by adding `breakout_ref`, anchored to
+        # the SIGNAL-TIME close, so the comparison measures real drift between when the signal
+        # computed and when we are about to fill. But that fix landed ONLY in
+        # paper_trading_engine.py — the SHADOW-LOGGED FALLBACK — while `decision_engine_mode`
+        # defaults to "primary", so the path that actually opens trades kept the broken form.
+        # `breakout_ref` was being passed through routes.py the whole time and simply not read.
+        #
+        # Third instance of that same mistake (see AUD-CHASE-ROC10, AUD-SIGALERT-RRUNREACHABLE).
+        # Falls back to `breakout` when no signal anchor exists, which restores the old inert
+        # behaviour rather than rejecting everything.
+        breakout = game_plan.get("breakout_ref") or game_plan.get("breakout")
         if breakout and float(breakout) > 0:
             ext_pct = (live_price / float(breakout) - 1) * 100
             threshold = cfg.get("max_breakout_extension_pct", 6.0)
