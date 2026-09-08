@@ -4922,6 +4922,17 @@ _DARK_POOL_BASELINE_DAYS = 14
 # history accumulates, then the relative bar engages on its own.
 _DARK_POOL_BASELINE_MIN_PRINTS = 20
 _DARK_POOL_ALERT_EMAIL_CAP = 12  # matches _OPTIONS_FLOW_ALERT_EMAIL_CAP exactly
+# AUD-DARKPOOL-STALEPRINT: only alert on prints that are actually NEW. UW's /api/darkpool
+# response is a rolling window, not "prints since you last asked" — production carries 4+ days
+# of prints per symbol (NET 242 rows back to 2026-09-04, TSM 1,117). The candidate selection
+# takes max(premium) with NO age filter, so the single biggest block a symbol has ever printed
+# stayed "the" candidate forever and re-alerted every time its cooldown lapsed.
+#
+# 90 minutes comfortably covers the 1-minute job cadence plus the 60-minute cooldown, so a
+# genuinely new block still alerts on the run that first sees it, while yesterday's block can
+# never come back.
+_DARK_POOL_PRINT_MAX_AGE_MINUTES = 90
+
 _DARK_POOL_ALERT_COOLDOWN_MINUTES = 60  # longer than options-flow's 30 — a symbol can see many
 # large dark-pool prints in a single session (unlike a specific options contract sweep), so a
 # shorter cooldown would flood a user's inbox with what's often the same accumulating position
@@ -5045,6 +5056,35 @@ def _record_dark_pool_alert_outcome(session, stock_id: int, symbol: str, price: 
         log.warning("dark_pool_alert_outcome.record_failed", symbol=symbol, error=str(exc))
 
 
+def _dark_pool_print_is_recent(row, cutoff: "datetime") -> bool:
+    """Is this dark-pool print newer than `cutoff`?
+
+    AUD-DARKPOOL-STALEPRINT. `DarkPoolPrintRow.executed_at` is an ISO **string** from UW, not a
+    datetime, and may or may not carry a timezone. Parsed defensively here because the
+    alternative — letting a parse failure raise — would take down the whole alert job for one
+    malformed row.
+
+    FAILS CLOSED (returns False) when the timestamp is missing or unparseable. That is the
+    correct direction: an alert we cannot date is an alert we cannot prove is new, and the whole
+    point of this filter is to stop re-sending prints whose age we previously ignored. The cost
+    of a false negative is one missed email; the cost of a false positive is the spam this fixes.
+    """
+    raw = getattr(row, "executed_at", None)
+    if not raw:
+        return False
+    try:
+        if isinstance(raw, str):
+            # fromisoformat handles "2026-09-08T20:04:39" and "+00:00"; normalise a trailing Z.
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        else:
+            parsed = raw
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed >= cutoff
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 def check_dark_pool_alerts() -> None:
     """T323-DARKPOOL: real large off-exchange block print alert — direct user request to add
     Unusual Whales' dark pool data to this app. A "dark pool" is a private trading venue where
@@ -5133,10 +5173,18 @@ def check_dark_pool_alerts() -> None:
                     # absolute floor applies, i.e. exactly the pre-fix behavior.
                     _baseline = _dark_pool_premium_baseline(session, symbol)
                     _rel_floor = (_baseline * _DARK_POOL_REL_MULTIPLE) if _baseline else 0.0
+                    # AUD-DARKPOOL-STALEPRINT: a print must also be RECENT. Without this the
+                    # biggest block in UW's multi-day rolling window was re-selected on every
+                    # 1-minute run and re-emailed each time the 60-minute cooldown lapsed —
+                    # the same NET/TSM pair arriving 61 minutes apart, byte-identical.
+                    _print_cutoff = datetime.now(timezone.utc) - timedelta(
+                        minutes=_DARK_POOL_PRINT_MAX_AGE_MINUTES
+                    )
                     qualifying = [
                         r for r in rows
                         if (r.premium or 0) >= _DARK_POOL_ALERT_MIN_PREMIUM
                         and (r.premium or 0) >= _rel_floor
+                        and _dark_pool_print_is_recent(r, _print_cutoff)
                     ]
                     if not qualifying:
                         continue
@@ -5175,7 +5223,18 @@ def check_dark_pool_alerts() -> None:
             for uid, user in recipients.items():
                 cooldown_ok_symbols = []
                 for symbol in candidates.keys():
-                    cd_key = f"stockai:dark_pool_alert_cooldown:{uid}:{symbol}"
+                    # AUD-DARKPOOL-STALEPRINT: key on the PRINT, not just (user, symbol). The
+                    # old key could not tell two prints apart, so it suppressed for 60 minutes
+                    # and then let the SAME block through again. Including the execution
+                    # timestamp means a genuinely new block alerts immediately (it has its own
+                    # key) while an already-sent one can never re-send, whatever the cooldown
+                    # does. The TTL still bounds key growth.
+                    _cd_print_id = candidates[symbol].get("executed_at")
+                    cd_key = (
+                        f"stockai:dark_pool_alert_cooldown:{uid}:{symbol}:{_cd_print_id}"
+                        if _cd_print_id else
+                        f"stockai:dark_pool_alert_cooldown:{uid}:{symbol}"
+                    )
                     try:
                         if _rc.set(cd_key, "1", nx=True, ex=_DARK_POOL_ALERT_COOLDOWN_MINUTES * 60):
                             cooldown_ok_symbols.append(symbol)
