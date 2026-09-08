@@ -66,6 +66,13 @@ _namespace = {
         _source.split("_MAX_ROC10_FOR_ENTRY = ")[1].split("\n")[0].strip()
     ),
 }
+# AUD-CONVICTION-SOFTDRIFT: the soft-layer set moved into a shared _soft_layer_keywords()
+# helper, because _store_conviction() carried a divergent hardcoded copy of only the BASE
+# tuple. Load the REAL helper rather than mirroring it — a hand-written copy here would be the
+# same drift being fixed. It reads _load_conviction_edges from this namespace, so the {} stub
+# above still yields the pre-fix hardcoded behaviour.
+exec(next(l for l in _source.splitlines() if l.startswith("_SOFT_LAYER_BASE = ")), _namespace)  # noqa: S102
+_load_function("_soft_layer_keywords", _namespace)
 _is_conviction_buy = _load_function("_is_conviction_buy", _namespace)
 
 

@@ -57,6 +57,16 @@ def _make_namespace(conviction_edges: dict[str, float] | None = None) -> dict:
         "_CONVICTION_EDGE_NOISE_THRESHOLD_PCT": 2.0,
         "_load_conviction_edges": lambda: edges,
     }
+    # AUD-CONVICTION-SOFTDRIFT: the soft-layer set is now built by a shared helper
+    # (_soft_layer_keywords) rather than inline inside _is_conviction_buy, because
+    # _store_conviction carried a divergent hardcoded copy of only the BASE tuple. Load the
+    # REAL helper into the namespace rather than reimplementing it here — a hand-written mirror
+    # would let the two drift, which is the very defect being fixed. It reads
+    # _load_conviction_edges from this same namespace, so the edge injection above still
+    # controls behaviour exactly as before.
+    _base_line = next(l for l in _source.splitlines() if l.startswith("_SOFT_LAYER_BASE = "))
+    exec(_base_line, ns)  # noqa: S102 — the real base tuple, read from source
+    _load_function("_soft_layer_keywords", ns)
     return ns
 
 
@@ -91,12 +101,39 @@ def _signal(horizon="SWING", **reason_overrides) -> dict:
 # ── Consumer wiring: load_conviction_weights() now has a real caller ─────────────────────
 
 def test_load_conviction_edges_is_called_inside_is_conviction_buy():
-    """The whole point of the fix: _is_conviction_buy must actually call the loader, not just
-    have it sit unused elsewhere in the file."""
-    start = _source.index("def _is_conviction_buy(")
-    end = _source.index("\n\n\ndef ", start)
-    body = _source[start:end]
-    assert "_load_conviction_edges()" in body
+    """The whole point of the original fix: the loader must actually be CALLED on the path that
+    classifies conviction tiers, not sit unused elsewhere in the file.
+
+    AUD-CONVICTION-SOFTDRIFT moved the call one level down, into the shared
+    _soft_layer_keywords() helper that _is_conviction_buy now uses — because
+    _store_conviction() had its own hardcoded copy of only the BASE soft tuple and could
+    therefore classify the same failure list into a different tier. The invariant is unchanged
+    and is asserted through the indirection rather than against one function's literal text.
+    """
+    def _body(fn: str) -> str:
+        start = _source.index(f"def {fn}(")
+        return _source[start:_source.index("\n\n\ndef ", start)]
+
+    # The helper is what calls the loader...
+    assert "_load_conviction_edges()" in _body("_soft_layer_keywords")
+    # ...and both tier-classifying paths must go through that helper, never a local copy.
+    assert "_soft_layer_keywords()" in _body("_is_conviction_buy")
+    assert "_soft_layer_keywords()" in _body("_store_conviction")
+    # The base tuple must be ASSIGNED exactly once. Counting bare occurrences would also match
+    # the historical tuple quoted in _store_conviction's explanatory comment, so this counts
+    # assignments — a real second definition — rather than any mention of the text.
+    assigns = [
+        l for l in _source.splitlines()
+        if '"OBV", "ADX", "ML probability", "MACD"' in l
+        and "=" in l.split('"OBV"')[0]
+        and not l.lstrip().startswith("#")
+    ]
+    assert len(assigns) == 1, (
+        f"the soft-layer base list must be assigned once; found {len(assigns)}: {assigns}"
+    )
+    assert assigns[0].startswith("_SOFT_LAYER_BASE = "), (
+        "the single definition must be the module-level constant"
+    )
 
 
 def test_no_calibration_data_behaves_exactly_like_before_the_fix():

@@ -314,7 +314,16 @@ def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed:
                 pass
         # Derive conviction_tier from passed/failed if not explicitly provided
         if conviction_tier is None:
-            _SOFT = ("OBV", "ADX", "ML probability", "MACD")
+            # AUD-CONVICTION-SOFTDRIFT: this used to hardcode
+            #     _SOFT = ("OBV", "ADX", "ML probability", "MACD")
+            # which is only the BASE list. _is_conviction_buy() extends that set at runtime
+            # with any layer whose calibrated edge is below the noise threshold
+            # (AUD263-CONVICTION-WEIGHTS-UNGATED), so this copy could classify the same
+            # failure list into a DIFFERENT tier than the gate that produced it. Currently
+            # unreachable (both live call sites pass conviction_tier explicitly), but a
+            # divergent duplicate that is one caller away from mattering is exactly the class
+            # this codebase keeps getting bitten by. Shares the real set now.
+            _SOFT = _soft_layer_keywords()
             soft_f = [f for f in failed if any(kw in f for kw in _SOFT)]
             hard_f = [f for f in failed if f not in soft_f]
             if len(failed) == 0:
@@ -840,6 +849,35 @@ _CONVICTION_LAYER_FLAG = {
 _CONVICTION_EDGE_NOISE_THRESHOLD_PCT = 2.0  # edge_pct below this = not meaningfully predictive
 
 
+_SOFT_LAYER_BASE = ("OBV", "ADX", "ML probability", "MACD")
+
+
+def _soft_layer_keywords() -> list[str]:
+    """The soft-fail layer set — SINGLE SOURCE for tier classification.
+
+    CB-4: a single soft failure (OBV, ADX, ML, or MACD) still allows a "near" conviction tier.
+    MACD is a lagging indicator; when every other layer aligns bullish, one MACD lag should not
+    hard-block the alert.
+
+    AUD263-CONVICTION-WEIGHTS-UNGATED: extended at runtime with any layer whose underlying flag
+    has near-zero or negative calibrated edge (measured from real signal_outcomes, not guessed).
+    Additive only — never removes a base soft layer.
+
+    AUD-CONVICTION-SOFTDRIFT: extracted here because _store_conviction() carried its own
+    hardcoded copy of the BASE tuple only, missing the calibrated extension, so the two could
+    classify the same failure list into different tiers.
+    """
+    keywords = list(_SOFT_LAYER_BASE)
+    edges = _load_conviction_edges()
+    for layer_kw, flag in _CONVICTION_LAYER_FLAG.items():
+        if layer_kw in keywords:
+            continue
+        edge = edges.get(flag)
+        if edge is not None and edge < _CONVICTION_EDGE_NOISE_THRESHOLD_PCT:
+            keywords.append(layer_kw)
+    return keywords
+
+
 def _load_conviction_edges() -> dict[str, float]:
     """Redis-primary (T228 convention), matching calibrate_conviction_weights' own write side.
     Returns {flag: edge_pct}; empty dict if never calibrated or unreachable — fails open, since
@@ -1053,17 +1091,7 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
     # CB-4: Near-conviction tier — allow 1 soft failure (OBV, ADX, ML, or MACD) to still send.
     # MACD is a lagging indicator; when all other layers (TA structure, RSI, ML, K-Score)
     # align bullish, a single MACD lag should not hard-block the alert.
-    _SOFT_LAYER_KEYWORDS = ["OBV", "ADX", "ML probability", "MACD"]
-    # AUD263-CONVICTION-WEIGHTS-UNGATED: extend the soft-fail set with any layer whose
-    # underlying flag has near-zero or negative calibrated edge (real signal_outcomes data,
-    # not a guess) — additive only, never removes an existing hardcoded soft layer.
-    _conviction_edges = _load_conviction_edges()
-    for _layer_kw, _flag in _CONVICTION_LAYER_FLAG.items():
-        if _layer_kw in _SOFT_LAYER_KEYWORDS:
-            continue
-        _edge = _conviction_edges.get(_flag)
-        if _edge is not None and _edge < _CONVICTION_EDGE_NOISE_THRESHOLD_PCT:
-            _SOFT_LAYER_KEYWORDS.append(_layer_kw)
+    _SOFT_LAYER_KEYWORDS = _soft_layer_keywords()
     soft_failed = [f for f in failed if any(kw in f for kw in _SOFT_LAYER_KEYWORDS)]
     hard_failed = [f for f in failed if f not in soft_failed]
 
@@ -6843,7 +6871,17 @@ def check_signal_alerts() -> None:
                             continue  # last_signal NOT updated — retried next run
                         conviction_passed = passed
                         near_conviction = conviction_tier == "near"
-                        near_conviction_failed = [f for f in failed if near_conviction]
+                        # AUD-CONVICTION-DEADFILTER: this was
+                        #     [f for f in failed if near_conviction]
+                        # whose condition is loop-INVARIANT — it never inspects `f`, so the
+                        # comprehension is either all of `failed` or none of it, never a
+                        # selection. It is accidentally correct today only because the "near"
+                        # tier implies exactly one soft failure, so "all of failed" and "the
+                        # one soft fail" coincide. If "near" ever admits 2 soft fails (a
+                        # one-line threshold change elsewhere), this would silently start
+                        # reporting BOTH — including any hard failure — in an email section
+                        # that says "one gate away". Written as what it means instead.
+                        near_conviction_failed = list(failed) if near_conviction else []
                         sig_regime = (signal_details.get(key) or {}).get("reasons", {}).get("market_regime", "unknown")
                         log.info(
                             "signal_alert.conviction_met", symbol=alert.symbol,
@@ -6865,8 +6903,14 @@ def check_signal_alerts() -> None:
                             continue  # last_signal NOT updated — retried next run
 
                 # Same-direction cooldown: if we already sent this exact direction within
-                # the last 4 hours, advance state but skip the email. Prevents BUY→HOLD→BUY
-                # oscillation spam when a stock is sitting right at the threshold boundary.
+                # _SAME_DIR_COOLDOWN_HRS, advance state but skip the email. Prevents
+                # BUY→HOLD→BUY oscillation spam when a stock is sitting right at the threshold
+                # boundary.
+                #
+                # This comment used to say "the last 4 hours" while the constant below was 2.
+                # The CODE is right — 2h is the documented and tested behaviour (see
+                # docs/incidents/alert-email-spam-and-suppression.md); only the prose drifted.
+                # Stated by name now so the two cannot disagree again.
                 _SAME_DIR_COOLDOWN_HRS = 2
                 if alert.last_sent_at is not None:
                     sent_ago = datetime.now(timezone.utc) - alert.last_sent_at.replace(tzinfo=timezone.utc) if alert.last_sent_at.tzinfo is None else datetime.now(timezone.utc) - alert.last_sent_at
