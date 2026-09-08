@@ -126,9 +126,29 @@ DESCRIPTION:Longer-horizon items where a quarter of accumulated data change
  roken: it is the healthiest domain audited - 123,475 bars, zero duplicates
  , zero high<low, zero out-of-range closes.\n- Alert dedup/cooldown/suppres
  sion and research-engine LLM cost: both surveyed clean 2026-09-08.\n- Thre
- shold retuning of any alert: every looser variant measured worse.\n\nFull 
- checklist: https://claude.ai/code/artifact/f2462c2d-bde6-4f30-99d9-121ede2
- 7f411
+ shold retuning of any alert: every looser variant measured worse.\n\n5) DA
+ RK POOL DIRECTION TEST (scoped 2026-09-08)\nThere is NO side flag in dark 
+ pool data - a print carries only price/size/premium/venue/executed_at, and
+  the FINRA tape does not record who initiated. Lee-Ready classification is
+  NOT implementable here (no historical NBBO quotes anywhere in the codebas
+ e). Venue composition is DEAD as a signal (98.2% of prints carry one venue
+  code). What IS viable: price-position-within-5m-bar, per symbol per day, 
+ blocks >= 10k shares only - measured 2026-09-08, prints do NOT cluster at 
+ midpoint (11.8% near mid, sd 0.289) so position carries information. BUT a
+ ggregate skew is 0.5099, dead center, so the signal MUST be per-symbol; po
+ oling reads as zero.\nRUN: scripts/dark_pool_direction_test.sql (read-only
+ , 7 sections, already smoke-tested).\nSAMPLE GUARD: expect ~500-550 symbol
+ -days (the 5-day sample yielded 44, ~9/day). If fewer than ~300, DEFER AGA
+ IN rather than lowering dp_n or the block floor to manufacture rows - loos
+ ening filters to reach significance is how the retracted findings happened
+ .\nSUCCESS = consistently signed correlation that STRENGTHENS with the dp_
+ weight tercile AND survives the 70/30 chronological holdout. A near-zero r
+ esult is a legitimate NULL RESULT worth recording, not a failure to fix.\n
+ Do NOT add a directional claim to check_dark_pool_alerts() until that pass
+ es - its current 'makes no directional claim' stance is correct and delibe
+ rate.\nScoping: docs/2026-09-08/DARK_POOL_DIRECTION_SCOPING.md\n\nFull che
+ cklist: https://claude.ai/code/artifact/f2462c2d-bde6-4f30-99d9-121ede27f4
+ 11
 BEGIN:VALARM
 TRIGGER:-P2D
 ACTION:DISPLAY
