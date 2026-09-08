@@ -153,8 +153,7 @@ mechanism is open, not solved.
 2. ~~**`data_quality_checks` scheduler jobs**~~ — **AUDITED, see Area 2 below.**
 3. ~~**Adjusted-vs-unadjusted consistency**~~ — **AUDITED, see Area 3 below. SPY question CLOSED.**
 4. ~~**`_fetch_live_bulk` and its per-symbol fallback**~~ — **AUDITED, see Area 4 below. CLEAN.**
-5. **HK timezone handling** — a documented past bug stored HK bars at the wrong UTC offset. Not
-   re-verified.
+5. ~~**HK timezone handling**~~ — **AUDITED, see Area 5 below. CLEAN.**
 6. **The 21 symbols with <400 bars / 7 with <100** — beyond the two dead tickers, are the rest
    genuinely new listings or silently under-ingested?
 
@@ -351,3 +350,41 @@ against a 48h `newer_than` window while no options were trading. The spike stopp
 after that deploy is independent confirmation the fix worked.
 
 **No action needed for Area 4.**
+
+
+---
+
+## Area 5 — HK timezone handling: **CLEAN. The old offset bug stayed fixed.**
+
+The documented past bug stored HK daily bars at the wrong UTC offset (fixed in `base.py` +
+`routes.py` + a DB migration). Re-verified against all 22,292 HK daily bars:
+
+| check | result |
+|---|---|
+| hour component | **0 on all 22,292 bars** — no offset |
+| weekend bars | **0** (an offset bug shifts Mon→Sun) |
+| weekday spread | even (Mon 4,373 … Thu 4,588) |
+
+The fix held. `_to_canonical`'s daily branch (`base.py:65-66`) preserves the LOCAL market date
+rather than the UTC date, which is what makes this correct.
+
+### A control-group anomaly worth recording: GOOGL
+
+Running US as a control surfaced **762 bars at hours 4 and 5 (UTC)** — all GOOGL, no other
+symbol. Investigated to conclusion; **benign and already self-resolved**:
+
+| check | result |
+|---|---|
+| dates correct? | **yes** — `2026-05-05 04:00` still reads as date `2026-05-05` |
+| duplicate dates? | **no** — 767 bars, 767 distinct dates, zero excess |
+| weekend bars? | **no** |
+| OHLC violations (the SPY signature)? | **zero** |
+| still happening? | **no** — no offset bars since June 2026 |
+
+**Same historical writer as the SPY bars.** All 767 GOOGL bars carry `adj_close` populated — the
+identical fingerprint that isolated the SPY window in Area 3, where only 45 of 555 SPY bars had
+it. So one legacy writer produced both artifacts, but GOOGL got only the timestamp-hour quirk
+and none of the OHLC mixing.
+
+**No action needed.** The dates are right, nothing derives from the hour component of a daily
+bar, and the writer is gone.
