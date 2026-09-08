@@ -107,10 +107,49 @@ record before any correction.
 
 ---
 
-## NOT YET AUDITED — scope for the completing pass
+## Area 1 — Ingest-time validation: **NO FINDING. Validation exists and is correct.**
 
-1. **Ingest-time validation** — is there any? A bar with `open > high`, a 3000% move, or a zero
-   price appears to be written unchallenged.
+I initially reported that there was *no OHLC validation on write*. **That was wrong** — I
+grepped for the checks rather than for a validator by name and missed it.
+
+`validate_ohlcv()` (`ingestion.py:110-133`) checks exactly what I claimed was missing:
+
+```python
+df = df[(df["high"] >= df["low"]) & (df["high"] >= df["open"]) & (df["high"] >= df["close"])]
+df = df[(df["low"] <= df["open"]) & (df["low"] <= df["close"])]
+df = df[(df[["open","high","low","close"]] > 0).all(axis=1)]
+if not allow_zero_volume:
+    df = df[df["volume"] > 0]
+```
+
+It is called at `:255`, **immediately after fetch and before any write**, on every path:
+`ingest_universe` → `ingest_symbol` → validated, and `pg_insert(Price)` at `:318` is the **only**
+write to the `prices` table in the entire codebase (confirmed across all services). The validated
+`candidate` frame is the one persisted. There is no bypass.
+
+### The open question this leaves — and where I stopped
+
+If validation is correct and universal, **how did the 14 bad SPY bars get in?** What I
+established:
+
+- **6 of 14 predate the repo's first commit** (2026-04-17) — those are pre-history and
+  unexplainable from this codebase.
+- **8 of 14 are AFTER it**, so they are not purely historical.
+- **It is not float-precision rounding.** The overshoots are $0.24–$0.69, orders of magnitude too
+  large.
+- **The raw values are diagnostic:** `open` carries unadjusted precision (`741.7899780273438`,
+  `711`) while `high` carries adjustment artifacts (`741.5496453663399`). So my *original*
+  adjusted/unadjusted-mixing hypothesis was right, and my earlier retraction of it was premature.
+- **Our code does not do the mixing** — there is no post-fetch adjustment anywhere in the adapter,
+  and `auto_adjust` is passed uniformly for all four OHLC columns.
+
+**Most likely explanation:** yfinance itself intermittently returns a row with `Open` unadjusted
+while `High`/`Low`/`Close` are adjusted. `validate_ohlcv` *should* still have rejected such a row,
+which is the part I could not close. **Not resolved — this needs a live reproduction against
+yfinance for one of the affected dates, which I did not do.**
+
+Severity remains LOW regardless (0.128% avg overshoot, SPY only, 2.5% of its bars) — but the
+mechanism is open, not solved.
 2. **`data_quality_checks` scheduler jobs** — what do they actually verify? They evidently did
    not catch the SPY anomaly or the two dead tickers.
 3. **Adjusted-vs-unadjusted consistency across ALL ingest paths** — I verified the main adapter
