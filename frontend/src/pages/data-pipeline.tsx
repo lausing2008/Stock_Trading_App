@@ -616,22 +616,37 @@ else:                                 -> get_adapters(market, timeframe)`}</Pre>
             [<span key="k"><Code>squeeze_*_48h</Code> (6)</span>, 'squeeze reject-reason breakdowns'],
           ]}
         />
-        <SubSection title="Known gating gaps (verified 2026-09-09, NOT yet fixed)">
+        <SubSection title="Gating gaps — found and fixed 2026-09-09">
+          <p style={{ marginTop: 0 }}>
+            Four were found in one pass while writing this page. They were fixed{' '}
+            <Hi>four different ways on purpose</Hi>, because what a job actually{' '}
+            <Hi>costs</Hi> on a non-trading day differs — and that decides where to gate it.
+          </p>
           <Table
-            head={['Job', 'Gap']}
-            widths={['42%', '58%']}
+            head={['Job', 'Was', 'Fix + why']}
+            widths={['24%', '34%', '42%']}
             rows={[
-              [<Code key="a">live_price_cache_refresh</Code>, <span key="b">gates on raw <Code>weekday()</Code> + hour window, <Hi>not</Hi> a trading-day check — so it runs a full bulk download on market holidays</span>],
-              [<span key="c">the six <Code>18:0x</Code> evaluators</span>, <span key="d">registered with <Hi>no <Code>day_of_week</Code></Hi>, so they fire Saturdays and Sundays too</span>],
-              [<Code key="e">edgar_8k_ingest_daily</Code>, <span key="f">cron <Code>mon-fri</Code> only, <Hi>no NYSE holiday check</Hi> — unlike its HK sibling, which does check</span>],
-              [<Code key="g">avg_volume_cache_refresh</Code>, <span key="h">omits <Code>misfire_grace_time</Code> — the exact gap that silently killed 3 jobs in AUD-MISFIREGRACE-OPTIONSFLOW</span>],
-              [<span key="i">startup log</span>, <span key="j">reports <Code>jobs=20</Code>; the real count is <Hi>~85</Hi> after loop expansion</span>],
+              [<Code key="a">live_price_cache_refresh</Code>,
+               <span key="b">raw <Code>weekday() &gt;= 5</Code> — ran every market <Hi>holiday</Hi></span>,
+               <span key="c"><Hi>Gated in-function, per market.</Hi> A yfinance bulk download of ~173 stocks ≈ <Hi>480 wasted downloads/holiday</Hi>, caching stale quotes for 16 scanners. Per-market because a US holiday is often a normal HKEX session.</span>],
+              [<Code key="d">edgar_8k_ingest_daily</Code>,
+               <span key="e"><Code>mon-fri</Code>, no holiday check</span>,
+               <span key="f"><Hi>Gated in-function.</Hi> The sweep is rate-limited 0.15s/CIK for SEC fair-use, so a no-op pass still spends real budget. Skip path still records a job status — a silent skip looks like a dead job.</span>],
+              [<span key="g">the six <Code>18:0x</Code> evaluators</span>,
+               <span key="h">no <Code>day_of_week</Code> — fired weekends</span>,
+               <span key="i"><Hi>Fixed at the trigger.</Hi> They query real <Code>Price</Code> rows, so a weekend run is <Hi>waste, not corruption</Hi>. An internal date guard would also have blocked a legitimate Monday catch-up.</span>],
+              [<Code key="j">avg_volume_cache_refresh</Code>,
+               <span key="k">no <Code>misfire_grace_time</Code></span>,
+               <span key="l"><Hi>Set to 300s.</Hi> A missed fire is <Hi>dropped</Hi>, and with <Code>max_instances=1</Code> that can retire the schedule — the AUD-MISFIREGRACE-OPTIONSFLOW shape. A repo-wide test now requires one on every interval job.</span>],
             ]}
           />
-          <p style={{ marginBottom: 0 }}>
-            All are the same class as <Hi>AUD-DIGEST-HOLIDAYBLIND</Hi>, which sent 13 emails on
-            Labor Day: <Hi>a <Code>mon-fri</Code> cron is not a market-open check.</Hi>
-          </p>
+          <Callout tone="example" title="The judgement worth reusing">
+            Before choosing <Hi>where</Hi> to gate a job, ask what it actually costs on a
+            non-trading day. A job that burns a rate-limited API or writes stale data into a
+            shared cache deserves an <Hi>in-function</Hi> guard. A job that queries real bars and
+            finds nothing only needs a <Hi>cadence</Hi> change — and an over-eager internal guard
+            there would block legitimate catch-up runs.
+          </Callout>
         </SubSection>
 
         <Callout tone="warn" title="Aggregate gauges are blind to single-symbol death">

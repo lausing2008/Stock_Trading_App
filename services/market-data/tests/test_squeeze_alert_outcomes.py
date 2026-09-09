@@ -519,11 +519,22 @@ def test_gamma_unwind_alerts_splits_by_dominant_side():
 
 
 def test_evaluator_is_registered_as_a_daily_cron_job():
-    assert 'CronTrigger(hour=18, minute=15, timezone="America/New_York")' in _SCHEDULER_SOURCE
+    """AUD-ING-EVALUATORS-WEEKENDFIRE (2026-09-09): this test used to assert the EXACT trigger
+    string `CronTrigger(hour=18, minute=15, timezone="America/New_York")`, which made it fail the
+    moment `day_of_week="mon-fri"` was added — a change that STRENGTHENED the very property the
+    test exists to check (that this is a once-daily post-close job). Asserting a whole literal
+    line pins incidental formatting alongside the real invariant. Now asserts the parts that
+    actually matter: the job's own registration block, at 18:15 ET, cron-triggered, once daily.
+    """
     idx = _SCHEDULER_SOURCE.index('id="squeeze_alert_outcome_eval_daily"')
     assert idx > 0
     nearby = _SCHEDULER_SOURCE[max(0, idx - 300):idx]
     assert "evaluate_squeeze_alert_outcomes" in nearby
+    assert "CronTrigger(" in nearby
+    assert "hour=18" in nearby and "minute=15" in nearby
+    assert 'timezone="America/New_York"' in nearby
+    # It must not fire on days that cannot produce a new daily bar.
+    assert 'day_of_week="mon-fri"' in nearby
 
 
 def test_evaluator_job_is_not_gated_behind_alerting_enabled():

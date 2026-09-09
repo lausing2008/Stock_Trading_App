@@ -8472,8 +8472,20 @@ def _ingest_edgar_8k() -> None:
     The event-intelligence service handles stock universe lookup, CIK resolution,
     and rate-limiting (0.15s/CIK to stay under SEC's 10 req/s fair-use policy).
     HK stocks are skipped automatically inside the ingest function.
+
+    AUD-ING-EDGAR-HOLIDAYBLIND (2026-09-09): the cron carries day_of_week="mon-fri" but NO
+    holiday check, so this fired on every NYSE holiday and asked event-intelligence to sweep
+    every US CIK for filings from a day the market never opened. Its HK sibling
+    _ingest_hk_connect_flows() has always called _is_hk_trading_day() for exactly this reason;
+    this is the same guard, applied to the same class of job. Not merely wasteful: the sweep is
+    rate-limited at 0.15s/CIK to respect SEC fair-use, so a full no-op pass still spends real
+    time against SEC's budget and logs a successful "ok" job status for a day with no data.
     """
     _t0 = time.monotonic()
+    if not _is_us_trading_day():
+        log.info("edgar.ingest_skipped", reason="not_a_us_trading_day")
+        _record_job_status("edgar_8k_ingest", "ok", time.monotonic() - _t0)
+        return
     try:
         log.info("edgar.ingest_trigger")
         _post(f"{_settings.event_intelligence_url}/events/sync/8k")
@@ -12207,10 +12219,28 @@ def start_scheduler() -> None:
     # ── T252-VALUE-AREA-BREAKDOWN-ALERT: daily POC/VAH/VAL computation — 18:00 ET ──
     # After US close (17:00 ET digest above) and before the next day's open; HK's own bars
     # have already landed too since HK closes well before US market hours. Reuses the same
+    # AUD-ING-EVALUATORS-WEEKENDFIRE (2026-09-09): these six 18:0x ET jobs were the only daily
+    # crons in this file registered WITHOUT day_of_week, so they fired on Saturdays and Sundays
+    # too — against their own docstrings, which say "once daily, post-close" and "forward returns
+    # don't need to be evaluated more often than once a trading day closes".
+    #
+    # WHY THIS IS WASTE AND NOT CORRUPTION, which is why it is a cadence fix rather than an
+    # internal guard: every one of them resolves forward returns by querying real `Price` rows
+    # (D1 bars strictly after fired_date), not by calendar arithmetic. On a weekend there are no
+    # new bars, so they scan the pending set, find nothing newly resolvable, and exit. The cost is
+    # two redundant full passes per week over every unresolved outcome row, each taking a Redis
+    # lock and writing an "ok" job status that makes a no-op look like a successful evaluation.
+    #
+    # Deliberately fixed at the TRIGGER rather than with an early-return inside each function: a
+    # date-based guard would also suppress a legitimate Monday catch-up after a missed Friday run,
+    # whereas mon-fri simply stops scheduling work on days that cannot produce new bars. Note this
+    # still fires on market HOLIDAYS (a mon-fri cron is not a market-open check) — harmless here
+    # for the same "no new bars" reason, and deliberately not guarded further so a holiday run can
+    # still resolve any backlog left by the preceding session.
     # PriceAlert-subscribed symbol scope as the alert checker below.
     _scheduler.add_job(
         compute_value_area_levels_daily,
-        CronTrigger(hour=18, minute=0, timezone="America/New_York"),
+        CronTrigger(hour=18, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
         id="value_area_levels_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
 
@@ -12221,7 +12251,7 @@ def start_scheduler() -> None:
     # snapshot taken the same day reflects that day's own evaluate_signal_outcomes() run.
     _scheduler.add_job(
         recheck_fix_effectiveness,
-        CronTrigger(hour=18, minute=5, timezone="America/New_York"),
+        CronTrigger(hour=18, minute=5, day_of_week="mon-fri", timezone="America/New_York"),
         id="fix_effectiveness_recheck_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
 
@@ -12231,7 +12261,7 @@ def start_scheduler() -> None:
     # day's own D1 bars have settled) so entry_price/forward-return lookups have fresh data.
     _scheduler.add_job(
         evaluate_squeeze_alert_outcomes,
-        CronTrigger(hour=18, minute=15, timezone="America/New_York"),
+        CronTrigger(hour=18, minute=15, day_of_week="mon-fri", timezone="America/New_York"),
         id="squeeze_alert_outcome_eval_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
 
@@ -12241,7 +12271,7 @@ def start_scheduler() -> None:
     # bars have settled).
     _scheduler.add_job(
         evaluate_prebreakout_alert_outcomes,
-        CronTrigger(hour=18, minute=20, timezone="America/New_York"),
+        CronTrigger(hour=18, minute=20, day_of_week="mon-fri", timezone="America/New_York"),
         id="prebreakout_alert_outcome_eval_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
 
@@ -12251,7 +12281,7 @@ def start_scheduler() -> None:
     # bars have settled).
     _scheduler.add_job(
         evaluate_options_flow_alert_outcomes,
-        CronTrigger(hour=18, minute=25, timezone="America/New_York"),
+        CronTrigger(hour=18, minute=25, day_of_week="mon-fri", timezone="America/New_York"),
         id="options_flow_alert_outcome_eval_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
 
@@ -12259,7 +12289,7 @@ def start_scheduler() -> None:
     # Pure data computation, no email sent. Runs right after its sibling evaluators above.
     _scheduler.add_job(
         evaluate_dark_pool_alert_outcomes,
-        CronTrigger(hour=18, minute=30, timezone="America/New_York"),
+        CronTrigger(hour=18, minute=30, day_of_week="mon-fri", timezone="America/New_York"),
         id="dark_pool_alert_outcome_eval_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
 
@@ -12580,13 +12610,25 @@ def start_scheduler() -> None:
     # Gated to US+HK combined market hours (09:00–17:00 ET or 09:00–17:00 HKT)
     # so the job is a no-op outside trading hours and doesn't burn API quota.
     def _live_price_refresh_job() -> None:
+        # AUD-ING-LIVEPRICE-HOLIDAYBLIND (2026-09-09): this used a raw `weekday() >= 5` check,
+        # which excludes weekends but NOT market holidays — the same defect class as
+        # AUD-DIGEST-HOLIDAYBLIND, which sent 13 emails on Labor Day. `refresh_live_price_cache()`
+        # is not cheap: it runs a real yfinance bulk download over every active, non-delisted
+        # stock (~173), so on each market holiday this burned ~480 downloads (8 hours x 60) against
+        # the one source that actually rate-limits this platform — and wrote the resulting stale
+        # quotes into `stockai:live_prices`, which all 16 every-minute alert scanners read.
+        #
+        # Now checks each market's OWN trading calendar. Deliberately per-market rather than a
+        # single combined flag: a US holiday is very often a normal HKEX session and vice versa,
+        # so collapsing them would either over- or under-refresh roughly half the time.
         now_et = datetime.now(ZoneInfo("America/New_York"))
         now_hk = datetime.now(ZoneInfo("Asia/Hong_Kong"))
-        weekday = now_et.weekday()  # Mon=0 … Fri=4
-        if weekday >= 5:
-            return  # weekend
-        us_open = now_et.hour >= 9 and now_et.hour < 17
-        hk_open = now_hk.hour >= 9 and now_hk.hour < 17
+        us_open = (
+            _is_us_trading_day(now_et) and 9 <= now_et.hour < 17
+        )
+        hk_open = (
+            _is_hk_trading_day(now_hk) and 9 <= now_hk.hour < 17
+        )
         if us_open or hk_open:
             refresh_live_price_cache()
 
@@ -12624,7 +12666,15 @@ def start_scheduler() -> None:
         hours=4,
         id="avg_volume_cache_refresh",
         replace_existing=True,
-        max_instances=1, coalesce=True,
+        # AUD-ING-AVGVOL-NOMISFIREGRACE (2026-09-09): this was the ONLY interval job in the file
+        # without a misfire_grace_time. APScheduler's default is None, meaning "run however late" —
+        # but a job whose fire time passes while the scheduler is paused/overloaded is DROPPED with
+        # a "missed" warning rather than run, and with max_instances=1 a single long run could
+        # silently retire the schedule. This is exactly the shape of AUD-MISFIREGRACE-OPTIONSFLOW,
+        # where 3 of 17 every-minute jobs died after their first run. 300s (not the 60s the
+        # minute-jobs use) because a 4-hourly job has no reason to be strict about a few minutes of
+        # lateness, and a wider grace makes a drop less likely, not more.
+        max_instances=1, coalesce=True, misfire_grace_time=300,
     )
 
     # MD-RVOL2: an IntervalTrigger's countdown resets to its FULL period on every restart —

@@ -168,3 +168,87 @@ was right and the reasoning wrong — precisely how a maintainer extending the t
 logic gets the next year wrong.
 
 ---
+
+---
+
+## AUD-ING-{LIVEPRICE,EDGAR}-HOLIDAYBLIND / EVALUATORS-WEEKENDFIRE / AVGVOL-NOMISFIREGRACE (Fixed 2026-09-09)
+
+**Four gating gaps found in one pass**, while building the Admin → Data Pipeline reference page.
+All four are the family this file exists for:
+
+> **A `mon-fri` cron is not a market-open check, and `weekday() < 5` is not a trading day.**
+
+They were fixed **differently on purpose**, because the cost of firing on a non-trading day is not
+the same in each case. That distinction is the reusable part.
+
+### 1. `live_price_cache_refresh` — REAL COST, gated in-function
+
+Used a raw `weekday() >= 5` test: excludes weekends, **not holidays**.
+`refresh_live_price_cache()` is not cheap — it runs a **yfinance bulk download over every active,
+non-delisted stock (~173)**. On each market holiday that burned roughly **480 downloads** (8h × 60)
+against the one source that actually rate-limits this platform, and wrote the resulting **stale
+quotes** into `stockai:live_prices`, which **all 16 every-minute alert scanners read**.
+
+Now checks each market's own calendar, **per market and not combined** — a US holiday is very
+often a normal HKEX session and vice versa, so one shared flag would be wrong about half the time.
+Verified: `us_trading=False / hk_trading=True` on 2026-09-07 (US Labor Day).
+
+### 2. `edgar_8k_ingest_daily` — REAL COST, gated in-function
+
+Cron carried `day_of_week="mon-fri"` but no holiday check, so on every NYSE holiday it asked
+event-intelligence to sweep every US CIK for filings from a day the market never opened. The sweep
+is **rate-limited at 0.15s/CIK to respect SEC fair-use**, so a full no-op pass still spends real
+time against SEC's budget *and* recorded an `"ok"` job status for a day with no data.
+
+Its HK sibling `_ingest_hk_connect_flows()` has always called `_is_hk_trading_day()`. This is the
+same guard on the same class of job. The skip path still records a job status — **a skip that
+records nothing is indistinguishable from a job that silently died**, and the liveness gauges
+would start reporting it missing.
+
+### 3. The six `18:0x` ET evaluators — WASTE ONLY, fixed at the TRIGGER
+
+`value_area_levels_daily`, `fix_effectiveness_recheck_daily`, and the four
+`*_alert_outcome_eval_daily` jobs were the only daily crons in the file registered with **no
+`day_of_week`**, so they fired Saturdays and Sundays — against their own docstrings ("once daily,
+post-close", "forward returns don't need to be evaluated more often than once a trading day
+closes").
+
+**Why this is waste and not corruption**, and why that changed the fix: every one of them resolves
+forward returns by **querying real `Price` rows** (D1 bars strictly after `fired_date`), not by
+calendar arithmetic. On a weekend there are no new bars, so they scan the pending set, find nothing
+newly resolvable, and exit. The cost is two redundant full passes per week over every unresolved
+outcome row, each taking a Redis lock and writing an `"ok"` status that makes a no-op look like a
+successful evaluation.
+
+Fixed at the **trigger** rather than with an early-return inside each function: **a date-based
+guard would also suppress a legitimate Monday catch-up after a missed Friday run.** They still fire
+on market holidays — harmless for the same "no new bars" reason, and deliberately left that way so
+a holiday run can still clear any backlog from the preceding session.
+
+### 4. `avg_volume_cache_refresh` — the missing `misfire_grace_time`
+
+The **only** interval job in the file without one. APScheduler's default is `None` ("run however
+late"), but a job whose fire time passes while the scheduler is paused or overloaded is **dropped**
+with a "missed" warning rather than run — and with `max_instances=1` a single long run can silently
+retire the schedule. Exactly the shape of `AUD-MISFIREGRACE-OPTIONSFLOW`, where **3 of 17
+every-minute jobs died after their first run**.
+
+Set to **300s**, not the 60s the minute-jobs use: a 4-hourly job has no reason to be strict about a
+few minutes of lateness, and a **wider** grace makes a drop *less* likely, not more.
+
+A repo-wide parity test now asserts **every** interval job declares a `misfire_grace_time`, so the
+next one cannot be added without it.
+
+### Two process notes worth keeping
+
+**A pre-existing test failed on a change that strengthened it.**
+`test_evaluator_is_registered_as_a_daily_cron_job` asserted the *exact* trigger string
+`CronTrigger(hour=18, minute=15, timezone="America/New_York")`, so adding `day_of_week="mon-fri"`
+broke it — while making the property it checks *more* true. **Asserting a whole literal line pins
+incidental formatting alongside the real invariant.** Rewritten to assert the parts that matter.
+
+**A failing behavioural check that was my own bad test data.** My verification script labelled
+2026-09-05 an "ordinary US Friday"; it is a **Saturday**, so the gate correctly returned
+`refresh=False` and the case printed FAIL. The calendar was right and the test case was wrong.
+Re-verified against a genuine Friday (2026-09-04 → `True`). **When a calendar assertion fails,
+check the weekday of the date you chose before suspecting the calendar.**
