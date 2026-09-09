@@ -792,3 +792,79 @@ the real invariant, so it fails on any legitimate extension.**
 Until `/events/earnings/direction-accuracy` reports `sample_is_adequate: true`, **this is an
 unvalidated LLM opinion**. Do not wire it into any gate, score, or sizing decision. Revisit once
 there are 30+ scored calls — at the current ~23 impact reads that is roughly a quarter away.
+
+---
+
+## T373-FORECAST-REASON — The Modal Guessed Why a Forecast Was Missing, and Guessed Wrong (Fixed 2026-09-09)
+
+**REPORTED BY THE USER:** the TSM Earnings Forecast modal said
+
+> *"No AI forecast available for this report yet — this feature is admin-gated and off by
+> default, or the underlying analyst consensus data is too thin to forecast from."*
+
+**Both halves were false.** Verified in production at the time:
+
+| Checked | TSM |
+|---|---|
+| `earnings_llm_forecast_enabled` | **`1` — ON** |
+| Claude API key | **set** |
+| Fundamentals blob | present |
+| `earnings_consensus` `0q` | present — **9 analysts**, EPS avg $4.46 |
+| Direct `generate_earnings_forecast()` | **returned a real forecast** |
+| Via api-gateway | **HTTP 200, forecast OK** |
+
+The real cause: no forecast had been cached, and the first request must call Claude (30–60s). The
+user reopened the modal and it rendered. **36 days out was irrelevant — nothing gates on
+`days_to_event`.**
+
+**This is the `AUD-CONVICTION-RSIDIV-NOWRITER` shape**: a confidently stated explanation for
+something never actually checked. The frontend cannot see the admin flag, the API key, or the
+consensus blob — **only the backend can, so only the backend should say why.**
+
+### The fix
+
+`earnings_forecast_unavailable_reason()` re-checks the same guards **in the same order** the
+generator checks them (a test pins that ordering — if they diverge, the reason could name a guard
+that is not the one that fired, which is a new way to be confidently wrong about the same
+question). The route returns a machine-readable `unavailable_reason` plus human `unavailable_detail`:
+
+| Code | Message |
+|---|---|
+| `disabled` | The AI forecast feature is turned off in admin settings. |
+| `no_api_key` | No Claude API key is configured. |
+| `no_fundamentals` | No fundamentals data is available for this symbol. |
+| `thin_coverage` | Analyst coverage is too thin — no current-quarter consensus. |
+| `llm_failed` | Could not be generated just now. Try again in a moment. |
+
+`llm_failed` is the **fallthrough** — the case the old text never admitted was possible, and the
+one the user actually hit. The retry hint renders **only** for that code; a "try again" line would
+be actively misleading when the feature is switched off.
+
+### A second finding: `thin_coverage` essentially never occurs here
+
+Measured across TSM, AAPL, SSNLF and BULL — **all four have a full `0q` consensus**, including the
+dead ticker SSNLF. The old message's second half described a condition that does not arise on this
+universe.
+
+### The user's other question: why no directional prediction?
+
+**For an upcoming report there deliberately is none** — `T370-EARNINGS-DIRECTION` made the
+pre-earnings prompt return three *scenarios* (Beat+Raise / In-Line / Miss or Cut), because before
+the print a direction is prophecy. After the print it is interpretation of known numbers.
+
+**But that post-earnings read was only on `/forecast` and in the impact email — not on this
+modal.** It now appears here too, for the most recent report that has one: the direction, its
+confidence, the **actual 1-day return** beside it, the `impact_text` reasoning, and the standing
+*"not a measured edge"* caveat. It renders nothing when no past report carries a direction, so
+most symbols are unchanged until their next print.
+
+### Three of my own test-slicing errors, all failing against correct code
+
+- `_fn()` searched only for `\ndef ` — the definition after
+  `earnings_forecast_unavailable_reason` is an **`async def`**, so the slice ran past it and
+  swallowed the rest of the module.
+- `_code_only()` stripped only `//` lines — **JSX comments are `{/* ... */}`**, and the fix's own
+  comment quotes the old wording verbatim.
+
+Both are the same recurring lesson: **assert on code, not prose**, and make sure the slicer
+actually bounds the thing being asserted. 20 tests, six sabotages caught.

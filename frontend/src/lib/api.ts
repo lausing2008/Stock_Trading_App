@@ -828,7 +828,15 @@ export const api = {
   eventsEarningsForecast: (symbol: string, sector: string | null, daysToEvent: number) => {
     const params = new URLSearchParams({ symbol, days_to_event: String(daysToEvent) });
     if (sector) params.set('sector', sector);
-    return request<{ forecast: EarningsForecast | null }>(`/events/earnings/forecast?${params}`);
+    // T373-FORECAST-REASON: the backend now says WHY a forecast is unavailable, so the
+    // modal stops guessing (it told the user TSM was "admin-gated / data too thin" when
+    // the flag was on and TSM had 9 analysts — the real cause was a pending LLM call).
+    return request<{
+      forecast: EarningsForecast | null;
+      unavailable_reason: 'disabled' | 'no_api_key' | 'no_fundamentals' | 'thin_coverage'
+        | 'llm_failed' | null;
+      unavailable_detail: string | null;
+    }>(`/events/earnings/forecast?${params}`);
   },
   eventsInsider: (symbol: string, days = 90) => request<InsiderResponse>(`/events/insider/${symbol}?days=${days}`),
   eventsInsiderLeaderboard: (days = 30) => request<InsiderLeaderItem[]>(`/events/insider/leaderboard?days=${days}`),

@@ -60,6 +60,21 @@ export default function EarningsForecastPanel({
   );
   const forecast: EarningsForecast | null = data?.forecast ?? null;
 
+  // T373: the POST-earnings AI direction for this symbol, if the report has already landed.
+  // The user asked why the modal shows no directional prediction. For an UPCOMING report it
+  // deliberately never will — T370 made the pre-earnings prompt return three SCENARIOS rather
+  // than a direction, because before the print a direction is prophecy. After the print it is
+  // interpretation of known numbers, and THAT read existed but was only surfaced on /forecast
+  // and in the impact email. It belongs here too, on the symbol the user is actually looking at.
+  const { data: pastEvents } = useSWR(
+    `earnings-past-${symbol}`,
+    () => api.eventsEarningsSymbol(symbol),
+    { revalidateOnFocus: false },
+  );
+  const lastWithDirection = (pastEvents ?? [])
+    .filter(e => !e.is_upcoming && !!e.impact_direction)
+    .sort((a, b) => b.earnings_date.localeCompare(a.earnings_date))[0] ?? null;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       {/* Real, already-known context — always shown regardless of LLM availability */}
@@ -105,10 +120,83 @@ export default function EarningsForecastPanel({
         </div>
       )}
 
+      {/* T373-FORECAST-REASON: say the REAL reason, from the backend.
+          This block used to assert "this feature is admin-gated and off by default, or the
+          underlying analyst consensus data is too thin" — a guess, and for TSM both halves were
+          FALSE (the flag was on, the key was set, TSM had 9 analysts and a full current-quarter
+          consensus). The actual cause was a first-request LLM generation that had not finished.
+          Same shape as AUD-CONVICTION-RSIDIV-NOWRITER: a confidently stated explanation for
+          something never actually checked. The backend knows which guard fired; show that. */}
       {!isLoading && !error && forecast === null && (
         <div style={{ fontSize: 11.5, color: '#64748b', padding: '10px 12px', borderRadius: 8, background: 'rgba(148,163,184,0.04)', border: '1px dashed #1e293b' }}>
-          No AI forecast available for this report yet — this feature is admin-gated and off by
-          default, or the underlying analyst consensus data is too thin to forecast from.
+          {data?.unavailable_detail
+            ? <>No AI forecast yet — {data.unavailable_detail}</>
+            : <>No AI forecast available for this report yet.</>}
+          {data?.unavailable_reason === 'llm_failed' && (
+            <div style={{ marginTop: 6, color: '#94a3b8' }}>
+              The first request for a symbol has to generate one, which can take up to a minute.
+              Reopening this usually shows it.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* T373: the POST-earnings directional read for the LAST report, when one exists.
+          Answers the user's "why doesn't it show me the prediction direction and reason?" —
+          for an UPCOMING report it deliberately never does (see the note at the fetch above),
+          but the read on the report that already happened belongs on this modal, not only on
+          /forecast and in the impact email.
+
+          Always carries "not a measured edge": until the accuracy endpoint reports an adequate
+          sample this is an unvalidated LLM opinion, and this platform has twice shipped a
+          confident figure nobody could check (AUD-RANK-RSPLACEHOLDER's fabricated 50.0 that the
+          weight optimizer LEARNED from; AUD-CONVICTION-RSIDIV-NOWRITER's "None detected"). */}
+      {lastWithDirection && (
+        <div style={{
+          padding: '10px 12px', borderRadius: 8,
+          background: lastWithDirection.impact_direction === 'bullish' ? 'rgba(34,197,94,0.07)'
+            : lastWithDirection.impact_direction === 'bearish' ? 'rgba(239,68,68,0.07)'
+            : 'rgba(148,163,184,0.05)',
+          border: `1px solid ${lastWithDirection.impact_direction === 'bullish' ? 'rgba(34,197,94,0.28)'
+            : lastWithDirection.impact_direction === 'bearish' ? 'rgba(239,68,68,0.28)'
+            : 'rgba(148,163,184,0.22)'}`,
+        }}>
+          <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            AI read on the {lastWithDirection.earnings_date} report
+          </div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+            <span style={{
+              fontSize: 13, fontWeight: 800,
+              color: lastWithDirection.impact_direction === 'bullish' ? '#22c55e'
+                : lastWithDirection.impact_direction === 'bearish' ? '#f87171' : '#94a3b8',
+            }}>
+              {(lastWithDirection.impact_direction ?? '').charAt(0).toUpperCase()
+                + (lastWithDirection.impact_direction ?? '').slice(1)}
+            </span>
+            {lastWithDirection.impact_direction_confidence != null && (
+              <span style={{ fontSize: 11, color: '#64748b' }}>
+                {lastWithDirection.impact_direction_confidence.toFixed(0)}% confidence
+              </span>
+            )}
+            {/* The measured outcome, shown WITH the call — a prediction displayed without its
+                result is how an unfalsifiable number survives. */}
+            {lastWithDirection.post_earnings_return_1d != null && (
+              <span style={{ fontSize: 11, color: '#64748b' }}>
+                · actual 1d{' '}
+                <span style={{ color: lastWithDirection.post_earnings_return_1d >= 0 ? '#22c55e' : '#f87171' }}>
+                  {(lastWithDirection.post_earnings_return_1d * 100).toFixed(2)}%
+                </span>
+              </span>
+            )}
+          </div>
+          {lastWithDirection.impact_text && (
+            <div style={{ fontSize: 12, color: '#cbd5e1', lineHeight: 1.55, marginTop: 6 }}>
+              {lastWithDirection.impact_text}
+            </div>
+          )}
+          <div style={{ fontSize: 10.5, color: '#475569', marginTop: 6 }}>
+            AI interpretation of the reported numbers — not a measured edge.
+          </div>
         </div>
       )}
 

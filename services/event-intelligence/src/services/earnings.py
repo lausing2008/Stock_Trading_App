@@ -513,6 +513,56 @@ def _fetch_past_reactions_sync(symbol: str, limit: int = 4) -> list[dict]:
         return []
 
 
+# T373-FORECAST-REASON: why a forecast was unavailable, as a machine-readable code.
+#
+# REPORTED BY THE USER: the TSM modal said "this feature is admin-gated and off by default, or
+# the underlying analyst consensus data is too thin to forecast from" — and BOTH were false. The
+# flag was on, the Claude key was set, and TSM had full consensus (9 analysts, 0q present). The
+# real cause was that no forecast had been generated yet and the first request has to call Claude,
+# which takes 30-60s; the modal simply rendered its generic fallback.
+#
+# That message is the AUD-CONVICTION-RSIDIV-NOWRITER shape: a confidently stated explanation for
+# something that was never actually checked. A UI must not guess at a cause the backend knows.
+_FORECAST_UNAVAILABLE_REASONS = {
+    "disabled": "The AI forecast feature is turned off in admin settings.",
+    "no_api_key": "No Claude API key is configured.",
+    "no_fundamentals": "No fundamentals data is available for this symbol.",
+    "thin_coverage": "Analyst coverage is too thin — no current-quarter consensus to forecast from.",
+    "llm_failed": "The forecast could not be generated just now. Try again in a moment.",
+}
+
+
+def earnings_forecast_unavailable_reason(symbol: str) -> str:
+    """Which guard would block a forecast for `symbol` — checked in the SAME order
+    generate_earnings_forecast() checks them, so the reason always matches the real outcome.
+
+    Deliberately re-checks rather than having generate_earnings_forecast() return a tuple: that
+    function is called from several places and fail-opens to None everywhere, and threading a
+    reason through all of them would be a wider change than the display problem warrants. The
+    cost is one extra fundamentals read on the failure path only.
+    """
+    try:
+        from common.redis_client import get_redis
+        if get_redis().get(_REDIS_EARNINGS_FORECAST_ENABLED) != "1":
+            return "disabled"
+    except Exception:
+        return "disabled"
+    if not _api_key():
+        return "no_api_key"
+    try:
+        fundamentals = _fetch_fundamentals_sync(symbol)
+    except Exception:
+        return "no_fundamentals"
+    if not fundamentals:
+        return "no_fundamentals"
+    if _nearest_forecast_period(fundamentals.get("earnings_consensus")) is None:
+        return "thin_coverage"
+    # Every precondition holds, so the generation itself is what failed (an LLM timeout or a
+    # transient error). This is the case the old UI text never admitted was possible, and the
+    # one the user actually hit.
+    return "llm_failed"
+
+
 async def generate_earnings_forecast(symbol: str, sector: str | None, days_to_event: int) -> dict | None:
     """PRE-report forecast — the genuinely on-demand (user-clicked, not scheduled-poll) sibling
     of generate_earnings_impact() above. Fail-open: returns None on any error (missing flag, no

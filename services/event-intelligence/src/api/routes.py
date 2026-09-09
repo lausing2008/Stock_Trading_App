@@ -130,7 +130,19 @@ async def get_earnings_forecast(
     than a 404/403 when the flag is off, so the frontend modal can render its own real
     consensus data unconditionally and simply omit the LLM section when unavailable."""
     forecast = await earnings.generate_earnings_forecast(symbol, sector, days_to_event)
-    return {"forecast": forecast}
+    if forecast is not None:
+        return {"forecast": forecast, "unavailable_reason": None, "unavailable_detail": None}
+    # T373-FORECAST-REASON: say WHY. The modal used to guess, and guessed wrong — it told the
+    # user the feature was "admin-gated and off by default, or the consensus data is too thin"
+    # for TSM, when the flag was ON, the key was set, and TSM had 9 analysts with a full
+    # current-quarter consensus. The real cause was a first-request LLM generation that had not
+    # completed. A UI must not invent a cause the backend can actually determine.
+    _reason = earnings.earnings_forecast_unavailable_reason(symbol)
+    return {
+        "forecast": None,
+        "unavailable_reason": _reason,
+        "unavailable_detail": earnings._FORECAST_UNAVAILABLE_REASONS.get(_reason),
+    }
 
 
 @router.get("/events/earnings/direction-accuracy")
