@@ -25,7 +25,8 @@
 import { useState, useMemo } from 'react';
 import Link from 'next/link';
 import useSWR from 'swr';
-import { api, type RankingRow, type LatestPrice, type SignalSummary, type QuickScanResult } from '@/lib/api';
+import { api, type RankingRow, type LatestPrice, type SignalSummary, type QuickScanResult,
+  type EarningsEvent, type EarningsDirectionAccuracy } from '@/lib/api';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel } from '@/lib/ai';
 import WatchlistPickerButton from '@/components/WatchlistPickerButton';
@@ -172,6 +173,147 @@ Include a mix of: small caps with momentum, sector leaders in their niche, recen
 Remember: ALL tickers must have a current stock price between $${priceMin} and $${priceMax}.
 
 Return ONLY a JSON array of ticker strings: ["SOFI","HOOD","DKNG","PLTR","AI","RXRX","DOCS","OPEN","IONQ","BBAI"]`;
+}
+
+// ── Post-earnings AI direction panel (T370-EARNINGS-DIRECTION) ────────────────
+//
+// The user asked whether the AI Assistant could give a direction on the forecast "as well after
+// earnings release". It can, and this is where it surfaces — but deliberately NOT as a bare
+// label next to the measured swing picks.
+//
+// WHY THE CAVEAT AND THE TRACK RECORD ARE NON-OPTIONAL HERE: this platform has twice shipped a
+// confident-looking figure nobody could check. AUD-RANK-RSPLACEHOLDER fabricated a neutral 50.0
+// that the weight optimizer then LEARNED from; AUD-CONVICTION-RSIDIV-NOWRITER rendered "None
+// detected" for a value nothing had computed. An unvalidated LLM opinion displayed beside
+// measured signals is the same shape of mistake, so the direction always ships with its own
+// accuracy and an explicit "not a measured edge" line.
+//
+// Note the PRE-earnings forecast deliberately has no direction — it returns three scenarios
+// (Beat+Raise / In-Line / Miss or Cut) because before the print a direction is prophecy. After
+// the print it is interpretation of known numbers. That asymmetry is the design, not an omission.
+
+const DIR_STYLE: Record<string, { bg: string; border: string; text: string; label: string }> = {
+  bullish: { bg: 'rgba(34,197,94,0.10)',  border: 'rgba(34,197,94,0.35)',  text: '#22c55e', label: 'Bullish' },
+  bearish: { bg: 'rgba(239,68,68,0.10)',  border: 'rgba(239,68,68,0.35)',  text: '#f87171', label: 'Bearish' },
+  neutral: { bg: 'rgba(148,163,184,0.10)', border: 'rgba(148,163,184,0.30)', text: '#94a3b8', label: 'Neutral' },
+};
+
+function pctOrDash(v: number | null | undefined): string {
+  // Three-state: a real 0 is "0.00%", a missing value is "—". Never collapse them.
+  if (v === null || v === undefined) return '—';
+  return `${(v * 100).toFixed(2)}%`;
+}
+
+function PostEarningsDirection() {
+  const { data: events } = useSWR<EarningsEvent[]>('earnings-recent-30',
+    () => api.eventsEarningsCalendar(30), { revalidateOnFocus: false });
+  const { data: acc } = useSWR<EarningsDirectionAccuracy>('earnings-dir-accuracy',
+    () => api.eventsEarningsDirectionAccuracy(), { revalidateOnFocus: false });
+
+  // Only rows that actually HAVE a direction. A row without one is not shown as "neutral".
+  const withDirection = useMemo(
+    () => (events ?? [])
+      .filter(e => !!e.impact_direction)
+      .sort((a, b) => b.earnings_date.localeCompare(a.earnings_date))
+      .slice(0, 12),
+    [events],
+  );
+
+  if (withDirection.length === 0) return null;
+
+  const overall = acc?.overall;
+
+  return (
+    <div style={{ padding: '16px 18px', borderRadius: 12, background: '#0d1424', border: '1px solid #1e293b' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+        <h2 style={{ fontSize: '14px', fontWeight: 800, color: '#e2e8f0', margin: 0 }}>
+          AI Direction — After Earnings
+        </h2>
+        <div style={{ fontSize: '11px', color: '#64748b' }}>
+          {overall && overall.n_directional > 0 ? (
+            overall.sample_is_adequate
+              ? <>Track record: <strong style={{ color: '#cbd5e1' }}>
+                  {((overall.accuracy_1d ?? 0) * 100).toFixed(0)}%
+                </strong> correct next-day (n={overall.n_directional})</>
+              : <>Track record: <strong style={{ color: '#fbbf24' }}>not yet measurable</strong>
+                  {' '}— only {overall.n_directional} scored call{overall.n_directional === 1 ? '' : 's'}</>
+          ) : <span style={{ color: '#fbbf24' }}>No scored calls yet — unvalidated</span>}
+        </div>
+      </div>
+
+      <div style={{ fontSize: '11.5px', color: '#64748b', marginTop: 6, lineHeight: 1.6 }}>
+        The AI&rsquo;s read on prints that have <strong style={{ color: '#94a3b8' }}>already happened</strong> —
+        interpretation of reported EPS, revenue, surprise and (where available) real earnings-call
+        transcript excerpts. <strong style={{ color: '#94a3b8' }}>Not a measured edge.</strong>{' '}
+        The pre-earnings forecast gives scenarios instead, on purpose.
+      </div>
+
+      <div style={{ overflowX: 'auto', marginTop: 12 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', minWidth: 560 }}>
+          <thead>
+            <tr>
+              {['Symbol', 'Reported', 'AI read', 'Conf.', '1d actual', '5d actual', 'Called it?'].map(h => (
+                <th key={h} style={{ textAlign: 'left', padding: '6px 9px', color: '#64748b',
+                  fontWeight: 700, fontSize: '10px', textTransform: 'uppercase',
+                  letterSpacing: '0.04em', borderBottom: '1px solid #1e293b' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {withDirection.map(e => {
+              const st = DIR_STYLE[e.impact_direction ?? 'neutral'] ?? DIR_STYLE.neutral;
+              const r1 = e.post_earnings_return_1d;
+              // A neutral call has no directional outcome — scoring it would need an arbitrary
+              // flat band, and that threshold would silently become the number doing the work.
+              const scored = e.impact_direction === 'neutral' || r1 === null || r1 === undefined
+                ? null
+                : (e.impact_direction === 'bullish' ? r1 > 0 : r1 < 0);
+              return (
+                <tr key={e.id}>
+                  <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', fontWeight: 700, color: '#e2e8f0' }}>
+                    {e.symbol}
+                  </td>
+                  <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', color: '#94a3b8' }}>
+                    {e.earnings_date}
+                  </td>
+                  <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e' }}>
+                    <span style={{ padding: '2px 8px', borderRadius: 5, background: st.bg,
+                      border: `1px solid ${st.border}`, color: st.text, fontWeight: 700, fontSize: '11px' }}>
+                      {st.label}
+                    </span>
+                  </td>
+                  <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', color: '#94a3b8',
+                    fontVariantNumeric: 'tabular-nums' }}>
+                    {e.impact_direction_confidence != null ? `${e.impact_direction_confidence.toFixed(0)}%` : '—'}
+                  </td>
+                  <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e',
+                    fontVariantNumeric: 'tabular-nums',
+                    color: r1 == null ? '#475569' : r1 > 0 ? '#22c55e' : r1 < 0 ? '#f87171' : '#94a3b8' }}>
+                    {pctOrDash(r1)}
+                  </td>
+                  <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e',
+                    fontVariantNumeric: 'tabular-nums', color: '#94a3b8' }}>
+                    {pctOrDash(e.post_earnings_return_5d)}
+                  </td>
+                  <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', fontWeight: 700,
+                    color: scored === null ? '#475569' : scored ? '#22c55e' : '#f87171' }}>
+                    {scored === null ? 'n/a' : scored ? 'yes' : 'no'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {withDirection.some(e => e.impact_text) && (
+        <div style={{ marginTop: 12, fontSize: '11.5px', color: '#94a3b8', lineHeight: 1.65 }}>
+          <strong style={{ color: '#cbd5e1' }}>{withDirection[0].symbol}:</strong>{' '}
+          {withDirection[0].impact_text}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -360,6 +502,11 @@ export default function ForecastPage() {
           </div>
         )}
       </div>
+
+      {/* T370-EARNINGS-DIRECTION: post-earnings AI direction + its own track record. Renders
+          nothing at all when no event carries a direction, so the page is unchanged until the
+          feature has real data. */}
+      <PostEarningsDirection />
 
       {/* No AI configured */}
       {!aiReady && (

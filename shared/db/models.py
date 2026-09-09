@@ -1169,6 +1169,25 @@ class EarningsEvent(Base):
     # until/unless an Advanced+ UW subscription is active) — a missing qualitative read is a
     # real, different state from an empty one, never silently conflated.
     management_tone: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # T370-EARNINGS-DIRECTION: the post-earnings LLM read's own directional call, stored
+    # ALONGSIDE the existing post_earnings_return_1d/_5d columns so it is measurable rather
+    # than merely displayed. Deliberately separate from impact_text: prose cannot be scored,
+    # a label can.
+    #
+    # WHY THE PRE-EARNINGS PROMPT DELIBERATELY HAS NO EQUIVALENT: _FORECAST_SYSTEM returns
+    # three SCENARIOS (Beat+Raise / In-Line / Miss or Cut) rather than a prediction, because
+    # before the print a direction is prophecy. AFTER the print it is interpretation — the EPS,
+    # revenue, surprise %, strength score and (when available) real transcript excerpts are all
+    # known. That is the whole reason this lives on the impact read and not the forecast.
+    #
+    # 'bullish' | 'bearish' | 'neutral', or NULL when the LLM declined / the read predates this
+    # column. NULL must never be coerced to 'neutral' — "not measured" and "measured as
+    # balanced" are different claims, and collapsing them is the AUD-RANK-RSPLACEHOLDER /
+    # AUD-CONVICTION-RSIDIV-NOWRITER error this codebase has now made twice.
+    impact_direction: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # 0-100 self-reported conviction. UNVALIDATED until the accuracy view below has a real
+    # sample — see docs/features/earnings-data-and-forecasts.md for the standing caution.
+    impact_direction_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     __table_args__ = (
         # AUD264-EARNINGS-FISCAL-QUARTER-FROM-ANNOUNCEMENT-MONTH: uniqueness used to be keyed

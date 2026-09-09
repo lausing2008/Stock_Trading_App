@@ -131,7 +131,16 @@ def test_impact_alerts_playbook_html_is_appended_not_replacing_the_llm_impact_te
     mechanical playbook (and, since AUD-TRANSCRIPT, the optional management-tone line) are
     ADDITIONS, never a replacement of the existing LLM section."""
     body = _func_body("check_earnings_impact_alerts")
-    assert 'body_html = f"<p>{ev.impact_text}</p>{tone_html}{playbook_html}"' in body
+    # T370-EARNINGS-DIRECTION: this asserted the EXACT f-string, so inserting {dir_html} broke
+    # it even though the invariant it exists to protect — the playbook is APPENDED, never
+    # replacing the LLM impact text — is untouched. Assert the ordering instead of the literal.
+    assert "{ev.impact_text}" in body, "the LLM impact text must still be present"
+    assert "{playbook_html}" in body, "and the playbook appended to it"
+    _h = body.index("body_html = f\"<p>{ev.impact_text}</p>")
+    _line = body[_h:body.index("\n", _h)]
+    assert _line.index("{ev.impact_text}") < _line.index("{playbook_html}"), (
+        "the playbook must come AFTER the impact text, not replace it"
+    )
     idx = body.index("body_html = f")
     assert body.index("{ev.impact_text}", idx) < body.index("{tone_html}", idx) < body.index("{playbook_html}", idx)
 

@@ -133,6 +133,22 @@ async def get_earnings_forecast(
     return {"forecast": forecast}
 
 
+@router.get("/events/earnings/direction-accuracy")
+def get_impact_direction_accuracy(
+    min_confidence: float | None = Query(None, ge=0, le=100),
+    _: str = Depends(get_current_username),
+):
+    """T370-EARNINGS-DIRECTION: how well the post-earnings LLM directional calls have actually
+    scored against the forward returns on the same rows.
+
+    Exposed so the direction can never be displayed without its track record. Every rate comes
+    back with its own `n`, and `overall.sample_is_adequate` is False below 30 scored calls —
+    three findings in docs/2026-09-05 reversed once their samples widened, one of them resting
+    on six stocks.
+    """
+    return earnings.get_impact_direction_accuracy(min_confidence)
+
+
 @router.post("/events/sync/earnings")
 async def sync_earnings(_: str = Depends(get_current_username)):
     result = await earnings.sync_all_earnings()

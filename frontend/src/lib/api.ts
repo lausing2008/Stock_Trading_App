@@ -817,6 +817,10 @@ export const api = {
   eventsCape: (months = 24) => request<CapeResponse>(`/events/valuation/cape?months=${months}`),
   eventsEarningsCalendar: (days = 14) => request<EarningsEvent[]>(`/events/earnings/calendar?days=${days}`),
   eventsEarningsSymbol: (symbol: string) => request<EarningsEvent[]>(`/events/earnings?symbol=${symbol}`),
+  eventsEarningsDirectionAccuracy: (minConfidence?: number) =>
+    request<EarningsDirectionAccuracy>(
+      `/events/earnings/direction-accuracy${minConfidence != null ? `?min_confidence=${minConfidence}` : ''}`,
+    ),
   // AUD-EARNINGSFORECAST: on-demand PRE-report forecast — always returns 200 with a possibly-
   // null `forecast` field (the LLM call itself is gated server-side behind the
   // earnings_llm_forecast_enabled admin flag), so a caller renders whatever real consensus/
@@ -3335,6 +3339,39 @@ export type EarningsEvent = {
   avg_beat_pct: number | null;
   surprise_pct: number | null;
   is_upcoming: boolean;
+  earnings_strength_score?: number | null;
+  // T370-EARNINGS-DIRECTION: the post-earnings LLM read. `impact_text` existed on the row and
+  // in the alert email but was never SERIALISED by any endpoint, so no page could show it.
+  impact_text?: string | null;
+  // 'bullish' | 'bearish' | 'neutral', or null. NULL means the model gave no usable direction
+  // (or the row predates the feature) — it must NEVER be rendered as "neutral", which is a
+  // real finding that the print does not lean either way. See AUD-CONVICTION-RSIDIV-NOWRITER.
+  impact_direction?: 'bullish' | 'bearish' | 'neutral' | null;
+  impact_direction_confidence?: number | null;
+  management_tone?: string | null;
+  // The measured outcome, deliberately shipped alongside the prediction.
+  post_earnings_return_1d?: number | null;
+  post_earnings_return_5d?: number | null;
+};
+
+/** T370-EARNINGS-DIRECTION: the directional calls' actual track record. Every rate arrives with
+ *  its own `n`, and `sample_is_adequate` is false below 30 scored calls — so a UI can never
+ *  render an accuracy figure without its sample size. */
+export type EarningsDirectionAccuracy = {
+  by_direction: Record<string, {
+    n: number;
+    accuracy_1d: number | null;
+    accuracy_5d: number | null;
+    scored_1d: number;
+    scored_5d: number;
+    mean_return_1d: number | null;
+  }>;
+  overall: {
+    n_directional: number;
+    accuracy_1d: number | null;
+    sample_is_adequate: boolean;
+    note: string;
+  };
 };
 
 export type InsiderTransaction = {

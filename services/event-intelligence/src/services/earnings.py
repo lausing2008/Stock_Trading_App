@@ -103,7 +103,7 @@ revenue actual vs. estimate, surprise percentages, and a computed earnings stren
 transcript (management/analyst statements) — when present, use them to inform your read;
 when absent, base your read on the numeric data alone exactly as before. Respond ONLY with
 valid JSON (no markdown, no explanation outside JSON) in this exact format:
-{"one_paragraph":"<2-3 sentences>","sectors_helped":["Technology"],"sectors_hurt":["Utilities"],"management_tone":"<1-2 sentences or empty string>"}
+{"one_paragraph":"<2-3 sentences>","sectors_helped":["Technology"],"sectors_hurt":["Utilities"],"management_tone":"<1-2 sentences or empty string>","direction":"bullish|bearish|neutral","direction_confidence":<0-100>}
 one_paragraph must be 2-3 plain-English sentences a retail trader can act on, max 400 chars —
 cover what the beat/miss means and any read-through risk (e.g. a weak print from a bellwether
 can pressure its whole sector/peers, a strong print can lift them).
@@ -119,7 +119,18 @@ qualitative read the numbers alone cannot give (e.g. did management sound confid
 guidance, defensive about a miss, or notably vague/evasive on a specific topic an analyst
 pressed on). Ground it in the ACTUAL WORDS given, never invent a tone the excerpts don't
 support. Empty string if no transcript excerpts were provided, or if the excerpts genuinely
-don't support a clear read either way — never pad this to look complete."""
+don't support a clear read either way — never pad this to look complete.
+direction: your directional read on THIS STOCK over the next 1-5 trading sessions, given the
+print that has ALREADY happened — "bullish", "bearish", or "neutral". This is interpretation of
+known results, NOT a market forecast: base it on the beat/miss magnitude, the revenue line, the
+strength score, and management's tone where transcript excerpts were provided. Say "neutral"
+whenever the print genuinely does not lean either way, or when a beat on EPS is contradicted by
+a revenue miss or cautious guidance — a real "neutral" is a finding, not a hedge, and padding
+toward bullish/bearish to look decisive makes this field worthless.
+direction_confidence: an integer 0-100 for how strongly the DATA YOU WERE GIVEN supports that
+direction. Use a low number freely — a 2% EPS beat with no transcript and no revenue line
+genuinely warrants 30, not 70. Reserve above 75 for prints where the magnitude and the
+qualitative read agree."""
 
 
 def _api_key() -> str:
@@ -275,10 +286,149 @@ async def generate_earnings_impact(
             "sectors_helped": _clean_sector_list(data.get("sectors_helped")),
             "sectors_hurt": _clean_sector_list(data.get("sectors_hurt")),
             "management_tone": (str(data.get("management_tone") or "").strip()[:400]) or None,
+            # T370-EARNINGS-DIRECTION: a direction is only meaningful paired with its
+            # confidence, so an unusable direction drops BOTH — a confidence with no direction
+            # would be a number attached to nothing.
+            "impact_direction": (_direction := _clean_direction(data.get("direction"))),
+            "impact_direction_confidence": (
+                _clean_direction_confidence(data.get("direction_confidence"))
+                if _direction is not None else None
+            ),
         }
     except Exception as exc:
         log.warning("earnings_impact.parse_failed", symbol=symbol, error=str(exc))
         return None
+
+
+_VALID_DIRECTIONS = ("bullish", "bearish", "neutral")
+
+
+def _clean_direction(raw: object) -> str | None:
+    """T370-EARNINGS-DIRECTION: validate the LLM's directional label.
+
+    Returns None — NOT "neutral" — for anything unrecognised. That distinction is the whole
+    point: NULL means "the model did not give a usable direction", while "neutral" is a real
+    finding that the print does not lean either way. Collapsing the two is exactly the
+    AUD-RANK-RSPLACEHOLDER error (a fabricated neutral 50.0 that the weight optimizer then
+    learned from) and the AUD-CONVICTION-RSIDIV-NOWRITER error (an email rendering "None
+    detected" for a value nothing had computed). Twice is enough.
+
+    Follows _clean_sector_list()'s partial-degrade convention: a bad direction must never take
+    down the impact_text it is paired with.
+    """
+    if not isinstance(raw, str):
+        return None
+    v = raw.strip().lower()
+    return v if v in _VALID_DIRECTIONS else None
+
+
+def _clean_direction_confidence(raw: object) -> float | None:
+    """0-100, or None if absent/unparseable. Deliberately NOT defaulted to 50 — an invented
+    mid-confidence would be indistinguishable from a real one, and would poison the accuracy
+    measurement this field exists to enable.
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if v != v:  # NaN
+        return None
+    return max(0.0, min(100.0, v))
+
+
+def get_impact_direction_accuracy(min_confidence: float | None = None) -> dict:
+    """T370-EARNINGS-DIRECTION: score the LLM's post-earnings directional calls against the
+    forward returns already stored on the same row.
+
+    THIS IS THE POINT OF THE FEATURE. A directional label displayed next to measured signals but
+    never scored is exactly what this codebase has been burned by: AUD-RANK-RSPLACEHOLDER (a
+    fabricated neutral that the weight optimizer LEARNED from) and AUD-CONVICTION-RSIDIV-NOWRITER
+    (an email confidently reporting "None detected" for something nothing computed). So the
+    direction ships WITH its own scoreboard from day one.
+
+    Scoring, deliberately simple and stated rather than tuned:
+      * bullish  -> correct when the 1d return is > 0
+      * bearish  -> correct when the 1d return is < 0
+      * neutral  -> EXCLUDED from accuracy entirely. "No lean" has no directional outcome to be
+        right or wrong about, and scoring it as correct-when-flat would need an arbitrary
+        flat-band threshold that would silently become the number doing all the work.
+      * NULL direction -> excluded. Not measured is not a prediction.
+
+    Returns `n` alongside every rate so a caller can never read a percentage without its sample
+    size — three findings in docs/2026-09-05 reversed once the sample widened, and one of them
+    (insider_score) rested on SIX stocks.
+    """
+    from sqlalchemy import select as _select
+    with SessionLocal() as s:
+        q = _select(
+            EarningsEvent.impact_direction,
+            EarningsEvent.impact_direction_confidence,
+            EarningsEvent.post_earnings_return_1d,
+            EarningsEvent.post_earnings_return_5d,
+        ).where(
+            EarningsEvent.impact_direction.isnot(None),
+            EarningsEvent.post_earnings_return_1d.isnot(None),
+        )
+        if min_confidence is not None:
+            q = q.where(EarningsEvent.impact_direction_confidence >= min_confidence)
+        rows = s.execute(q).all()
+
+    def _score(direction: str, ret: float | None) -> bool | None:
+        if ret is None or direction == "neutral":
+            return None
+        if direction == "bullish":
+            return ret > 0
+        if direction == "bearish":
+            return ret < 0
+        return None
+
+    buckets: dict[str, dict] = {}
+    for d, conf, r1, r5 in rows:
+        b = buckets.setdefault(d, {"n": 0, "scored": 0, "correct_1d": 0, "correct_5d": 0,
+                                   "scored_5d": 0, "sum_ret_1d": 0.0})
+        b["n"] += 1
+        b["sum_ret_1d"] += float(r1)
+        ok1 = _score(d, r1)
+        if ok1 is not None:
+            b["scored"] += 1
+            b["correct_1d"] += int(ok1)
+        ok5 = _score(d, r5)
+        if ok5 is not None:
+            b["scored_5d"] += 1
+            b["correct_5d"] += int(ok5)
+
+    out = {}
+    for d, b in buckets.items():
+        out[d] = {
+            "n": b["n"],
+            # None, never 0.0 — a rate with no sample is not "0% accurate".
+            "accuracy_1d": (b["correct_1d"] / b["scored"]) if b["scored"] else None,
+            "accuracy_5d": (b["correct_5d"] / b["scored_5d"]) if b["scored_5d"] else None,
+            "scored_1d": b["scored"],
+            "scored_5d": b["scored_5d"],
+            "mean_return_1d": (b["sum_ret_1d"] / b["n"]) if b["n"] else None,
+        }
+
+    _directional = sum(v["scored_1d"] for v in out.values())
+    _correct = sum(
+        int(round((v["accuracy_1d"] or 0) * v["scored_1d"])) for v in out.values()
+    )
+    return {
+        "by_direction": out,
+        "overall": {
+            "n_directional": _directional,
+            "accuracy_1d": (_correct / _directional) if _directional else None,
+            # An explicit, machine-readable "do not trust this yet" rather than a bare number a
+            # UI might render as authoritative.
+            "sample_is_adequate": _directional >= 30,
+            "note": (
+                "neutral calls are excluded from accuracy — no lean has no directional outcome. "
+                "Fewer than 30 scored calls is not yet evidence of edge."
+            ),
+        },
+    }
 
 
 def _nearest_forecast_period(consensus: dict | None) -> tuple[str, dict] | None:
@@ -566,10 +716,18 @@ async def check_earnings_impact_poll() -> dict:
                 ev.sectors_helped = json.dumps(impact["sectors_helped"])
                 ev.sectors_hurt = json.dumps(impact["sectors_hurt"])
                 ev.management_tone = impact.get("management_tone")
+                # T370-EARNINGS-DIRECTION: persisted so it can be SCORED against the existing
+                # post_earnings_return_1d/_5d columns, not merely displayed. `.get()` with no
+                # default keeps NULL distinct from "neutral".
+                ev.impact_direction = impact.get("impact_direction")
+                ev.impact_direction_confidence = impact.get("impact_direction_confidence")
                 ev.impact_generated_at = datetime.now(timezone.utc)
                 s.commit()
                 generated += 1
-                log.info("earnings_impact.generated", symbol=sym, had_transcript=bool(transcript_statements))
+                log.info("earnings_impact.generated", symbol=sym,
+                         had_transcript=bool(transcript_statements),
+                         direction=impact.get("impact_direction"),
+                         direction_confidence=impact.get("impact_direction_confidence"))
             except Exception as exc:
                 log.warning("earnings_impact.poll_error", symbol=sym, error=str(exc))
 
@@ -1231,4 +1389,17 @@ def _row_to_dict(e: EarningsEvent) -> dict:
         "fiscal_year": e.fiscal_year,
         "fiscal_quarter": e.fiscal_quarter,
         "earnings_strength_score": e.earnings_strength_score,
+        # T370-EARNINGS-DIRECTION: the post-earnings LLM read was persisted but never
+        # SERIALISED — `impact_text` existed on the row and in the alert email, yet no API
+        # response carried it, so no page could show it. Added here with the direction so the
+        # forecast page can render both.
+        "impact_text": e.impact_text,
+        "impact_direction": e.impact_direction,
+        "impact_direction_confidence": e.impact_direction_confidence,
+        "management_tone": e.management_tone,
+        # The measured outcome, sent ALONGSIDE the prediction on purpose: a UI that shows the
+        # call without the result invites exactly the unfalsifiable-confidence problem this
+        # feature was designed to avoid.
+        "post_earnings_return_1d": e.post_earnings_return_1d,
+        "post_earnings_return_5d": e.post_earnings_return_5d,
     }

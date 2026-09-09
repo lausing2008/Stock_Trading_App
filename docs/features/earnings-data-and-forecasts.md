@@ -697,3 +697,98 @@ docker exec stockai-frontend-1 sh -c "grep -o 'Est. trend' /app/.next/static/chu
 
 ---
 
+
+---
+
+## T370-EARNINGS-DIRECTION — An AI Directional Read on a Print That Already Happened (Built 2026-09-09)
+
+**USER REQUEST:** *"Can we ask AI Assistant its prediction on the direction in the forecast as
+well after earnings release?"*
+
+### What already existed — why this was small
+
+The post-earnings LLM read (`_IMPACT_SYSTEM`) already received EPS actual vs estimate, revenue,
+surprise %, a 0–100 strength score, and **real earnings-call transcript excerpts** when available.
+`post_earnings_return_1d`/`_5d` were already **populated** (72 events measured 2026-09-09). Two
+things were missing: the read was never *asked* for a direction, and **`impact_text` was never
+serialised by any endpoint** — it existed on the row and in the alert email, but no page could
+show it.
+
+### The asymmetry that is deliberate
+
+| | Timing | Direction? |
+|---|---|---|
+| `_FORECAST_SYSTEM` | **before** the print | **No** — three scenarios (Beat+Raise / In-Line / Miss or Cut) |
+| `_IMPACT_SYSTEM` | **after** `eps_actual` lands | **Yes, new** |
+
+Before the print a direction is **prophecy**; after it, **interpretation of known numbers**. The
+pre-earnings prompt is left alone on purpose, and a test pins that it still has no `direction`
+field.
+
+### It ships with its own scoreboard, and that is the point
+
+This platform has twice shipped a confident-looking figure nobody could check:
+
+- **`AUD-RANK-RSPLACEHOLDER`** — a fabricated neutral 50.0 that the weight optimizer then
+  **learned from**, so nothing looked broken while the input was corrupt.
+- **`AUD-CONVICTION-RSIDIV-NOWRITER`** — an alert email rendering **"None detected"** for a value
+  nothing had computed: a confidently *false* statement, not a null.
+
+An unvalidated LLM opinion rendered beside measured signals is the same shape. So:
+
+- **NULL is never coerced to `"neutral"`.** `_clean_direction()` returns `None` for anything
+  unrecognised. "Not measured" and "measured as balanced" are different claims.
+- **Confidence is never defaulted to a midpoint.** An invented 50 would be indistinguishable
+  from a real one and would poison the very measurement this field enables.
+- **A direction and its confidence travel together** — a confidence with no direction is a number
+  attached to nothing.
+- **`GET /events/earnings/direction-accuracy`** scores the calls against the forward returns
+  already on the same row. Every rate carries its `n`; `sample_is_adequate` is False below **30**
+  scored calls.
+- **`neutral` is excluded from accuracy entirely.** "No lean" has no directional outcome, and
+  scoring it as correct-when-flat would need an arbitrary flat band that would silently become
+  the number doing all the work.
+- **An empty sample returns `None`, not `0.0`** — "0% accurate" and "no data" are different
+  claims.
+
+### Both surfaces
+
+**Email** (`check_earnings_impact_alerts`) — the direction line is **omitted entirely** when NULL,
+and always carries the confidence plus `_EARNINGS_DIRECTION_CAVEAT` ("AI interpretation of the
+reported numbers — not a measured edge") in both the HTML and text bodies.
+
+**Forecast page** (`/forecast`) — a panel showing the last 12 directional calls with the AI read,
+its confidence, the **actual 1d/5d return**, and a per-row *"Called it?"* column. It renders
+**nothing at all** when no event carries a direction, so the page is unchanged until there is real
+data. The track-record line reads *"not yet measurable"* below 30 scored calls rather than showing
+a percentage.
+
+### Migration required
+
+`create_all()` only creates missing **tables**, never adds columns (see
+`docs/incidents/docker-deploy-staleness.md`). Applied 2026-09-09:
+
+```sql
+ALTER TABLE earnings_events ADD COLUMN IF NOT EXISTS impact_direction VARCHAR(8);
+ALTER TABLE earnings_events ADD COLUMN IF NOT EXISTS impact_direction_confidence DOUBLE PRECISION;
+```
+
+### Two test-quality notes worth keeping
+
+**A function pinned only by a copy of itself is not pinned.** The first 48 tests mirrored the
+logic in local Python, so sabotaging `_clean_direction` to return `"neutral"` instead of `None` —
+**the core mistake this feature is designed around** — left every test passing. Same for scoring
+neutral as correct-when-flat. Fixed by importing and calling the real functions; both sabotages
+now fail.
+
+**Two pre-existing tests asserted whole literal structures** and broke on a purely additive
+change: an exact-dict equality on the impact result, and an exact f-string for the email body.
+Both were rewritten to assert the invariant (fields under test; playbook *appended* not
+replacing) rather than the shape. **Asserting a full literal pins incidental structure alongside
+the real invariant, so it fails on any legitimate extension.**
+
+### Standing caution
+
+Until `/events/earnings/direction-accuracy` reports `sample_is_adequate: true`, **this is an
+unvalidated LLM opinion**. Do not wire it into any gate, score, or sizing decision. Revisit once
+there are 30+ scored calls — at the current ~23 impact reads that is roughly a quarter away.

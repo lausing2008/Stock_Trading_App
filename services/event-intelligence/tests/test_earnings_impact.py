@@ -222,12 +222,19 @@ def test_returns_dict_with_sector_lists_on_success(monkeypatch):
     monkeypatch.setattr(e.httpx, "AsyncClient", lambda **kw: fake_client)
 
     result = _run(generate_earnings_impact("AAPL", "Technology", 1.5, 1.4, 7.1, 90e9, 88e9, 2.3, 72.0))
-    assert result == {
-        "impact_text": "Test impact.",
-        "sectors_helped": ["Technology"],
-        "sectors_hurt": ["Utilities"],
-        "management_tone": None,
-    }
+    # T370-EARNINGS-DIRECTION: this was an exact-dict equality assertion, which broke the moment
+    # the impact read gained impact_direction/impact_direction_confidence — a change that ADDED
+    # information without altering anything this test cares about. Asserting a whole literal
+    # structure pins its exact shape alongside the real invariant, so it fails on any legitimate
+    # extension. Now asserts the fields under test, plus the new ones explicitly.
+    assert result["impact_text"] == "Test impact."
+    assert result["sectors_helped"] == ["Technology"]
+    assert result["sectors_hurt"] == ["Utilities"]
+    assert result["management_tone"] is None
+    # The mock response carries no `direction`, so both must be NULL — never coerced to
+    # "neutral", which would be a fabricated finding (see AUD-CONVICTION-RSIDIV-NOWRITER).
+    assert result["impact_direction"] is None
+    assert result["impact_direction_confidence"] is None
 
 
 def test_returns_empty_sector_lists_when_llm_provides_none(monkeypatch):

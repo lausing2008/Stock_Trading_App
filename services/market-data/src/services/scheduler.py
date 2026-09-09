@@ -1811,6 +1811,18 @@ _EARNINGS_IMPACT_LOCK_KEY = "stockai:lock:check_earnings_impact_alerts"
 _EARNINGS_IMPACT_LOCK_TTL = 55  # seconds — runs every 60s, same pattern as check_price_alerts
 _REDIS_EARNINGS_LLM_ENABLED = "stockai:admin:feature:earnings_llm_impact_enabled"
 
+# T370-EARNINGS-DIRECTION: shown with EVERY directional read, in the email and on the forecast
+# page. This is an LLM opinion on a known print, not a measured edge — and this codebase has
+# twice shipped a confident-looking number nobody could check (AUD-RANK-RSPLACEHOLDER's
+# fabricated neutral 50.0, which the weight optimizer then LEARNED from; and
+# AUD-CONVICTION-RSIDIV-NOWRITER's "None detected" for an unmeasured value). The accuracy
+# endpoint /events/earnings/direction-accuracy scores these against the forward returns already
+# stored on the same row; until it reports sample_is_adequate, this line stays.
+_EARNINGS_DIRECTION_CAVEAT = (
+    "AI interpretation of the reported numbers — not a measured edge. "
+    "Track record: Admin \u2192 Earnings direction accuracy."
+)
+
 
 def check_earnings_impact_alerts() -> None:
     """T249-EARNINGS-LLM-IMPACT: alert-delivery half of the earnings LLM impact feature —
@@ -1923,8 +1935,35 @@ def check_earnings_impact_alerts() -> None:
                     # None and the email is byte-identical to before this feature existed).
                     tone_html = f'<p><em>Management tone: {ev.management_tone}</em></p>' if ev.management_tone else ""
                     tone_text = f"\nManagement tone: {ev.management_tone}\n" if ev.management_tone else ""
-                    body_html = f"<p>{ev.impact_text}</p>{tone_html}{playbook_html}"
-                    body_text = f"{ev.impact_text}{tone_text}{playbook_text}"
+                    # T370-EARNINGS-DIRECTION: the LLM's own directional read on the print.
+                    #
+                    # OMITTED ENTIRELY when NULL — never rendered as "neutral" or "unknown".
+                    # AUD-CONVICTION-RSIDIV-NOWRITER was precisely this mistake: an email that
+                    # said "None detected" for a value nothing had computed, which is a
+                    # confidently FALSE statement rather than a null. A row generated before
+                    # this feature existed, or one where the model declined, simply has no line.
+                    #
+                    # Always carries the confidence AND the unvalidated caveat. A bare
+                    # "Bearish" next to measured signals reads as though the platform has
+                    # established this works; it has not, and _direction_accuracy_note() below
+                    # keeps that honest until there is a real sample.
+                    if ev.impact_direction:
+                        _conf = ev.impact_direction_confidence
+                        _conf_str = f" ({_conf:.0f}% confidence)" if _conf is not None else ""
+                        _dir_label = ev.impact_direction.capitalize()
+                        dir_html = (
+                            f'<p><strong>AI directional read: {_dir_label}</strong>{_conf_str}'
+                            f'<br><span style="font-size:11px;color:#64748b">'
+                            f'{_EARNINGS_DIRECTION_CAVEAT}</span></p>'
+                        )
+                        dir_text = (
+                            f"\nAI directional read: {_dir_label}{_conf_str}\n"
+                            f"{_EARNINGS_DIRECTION_CAVEAT}\n"
+                        )
+                    else:
+                        dir_html = dir_text = ""
+                    body_html = f"<p>{ev.impact_text}</p>{dir_html}{tone_html}{playbook_html}"
+                    body_text = f"{ev.impact_text}{dir_text}{tone_text}{playbook_text}"
                     if send_email(u_obj.email, subject, body_html, body_text):
                         any_sent = True
                         try:
