@@ -2793,142 +2793,150 @@ def send_trade_exit_email(
 
 def send_paper_portfolio_digest_email(
     to: str,
-    portfolio_name: str,
-    total_return_pct: float,
-    total_pnl: float,
-    open_count: int,
-    today_closed: list,  # list of {symbol, pnl, pnl_pct, exit_reason}
-    top_positions: list,  # list of {symbol, unrealized_pct, style}
-    sharpe: float | None,
+    market: str,
+    portfolios: list,  # [{name, total_return_pct, total_pnl, open_count, sharpe,
+                       #   today_closed:[{symbol,pnl,pnl_pct,exit_reason}],
+                       #   top_positions:[{symbol,unrealized_pct,style}]}]
 ) -> bool:
-    """Daily after-market portfolio digest email."""
+    """ONE consolidated after-market portfolio digest per market.
+
+    T372-PORTFOLIO-DIGEST-CONSOLIDATE (2026-09-09), reported by the user from their inbox: this
+    used to take a SINGLE portfolio and was called once per (user, portfolio), so ten separate
+    emails arrived at 14:00 PST — five of them reading "+0.0% Total Return / $0 Total P&L"
+    because the five portfolios created on 2026-09-08 hold no positions yet.
+
+    The email count was users x active portfolios, so it silently doubled the day five
+    portfolios were added, and half the new volume carried no information. Now every portfolio
+    for one market is a row in one email.
+
+    EMPTY PORTFOLIOS ARE STILL SHOWN, deliberately — a portfolio at exactly 0.0% with no trades
+    is a real state worth seeing (it means the entry gates admitted nothing), and hiding it
+    would make its absence ambiguous between "nothing happened" and "the job died". What was
+    wrong was giving each one its own email, not showing them.
+    """
     from datetime import date as _date
     date_str = _date.today().strftime("%b %d, %Y")
+    _mkt = (market or "US").upper()
 
-    ret_color = "#22c55e" if total_return_pct >= 0 else "#ef4444"
-    ret_sign = "+" if total_return_pct >= 0 else ""
-    pnl_sign = "+" if total_pnl >= 0 else ""
+    def _sign(v: float) -> str:
+        return "+" if v >= 0 else ""
 
-    # ── Closed trades today ───────────────────────────────────────────────────
-    closed_rows_html = ""
-    closed_lines_text = ""
-    for t in today_closed[:8]:
-        sym = t.get("symbol", "")
-        pnl = t.get("pnl", 0.0)
-        pnl_pct = t.get("pnl_pct", 0.0)
-        reason = (t.get("exit_reason") or "").replace("_", " ").title()
-        c = "#22c55e" if pnl >= 0 else "#ef4444"
-        s = "+" if pnl >= 0 else ""
-        closed_rows_html += (
-            f'<tr style="border-bottom:1px solid #f1f5f9">'
-            f'<td style="padding:7px 10px;font-weight:700;font-size:13px">{sym}</td>'
-            f'<td style="padding:7px 10px;font-size:13px;font-weight:700;color:{c}">{s}${pnl:,.2f} ({s}{pnl_pct:.1f}%)</td>'
-            f'<td style="padding:7px 10px;font-size:12px;color:#64748b">{reason}</td>'
-            f'</tr>'
+    def _color(v: float) -> str:
+        return "#22c55e" if v >= 0 else "#ef4444"
+
+    # ── Portfolio summary table ──────────────────────────────────────────────
+    rows_html = ""
+    rows_text = ""
+    for p in portfolios:
+        name = p.get("name", "")
+        ret = float(p.get("total_return_pct") or 0.0)
+        pnl = float(p.get("total_pnl") or 0.0)
+        opens = int(p.get("open_count") or 0)
+        sharpe = p.get("sharpe")
+        # Three-state: a real 0.00 Sharpe is shown; an unavailable one is "—".
+        sharpe_str = f"{float(sharpe):.2f}" if sharpe is not None else "—"
+        _idle = opens == 0 and not p.get("today_closed")
+        _note = " <span style='color:#94a3b8;font-size:11px'>(no activity)</span>" if _idle else ""
+        rows_html += (
+            f"<tr>"
+            f"<td style='padding:6px 10px'><b>{name}</b>{_note}</td>"
+            f"<td style='padding:6px 10px;color:{_color(ret)};text-align:right'>"
+            f"{_sign(ret)}{ret:.1f}%</td>"
+            f"<td style='padding:6px 10px;color:{_color(pnl)};text-align:right'>"
+            f"{_sign(pnl)}${pnl:,.0f}</td>"
+            f"<td style='padding:6px 10px;text-align:right'>{opens}</td>"
+            f"<td style='padding:6px 10px;text-align:right'>{sharpe_str}</td>"
+            f"</tr>"
         )
-        closed_lines_text += f"  {sym:6}  {s}${pnl:,.2f} ({s}{pnl_pct:.1f}%)  {reason}\n"
-
-    closed_section_html = ""
-    if closed_rows_html:
-        closed_section_html = f"""
-        <h3 style="font-size:14px;font-weight:700;color:#374151;margin:24px 0 10px">Closed Today</h3>
-        <table style="width:100%;border-collapse:collapse;font-size:13px">
-          <tr style="background:#f8fafc"><th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b">Symbol</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b">P&amp;L</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b">Reason</th></tr>
-          {closed_rows_html}
-        </table>"""
-        closed_section_text = f"\nCLOSED TODAY:\n{closed_lines_text}"
-    else:
-        closed_section_text = "\nNo trades closed today.\n"
-
-    # ── Open positions ────────────────────────────────────────────────────────
-    pos_rows_html = ""
-    pos_lines_text = ""
-    for p in top_positions[:6]:
-        sym = p.get("symbol", "")
-        pct = p.get("unrealized_pct", 0.0)
-        style = p.get("style", "")
-        c = "#22c55e" if pct >= 0 else "#ef4444"
-        s = "+" if pct >= 0 else ""
-        pos_rows_html += (
-            f'<tr style="border-bottom:1px solid #f1f5f9">'
-            f'<td style="padding:7px 10px;font-weight:700;font-size:13px">{sym}</td>'
-            f'<td style="padding:7px 10px;font-size:13px;font-weight:700;color:{c}">{s}{pct:.1f}%</td>'
-            f'<td style="padding:7px 10px;font-size:12px;color:#94a3b8">{style}</td>'
-            f'</tr>'
+        # Build the signed numbers FIRST, then pad the whole token — padding the number and
+        # prefixing the sign separately misaligns every positive row by one character.
+        _ret_s = f"{_sign(ret)}{ret:.1f}%"
+        _pnl_s = f"{_sign(pnl)}${pnl:,.0f}"
+        rows_text += (
+            f"  {name:<28} {_ret_s:>8} {_pnl_s:>12}  "
+            f"open={opens:<3} sharpe={sharpe_str:>6}"
+            f"{'   (no activity)' if _idle else ''}\n"
         )
-        pos_lines_text += f"  {sym:6}  {s}{pct:.1f}%  {style}\n"
 
-    pos_section_html = ""
-    if pos_rows_html:
-        pos_section_html = f"""
-        <h3 style="font-size:14px;font-weight:700;color:#374151;margin:24px 0 10px">Open Positions ({open_count})</h3>
-        <table style="width:100%;border-collapse:collapse;font-size:13px">
-          <tr style="background:#f8fafc"><th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b">Symbol</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b">Unrealized</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b">Style</th></tr>
-          {pos_rows_html}
-        </table>"""
+    # ── Today's closed trades, across all portfolios in this market ──────────
+    closed_html = ""
+    closed_text = ""
+    _all_closed = [
+        (p.get("name", ""), t)
+        for p in portfolios for t in (p.get("today_closed") or [])
+    ]
+    if _all_closed:
+        _cells = "".join(
+            f"<tr><td style='padding:4px 10px'>{t.get('symbol','')}</td>"
+            f"<td style='padding:4px 10px;color:#94a3b8'>{pname}</td>"
+            f"<td style='padding:4px 10px;text-align:right;color:{_color(float(t.get('pnl') or 0))}'>"
+            f"{_sign(float(t.get('pnl') or 0))}${float(t.get('pnl') or 0):,.0f} "
+            f"({_sign(float(t.get('pnl_pct') or 0))}{float(t.get('pnl_pct') or 0):.1f}%)</td>"
+            f"<td style='padding:4px 10px;color:#94a3b8'>{t.get('exit_reason','')}</td></tr>"
+            for pname, t in _all_closed[:15]
+        )
+        closed_html = (
+            f"<h3 style='margin:18px 0 6px;font-size:14px'>Closed today ({len(_all_closed)})</h3>"
+            f"<table style='border-collapse:collapse;font-size:13px'>{_cells}</table>"
+        )
+        closed_text = f"\nCLOSED TODAY ({len(_all_closed)})\n" + "".join(
+            f"  {t.get('symbol',''):<8} {pname:<24} "
+            f"{_sign(float(t.get('pnl') or 0))}${float(t.get('pnl') or 0):,.0f} "
+            f"({_sign(float(t.get('pnl_pct') or 0))}{float(t.get('pnl_pct') or 0):.1f}%) "
+            f"{t.get('exit_reason','')}\n"
+            for pname, t in _all_closed[:15]
+        )
 
-    sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "—"
+    # ── Biggest open movers, across all portfolios in this market ────────────
+    movers_html = ""
+    movers_text = ""
+    _all_open = [
+        (p.get("name", ""), t)
+        for p in portfolios for t in (p.get("top_positions") or [])
+    ]
+    _all_open.sort(key=lambda x: abs(float(x[1].get("unrealized_pct") or 0)), reverse=True)
+    if _all_open:
+        _cells = "".join(
+            f"<tr><td style='padding:4px 10px'>{t.get('symbol','')}</td>"
+            f"<td style='padding:4px 10px;color:#94a3b8'>{t.get('style','')}</td>"
+            f"<td style='padding:4px 10px;color:#94a3b8'>{pname}</td>"
+            f"<td style='padding:4px 10px;text-align:right;"
+            f"color:{_color(float(t.get('unrealized_pct') or 0))}'>"
+            f"{_sign(float(t.get('unrealized_pct') or 0))}"
+            f"{float(t.get('unrealized_pct') or 0):.1f}%</td></tr>"
+            for pname, t in _all_open[:10]
+        )
+        movers_html = (
+            f"<h3 style='margin:18px 0 6px;font-size:14px'>Open positions "
+            f"({len(_all_open)})</h3>"
+            f"<table style='border-collapse:collapse;font-size:13px'>{_cells}</table>"
+        )
+        movers_text = f"\nOPEN POSITIONS ({len(_all_open)})\n" + "".join(
+            f"  {t.get('symbol',''):<8} {t.get('style',''):<8} {pname:<24} "
+            f"{_sign(float(t.get('unrealized_pct') or 0))}"
+            f"{float(t.get('unrealized_pct') or 0):.1f}%\n"
+            for pname, t in _all_open[:10]
+        )
 
-    subject = f"[Paper Portfolio] {portfolio_name} — {date_str} · {ret_sign}{total_return_pct:.1f}%"
-    body_text = (
-        f"Paper Portfolio Digest — {portfolio_name} — {date_str}\n"
-        f"Total Return: {ret_sign}{total_return_pct:.1f}%  Total P&L: {pnl_sign}${total_pnl:,.2f}\n"
-        f"Open Positions: {open_count}  Sharpe: {sharpe_str}\n"
-        f"{closed_section_text}"
-        f"\nOPEN POSITIONS:\n{pos_lines_text}"
+    _n = len(portfolios)
+    subject = f"[Paper Portfolio] {_mkt} — {date_str} · {_n} portfolio{'' if _n == 1 else 's'}"
+    body_html = (
+        f"<h2 style='margin:0'>{_mkt} Paper Portfolios</h2>"
+        f"<p style='font-size:12px;color:#666;margin:4px 0 12px'>{date_str}</p>"
+        f"<table style='border-collapse:collapse;font-size:13px'>"
+        f"<tr>"
+        f"<th align='left' style='padding:6px 10px'>Portfolio</th>"
+        f"<th align='right' style='padding:6px 10px'>Return</th>"
+        f"<th align='right' style='padding:6px 10px'>P&amp;L</th>"
+        f"<th align='right' style='padding:6px 10px'>Open</th>"
+        f"<th align='right' style='padding:6px 10px'>Sharpe</th>"
+        f"</tr>{rows_html}</table>"
+        f"{closed_html}{movers_html}"
     )
-    body_html = f"""<!DOCTYPE html><html><body style="font-family:sans-serif;background:#f8fafc;padding:24px;margin:0">
-  <div style="max-width:540px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
-    <div style="margin-bottom:20px">
-      <div style="font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Paper Portfolio Digest · {date_str}</div>
-      <div style="font-size:20px;font-weight:700;color:#111827">{portfolio_name}</div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px">
-      <div style="background:#f8fafc;border-radius:8px;padding:14px;text-align:center">
-        <div style="font-size:22px;font-weight:800;color:{ret_color}">{ret_sign}{total_return_pct:.1f}%</div>
-        <div style="font-size:11px;color:#94a3b8;margin-top:2px">Total Return</div>
-      </div>
-      <div style="background:#f8fafc;border-radius:8px;padding:14px;text-align:center">
-        <div style="font-size:18px;font-weight:700;color:{ret_color}">{pnl_sign}${total_pnl:,.0f}</div>
-        <div style="font-size:11px;color:#94a3b8;margin-top:2px">Total P&amp;L</div>
-      </div>
-      <div style="background:#f8fafc;border-radius:8px;padding:14px;text-align:center">
-        <div style="font-size:18px;font-weight:700;color:#374151">{sharpe_str}</div>
-        <div style="font-size:11px;color:#94a3b8;margin-top:2px">Sharpe</div>
-      </div>
-    </div>
-    {closed_section_html}
-    {pos_section_html}
-    <p style="font-size:12px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:12px">
-      Paper trade simulation — no real money. <a href="https://lausing.com/paper-portfolio" style="color:#6366f1">View portfolio →</a>
-    </p>
-  </div>
-</body></html>"""
+    body_text = (
+        f"{_mkt} PAPER PORTFOLIOS — {date_str}\n\n{rows_text}{closed_text}{movers_text}"
+    )
     return send_email(to, subject, body_html, body_text)
-
-
-# T241-DIGEST5X: 5 post-open checks/day — 30min, then hourly through 4hr30min.
-# Keys must match the window names scheduler.py's _POST_OPEN_WINDOWS registers jobs with.
-_WINDOW_LABELS = {
-    "30min": "30 min after open",
-    "1hr30min": "1.5 hours after open",
-    "2hr30min": "2.5 hours after open",
-    "3hr30min": "3.5 hours after open",
-    "4hr30min": "4.5 hours after open",
-}
-# What each window's "since ___" comparison point actually is, for the digest header.
-_WINDOW_SINCE_LABELS = {
-    "30min": "open",
-    "1hr30min": "30 min ago",
-    "2hr30min": "1.5 hours ago",
-    "3hr30min": "2.5 hours ago",
-    "4hr30min": "3.5 hours ago",
-}
-
 
 def send_post_open_digest_email(
     to: str,

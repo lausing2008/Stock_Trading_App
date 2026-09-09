@@ -12143,19 +12143,40 @@ def _render_flow_digest(dp_rows, of_rows, dp_acc, of_acc, lookback, since) -> tu
     return html, text
 
 
-def send_paper_portfolio_digest() -> None:
-    """Send after-market portfolio digest email to all users with email configured.
+def send_paper_portfolio_digest(market: str = "US") -> None:
+    """Send ONE consolidated after-market portfolio digest per market, per user.
 
-    Runs weekdays at 17:00 ET (1h after US close). Covers all active paper
-    portfolios. Shows total return, today's closed trades, open positions.
+    T372-PORTFOLIO-DIGEST-CONSOLIDATE (2026-09-09), reported by the user from their inbox:
+    ten separate emails arrived at 14:00 PST, five of them saying "+0.0% Total Return / $0
+    Total P&L" because the five portfolios created on 2026-09-08 hold no positions yet.
+
+    TWO CHANGES, both requested:
+
+    1. ONE EMAIL PER MARKET instead of one per PORTFOLIO. The loop was
+       `for user: for portfolio: send()`, so the email count was users x active portfolios —
+       it silently doubled from 5 to 10 the day five new portfolios were added, and half of
+       the new volume carried no information. Now every portfolio for a market is rendered as
+       a row in a single digest.
+
+    2. PER-MARKET TIMING. This ran only at 17:00 ET, so HK portfolios were reported ~17 hours
+       after their own close, against a US calendar. HK now has its own 17:00 HKT run gated on
+       the HK trading calendar. Reporting HK results on a US holiday (or skipping them on an
+       HK one) was never right — it is the same class as AUD-PT-CROSSMARKETSWEEP, where HK's
+       open burst force-closed US positions at the previous day's price.
+
+    EMPTY PORTFOLIOS ARE STILL INCLUDED, deliberately, but compactly — a portfolio at exactly
+    0.0% with no trades is a real state worth seeing (it means the entry gates admitted
+    nothing), and omitting it would make "no email" ambiguous between "nothing happened" and
+    "the job died". What was wrong was giving each one its own email, not showing them.
 
     AUD-DIGEST-HOLIDAYBLIND: sent to 5 recipients on 2026-09-07 (US Labor Day) reporting
-    "today's closed trades" for a day the market never opened. US-only gate — this job is
-    registered at 17:00 ET against the US close.
+    "today's closed trades" for a day the market never opened. Each market is now gated on its
+    OWN calendar.
     """
-    if not _is_us_trading_day():
+    _mkt = (market or "US").upper()
+    if not _is_trading_day_for(_mkt):
         log.info("scheduler.digest_skip_market_closed",
-                 job="paper_portfolio_digest", skipped=["US"])
+                 job=f"paper_portfolio_digest_{_mkt.lower()}", skipped=[_mkt])
         return
     from datetime import date as _date
     from sqlalchemy import select as _sel, desc as _desc
@@ -12188,80 +12209,112 @@ def send_paper_portfolio_digest() -> None:
             portfolios = session.execute(
                 _sel(PaperPortfolio).where(PaperPortfolio.is_active.is_(True))
             ).scalars().all()
+            # T372: keep only THIS market's portfolios. Filtered in Python, not SQL, because
+            # `config` is a `json` column (not `jsonb`) — a `->>` filter needs an explicit
+            # ::jsonb cast, and a portfolio whose config omits the key would silently match
+            # nothing and drop out of its digest entirely. Same reasoning, and the same
+            # incident file, as AUD-PT-CROSSMARKETSWEEP's own market filter.
+            portfolios = [
+                _p for _p in portfolios
+                if ((_p.config or {}).get("market", "US") or "US").upper() == _mkt
+            ]
             sent = 0
             errors = 0
             if portfolios:
+                # T372: metrics are computed ONCE per portfolio, not once per (user, portfolio).
+                # They do not depend on which user is being emailed — the old nested loop
+                # recomputed every portfolio's risk metrics and trade queries for each recipient.
+                portfolio_rows = []
+                for p in portfolios:
+                    try:
+                        from ..api.paper_portfolio import _portfolio_risk_metrics
+                        from db.models import PaperEquityCurve
+                        curve_rows = session.execute(
+                            _sel(PaperEquityCurve).where(PaperEquityCurve.portfolio_id == p.id).order_by(PaperEquityCurve.date)
+                        ).scalars().all()
+                        risk = _portfolio_risk_metrics(curve_rows)
+                        open_trades = session.execute(
+                            _sel(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
+                        ).scalars().all()
+                        today_utc_start = datetime.combine(_date.today(), datetime.min.time())
+                        closed_today = session.execute(
+                            _sel(PaperTrade).where(
+                                PaperTrade.portfolio_id == p.id,
+                                PaperTrade.stage == "closed",
+                                PaperTrade.exit_time >= today_utc_start,
+                            ).order_by(_desc(PaperTrade.exit_time))
+                        ).scalars().all()
+                        positions_value = sum(
+                            float(t.current_price or t.entry_price) * float(t.shares)
+                            for t in open_trades if t.shares and t.shares > 0
+                        )
+                        equity = float(p.current_cash) + positions_value
+                        total_return_pct = round((equity / float(p.initial_capital) - 1) * 100, 2)
+                        total_pnl = round(equity - float(p.initial_capital), 2)
+                        portfolio_rows.append({
+                            "name": p.name or f"Portfolio #{p.id}",
+                            "total_return_pct": total_return_pct,
+                            "total_pnl": total_pnl,
+                            "open_count": len(open_trades),
+                            "sharpe": risk.get("sharpe"),
+                            "today_closed": [
+                                {"symbol": t.symbol, "pnl": float(t.pnl or 0),
+                                 "pnl_pct": float(t.pct_return or 0), "exit_reason": t.exit_reason or ""}
+                                for t in closed_today
+                            ],
+                            "top_positions": sorted(
+                                [{"symbol": t.symbol,
+                                  "unrealized_pct": round(((t.current_price or t.entry_price) / float(t.entry_price) - 1) * 100, 2) if t.entry_price else 0.0,
+                                  "style": t.trading_style or ""} for t in open_trades],
+                                key=lambda x: abs(x["unrealized_pct"]), reverse=True
+                            ),
+                        })
+                    except Exception as _calc_exc:
+                        # Per-portfolio isolation preserved from AUD301: one portfolio's data
+                        # anomaly (initial_capital == 0 -> ZeroDivisionError, a malformed equity
+                        # curve row) must not take down the whole market's digest.
+                        errors += 1
+                        log.warning("paper_portfolio_digest.portfolio_calc_error",
+                                    portfolio=p.id, market=_mkt, error=str(_calc_exc))
+
+                # One email per USER per MARKET, carrying every portfolio as a row.
                 for user in users:
-                    if not user.email:
+                    if not user.email or not portfolio_rows:
                         continue
-                    for p in portfolios:
-                        redis_key = f"stockai:paper_portfolio_digest:{user.id}:{p.id}:{today_str}"
+                    # Dedup key is per (user, MARKET, date) rather than per portfolio — there is
+                    # one email now, so a per-portfolio key would let a restart re-send it once
+                    # for every portfolio the email contains.
+                    redis_key = f"stockai:paper_portfolio_digest:{user.id}:{_mkt}:{today_str}"
+                    try:
+                        if _rc and _rc.exists(redis_key):
+                            continue
+                    except Exception:
+                        pass
+                    try:
+                        ok = send_paper_portfolio_digest_email(
+                            to=user.email,
+                            market=_mkt,
+                            portfolios=portfolio_rows,
+                        )
+                    except Exception as _send_exc:
+                        ok = False
+                        errors += 1
+                        log.warning("paper_portfolio_digest.recipient_send_error",
+                                    user=user.id, market=_mkt, error=str(_send_exc))
+                    if ok:
+                        sent += 1
                         try:
-                            if _rc and _rc.exists(redis_key):
-                                continue
+                            _rc and _rc.setex(redis_key, 20 * 3600, "1")  # 20h TTL — one/user/market/day
                         except Exception:
                             pass
-                        try:
-                            from ..api.paper_portfolio import _portfolio_risk_metrics
-                            from db.models import PaperEquityCurve
-                            # Summary metrics
-                            curve_rows = session.execute(
-                                _sel(PaperEquityCurve).where(PaperEquityCurve.portfolio_id == p.id).order_by(PaperEquityCurve.date)
-                            ).scalars().all()
-                            risk = _portfolio_risk_metrics(curve_rows)
-                            open_trades = session.execute(
-                                _sel(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
-                            ).scalars().all()
-                            today_utc_start = datetime.combine(_date.today(), datetime.min.time())
-                            closed_today = session.execute(
-                                _sel(PaperTrade).where(
-                                    PaperTrade.portfolio_id == p.id,
-                                    PaperTrade.stage == "closed",
-                                    PaperTrade.exit_time >= today_utc_start,
-                                ).order_by(_desc(PaperTrade.exit_time))
-                            ).scalars().all()
-                            # Include market value of open positions (not just cash)
-                            positions_value = sum(
-                                float(t.current_price or t.entry_price) * float(t.shares)
-                                for t in open_trades if t.shares and t.shares > 0
-                            )
-                            equity = float(p.current_cash) + positions_value
-                            total_return_pct = round((equity / float(p.initial_capital) - 1) * 100, 2)
-                            total_pnl = round(equity - float(p.initial_capital), 2)
-                            today_closed_list = [
-                                {"symbol": t.symbol, "pnl": float(t.pnl or 0), "pnl_pct": float(t.pct_return or 0), "exit_reason": t.exit_reason or ""}
-                                for t in closed_today
-                            ]
-                            top_positions = sorted(
-                                [{"symbol": t.symbol, "unrealized_pct": round(((t.current_price or t.entry_price) / float(t.entry_price) - 1) * 100, 2) if t.entry_price else 0.0, "style": t.trading_style or ""} for t in open_trades],
-                                key=lambda x: abs(x["unrealized_pct"]), reverse=True
-                            )
-                            ok = send_paper_portfolio_digest_email(
-                                to=user.email,
-                                portfolio_name=p.name or f"Portfolio #{p.id}",
-                                total_return_pct=total_return_pct,
-                                total_pnl=total_pnl,
-                                open_count=len(open_trades),
-                                today_closed=today_closed_list,
-                                top_positions=top_positions,
-                                sharpe=risk.get("sharpe"),
-                            )
-                        except Exception as _send_exc:
-                            ok = False
-                            errors += 1
-                            log.warning("paper_portfolio_digest.recipient_send_error",
-                                        user=user.id, portfolio=p.id, error=str(_send_exc))
-                        if ok:
-                            sent += 1
-                            try:
-                                _rc and _rc.setex(redis_key, 20 * 3600, "1")  # 20h TTL — one digest/user/portfolio/day
-                            except Exception:
-                                pass
-        _record_job_status("paper_portfolio_digest", "ok", time.monotonic() - _t0)
-        log.info("scheduler.paper_portfolio_digest_done", sent=sent, errors=errors)
+        _record_job_status(f"paper_portfolio_digest_{_mkt.lower()}", "ok", time.monotonic() - _t0)
+        log.info("scheduler.paper_portfolio_digest_done", market=_mkt, sent=sent,
+                 portfolios=len(portfolios), errors=errors)
     except Exception as exc:
-        _record_job_status("paper_portfolio_digest", "error", time.monotonic() - _t0, str(exc))
-        log.error("scheduler.paper_portfolio_digest_failed", error=str(exc), exc_info=True)
+        _record_job_status(f"paper_portfolio_digest_{_mkt.lower()}", "error",
+                           time.monotonic() - _t0, str(exc))
+        log.error("scheduler.paper_portfolio_digest_failed", market=_mkt,
+                  error=str(exc), exc_info=True)
 
 
 def start_scheduler() -> None:
@@ -12544,10 +12597,23 @@ def start_scheduler() -> None:
     # ── Paper portfolio after-market digest — 17:00 ET (1h after US close) ──
     # BUG-LOCALDEV-ALERTS-UNGATED: sends a real email — gated, see _is_alerting_enabled().
     if _is_alerting_enabled():
+        # T372-PORTFOLIO-DIGEST-CONSOLIDATE: ONE consolidated digest per MARKET, each an hour
+        # after its OWN close — not a single 17:00 ET job covering both. HK portfolios were
+        # previously reported ~17 hours after the HK close and gated on the US calendar, so an
+        # HK digest could be skipped on a US holiday (and sent on an HK one). Same class as
+        # AUD-PT-CROSSMARKETSWEEP, where HK's open burst force-closed US positions.
+        #
+        # The job id keeps the `paper_portfolio_digest` prefix so existing liveness gauges and
+        # the alert-gate parity test continue to recognise the family.
         _scheduler.add_job(
-            send_paper_portfolio_digest,
+            lambda: send_paper_portfolio_digest("US"),
             CronTrigger(hour=17, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
-            id="paper_portfolio_digest", replace_existing=True, **_JOB_DEFAULTS,
+            id="paper_portfolio_digest_us", replace_existing=True, **_JOB_DEFAULTS,
+        )
+        _scheduler.add_job(
+            lambda: send_paper_portfolio_digest("HK"),
+            CronTrigger(hour=17, minute=0, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+            id="paper_portfolio_digest_hk", replace_existing=True, **_JOB_DEFAULTS,
         )
 
         # ── T371-FLOW-DIGEST: dark pool + unusual options activity, 3x daily ──────

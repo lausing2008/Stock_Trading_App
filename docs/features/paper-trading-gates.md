@@ -48,3 +48,66 @@ docker exec stockai-redis-1 redis-cli ttl paper:gate_block:<portfolio_id>
 # If two same-market portfolios show DIFFERENT regime_* gate reasons — that's the bug class
 # above; if they show different non-regime reasons (volume, K-score) — that's layer 2, expected.
 ```
+---
+
+## T372-PORTFOLIO-DIGEST-CONSOLIDATE — Ten Emails Became One Per Market (Built 2026-09-09)
+
+**REPORTED BY THE USER FROM THEIR INBOX:** ten `[Paper Portfolio]` emails arrived at 14:00 PST,
+five reading **"+0.0% Total Return / $0 Total P&L"** — the five portfolios created on 2026-09-08,
+which hold no positions yet.
+
+### The cause was structural, not a bug
+
+The loop was `for user: for portfolio: send()`, so **email count = users × active portfolios**. It
+silently **doubled from 5 to 10** the day five portfolios were added, and half the new volume
+carried no information. Nothing failed; the volume just grew.
+
+### Two changes
+
+**1. One email per market**, every portfolio as a row, with today's closed trades and open
+positions consolidated across all of them:
+
+```
+[Paper Portfolio] US — Sep 09, 2026 · 6 portfolios
+
+  GROWTH Paper Portfolio          +0.5%        +$231  open=5   sharpe= -0.16
+  ETrade Sandbox SWING            -3.0%      $-1,512  open=0   sharpe= -6.44   (no activity)
+  US SWING After 09082026         +0.0%          +$0  open=0   sharpe=     —   (no activity)
+  ...
+CLOSED TODAY (2)
+  VZ   US SWING Portfolio  +$383 (+7.7%) trailing_stop
+```
+
+**2. Per-market timing.** Each fires an hour after its **own** close — `paper_portfolio_digest_us`
+at 17:00 ET, `paper_portfolio_digest_hk` at 17:00 HKT. Previously a single 17:00 ET job reported
+HK portfolios ~17 hours after the HK close **and gated them on the US calendar**, so an HK digest
+could be skipped on a US holiday and sent on an HK one. Same class as `AUD-PT-CROSSMARKETSWEEP`.
+
+The market filter runs **in Python, not SQL** — `config` is a `json` column, so a `->>` filter
+needs a `::jsonb` cast and a portfolio omitting the key would silently vanish from its digest.
+
+### Empty portfolios are still shown, deliberately
+
+A portfolio at exactly 0.0% with no trades is a **real state** — it means the entry gates admitted
+nothing — and hiding it would make its absence ambiguous between "nothing happened" and "the job
+died". They are tagged `(no activity)` rather than omitted. **What was wrong was giving each one
+its own email, not showing them.**
+
+### The dedup scope inverted, on purpose
+
+The key moved from `(user, portfolio, date)` to `(user, market, date)`. Keeping the portfolio id
+would let a restart re-send the **same consolidated email once for every portfolio it contains** —
+the exact duplicate-send the original key existed to prevent, just inverted by the consolidation.
+The pre-existing test asserting the old scope was rewritten to explain that inversion rather than
+deleted.
+
+### Three pre-existing tests changed, all for the same reason
+
+They asserted **structure** rather than **invariant**: the exact dedup key string, and an ordering
+anchor that assumed dedup came *before* metrics. Metrics now run once per portfolio *before* the
+recipient loop (they never depended on which user was being emailed — the old nesting recomputed
+every portfolio's risk metrics for each recipient). **AUD301's isolation invariant is preserved
+and still pinned**: one portfolio's bad data (`initial_capital == 0` → `ZeroDivisionError`) cannot
+abort the whole market's digest.
+
+**Volume:** 10 emails/day → 2. 22 new tests, five sabotages caught.

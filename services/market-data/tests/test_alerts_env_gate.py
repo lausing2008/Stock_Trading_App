@@ -167,7 +167,6 @@ _ALERT_JOB_IDS = {
     "premarket_brief_us",
     "premarket_brief_hk",
     "(f-string prefix='post_open_digest__')",
-    "paper_portfolio_digest",
     "price_alert_check",
     "volume_anomaly_check",
     "conditional_order_check",
@@ -196,6 +195,10 @@ _ALERT_JOB_IDS = {
     "flow_digest_morning",
     "flow_digest_close",
     "flow_digest_night",
+    # T372-PORTFOLIO-DIGEST-CONSOLIDATE: `paper_portfolio_digest` split into two per-market
+    # jobs, each an hour after its OWN close.
+    "paper_portfolio_digest_us",
+    "paper_portfolio_digest_hk",
 }
 
 _NON_ALERT_JOB_IDS = {

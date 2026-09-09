@@ -85,8 +85,11 @@ def test_post_open_digest_dedup_key_is_scoped_per_market_and_window():
 # ── send_paper_portfolio_digest() ──────────────────────────────────────────────
 
 def test_paper_portfolio_digest_checks_a_redis_dedup_key_before_sending():
+    """T372: the key is now scoped per (user, MARKET, date) — see the dedup-scope test below
+    for why keeping the portfolio id would cause the very duplicate send it was meant to stop.
+    The invariant asserted here is unchanged: check before send."""
     body = _paper_portfolio_digest_body()
-    assert 'redis_key = f"stockai:paper_portfolio_digest:{user.id}:{p.id}:{today_str}"' in body
+    assert 'redis_key = f"stockai:paper_portfolio_digest:{user.id}:{_mkt}:{today_str}"' in body
     dedup_check_idx = body.index("_rc.exists(redis_key)")
     send_call_idx = body.index("send_paper_portfolio_digest_email(")
     assert dedup_check_idx < send_call_idx, "dedup check must happen BEFORE the send call"
@@ -107,27 +110,37 @@ def test_paper_portfolio_digest_isolates_the_whole_per_portfolio_block_not_just_
     portfolio's data anomaly (e.g. a ZeroDivisionError computing total_return_pct) must not
     abort the digest for every other user/portfolio still left in the loop.
 
-    There are TWO `try:` blocks in this function before the metrics call: the outer function-
-    level one (wrapping the whole `with SessionLocal()` block) and the dedup-check's own small
-    `try: ... except Exception: pass`. A naive `.rindex("try:", 0, metrics_call_idx)` finds
-    whichever `try:` happens to be textually nearest before the metrics call — which, if the
-    REAL per-portfolio isolation try were removed, would silently fall back to the outer
-    function-level try instead and the test would incorrectly still pass (self-caught via
-    adversarial sabotage: removing the per-portfolio try and replacing it with `if True:` did
-    NOT fail the original version of this test). Anchored instead on the exact adjacency
-    between the dedup-check's own closing `except Exception:\\n    pass` and the per-portfolio
-    isolation try's opening `try:` immediately after it — the one structural marker that can
-    only exist if the real per-portfolio try/except is actually present."""
+    T372-PORTFOLIO-DIGEST-CONSOLIDATE inverted the ORDER this test anchored on, without
+    weakening the invariant it protects. The loop used to be `for user: for portfolio:
+    dedup-check -> compute -> send`, so the dedup check came BEFORE the metrics. It is now
+    `for portfolio: compute` (once, not once per user) followed by `for user: dedup-check ->
+    send`, because the metrics do not depend on which user is being emailed — the old nesting
+    recomputed every portfolio's risk metrics and trade queries for each recipient.
+
+    The invariant is unchanged and still worth pinning: the per-portfolio computation must have
+    its OWN try/except, so one portfolio's data anomaly (initial_capital == 0 ->
+    ZeroDivisionError, a malformed equity-curve row) cannot abort the digest for every other
+    portfolio in the market. Anchored now on that block directly.
+    """
     body = _paper_portfolio_digest_body()
-    dedup_except_idx = body.index("if _rc and _rc.exists(redis_key):")
-    isolation_try_marker = "except Exception:\n                            pass\n                        try:\n"
-    isolation_try_idx = body.index(isolation_try_marker, dedup_except_idx)
+    # The per-portfolio computation sits inside its own try, closed by a calc-specific except.
+    loop_idx = body.index("for p in portfolios:")
+    try_idx = body.index("try:", loop_idx)
     metrics_call_idx = body.index("_portfolio_risk_metrics(curve_rows)")
+    calc_except_idx = body.index("except Exception as _calc_exc:")
+    assert loop_idx < try_idx < metrics_call_idx < calc_except_idx, (
+        "the risk-metrics computation must sit inside a per-portfolio try/except, so one "
+        "portfolio's bad data cannot abort the whole market's digest"
+    )
+    # And that except must NOT re-raise — it counts and continues.
+    _tail = body[calc_except_idx:calc_except_idx + 400]
+    assert "errors += 1" in _tail
+    assert "raise" not in _tail
+    # The send loop keeps its own separate isolation.
     send_call_idx = body.index("send_paper_portfolio_digest_email(")
-    except_idx = body.index("except Exception as _send_exc:", send_call_idx)
-    assert isolation_try_idx < metrics_call_idx < send_call_idx < except_idx, (
-        "the per-portfolio isolation try block must start immediately after the dedup-check's "
-        "own except, before the risk-metrics computation — not just before the send call"
+    send_except_idx = body.index("except Exception as _send_exc:", send_call_idx)
+    assert calc_except_idx < send_call_idx < send_except_idx, (
+        "metrics are computed for every portfolio BEFORE any email is sent"
     )
 
 
@@ -140,12 +153,25 @@ def test_paper_portfolio_digest_logs_and_counts_per_recipient_errors_without_rer
     assert "errors=errors" in done_log_line
 
 
-def test_paper_portfolio_digest_dedup_key_is_scoped_per_user_and_portfolio():
-    """A user with multiple active portfolios must get a digest for EACH one — the dedup key
-    must include the portfolio id, not just the user id, or a second portfolio's digest would
-    be silently suppressed by the first one's own dedup key."""
+def test_paper_portfolio_digest_dedup_key_is_scoped_per_user_and_market():
+    """T372-PORTFOLIO-DIGEST-CONSOLIDATE inverted this test's premise, deliberately.
+
+    It used to require the portfolio id in the dedup key, because there was ONE EMAIL PER
+    PORTFOLIO and a user-scoped key would have suppressed every portfolio after the first. The
+    user reported the consequence from their own inbox: ten emails at once, five of them
+    reading "+0.0% / $0" for portfolios created the day before.
+
+    There is now one email per MARKET carrying every portfolio as a row, so the key must be
+    scoped per (user, market, date). Keeping the portfolio id would let a restart re-send the
+    same consolidated email once for EVERY portfolio it contains — the exact duplicate-send
+    failure the original key existed to prevent, just inverted.
+
+    The invariant is unchanged: one digest per user per market per day, and no silent
+    suppression. Only the unit of "a digest" moved.
+    """
     body = _paper_portfolio_digest_body()
-    assert "{user.id}:{p.id}:{today_str}" in body
+    assert "{user.id}:{_mkt}:{today_str}" in body
+    assert "{user.id}:{p.id}:{today_str}" not in body, "per-portfolio scope would re-send"
 
 
 def test_paper_portfolio_digest_queries_portfolios_exactly_once_not_per_user():
