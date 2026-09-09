@@ -346,3 +346,71 @@ docker logs stockai-event-intelligence-1 --since 24h | grep -i 'fomc\|release_da
 
 ---
 
+
+---
+
+## AUD-DE-COMMONSTUB-NONPACKAGE — A Bare `common` MagicMock Silenced 188 Tests (Fixed 2026-09-09)
+
+**A defect I introduced myself one day earlier, found only while running the suite for an
+unrelated change.**
+
+`AUD-ENTRY-NYSEHOLIDAY-FOURTHCOPY` (commit `5796ebf`, 2026-09-08) correctly replaced
+`hard_rejects.py`'s private `_NYSE_HOLIDAYS` frozenset with
+`from common.market_calendar import NYSE_HOLIDAYS`. Four test files in
+`services/decision-engine/tests/` carry their own `sys.modules.setdefault("common", MagicMock())`
+preamble — and **a bare MagicMock is not a package**, so Python refuses to resolve any
+`common.<submodule>` import through it:
+
+```
+test_hard_rejects.py  test_score_replay.py  test_entry_gate_params.py  test_entry_weights.py
+-> ModuleNotFoundError: No module named 'common.market_calendar'; 'common' is not a package
+```
+
+**144 + 15 + 15 + 14 = 188 tests stopped running**, including the entire hard-rejects gate suite
+that guards real trading decisions.
+
+### Why it survived a day
+
+It surfaces as **`4 errors during collection`**, not as a test FAILURE. A targeted run of the
+file you happen to be editing still passes, and the summary line reads "errors" rather than
+"failed". The day's deploy shipped with four whole files uncollectable; the only signal was
+pytest's non-zero exit, which was attributed to an unrelated in-progress change.
+
+### The fix
+
+Borrowed verbatim from `market-data/tests/conftest.py`, which had already solved this for the
+same module: in decision-engine's `conftest.py`, load the real `common.market_calendar` from
+`shared/` and register it in `sys.modules`, plus register stubs for the `common` submodules the
+core actually imports (`config`, `redis_client`, `jwt_auth`, `ai_keys`). One place, not four.
+
+The calendar must be **real, not mocked** — it carries holiday DATA and every guard on it is a
+membership test, so under a blanket mock `date(...) in NYSE_HOLIDAYS` returns a truthy Mock and
+every holiday test passes vacuously. Verified: real `frozenset`, 40 dates, and it discriminates
+both ways (2026-09-07 in, 2026-09-08 out).
+
+### The generalisable lesson
+
+> **`sys.modules` stubs are process-wide and order-dependent.** Stubbing a *package* as a bare
+> Mock silently forbids every real submodule import beneath it — and the breakage lands at
+> **collection time, in files you did not touch**.
+
+A parity test now derives the needed submodule list from the real core sources with a regex, so a
+new `from common.X import ...` cannot silently break collection again. It asserts its own
+non-vacuity, since a regex matching nothing would make it pass trivially.
+
+### Two errors of my own, both caught by sabotage-testing
+
+**I asserted a mechanism that isn't load-bearing.** I claimed `setattr(sys.modules["common"],
+"market_calendar", mod)` was *required* for `from common.market_calendar import X`, and that
+`sys.modules` alone was insufficient. **That is false** — verified directly: with only the
+`sys.modules` entry, the from-import succeeds and returns the real frozenset, because CPython
+resolves `from X.Y import Z` against `sys.modules["X.Y"]` first. The `setattr` is kept as
+belt-and-braces but is *not* required, so the honest fix was to **stop asserting it** rather than
+pin it harder. A test that pins a non-load-bearing line fails on harmless cleanup while telling
+you nothing about behaviour.
+
+**Full-suite runs can mask a conftest regression.** Removing the submodule-stub loop still gave
+`366 passed`, because the four sibling files stub `common.config` themselves. It only fails when
+a file runs *alone* — which is exactly how the parity test catches it. Concrete proof of the
+masking: without the loop, the R:R test file's four real-function tests silently revert to
+**skipped** while the suite still reports all-green.
