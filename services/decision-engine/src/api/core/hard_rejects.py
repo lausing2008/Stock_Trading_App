@@ -33,6 +33,66 @@ _MAX_ROC10_FOR_ENTRY = 10.0
 from common.market_calendar import NYSE_HOLIDAYS as _NYSE_HOLIDAYS
 
 
+# AUD-RR-REGIMEFLOOR-UNREACHABLE: the highest R:R THIS candidate can possibly produce.
+#
+# `_default_game_plan()` caps `take_profit` at `live_price * target_pct`, so the reward is
+# bounded by the style. The risk is whatever the plan's own stop implies. Therefore:
+#
+#     ceiling = (live_price * target_pct - live_price) / (live_price - stop_price)
+#
+# and no candidate of that style, at that stop, can ever exceed it.
+#
+# A CORRECTION TO MY OWN FIRST ATTEMPT, worth recording because it was backwards and would have
+# LOOSENED every gate. I first derived a per-STYLE constant, `(target_pct - 1) / (1 - stop_pct)`,
+# believing it to be the achievable maximum. It is the **minimum**: `_default_game_plan()` sets
+# `stop = max(atr_stop, fixed_stop)`, so the fixed stop is the WIDEST stop it ever uses, giving
+# the LARGEST risk and hence the SMALLEST ceiling. Verified directly — GROWTH at a 0.5% ATR has
+# a ceiling of 23.33, at 5.0% ATR it is 2.92:
+#
+#     GROWTH  atr=0.5%  stop=$98.50  ceiling=23.33
+#     GROWTH  atr=2.0%  stop=$94.00  ceiling= 5.83
+#     GROWTH  atr=5.0%  stop=$88.00  ceiling= 2.92   <- the per-style "constant"
+#
+# It coincided exactly with the 129-symbol sweep's per-style WORST case (GROWTH 2.92, LONG 2.50,
+# SWING 2.18, SHORT 1.67), which is what should have told me immediately that it was the wrong
+# bound. Capping a calibrated 3.4 floor at that constant would have dropped GROWTH to 2.77 and
+# LONG to 2.38 for EVERY candidate including the ones already clearing 3.4 — silently weakening
+# the two styles that were working.
+#
+# So the cap is computed per candidate, from its OWN stop. Effect: a high-ATR (wide-stop)
+# candidate is judged against what its geometry allows instead of an unreachable market-wide
+# number, while a tight-stop candidate keeps facing the full calibrated floor.
+_RR_CEILING_HAIRCUT = 0.95
+
+
+def _candidate_rr_ceiling(
+    live_price: float, stop_price: float, style: str | None, cfg: dict
+) -> float | None:
+    """Max R:R achievable for this candidate, or None if undeterminable (fail OPEN — leave the
+    calibrated floor untouched rather than guess).
+
+    Reads the SAME canonical style params `_default_game_plan()` uses, so the ceiling cannot
+    drift from the geometry it describes.
+    """
+    if not style or live_price <= 0 or stop_price <= 0 or stop_price >= live_price:
+        return None
+    try:
+        from .aggregator import _get_style_params
+        params = (_get_style_params() or {}).get(str(style).upper())
+        if not params:
+            return None
+        target_pct = params.get("target_pct", params.get("default_tp_pct"))
+        if target_pct is None:
+            return None
+        reward = live_price * float(target_pct) - live_price
+        risk = live_price - stop_price
+        if reward <= 0 or risk <= 0:
+            return None
+        return (reward / risk) * _RR_CEILING_HAIRCUT
+    except Exception:
+        return None
+
+
 def check_hard_rejects(
     signal_direction: str,
     confidence: float,
@@ -208,7 +268,42 @@ def check_hard_rejects(
     min_rr = cfg.get("min_rr_ratio", 2.0)
     # T190: In choppy/risk_off regimes human traders demand better setups — require higher R:R.
     if regime_state in ("choppy", "risk_off"):
-        min_rr = max(min_rr, cfg.get("regime_min_rr_ratio", 3.0))
+        _regime_floor = float(cfg.get("regime_min_rr_ratio", 3.0))
+        # AUD-RR-REGIMEFLOOR-UNREACHABLE (2026-09-09): the regime floor is calibrated from real
+        # trade outcomes and is market-wide, but the R:R a candidate can POSSIBLY achieve is
+        # bounded by its STYLE's own geometry — `_default_game_plan()` sets
+        # `take_profit = min(rr_target, live_price * target_pct)`, so `target_pct` is a hard
+        # ceiling no candidate of that style can exceed. The two are tuned independently and
+        # nothing ever compared them.
+        #
+        # MEASURED across 129 live US symbols with real ATR(14), against a calibrated choppy
+        # floor of 3.4 (best-case ceiling per style, target uncapped):
+        #
+        #     style   target_pct   median max R:R   % of universe that can reach 3.4
+        #     GROWTH     1.35          3.36                 49%
+        #     LONG       1.25          3.60                 53%
+        #     SWING      1.12          2.18                 15%
+        #     SHORT      1.05          1.67                  2%
+        #
+        # So a 3.4 choppy floor is reasonable for GROWTH/LONG and effectively a TOTAL OUTAGE for
+        # SWING and SHORT — not selectivity, an inability to ever pass. Measured live: 35 of 35
+        # DE verdicts blocked on R:R in 24h with ZERO approvals, and no US paper entry since
+        # 2026-09-04. The blocked ratios clustered at 1.55-2.12, i.e. wide-stop candidates whose
+        # own geometry could never reach 3.4 no matter how good the setup.
+        #
+        # SAME FAMILY AS AUD-SIGALERT-RRUNREACHABLE, which killed BUY alerts for four days: a
+        # floor and a ceiling set by two independent mechanisms, each correct alone, jointly
+        # producing zero output. Fixed the same way — make the two aware of each other rather
+        # than hand-tuning either number.
+        #
+        # The cap is the style's own ceiling with a small haircut, so a style can still be
+        # STIFFENED by a choppy regime (up to what it can actually deliver) but can never be
+        # locked out entirely. GROWTH/LONG are unaffected in practice (their ceilings exceed the
+        # floor); SWING/SHORT get a floor they can reach on their better setups.
+        _ceiling = _candidate_rr_ceiling(live_price, stop_price, style, cfg)
+        if _ceiling is not None:
+            _regime_floor = min(_regime_floor, _ceiling)
+        min_rr = max(min_rr, _regime_floor)
     if rr < min_rr:
         return f"R:R {rr:.2f}:1 below minimum {min_rr:.1f}:1"
 

@@ -405,3 +405,119 @@ docker logs stockai-market-data-1 --since 10m 2>&1 | grep -o 'Running job "[a-z_
 
 ---
 
+
+---
+
+## AUD-RR-REGIMEFLOOR-UNREACHABLE — A Calibrated Floor Above What the Geometry Can Deliver (Fixed 2026-09-09)
+
+**REPORTED BY THE USER:** *"why no trades on paper trading in US market"*.
+
+### Measured before fixing
+
+```
+DE verdicts, 24h:  35 blocked, 0 APPROVED — every single one on R:R
+Blocked ratios:    1.55 – 2.12  against a floor of 3.4:1
+Last US entry:     2026-09-04 (five days earlier)
+Regime:            choppy (SPY $762 below 20EMA $766, VIX 16.5, spy_20d_ret −1.41%)
+```
+
+### The cause — two independently correct mechanisms
+
+- `calibrate_min_rr_ratio` learned a choppy/risk_off floor of **3.4:1** from 103 real trades.
+- `_default_game_plan()` caps `take_profit` at `live_price * target_pct`, so a candidate's
+  achievable R:R is bounded by its **style's geometry and its own ATR-derived stop**.
+
+Nothing ever compared them. Measured across **129 live US symbols with real ATR(14)**, the share
+of the universe that can reach 3.4 **at all**:
+
+| Style | target_pct | Median max R:R | Can reach 3.4 |
+|---|---|---|---|
+| GROWTH | 1.35 | 3.36 | **49%** |
+| LONG | 1.25 | 3.60 | **53%** |
+| SWING | 1.12 | 2.18 | **15%** |
+| SHORT | 1.05 | 1.67 | **2%** |
+
+For SWING and SHORT that is not selectivity — it is an **inability to ever pass**.
+
+**Same family as `AUD-SIGALERT-RRUNREACHABLE`**, which killed BUY alerts for four days: a floor
+and a ceiling tuned by separate mechanisms, each defensible alone, jointly producing zero output.
+
+### The fix
+
+Cap the regime floor at the candidate's **own** geometric ceiling, in
+`hard_rejects.py` — the authoritative path (`decision_engine_mode` defaults to `"primary"`), not
+`paper_trading_engine._should_enter()`, which is the shadow-logged fallback three prior fixes
+landed on by mistake.
+
+```
+GROWTH stop=98.00 → ceiling 16.62 → floor stays 3.40   (tight stop, full calibrated floor)
+GROWTH stop=88.00 → ceiling  2.77 → floor becomes 2.77 (wide stop, now reachable)
+SWING  stop=94.50 → ceiling  2.07 → floor becomes 2.07
+```
+
+A tight-stop candidate still faces the full calibrated floor — the calibrator's finding is
+preserved. Only a candidate whose geometry cannot reach it is judged against what it can
+actually deliver.
+
+### THE CORRECTION THAT MATTERS — my first formula was backwards
+
+I first derived a per-**style** constant, `(target_pct - 1) / (1 - stop_pct)`, believing it the
+achievable **maximum**. It is the **minimum**: `_default_game_plan()` sets
+`stop = max(atr_stop, fixed_stop)`, so the fixed stop is the **widest** stop it ever uses, giving
+the largest risk and hence the **smallest** ceiling.
+
+```
+GROWTH  atr=0.5%  stop=$98.50  ceiling=23.33
+GROWTH  atr=2.0%  stop=$94.00  ceiling= 5.83
+GROWTH  atr=5.0%  stop=$88.00  ceiling= 2.92   <- the per-style "constant"
+```
+
+It coincided **exactly** with the 129-symbol sweep's per-style *worst* case (2.92 / 2.50 / 2.18 /
+1.67), which should have told me immediately it was the wrong bound. Capping at that constant
+would have dropped GROWTH to 2.77 and LONG to 2.38 for **every** candidate — including the ones
+already clearing 3.4 — silently weakening the two styles that were working.
+
+**The check that caught it:** asking whether a bigger ATR should *raise* or *lower* achievable
+R:R, and computing it. A formula whose output matches the worst observed case is describing the
+worst case.
+
+### SHORT is out of scope, and that is correct
+
+SHORT's geometry caps its R:R at **1.67 — below the portfolio's BASE `min_rr_ratio` of 2.0**. So
+SHORT is blocked by the base floor, not the regime stiffening, and this cap neither can nor
+should lift it: **the cap only ever reduces the REGIME component, never the operator's own base
+minimum.** That matches the decision already recorded for `AUD-SIGALERT-RRUNREACHABLE`, where
+SHORT was deliberately deferred after being shown its 3%/5% params cap R:R at 1.67 by design.
+SHORT remaining blocked is correct, not a residual bug. **My own tests initially asserted
+otherwise and were wrong.**
+
+### Also answered: is the tech sector choppy?
+
+The user asked. **Tech is genuinely mixed, and it does not matter — regime is classified on SPY
+alone**, so there is no per-sector regime and XLK's strength loosens nothing.
+
+| Proxy | vs 20EMA | 20d | State |
+|---|---|---|---|
+| SPY (regime driver) | −0.46% | −1.07% | CHOPPY |
+| XLK Technology | +1.44% | +1.01% | **BULL** |
+| SMH / SOXX | +1.8 / +2.0% | ~flat | WEAK (below 50EMA) |
+| IGV Software | −1.27% | −1.56% | CHOPPY |
+| QQQ | +0.20% | −0.30% | CHOPPY |
+
+Breadth is poor: NVDA/MSFT/META trending while AVGO (−13.3%/20d), AMZN (−7.6%) and GOOG (−4.5%)
+are broken. XLK reads bullish because it is cap-weighted into the winners.
+
+### A test gap worth remembering
+
+All 30 original behavioural tests **mirrored the geometry in Python**, so reverting the helper to
+the backwards per-style constant left every one of them passing. **A formula pinned only by a copy
+of itself is not pinned.** Four tests were added that call the real `_candidate_rr_ceiling`; the
+discriminator is that the correct version varies with `stop_price` while the constant ignores it
+entirely.
+
+### Other blockers found in the same investigation — all correct, left alone
+
+| Portfolio | Blocker | Verdict |
+|---|---|---|
+| GROWTH Paper (1) | `open_exposure_cap` 43.9% vs 40% max, 5 open | working as designed |
+| ETrade Sandbox (5) | `consecutive_loss_limit`, 10 straight losses, suspended | the 2026-09-08 breaker fix working |
