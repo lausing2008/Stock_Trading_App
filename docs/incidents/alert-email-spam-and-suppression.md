@@ -125,3 +125,118 @@ have prevented a second send within its 20h TTL.
 
 ---
 
+
+## AUD-DARKPOOL-STALEPRINT — The Same Dark-Pool Print Re-Emailed Every 60 Minutes (Fixed 2026-09-08)
+
+**Reported by the user from their own inbox**, not found by an audit sweep — two Dark Pool
+Activity emails 61 minutes apart, byte-identical:
+
+```
+3:41pm   NET $39,137,875 · 137,664 shares @ $284.30 · venue L
+         TSM $37,978,768 ·  86,512 shares @ $439.00 · venue L
+4:42pm   ...the same two lines, again
+```
+
+They were not two events. The DB holds **exactly one** NET print and **one** TSM print, both
+executed 20:00–20:04 UTC. The same blocks were re-selected and re-sent.
+
+### Two defects combining
+
+**1. No age filter.** `get_dark_pool_prints(symbol)` returns UW's **rolling window** — production
+carried **4+ days** of prints per symbol (NET 242 rows back to 2026-09-04, TSM 1,117) — while
+candidate selection is `max(qualifying, key=premium)` with no check on *when* the print executed.
+So the single biggest block a symbol had ever printed stayed "the" candidate indefinitely.
+
+**2. The cooldown key could not tell prints apart.** It was
+`stockai:dark_pool_alert_cooldown:{uid}:{symbol}` — user and symbol only. It suppressed for 60
+minutes and then let the **same block** through again.
+
+The job runs **every 1 minute** against **32 candidate symbols**, each with its own independent
+60-minute timer — which is why this presented as a steady drip rather than an occasional repeat.
+
+**A worse case was latent:** a TSM print from 2026-09-04 at **$50.4M** is *larger* than either of
+the two that spammed, so while it stayed in UW's window it would out-rank them and alert as
+though new.
+
+### The fix
+
+A **90-minute age filter** (deliberately longer than the 60-minute cooldown, so a genuinely new
+print cannot expire before it is ever sent) plus a cooldown key that includes the print's
+**execution timestamp**. A new block alerts on the run that first sees it because it has its own
+key; an already-sent one can never re-send whatever the cooldown does.
+
+The age check **fails closed** on a missing or unparseable timestamp — an alert we cannot date is
+one we cannot prove is new, and that is the entire point of the filter. Naive timestamps are
+treated as UTC and a trailing `Z` is normalised, so the fix does not smuggle in a timezone bug of
+the kind `AUD-EXIT-HKENTRYDATE` had just closed.
+
+Persistence still runs **before** filtering, preserving `AUD-DARKPOOL-NOPERSIST`'s baseline
+distribution.
+
+### Why an audit missed it
+
+The alert dedup/cooldown path was surveyed **CLEAN** on 2026-09-08 — and correctly so: the
+cooldown works exactly as designed. The defect was that the *design* deduped on `(user, symbol)`
+rather than on the print. No amount of reading the cooldown logic reveals that without asking:
+**"what happens to the SAME print an hour later?"**
+
+> **The generalisable check for any cooldown:** ask what its key can and cannot distinguish. A
+> key that omits the identity of the thing being announced will re-announce it forever.
+
+---
+
+## AUD-CONVICTION-RSIDIV-NOWRITER — An Alert Email That Asserted a Check It Never Ran (Fixed 2026-09-08)
+
+`rsi_divergence` has **no producer**. It was removed from `signals.py`, and **0 of 4,316** signals
+in the last 7 days carry the key. Three consumers still read it:
+
+1. `_is_conviction_buy`'s hard disqualifier — listed **first** in its own docstring, so it reads
+   as live protection against a false BUY. It can never fire.
+2. `analytics.py`'s gate-replica backtest — scores a disqualifier that never fires, so replay and
+   live agree only by accident.
+3. The alert email — rendered **"None detected"** to every user on every alert.
+
+**The third one is the actual harm.** It is a *confidently false statement, not a null*: it told
+the reader divergence had been **checked and found absent**, when nothing evaluated it at all.
+
+Fixed by **omitting the row** when the key is missing, while a genuine `none` from a future
+producer still renders. Other evaluated-but-empty fields keep their explicit `—`.
+
+> The distinction between **"not measured"** and **"measured as nothing"** is the whole finding.
+> Collapsing them is the same error class as `AUD-RANK-RSPLACEHOLDER`'s fabricated 50.0.
+
+### Two corrections to the record — placed in the source, not just here
+
+**The removal comment's premise is wrong.** It claims detection was *"hard-zeroed (argmax bug)"*.
+Across the 4,678 historical rows still carrying the key: **4,147 `none`, 376 `bearish`, 155
+`bullish`** — 11% non-none. **The detector did fire.** Whatever the bug was, it was not a hard
+zero, and nobody recorded what it actually did — which is itself why restoring it is more work
+than it looks. Corrected in `signals.py`, where someone deciding to restore it would read it.
+
+**But the signal is too small to act on.** On resolved BUY outcomes:
+
+| divergence | n | avg 10d | win |
+|---|---|---|---|
+| none | 1217 | −1.31% | 48.0% |
+| **bearish** | **42** | −1.92% | 42.9% |
+| bullish | 14 | −0.94% | 57.1% |
+
+Directionally right, and **n=42**. A 0.6pp gap on 42 samples is noise — three findings in this
+same session reversed under exactly that test.
+
+The gate is **left in place** but marked `DORMANT` / `DO NOT COUNT THIS AS PROTECTION`, so a
+restored producer re-arms it automatically while nobody counts it as live defence meanwhile.
+
+### On restoring the detector
+
+Worth knowing what it is *for*: RSI divergence measures **price rising while momentum fades** — a
+**non-momentum** signal. The 2026-09-05 audit root-caused this platform's one genuinely weak
+component (entry timing) to *every conviction pillar being a momentum measure*, so the use case
+is real and aimed at a known weakness.
+
+It is still not worth restoring on n=42, and **the cheaper path already exists**:
+`check_prebreakout_alerts()` is the non-momentum pillar for exactly that weakness, already
+accumulating outcomes, with a scheduled evaluation. Revisit only if that evaluation says another
+non-momentum input is still needed.
+
+---
