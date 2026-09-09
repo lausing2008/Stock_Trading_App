@@ -202,6 +202,10 @@ _ALERT_JOB_IDS = {
 }
 
 _NON_ALERT_JOB_IDS = {
+    # T374-OPTHIST-SCHEDULE: these WRITE DATA and send no email, so they belong on the
+    # non-alert side — a local dev stack should still be able to build its option archive.
+    "option_chain_history_daily",
+    "option_chain_history_purge",
     "us_open_burst", "us_intra", "us_close_burst", "us_post_close", "options_flow_eod", "gex_eod",
     "options_game_plan_eod",
     "hk_open_burst", "hk_intra", "hk_close_burst", "hk_post_close", "weekly_full_refresh",

@@ -12651,6 +12651,29 @@ def start_scheduler() -> None:
             id="flow_digest_night", replace_existing=True, **_JOB_DEFAULTS,
         )
 
+    # ── T374-OPTHIST-SCHEDULE: keep the option-chain archive current ─────────
+    # There was NO scheduled capture until 2026-09-09 — the table was populated by hand via
+    # POST /admin/capture-option-chain-history and then went stale (newest row 2026-09-04).
+    # UW's history is a ROLLING ~2-year window (oldest still-served date measured by
+    # bisection: ~2023-10-11), so an uncaptured day eventually becomes UNCAPTURABLE.
+    #
+    # 18:45 ET: after the 18:0x outcome evaluators, on a settled chain. NOT gated behind
+    # _is_alerting_enabled() — this writes data, it sends no email, so a local dev stack
+    # should still be able to build its archive.
+    _scheduler.add_job(
+        _capture_option_chain_history_daily,
+        CronTrigger(hour=18, minute=45, day_of_week="mon-fri",
+                    timezone="America/New_York"),
+        id="option_chain_history_daily", replace_existing=True, **_JOB_DEFAULTS,
+    )
+    # Weekly purge — this table was 69% of the whole database with no retention policy.
+    _scheduler.add_job(
+        _purge_option_chain_history,
+        CronTrigger(day_of_week="sun", hour=15, minute=30,
+                    timezone="America/Los_Angeles"),
+        id="option_chain_history_purge", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
     # ── T252-VALUE-AREA-BREAKDOWN-ALERT: daily POC/VAH/VAL computation — 18:00 ET ──
     # After US close (17:00 ET digest above) and before the next day's open; HK's own bars
     # have already landed too since HK closes well before US market hours. Reuses the same
@@ -13359,6 +13382,101 @@ def start_scheduler() -> None:
 # but ~3.2M rows. The binding constraint is DB volume, NOT the request budget — which is why
 # this takes an explicit symbol list and date range rather than sweeping the whole universe.
 _OPTHIST_THROTTLE_S = 0.30  # ~3 req/s, matching this file's other UW/yfinance batch loops
+
+# T374-OPTHIST-SCHEDULE: the capture universe, and the daily job that keeps it current.
+#
+# UNTIL 2026-09-09 THERE WAS NO SCHEDULED JOB AT ALL — capture_option_chain_history() existed
+# and was correct, but only reachable from POST /admin/capture-option-chain-history. So the ten
+# symbols in the table were captured by hand and then stopped: the newest row was 2026-09-04,
+# five days stale, and drifting further every day.
+#
+# That matters more than it sounds, because UW's history is a ROLLING window (~2 years on
+# API BASIC), not an archive. Measured 2026-09-09 by bisection: the oldest date that still
+# returns data is ~2023-10-11 (2023-10-09 returns 403). So an uncaptured day does not merely
+# stay uncaptured — it eventually becomes UNCAPTURABLE. A one-off manual backfill without a
+# daily job is a decaying asset.
+#
+# THE UNIVERSE. The original ten, plus the three QQQ-family ETFs the user's own LEAPS playbook
+# compares against (QQQ vs QQQM vs QLD vs TQQQ) — that comparison was untestable because
+# QQQM/QLD/TQQQ had ZERO rows. Measured contracts/day: QQQM 1,206, QLD 588, TQQQ 1,632.
+#
+# COST, measured rather than assumed: 3,426 contracts/day for the three new symbols. A full
+# 2-year backfill is ~1.73M rows / ~345 MB / 1,512 requests. The requests are trivial (1.3% of
+# one day's 120k budget); DB VOLUME is the binding constraint, exactly as OPTHIST-1 recorded —
+# option_chain_history was ALREADY 1,804 MB of a 2,607 MB database (69%) before this change.
+# Hence _OPTHIST_RETENTION_DAYS below: this is the first table here to carry one from the start.
+_OPTHIST_SYMBOLS = [
+    "SPY", "QQQ", "META", "TSLA", "AMD", "NVDA", "MSFT", "AAPL", "AMZN", "PLTR",
+    # The QQQ-family comparison set (T374) — see frontend/src/pages/qqq-leaps-playbook.tsx.
+    "QQQM", "QLD", "TQQQ",
+]
+
+# Keep ~2 years, matching UW's own rolling window: retaining more than the source can re-supply
+# is fine, but the point of the local archive is to OUTLIVE that window, so this is deliberately
+# generous rather than tight. prices_5m keeps 90d and signals 365d; this table is far larger per
+# day, so it gets an explicit policy from the start instead of growing unbounded like
+# scheduler_jobs did.
+_OPTHIST_RETENTION_DAYS = 800
+
+# 5 days: long enough for the daily job to self-heal a long weekend plus one failed run, short
+# enough that the skip_existing lookups stay negligible.
+_OPTHIST_BACKFILL_WINDOW_DAYS = 5
+
+
+def _capture_option_chain_history_daily() -> None:
+    """T374-OPTHIST-SCHEDULE: capture yesterday's chains for the standing universe.
+
+    Yesterday, not today: the chain for a session is only settled after the close, and this runs
+    at 18:45 ET — after the 18:0x evaluators, before nothing else competes for the DB.
+
+    Deliberately captures a SHORT trailing window (not just one day) so a missed run, a deploy,
+    or an unhealthy container self-heals on the next run instead of leaving a permanent hole in
+    a rolling-window archive. `skip_existing=True` makes that cheap — already-captured days cost
+    one indexed lookup each, not a fetch.
+    """
+    from datetime import date as _date, timedelta as _td
+    _t0 = time.monotonic()
+    if not _is_us_trading_day():
+        log.info("opthist.skipped", reason="not_a_us_trading_day")
+        _record_job_status("option_chain_history_daily", "ok", time.monotonic() - _t0)
+        return
+    try:
+        _end = _date.today() - _td(days=1)
+        _start = _end - _td(days=_OPTHIST_BACKFILL_WINDOW_DAYS)
+        res = capture_option_chain_history(_OPTHIST_SYMBOLS, _start, _end, skip_existing=True)
+        log.info("opthist.daily_done", **{k: v for k, v in res.items() if k != "errors_detail"})
+        _record_job_status("option_chain_history_daily", "ok", time.monotonic() - _t0)
+    except Exception as exc:
+        log.error("opthist.daily_failed", error=str(exc), exc_info=True)
+        _record_job_status("option_chain_history_daily", "error",
+                           time.monotonic() - _t0, str(exc))
+
+
+
+def _purge_option_chain_history() -> None:
+    """T374-OPTHIST-SCHEDULE: drop chain rows older than _OPTHIST_RETENTION_DAYS.
+
+    option_chain_history was 69% of the entire database before this existed, and unlike
+    prices_5m (90d) and signals (365d) it had NO retention policy — the same unbounded-growth
+    shape scheduler_jobs still has. Runs weekly, right after db_purge_weekly's own slot.
+    """
+    from datetime import date as _date, timedelta as _td
+    from db import SessionLocal as _SL
+    from sqlalchemy import text as _text
+    _t0 = time.monotonic()
+    try:
+        cutoff = _date.today() - _td(days=_OPTHIST_RETENTION_DAYS)
+        with _SL() as sess:
+            res = sess.execute(
+                _text("DELETE FROM option_chain_history WHERE as_of < :c"), {"c": cutoff}
+            )
+            sess.commit()
+            log.info("opthist.purged", cutoff=cutoff.isoformat(), rows=res.rowcount)
+        _record_job_status("option_chain_history_purge", "ok", time.monotonic() - _t0)
+    except Exception as exc:
+        log.error("opthist.purge_failed", error=str(exc), exc_info=True)
+        _record_job_status("option_chain_history_purge", "error",
+                           time.monotonic() - _t0, str(exc))
 
 
 def capture_option_chain_history(
