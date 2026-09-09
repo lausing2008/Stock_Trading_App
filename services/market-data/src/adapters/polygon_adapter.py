@@ -66,8 +66,29 @@ class PolygonAdapter(DataAdapter):
                 log.warning("polygon.rate_limit", symbol=symbol)
                 raise RateLimitError("Polygon rate limit exceeded — falling back to yfinance")
             r.raise_for_status()
-            data = r.json().get("results", []) or []
+            _payload = r.json() or {}
+            data = _payload.get("results", []) or []
         if not data:
+            # AUD-ING-POLYGONDELAYED: an empty `results` is NOT the same thing as "there were no
+            # bars in this window". On a DELAYED plan (the one this key is on) Polygon answers a
+            # window past its coverage cutoff with `{"status": "DELAYED", "resultsCount": 0}` —
+            # HTTP 200, no error field. The ingest loop treats an empty frame as a non-answer and
+            # falls through to the next adapter, which is correct, but this adapter used to give
+            # the caller no way to tell "genuinely no bars" from "I cannot see that far forward".
+            #
+            # This silently stalled UBER/CWEN/ARMK/BIP at 2026-09-04 for 4 days: their DB head
+            # had reached Polygon's own newest bar, so every incremental window from then on was
+            # entirely past the cutoff and came back empty, while `ingest.done` logged success.
+            #
+            # Raise instead of returning empty, so the failure is VISIBLE in the logs and the
+            # fallback is an explicit adapter failure rather than a silent shrug.
+            if str(_payload.get("status", "")).upper() == "DELAYED":
+                log.warning("polygon.delayed_plan_window_uncovered", symbol=symbol,
+                            start=start.isoformat(), end=end.isoformat(), tf=timeframe)
+                raise RuntimeError(
+                    f"Polygon DELAYED plan cannot serve {start}..{end} for {symbol} "
+                    "(window is past its coverage cutoff)"
+                )
             return OHLCV(symbol, timeframe, pd.DataFrame(columns=["ts"]))
         df = pd.DataFrame(data).rename(
             columns={"t": "ts", "o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"}

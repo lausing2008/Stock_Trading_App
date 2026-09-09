@@ -105,3 +105,119 @@ secondary source, because it looks trustworthy while silently serving frozen dat
 
 ---
 
+
+---
+
+## AUD-ING-POLYGONDELAYED — A Delayed Data Plan Answering "No Bars" Authoritatively (Fixed 2026-09-09)
+
+**How it surfaced.** Not from an alert. While listing the 54 active stocks that belonged to no
+watchlist, UBER and CWEN stood out with D1 bars four days older than every US peer. Widening the
+query found **4** symbols — UBER, CWEN, ARMK, BIP — all frozen at exactly **2026-09-04**.
+
+**Root cause.** The configured Polygon key is on a **`DELAYED`** plan whose newest daily bar *was*
+2026-09-04 — the stall date is the cutoff, not a coincidence. Polygon sat **first** in
+`_PRIORITY`, on the reasoning "Polygon is tried first for US because it has a real API (vs
+yfinance scraping)" — sound about the *interface*, wrong about the *data*.
+
+For a symbol whose DB head had reached 09-04, the incremental window (`head - 7d .. today`) fell
+entirely past the cutoff, and Polygon answered:
+
+```
+{"status": "DELAYED", "resultsCount": 0}     HTTP 200
+```
+
+An empty success, not an error.
+
+**Why only 4 of 131.** A symbol whose head was further back still had a window *overlapping*
+Polygon's coverage, got real bars, and stayed healthy. Only symbols already caught up to the
+cutoff could be starved. That uneven blast radius is what made this look like four broken tickers
+rather than one broken provider — and it is the reason it survived four days.
+
+**Why nothing alerted — the part worth internalising.** `ingest_symbol("UBER")` returned
+`{'inserted': 5}` and logged a clean `ingest.done`. `result.rowcount` on an
+`ON CONFLICT DO UPDATE` counts rows **SENT**, not rows **CHANGED**; the 5 were pre-existing bars
+re-upserted to identical values. **Zero new data, reported as success.** The `stale_symbols_d1`
+DQ gauge — added by the 2026-09-08 ingestion audit specifically to catch per-symbol death — also
+missed it.
+
+Same class as the 2026-09-07 six-part series: **not a crash, a silent wrong answer.**
+
+**A correction to the record.** `docs/2026-09-04/DATA_QUALITY_AUDIT.md` states Polygon and Alpha
+Vantage are "confirmed dead in live production (blank keys, no runtime override)... yfinance is
+the de facto sole data source today." **That is wrong.** Polygon has a live 32-character key
+returning HTTP 200, and it was the *preferred* US daily provider. It was not dead — it was worse
+than dead: **silently two trading days stale and trusted first**. A genuinely blank key would have
+failed over to yfinance and caused no incident. The likely cause of the error is that the audit
+inferred deadness from configuration rather than issuing a request.
+
+### The fixes (4)
+
+1. **`_PRIORITY` reordered** to `["unusual_whales", "yfinance", "alpha_vantage", "polygon"]`.
+   Polygon is kept, not deleted — it remains a real second opinion for backfills well inside its
+   coverage window.
+2. **Polygon now RAISES on a delayed-uncovered window** rather than returning an empty frame, so
+   the failure is visible in logs instead of being an indistinguishable shrug.
+3. **New `UnusualWhalesAdapter`** (`services/market-data/src/adapters/unusual_whales_adapter.py`)
+   implementing the real `DataAdapter` ABC against `/api/stock/{ticker}/ohlc/{candle_size}`.
+   **US-only** — UW has no HK coverage, so `supports()` returns False for HK and HK routing to
+   yfinance is unchanged (verified: `get_adapters("HK","1d") == ["yfinance"]`).
+4. **`ingest.done` now reports whether the head actually MOVED** (`advanced`, `head_before`,
+   `head_after`, `rows_sent`, `adapter`). `inserted` is retained for backward compatibility but
+   no longer means "new bars".
+
+### Three traps in the UW OHLC endpoint — read before touching that adapter
+
+1. **It returns THREE rows per calendar date**, tagged `market_time`: `pr` / `r` / `po`.
+   Ingesting the payload as-is writes **3 bars per day** and corrupts every rolling feature.
+   Only `r` is the daily bar. Measured: AAPL returns 756 rows over 252 distinct dates — exactly 3×.
+2. **`limit` silently returns an EMPTY list when too large.** `limit=5000` → `{"data":[]}`,
+   HTTP 200. The *same silent-empty shape* as the Polygon bug this adapter exists to fix. Capped
+   at 500 in the adapter rather than trusted to callers.
+3. **`/api/screener/stocks` cannot substitute for it.** It genuinely batches (comma-separated
+   tickers; 131 US symbols in 3 requests) but **silently caps at 50 rows** and returns
+   **`open: None`** — and `validate_ohlcv()` requires `open` and enforces `low <= open <= high`.
+   It is a fine *freshness sweep*; it is not a bar source.
+
+### Budget — why per-symbol, not batched
+
+| Approach | Requests/day (131 US symbols) | % of 120k quota |
+|---|---|---|
+| Per-symbol `/ohlc/1d`, 5 refreshes | 655 | **0.55%** |
+| Batched screener, 3 reqs × 5 | 15 | 0.01% |
+| Per-symbol, every 5 min (78 cycles) | 10,218 | 8.5% |
+
+Batching would save **640 requests out of 120,000** and buys that saving by fabricating `open`.
+Deliberately not done.
+
+### Verification
+
+- Backfilled all 4 symbols from UW; **129/131 US symbols current at 09-08**, zero duplicates.
+  OHLC matched yfinance to the cent (UBER `75.615/75.615/72.715/73.13`); volume differs ~0.4%
+  (consolidated vs primary-exchange tape).
+- The 2 remaining stale symbols are the known-dead SKHYV and SSNLF, not new problems.
+- 22 new tests, **five sabotages caught**; full suite **3335 passed, 1 skipped**.
+
+### A vacuous test of my own, caught by sabotage-testing
+
+`test_the_limit_is_capped_below_the_silent_empty_threshold` first asserted the substring
+`"_MAX_LIMIT = 500"` — which **also appears in the adapter's own explanatory comment**. Raising
+the constant back to the silent-empty 5000 left the test **passing**. Fixed by importing the real
+module attribute (`mod._MAX_LIMIT == 500`) instead of grepping source text. This is at least the
+fifth instance of this exact failure in this codebase: **a source-text assertion that matches
+prose rather than a live statement.** Assert on the imported value, or on a statement that cannot
+appear in a comment.
+
+### SECURITY — the Polygon key is exposed in plaintext logs
+
+`PolygonAdapter` passes the key as a **URL query parameter** (`?apiKey=...`), and httpx logs full
+request URLs at INFO. The key is therefore sitting in `docker logs stockai-market-data-1` in
+plaintext, readable by anyone with host access:
+
+```
+INFO:httpx:HTTP Request: GET https://api.polygon.io/v2/aggs/...&apiKey=<REDACTED>
+```
+
+**Treat the key as compromised and rotate it.** Polygon accepts `Authorization: Bearer`, which
+keeps it out of the URL. **Not fixed in this change** — rotating a credential is the user's call,
+and moving it to a header without rotating leaves the already-logged value exposed. Recorded here
+so it is not lost.

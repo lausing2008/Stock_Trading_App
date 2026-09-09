@@ -425,11 +425,39 @@ def ingest_symbol(
                 "session": stmt.excluded.session,
             },
         )
+        # AUD-ING-POLYGONDELAYED: capture the DB head BEFORE the upsert so the result can say
+        # whether this call actually ADVANCED the series. `result.rowcount` on an
+        # ON CONFLICT DO UPDATE counts rows SENT (inserted + updated), so a call that re-upserts
+        # 5 identical existing bars and adds nothing new reports `inserted=5` and logs a clean
+        # `ingest.done` — which is precisely how 4 US symbols sat frozen at 2026-09-04 for four
+        # days with no error and no alert anywhere. "Success" must mean the head moved.
+        _head_before = head
         result = session.execute(stmt)
         session.commit()
 
-        log.info("ingest.done", symbol=symbol, inserted=result.rowcount, tf=timeframe)
-        return {"symbol": symbol, "inserted": result.rowcount, "tf": timeframe}
+        _head_after = _last_bar_ts(session, stock.id, tf)
+        _advanced = bool(
+            _head_after is not None
+            and (_head_before is None or _head_after > _head_before)
+        )
+        _newest_written = max((r["ts"] for r in rows), default=None)
+
+        log.info("ingest.done", symbol=symbol, inserted=result.rowcount, tf=timeframe,
+                 rows_sent=len(rows), advanced=_advanced,
+                 head_before=str(_head_before)[:19] if _head_before else None,
+                 head_after=str(_head_after)[:19] if _head_after else None,
+                 newest_bar=str(_newest_written)[:19] if _newest_written else None,
+                 adapter=adapter.name)
+        return {
+            "symbol": symbol,
+            "inserted": result.rowcount,
+            "tf": timeframe,
+            # `inserted` is kept for backward compatibility with existing callers, but it does
+            # NOT mean "new bars" — read `advanced` for that.
+            "advanced": _advanced,
+            "head_after": _head_after,
+            "adapter": adapter.name,
+        }
 
 
 def _write_parquet(df: pd.DataFrame, symbol: str, timeframe: str) -> None:
