@@ -172,6 +172,39 @@ def _is_alerting_enabled() -> bool:
         return False
 
 
+# AUD-OUTCOMES-CALENDARDAYSTALE: how many US TRADING days of silence before the outcome
+# evaluator is considered stale. 3 trading days is deliberately the same NUMBER the old
+# calendar-day check used — this fix changes the UNIT, not the tolerance, so it stays silent
+# through a long weekend while still catching a genuine multi-day outage.
+_OUTCOME_STALE_TRADING_DAYS = 3
+
+
+def _trading_days_between(start: "date", end: "date") -> int:
+    """US trading days strictly after `start`, up to and including `end`.
+
+    AUD-OUTCOMES-CALENDARDAYSTALE: staleness checks on a job that only runs on TRADING days must
+    be measured in trading days. A calendar-day threshold fires on any ordinary long weekend —
+    Fri -> Sat -> Sun -> Mon-holiday is 4 calendar days with absolutely nothing wrong, which is
+    exactly what happened on 2026-09-08 (last evaluation Fri 09-04, Labor Day Mon 09-07).
+
+    Same class as AUD-DIGEST-HOLIDAYBLIND: a calendar-day rule applied to a trading-day process.
+    Uses the shared market_calendar so it cannot drift from the guards that decide whether the
+    job runs at all.
+    """
+    from common.market_calendar import is_us_trading_day
+    if end <= start:
+        return 0
+    count = 0
+    cursor = start + timedelta(days=1)
+    while cursor <= end:
+        # is_us_trading_day takes a datetime; noon UTC lands on the same calendar date in ET
+        # for every date, avoiding a midnight-boundary timezone flip.
+        if is_us_trading_day(datetime(cursor.year, cursor.month, cursor.day, 12, tzinfo=timezone.utc)):
+            count += 1
+        cursor += timedelta(days=1)
+    return count
+
+
 def _record_job_status(job_name: str, status: str, duration_s: float, error: str | None = None) -> None:
     """Write job completion status to Redis for the admin health monitor (TTL 14 days)."""
     try:
@@ -682,9 +715,20 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
                 if _last_eval is not None:
                     _eval_now = datetime.now(timezone.utc)
                     _last_eval_utc = _last_eval if _last_eval.tzinfo else _last_eval.replace(tzinfo=timezone.utc)
-                    _days_since_eval = (_eval_now - _last_eval_utc).days
-                    if _days_since_eval > 3:
-                        log.error("outcomes.evaluation_stale", days_since_last_eval=_days_since_eval,
+                    # AUD-OUTCOMES-CALENDARDAYSTALE: measured in TRADING days, not calendar days.
+                    # This job only runs on the US post-close path, which is itself gated on
+                    # _is_us_trading_day() — so a calendar-day threshold fires on every ordinary
+                    # long weekend. Confirmed 2026-09-08: last evaluation Fri 09-04, then Sat,
+                    # Sun, and Labor Day Mon 09-07 = 4 calendar days with nothing wrong, and the
+                    # health check reported a failure. Verified the pipeline itself was healthy —
+                    # the endpoint returns 200 with evaluated=0 / skipped_open=740 / failed=0,
+                    # i.e. nothing was DUE, not anything broken.
+                    _cal_days = (_eval_now - _last_eval_utc).days
+                    _days_since_eval = _trading_days_between(_last_eval_utc.date(), _eval_now.date())
+                    if _days_since_eval > _OUTCOME_STALE_TRADING_DAYS:
+                        log.error("outcomes.evaluation_stale",
+                                  trading_days_since_last_eval=_days_since_eval,
+                                  calendar_days_since_last_eval=_cal_days,
                                   last_evaluated=_last_eval_utc.isoformat())
             except Exception as _oc_exc:
                 log.warning("outcomes.staleness_check_failed", error=str(_oc_exc))
