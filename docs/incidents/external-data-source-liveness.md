@@ -292,3 +292,65 @@ Three further gating gaps were found in the same pass and are **recorded but NOT
   jobs in `AUD-MISFIREGRACE-OPTIONSFLOW`.
 
 They are surfaced on the **Admin → Data Pipeline** page so they are not re-derived from scratch.
+
+---
+
+## AUD-PROVIDERKEY-ZOMBIEPUSH + AUD-POLYGONKEY-INURL (Fixed 2026-09-09)
+
+**Found in a live error log, one step after I had told the user the Polygon key issue was closed:**
+
+```
+401 Unauthorized for url 'https://api.polygon.io/...&apiKey=<the real 32-char key>'
+```
+
+**Two independent defects in that one line.**
+
+### 1. ZOMBIEPUSH — a browser cache was authoritative over server state for a credential
+
+`_app.tsx` re-pushed whatever provider keys sat in the **browser's localStorage** on every app
+load. We deleted the Polygon key from Redis and **verified it absent** — then it reappeared with
+the **identical fingerprint `715074f68232`**, because simply opening the site pushed the stale copy
+back.
+
+The key had been **revoked** at Polygon by then (confirmed `HTTP 401`), so the resurrected
+credential was dead — but every 5-minute intraday cycle still spent a doomed request on it, and
+Polygon remained in the US 5m adapter chain.
+
+**Removed entirely, not made conditional.** My first rewrite seeded only when the server reported
+no key. That is *still* unsafe: from the browser's side **"operator deleted it" and "never
+configured" are indistinguishable**, so any seed is a potential revival. And the block was
+**redundant** — `AUD-PROVIDERKEY-INMEMORY` already moved provider keys from an in-process dict to
+Redis, so there is nothing left to carry across a deploy. The Settings page is now the only
+writer, which is the correct authority for a secret.
+
+> **A browser cache must never be authoritative over server state for a credential.**
+
+Presence-only flags (`polygon_key_set` / `alpha_vantage_key_set`) were added anyway — they are how
+the Settings page can show "already configured" without re-displaying a secret, and they
+**fail as SET** on a Redis error so no client can be nudged into re-pushing.
+
+### 2. POLYGONKEY-INURL — the leak path was the EXCEPTION, not the request log
+
+**I first blamed httpx's INFO request-line logging. That was wrong**, and the correction matters:
+httpx's effective level in the live container is already **30 (WARNING)**, so it logs no request
+lines at all. All **58 `apiKey` occurrences** in the container's logs came from
+`raise_for_status()`, whose `HTTPStatusError` message **embeds the full URL** — and that message is
+then logged as `ingest.symbol_failed` at **ERROR**, which no level filter suppresses.
+
+So suppressing a logger would have fixed nothing. The key had to **leave the URL**: Polygon accepts
+`Authorization: Bearer`.
+
+> **Check where a secret actually surfaces before assuming it is the request logger.** An exception
+> message that embeds a URL defeats every log-level control, because errors are the one thing you
+> never filter out.
+
+### Recorded, deliberately NOT fixed
+
+- **`common.logging.configure_logging()` is called by no service `main.py` anywhere** — only by
+  `hk_connect.py`. The httpx suppression it implements (with a comment about exactly this
+  query-param leak class) is therefore inactive platform-wide. It happens not to matter here
+  because the effective level is already WARNING via `basicConfig` defaults, so wiring it up is a
+  separate, unrelated change.
+- **Alpha Vantage must keep its key in the query string** — its API has no header auth. No key is
+  configured today, but the same exception-message path would leak one if set. Left as-is rather
+  than half-fixed.

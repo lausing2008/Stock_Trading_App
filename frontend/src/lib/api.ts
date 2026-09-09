@@ -223,6 +223,10 @@ export const api = {
     theme_forecast_email_enabled: boolean; trade_coach_email_enabled: boolean;
     unusual_whales_enabled: boolean;
     unusual_whales_key_set: boolean;
+    // AUD-PROVIDERKEY-ZOMBIEPUSH: presence-only, so _app.tsx's seed-on-load can tell
+    // "server has no key" from "server deliberately has none" and stop resurrecting a
+    // credential deleted server-side.
+    polygon_key_set: boolean; alpha_vantage_key_set: boolean;
   }>(`/admin/feature-flags/public`),
 
   getAdminSignalLog: (params?: {

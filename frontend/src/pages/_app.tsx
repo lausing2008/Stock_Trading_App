@@ -13,7 +13,8 @@ import { api, type Stock } from '@/lib/api';
 
 const PUBLIC_PATHS = ['/login', '/gate'];
 const GATE_COOKIE  = 'stockai_gate';
-let _configPushed = false;
+// AUD-PROVIDERKEY-ZOMBIEPUSH: `_configPushed` removed with the seed-on-load
+// block it guarded — see the note in the session-restore path below.
 
 function hasGateCookie() {
   if (typeof document === 'undefined') return false;
@@ -556,14 +557,23 @@ export default function App({ Component, pageProps }: AppProps) {
         setRole(session.role);
         setTier(session.tier ?? null);
         setImpersonating(getImpersonatedUser());
-        const settings = loadSettings();
-        if (!_configPushed && (settings.polygonApiKey || settings.alphaVantageApiKey)) {
-          _configPushed = true;
-          api.pushConfig({
-            polygon_api_key: settings.polygonApiKey || undefined,
-            alpha_vantage_api_key: settings.alphaVantageApiKey || undefined,
-          }).catch(() => {});
-        }
+        // AUD-PROVIDERKEY-ZOMBIEPUSH (2026-09-09): REMOVED — this block used to re-push
+        // whatever provider keys sat in the BROWSER's localStorage on every app load, which
+        // silently RESURRECTED a credential deleted server-side. Observed live: the Polygon key
+        // was removed from Redis (verified absent), then reappeared with the identical
+        // fingerprint 715074f68232 — because simply opening the site pushed the stale copy back.
+        // It had been REVOKED at Polygon by then (HTTP 401), so every 5-minute intraday cycle
+        // spent a doomed request on a dead key and logged it via the exception message.
+        //
+        // WHY REMOVED RATHER THAN MADE CONDITIONAL: I first rewrote this to seed only when the
+        // server reported no key. That is still unsafe — from the browser's side "operator
+        // deleted it" and "never configured" are INDISTINGUISHABLE, so any seed is a potential
+        // revival. And the block is redundant anyway: AUD-PROVIDERKEY-INMEMORY already moved
+        // provider keys from an in-process dict to REDIS, so there is nothing left to carry
+        // across a deploy. The Settings page is now the only writer, which is the correct
+        // authority for a credential.
+        //
+        // A browser cache must never be authoritative over server state for a secret.
         setChecked(true);
         return;
       }

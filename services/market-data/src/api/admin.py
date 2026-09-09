@@ -148,6 +148,30 @@ _HK_NAME_ZH: dict[str, str] = {
 }
 
 
+def _provider_key_presence() -> dict:
+    """Presence-only flags for the data-provider keys — never the secret values.
+
+    AUD-PROVIDERKEY-ZOMBIEPUSH (2026-09-09): _app.tsx re-pushed whatever provider keys sat in
+    the BROWSER's localStorage on every app load, which silently RESURRECTED a credential that
+    had been deleted server-side (observed live: the Polygon key reappeared with the identical
+    fingerprint after being verified absent from Redis, because opening the site pushed the stale
+    copy back). The frontend needs to distinguish "server has no key" from "server never had
+    one", and it can only do that if the server says so.
+
+    Goes through get_runtime_key() rather than poking Redis directly, so the key prefix keeps a
+    single definition in registry.py.
+    """
+    from ..adapters.registry import get_runtime_key
+    out = {}
+    for name in ("polygon", "alpha_vantage"):
+        try:
+            out[f"{name}_key_set"] = bool(get_runtime_key(name))
+        except Exception:
+            # Fail as "set" — a Redis hiccup must not make the frontend re-push a credential.
+            out[f"{name}_key_set"] = True
+    return out
+
+
 class ConfigRequest(BaseModel):
     polygon_api_key: str | None = None
     alpha_vantage_api_key: str | None = None
@@ -220,6 +244,10 @@ def get_feature_flags(_: User = Depends(get_admin_user)):
         # presence-only signal — never the real secret value — so the Settings page can show
         # "already configured" without re-displaying (or losing on refresh) a saved key.
         "unusual_whales_key_set": bool(r.exists(_REDIS_UW_KEY)),
+        # AUD-PROVIDERKEY-ZOMBIEPUSH: the two DATA-provider keys need the same presence signal,
+        # so _app.tsx's seed-on-load can tell "server has no key" from "server deliberately has
+        # no key" and stop resurrecting a credential deleted server-side.
+        **_provider_key_presence(),
     }
 
 
@@ -237,6 +265,7 @@ def get_feature_flags_public():
         "earnings_llm_forecast_enabled": r.get(_REDIS_EARNINGS_FORECAST_ENABLED) == "1",
         "unusual_whales_enabled": r.get(_REDIS_UW_ENABLED) == "1",
         "unusual_whales_key_set": bool(r.exists(_REDIS_UW_KEY)),
+        **_provider_key_presence(),
     }
 
 

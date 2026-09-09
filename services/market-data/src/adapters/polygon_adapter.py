@@ -58,10 +58,20 @@ class PolygonAdapter(DataAdapter):
             f"{self._BASE}/v2/aggs/ticker/{symbol}/range/{mult}/{span}/"
             f"{start.isoformat()}/{end.isoformat()}"
         )
-        params = {"adjusted": "true", "sort": "asc", "limit": 50000, "apiKey": key}
+        # AUD-POLYGONKEY-INURL (2026-09-09): the key used to be passed as a `apiKey` QUERY
+        # PARAMETER, and httpx logs full request URLs at INFO — so every fetch wrote the live
+        # credential into `docker logs` in plaintext, readable by anyone with host access, and
+        # into every historical log line the container had emitted. Observed directly:
+        #
+        #     401 Unauthorized for url '...&apiKey=<the real 32-char key>'
+        #
+        # Polygon accepts `Authorization: Bearer`, which keeps it out of the URL entirely.
+        # Note the header form is what fixes the LEAK PATH; it does not un-leak an already
+        # logged value — that needs the key rotated at Polygon, which was done separately.
+        params = {"adjusted": "true", "sort": "asc", "limit": 50000}
         log.info("polygon.fetch", symbol=symbol, tf=timeframe)
         with httpx.Client(timeout=30) as client:
-            r = client.get(url, params=params)
+            r = client.get(url, params=params, headers={"Authorization": f"Bearer {key}"})
             if r.status_code == 429:
                 log.warning("polygon.rate_limit", symbol=symbol)
                 raise RateLimitError("Polygon rate limit exceeded — falling back to yfinance")
