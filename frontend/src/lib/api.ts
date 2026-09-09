@@ -200,6 +200,9 @@ export const api = {
     }),
   pushConfig: (keys: {
     polygon_api_key?: string; alpha_vantage_api_key?: string;
+    // AUD-ADMIN-PROVIDERKEY-NOCLEAR: these two data-provider keys were the only credentials
+    // with no removal path, so clearing the Settings field silently no-opped.
+    unshare_polygon_key?: boolean; unshare_alpha_vantage_key?: boolean;
     claude_api_key?: string; deepseek_api_key?: string;
     claude_model?: string; deepseek_model?: string;
     broker_enabled?: boolean;

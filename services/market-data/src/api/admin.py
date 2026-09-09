@@ -18,7 +18,7 @@ from db import (
     LlmCallLog,
 )
 
-from ..adapters.registry import set_runtime_key
+from ..adapters.registry import clear_runtime_key, set_runtime_key
 from ..services.ingestion import ingest_symbol, ingest_universe
 from ..services.seed_universe import seed
 from .auth import User, get_admin_user
@@ -151,6 +151,15 @@ _HK_NAME_ZH: dict[str, str] = {
 class ConfigRequest(BaseModel):
     polygon_api_key: str | None = None
     alpha_vantage_api_key: str | None = None
+    # AUD-ADMIN-PROVIDERKEY-NOCLEAR (2026-09-09): these two data-provider keys were the only
+    # credentials in this model with no way to REMOVE them — Claude/DeepSeek/Alpaca/UW have all
+    # had an `unshare_*` flag for exactly this. Clearing the Settings field looked like it
+    # worked and silently did nothing: the frontend sent `value || undefined`, so an empty
+    # string became `undefined`, the field dropped out of the request body, and the
+    # `if req.<field> is not None` guard below skipped it. The old key stayed live in Redis.
+    # Found while rotating a leaked Polygon key, which had to be deleted by hand via redis-cli.
+    unshare_polygon_key: bool | None = None
+    unshare_alpha_vantage_key: bool | None = None
     claude_api_key: str | None = None
     deepseek_api_key: str | None = None
     claude_model: str | None = None
@@ -237,6 +246,15 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
         set_runtime_key("polygon", req.polygon_api_key)
     if req.alpha_vantage_api_key is not None:
         set_runtime_key("alpha_vantage", req.alpha_vantage_api_key)
+    # AUD-ADMIN-PROVIDERKEY-NOCLEAR: explicit removal, mirroring unshare_unusual_whales_key
+    # below. Deliberately AFTER the set branches so that a request carrying both a new value and
+    # an unshare flag ends up CLEARED — "remove it" is the more destructive, more deliberate
+    # intent, and a caller sending both is ambiguous enough that the safe reading is to end with
+    # no credential rather than a live one.
+    if req.unshare_polygon_key:
+        clear_runtime_key("polygon")
+    if req.unshare_alpha_vantage_key:
+        clear_runtime_key("alpha_vantage")
     r = None
     if req.claude_api_key is not None or req.deepseek_api_key is not None or \
        req.claude_model is not None or req.deepseek_model is not None or \

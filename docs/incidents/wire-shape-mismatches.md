@@ -175,3 +175,65 @@ activates the moment anyone is set to `ADVANCED` — reported as a real defect r
 as unreachable, because the tier axis exists precisely to be used.
 
 ---
+
+---
+
+## AUD-ADMIN-PROVIDERKEY-NOCLEAR — Clearing a Provider Key in the UI Silently Did Nothing (Fixed 2026-09-09)
+
+**Found while rotating a leaked credential** — the worst possible time to discover it. The Polygon
+key had been exposed in container logs, and the Settings page **could not remove it**. It had to be
+deleted by hand with `redis-cli`.
+
+### The chain — all three links required
+
+1. `settings.tsx` sent `polygon_api_key: s.polygonApiKey || undefined`. An empty string is falsy,
+   so clearing the field produced `undefined`.
+2. **`JSON.stringify` drops `undefined` values**, so the field vanished from the request body
+   entirely — not sent as `null`, simply absent.
+3. `admin.py` guards `if req.polygon_api_key is not None:`, so an absent field is skipped.
+
+Net effect: emptying the box showed **"Saved"** and changed nothing. The old key stayed live in
+Redis. A confident success message over a complete no-op.
+
+This is the wire-shape family: **the frontend and backend each behaved reasonably in isolation, and
+the contract between them lost the "clear this" intent.** `undefined` is not a value that survives
+serialisation, so "field absent" had to carry two different meanings — *unchanged* and *cleared* —
+and the backend could only honour one.
+
+### Why it was only these two keys
+
+Claude, DeepSeek, Alpaca and Unusual Whales have **all** had an `unshare_*` flag for exactly this
+purpose. `polygon` and `alpha_vantage` — the two *data-provider* keys, routed through
+`adapters/registry.py` rather than `ai_keys.py` — were simply never given one. **The pattern
+existed; these two sat outside it**, and nothing recorded why.
+
+### The fix
+
+Follows the established convention rather than inventing a new one:
+
+- `clear_runtime_key()` in `registry.py`, mirroring `set_runtime_key()`. It **deletes** rather than
+  writing `""` — an empty-string entry still appears in `redis-cli --scan` while the code treats it
+  as absent, so an operator auditing which providers are configured would see a key that isn't one.
+- `unshare_polygon_key` / `unshare_alpha_vantage_key` on `ConfigRequest`.
+- The frontend trims and sends the flag when the field is empty. **Whitespace counts as empty** —
+  `get_runtime_key()` already strips, so a whitespace-only key reads back as `None` while still
+  existing in Redis: exactly the misleading half-state this fix removes.
+
+**Clear runs AFTER set, deliberately.** A request carrying both a new value and an unshare flag is
+ambiguous; ending with **no credential** is the safe reading, ending with a live one is not.
+
+### A parity test now covers the pattern
+
+`test_every_provider_credential_has_a_removal_path` asserts all six credentials
+(claude, deepseek, alpaca, unusual_whales, polygon, alpha_vantage) declare an `unshare_*` flag — so
+the next provider key cannot be added without a way to remove it.
+
+### A vacuous test of my own, again
+
+`test_the_falsy_undefined_shortcut_is_gone_for_both_keys` first asserted the buggy string was
+absent from the whole file — but **the fix's own explanatory comment quotes that string**, so the
+test failed against correct code. Fixed by stripping `//` comment lines before matching.
+
+**This is the fifth time this session** a source-text assertion matched prose rather than a
+statement. The rule: assert on an imported value, or strip comments first, or match a form that
+cannot appear in a comment.

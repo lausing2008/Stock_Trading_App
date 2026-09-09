@@ -784,9 +784,22 @@ export default function SettingsPage() {
     saveSettings(s);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+    // AUD-ADMIN-PROVIDERKEY-NOCLEAR (2026-09-09): this used to send
+    // `polygon_api_key: s.polygonApiKey || undefined`. An empty string is falsy, so clearing the
+    // field sent `undefined`, which JSON.stringify DROPS from the body entirely — and the backend
+    // only acts `if req.polygon_api_key is not None`. So emptying the box showed "Saved" and
+    // changed nothing: the old key stayed live in Redis. Found while rotating a leaked Polygon
+    // key, which had to be deleted by hand with redis-cli because the UI could not do it.
+    //
+    // An empty field now sends an explicit unshare flag instead. `|| undefined` is still correct
+    // for the NON-empty case: it omits the field when unchanged rather than rewriting it.
+    const trimmedPolygon = (s.polygonApiKey || '').trim();
+    const trimmedAlphaVantage = (s.alphaVantageApiKey || '').trim();
     api.pushConfig({
-      polygon_api_key: s.polygonApiKey || undefined,
-      alpha_vantage_api_key: s.alphaVantageApiKey || undefined,
+      polygon_api_key: trimmedPolygon || undefined,
+      alpha_vantage_api_key: trimmedAlphaVantage || undefined,
+      unshare_polygon_key: trimmedPolygon ? undefined : true,
+      unshare_alpha_vantage_key: trimmedAlphaVantage ? undefined : true,
     }).catch(() => {});
   }
 

@@ -29,6 +29,25 @@ def set_runtime_key(name: str, value: str) -> None:
         pass
 
 
+def clear_runtime_key(name: str) -> None:
+    """Remove a provider key entirely.
+
+    AUD-ADMIN-PROVIDERKEY-NOCLEAR (2026-09-09): there was no way to UNSET a provider key.
+    `set_runtime_key(name, "")` looks like it should work — `get_runtime_key()` does
+    `... or "").strip() or None`, so an empty string reads back as None — but the Settings page
+    never sends an empty string in the first place (see the frontend fix), and leaving a live
+    empty key in Redis is a worse state than no key: it survives as a real Redis entry that
+    `--scan` still reports, so an operator auditing which providers are configured sees a key
+    that the code treats as absent. Deleting is the honest operation.
+
+    Fails silently like its siblings — a Redis hiccup must not 500 the whole Settings save.
+    """
+    try:
+        _redis().delete(f"{_REDIS_KEY_PREFIX}{name}")
+    except Exception:
+        pass
+
+
 def get_runtime_key(name: str) -> str | None:
     try:
         return (_redis().get(f"{_REDIS_KEY_PREFIX}{name}") or "").strip() or None
