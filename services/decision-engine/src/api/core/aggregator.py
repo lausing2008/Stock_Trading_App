@@ -111,9 +111,25 @@ def _target_rr_multiple(style: str, market: str = "US") -> float:
     """
     try:
         params = _get_entry_gate_params(style, market) or {}
-        floor = params.get("min_rr_ratio")
-        if floor is not None and float(floor) > 0:
-            return max(_RR_TARGET_FLOOR, float(floor) + _RR_TARGET_MARGIN)
+        # AUD-SIGALERT-RRREGIMEFLOOR: must consider BOTH floors. check_hard_rejects does
+        #     min_rr = cfg["min_rr_ratio"]
+        #     if regime_state in ("choppy", "risk_off"):
+        #         min_rr = max(min_rr, cfg["regime_min_rr_ratio"])
+        # so in a choppy/risk_off regime the ENFORCED floor is the regime value (3.38), not the
+        # base one (2.25). My first version of this fix read only `min_rr_ratio`, so it aimed at
+        # 2.40 and the gate still rejected everything with "R:R 2.40:1 below minimum 3.4:1" —
+        # the outage persisted for exactly the regimes where it matters most.
+        #
+        # _default_game_plan is not given `regime_state` (routes.py resolves it separately), and
+        # threading it through would be a wider change. Taking the max of both floors is safe in
+        # EVERY regime: in a calm regime it aims slightly higher than strictly required, which
+        # the style target cap still bounds, and it can never aim BELOW what the gate enforces.
+        _floors = [
+            float(v) for v in (params.get("min_rr_ratio"), params.get("regime_min_rr_ratio"))
+            if v is not None and float(v) > 0
+        ]
+        if _floors:
+            return max(_RR_TARGET_FLOOR, max(_floors) + _RR_TARGET_MARGIN)
     except Exception:  # noqa: BLE001 — never let a params lookup break game-plan construction
         pass
     return _RR_TARGET_FLOOR

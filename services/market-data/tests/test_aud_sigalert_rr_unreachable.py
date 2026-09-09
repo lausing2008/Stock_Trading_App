@@ -123,7 +123,8 @@ def test_a_zero_or_negative_floor_is_ignored_not_trusted():
     `x or default` confusion 6+ times."""
     assert _target_multiple(0.0) == 2.0
     assert _target_multiple(-1.0) == 2.0
-    assert "float(floor) > 0" in _fn_src(AGG_SRC, "_target_rr_multiple")
+    fn = _fn_src(AGG_SRC, "_target_rr_multiple")
+    assert "float(v) > 0" in fn, "a zero/negative floor is bad data, not 'no minimum'"
 
 
 # ── The style cap still binds — the fix must not fabricate an unsupported target ─────────
@@ -209,3 +210,60 @@ def test_the_expected_move_fix_is_still_absent_from_decision_engine():
     assert "expected_move" not in AGG_SRC, (
         "if expected_move is now in decision-engine, revisit _target_rr_multiple's role"
     )
+
+
+# ── AUD-SIGALERT-RRREGIMEFLOOR — a second, incomplete-fix round ─────────────────────────
+
+def _target(base: float | None, regime: float | None, margin: float = 0.15) -> float:
+    """Mirrors the corrected helper: the max of BOTH floors."""
+    floors = [float(v) for v in (base, regime) if v is not None and float(v) > 0]
+    return max(2.0, max(floors) + margin) if floors else 2.0
+
+
+def test_my_first_fix_was_incomplete_and_the_outage_persisted():
+    """CAUGHT IN PRODUCTION 30 MINUTES AFTER THE HK OPEN, by the user asking why no signals
+    had arrived.
+
+    check_hard_rejects does:
+        min_rr = cfg["min_rr_ratio"]                                    # 2.25
+        if regime_state in ("choppy", "risk_off"):
+            min_rr = max(min_rr, cfg["regime_min_rr_ratio"])            # 3.38
+    My first fix read ONLY `min_rr_ratio`, so it aimed at 2.40 — and the live gate still said
+    "R:R 2.40:1 below minimum 3.4:1". The outage persisted for exactly the regimes where a
+    higher bar matters most.
+    """
+    assert _target(2.25, None) == pytest.approx(2.40)
+    assert _target(2.25, None) < 3.38, "the first fix could not clear the regime floor"
+    assert _target(2.25, 3.38) == pytest.approx(3.53)
+    assert _target(2.25, 3.38) >= 3.38, "the corrected target clears it"
+
+
+def test_it_takes_the_max_of_both_floors():
+    """_default_game_plan is not given regime_state, and threading it through would be a wider
+    change. Taking the max is safe in EVERY regime: in a calm one it aims slightly higher than
+    strictly required (bounded by the style target cap) and can never aim BELOW what the gate
+    enforces."""
+    assert _target(2.25, 1.0) == pytest.approx(2.40), "a lower regime floor must not drag it down"
+    assert _target(1.0, 3.38) == pytest.approx(3.53)
+
+
+def test_the_source_reads_both_keys():
+    """Assert on the LIVE statement, not merely that the strings appear somewhere in the
+    function — my first version of this test passed against a sabotage that dropped
+    regime_min_rr_ratio from the tuple, because the name still appeared in the comment above it.
+    """
+    fn = _fn_src(AGG_SRC, "_target_rr_multiple")
+    stmt = [
+        l.strip() for l in fn.splitlines()
+        if "params.get(" in l and not l.lstrip().startswith("#")
+    ]
+    assert len(stmt) == 1, f"expected one params-reading statement, got {stmt}"
+    assert '"min_rr_ratio"' in stmt[0]
+    assert '"regime_min_rr_ratio"' in stmt[0], (
+        "the regime floor is what check_hard_rejects actually enforces in choppy/risk_off"
+    )
+
+
+def test_it_still_fails_safe_with_no_floors_at_all():
+    assert _target(None, None) == 2.0
+    assert _target(0.0, 0.0) == 2.0
