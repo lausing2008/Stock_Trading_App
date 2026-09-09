@@ -354,3 +354,47 @@ So suppressing a logger would have fixed nothing. The key had to **leave the URL
 - **Alpha Vantage must keep its key in the query string** — its API has no header auth. No key is
   configured today, but the same exception-message path would leak one if set. Left as-is rather
   than half-fixed.
+
+---
+
+## AUD-AVKEY-INEXCEPTION — The Same Leak, Third Instance (Fixed 2026-09-09)
+
+Alpha Vantage has **no header auth** — its key must travel as the `apikey` query param — so the
+sibling fix used for Polygon (`Authorization: Bearer`) is unavailable. Its `raise_for_status()`
+would therefore have leaked a live 16-char key the same way Polygon's did.
+
+**Fixed by re-raising without the URL**: a `RuntimeError` carrying the status code and symbol
+(all a caller needs to retry or fail over) and `from None` to suppress the `__cause__` chain —
+without that, the original exception's repr rides along in the traceback and carries the URL
+anyway, making the fix cosmetic.
+
+### Two corrections to my own earlier claims
+
+**1. `configure_logging()` IS called for every service.** I reported it as *"called by no service
+`main.py` anywhere"*. Wrong — it is called at `shared/common/service.py:35`, inside
+`create_app()`, which all 12 services use. I grepped the 12 entrypoints and missed the shared
+factory they all call. This is why httpx was already at WARNING when I measured it, and why the
+logger was never the leak.
+
+**2. The leak path is the exception, not the request logger.** Verified empirically that httpx's
+`HTTPStatusError` message contains the **URL but not headers**:
+
+```
+message contains URL   : True
+message contains SECRET: False
+```
+
+That is precisely why Polygon's `raise_for_status()` is safe now that its key is a header, and why
+only Alpha Vantage needed the re-raise. It also means **suppressing a logger would have fixed
+nothing** in any of the three cases.
+
+> **An exception message that embeds a URL defeats every log-level control**, because errors are
+> the one thing you never filter out. Check where a secret actually surfaces before blaming the
+> request logger.
+
+### A repo-wide parity test now covers the class
+
+`test_no_adapter_combines_a_secret_query_param_with_raise_for_status` scans every adapter for the
+combination of a secret-bearing query param and a `raise_for_status()` call — so a fourth instance
+cannot be added silently. It asserts its own non-vacuity, since a regex matching nothing would make
+it pass trivially.
