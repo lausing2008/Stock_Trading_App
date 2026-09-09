@@ -221,3 +221,74 @@ INFO:httpx:HTTP Request: GET https://api.polygon.io/v2/aggs/...&apiKey=<REDACTED
 keeps it out of the URL. **Not fixed in this change** — rotating a credential is the user's call,
 and moving it to a header without rotating leaves the already-logged value exposed. Recorded here
 so it is not lost.
+
+---
+
+## AUD-ING-POLYGONBUDGET-SKIPSPRIMARY — A Guard That Named a Provider Instead of Excluding One (Fixed 2026-09-09)
+
+**Found one day after the change that caused it**, while writing the Data Pipeline reference page
+— i.e. by documenting the system, not by any alert.
+
+`AUD-ING-POLYGONDELAYED` (above) reordered `_PRIORITY` to put `unusual_whales` first and Polygon
+last. It did **not** touch this branch in `ingest_symbol()`:
+
+```python
+elif not _polygon_budget_available():
+    adapters = [get_adapter("yfinance")]
+```
+
+That line was **correct** while Polygon was first — *"don't send a request we know will 429, go
+straight to the fallback."* Once Polygon moved to last, the same line became actively harmful: it
+hardcodes yfinance and therefore **skips the new primary entirely**.
+
+### Why the blast radius was ~126 of 131, not "some Polygon calls"
+
+**The budget counter increments on EVERY US incremental ingest**, whether or not Polygon is ever
+reached. With `_POLYGON_BUDGET_PER_MINUTE = 5` and ~131 active US symbols, only the **first 5
+symbols per minute** ever saw Unusual Whales. The other **~126 were forced onto yfinance-only** —
+the unauthenticated, rate-limiting source the reorder existed to stop depending on.
+
+Verified live before fixing:
+
+```
+9 consecutive _polygon_budget_available() calls in one minute
+    -> [True, True, True, True, True, False, False, False, False]
+```
+
+**So the previous day's fix was, in practice, inert for 96% of the universe.** Nothing failed:
+yfinance answered, bars landed, `ingest.done` logged success. Same family as everything else in
+this file — not a crash, a silent wrong answer.
+
+### The fix
+
+Make the gate do what its **name** says: **exclude Polygon**, not select yfinance. Everything else
+in `_PRIORITY` keeps its normal order, so exhausting Polygon's tiny free budget can never again
+decide which *other* provider answers. An empty-list guard keeps Polygon if it were somehow the
+only candidate — one doomed request beats no request at all.
+
+### The generalisable lesson
+
+> **A guard written as "fall back to X" silently encodes the priority order that was current when
+> it was written.** Reordering the list does not update the guard — it just leaves it naming a
+> provider that is no longer the right answer. **Prefer "exclude Y" over "use X"** so the guard
+> stays correct under reordering.
+
+This is a close cousin of the wrong-path pattern from the gate audit: the fix landed somewhere
+real, but the *deciding* path had moved. The check is the same — after changing a priority or
+routing order, grep for every guard that names a specific member of that order.
+
+### Also worth knowing
+
+Three further gating gaps were found in the same pass and are **recorded but NOT fixed** (all the
+`AUD-DIGEST-HOLIDAYBLIND` class — *a `mon-fri` cron is not a market-open check*):
+
+- `live_price_cache_refresh` gates on raw `weekday()` + an hour window rather than a trading-day
+  check, so it runs a full bulk download on market holidays.
+- The six `18:0x` ET outcome evaluators are registered with **no `day_of_week`** and fire on
+  Saturdays and Sundays.
+- `edgar_8k_ingest_daily` has **no NYSE holiday check** (its HK sibling `_ingest_hk_connect_flows`
+  does check `_is_hk_trading_day()`).
+- `avg_volume_cache_refresh` omits `misfire_grace_time` — the exact gap that silently killed three
+  jobs in `AUD-MISFIREGRACE-OPTIONSFLOW`.
+
+They are surfaced on the **Admin → Data Pipeline** page so they are not re-derived from scratch.

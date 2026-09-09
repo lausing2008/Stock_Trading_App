@@ -33,7 +33,16 @@ _settings = get_settings()
 # that was going to be needed anyway. RateLimitError is already excluded from Polygon's own
 # retry policy (fails fast on the first 429, no wasted backoff) — this doesn't change that;
 # it stops SENDING the doomed request in the first place once the real per-minute budget for
-# THIS cycle is already spent, going straight to yfinance instead.
+# THIS cycle is already spent.
+#
+# NOTE (AUD-ING-POLYGONBUDGET-SKIPSPRIMARY, 2026-09-09): the original wording of this comment
+# ended "...going straight to yfinance instead", and that is no longer what happens — nor what
+# should. Polygon is now LAST in _PRIORITY (see registry.py), so exhausting this budget must
+# DROP POLYGON from the candidate list, not pick a specific replacement. Naming yfinance here
+# is what let this guard silently skip Unusual Whales, the new primary, for ~126 of 131 US
+# symbols every cycle. The counter increments on every US incremental ingest regardless of
+# whether Polygon is ever reached, which is why the blast radius was near-total rather than
+# limited to Polygon calls.
 _POLYGON_BUDGET_PER_MINUTE = 5
 _POLYGON_BUDGET_KEY_PREFIX = "stockai:polygon_budget:"
 
@@ -241,21 +250,48 @@ def ingest_symbol(
 
         # Adapter selection strategy:
         #   - Explicit provider requested → use that provider
-        #   - HK stocks → always yfinance (Polygon doesn't support HK)
-        #   - Batch context (force or no existing bars) → yfinance (preserve Polygon quota for incremental)
-        #   - US incremental → Polygon first, UNLESS the free-tier per-minute budget for this
-        #     cycle is already spent (BUG-POLYGONBUDGET) — go straight to yfinance instead of
-        #     sending a Polygon request we already know will 429.
+        #   - HK stocks → always yfinance (Polygon doesn't support HK, and UW has no HK coverage)
+        #   - Batch context (force or no existing bars) → yfinance (preserve paid quota for incremental)
+        #   - US incremental → the full _PRIORITY list, with Polygon DROPPED when its free-tier
+        #     per-minute budget for this cycle is already spent (BUG-POLYGONBUDGET).
+        #
+        # AUD-ING-POLYGONBUDGET-SKIPSPRIMARY (2026-09-09): this last branch used to read
+        # `elif not _polygon_budget_available(): adapters = [get_adapter("yfinance")]`, which was
+        # correct ONLY while Polygon was FIRST in _PRIORITY — "don't send a request we know will
+        # 429, go straight to the fallback". After AUD-ING-POLYGONDELAYED reordered _PRIORITY to
+        # put unusual_whales first and Polygon LAST, that same line became actively harmful: it
+        # hardcoded yfinance and therefore SKIPPED THE NEW PRIMARY ENTIRELY.
+        #
+        # The blast radius was near-total, because the budget counter increments on EVERY US
+        # incremental ingest whether or not Polygon is ever reached. With _POLYGON_BUDGET_PER_MINUTE
+        # = 5 and ~131 active US symbols, only the FIRST 5 SYMBOLS PER MINUTE saw Unusual Whales;
+        # the other ~126 were forced onto yfinance-only — the unauthenticated, rate-limiting source
+        # the reorder existed to stop depending on. Verified live: 9 consecutive calls in one
+        # minute returned [True]*5 + [False]*4.
+        #
+        # THE FIX IS TO MAKE THE GATE DO WHAT ITS NAME SAYS: exclude POLYGON, not select yfinance.
+        # Everything else in _PRIORITY keeps its normal order, so exhausting Polygon's tiny free
+        # budget can never again decide which OTHER provider answers.
+        #
+        # GENERALISABLE: a guard written as "fall back to X" silently encodes the priority order
+        # that was current when it was written. When that order changes, the guard does not — it
+        # keeps naming a provider that is no longer the right answer. Prefer "exclude Y" over
+        # "use X" so the guard stays correct under reordering.
         if provider:
             adapters = [get_adapter(provider, market)]
         elif symbol.endswith(".HK") or market == "HK":
             adapters = [get_adapter("yfinance")]
         elif force or head is None:
             adapters = [get_adapter("yfinance")]
-        elif not _polygon_budget_available():
-            adapters = [get_adapter("yfinance")]
         else:
             adapters = get_adapters(market, timeframe)
+            if not _polygon_budget_available():
+                _without_polygon = [a for a in adapters if a.name != "polygon"]
+                # Never return an EMPTY list: if Polygon were somehow the only candidate, dropping
+                # it would raise IngestionError with no adapter tried at all. Keep it in that case
+                # — one doomed request beats no request.
+                if _without_polygon:
+                    adapters = _without_polygon
 
         # T230-CHARTING-PREMARKET: only the US-intraday prepost=True path can legitimately
         # produce real zero-volume bars (yfinance's extended-hours quirk) — daily/weekly bars

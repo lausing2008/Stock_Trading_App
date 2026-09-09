@@ -315,14 +315,27 @@ else:                                 -> get_adapters(market, timeframe)`}</Pre>
             <Hi>first non-empty validated frame</Hi>. An empty frame does not{' '}
             <Code>break</Code> &mdash; it falls through to the next adapter.
           </p>
-          <Callout tone="warn" title="OPEN ISSUE — the Polygon budget gate now skips the primary">
+          <Callout tone="good" title="FIXED 2026-09-09 — the budget gate was skipping the primary">
             <Code>_polygon_budget_available()</Code> was written when Polygon was <Hi>first</Hi>
-            in priority: exhausting its free-tier 5-req/min budget meant &ldquo;go straight to
-            yfinance rather than send a request we know will 429&rdquo;. Since the 2026-09-09
-            reorder, Polygon is <Hi>last</Hi> — so that branch now forces{' '}
-            <Code>[yfinance]</Code> and <Hi>silently removes Unusual Whales</Hi>, the new
-            primary, from the candidate list. The comments still describe the old ordering.
-            Not yet fixed; recorded here so it is not re-derived from scratch.
+            in priority, so exhausting its free-tier 5-req/min budget meant &ldquo;go straight to
+            yfinance rather than send a request we know will 429&rdquo;. After the reorder put
+            Polygon <Hi>last</Hi>, that same line hardcoded yfinance and{' '}
+            <Hi>skipped Unusual Whales entirely</Hi>.
+            <div style={{ marginTop: 8 }}>
+              The blast radius was near-total: the counter increments on <Hi>every</Hi> US
+              incremental ingest whether or not Polygon is reached, so with a budget of 5 and 131
+              US symbols, only the <Hi>first 5 symbols per minute</Hi> saw UW — the other{' '}
+              <Hi>~126 were forced onto yfinance-only</Hi>, the rate-limiting source the reorder
+              existed to stop depending on. The previous day&rsquo;s fix was inert for 96% of the
+              universe, and nothing failed: yfinance answered and <Code>ingest.done</Code> logged
+              success.
+            </div>
+            <div style={{ marginTop: 8 }}>
+              Fixed by making the gate <Hi>exclude Polygon</Hi> rather than select a replacement.
+              The lesson generalises: <Hi>a guard written as &ldquo;fall back to X&rdquo; encodes
+              the priority order current when it was written</Hi> — reordering the list does not
+              update the guard. Prefer &ldquo;exclude Y&rdquo; over &ldquo;use X&rdquo;.
+            </div>
           </Callout>
 
           <Callout tone="good" title="Why an empty response must never be authoritative">
@@ -603,7 +616,7 @@ else:                                 -> get_adapters(market, timeframe)`}</Pre>
             [<span key="k"><Code>squeeze_*_48h</Code> (6)</span>, 'squeeze reject-reason breakdowns'],
           ]}
         />
-        <SubSection title="Known gating gaps (verified 2026-09-09, not yet fixed)">
+        <SubSection title="Known gating gaps (verified 2026-09-09, NOT yet fixed)">
           <Table
             head={['Job', 'Gap']}
             widths={['42%', '58%']}
