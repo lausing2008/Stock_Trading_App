@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 # AUD-ENTRY4-CHASEPARITY: 10-day rate-of-change ceiling for a BUY entry. MUST stay equal to
 # paper_trading_engine._MAX_ROC10_FOR_ENTRY_PAPER (10.0) — the two gates screen the same
@@ -12,21 +12,25 @@ from datetime import date, datetime, timezone
 _MAX_ROC10_FOR_ENTRY = 10.0
 
 # QW-4: NYSE holidays — market-closed guard would block weekends but not holidays.
-# Update annually or replace with a market-calendar library.
-_NYSE_HOLIDAYS: frozenset[date] = frozenset({
-    # 2025
-    date(2025, 1, 1), date(2025, 1, 20), date(2025, 2, 17), date(2025, 4, 18),
-    date(2025, 5, 26), date(2025, 6, 19), date(2025, 7, 4), date(2025, 9, 1),
-    date(2025, 11, 27), date(2025, 12, 25),
-    # 2026
-    date(2026, 1, 1), date(2026, 1, 19), date(2026, 2, 16), date(2026, 4, 3),
-    date(2026, 5, 25), date(2026, 6, 19), date(2026, 7, 3), date(2026, 9, 7),
-    date(2026, 11, 26), date(2026, 12, 25),
-    # 2027
-    date(2027, 1, 1), date(2027, 1, 18), date(2027, 2, 15), date(2027, 3, 26),
-    date(2027, 5, 31), date(2027, 6, 18), date(2027, 7, 5), date(2027, 9, 6),
-    date(2027, 11, 25), date(2027, 12, 24),
-})
+#
+# AUD-ENTRY-NYSEHOLIDAY-FOURTHCOPY: this used to be a private frozenset right here, with its own
+# "Update annually or replace with a market-calendar library" comment. It was the FOURTH
+# independently-maintained copy of the NYSE holiday list, and it escaped the AUD-HOLIDAY-2027GAP
+# consolidation earlier the same day that merged the other three into
+# shared/common/market_calendar.py.
+#
+# Two things made that dangerous rather than merely untidy:
+#   * It sits in the AUTHORITATIVE entry gate — decision_engine_mode defaults to "primary", so
+#     this is the path that actually blocks a trade on a market holiday.
+#   * It was COMPLETELY UNPROTECTED. assert_calendar_coverage() — the guard added with the
+#     consolidation to force annual extension with runway — is invoked in exactly one place, the
+#     market-data test file, and that test does not import this module. So this copy would have
+#     expired silently after 2027-12-24 with no failing test to announce it: precisely the setup
+#     that produced AUD-HOLIDAY-2027GAP in the first place.
+#
+# Its dates were verified identical to the shared module's before replacement, so this is a
+# pure de-duplication with no behaviour change today — it only removes the next divergence.
+from common.market_calendar import NYSE_HOLIDAYS as _NYSE_HOLIDAYS
 
 
 def check_hard_rejects(
