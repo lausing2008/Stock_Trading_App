@@ -787,7 +787,10 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
     if market in ("US", "HK") and _settings.enable_paper_trading:
         _pt0 = time.monotonic()
         try:
-            _run_paper_trading_step(label="refresh_market")
+            # AUD-PT-CROSSMARKETSWEEP: scope to THIS refresh's market. Without it, HK's open
+            # burst (21:25-21:45 ET) monitored US positions five hours after the US close,
+            # against the previous day's cached price.
+            _run_paper_trading_step(label="refresh_market", market=market)
             _record_job_status("paper_trading", "ok", time.monotonic() - _pt0)
         except Exception as _pte:
             log.error("scheduler.paper_trading_step_failed", error=str(_pte), exc_info=True)
@@ -1446,7 +1449,7 @@ end
 """
 
 
-def _run_paper_trading_step(label: str = "refresh") -> None:
+def _run_paper_trading_step(label: str = "refresh", market: str | None = None) -> None:
     """Run paper_trading_step() with a distributed Redis lock.
 
     Both _refresh_market() and _refresh_5m() call paper_trading_step(). During the
@@ -1470,7 +1473,7 @@ def _run_paper_trading_step(label: str = "refresh") -> None:
         log.error("paper.step_skipped_lock_unavailable", label=label, error=str(_lock_exc))
         return
     try:
-        paper_trading_step()
+        paper_trading_step(market)
         # Poll pending broker orders for actual fills (no-op if no broker-linked portfolios).
         # Was importing via the wrong absolute path (services.paper_trading_engine, which
         # doesn't exist as a top-level module) — silently no-op'd on every cycle for weeks.
@@ -10196,7 +10199,7 @@ def _refresh_5m(market: str) -> None:
     if market in ("US", "HK") and _settings.enable_paper_trading:
         _pt0 = time.monotonic()
         try:
-            _run_paper_trading_step(label="refresh_5m")
+            _run_paper_trading_step(label="refresh_5m", market=market)
             _record_job_status(f"paper_trading_5m_{market.lower()}", "ok", time.monotonic() - _pt0)
         except Exception as _pte:
             log.error("scheduler.paper_trading_5m_failed", market=market, error=str(_pte), exc_info=True)

@@ -6640,8 +6640,30 @@ def _send_exit_emails(session, closed_exits: list[dict]) -> None:
             log.error("paper.exit_email_query_failed", symbol=symbol, error=str(_qe))
 
 
-def paper_trading_step() -> None:
-    """One full monitor + scan cycle. Runs every 5-10 min during market hours."""
+def paper_trading_step(market: str | None = None) -> None:
+    """One full monitor + scan cycle. Runs every 5-10 min during market hours.
+
+    AUD-PT-CROSSMARKETSWEEP: `market` scopes the cycle to portfolios of that market. It used to
+    take no argument at all and swept EVERY active portfolio regardless of which market's
+    refresh invoked it — so HK's open burst (09:25-09:45 HKT = 21:25-21:45 ET) monitored US
+    positions five hours after the US close, against whatever price was cached, which after the
+    close is the PREVIOUS DAY's.
+
+    Measured: 8 of 98 US exits fired outside 09:30-16:00 ET, six of them at exactly 21:00 ET —
+    the HK open. The damage is real, not cosmetic:
+
+        SNOW  exited $305.53 on 09-03 21:00 ET, booking -19.03%
+              09-03's actual LOW was $355.47; $305.84 was 09-02's CLOSE.
+              The position was closed at a price that never traded that day.
+        DELL  -6.66%, IGV -2.63%, GDX, ANF, BRK-A — same 21:00 ET pattern.
+
+    The existing stale-price guard could not catch this: `_price_is_stale_escalated` counts
+    CONSECUTIVE UNCHANGED prices, and a price that changed yesterday and is merely the wrong
+    day's close does not look frozen — it looks like a fresh reading.
+
+    `None` keeps the old all-markets behaviour for any caller that genuinely wants it (manual
+    invocation, tests); the two scheduled callers now always pass their own market.
+    """
     # AL-4: reload tuned params each cycle so they take effect without a restart
     _load_tuned_params()
     _apply_tuned_hold_days()
@@ -6650,6 +6672,18 @@ def paper_trading_step() -> None:
             portfolios = session.execute(
                 select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True))
             ).scalars().all()
+
+            # AUD-PT-CROSSMARKETSWEEP: keep only portfolios belonging to the market whose
+            # session actually triggered this cycle. Filtered in Python rather than SQL because
+            # `config` is a `json` column (not `jsonb`), so a ->> filter needs a cast and would
+            # silently match nothing on a portfolio whose config omits the key. Defaulting an
+            # absent key to "US" mirrors _DEFAULT_CONFIG and every other reader in this file.
+            if market:
+                _want = market.upper()
+                portfolios = [
+                    p for p in portfolios
+                    if (p.config or {}).get("market", "US").upper() == _want
+                ]
 
             if not portfolios:
                 return
