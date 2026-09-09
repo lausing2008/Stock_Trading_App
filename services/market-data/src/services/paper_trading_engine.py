@@ -4995,6 +4995,37 @@ def _squeeze_score_for(symbol: str, momentum_score: float | None) -> float | Non
         return None
 
 
+def _bar_is_incomplete(market: str) -> bool:
+    """True if the current day's bar for `market` is still being written (regular session in
+    progress), making a today-vs-completed-days volume comparison invalid.
+
+    AUD-VOLZ-PARTIALBAR: see the volume-z gate in _scan_for_entries() for the measurement and
+    the reasoning. Mirrors decision-engine's own `_bar_is_incomplete()` in hard_rejects.py — the
+    two gates must agree, since one is the authoritative path and the other its shadow.
+
+    Fails CLOSED (returns False → the gate still applies) on any clock/tz error, so a lookup
+    failure cannot silently disable a risk gate.
+    """
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        _tz = _ZI("America/New_York") if str(market).upper() != "HK" else _ZI("Asia/Hong_Kong")
+        _local = datetime.now(timezone.utc).astimezone(_tz)
+        if _local.weekday() >= 5:
+            return False
+        from common.market_calendar import is_us_trading_day, is_hk_trading_day
+        if str(market).upper() == "HK":
+            if not is_hk_trading_day(_local):
+                return False
+        elif not is_us_trading_day(_local):
+            return False
+        _mins = _local.hour * 60 + _local.minute
+        # Both exchanges run 09:30-16:00 local. HK's 12:00-13:00 lunch is still INCOMPLETE —
+        # the afternoon session has yet to be written into the day's bar.
+        return 570 <= _mins < 960
+    except Exception:
+        return False
+
+
 def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str, float], live_regime: dict | None = None) -> None:
     """Find fresh BUY signals and evaluate them for entry."""
     cfg = resolve_entry_config(portfolio.config)
@@ -6124,8 +6155,22 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         # Very low volume = thin market, harder to exit, higher slippage risk.
         # T232-DL5: a missing volume_z must NOT be treated as 0 (exactly average) — that silently
         # passes the gate for a data gap. Fail-open (skip the gate) only when data is genuinely absent.
+        # AUD-VOLZ-PARTIALBAR (2026-09-09): skip this gate while the day's bar is still being
+        # written. `volume_z` compares TODAY's volume against a 20-day baseline of COMPLETED
+        # days, so mid-session it is biased NEGATIVE by construction — and this gate only rejects
+        # on the negative side, so the contamination can only ever OVER-BLOCK. Measured: signals
+        # generated at 12:28 ET had mean volume_z -1.84 with 64.3% below the -1.5 floor, versus
+        # +0.50 and 3.1% on the post-close cycle the previous day, while the raw bars stood at
+        # 0.26x-0.51x of their own 20-day average — i.e. roughly the fraction of the session that
+        # had elapsed, not a thin tape.
+        #
+        # FIXED ON BOTH PATHS DELIBERATELY. decision-engine's hard_rejects.py carries the same
+        # gate and is the AUTHORITATIVE one (decision_engine_mode defaults to "primary"); this is
+        # the shadow-logged fallback. Three fixes this month landed on only one of the two and
+        # produced plausible logs while changing no real decision, so both are changed together.
+        # `paper.skip_low_volume` fired 128 times in 24h here, so this path was live-blocking too.
         _vol_z_raw = (sig.reasons or {}).get("volume_z") if sig.reasons else None
-        if _vol_z_raw is not None:
+        if _vol_z_raw is not None and not _bar_is_incomplete(cfg.get("market") or "US"):
             _vol_z = float(_vol_z_raw)
             _min_vol_z = float(cfg.get("min_volume_z", -1.5))
             if _vol_z < _min_vol_z:

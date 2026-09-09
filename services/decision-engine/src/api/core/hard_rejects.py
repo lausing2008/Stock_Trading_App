@@ -93,6 +93,71 @@ def _candidate_rr_ceiling(
         return None
 
 
+# AUD-VOLZ-PARTIALBAR (2026-09-09): `volume_z` compares TODAY's volume against a 20-day
+# baseline of COMPLETED days. Mid-session, "today" is a partial bar, so the comparison is
+# apples-to-oranges and the z-score is biased NEGATIVE by construction — and this gate only ever
+# rejects on the negative side, so the contamination can only ever OVER-BLOCK. It can never
+# accidentally admit a bad candidate, which is exactly why it went unnoticed.
+#
+# MEASURED. Signals generated mid-session vs post-close, same universe, same 20-day baseline:
+#
+#     date        first signal (ET)   mean volume_z   % below the -1.5 floor
+#     2026-09-09     12:28  (mid)        -1.84              64.3%
+#     2026-09-08     16:31  (post)       +0.50               3.1%
+#     2026-09-06     18:22  (post)       -0.11               2.3%
+#     2026-09-04     16:20  (post)       -0.25               5.5%
+#     2026-09-01     16:40  (post)       -0.04               1.6%
+#
+# and the raw bars confirm the cause rather than a thin tape — at 12:28 ET the day's volume was
+# AAPL 0.51x / NVDA 0.34x / SPY 0.29x / MSFT 0.26x of its own 20-day average, i.e. about the
+# fraction of a session that had elapsed.
+#
+# THE FLOOR ITSELF IS FINE and is deliberately NOT changed: at 1.6-6.5% blocked on post-close
+# cycles it is reasonable selectivity for a slippage filter. The INPUT was contaminated, not the
+# threshold — retuning the number to accommodate a broken input would have been the wrong fix and
+# would have loosened the gate permanently for the ~95% of cycles that are fine.
+#
+# SCOPE, DELIBERATELY NARROW. The proper fix is a time-of-day-adjusted baseline (volume-so-far vs
+# typical-volume-by-this-hour), which lives in signal-engine's feature computation — and the
+# user deferred the signal-engine live-bar refactor on 2026-09-06 pending prebreakout outcome
+# data, with docs/2026-09-05 explicitly recording it as high regression risk against AUD232 for
+# marginal gain. So this only makes the CONSUMER fail OPEN on an input it cannot trust, matching
+# the gate's own existing convention for a missing volume_z (T232-DL5).
+#
+# NOTE what this implies: the T193 market-closed gate above only admits entries DURING the open
+# session, which is precisely when the bar is incomplete. So for live entry decisions this gate
+# is now effectively always skipped, and that is the honest state of affairs — it was never
+# evaluating a comparable number in that window. It still applies to any caller evaluating
+# outside session hours (backtests, replays, post-close analysis), where the bar is settled.
+def _bar_is_incomplete(market: str) -> bool:
+    """True if the current day's bar for `market` is still being written (regular session in
+    progress), making a today-vs-completed-days volume comparison invalid.
+
+    Fails CLOSED (returns False → the gate still applies) on any clock/tz error, so a lookup
+    failure cannot silently disable a risk gate.
+    """
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        _tz = _ZI("America/New_York") if market.upper() != "HK" else _ZI("Asia/Hong_Kong")
+        _local = datetime.now(timezone.utc).astimezone(_tz)
+        if _local.weekday() >= 5:
+            return False
+        # Use the shared calendar rather than only the NYSE set, so HK holidays are honoured too
+        # — this must agree with paper_trading_engine's mirror of this helper.
+        from common.market_calendar import is_hk_trading_day, is_us_trading_day
+        if market.upper() == "HK":
+            if not is_hk_trading_day(_local):
+                return False
+        elif not is_us_trading_day(_local):
+            return False
+        _mins = _local.hour * 60 + _local.minute
+        # Both exchanges run 09:30-16:00 local. HK's 12:00-13:00 lunch is still INCOMPLETE —
+        # the afternoon session has yet to be written into the day's bar.
+        return 570 <= _mins < 960
+    except Exception:
+        return False
+
+
 def check_hard_rejects(
     signal_direction: str,
     confidence: float,
@@ -451,7 +516,7 @@ def check_hard_rejects(
     # present (T232-DL5: a missing value must fail OPEN, not be treated as 0/average, which
     # would silently pass the gate for a genuine data gap — matches the fallback exactly).
     _vol_z_raw = _reasons.get("volume_z")
-    if _vol_z_raw is not None:
+    if _vol_z_raw is not None and not _bar_is_incomplete(market):
         _vol_z = float(_vol_z_raw)
         _min_vol_z = float(cfg.get("min_volume_z", -1.5))
         if _vol_z < _min_vol_z:

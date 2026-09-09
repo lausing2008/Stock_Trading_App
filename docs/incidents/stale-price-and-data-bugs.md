@@ -175,3 +175,98 @@ docker exec stockai-market-data-1 redis-cli get "stockai:fundamentals:v2:HPE" | 
 
 ---
 
+
+---
+
+## AUD-VOLZ-PARTIALBAR — A Volume Z-Score Computed Against a Half-Finished Day (Fixed 2026-09-09)
+
+**Found by measuring**, after the user asked whether the −1.50 volume-z floor was well calibrated.
+**It is. The input was contaminated.**
+
+`volume_z` compares TODAY's volume against a 20-day baseline of **completed** days. Mid-session,
+"today" is a partial bar, so the comparison is apples-to-oranges and the z-score is biased
+**negative by construction** — and this gate only rejects on the negative side, so the
+contamination **can only ever over-block**. It can never accidentally admit a bad candidate, which
+is exactly why it hid.
+
+### Measured — same universe, same baseline, different generation time
+
+| Date | First signal (ET) | mean `volume_z` | % below the −1.5 floor |
+|---|---|---|---|
+| **2026-09-09** | **12:28 (mid-session)** | **−1.84** | **64.3%** |
+| 2026-09-08 | 16:31 (post-close) | +0.50 | 3.1% |
+| 2026-09-06 | 18:22 | −0.11 | 2.3% |
+| 2026-09-04 | 16:20 | −0.25 | 5.5% |
+| 2026-09-01 | 16:40 | −0.04 | 1.6% |
+
+The raw bars confirm elapsed session time, not a thin tape — at 12:28 ET the day's volume stood at
+**AAPL 0.51× / NVDA 0.34× / SPY 0.29× / MSFT 0.26×** of its own 20-day average. Independently
+corroborated by the M5 volume curve: **only ~47.7% of a typical session's volume has traded by
+12:30 ET**.
+
+### The floor is NOT changed
+
+At 1.6–6.5% blocked on post-close cycles it is reasonable selectivity for a slippage filter.
+**Retuning the threshold to accommodate a broken input would have loosened the gate permanently
+for the ~95% of cycles that are fine** — the wrong fix, and one of the sabotage tests pins it.
+
+### The fix, and the honest consequence
+
+Both consumers now **fail OPEN when the day's bar is still being written** — matching the gate's
+existing convention for a *missing* `volume_z` (T232-DL5). Fixed on **both** paths:
+`hard_rejects.py` (authoritative, `decision_engine_mode` defaults to `"primary"`) and
+`paper_trading_engine._scan_for_entries()` (the shadow fallback, whose own
+`paper.skip_low_volume` fired **128 times in 24h**).
+
+**THE CONSEQUENCE, STATED PLAINLY:** both entry paths already require market hours
+(`enforce_market_hours: True`; the T193 market-closed gate), which is *exactly* when the bar is
+incomplete. **So this gate can no longer fire on any live entry decision.** There is no clock at
+which both gates pass.
+
+That is the correct state of affairs — it was never evaluating a comparable number in that window
+— but it means **intraday volume confirmation is now absent**, not merely fixed. The gate still
+applies to callers evaluating a settled bar (backtests, replays, post-close analysis).
+
+`_bar_is_incomplete()` **fails CLOSED** (gate still applies) on a clock/tz error: absent data is a
+reason to skip a comparison, a broken clock is not.
+
+### Restoring real intraday confirmation — scoped, ~5-6h, deliberately deferred
+
+The proper fix is a **time-of-day-adjusted baseline**: scale the 20-day mean by the elapsed
+session fraction. **The data already exists** — 1.34M M5 rows, 3 months, all 173 symbols — and the
+curve is clean and monotonic (~2,700 observations per half-hour bucket):
+
+```
+ET     % of day's volume complete
+10:00              17.5
+11:00              27.0
+12:00              41.6
+12:30              47.7
+13:00              53.2
+15:00              73.5
+16:00             100.0
+```
+
+```python
+_frac = _session_volume_fraction(market, now)     # 0.477 at 12:28 ET
+vol_z = (volume.iloc[-1] - mean20 * _frac) / (vol_std * sqrt(_frac))
+```
+
+**Why it is deferred despite being cheap: `volume_z` is not only a gate input.** It carries TA
+weight 0.05 and feeds `_vz` at `signals.py:1289`, so changing it **shifts every signal's TA
+score** — a different and much larger risk class than unblocking a gate. That is the AUD232
+regression risk `docs/2026-09-05` warns about, and the reason the user deferred signal-engine
+live-bar work on 2026-09-06. HK would also need its own curve (different session, non-continuous
+across the lunch break), and the curve needs a periodic refresh job.
+
+**If it is picked up, it needs its own before/after signal-score comparison** — not bolting onto a
+gate fix.
+
+### A test that had to change, and why that is the right call
+
+`test_low_volume_below_min_volume_z_blocks` and two siblings used the file's default
+inside-market-hours fixture — now precisely the window where the gate is skipped. Rewritten to
+exercise `_bar_is_incomplete()` directly and to **pin the consequence explicitly**
+(`test_the_volume_gate_can_no_longer_fire_on_the_LIVE_ENTRY_PATH`), rather than deleting the
+coverage or quietly weakening the assertions. A behaviour change that invalidates a test should
+make the *new* behaviour assertable, not remove the question.
