@@ -1021,3 +1021,98 @@ docker exec stockai-market-data-1 grep -n '_record_job_status("check_conditional
 
 ---
 
+
+---
+
+## T371-FLOW-DIGEST — Dark Pool + Unusual Options Activity Summary, 3× Daily (Built 2026-09-09)
+
+**USER REQUEST:** a summary report on dark pool and unusual options activity, *"maybe 3 times
+daily? Mid of the market open and 30 mins after the end of the market. And one more at 11:00pm
+PST."*
+
+### The schedule came from measured data, and two of the three times moved
+
+Across **337 dark-pool** and **1,587 options-flow** alerts, by ET hour of firing:
+
+| Window | Dark pool | Options flow |
+|---|---|---|
+| First 90 min (09:30–11:00) | **26%** | **71%** |
+| Midday (11:00–16:00) | **4%** | **5%** |
+| 02:00 ET | ~0 | 1 alert ever |
+
+Institutional flow front-loads hard into the open. The original **mid-session** slot (~12:45 ET)
+sat squarely in that 4–5% dead zone and would have reported flow from three hours earlier, so it
+moved to **11:00 ET**, right after the burst. The **16:30 ET** slot was kept exactly as asked.
+
+**The 23:00 PST slot is a full-SESSION recap, not a window.** At 02:00 ET essentially nothing
+fires, so a "last few hours" digest there would always be empty. The user's stated reason —
+*"I would like to see before I sleep"* — is served by recapping the whole session instead, which
+is what `lookback="session"` does.
+
+| Job | Time | Lookback |
+|---|---|---|
+| `flow_digest_morning` | 11:00 ET | 6h (catches pre-market too) |
+| `flow_digest_close` | 16:30 ET | 6h |
+| `flow_digest_night` | 23:00 **PST** | full ET session that just closed |
+
+The night job is scheduled in **`America/Los_Angeles`** deliberately: 23:00 PST is 02:00 ET the
+*following* day, so scoping `mon-fri` in Eastern would shift the whole week by one and drop
+Friday's recap entirely.
+
+### A correction to my own first reading of that distribution
+
+The apparent large **"20:00 ET" cluster is not organic firing.** It is `options_flow_eod`'s 17:00
+ET snapshot job, and **293 of its 383 rows landed on a single day (2026-09-01)** — a backfill.
+Real intraday firing is even *more* concentrated in the open than the raw percentages suggested.
+
+### The hit rates are the point
+
+First live render, from the platform's own resolved outcomes:
+
+```
+Dark pool    30-day hit rate: 46% next-day (n=93)      <- coin flip
+Options flow 30-day hit rate: 40% next-day (n=1475)    <- BELOW coin flip, large sample
+```
+
+**A digest of institutional prints without that context would read as a stream of actionable
+signals.** With it, the reader can see what these alerts have actually been worth. A rate below
+`_FLOW_DIGEST_MIN_N = 20` resolved outcomes is reported as a **sample size, not a percentage** —
+three findings in `docs/2026-09-05` reversed once their samples widened, one resting on six
+stocks. A genuine 0% on an adequate sample IS shown, since that is a real finding.
+
+### Zero Unusual Whales quota cost
+
+It reads the `DarkPoolAlertOutcome` / `OptionsFlowAlertOutcome` rows that `check_dark_pool_alerts()`
+and `check_options_flow_alerts()` **already wrote** — no fresh API calls. The 2026-09-04 audit
+traced **22,031 rate-limit events in 48h** to one uncached per-minute function, so a new job that
+re-fetched would repeat a known mistake. A test asserts the function contains no `_uw.`,
+`get_dark_pool_prints`, `get_flow_alerts` or `httpx` reference.
+
+Because it aggregates `is_correct_1d` — already computed by the nightly evaluators — the digest's
+hit rates **cannot disagree** with the alert-performance pages.
+
+### Skip-if-empty, and the two clock traps
+
+**Skips silently when there is nothing to report.** An empty digest trains the reader to ignore
+the full ones; `AUD-DIGEST-HOLIDAYBLIND` (13 emails on Labor Day showing Friday's prices as live)
+is the standing reminder. The skip still records a job status — a silent no-send that records
+nothing is indistinguishable from a job that died.
+
+Two timing details that would each have broken exactly one of the three runs:
+
+1. **The night run must check the PREVIOUS day for trading.** At 02:00 ET `today` is a fresh
+   calendar day that has not traded, so checking it would skip every night run.
+2. **`_flow_digest_window` needs a local `time` import.** The module-level
+   `from datetime import ...` has no `time`, so an unqualified `dtime()` would `NameError` at
+   runtime — and only on the night path, the least-observed of the three.
+
+### Test-quality note
+
+`test_alerts_env_gate.py::test_no_job_id_is_missing_from_either_known_list` **caught all three
+new job IDs immediately** and named the exact fix. That parity test is doing real work — they
+send email, so they belong on the `_ALERT_JOB_IDS` (gated) side per
+`BUG-LOCALDEV-ALERTS-UNGATED`.
+
+35 new tests, **seven sabotages caught** (moving a digest into the midday dead zone, scheduling
+the night run in Eastern, dropping skip-if-empty, zeroing the minimum-sample threshold, checking
+the wrong day, adding a fresh UW call, and dropping `day_of_week`).

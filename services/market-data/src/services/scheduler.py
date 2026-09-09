@@ -11848,6 +11848,301 @@ def run_data_quality_checks() -> None:
         _record_job_status("data_quality_checks", "error", time.monotonic() - _t0, str(exc))
 
 
+# ── T371-FLOW-DIGEST: Dark Pool + Unusual Options Activity summary ────────────────────────
+#
+# USER REQUEST: a summary report on dark pool and unusual options activity, three times daily.
+#
+# THE SCHEDULE WAS CHOSEN FROM MEASURED DATA, not intuition. The user's first instinct was
+# mid-session / 30-min-after-close / 23:00 PST. Measured across 337 dark-pool and 1,587
+# options-flow alerts, by ET hour of firing:
+#
+#     window                      dark pool   options flow
+#     first 90 min (09:30-11:00)      26%          71%
+#     midday      (11:00-16:00)        4%           5%     <- the ORIGINAL mid-session slot
+#     (EOD snapshot job, 17:00)       60%          24%
+#
+# So institutional flow front-loads hard into the open, and the midday slot would have reported
+# things that happened three hours earlier. Moved to 11:00 ET, immediately after the burst.
+#
+# A CORRECTION TO MY OWN FIRST READING of that data: the apparent "60%/24% at 20:00 ET" spike is
+# NOT organic firing — it is `options_flow_eod`'s 17:00 ET snapshot job, and 293 of its 383 rows
+# landed on a single day (2026-09-01), i.e. a backfill. Real intraday firing is even more
+# concentrated in the open than the raw percentages suggest.
+#
+# THE 23:00 PST SLOT IS DELIBERATELY A FULL-DAY RECAP, not a "last few hours" window. At 02:00 ET
+# essentially nothing fires (1 alert in the entire sample), so a windowed digest there would
+# always be empty. The user's reason for wanting it — "I would like to see before I sleep" — is
+# better served by recapping the whole session, which is what `lookback="session"` does.
+#
+# COSTS ZERO UW QUOTA. It reads the DarkPoolAlertOutcome / OptionsFlowAlertOutcome rows that
+# check_dark_pool_alerts() and check_options_flow_alerts() already wrote — no fresh API calls.
+# The 2026-09-04 audit traced 22,031 rate-limit events in 48h to one uncached 1-minute function,
+# so a new job that re-fetched would be repeating a known mistake.
+
+_FLOW_DIGEST_LOCK_KEY = "stockai:lock:flow_digest"
+_FLOW_DIGEST_LOCK_TTL = 300  # seconds
+_FLOW_DIGEST_MAX_ROWS = 12   # per section, newest first — an email, not a report
+
+# Hit rates below this many resolved outcomes are shown as "n too small" rather than a
+# percentage. Three findings in docs/2026-09-05 reversed once their samples widened, one resting
+# on SIX stocks — so a rate without an adequate n is worse than no rate at all.
+_FLOW_DIGEST_MIN_N = 20
+
+
+def _flow_digest_window(lookback: str) -> datetime:
+    """UTC cutoff for the digest's own window.
+
+    'session'  — the whole current ET trading day (the 23:00 PST bedtime recap)
+    'intraday' — the last 6 hours (the 11:00 and 16:30 ET runs)
+
+    Uses the ET calendar date rather than a fixed hour count for 'session', so the recap covers
+    exactly one trading day regardless of when it fires — including the 23:00 PST run, which is
+    already the NEXT ET calendar day.
+    """
+    from datetime import time as _dtime  # local: the module-level datetime import has no `time`
+    now_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
+    if lookback == "session":
+        # At 02:00 ET we want YESTERDAY's session, which is the day that just closed.
+        _target = now_et.date() if now_et.hour >= 9 else (now_et.date() - timedelta(days=1))
+        start_et = datetime.combine(_target, _dtime(0, 0), tzinfo=ZoneInfo("America/New_York"))
+        return start_et.astimezone(timezone.utc)
+    return datetime.now(timezone.utc) - timedelta(hours=6)
+
+
+def _flow_hit_rate(session, model, since_days: int = 30) -> dict:
+    """Measured hit rate for an alert family, from its OWN resolved outcomes.
+
+    Included so the digest is self-checking rather than another stream of confident-looking
+    prints. `is_correct_1d` is already computed by the nightly evaluators; this only aggregates.
+
+    Returns n alongside the rate ALWAYS, and rate=None when n is below _FLOW_DIGEST_MIN_N — a
+    percentage with no sample is not a result. Never returns 0.0 for "no data".
+    """
+    cutoff = date.today() - timedelta(days=since_days)
+    rows = session.execute(
+        select(model.is_correct_1d).where(
+            model.fired_date >= cutoff,
+            model.is_correct_1d.isnot(None),
+        )
+    ).scalars().all()
+    n = len(rows)
+    if n < _FLOW_DIGEST_MIN_N:
+        return {"n": n, "rate": None, "adequate": False}
+    return {"n": n, "rate": sum(1 for r in rows if r) / n, "adequate": True}
+
+
+def send_flow_digest(lookback: str = "intraday", label: str = "flow_digest") -> None:
+    """T371-FLOW-DIGEST: email a dark-pool + unusual-options-activity summary.
+
+    Three scheduled runs, all US-market (both alert families are US-only):
+      * 11:00 ET — right after the open burst, where 71% of options-flow alerts fire
+      * 16:30 ET — post-close, all prints settled, dark pool at its heaviest
+      * 23:00 PST (02:00 ET) — full-session recap, for review before bed
+
+    SKIPS SILENTLY WHEN THERE IS NOTHING TO REPORT. An empty digest trains the reader to ignore
+    the full ones, and AUD-DIGEST-HOLIDAYBLIND is the standing reminder of what a digest that
+    fires regardless of real content actually costs (13 emails on Labor Day showing Friday's
+    prices as live). The skip is logged, so a silent no-send is still visible in job status.
+    """
+    _t0 = time.monotonic()
+    # Both alert families are US-only, so gate on the US calendar. The 02:00 ET recap covers the
+    # session that just closed, so it must check THAT day rather than the current one.
+    _now_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
+    _check_day = _now_et if _now_et.hour >= 9 else (_now_et - timedelta(days=1))
+    if not _is_us_trading_day(_check_day):
+        log.info("flow_digest.skipped", reason="not_a_us_trading_day", label=label)
+        _record_job_status(label, "ok", time.monotonic() - _t0)
+        return
+
+    try:
+        acquired = _get_redis().set(
+            f"{_FLOW_DIGEST_LOCK_KEY}:{label}", "1", nx=True, ex=_FLOW_DIGEST_LOCK_TTL
+        )
+        if not acquired:
+            log.info("flow_digest.skipped_locked", label=label)
+            return
+    except Exception:
+        pass  # Redis unavailable — allow through; a rare duplicate email beats no digest
+
+    try:
+        since = _flow_digest_window(lookback)
+        with SessionLocal() as session:
+            dp_rows = session.execute(
+                select(DarkPoolAlertOutcome)
+                .where(DarkPoolAlertOutcome.fired_at >= since)
+                .order_by(DarkPoolAlertOutcome.fired_at.desc())
+                .limit(_FLOW_DIGEST_MAX_ROWS)
+            ).scalars().all()
+            of_rows = session.execute(
+                select(OptionsFlowAlertOutcome)
+                .where(OptionsFlowAlertOutcome.fired_at >= since)
+                .order_by(OptionsFlowAlertOutcome.fired_at.desc())
+                .limit(_FLOW_DIGEST_MAX_ROWS)
+            ).scalars().all()
+
+            if not dp_rows and not of_rows:
+                log.info("flow_digest.skipped", reason="nothing_to_report",
+                         label=label, lookback=lookback)
+                _record_job_status(label, "ok", time.monotonic() - _t0)
+                return
+
+            dp_acc = _flow_hit_rate(session, DarkPoolAlertOutcome)
+            of_acc = _flow_hit_rate(session, OptionsFlowAlertOutcome)
+
+            users = session.execute(
+                select(User).where(User.email.isnot(None), User.email != "")
+            ).scalars().all()
+            if not users:
+                _record_job_status(label, "ok", time.monotonic() - _t0)
+                return
+
+            from .email_service import send_email
+            html, text = _render_flow_digest(
+                dp_rows, of_rows, dp_acc, of_acc, lookback, since
+            )
+            _window_label = "Session recap" if lookback == "session" else "Latest flow"
+            subject = (
+                f"Flow Digest — {_window_label}: "
+                f"{len(dp_rows)} dark pool / {len(of_rows)} options"
+            )
+            sent = 0
+            for u in users:
+                if send_email(u.email, subject, html, text):
+                    sent += 1
+            log.info("flow_digest.sent", label=label, lookback=lookback,
+                     dark_pool=len(dp_rows), options_flow=len(of_rows),
+                     recipients=sent,
+                     dp_hit_rate=dp_acc["rate"], dp_n=dp_acc["n"],
+                     of_hit_rate=of_acc["rate"], of_n=of_acc["n"])
+        _record_job_status(label, "ok", time.monotonic() - _t0)
+    except Exception as exc:
+        log.error("flow_digest.failed", label=label, error=str(exc), exc_info=True)
+        _record_job_status(label, "error", time.monotonic() - _t0, str(exc))
+
+
+def _fmt_hit_rate(acc: dict, family: str) -> str:
+    """Render a hit rate honestly — or say why it cannot be rendered.
+
+    NEVER shows a bare percentage on a thin sample. This platform has twice shipped a
+    confident-looking figure nobody could check (AUD-RANK-RSPLACEHOLDER's fabricated 50.0 that
+    the weight optimizer then LEARNED from; AUD-CONVICTION-RSIDIV-NOWRITER's "None detected" for
+    an unmeasured value), so a rate below _FLOW_DIGEST_MIN_N resolved outcomes is reported as a
+    sample size, not a number.
+    """
+    if acc["rate"] is None:
+        return (
+            f"{family} 30-day hit rate: not yet measurable "
+            f"(only {acc['n']} resolved outcome{'' if acc['n'] == 1 else 's'})"
+        )
+    return (
+        f"{family} 30-day hit rate: {acc['rate'] * 100:.0f}% "
+        f"next-day (n={acc['n']})"
+    )
+
+
+def _render_flow_digest(dp_rows, of_rows, dp_acc, of_acc, lookback, since) -> tuple[str, str]:
+    """Build the HTML + text bodies. Both are rendered from the SAME row list, so a field added
+    to one cannot silently be missing from the other — the shape AUD-CONVICTION-RSIDIV-NOWRITER
+    exploited when the email and the gate disagreed about what had been measured."""
+    _et = ZoneInfo("America/New_York")
+    _since_et = since.astimezone(_et).strftime("%b %d %H:%M ET")
+    _hdr = "Full session recap" if lookback == "session" else "Flow since " + _since_et
+
+    def _t(dt) -> str:
+        if dt is None:
+            return "—"
+        _d = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        return _d.astimezone(_et).strftime("%H:%M")
+
+    def _money(v) -> str:
+        # Three-state: a real 0 is "$0", a missing value is "—". Never collapse them.
+        if v is None:
+            return "—"
+        v = float(v)
+        for div, suf in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+            if abs(v) >= div:
+                return f"${v / div:.1f}{suf}"
+        return f"${v:.0f}"
+
+    dp_html = of_html = ""
+    dp_text = of_text = ""
+
+    if dp_rows:
+        _cells = "".join(
+            f"<tr><td style='padding:4px 8px'><b>{r.symbol}</b></td>"
+            f"<td style='padding:4px 8px'>{_t(r.fired_at)}</td>"
+            f"<td style='padding:4px 8px'>{r.alert_type or '—'}</td>"
+            f"<td style='padding:4px 8px'>"
+            f"{('$%.2f' % r.alert_price) if r.alert_price is not None else '—'}</td></tr>"
+            for r in dp_rows
+        )
+        dp_html = (
+            f"<h3 style='margin:18px 0 6px'>Dark Pool ({len(dp_rows)})</h3>"
+            f"<table style='border-collapse:collapse;font-size:13px'>"
+            f"<tr><th align='left' style='padding:4px 8px'>Symbol</th>"
+            f"<th align='left' style='padding:4px 8px'>Time</th>"
+            f"<th align='left' style='padding:4px 8px'>Type</th>"
+            f"<th align='left' style='padding:4px 8px'>Price</th></tr>{_cells}</table>"
+            f"<p style='font-size:11px;color:#666'>{_fmt_hit_rate(dp_acc, 'Dark pool')}</p>"
+        )
+        dp_text = (
+            f"\nDARK POOL ({len(dp_rows)})\n"
+            + "".join(
+                f"  {r.symbol:<10} {_t(r.fired_at)}  {r.alert_type or '-'}  "
+                f"{('$%.2f' % r.alert_price) if r.alert_price is not None else '-'}\n"
+                for r in dp_rows
+            )
+            + f"  {_fmt_hit_rate(dp_acc, 'Dark pool')}\n"
+        )
+
+    if of_rows:
+        _cells = "".join(
+            f"<tr><td style='padding:4px 8px'><b>{r.symbol}</b></td>"
+            f"<td style='padding:4px 8px'>{_t(r.fired_at)}</td>"
+            f"<td style='padding:4px 8px'>{(r.direction or '—')}</td>"
+            f"<td style='padding:4px 8px'>{(r.option_type or '—')}</td>"
+            f"<td style='padding:4px 8px'>{_money(r.total_premium)}</td>"
+            f"<td style='padding:4px 8px'>{'sweep' if r.has_sweep else ''}</td></tr>"
+            for r in of_rows
+        )
+        of_html = (
+            f"<h3 style='margin:18px 0 6px'>Unusual Options Activity ({len(of_rows)})</h3>"
+            f"<table style='border-collapse:collapse;font-size:13px'>"
+            f"<tr><th align='left' style='padding:4px 8px'>Symbol</th>"
+            f"<th align='left' style='padding:4px 8px'>Time</th>"
+            f"<th align='left' style='padding:4px 8px'>Dir</th>"
+            f"<th align='left' style='padding:4px 8px'>Type</th>"
+            f"<th align='left' style='padding:4px 8px'>Premium</th>"
+            f"<th align='left' style='padding:4px 8px'></th></tr>{_cells}</table>"
+            f"<p style='font-size:11px;color:#666'>{_fmt_hit_rate(of_acc, 'Options flow')}</p>"
+        )
+        of_text = (
+            f"\nUNUSUAL OPTIONS ACTIVITY ({len(of_rows)})\n"
+            + "".join(
+                f"  {r.symbol:<10} {_t(r.fired_at)}  {(r.direction or '-'):<8} "
+                f"{(r.option_type or '-'):<5} {_money(r.total_premium):>8}"
+                f"{'  sweep' if r.has_sweep else ''}\n"
+                for r in of_rows
+            )
+            + f"  {_fmt_hit_rate(of_acc, 'Options flow')}\n"
+        )
+
+    _caveat = (
+        "Institutional prints and unusual options volume are OBSERVATIONS, not "
+        "recommendations — a large block can be a hedge, a roll, or a portfolio "
+        "rebalance with no directional view. Hit rates above are measured from this "
+        "platform's own resolved outcomes."
+    )
+    html = (
+        f"<h2 style='margin:0'>Flow Digest</h2>"
+        f"<p style='font-size:12px;color:#666;margin:4px 0 0'>{_hdr}</p>"
+        f"{dp_html}{of_html}"
+        f"<p style='font-size:11px;color:#888;margin-top:18px'>{_caveat}</p>"
+    )
+    text = f"FLOW DIGEST — {_hdr}\n{dp_text}{of_text}\n{_caveat}\n"
+    return html, text
+
+
 def send_paper_portfolio_digest() -> None:
     """Send after-market portfolio digest email to all users with email configured.
 
@@ -12253,6 +12548,41 @@ def start_scheduler() -> None:
             send_paper_portfolio_digest,
             CronTrigger(hour=17, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
             id="paper_portfolio_digest", replace_existing=True, **_JOB_DEFAULTS,
+        )
+
+        # ── T371-FLOW-DIGEST: dark pool + unusual options activity, 3x daily ──────
+        # Times chosen from MEASURED firing distribution, not intuition (337 dark-pool /
+        # 1,587 options-flow alerts by ET hour):
+        #     first 90min 09:30-11:00  ->  26% dark pool, 71% options flow
+        #     midday      11:00-16:00  ->   4% dark pool,  5% options flow
+        # The user's original mid-session slot sat in that 4-5% dead zone and would have
+        # reported flow from three hours earlier; moved to 11:00, right after the burst.
+        #
+        # All three are US-only (both alert families are US-only) and all read already-written
+        # outcome rows, so this costs ZERO Unusual Whales quota — the 2026-09-04 audit traced
+        # 22,031 rate-limit events in 48h to one uncached per-minute function, and a new job
+        # that re-fetched would repeat that.
+        _scheduler.add_job(
+            lambda: send_flow_digest("intraday", "flow_digest_morning"),
+            CronTrigger(hour=11, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
+            id="flow_digest_morning", replace_existing=True, **_JOB_DEFAULTS,
+        )
+        _scheduler.add_job(
+            lambda: send_flow_digest("intraday", "flow_digest_close"),
+            CronTrigger(hour=16, minute=30, day_of_week="mon-fri", timezone="America/New_York"),
+            id="flow_digest_close", replace_existing=True, **_JOB_DEFAULTS,
+        )
+        # 23:00 PST = 02:00 ET the FOLLOWING day, so this is deliberately a full-SESSION recap
+        # rather than a windowed digest — essentially nothing fires at 02:00 ET (1 alert in the
+        # entire measured sample), so a "last few hours" window there would always be empty.
+        # The user's stated purpose is reviewing before bed, which a session recap serves.
+        # day_of_week is mon-fri in PACIFIC terms: Friday 23:00 PST is Saturday 02:00 ET, and
+        # its recap covers Friday's session, so the trigger is scoped in the Pacific timezone.
+        _scheduler.add_job(
+            lambda: send_flow_digest("session", "flow_digest_night"),
+            CronTrigger(hour=23, minute=0, day_of_week="mon-fri",
+                        timezone="America/Los_Angeles"),
+            id="flow_digest_night", replace_existing=True, **_JOB_DEFAULTS,
         )
 
     # ── T252-VALUE-AREA-BREAKDOWN-ALERT: daily POC/VAH/VAL computation — 18:00 ET ──
