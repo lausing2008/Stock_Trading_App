@@ -1037,6 +1037,31 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
         failed.append(f"ML probability {float(ml_prob) * 100:.0f}% below {ml_threshold * 100:.0f}% threshold ({tier_label} regime)")
 
     # Disqualifiers — false-BUY flags that block regardless of layer scores
+    #
+    # AUD-CONVICTION-RSIDIV-NOWRITER: this disqualifier is DORMANT, not active protection.
+    # Nothing writes `rsi_divergence` any more — the producer was removed from signals.py
+    # ("rsi_divergence keys removed — detection was hard-zeroed (argmax bug)") and 0 of 4,316
+    # signals in the last 7 days carry the key. It is left in place, rather than deleted, so
+    # that restoring the producer re-arms the gate automatically.
+    #
+    # DO NOT COUNT THIS AS PROTECTION when reasoning about what blocks a false BUY.
+    #
+    # ON RESTORING THE DETECTOR — measured 2026-09-08, so the next person does not have to:
+    # the removal comment's claim that detection was "hard-zeroed" is WRONG. Across 4,678
+    # historical rows it produced 4,147 `none`, 376 `bearish`, 155 `bullish` — 11% non-none, so
+    # it did fire. And the signal is directionally right on resolved BUY outcomes:
+    #     none     n=1217   -1.31%   48.0% win
+    #     bearish  n=42     -1.92%   42.9% win
+    #     bullish  n=14     -0.94%   57.1% win
+    # But n=42 is NOT enough to act on — a 0.6pp gap on 42 samples is noise, and three findings
+    # in this same session reversed under exactly that test. Restoring it also means first
+    # working out which historical values were correct and which were the (undocumented) bug.
+    #
+    # The cheaper path to the same goal already exists: check_prebreakout_alerts() is the
+    # non-momentum pillar for the known entry-timing weakness (every other conviction pillar is
+    # a momentum measure), it is already accumulating outcomes, and it has a scheduled
+    # evaluation. Revisit this detector only if that evaluation says another non-momentum input
+    # is still needed.
     if reasons.get("rsi_divergence") == "bearish":
         failed.append("Bearish RSI divergence: price rising but momentum fading — high false-BUY risk")
     if bool(reasons.get("stoch_rsi_overbought")):

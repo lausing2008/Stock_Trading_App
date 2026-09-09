@@ -213,9 +213,20 @@ def send_signal_alert_email(
     stoch_cross = " ↑ crossed up from oversold" if reasons.get("stoch_rsi_cross_up") else ""
 
     # RSI divergence
-    div = reasons.get("rsi_divergence", "none")
+    #
+    # AUD-CONVICTION-RSIDIV-NOWRITER: this used to render "None detected" whenever the key was
+    # absent — a CONFIDENTLY FALSE statement, not a null. It told the reader divergence had been
+    # CHECKED and found absent, when in fact nothing evaluates it any more: the producer was
+    # removed from signals.py ("rsi_divergence keys removed — detection was hard-zeroed (argmax
+    # bug)") and 0 of 4,316 signals in the last 7 days carry the key.
+    #
+    # The row is now OMITTED entirely when the key is missing, rather than asserting a negative
+    # finding we never computed. `None` here means "drop this row" — see the filter on the row
+    # list below.
+    div = reasons.get("rsi_divergence")
     div_note = {"bearish": "⚠ Bearish — price up but momentum fading",
-                "bullish": "✓ Bullish — price down but momentum recovering"}.get(div, "None detected")
+                "bullish": "✓ Bullish — price down but momentum recovering",
+                "none":    "None detected"}.get(div) if div is not None else None
 
     # MACD zero-line
     macd_zero = " ✓ just crossed above zero" if reasons.get("macd_zero_cross_up") else ""
@@ -254,7 +265,7 @@ def send_signal_alert_email(
         ("Death cross fired",     "⚠ Yes" if death_cross else "No"),
         ("RSI (14)",              f"{_fmt(rsi_val)}{rsi_note}"),
         ("Stoch RSI %K",          f"{_fmt(stoch_k, 3) if stoch_k is not None else '—'}{stoch_note}{stoch_cross}"),
-        ("RSI divergence",        div_note),
+        ("RSI divergence",        div_note),   # None -> row dropped (see the filter below)
         ("MACD histogram",        f"{_fmt(reasons.get('macd_hist'), 3)} {'↑ rising' if reasons.get('macd_rising') else '↓ flat/falling'}{macd_zero}"),
         ("Bollinger %B",          _fmt(reasons.get("bb_pct_b"), 2)),
         ("ADX",                   f"{_fmt(adx_val)}{adx_note}"),
@@ -269,6 +280,13 @@ def send_signal_alert_email(
         ("Congress score",         _catalyst_note(_cong_score)),
         ("90d signal accuracy",   f"{round(win_rate_90d[0]*100)}%WR ({win_rate_90d[1]} outcomes)" if win_rate_90d else "—"),
     ]
+
+    # AUD-CONVICTION-RSIDIV-NOWRITER: a None value means "we did not evaluate this", so the row
+    # is dropped rather than rendered as a negative finding. Applies to both the HTML and text
+    # bodies below, which share this list. An explicit "—" is still shown for fields that WERE
+    # evaluated and came back empty — the distinction between "not measured" and "measured as
+    # nothing" is exactly what this fix restores.
+    reason_rows = [(k, v) for k, v in reason_rows if v is not None]
 
     rows_html = "".join(
         f'<tr><td style="padding:6px 10px;color:#64748b;font-size:13px;border-bottom:1px solid #f1f5f9">{k}</td>'

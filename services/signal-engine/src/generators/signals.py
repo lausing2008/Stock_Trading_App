@@ -142,6 +142,17 @@ _TA_WEIGHTS_DEFAULT: dict[str, float] = {
     "stoch_overbought_penalty": 0.08,
     "stoch_cross_up":           0.05,
     # rsi_divergence keys removed — detection was hard-zeroed (argmax bug); dead weight in denominator
+    #
+    # AUD-CONVICTION-RSIDIV-NOWRITER (2026-09-08): the "hard-zeroed" claim above is WRONG, and
+    # left uncorrected it would mislead anyone deciding whether to restore this. Measured across
+    # 4,678 historical signal rows that still carry the key: 4,147 `none`, 376 `bearish`, 155
+    # `bullish` — 11% non-none. The detector DID fire. Whatever the argmax bug was, it was not a
+    # hard zero, and nobody recorded what it actually did — which is itself the reason restoring
+    # this is more work than it looks.
+    #
+    # Three consumers still READ the key and now get nothing: _is_conviction_buy's hard
+    # disqualifier (marked dormant there), analytics.py's gate-replica backtest, and the alert
+    # email (which used to render a confidently false "None detected" and now omits the row).
     "macd_strong":              0.15,
     "macd_positive":            0.08,
     "macd_zero_cross_up":       0.05,
