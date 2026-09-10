@@ -2828,6 +2828,108 @@ def realized_performance(
 # the replay can't reproduce the trades that really happened, it must not be trusted on the
 # ones that didn't. Research tool — writes nothing, promotes nothing.
 
+# ── T375-LEAPS-BACKTEST ───────────────────────────────────────────────────────────────────
+#
+# User request: "can we add QQQ Leap Call in Strategy Backtester with delta, date range, QQQ or
+# QQQM or QLD or TQQQ, strike price, expiration date etc"
+#
+# These replay REAL captured option chains — no Black-Scholes, no synthetic greeks. See
+# services/market-data/src/backtest/leaps_backtest.py for the pricing convention (buy the ask,
+# sell the bid) and the coverage constraint that makes /leaps/coverage a required first stop.
+
+@router.get("/backtest/leaps/coverage")
+def backtest_leaps_coverage(
+    symbols: str = Query("QQQ,QQQM,QLD,TQQQ"),
+    target_delta: float = Query(0.80, ge=0.05, le=0.99),
+    min_dte: int = Query(330, ge=30, le=1400),
+    _: User = Depends(get_current_user),
+):
+    """How many days each symbol actually has a delta-selectable LEAPS, and the overlap.
+
+    DELIBERATELY EXPOSED BEFORE the backtest itself. Measured 2026-09-09: TQQQ has 726 usable
+    days, QLD 489, QQQM 266 — and only 101 days have all four at once. Greeks are sparse BY
+    DESIGN (UW returns delta only where volume > 0), so a symbol's tradeable-day count is far
+    below its row count, and a comparison that ignored this would rank symbols over DIFFERENT
+    date ranges while looking authoritative.
+    """
+    from ..backtest.leaps_backtest import coverage as _cov
+    syms = [x.strip().upper() for x in symbols.split(",") if x.strip()]
+    if not syms:
+        raise HTTPException(400, "symbols is required")
+    return _cov(syms, target_delta, min_dte)
+
+
+@router.get("/backtest/leaps")
+def backtest_leaps_run(
+    symbol: str = Query(...),
+    entry_date: str = Query(...),
+    exit_date: str = Query(...),
+    target_delta: float = Query(0.80, ge=0.05, le=0.99),
+    min_dte: int = Query(330, ge=30, le=1400),
+    max_dte: int | None = Query(None, ge=30, le=2000),
+    strike: float | None = Query(None, gt=0),
+    expiry: str | None = Query(None),
+    contracts: int = Query(1, ge=1, le=1000),
+    _: User = Depends(get_current_user),
+):
+    """Replay one LEAPS trade on real quotes.
+
+    Returns 404 with an explicit reason rather than a fabricated result when either side has no
+    usable quote — a "closest available" contract outside the delta band is a DIFFERENT trade,
+    and substituting one silently is how a backtest reports a result for a strategy it never
+    tested.
+    """
+    from datetime import date as _date
+    from ..backtest.leaps_backtest import backtest_leaps as _bt
+    try:
+        d_in = _date.fromisoformat(entry_date)
+        d_out = _date.fromisoformat(exit_date)
+        d_exp = _date.fromisoformat(expiry) if expiry else None
+    except ValueError:
+        raise HTTPException(400, "dates must be YYYY-MM-DD")
+    if d_out <= d_in:
+        raise HTTPException(400, "exit_date must be after entry_date")
+    res = _bt(symbol, d_in, d_out, target_delta, min_dte, max_dte, strike, d_exp, contracts)
+    if res is None:
+        raise HTTPException(404, (
+            f"No usable LEAPS quote for {symbol.upper()} on {entry_date} "
+            f"(delta ~{target_delta}, >={min_dte} DTE), or no exit quote near {exit_date}. "
+            "Greeks are sparse by design — check /backtest/leaps/coverage first."
+        ))
+    return res
+
+
+@router.get("/backtest/leaps/compare")
+def backtest_leaps_compare(
+    symbols: str = Query("QQQ,QQQM,QLD,TQQQ"),
+    entry_date: str = Query(...),
+    exit_date: str = Query(...),
+    target_delta: float = Query(0.80, ge=0.05, le=0.99),
+    min_dte: int = Query(330, ge=30, le=1400),
+    contracts: int = Query(1, ge=1, le=1000),
+    _: User = Depends(get_current_user),
+):
+    """The same LEAPS trade across several symbols on the SAME dates.
+
+    Always reports which symbols had NO usable quote (`missing`) and whether the comparison is
+    complete (`comparable`) — a shorter results list would otherwise force the caller to infer
+    which symbol was dropped, and an incomplete ranking reads as a finding.
+    """
+    from datetime import date as _date
+    from ..backtest.leaps_backtest import compare_symbols as _cmp
+    syms = [x.strip().upper() for x in symbols.split(",") if x.strip()]
+    if not syms:
+        raise HTTPException(400, "symbols is required")
+    try:
+        d_in = _date.fromisoformat(entry_date)
+        d_out = _date.fromisoformat(exit_date)
+    except ValueError:
+        raise HTTPException(400, "dates must be YYYY-MM-DD")
+    if d_out <= d_in:
+        raise HTTPException(400, "exit_date must be after entry_date")
+    return _cmp(syms, d_in, d_out, target_delta, min_dte, contracts)
+
+
 @router.get("/backtest/replay-fidelity")
 def backtest_replay_fidelity(
     style: str = Query(..., description="SHORT | SWING | LONG | GROWTH"),
