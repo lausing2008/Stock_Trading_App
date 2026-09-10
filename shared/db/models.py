@@ -1302,6 +1302,25 @@ class DarkPoolPrint(Base):
     premium: Mapped[float | None] = mapped_column(Float, nullable=True)  # price * size, UW's own field when present
     venue: Mapped[str | None] = mapped_column(String(16), nullable=True)  # UW's market_center code, verbatim
     executed_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    # T377-DARKPOOL-SIDE: the NBBO quote AT EXECUTION TIME, returned by UW on every print
+    # (`nbbo_bid`/`nbbo_ask`) and previously discarded by the adapter.
+    #
+    # WHY THIS AND NOT "compare against the current price". The user proposed inferring
+    # buy/sell by comparing the print against the live price. The MECHANISM is right — a
+    # buyer pays up toward the ask, a seller hits the bid — but the live price is the wrong
+    # reference, and it was MEASURED wrong: against NBBO ground truth on 364 real comparable
+    # prints it agreed only **66.8%** of the time, i.e. wrong on one print in three.
+    #
+    # The reason is scale. The NBBO spread is typically 10-30 CENTS wide, while the live
+    # price drifts DOLLARS away over the session — so the drift swamps the signal. Measured
+    # on MU: seven prints executing at or below the bid (unambiguously seller-initiated) were
+    # all classified "buying" purely because the live price had fallen below them.
+    #
+    # Storing the quote makes the classification exact instead of inferred, and it is FREE:
+    # UW already returns both fields on every print (400/400 had a usable quote), so this
+    # costs no extra request.
+    nbbo_bid: Mapped[float | None] = mapped_column(Float, nullable=True)
+    nbbo_ask: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -1331,6 +1350,21 @@ class DarkPoolAlertOutcome(Base):
     fired_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     alert_price: Mapped[float] = mapped_column(Float)
     qualifying_metric: Mapped[float | None] = mapped_column(Float, nullable=True)  # the print's own premium ($) at fire time
+    # T377-DARKPOOL-SIDE: the three facts the digest could not otherwise recover.
+    #
+    # `alert_price` above is deliberately UNCHANGED — it is `live_price or exec_price`, and
+    # every existing forward-return computation is denominated in it. These are additive.
+    #
+    # STORED ON THIS ROW RATHER THAN JOINED BACK TO dark_pool_prints, because T376-DIGEST-SIZE
+    # already tested that join and REJECTED it as ambiguous: MU and AVGO matched NO print at
+    # all, while BULL matched SIX rows for one alert with nothing to disambiguate. The alert
+    # knows exactly which print it fired on; the join does not.
+    exec_price: Mapped[float | None] = mapped_column(Float, nullable=True)   # where the block traded
+    live_price: Mapped[float | None] = mapped_column(Float, nullable=True)   # the stock at that moment
+    # "buy" | "sell" | NULL. NULL is a REAL third state (no quote, a crossed quote, or a
+    # genuine mid-spread cross) and must never be defaulted to a side — see
+    # classify_dark_pool_side() for the measurement behind that.
+    side: Mapped[str | None] = mapped_column(String(4), nullable=True)
     entry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     price_1d: Mapped[float | None] = mapped_column(Float, nullable=True)

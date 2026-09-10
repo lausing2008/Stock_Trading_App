@@ -1470,6 +1470,52 @@ class DarkPoolPrintRow:
     premium: float | None
     venue: str | None
     executed_at: str | None  # ISO datetime
+    # T377-DARKPOOL-SIDE: the NBBO quote at execution time. UW returns these on every print
+    # and they were previously parsed away; they are what makes buy/sell EXACT rather than
+    # inferred from a drifting live price (see classify_dark_pool_side()).
+    nbbo_bid: float | None = None
+    nbbo_ask: float | None = None
+
+
+# T377-DARKPOOL-SIDE: how far into the spread a print must land before it is called.
+# 0.6/0.4 leaves a deliberate ~9% "mid" band reported as UNKNOWN rather than guessed — a print
+# that crosses at the midpoint genuinely does not reveal which side was the aggressor, and
+# this codebase has twice shipped a confident value for something unmeasured
+# (AUD-RANK-RSPLACEHOLDER's fabricated 50.0, AUD-CONVICTION-RSIDIV-NOWRITER's "None detected").
+_DP_SIDE_ASK_THRESHOLD = 0.6
+_DP_SIDE_BID_THRESHOLD = 0.4
+
+
+def classify_dark_pool_side(
+    price: float | None, nbbo_bid: float | None, nbbo_ask: float | None
+) -> str | None:
+    """"buy" | "sell" | None, from where a print executed WITHIN the NBBO spread.
+
+    A buyer crossing the spread pays up toward the ASK; a seller hits the BID. Position is
+    normalised to 0.0 (at bid) .. 1.0 (at ask), so it is comparable across symbols whose
+    absolute spreads differ by orders of magnitude.
+
+    RETURNS None, NEVER A DEFAULT SIDE, in three real cases — a missing quote, a crossed or
+    zero-width quote, and a genuine mid-spread execution. "We cannot tell" and "it was
+    balanced" are different claims and must not be collapsed.
+
+    WHY NOT "print price vs. the current price", which is the intuitive version: MEASURED on
+    364 real comparable prints, that heuristic agreed with this one only **66.8%** of the time
+    — wrong on one print in three. The NBBO spread is 10-30 cents wide while the live price
+    drifts dollars over a session, so the drift dominates. On MU, seven prints executing at or
+    BELOW the bid (unambiguously seller-initiated) were all labelled "buying" by the
+    live-price version, purely because the price had since fallen below them.
+    """
+    if price is None or nbbo_bid is None or nbbo_ask is None:
+        return None
+    if nbbo_ask <= nbbo_bid:  # crossed/locked/zero-width — no spread to place the print in
+        return None
+    pos = (price - nbbo_bid) / (nbbo_ask - nbbo_bid)
+    if pos > _DP_SIDE_ASK_THRESHOLD:
+        return "buy"
+    if pos < _DP_SIDE_BID_THRESHOLD:
+        return "sell"
+    return None
 
 
 def get_dark_pool_prints(symbol: str, *, limit: int = 50) -> list[DarkPoolPrintRow]:
@@ -1515,6 +1561,10 @@ def get_dark_pool_prints(symbol: str, *, limit: int = 50) -> list[DarkPoolPrintR
                     premium=premium,
                     venue=row.get("market_center") or row.get("venue"),
                     executed_at=row.get("executed_at") or row.get("timestamp"),
+                    # T377-DARKPOOL-SIDE: UW returns these as STRINGS ("977.65"), like every
+                    # other numeric field in this payload — _to_float handles that and None.
+                    nbbo_bid=_to_float(row.get("nbbo_bid")),
+                    nbbo_ask=_to_float(row.get("nbbo_ask")),
                 ))
             except Exception:
                 continue

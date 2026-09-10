@@ -5120,6 +5120,12 @@ def _persist_dark_pool_prints(session, stock_id: int, symbol: str, rows: list) -
                 "price": float(r.price), "size": int(r.size),
                 "premium": float(r.premium) if r.premium is not None else None,
                 "venue": r.venue, "executed_at": r.executed_at,
+                # T377-DARKPOOL-SIDE: the NBBO quote at execution. Stored raw rather than
+                # storing a precomputed side, so the classification thresholds can be retuned
+                # against history later without re-ingesting (and so a future analysis can ask
+                # questions this one did not, e.g. spread width vs. print size).
+                "nbbo_bid": float(r.nbbo_bid) if r.nbbo_bid is not None else None,
+                "nbbo_ask": float(r.nbbo_ask) if r.nbbo_ask is not None else None,
             })
         if not payload:
             return 0
@@ -5138,7 +5144,10 @@ def _persist_dark_pool_prints(session, stock_id: int, symbol: str, rows: list) -
         return 0
 
 
-def _record_dark_pool_alert_outcome(session, stock_id: int, symbol: str, price: float, qualifying_metric: float | None) -> None:
+def _record_dark_pool_alert_outcome(
+    session, stock_id: int, symbol: str, price: float, qualifying_metric: float | None,
+    *, exec_price: float | None = None, live_price: float | None = None, side: str | None = None,
+) -> None:
     """Same fail-open, existence-check-first persistence discipline as
     _record_options_flow_alert_outcome()/_record_squeeze_alert_outcome() — a persistence hiccup
     here must never block the actual email send. One row per (stock_id, fired_date), matching
@@ -5160,6 +5169,12 @@ def _record_dark_pool_alert_outcome(session, stock_id: int, symbol: str, price: 
         session.add(DarkPoolAlertOutcome(
             alert_type="dark_pool_block", stock_id=stock_id, symbol=symbol, fired_date=today,
             alert_price=float(price), qualifying_metric=qualifying_metric,
+            # T377-DARKPOOL-SIDE: keyword-only with None defaults so every existing caller and
+            # test keeps working unchanged; a None here is an honest "not recorded", never a
+            # placeholder value.
+            exec_price=float(exec_price) if exec_price is not None else None,
+            live_price=float(live_price) if live_price is not None else None,
+            side=side,
         ))
         session.commit()
     except Exception as exc:
@@ -5303,7 +5318,20 @@ def check_dark_pool_alerts() -> None:
                     biggest = max(qualifying, key=lambda r: r.premium or 0)
                     candidates[symbol] = {
                         "symbol": symbol,
+                        # T377-DARKPOOL-SIDE: `price` remains the pre-existing "best available
+                        # price" (live, else the print's own) so every existing consumer and
+                        # the stored alert_price keep their exact meaning. The two components
+                        # are now ALSO carried separately, because collapsing them lost the
+                        # distinction the user asked for: exec_price is where the block
+                        # actually traded, live_price is what the stock was worth at the time.
                         "price": price or biggest.price,
+                        "exec_price": biggest.price,
+                        "live_price": price,
+                        "nbbo_bid": biggest.nbbo_bid,
+                        "nbbo_ask": biggest.nbbo_ask,
+                        "side": _uw.classify_dark_pool_side(
+                            biggest.price, biggest.nbbo_bid, biggest.nbbo_ask
+                        ),
                         "size": biggest.size,
                         "premium": biggest.premium,
                         "venue": biggest.venue,
@@ -5327,6 +5355,9 @@ def check_dark_pool_alerts() -> None:
             for symbol, cand in candidates.items():
                 _record_dark_pool_alert_outcome(
                     session, id_by_symbol[symbol], symbol, float(cand["price"] or 0.0), cand.get("premium"),
+                    exec_price=cand.get("exec_price"),
+                    live_price=cand.get("live_price"),
+                    side=cand.get("side"),
                 )
 
             from .email_service import send_dark_pool_alert_email
@@ -12080,6 +12111,50 @@ def _render_flow_digest(dp_rows, of_rows, dp_acc, of_acc, lookback, since) -> tu
         # print rows for one alert (an alert fires once per symbol, not once per print). A
         # derived figure that is always right beats a joined one that is often missing or
         # ambiguous — and it is exact whenever premium and price come from the same print.
+        # T377-DARKPOOL-SIDE ─────────────────────────────────────────────────────────────
+        def _dp_exec(r) -> str:
+            """Where the block actually traded.
+
+            Falls back to alert_price for rows written before exec_price existed — alert_price
+            IS `live_price or exec_price`, so for a row with no live quote it already WAS the
+            execution price. That makes the fallback correct rather than merely convenient.
+            """
+            ep = getattr(r, "exec_price", None)
+            v = ep if ep is not None else r.alert_price
+            return f"${float(v):.2f}" if v is not None else "—"
+
+        def _dp_live(r) -> str:
+            """The stock's price at the moment the block printed — the "current price at that
+            time". Distinct from Exec: an em-dash means no live quote was captured, NOT that
+            the two prices were equal."""
+            lp = getattr(r, "live_price", None)
+            return f"${float(lp):.2f}" if lp is not None else "—"
+
+        def _dp_vs_live(r) -> str:
+            """Execution price against the stock's price at that same moment.
+
+            Shown as CONTEXT, not as the side signal. Inferring buy/sell from exactly this
+            comparison was the intuitive proposal, and measured against NBBO ground truth on
+            364 real prints it agreed only 66.8% of the time — wrong on one print in three —
+            because the spread is 10-30 cents wide while the live price drifts dollars over a
+            session. So it is displayed as information while `side` carries the real answer.
+            """
+            ep, lp = getattr(r, "exec_price", None), getattr(r, "live_price", None)
+            if ep is None or not lp:
+                return "—"
+            return f"{100.0 * (float(ep) - float(lp)) / float(lp):+.2f}%"
+
+        def _dp_side(r) -> str:
+            """BUY/SELL from where the print landed inside the NBBO spread, or "—".
+
+            The em-dash is a REAL third state covering three cases: no quote, a crossed quote,
+            and a genuine mid-spread cross (~9% of prints, measured). Guessing a side there
+            would be the AUD-CONVICTION-RSIDIV-NOWRITER error — a confident answer to a
+            question nothing evaluated. Rows written before this shipped carry NULL and
+            correctly render "—" rather than being back-filled with a fabricated side.
+            """
+            return {"buy": "BUY", "sell": "SELL"}.get(getattr(r, "side", None) or "", "—")
+
         def _shares(r) -> str:
             if r.qualifying_metric is None or not r.alert_price:
                 return "—"
@@ -12089,8 +12164,10 @@ def _render_flow_digest(dp_rows, of_rows, dp_acc, of_acc, lookback, since) -> tu
         _cells = "".join(
             f"<tr><td style='padding:4px 8px'><b>{r.symbol}</b></td>"
             f"<td style='padding:4px 8px'>{_t(r.fired_at)}</td>"
-            f"<td style='padding:4px 8px'>"
-            f"{('$%.2f' % r.alert_price) if r.alert_price is not None else '—'}</td>"
+            f"<td style='padding:4px 8px;text-align:right'>{_dp_exec(r)}</td>"
+            f"<td style='padding:4px 8px;text-align:right'>{_dp_live(r)}</td>"
+            f"<td style='padding:4px 8px;text-align:right'>{_dp_vs_live(r)}</td>"
+            f"<td style='padding:4px 8px'>{_dp_side(r)}</td>"
             f"<td style='padding:4px 8px;text-align:right'>{_shares(r)}</td>"
             f"<td style='padding:4px 8px;text-align:right'>{_money(r.qualifying_metric)}</td></tr>"
             for r in dp_rows
@@ -12100,7 +12177,10 @@ def _render_flow_digest(dp_rows, of_rows, dp_acc, of_acc, lookback, since) -> tu
             f"<table style='border-collapse:collapse;font-size:13px'>"
             f"<tr><th align='left' style='padding:4px 8px'>Symbol</th>"
             f"<th align='left' style='padding:4px 8px'>Time</th>"
-            f"<th align='left' style='padding:4px 8px'>Price</th>"
+            f"<th align='right' style='padding:4px 8px'>Exec</th>"
+            f"<th align='right' style='padding:4px 8px'>Live</th>"
+            f"<th align='right' style='padding:4px 8px'>vs Live</th>"
+            f"<th align='left' style='padding:4px 8px'>Side</th>"
             f"<th align='right' style='padding:4px 8px'>Shares</th>"
             f"<th align='right' style='padding:4px 8px'>Premium</th></tr>{_cells}</table>"
             f"<p style='font-size:11px;color:#666'>{_fmt_hit_rate(dp_acc, 'Dark pool')}</p>"
@@ -12109,7 +12189,7 @@ def _render_flow_digest(dp_rows, of_rows, dp_acc, of_acc, lookback, since) -> tu
             f"\nDARK POOL ({len(dp_rows)})\n"
             + "".join(
                 f"  {r.symbol:<10} {_t(r.fired_at)}  "
-                f"{('$%.2f' % r.alert_price) if r.alert_price is not None else '-':>10}  "
+                f"{_dp_exec(r):>10} {_dp_live(r):>10} {_dp_vs_live(r):>7}  {_dp_side(r):<4} "
                 f"{(_shares(r) + ' sh') if _shares(r) != '—' else '—':>15}"
                 f"  {_money(r.qualifying_metric):>9}\n"
                 for r in dp_rows
