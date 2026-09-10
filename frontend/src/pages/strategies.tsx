@@ -119,7 +119,7 @@ const PRESETS: Preset[] = [
   },
 ];
 
-type AiStyle = 'SHORT' | 'SWING' | 'LONG';
+type AiStyle = 'SHORT' | 'SWING' | 'GROWTH' | 'LONG';
 
 const AI_SIGNAL_VARIANTS: Record<AiStyle, { label: string; tagline: string; description: string; entry: Cond[]; exit: Cond[] }> = {
   SHORT: {
@@ -144,6 +144,18 @@ const AI_SIGNAL_VARIANTS: Record<AiStyle, { label: string; tagline: string; desc
       { feature: 'macd_hist', op: '>', right: '0'  },
       { feature: 'close',    op: '>',  right: 'sma_50'  },
       { feature: 'sma_50',   op: '>',  right: 'sma_200' },
+    ],
+    exit: [{ feature: 'macd_hist', op: '<', right: '0' }],
+  },
+  GROWTH: {
+    label: 'AI Signal — GROWTH',
+    tagline: 'High-momentum names',
+    description: 'Mirrors the live GROWTH signal engine, which deliberately differs from SWING in two ways that matter for high-momentum names. First, it uses SMA20 > SMA50 rather than SMA50 > SMA200 — growth names live above the shorter averages and are often still in a valid uptrend before a golden cross ever forms, so the SWING filter systematically ranks them below their true signal strength. Second, RSI 72–85 is treated as MOMENTUM TERRITORY rather than overbought (the engine adds credit there), so the entry band runs to 85 instead of stopping at 68. The live engine also runs a looser ADX floor (12 vs SWING\'s 15), but ADX is not one of this backtester\'s available features, so this template cannot express it — expect it to fire somewhat MORE often than the live engine, not less. Exit when momentum genuinely breaks — MACD histogram turns negative — not merely because RSI is high.',
+    entry: [
+      { feature: 'rsi_14',    op: '>', right: '40'     },
+      { feature: 'rsi_14',    op: '<', right: '85'     },
+      { feature: 'macd_hist', op: '>', right: '0'      },
+      { feature: 'sma_20',    op: '>', right: 'sma_50' },
     ],
     exit: [{ feature: 'macd_hist', op: '<', right: '0' }],
   },
@@ -288,6 +300,10 @@ const lbl: React.CSSProperties = {
 };
 
 export default function StrategiesPage() {
+  // T375: the LEAPS backtester is a DIFFERENT ENGINE (option chains, not daily OHLCV rules), so
+  // it swaps the main pane rather than sharing the condition builder. It was first mounted at
+  // the very bottom of the page, below Saved Runs, where the user reasonably could not find it.
+  const [showLeaps, setShowLeaps] = useState(false);
   const { data: stocks } = useSWR<Stock[]>('stocks-all', () => api.listStocks());
   const { data: savedRuns, mutate: mutateSaved } = useSWR<BacktestRun[]>('backtests', () => api.listBacktests());
 
@@ -329,6 +345,7 @@ export default function StrategiesPage() {
   }, [stocks, symbol]);
 
   function applyPreset(p: Preset, clearResult = true) {
+    setShowLeaps(false);  // T375: a rule template and the LEAPS pane are mutually exclusive
     setSelectedPreset(p.key);
     if (p.key === 'ai_signal') {
       const v = AI_SIGNAL_VARIANTS['SWING'];
@@ -497,10 +514,31 @@ export default function StrategiesPage() {
                 <span style={{ fontSize: '10px', color: selectedPreset === p.key ? '#818cf8' : '#334155' }}>{p.tagline}</span>
               </button>
             ))}
+            {/* T375-LEAPS-BACKTEST: a separate engine, so it gets its own sidebar entry and
+                swaps the main pane. Visually separated because selecting it does NOT load a
+                rule template — clicking it and seeing the condition builder unchanged would be
+                confusing. */}
+            <div style={{ height: 1, background: '#1e293b', margin: '8px 0' }} />
+            <button onClick={() => setShowLeaps(true)}
+              style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'flex-start',
+                padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', textAlign: 'left',
+                border: showLeaps ? '1px solid rgba(56,189,248,0.6)' : '1px solid #1e293b',
+                background: showLeaps ? 'rgba(56,189,248,0.15)' : 'rgba(255,255,255,0.02)',
+                transition: 'all 0.1s',
+              }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
+                <span style={{ fontSize: '13px' }}>📈</span>
+                <span style={{ fontSize: '12px', fontWeight: 700, color: showLeaps ? '#7dd3fc' : '#94a3b8' }}>LEAPS Calls</span>
+              </div>
+              <span style={{ fontSize: '10px', color: showLeaps ? '#38bdf8' : '#334155' }}>QQQ · QQQM · QLD · TQQQ</span>
+            </button>
           </div>
         </div>
 
-        {/* Condition builder */}
+        {/* T375: LEAPS pane replaces the condition builder — different engine, different inputs. */}
+        {showLeaps ? <LeapsBacktestPanel /> : (
+        /* Condition builder */
         <div style={{ borderRadius: '12px', border: '1px solid rgba(99,102,241,0.25)', background: 'rgba(15,23,42,0.95)', overflow: 'hidden' }}>
           <div style={{ height: '3px', background: 'linear-gradient(90deg,#4f46e5,#818cf8,#4f46e5)' }} />
           <div style={{ padding: '20px 24px' }}>
@@ -599,10 +637,13 @@ export default function StrategiesPage() {
             )}
           </div>
         </div>
+        )}
       </div>
 
-      {/* Result */}
-      {result && (
+      {/* Result — rule-engine only; hidden in LEAPS mode so a stale rule result is
+          never read as the LEAPS run's output. Saved Runs stays visible: it is a
+          history list, not output of the current pane. */}
+      {!showLeaps && result && (
         <div style={{ marginTop: '20px', borderRadius: '12px', border: '1px solid #1e293b', background: 'rgba(15,23,42,0.95)', overflow: 'hidden' }}>
           <div style={{ padding: '16px 22px', borderBottom: '1px solid #1e293b', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
             <div>
@@ -866,9 +907,6 @@ export default function StrategiesPage() {
           </div>
         </div>
       )}
-      {/* T375-LEAPS-BACKTEST: real-chain LEAPS backtester for the QQQ family. */}
-      <LeapsBacktestPanel />
-
     </div>
   );
 }
