@@ -294,14 +294,49 @@ def compare_symbols(
     }
 
 
+# T375-LEAPS-PERF: coverage is REDIS-CACHED for 6h, and that is not an optimisation detail —
+# without it the endpoint took 47 SECONDS through the api-gateway and the browser reported
+# "NetworkError when attempting to fetch resource" on every page load of the LEAPS panel.
+#
+# WHY THE QUERY IS INHERENTLY SLOW, after three indexing attempts:
+#   1. A plain partial index on (symbol, as_of, expiry) was IGNORED — the DTE filter is
+#      `expiry >= as_of + interval`, a COLUMN-TO-COLUMN comparison no ordinary index satisfies.
+#      Postgres kept a Parallel Seq Scan removing 6,636,204 rows to return 15,823.
+#   2. An EXPRESSION index on (expiry - as_of) plus rewriting the predicate to
+#      `(expiry - as_of) >= N` did get a Bitmap Index Scan — 47s down to 17s.
+#   3. Reordering to put as_of last, hoping for an index-only scan, reached 13s but still needed
+#      the heap for COUNT(DISTINCT as_of) across 47,468 matching rows.
+#
+# 13s is still far too slow for something that runs on page load, and the answer changes only
+# when the daily capture job adds a day. So it is cached rather than tuned further; the
+# remaining index (ix_och_leaps_cov) is kept because it also serves find_leaps_entry().
+_COVERAGE_CACHE_TTL = 6 * 3600
+
+
+def _coverage_cache_key(syms: list[str], target_delta: float, min_dte: int) -> str:
+    return (f"stockai:leaps:coverage:{'-'.join(sorted(syms))}"
+            f":{target_delta:.2f}:{min_dte}")
+
+
 def coverage(symbols: list[str], target_delta: float = 0.80,
              min_dte: int = _MIN_LEAPS_DTE) -> dict:
     """How many days each symbol actually has a delta-selectable LEAPS, plus the overlap.
 
     Exposed as a first-class result rather than an internal detail: a user choosing dates needs
-    to know that TQQQ has 726 usable days and QQQ 126 BEFORE reading a comparison, not after.
+    to know that TQQQ has 726 usable days and QQQM 266 BEFORE reading a comparison, not after.
+
+    Cached 6h — see _COVERAGE_CACHE_TTL for why that is load-bearing rather than incidental.
     """
     syms = [s.upper() for s in symbols]
+    _ck = _coverage_cache_key(syms, target_delta, min_dte)
+    try:
+        from common.redis_client import get_redis
+        import json as _json
+        _hit = get_redis().get(_ck)
+        if _hit:
+            return _json.loads(_hit)
+    except Exception:
+        pass  # cache unavailable -> compute it; slow beats broken
     with SessionLocal() as s:
         per = s.execute(text("""
             SELECT symbol, COUNT(DISTINCT as_of) AS days,
@@ -310,7 +345,7 @@ def coverage(symbols: list[str], target_delta: float = 0.80,
             WHERE symbol = ANY(:syms) AND option_type = 'call'
               AND delta IS NOT NULL
               AND delta BETWEEN :dlo AND :dhi
-              AND expiry >= as_of + (:dte * INTERVAL '1 day')
+              AND (expiry - as_of) >= :dte
             GROUP BY symbol
         """), {"syms": syms, "dlo": target_delta - _DELTA_BAND,
                "dhi": target_delta + _DELTA_BAND, "dte": min_dte}).all()
@@ -320,7 +355,7 @@ def coverage(symbols: list[str], target_delta: float = 0.80,
                 WHERE symbol = ANY(:syms) AND option_type = 'call'
                   AND delta IS NOT NULL
                   AND delta BETWEEN :dlo AND :dhi
-                  AND expiry >= as_of + (:dte * INTERVAL '1 day')
+                  AND (expiry - as_of) >= :dte
                 GROUP BY as_of
                 HAVING COUNT(DISTINCT symbol) = :n_syms
             ) x
@@ -336,7 +371,7 @@ def coverage(symbols: list[str], target_delta: float = 0.80,
     for sym in syms:
         by_symbol.setdefault(sym, {"days": 0, "oldest": None, "newest": None})
     n_common = int(common.n) if common else 0
-    return {
+    _out = {
         "by_symbol": by_symbol,
         "common_days": n_common,
         # An explicit, machine-readable "do not rank on this" rather than a bare number a UI
@@ -344,3 +379,10 @@ def coverage(symbols: list[str], target_delta: float = 0.80,
         "comparison_supported": n_common >= _MIN_COMPARE_DAYS,
         "min_days_for_comparison": _MIN_COMPARE_DAYS,
     }
+    try:
+        from common.redis_client import get_redis
+        import json as _json
+        get_redis().setex(_ck, _COVERAGE_CACHE_TTL, _json.dumps(_out))
+    except Exception:
+        pass
+    return _out

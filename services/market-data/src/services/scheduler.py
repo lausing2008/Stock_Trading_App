@@ -13445,6 +13445,20 @@ def _capture_option_chain_history_daily() -> None:
         _start = _end - _td(days=_OPTHIST_BACKFILL_WINDOW_DAYS)
         res = capture_option_chain_history(_OPTHIST_SYMBOLS, _start, _end, skip_existing=True)
         log.info("opthist.daily_done", **{k: v for k, v in res.items() if k != "errors_detail"})
+        # T375-LEAPS-PERF: re-warm the LEAPS coverage cache immediately after new rows land.
+        # That query is inherently slow (a COLUMN-TO-COLUMN DTE comparison over 7.5M rows; three
+        # indexing attempts got 47s down to 13s, never to index-only), and it runs on PAGE LOAD
+        # of the LEAPS panel — a cold cache showed the user "NetworkError when attempting to
+        # fetch resource". Warming it here means a real visitor never pays the cold cost, and
+        # doing it right after the capture is what keeps the cached answer correct.
+        try:
+            from ..backtest.leaps_backtest import coverage as _leaps_cov
+            for _d in (0.80, 0.70, 0.90):
+                _leaps_cov(["QQQ", "QQQM", "QLD", "TQQQ"], _d, 330)
+            log.info("opthist.leaps_coverage_warmed")
+        except Exception as _wexc:
+            # Never let a cache warm-up fail the capture it follows.
+            log.warning("opthist.leaps_coverage_warm_failed", error=str(_wexc))
         _record_job_status("option_chain_history_daily", "ok", time.monotonic() - _t0)
     except Exception as exc:
         log.error("opthist.daily_failed", error=str(exc), exc_info=True)

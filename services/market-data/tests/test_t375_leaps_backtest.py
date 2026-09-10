@@ -226,3 +226,61 @@ def test_the_overlap_is_far_smaller_than_any_single_symbol():
     """101 common days vs 726 for TQQQ alone — the reason comparison needs its own guard."""
     tqqq, common = 726, 101
     assert common < tqqq / 5
+
+
+# ── T375-LEAPS-PERF: the coverage query is cached, and that is load-bearing ──────────────
+#
+# USER-REPORTED: "I'm getting NetworkError when attempting to fetch resource."
+#
+# MEASURED: the coverage endpoint took 47s through the api-gateway, and it runs on PAGE LOAD of
+# the LEAPS panel — so every visit failed in the browser before rendering anything.
+#
+# WHY IT IS CACHED RATHER THAN TUNED FURTHER, after three indexing attempts:
+#   1. A partial index on (symbol, as_of, expiry) was IGNORED — the DTE filter is
+#      `expiry >= as_of + interval`, a COLUMN-TO-COLUMN comparison no ordinary index satisfies.
+#      Postgres kept a Parallel Seq Scan removing 6,636,204 rows to return 15,823.
+#   2. An EXPRESSION index on (expiry - as_of), plus rewriting the predicate to
+#      `(expiry - as_of) >= N`, did get a Bitmap Index Scan: 47s -> 17s.
+#   3. Reordering for an index-only scan reached 13s but still hit the heap for
+#      COUNT(DISTINCT as_of) over 47,468 rows.
+#
+# 13s is still unusable on page load, and the answer only changes when the daily capture adds a
+# day — so it is cached (6h) AND warmed by that capture job. Warm-cache measured at 4.1s.
+
+def test_the_dte_predicate_is_written_in_the_INDEXABLE_form():
+    """`expiry >= as_of + interval` cannot use an index; `(expiry - as_of) >= N` can. Reverting
+    this silently restores a 47s query and the browser NetworkError."""
+    assert "(expiry - as_of) >= :dte" in SRC
+    assert "expiry >= as_of + (:dte * INTERVAL" not in SRC
+
+
+def test_coverage_is_cached():
+    fn = _fn("coverage")
+    assert "_coverage_cache_key(" in fn
+    assert "get_redis().get(_ck)" in fn
+    assert "setex(_ck, _COVERAGE_CACHE_TTL" in SRC
+
+
+def test_the_cache_key_includes_every_parameter_that_changes_the_answer():
+    """A key omitting target_delta or min_dte would serve one delta band's coverage for
+    another — a wrong answer that looks entirely plausible."""
+    fn = _fn("_coverage_cache_key")
+    assert "target_delta" in fn and "min_dte" in fn
+    assert "sorted(syms)" in fn, "and be order-independent for the same symbol set"
+
+
+def test_a_cache_failure_falls_back_to_computing():
+    """Slow beats broken: a Redis outage must not take the panel down."""
+    fn = _fn("coverage")
+    assert "except Exception:" in fn
+    assert "pass" in fn
+
+
+def test_the_ttl_is_generous_because_the_answer_changes_daily():
+    assert "_COVERAGE_CACHE_TTL = 6 * 3600" in SRC
+
+
+def test_the_measured_timings_are_recorded():
+    """So the next person does not "optimise" the cache away and reintroduce the NetworkError."""
+    for frag in ("47", "6,636,204", "13s"):
+        assert frag in SRC, f"the measurement {frag} should be recorded"

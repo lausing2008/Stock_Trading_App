@@ -519,7 +519,7 @@ export default function StrategiesPage() {
                 rule template — clicking it and seeing the condition builder unchanged would be
                 confusing. */}
             <div style={{ height: 1, background: '#1e293b', margin: '8px 0' }} />
-            <button onClick={() => setShowLeaps(true)}
+            <button onClick={() => { setShowLeaps(true); setSelectedPreset(''); }}
               style={{
                 display: 'flex', flexDirection: 'column', alignItems: 'flex-start',
                 padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', textAlign: 'left',
