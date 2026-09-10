@@ -12068,12 +12068,31 @@ def _render_flow_digest(dp_rows, of_rows, dp_acc, of_acc, lookback, since) -> tu
     dp_text = of_text = ""
 
     if dp_rows:
+        # T376-DIGEST-SIZE: the user reported "they have the price but don't have the share
+        # volume" — and a dark-pool print without size is not actionable, since the whole
+        # signal IS the size. The data was already there and simply not displayed:
+        # `qualifying_metric` on a dark_pool_alert_outcome IS the print's PREMIUM (verified
+        # against dark_pool_prints — BULL's 5,103,398.04 matched the print exactly), and
+        # check_dark_pool_alerts() picks `biggest` by premium.
+        #
+        # Shares are DERIVED as premium/price rather than joined from dark_pool_prints, because
+        # that join is unreliable: MU and AVGO returned no match at all, and BULL matched SIX
+        # print rows for one alert (an alert fires once per symbol, not once per print). A
+        # derived figure that is always right beats a joined one that is often missing or
+        # ambiguous — and it is exact whenever premium and price come from the same print.
+        def _shares(r) -> str:
+            if r.qualifying_metric is None or not r.alert_price:
+                return "—"
+            n = float(r.qualifying_metric) / float(r.alert_price)
+            return f"{n:,.0f}"
+
         _cells = "".join(
             f"<tr><td style='padding:4px 8px'><b>{r.symbol}</b></td>"
             f"<td style='padding:4px 8px'>{_t(r.fired_at)}</td>"
-            f"<td style='padding:4px 8px'>{r.alert_type or '—'}</td>"
             f"<td style='padding:4px 8px'>"
-            f"{('$%.2f' % r.alert_price) if r.alert_price is not None else '—'}</td></tr>"
+            f"{('$%.2f' % r.alert_price) if r.alert_price is not None else '—'}</td>"
+            f"<td style='padding:4px 8px;text-align:right'>{_shares(r)}</td>"
+            f"<td style='padding:4px 8px;text-align:right'>{_money(r.qualifying_metric)}</td></tr>"
             for r in dp_rows
         )
         dp_html = (
@@ -12081,27 +12100,68 @@ def _render_flow_digest(dp_rows, of_rows, dp_acc, of_acc, lookback, since) -> tu
             f"<table style='border-collapse:collapse;font-size:13px'>"
             f"<tr><th align='left' style='padding:4px 8px'>Symbol</th>"
             f"<th align='left' style='padding:4px 8px'>Time</th>"
-            f"<th align='left' style='padding:4px 8px'>Type</th>"
-            f"<th align='left' style='padding:4px 8px'>Price</th></tr>{_cells}</table>"
+            f"<th align='left' style='padding:4px 8px'>Price</th>"
+            f"<th align='right' style='padding:4px 8px'>Shares</th>"
+            f"<th align='right' style='padding:4px 8px'>Premium</th></tr>{_cells}</table>"
             f"<p style='font-size:11px;color:#666'>{_fmt_hit_rate(dp_acc, 'Dark pool')}</p>"
         )
         dp_text = (
             f"\nDARK POOL ({len(dp_rows)})\n"
             + "".join(
-                f"  {r.symbol:<10} {_t(r.fired_at)}  {r.alert_type or '-'}  "
-                f"{('$%.2f' % r.alert_price) if r.alert_price is not None else '-'}\n"
+                f"  {r.symbol:<10} {_t(r.fired_at)}  "
+                f"{('$%.2f' % r.alert_price) if r.alert_price is not None else '-':>10}  "
+                f"{(_shares(r) + ' sh') if _shares(r) != '—' else '—':>15}"
+                f"  {_money(r.qualifying_metric):>9}\n"
                 for r in dp_rows
             )
             + f"  {_fmt_hit_rate(dp_acc, 'Dark pool')}\n"
         )
 
     if of_rows:
+        # T376-DIGEST-SIZE: the CONTRACT was missing. Premium alone does not say what was
+        # bought — strike and expiry are what make an options alert actionable, and
+        # volume/OI ratio is the "unusual" in unusual options activity (a 5x ratio means five
+        # times more contracts traded today than exist as open interest). All three were
+        # already columns on options_flow_alert_outcomes and simply were not rendered.
+        def _voi(r) -> str:
+            return f"{float(r.volume_oi_ratio):.1f}x" if r.volume_oi_ratio is not None else "—"
+
+        def _side(r) -> str:
+            """ask_side_dominant is the BOUGHT-vs-SOLD half of the direction derivation.
+
+            Per OptionsFlowAlertOutcome's own docstring the alert encodes FOUR distinct reads,
+            not two: an ask-side CALL sweep is aggressive buying of upside, an ask-side PUT is
+            aggressive buying of downside, and either on the BID side is aggressive SELLING of
+            that contract — the "option sell" half of the original request. Rendering only
+            `direction` collapses four reads into two and loses which side was aggressive.
+
+            Not falsy-tested: this column is a non-nullable Boolean, so `False` is a REAL
+            value meaning sold, never "unknown". `r.ask_side_dominant or "—"` would print "—"
+            for every sell — the falsy-zero bug class this codebase keeps finding.
+            """
+            return "bought" if r.ask_side_dominant else "sold"
+
+        def _contract(r) -> str:
+            """Strike/type/expiry, or an em-dash when NOTHING about the contract is known.
+
+            Caught by rendering a fully-null row: the naive version emitted "?? ?", which reads
+            as corruption rather than as absence. A partially-known contract still shows what IS
+            known (e.g. "955P ?") — dropping the whole cell would discard a real strike.
+            """
+            if r.strike is None and r.expiry is None and not r.option_type:
+                return "—"
+            _k = f"{float(r.strike):g}" if r.strike is not None else "?"
+            _e = r.expiry.isoformat()[2:] if r.expiry else "?"
+            return f"{_k}{(r.option_type or '?')[:1].upper()} {_e}"
+
         _cells = "".join(
             f"<tr><td style='padding:4px 8px'><b>{r.symbol}</b></td>"
             f"<td style='padding:4px 8px'>{_t(r.fired_at)}</td>"
             f"<td style='padding:4px 8px'>{(r.direction or '—')}</td>"
-            f"<td style='padding:4px 8px'>{(r.option_type or '—')}</td>"
-            f"<td style='padding:4px 8px'>{_money(r.total_premium)}</td>"
+            f"<td style='padding:4px 8px'>{_side(r)}</td>"
+            f"<td style='padding:4px 8px'>{_contract(r)}</td>"
+            f"<td style='padding:4px 8px;text-align:right'>{_money(r.total_premium)}</td>"
+            f"<td style='padding:4px 8px;text-align:right'>{_voi(r)}</td>"
             f"<td style='padding:4px 8px'>{'sweep' if r.has_sweep else ''}</td></tr>"
             for r in of_rows
         )
@@ -12111,8 +12171,10 @@ def _render_flow_digest(dp_rows, of_rows, dp_acc, of_acc, lookback, since) -> tu
             f"<tr><th align='left' style='padding:4px 8px'>Symbol</th>"
             f"<th align='left' style='padding:4px 8px'>Time</th>"
             f"<th align='left' style='padding:4px 8px'>Dir</th>"
-            f"<th align='left' style='padding:4px 8px'>Type</th>"
-            f"<th align='left' style='padding:4px 8px'>Premium</th>"
+            f"<th align='left' style='padding:4px 8px'>Side</th>"
+            f"<th align='left' style='padding:4px 8px'>Contract</th>"
+            f"<th align='right' style='padding:4px 8px'>Premium</th>"
+            f"<th align='right' style='padding:4px 8px'>Vol/OI</th>"
             f"<th align='left' style='padding:4px 8px'></th></tr>{_cells}</table>"
             f"<p style='font-size:11px;color:#666'>{_fmt_hit_rate(of_acc, 'Options flow')}</p>"
         )
@@ -12120,7 +12182,7 @@ def _render_flow_digest(dp_rows, of_rows, dp_acc, of_acc, lookback, since) -> tu
             f"\nUNUSUAL OPTIONS ACTIVITY ({len(of_rows)})\n"
             + "".join(
                 f"  {r.symbol:<10} {_t(r.fired_at)}  {(r.direction or '-'):<8} "
-                f"{(r.option_type or '-'):<5} {_money(r.total_premium):>8}"
+                f"{_side(r):<7} {_contract(r):<16} {_money(r.total_premium):>9}  {_voi(r):>6}"
                 f"{'  sweep' if r.has_sweep else ''}\n"
                 for r in of_rows
             )
