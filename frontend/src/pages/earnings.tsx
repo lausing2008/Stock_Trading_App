@@ -174,6 +174,9 @@ function EventCard({ ev, subs, onSubsChanged, onOpenForecast }: { ev: CalendarEv
       {ev.type === 'earnings' && (
         <>
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+            {/* T379-CALENDAR-PRICE: shown FIRST — it is the number the other stats are
+                relative to (an EPS estimate or an analyst target means little without it). */}
+            <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>Price: </span><span style={{ color: '#e2e8f0', fontWeight: 700 }}>{ev.current_price != null ? `$${ev.current_price.toFixed(2)}` : '—'}</span></span>
             <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>EPS est: </span><span style={{ color: '#e2e8f0', fontWeight: 700 }}>{ev.eps_estimate != null ? `$${ev.eps_estimate.toFixed(2)}` : '—'}</span></span>
             <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>Rev growth: </span><span style={{ color: (ev.revenue_growth ?? 0) >= 0 ? '#4ade80' : '#f87171', fontWeight: 700 }}>{fmtPct(ev.revenue_growth)}</span></span>
             <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>EPS growth: </span><span style={{ color: (ev.earnings_growth ?? 0) >= 0 ? '#4ade80' : '#f87171', fontWeight: 700 }}>{fmtPct(ev.earnings_growth)}</span></span>
@@ -241,6 +244,9 @@ function EventCard({ ev, subs, onSubsChanged, onOpenForecast }: { ev: CalendarEv
       {/* Dividend details */}
       {ev.type === 'dividend' && (
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          {/* T379-CALENDAR-PRICE: the ex-div card gets it too — the NVDA card in the user's
+              screenshot showed a 44% yield with no price to sanity-check it against. */}
+          <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>Price: </span><span style={{ color: '#e2e8f0', fontWeight: 700 }}>{ev.current_price != null ? `$${ev.current_price.toFixed(2)}` : '—'}</span></span>
           <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>Annual rate: </span><span style={{ color: '#4ade80', fontWeight: 700 }}>{ev.dividend_rate != null ? `$${ev.dividend_rate.toFixed(2)}` : '—'}</span></span>
           <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>Yield: </span><span style={{ color: '#4ade80', fontWeight: 700 }}>{fmtYield(ev.dividend_yield)}</span></span>
           <span style={{ fontSize: 11 }}><span style={{ color: '#475569' }}>Cap: </span><span style={{ color: '#94a3b8', fontWeight: 700 }}>{fmtCap(ev.market_cap)}</span></span>

@@ -2238,6 +2238,19 @@ def events_calendar(
     from ..services import unusual_whales as _uw
 
     r = _get_redis()
+    # T379-CALENDAR-PRICE: the user asked to show each stock's current price on the calendar.
+    # ONE bulk read of the same stockai:live_prices blob the every-minute alert scanners
+    # already share — NOT a per-symbol lookup, which would put ~120 Redis round-trips inside a
+    # route that AUD-UWCAL-NONUS422 was just rescued from a 61s per-symbol fan-out.
+    # Fails open to {}: a missing live cache must render "—", never block the calendar.
+    try:
+        _live_by_symbol = {
+            row["symbol"]: row.get("price")
+            for row in json.loads(r.get(_LIVE_KEY) or "[]")
+            if row.get("symbol")
+        }
+    except Exception:
+        _live_by_symbol = {}
     stocks = session.execute(select(Stock).where(Stock.active.is_(True))).scalars().all()
 
     _stock_events_misses = 0
@@ -2298,6 +2311,10 @@ def events_calendar(
                             "name": stock.name,
                             "sector": stock.sector,
                             "market": mkt,
+                            # T379-CALENDAR-PRICE: None (not 0.0) when no live quote exists —
+                            # a price of zero is not a real price, and the frontend renders
+                            # "—" for null rather than an authoritative-looking $0.00.
+                            "current_price": _live_by_symbol.get(stock.symbol),
                             "eps_estimate": data.get("forward_eps"),
                             "trailing_eps": data.get("trailing_eps"),
                             "revenue_growth": data.get("revenue_growth"),
@@ -2343,6 +2360,9 @@ def events_calendar(
                             "name": stock.name,
                             "sector": stock.sector,
                             "market": mkt,
+                            # T379-CALENDAR-PRICE: ex-dividend cards get it too — the screenshot
+                            # the user sent shows an NVDA ex-div card alongside the earnings ones.
+                            "current_price": _live_by_symbol.get(stock.symbol),
                             "dividend_rate": data.get("dividend_rate"),
                             "dividend_yield": data.get("dividend_yield"),
                         })

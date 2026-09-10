@@ -1761,6 +1761,10 @@ export type CalendarEvent = {
   analyst_price_target_weighted?: number | null; // accuracy-weighted mean (same source as /analyst-consensus)
   analyst_n_firms?: number | null;
   market_cap?: number | null;
+  // T379-CALENDAR-PRICE: the symbol's live price at request time, from the shared
+  // stockai:live_prices cache. NULL (never 0) when no quote exists — the card renders "—",
+  // since $0.00 would be an authoritative-looking wrong answer.
+  current_price?: number | null;
   // AUD-EARNINGSMOVE: real, options-market-implied expected move for the NEXT report (from
   // this symbol's most recent historical row) plus up to 8 quarters of real pre-report-
   // forecast-vs-actual-outcome track record. Genuinely different from eps_beat_rate above —
