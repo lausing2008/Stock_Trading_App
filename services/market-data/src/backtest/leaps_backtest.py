@@ -207,7 +207,27 @@ def backtest_leaps(
     if contracts < 1:
         return None
 
-    entry = find_leaps_entry(symbol, entry_date, target_delta, min_dte, max_dte, strike, expiry)
+    # T375-EXPIRYBEFOREEXIT: the selected contract must still EXIST on the exit date.
+    #
+    # REPORTED BY THE USER: a 2024-10-01 -> 2026-09-01 run showed "no usable LEAPS quote for QQQ"
+    # even though coverage reported 727 usable QQQ days. The cause was a real bug here, not a
+    # data gap: `find_leaps_entry` picked the >=330 DTE contract closest to the target delta —
+    # QQQ251219C00430000, expiring 2025-12-19 — which is a perfectly good LEAPS on the ENTRY
+    # date but expired EIGHT MONTHS before the requested exit. `_nearest_quote_date`'s 7-day
+    # backward window then found nothing and the symbol was reported as unpriceable.
+    #
+    # Requiring the expiry to reach the exit date makes the selection match the trade actually
+    # being asked for. It also changes which contract is chosen for long holds — QLD priced
+    # before this fix only because its nearest-delta contract (2027-01-15) happened to outlive
+    # the exit date, which is luck, not correctness.
+    #
+    # Deliberately a REQUIREMENT, not a fallback: a contract that expires mid-hold cannot model
+    # a hold-to-exit trade at any price, and silently substituting a different expiry would
+    # report a result for a trade the user did not describe.
+    _needed_dte = (exit_date - entry_date).days
+    _eff_min_dte = max(min_dte, _needed_dte)
+    entry = find_leaps_entry(symbol, entry_date, target_delta, _eff_min_dte, max_dte,
+                             strike, expiry)
     if entry is None or entry.ask is None or entry.ask <= 0:
         return None
 

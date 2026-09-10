@@ -284,3 +284,75 @@ def test_the_measured_timings_are_recorded():
     """So the next person does not "optimise" the cache away and reintroduce the NetworkError."""
     for frag in ("47", "6,636,204", "13s"):
         assert frag in SRC, f"the measurement {frag} should be recorded"
+
+
+# ── T375-EXPIRYBEFOREEXIT: the contract must still exist on the exit date ────────────────
+#
+# REPORTED BY THE USER: a 2024-10-01 -> 2026-09-01 run at delta 0.70 showed "no usable LEAPS
+# quote for QQQ" — while the coverage panel on the same screen reported 727 usable QQQ days.
+#
+# A REAL BUG IN THE ENGINE, not a data gap. find_leaps_entry() picked the >=330 DTE contract
+# closest to the target delta: QQQ251219C00430000, expiring 2025-12-19. That is a perfectly good
+# LEAPS on the entry date, and it was quoted 521 times — but it expired EIGHT MONTHS before the
+# requested exit, so _nearest_quote_date()'s 7-day backward window found nothing and the symbol
+# was reported unpriceable.
+#
+# The tell was the contradiction between two numbers on one screen: coverage said 727 days,
+# the run said no quote. Coverage answers "is there a delta-selectable LEAPS on the ENTRY date",
+# which was true; it says nothing about whether that contract survives the HOLD.
+#
+# QLD priced before this fix only because its nearest-delta contract happened to expire
+# 2027-01-15, outliving the exit. Luck, not correctness — and after the fix QLD's number changed,
+# which is the proof it was luck.
+#
+# AFTER: QQQ +146.73% (exp 2026-12-18, 808 DTE), TQQQ -58.04%, QLD -70.29%, all held 700d.
+
+def test_the_required_dte_covers_the_whole_hold():
+    """THE FIX. min_dte is a floor on the LEAPS definition; the hold length is a separate,
+    harder requirement, and the effective floor must be whichever is larger."""
+    fn = _fn("backtest_leaps")
+    assert "_needed_dte = (exit_date - entry_date).days" in fn
+    assert "_eff_min_dte = max(min_dte, _needed_dte)" in fn
+    assert "find_leaps_entry(symbol, entry_date, target_delta, _eff_min_dte" in fn
+
+
+@pytest.mark.parametrize("entry,exit_,min_dte,expected", [
+    # A ~2-year hold needs ~2 years of expiry, far beyond the 330 LEAPS floor.
+    (date(2024, 10, 1), date(2026, 9, 1), 330, 700),
+    # A 1-year hold: the 330 floor still binds, so shorter expiries stay eligible.
+    (date(2024, 10, 1), date(2025, 10, 1), 330, 365),
+    # An explicit long min_dte must not be lowered by a short hold.
+    (date(2025, 1, 1), date(2025, 3, 1), 700, 700),
+])
+def test_the_effective_floor_is_the_larger_of_the_two(entry, exit_, min_dte, expected):
+    assert max(min_dte, (exit_ - entry).days) == expected
+
+
+def test_the_users_exact_case_needed_more_than_the_leaps_floor():
+    """700 days of hold against a 330-day floor — the contract chosen under the old logic could
+    legitimately expire less than halfway through."""
+    needed = (date(2026, 9, 1) - date(2024, 10, 1)).days
+    assert needed == 700
+    assert needed > 330, "which is exactly why the floor alone was insufficient"
+
+
+def test_a_short_hold_does_not_lose_the_leaps_definition():
+    """max(), not replacement: a 30-day hold must still require a LEAPS-length expiry, or this
+    silently becomes a short-dated-options backtester."""
+    assert max(330, 30) == 330
+
+
+def test_it_is_a_requirement_not_a_fallback():
+    """A contract expiring mid-hold cannot model a hold-to-exit trade at ANY price. Substituting
+    a different expiry would report a result for a trade the user did not describe."""
+    i = SRC.index("T375-EXPIRYBEFOREEXIT")
+    block = SRC[i:i + 1600]
+    assert "REQUIREMENT, not a fallback" in block
+
+
+def test_the_luck_of_the_old_QLD_result_is_recorded():
+    """QLD priced before the fix only because its nearest-delta contract happened to outlive the
+    exit date. Recorded so nobody reads the pre-fix number as a baseline."""
+    i = SRC.index("T375-EXPIRYBEFOREEXIT")
+    block = SRC[i:i + 1600]
+    assert "luck, not correctness" in block
