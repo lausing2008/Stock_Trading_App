@@ -1194,3 +1194,118 @@ Eight sabotage mutations, all caught: reverting the shares cell, falsy-zero on s
 falsy-testing `ask_side_dominant`, dropping vol/OI, regressing the `?? ?` contract, restoring
 `— sh`, fixing only the HTML and leaving the text body stale, and collapsing a partially-known
 contract. File verified byte-identical after the sweep.
+
+---
+
+## T377-DARKPOOL-SIDE — buy/sell from the NBBO quote, not from the current price (2026-09-10)
+
+**User request, two parts:** *"can it also stamp the current price at that time when they execute
+it? Can we add the current price in Dark Pool report as well?"* and *"If those Dark pool
+transaction is more than current price can we think they are buying and if less, then they are
+selling?"*
+
+### Part 1 — implemented as asked
+
+`exec_price` (where the block traded) and `live_price` (the stock at that moment) are now stored
+**separately** and both rendered. Previously they were collapsed by
+`alert_price = live_price or exec_price`, which silently discarded whichever was not chosen —
+so the digest could not show both even though both existed at fire time.
+
+`alert_price` is deliberately **unchanged**: every forward-return column is denominated in it,
+and redefining it would silently reinterpret all existing history.
+
+### Part 2 — the mechanism is right, the reference point is wrong. MEASURED.
+
+A buyer *does* cross the spread toward the ask; a seller *does* hit the bid. But compared
+against NBBO ground truth on **364 real comparable prints**, the exec-vs-live-price heuristic
+agreed only **66.8%** of the time — **wrong on one print in three.**
+
+**The reason is scale.** The NBBO spread is typically **10–30 cents** wide, while the live price
+drifts **dollars** over a session, so the drift swamps the signal.
+
+The concrete counterexample, now pinned as a test — seven real MU prints:
+
+```
+    exec       bid       ask  in-spread    NBBO  vs live
+  978.00    977.98    978.08       0.20    SELL      BUY
+  977.73    977.70    977.91       0.14    SELL      BUY
+  977.70    977.75    977.97      -0.23    SELL      BUY
+  977.73    977.65    978.00       0.23    SELL      BUY
+  977.72    977.65    977.89       0.27    SELL      BUY
+  977.70    977.65    977.89       0.21    SELL      BUY
+  977.60    977.60    977.91       0.00    SELL      BUY
+```
+
+Every one executed **at or below the bid** — unambiguously seller-initiated — and every one is
+labelled "buying" by the live-price rule, purely because MU had since fallen below them.
+
+### What made the exact version free
+
+**UW already returns `nbbo_bid` and `nbbo_ask` on every dark-pool print**, and the adapter was
+parsing them away. Measured on 400 live prints across 8 symbols:
+
+| | |
+|---|---|
+| prints with a usable quote | **400 / 400** |
+| at/near ask (buyer-initiated) | 37.5% |
+| at/near bid (seller-initiated) | 53.5% |
+| mid-spread (undeterminable) | 9.0% |
+
+So the exact classification costs **no extra UW request** — the data was already on the wire.
+
+### `classify_dark_pool_side()` — read before changing the thresholds
+
+- **Normalised** position in the spread (0 = bid, 1 = ask), so it is **scale-invariant**: a $9
+  stock and a $978 stock are classified by the same rule. An absolute cent threshold would
+  silently behave differently across the universe.
+- Returns **`None`, never a default side**, in three real cases: no quote, a crossed/locked
+  quote (division by zero or an inverted result), and a **genuine mid-spread cross**.
+- The ~9% mid band is reported as **UNKNOWN rather than guessed**. Asserting a side there would
+  be the `AUD-CONVICTION-RSIDIV-NOWRITER` error — a confident answer to a question nothing
+  evaluated.
+- The digest still **shows the exec-vs-live percentage as context.** It is informative; it just
+  is not the side signal.
+
+### Storage decisions
+
+- **The raw quote is persisted, not a precomputed side**, so thresholds can be retuned against
+  history later without re-ingesting — and so a future analysis can ask questions this one did
+  not (e.g. spread width vs. print size).
+- **Stored on the outcome row rather than joined back to `dark_pool_prints`**, because
+  `T376-DIGEST-SIZE` already tested that join and **rejected it as ambiguous**: MU and AVGO
+  matched *no* print at all, while BULL matched **six** rows for one alert. The alert knows
+  exactly which print it fired on; the join does not.
+- New recorder args are **keyword-only with `None` defaults**, so every existing caller and test
+  is unchanged.
+- **Migration required** — `create_all()` only creates missing *tables*, never adds a column.
+  **No backfill:** existing rows genuinely lack this data, and inventing a side for them would be
+  the `AUD-RANK-RSPLACEHOLDER` error (a fabricated value a consumer then learns from).
+
+### A validation attempt that had to be discarded — do not resurrect it
+
+64,338 persisted prints were joined to daily OHLC to test whether "above the day's midpoint"
+predicted the next day's return. The result *looked* strong:
+
+```
+above mid (buying?)   n=24683   avg next-day -1.08%   37.0% up
+below mid (selling?)  n=20904   avg next-day -0.97%   27.8% up
+```
+
+**It is an artifact.** The entire persisted history spans only **six days** (2026-09-04 to
+09-10) across 65 symbols, so both buckets were measuring a down week for semiconductors. A large
+sample over a tiny window is still a tiny window. This codebase has already retracted three
+findings that looked exactly like that.
+
+### Verified live after deploy
+
+- **30/30 (100%)** of prints written after the deploy carry a quote. (An earlier reading of
+  83.3% was measuring rows written *during* the container recreation, before the new code was
+  serving — the coverage figure to trust is the post-deploy one.)
+- The 6 alerts that fired **before** the deploy correctly show `NULL` → `—`, not a back-filled
+  side.
+
+Tests: 45 cases, 9 sabotage mutations all caught — including the two real traps, **reintroducing
+the naive heuristic** and **classifying from the live price instead of the print** while still
+looking correct. Three of my own test bugs are fixed and noted in place, the notable one being a
+datum at spread position 0.43 that I asserted as "buy" when the classifier was **correctly**
+returning `None`.
