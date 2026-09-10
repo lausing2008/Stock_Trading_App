@@ -198,7 +198,17 @@ export default function LeapsBacktestPanel() {
                       <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>{fmtMoney(r.cost)}</td>
                       <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', color: '#94a3b8' }}>{r.strike ?? '—'}</td>
                       <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', color: '#94a3b8' }}>{r.expiry ?? '—'}</td>
-                      <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>{r.entry_delta != null ? r.entry_delta.toFixed(3) : '—'}</td>
+                      <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>{r.entry_delta != null ? r.entry_delta.toFixed(3) : '—'}
+                        {/* T381-LEAPS-NEARESTDELTA: a relaxed match is a NEARBY delta, not the
+                            requested one. Badged rather than footnoted, because the number in
+                            this very cell is the thing that differs from what was asked for —
+                            an unlabelled 0.802 under a 0.70 target reads as a bug. */}
+                        {r.delta_relaxed && (
+                          <span title="No contract inside the strict ±0.10 delta band could be priced on these dates; the nearest available delta was used instead. This is a related trade, not the one requested."
+                                style={{ marginLeft: 6, padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700, background: 'rgba(251,191,36,0.15)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.35)' }}>
+                            NEAR
+                          </span>
+                        )}</td>
                       <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>{r.dte_at_entry ?? '—'}</td>
                       <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>{r.days_held}d</td>
                       {/* Spread is a REAL cost on a LEAPS — shown, not folded into the return. */}

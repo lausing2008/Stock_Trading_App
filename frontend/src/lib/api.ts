@@ -3409,6 +3409,10 @@ export type LeapsTrade = {
   symbol: string; entry_date: string; exit_date: string; exit_date_requested: string;
   option_symbol: string; strike: number | null; expiry: string | null;
   entry_delta: number | null; entry_iv: number | null;
+  // T381-LEAPS-NEARESTDELTA: true when no contract inside the strict +/-0.10 band could be
+  // priced and a wider +/-0.20 search was used. Optional so an older backend renders no badge
+  // rather than a wrong one.
+  delta_relaxed?: boolean;
   exit_delta: number | null; exit_iv: number | null;
   contracts: number;
   entry_ask: number | null; entry_bid: number | null; entry_mid: number | null;

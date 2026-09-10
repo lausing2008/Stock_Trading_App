@@ -55,6 +55,35 @@ _MIN_LEAPS_DTE = 330
 # Widest delta band still recognisably "deep ITM LEAPS". Outside this the trade is a different
 # strategy, so a miss is reported as no-candidate rather than substituted with whatever exists.
 _DELTA_BAND = 0.10
+
+# T381-LEAPS-NEARESTDELTA: the widened band used ONLY when the strict band yields nothing
+# priceable. User request: "if we can't find the exact delta at that moment, we can find
+# something near the same to run it."
+#
+# WHY THIS IS SAFE HERE AND WAS REFUSED BEFORE. T380 deliberately did NOT auto-widen, because
+# silently pricing a 0.80-delta contract when 0.70 was asked for reports a result for a
+# different trade. That objection is about SILENCE, not about widening — so the widened attempt
+# is a clearly-labelled SECOND pass: it runs only after the strict band fails, every result
+# carries `delta_relaxed` and the actual `entry_delta`, and the UI shows a badge. The strict
+# band still wins whenever it can price, so no existing result changes.
+#
+# 0.20 rather than something larger, measured on the QLD case that prompted this: at +/-0.15
+# QLD finds 3 priceable contracts (delta 0.802/0.805/0.844) and +/-0.20 and +/-0.25 find the
+# SAME three — the chain simply has a gap between 0.659 and 0.802. So a wider cap buys nothing
+# real while admitting progressively less comparable trades. 0.20 keeps the nearest match
+# (0.802, just 0.102 from a 0.70 target) reachable without opening the door to a 0.45-delta
+# contract being passed off as a deep-ITM LEAPS.
+_DELTA_BAND_RELAXED = 0.20
+#
+# WHAT THIS ACTUALLY PRODUCED, recorded because it is deliberately UNFLATTERING and the label is
+# the whole point. On 2025-10-01 -> 2026-09-01 at target delta 0.70:
+#
+#     QQQ   +60.20%  delta 0.703            TQQQ  -73.78%  delta 0.705
+#     QQQM  +45.45%  delta 0.727            QLD   -94.23%  delta 0.802   <- RELAXED
+#
+# QLD's -94% is mostly LEVERAGED-ETF DECAY over a 336-day hold, not the 0.10 delta difference.
+# An unbadged -94% row sitting beside a +60% row reads as the same trade run four ways, which
+# is exactly the misreading `delta_relaxed` and the "NEAR" badge exist to prevent.
 # T380-LEAPS-CONTRACTGAP: how far down the delta-ranked band to look for a contract that is
 # still quoted at the exit date. Bounded rather than unlimited: walking the whole band would
 # drift arbitrarily far from the requested delta, and a match 8 candidates away is no longer
@@ -164,6 +193,7 @@ def find_leaps_entry_candidates(
     min_dte: int = _MIN_LEAPS_DTE,
     max_dte: int | None = None,
     limit: int = _ENTRY_CANDIDATE_LIMIT,
+    band: float | None = None,
 ) -> list[LeapsLeg]:
     """Every in-band contract on `as_of`, best delta match FIRST.
 
@@ -188,6 +218,9 @@ def find_leaps_entry_candidates(
     """
     if not symbol or as_of is None:
         return []
+    # T381-LEAPS-NEARESTDELTA: default keeps the strict band, so every existing caller is
+    # unchanged and a relaxed search must be asked for explicitly.
+    _band = _DELTA_BAND if band is None else float(band)
     sql = """
         SELECT symbol, as_of, option_symbol, expiry, strike, delta,
                nbbo_bid, nbbo_ask, implied_volatility, open_interest
@@ -203,7 +236,7 @@ def find_leaps_entry_candidates(
     params: dict = {
         "sym": symbol.upper(), "dt": as_of,
         "min_exp": as_of + timedelta(days=min_dte),
-        "dlo": target_delta - _DELTA_BAND, "dhi": target_delta + _DELTA_BAND,
+        "dlo": target_delta - _band, "dhi": target_delta + _band,
         "tgt": target_delta, "lim": max(1, int(limit)),
     }
     if max_dte is not None:
@@ -320,21 +353,50 @@ def backtest_leaps(
             symbol, entry_date, target_delta, _eff_min_dte, max_dte
         )
 
-    entry = ex = exit_on = None
-    _skipped_unquoted = 0
-    for _cand in _candidates:
-        if _cand.ask is None or _cand.ask <= 0:
-            continue
-        _on = _nearest_quote_date(symbol, _cand.option_symbol, exit_date)
-        if _on is None:
-            _skipped_unquoted += 1
-            continue
-        _ex = price_leg_on(symbol, _cand.option_symbol, _on)
-        if _ex is None or _ex.bid is None:
-            _skipped_unquoted += 1
-            continue
-        entry, exit_on, ex = _cand, _on, _ex
-        break
+    def _first_priceable(cands):
+        """The best-delta candidate that can actually be priced at the exit, and how many
+        better-delta ones were skipped getting there."""
+        _skipped = 0
+        for _c in cands:
+            if _c.ask is None or _c.ask <= 0:
+                continue
+            _on = _nearest_quote_date(symbol, _c.option_symbol, exit_date)
+            if _on is None:
+                _skipped += 1
+                continue
+            _e = price_leg_on(symbol, _c.option_symbol, _on)
+            if _e is None or _e.bid is None:
+                _skipped += 1
+                continue
+            return _c, _on, _e, _skipped
+        return None, None, None, _skipped
+
+    entry, exit_on, ex, _skipped_unquoted = _first_priceable(_candidates)
+
+    # T381-LEAPS-NEARESTDELTA: "if we can't find the exact delta at that moment, we can find
+    # something near the same to run it" (user).
+    #
+    # SECOND PASS ONLY. The strict band is tried first and wins whenever it can price, so this
+    # changes no result that already worked. It runs only when the strict band produced nothing
+    # priceable, and everything it returns is LABELLED (`delta_relaxed`, plus the real
+    # `entry_delta`) — the T380 objection was to SILENT substitution, not to widening.
+    #
+    # Never for a pinned strike/expiry: the user named a specific contract, and a "near" one is
+    # a different contract, not a near-miss on a target.
+    _relaxed = False
+    if entry is None and not _pinned:
+        _wider = find_leaps_entry_candidates(
+            symbol, entry_date, target_delta, _eff_min_dte, max_dte,
+            band=_DELTA_BAND_RELAXED,
+        )
+        # Only the ones the strict pass did not already reject, so the skip count stays honest.
+        _seen = {c.option_symbol for c in _candidates}
+        _wider = [c for c in _wider if c.option_symbol not in _seen]
+        if _wider:
+            entry, exit_on, ex, _extra = _first_priceable(_wider)
+            _skipped_unquoted += _extra
+            _relaxed = entry is not None
+
     if entry is None or ex is None:
         return None
 
@@ -355,6 +417,12 @@ def backtest_leaps(
         # the pre-fix behaviour. Non-zero means the delta is further from target than
         # requested, and the caller must be able to see that rather than infer it.
         "delta_fallback_skipped": _skipped_unquoted,
+        # T381-LEAPS-NEARESTDELTA: True when NO contract inside the strict +/-0.10 band could be
+        # priced and a wider +/-0.20 search was used instead. The caller must be able to see
+        # that this is a NEARBY delta rather than the requested one — compare `entry_delta`
+        # against the target to judge how near. False means the strict band was used, i.e.
+        # identical to the pre-T381 behaviour.
+        "delta_relaxed": _relaxed,
         "option_symbol": entry.option_symbol,
         "strike": entry.strike,
         "expiry": entry.expiry.isoformat() if entry.expiry else None,
@@ -480,6 +548,12 @@ def compare_symbols(
             results[sym.upper()] = r
 
     ranked = sorted(results.values(), key=lambda x: x["return_pct"] or -1e9, reverse=True)
+    # T381-LEAPS-NEARESTDELTA: a symbol that only priced via the widened band is still a
+    # caveat, even though it is no longer "missing". `comparable` stays True (everything
+    # priced), but the note must say the comparison is not strictly like-for-like — otherwise
+    # a -94% QLD row at delta 0.802 sits silently beside a +60% QQQ row at 0.703 and reads as
+    # the same trade. Leveraged-ETF decay makes that gap look far more meaningful than it is.
+    _relaxed_syms = [r["symbol"] for r in ranked if r.get("delta_relaxed")]
     return {
         "entry_date": entry_date.isoformat(),
         "exit_date": exit_date.isoformat(),
@@ -493,8 +567,18 @@ def compare_symbols(
         "missing_reasons": reasons,
         "ranking": [r["symbol"] for r in ranked],
         "comparable": len(missing) == 0,
+        "delta_relaxed_symbols": _relaxed_syms,
         "note": (
-            "All requested symbols priced." if not missing else
+            (
+                "All requested symbols priced."
+                if not _relaxed_syms else
+                # T381-LEAPS-NEARESTDELTA: say it plainly. "All priced" would be true and
+                # misleading — the reader would compare a relaxed row against a strict one.
+                f"All requested symbols priced, but {', '.join(_relaxed_syms)} used the "
+                f"NEAREST available delta rather than {target_delta:.2f} (no contract inside "
+                f"the strict band could be priced on these dates). Compare the delta column "
+                f"before reading the ranking as like-for-like."
+            ) if not missing else
             f"No usable LEAPS quote on this date for: {', '.join(missing)}. "
             "Greeks are sparse by design (present only where volume > 0), so a symbol can have "
             "rows for a day yet no delta-selectable contract."

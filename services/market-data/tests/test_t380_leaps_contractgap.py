@@ -96,8 +96,18 @@ def test_the_fallback_is_bounded():
 
 def test_the_backtest_loops_over_candidates():
     fn = _fn("backtest_leaps")
-    assert "for _cand in _candidates:" in fn
+    # T381-LEAPS-NEARESTDELTA extracted the loop into a local _first_priceable() so the strict
+    # and relaxed passes share it. Assert the BEHAVIOUR — a ranked list is obtained and walked
+    # until one prices — rather than the literal loop line, which a pure refactor moves.
     assert "find_leaps_entry_candidates(" in fn
+    assert "_first_priceable(" in fn, "candidates must still be walked, not taken blindly"
+    assert "for _c in cands:" in fn, "the walk itself must still exist"
+    # A SECOND SABOTAGE ROUND EXPOSED THIS: my first rewrite of this assertion checked only
+    # that _first_priceable EXISTS, so replacing the call with `_candidates[0]` — taking the
+    # best-delta contract without checking it can be priced, i.e. restoring the original bug —
+    # still passed. Pin that the result comes FROM the walker, not from indexing the list.
+    assert "_first_priceable(_candidates)" in fn
+    assert "_candidates[0]" not in fn, "must not take the first candidate without pricing it"
 
 
 def test_an_explicit_strike_or_expiry_is_never_substituted():
