@@ -133,3 +133,19 @@ asked to do, and the findings are real and independently verified. But reading o
 a false picture of the whole: **the app is in materially better shape than that reading
 suggests, and better today than yesterday**, because those defects are now found, fixed, or
 instrumented rather than silently costing money.
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+- **[`docs/2026-09-05/SESSION_INDEX_AND_NEXT_STEPS.md`](../docs/2026-09-05/SESSION_INDEX_AND_NEXT_STEPS.md)** — **START HERE for the 2026-09-04/05 audit cycle.** Index of 11 documents + 16 deployed fixes, with the balanced read (`WHERE_THE_APP_ACTUALLY_STANDS.md`) that the individual defect-scoped audits do not give on their own. Key resolved arc: the confidence inversion was `AUD232-BUY-FROM-TOP`, already fixed 2026-08-03 (see `PHASE_B2_INVERSION_ROOT_CAUSE_FOUND.md`). Key open finding: signal ENTRY TIMING is the one genuinely weak component — the placebo test (`ENTRY_TIMING_PLACEBO_TEST.md`) shows entering the same stocks 14 days earlier was ~6 points better, root-caused in `WHY_SIGNALS_FIRE_LATE.md` to every conviction pillar being a momentum measure. **The non-momentum pillar that would fix it ALREADY EXISTS** (`check_prebreakout_alerts()`) and just needs 3-4 weeks of outcomes to evaluate. **Contains TWO retractions worth remembering** — "the system has defensive skill" (was 0.355 beta) and "insider_score predicts returns" (was 6 stocks, 3 up / 3 down); on this data always widen the sample and validate out-of-sample before believing a result, as three separate findings reversed under that test. Also lists what NOT to do: don't tune alert thresholds (every looser variant measured worse), don't rebuild the confidence formula (correctly signed post-fix), don't run the signal-engine live-bar refactor (high regression risk against AUD232 for marginal gain).

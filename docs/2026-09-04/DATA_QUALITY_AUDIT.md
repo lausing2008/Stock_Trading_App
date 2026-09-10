@@ -220,3 +220,19 @@ Per the audit's own operating rules (§G.1: label `UNMEASURABLE` rather than sub
 **Do not yet conclude the confidence inversion is fully explained.** This is the leading, well-evidenced hypothesis — not a proven cause. **Phase B must specifically test it**: after conceptually removing same-day-computed signals from the confidence-calibration sample (or, once fixed, re-measuring post-fix), does the inversion persist, weaken, or disappear? That comparison is the actual test, and it has not yet been run.
 
 **Recommended immediate next step:** proceed to Phase B (§B.3, confidence calibration) with this specific question added: *does the inversion hold when restricted to signals whose `ts` is NOT the same calendar day as their features' most recent bar (i.e., signals evaluated the day after generation, when the reference bar has genuinely settled)?* If the inversion weakens or vanishes in that subset, this finding is confirmed as the primary cause. If it persists identically, a second, independent cause exists and must be found separately.
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+- **[`docs/2026-09-04/DATA_QUALITY_AUDIT.md`](../docs/2026-09-04/DATA_QUALITY_AUDIT.md)** — Phase A of the revised independent trading-edge audit (see `docs/recomm_or_audit/AI Stock Trading Platform — Independent Trading Audit Prompt (REVISED 2026-09-04).md`). Confirmed real defect: every intraday signal feature is computed off a live, continuously-mutating "today" price bar, not a settled close — traced through signal-engine's entire TA stack, decision-engine's own T196 hard-reject gate (which ironically reintroduces the exact defect an earlier gap-filter fix was meant to close), and ml-prediction's live-inference path `predict_latest()` (while its OWN training pipeline was already separately hardened against this exact defect class, never ported to inference). Also: Unusual Whales' 22,031 rate-limit events/48h traced to one uncached 1-minute function (`check_options_flow_alerts`) — now fixed with a 45s cache; Polygon/Alpha Vantage confirmed dead in live production (blank keys, no runtime override) despite looking like real fallback diversification in code — yfinance is the de facto sole data source today. **UPDATE (Phase B, [`docs/2026-09-04/PHASE_B_LIVEBAR_HYPOTHESIS_TEST.md`](../docs/2026-09-04/PHASE_B_LIVEBAR_HYPOTHESIS_TEST.md)): the live-bar defect was tested directly against the confidence-inversion finding and REJECTED as its cause — the inversion is essentially unchanged in the settled/uncontaminated subset (n=11,779). The live-bar fix itself is real and worth doing on its own merits but is PAUSED per explicit user instruction until the inversion's actual cause is found; do not re-derive it as "likely explains the inversion" from this line alone.**

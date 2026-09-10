@@ -237,3 +237,19 @@ test failed against correct code. Fixed by stripping `//` comment lines before m
 **This is the fifth time this session** a source-text assertion matched prose rather than a
 statement. The rule: assert on an imported value, or strip comments first, or match a form that
 cannot appear in a comment.
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+`/events/overview`'s Nested `top_buys` Is a DIFFERENT Shape Than the Standalone Leaderboard Endpoints — Reused the Wrong Type; AUD-HORIZONCOMPARE-BEARREGIME — a reference page showing a hardcoded snapshot of values the backend OVERRIDES at runtime (symptomless: renders cleanly, numbers plausible, nothing errors). Read its 4-point checklist before adding or reviewing any "reference values" page.; **AUD-ADMINPAGE-GUARDGAP + AUD-NAV-ROTATIONEXPLAINER-DEADLINK (2026-09-08)** — the same contract declared twice (the `_app.tsx` nav tree and each page's own guard) drifted in BOTH directions: 4 `adminOnly` pages had no admin check (one had no guard at all, rendering for unauthenticated visitors) while a `minTier: advanced` page required `role=admin`, making its own nav item a dead link. `frontend/src/lib/navGuardParity.test.ts` now walks the real nav tree against the real page sources so new gated pages inherit the check; it asserts its own non-vacuity, since a nav regex matching nothing would make every case pass. **AUD-ADMIN-PROVIDERKEY-NOCLEAR (2026-09-09)** — clearing a provider API key in Settings saved "successfully" and changed NOTHING; **found while rotating a leaked credential**, and the key had to be deleted by hand with `redis-cli`. Three links, all required: the frontend sent `value || undefined`, **`JSON.stringify` DROPS `undefined`** so the field never arrived, and the backend guards `if ... is not None`. **`undefined` does not survive serialisation, so "field absent" had to mean both *unchanged* and *cleared*** — a "remove it" state needs its OWN explicit signal. `polygon`/`alpha_vantage` were the only credentials without an `unshare_*` flag (Claude/DeepSeek/Alpaca/UW all had one) — **the pattern existed and these two sat outside it**. Fixed with `clear_runtime_key()` (DELETES rather than writing `""`, since an empty entry still shows in `--scan` while the code treats it as absent), an `unshare_*` flag each, and a trimmed frontend where whitespace counts as empty. Clear runs AFTER set on purpose: a request with both is ambiguous, and ending with NO credential is the safe reading. A parity test now requires all six provider credentials to declare a removal path.

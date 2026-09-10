@@ -180,3 +180,19 @@ ssh -i ~/Documents/Stock_AI/lausing.pem ec2-user@18.205.121.71 \
    \"SELECT ts, close, volume FROM prices p JOIN stocks s ON s.id=p.stock_id \
      WHERE s.symbol='V' AND p.timeframe='D1' AND p.ts >= '2026-08-28' ORDER BY ts;\""
 ```
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+Deep Audit Series (2026-09-03): Options Trading & Alerts — 6 of 6, SERIES COMPLETE (compute_options_pressure_score()'s cp_ratio component was asymmetric — contradicted its own docstring's claim that both extreme-bearish and extreme-bullish readings score the full 40 points — fixed; "zero options-flow-alert outcomes ever resolved" investigated and confirmed a genuine non-issue, just checked before the daily evaluator's scheduled run; V's missing 2026-09-02 D1 price bar flagged as a separate, out-of-scope ingestion gap; UW confirmed fully and correctly wired across every options surface meant to use it)

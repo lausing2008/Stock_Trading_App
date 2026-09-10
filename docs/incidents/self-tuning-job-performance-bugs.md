@@ -521,3 +521,19 @@ entirely.
 |---|---|---|
 | GROWTH Paper (1) | `open_exposure_cap` 43.9% vs 40% max, 5 open | working as designed |
 | ETrade Sandbox (5) | `consecutive_loss_limit`, 10 straight losses, suspended | the 2026-09-08 breaker fix working |
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+BUG-WEEKLYREFRESH-HEAVYSWEEP-TIMEOUT — Heavy Weekly Sweeps Were Timing Out And Silently Truncating the Rest of Sunday's Tuning Chain (Fixed 2026-08-31); BUG-...; AUD-MINRR-MARKETBLIND — Self-Calibrated R:R Floor Pooled Across Markets, Silently Disabling HK Paper Trading for Months (Fixed 2026-09-04); AUD-MISFIREGRACE-OPTIONSFLOW — 3 of 17 Every-Minute Scheduler Jobs Silently Died After Their First Run (Fixed 2026-09-04) **AUD-RR-REGIMEFLOOR-UNREACHABLE (2026-09-09)** — user asked "why no trades on paper trading in US market": **35 of 35 DE verdicts blocked on R:R in 24h, ZERO approvals, no US entry for 5 days**, all with healthy jobs and no errors. `calibrate_min_rr_ratio` learned a choppy floor of **3.4:1** from 103 trades while `_default_game_plan()` caps `take_profit` at `live_price * target_pct` — so achievable R:R is bounded by style geometry + the candidate's own ATR stop, and **nothing ever compared the two**. Measured over 129 US symbols, share able to reach 3.4 at all: **GROWTH 49%, LONG 53%, SWING 15%, SHORT 2%** — for SWING/SHORT an inability to pass, not selectivity. Same family as AUD-SIGALERT-RRUNREACHABLE. Fixed by capping the regime floor at each candidate's **own** ceiling in `hard_rejects.py` (the AUTHORITATIVE path); a tight-stop candidate still faces the full 3.40. **MY FIRST FORMULA WAS BACKWARDS** — the per-style constant `(target_pct-1)/(1-stop_pct)` is the MINIMUM not the maximum (the fixed stop is the WIDEST stop `max(atr_stop, fixed_stop)` ever uses), and it matched the sweep's per-style WORST case exactly, which should have flagged it; capping there would have LOOSENED GROWTH to 2.77 and LONG to 2.38. **SHORT is out of scope and that is CORRECT** — its 1.67 ceiling is below the BASE `min_rr_ratio` of 2.0, and the cap only ever reduces the REGIME component. **Tech sector check (user asked): genuinely MIXED — XLK is BULL while IGV/QQQ are choppy — but irrelevant, because regime is classified on SPY ALONE with no per-sector regime.** Also **AUD-DE-COMMONSTUB-NONPACKAGE (2026-09-09)** — a defect I shipped the day before: adding `from common.market_calendar import ...` to `hard_rejects.py` collided with four test files' `sys.modules.setdefault("common", MagicMock())`, and **a bare Mock is not a PACKAGE**, so **188 tests (incl. the 144-test hard-rejects gate suite) silently stopped running for a day**. It reads as "4 errors during collection", NOT a failure. Fixed in `conftest.py` with market-data's existing pattern. **sys.modules stubs are process-wide: stubbing a PACKAGE as a bare Mock forbids every real submodule beneath it, and the breakage lands in files you did not touch.** Note a full-suite run MASKS it (siblings self-stub) — it only fails when a file runs alone.

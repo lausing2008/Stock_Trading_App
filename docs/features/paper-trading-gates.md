@@ -111,3 +111,19 @@ and still pinned**: one portfolio's bad data (`initial_capital == 0` → `ZeroDi
 abort the whole market's digest.
 
 **Volume:** 10 emails/day → 2. 22 new tests, five sabotages caught.
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+Paper Portfolio Badges Are Two Independent Layers — layer-1 (portfolio/market-wide gates) vs. layer-2 (per-candidate "why no entry") badges on `/paper-portfolio/list` **T372-PORTFOLIO-DIGEST-CONSOLIDATE (2026-09-09)** — user reported **10 `[Paper Portfolio]` emails at once**, 5 of them reading `+0.0% / $0`. Structural, not a bug: the loop was `for user: for portfolio: send()`, so **email count = users x active portfolios** and it silently DOUBLED the day five portfolios were added. Now **one email per MARKET** (every portfolio a row, closed trades + open positions consolidated), and **each market fires an hour after its OWN close** (`_us` 17:00 ET, `_hk` 17:00 HKT) gated on its OWN calendar — previously one 17:00 ET job reported HK ~17h late and could skip an HK digest on a US holiday (AUD-PT-CROSSMARKETSWEEP class). Market filter runs in **Python, not SQL** (`config` is `json` not `jsonb`). **Empty portfolios are still SHOWN, tagged `(no activity)`** — 0.0% with no trades means the entry gates admitted nothing, a real state; hiding it would make absence ambiguous with a dead job. **Dedup key inverted to `(user, market, date)`** — keeping the portfolio id would re-send the same consolidated email once per portfolio it contains. 10 emails/day -> 2.

@@ -270,3 +270,19 @@ exercise `_bar_is_incomplete()` directly and to **pin the consequence explicitly
 (`test_the_volume_gate_can_no_longer_fire_on_the_LIVE_ENTRY_PATH`), rather than deleting the
 coverage or quietly weakening the assertions. A behaviour change that invalidates a test should
 make the *new* behaviour assertable, not remove the question.
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+BUG-MONITORPOS-STALEPRICE — `_monitor_positions()` Could Run Exit Checks Against a Frozen Price Forever (Fixed 2026-07-21); BUG-TALEVELS-EMPTYPIVOTS-FLOATIDX... **AUD-VOLZ-PARTIALBAR (2026-09-09)** — the volume-z hard gate compared **TODAY's partial bar against a 20-day baseline of COMPLETED days**, so mid-session it is biased NEGATIVE by construction — and the gate only rejects on the negative side, so it **could only ever OVER-BLOCK**, which is why it hid. Measured: a 12:28 ET cycle gave mean `volume_z` **−1.84 with 64.3% below the −1.5 floor** vs **+0.50 / 3.1%** post-close the day before, with raw bars at **0.26×–0.51×** of their 20-day average (M5 curve confirms ~47.7% of session volume by 12:30 ET). **The FLOOR is CORRECT and was NOT retuned** — at 1.6–6.5% post-close it is sane selectivity; a sabotage test pins that. Both consumers now fail OPEN on an incomplete bar (authoritative `hard_rejects.py` AND the shadow `paper_trading_engine`, whose `paper.skip_low_volume` fired 128×/24h). **READ THIS BEFORE ASSUMING THE GATE STILL WORKS: both entry paths already require market hours, which is exactly when the bar is incomplete, so this gate can NO LONGER FIRE on a live entry decision** — intraday volume confirmation is ABSENT, not fixed. It still applies to settled-bar callers (backtests/replays). **Restoring it is ~5-6h and deliberately deferred**: the data exists (1.34M M5 rows) and the fix is to scale the mean by elapsed-session fraction, BUT `volume_z` also carries TA weight 0.05 and feeds `_vz` at `signals.py:1289`, so changing it **shifts every signal's TA score** — the AUD232 risk `docs/2026-09-05` warns about. Needs its own before/after score comparison.

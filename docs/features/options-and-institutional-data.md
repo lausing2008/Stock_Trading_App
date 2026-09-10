@@ -1042,3 +1042,19 @@ unclassified — they were registered as non-alert data-capture jobs rather than
 guard.
 
 ---
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+T230-DATA-OPTIONS-CHAIN — Full Strike/Expiry Options Chain (Built 2026-07-22); TIER82-FMP-ANALYST-ESTIMATES — analyst_pt_upside ML Feature (Built 2026-08-18,...; AUD-UWEXPAND (2026-09-07) — surveyed all 226 UW endpoints against the LIVE key (documented != entitled) and wired the 4 the tier already grants: ETF fund flows (the only NON-derived flow signal on the platform), 13F institutional ownership w/ holder cost basis, and the stock screener. Records that entitlements are **three axes** (tier / product add-ons / scopes) so an Advanced upgrade likely does NOT buy futures+private-markets too, that `get_earnings_transcript()` is **wired but 403 and silently dead**, and that the FDA calendar had to be **unscheduled** (returns oldest-first, ignores every date/pagination param — current events unreachable). Also OPTHIST-1 — Historical Option Chain Capture (Built 2026-09-07) — closes the "no historical options data anywhere" gap that hard-blocked options backtesting; UW history is a ROLLING ~2yr window not an archive, so capturing is TIME-SENSITIVE. Read it before any options-history backfill: greeks are sparse BY DESIGN (present exactly 1:1 with volume>0), and DB volume is the binding constraint, NOT the 120k/day request budget (1 request per symbol-day). **Cost splits by symbol class — never scope with one flat average:** index ETFs (SPY/QQQ) ~3.0 MB/symbol-day (~0.73 GB per symbol-year), single names ~1.06 MB/symbol-day (~0.26 GB). Earlier published figures of ~285 KB and of ~1.05 MB-as-universal are both wrong; the doc carries the postmortem. Also documents OPTHIST-DUPINDEX: per-column `index=True` PLUS explicit `__table_args__` indexes makes SQLAlchemy build every index twice, silently — worth checking on any new high-volume table.

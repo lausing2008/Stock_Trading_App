@@ -193,3 +193,19 @@ docker exec stockai-postgres-1 psql -U stockai -d stockai -c "SELECT id, name, c
 docker exec stockai-market-data-1 grep -n "de_min_score" /app/src/services/paper_trading_engine.py
 docker exec stockai-decision-engine-1 grep -n "INSUFFICIENT DATA" /app/src/api/core/sizer.py /app/src/api/core/scorer.py
 ```
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+Deep Audit Series (2026-09-03): Decision-Making — 2 of 6 (4 production portfolios had min_confidence=15/min_entry_score=3, far below real defaults — config fixed live; shadow-comparison min_score bug, batch equity-floor bypass, falsy-zero, missing research vocabulary — all fixed; 5 items deferred)

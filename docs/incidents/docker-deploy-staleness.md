@@ -509,3 +509,18 @@ change that day.
 
 ---
 
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+**AUD-DEPLOYDRIFT-T370REVERT (2026-09-10)** — found by RUNNING `scripts/check_deploy_drift.sh` while answering "everything looks good now?"; the honest answer was NO. **10 of 12 services ran a stale `shared/db/models.py`** missing T370's columns, because they were deployed by `docker cp` and **the reboot reverted them** — at least the NINTH time this pattern has bitten this repo. **Impact was assessed BEFORE rebuilding:** the DB columns exist, only 2 services read them, both were already clean, and the one apparent risk (`ml-prediction`) referenced `EarningsEvent` only in a **COMMENT** — so nothing was broken, but a stale shared model is a latent trap. Fixed by rebuilding all 10 as **IMAGES**, never another `docker cp`. **First-ever fully clean run: 0 of 12 drifted.** Also caught: EC2's checkout sat one commit behind because a docs commit was pushed AFTER the deploy's `git pull`. **Two things checked rather than dismissed:** 39 ml-prediction + 6 research-engine tracebacks were real but `QueuePool limit reached` confined to ONE MINUTE during the restart window (10 services reconnecting at once), zero since; and **load 9.65 on 2 vCPUs with iowait 0.00%** is a BUSY box, not a dying one — yesterday hit 7.65 at the same hour. **The distinction that matters: high load + LOW iowait is work; low user CPU + HIGH iowait is starvation.**

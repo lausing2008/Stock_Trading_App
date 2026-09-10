@@ -138,3 +138,13 @@ systematic guard** — e.g. asserting that every key in `_ENTRY_GATE_KEYS` / `_H
 actually arrives at DE, so the next added parameter cannot silently fail to plumb through.
 
 **Not fixed — reported only, per the agreed audit protocol.**
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** Moved out of `.claude/CLAUDE.md`'s Topic File Index, which is read
+at the start of every session. Preserved verbatim.
+
+**SIX-PART DEEP PLATFORM AUDIT (2026-09-07): Decision-Making, ML Training, AI Signal, Entry Timing, Paper Trading, Option Alerts. 17 findings, ALL FIXED AND DEPLOYED (tier 363).** Read the relevant domain file before touching that area. **The pattern worth internalising: not one of the 17 was a crash or an exception — every one was a SILENT WRONG ANSWER** (a gate that passed everything, a flag that never refreshed, a message that was confidently false). This platform's failure mode is not breaking; it is quietly not working, so "no errors in the logs" is not evidence anything works. Headline findings: the ML pillar was DEAD for LONG+GROWTH (2,060 live signals / 7d carried zero ml_weight — the serial nightly retrain never reached them); the self-healing watchdog was LOOSENING SWING's threshold 7 points and had locked itself out; the anti-chase roc_10 filter had never blocked a real entry (ported to the shadow-logged fallback, not the authoritative DE gate); two entry gates were mathematically incapable of firing (self-referential breakout); positions were force-closed after 5 MINUTES on a false "momentum lost" message; HK sizing was ~43% over for months; 71% of options-flow alerts recommended ALREADY-EXPIRED contracts. **Three things that LOOK broken and are NOT — do not re-derive them as findings:** stop execution (compare against `current_stop`, not the original `stop_loss`), HK GROWTH holding more cash than initial capital (it is simply profitable), and prebreakout's 0% win rate (effective sample ~2-3, heavily clustered). **Two items deliberately left as decisions, not defects:** the ML retrain still cannot finish a full pass in one night, and the R:R gap (2.95 promised vs 1.77 delivered) is a consequence of scale-outs capping upside, not a bug.

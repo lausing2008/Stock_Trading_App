@@ -124,3 +124,19 @@ silently inherit the same 100× error.
 - **The live-bar fix remains open on its own merits** (still paused per instruction). This
   finding does not change that: it was never the cause of the inversion, but it is still a real
   point-in-time-correctness defect.
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+- **[`docs/2026-09-04/PHASE_B2_INVERSION_ROOT_CAUSE_FOUND.md`](../docs/2026-09-04/PHASE_B2_INVERSION_ROOT_CAUSE_FOUND.md)** — **THE CONFIDENCE INVERSION IS SOLVED AND WAS ALREADY FIXED.** It was an artifact of `AUD232-BUY-FROM-TOP` (commit `aee6d17`, 2026-08-03): the highest-conviction BUY signals were firing on extended/overbought stocks at their 20-day highs, so high confidence causally selected the worst entries. Split on the fix date, high-conf (≥80) BUYs went from the WORST bucket (−7.19%, 33.5% win, n=744) to the BEST (−1.02%, 51.6% win, n=95); weekly `CORR(confidence, pct_return)` is negative every week before (to −0.215) and non-negative every week after (+0.072/+0.013/+0.100). Supersedes PHASE_B's "root cause unfound" and all four of its proposed next-hypotheses — do NOT re-investigate those. Two consequences: (1) confidence is NOT meaningless — post-fix it is correctly signed, so re-scope any roadmap item premised on rebuilding it; (2) all-time aggregate signal stats pool two materially different systems (62% of evaluated BUY outcomes predate the fix) and understate current quality — re-baseline from 2026-08-04. **Also found: `signal_outcomes.pct_return` is a FRACTION (no ×100) while `paper_trades.pct_return` IS ×100 — same column name, two tables, two scales. Prior analyses reading the fraction as a percent overstate magnitudes 100×; the numbers in PHASE_B are on the wrong scale (its shape conclusions still hold).**

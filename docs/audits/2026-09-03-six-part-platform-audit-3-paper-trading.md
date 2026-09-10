@@ -184,3 +184,19 @@ ssh -i ~/Documents/Stock_AI/lausing.pem ec2-user@18.205.121.71 \
      FROM paper_trades WHERE exit_price IS NOT NULL AND exit_reason IN ('stop_hit','breakeven_stop') \
      GROUP BY exit_reason, era ORDER BY exit_reason, era;\""
 ```
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+Deep Audit Series (2026-09-03): Paper Trading — 3 of 6 (poll_broker_order_fills never cleared its "still needs polling" signal, silently re-polling filled broker orders forever — fixed with a new broker_fill_confirmed column + migration; stop_hit/breakeven_stop "contradictory" stats confirmed to be stale pre-fix history, not a live bug; P2 HK-SWING's dormant trading confirmed to be a real watchlist-breadth gap, not a bug)

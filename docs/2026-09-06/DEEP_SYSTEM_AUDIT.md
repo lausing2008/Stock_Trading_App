@@ -1326,3 +1326,19 @@ measurement) or a *silent-corruption fix* (cash race, RL labels). They are preci
 that cycle endorsed: **"the only finding that silently corrupts every other measurement."**
 
 Item 9, by contrast, changes trading behavior and belongs *after* the measurement window.
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+- **[`docs/2026-09-06/DEEP_SYSTEM_AUDIT.md`](../docs/2026-09-06/DEEP_SYSTEM_AUDIT.md)** — Full-system architecture + trading-logic deep audit, 27 verified findings. All 19 priority fixes applied and deployed (`prod` commits `9225995`, `bed7ed9`, `50c710f`, `0fb74c3`). Tracked as improvements tier 352.

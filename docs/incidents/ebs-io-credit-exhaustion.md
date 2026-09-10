@@ -125,3 +125,19 @@ guard and briefly read `exit=0` as the guard not working. Check `$?` unpiped, or
   images for a 12-service platform. That works only with disciplined disk hygiene. If builds
   become frequent, the durable fixes are a larger/gp3 volume (gp3 has no burst-credit model at
   baseline) or building images off-instance.
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+**INCIDENT 2026-09-10: a frontend rebuild made the whole instance unreachable for ~50 min.** NOT network, NOT OOM (`journalctl -b -1` had zero oom-kills): **EBS I/O credit exhaustion**. The tell is `ssh` failing **"during banner exchange"** while **TCP 22/443 both ACCEPT** — sshd can be reached but cannot read its host keys off the disk. `sar` shows `%user` COLLAPSING 75.6→0.4 while `%iowait` rises to 44 and `%idle` hits **0.01**, with `%steal` flat ~2% (so not a noisy neighbour). **The cause was accumulated garbage, not the build:** 144 images / 62.23GB with **53.49GB (85%) reclaimable** and **128 dangling images** on a volume at 84%; one `docker image prune -f` reclaimed **47.25GB** and took it to 36% — more than the platform's entire live footprint. **Use `scripts/deploy.sh`**, which preflights disk+iowait, REFUSES a frontend build under 25GB free, auto-prunes before and after, and verifies after a 45s settle requiring the literal `healthy` — I previously declared a deploy clean from a check run 90s after recreation while health checks were already timing out platform-wide. **"Up" is not "healthy".** Deliberately no `docker cp` path and no `prune -a` (which would silently force a full 12-service rebuild).

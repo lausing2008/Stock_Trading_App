@@ -219,3 +219,19 @@ the bulk path the scheduler uses. Both now derive one `_effective_market`.
 
 > **Two things inferring the same fact by different rules is a bug waiting for one of them to
 > change.**
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+**RANKING / K-SCORE audit (2026-09-08): 6 findings, all fixed (tier 366).** Read before touching `services/ranking-engine/` or `kscore.py`. **Headline (`AUD-RANK-RSPLACEHOLDER`): `_rs_score()` fabricated a neutral 50.0 whenever the benchmark was missing, and the weight optimizer had ALREADY LEARNED FROM IT** — `^HSI` is not DB-seeded and `_etf_20d_return()` skips its DB path for `^` tickers, so yfinance was its only source and rate-limits it every cycle; 1,956/3,459 HK rows (56.5%) were exactly 50.0 vs 6/9,328 (0.1%) for US, and `tune_kscore_weights` responded by halving `relative_strength` 0.10 → 0.0501. The optimizer was working CORRECTLY on corrupt input, which is why nothing looked broken. **Fixing the data does NOT undo the demotion — the Redis override must be cleared separately.** **ONE ITEM STILL OPEN:** 1,956 HK rows still hold the 50.0, and since they are `50.0` not `NULL` the tuner's own exclusion won't skip them, so a Sunday run may re-demote the weight — needs a scoped `UPDATE` (HK only; the 6 US 50.0s are VOO/IGV/GOOG and genuinely real), blocked by the SELECT-only DB constraint. **Do not assume it was applied.** Also: XLP sat 102 days stale because the ONLY job that ingests benchmark ETFs (they are all `active=False`, so `_symbols_for()` skips them) omitted it from a hardcoded list — the FOURTH copy of the sector-ETF set; the sector→ETF map was keyed on GICS names the yfinance-sourced data never emits, in THREE services (silently disabling PT-M1's sector-lag exit gate); null value/growth was cohort fragmentation, NOT missing fundamentals (94% have a warm cache); and 12.81% of rows tied at the volatility clip floor. **Things checked and CLEAN — do not re-derive:** point-in-time integrity, all K-Score consumers fail closed, no falsy-zero in any read path, the weights tuner's promotion gate, and the live weight set summing to 1.0001 (harmless — `compute_kscore()` renormalizes unconditionally, which is also WHY failing closed was safe).

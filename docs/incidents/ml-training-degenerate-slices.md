@@ -74,3 +74,19 @@ that substring legitimately appears elsewhere in the same scope. Assert on the f
    Prefer degrading to the existing suppression path over producing no model at all.
 
 ---
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+AUD-MLCV-SINGLECLASSFOLD — a single-class TRAINING slice made sklearn's `predict_proba` return shape `(n,1)`, so `[:, 1]` killed the ENTIRE `train_model()` call, not just the fold (the validation slice was guarded, the training slice never was). Read before touching any training loop: guard the slice that feeds `fit()`, not only the one that feeds the metric. Also carries a test-quality lesson — a source-text assertion on a mere substring is weak when that substring appears elsewhere in scope.

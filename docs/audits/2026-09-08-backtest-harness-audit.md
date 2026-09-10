@@ -233,3 +233,19 @@ display-only. Separately `multi_tranche_engine` checks `bar_high >= upper` **bef
 `bar_low <= lower`, so a bar touching both barriers always scores a WIN, and exits fill *at* the
 barrier — correct for a limit target, wrong for a stop that gaps through. That feeds
 `position_scaling_gate`, which is **shadow-mode only** (logs a verdict, never acts).
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+**BACKTEST HARNESS audit (2026-09-08): 4 findings fixed + 1 RETRACTION (tier 367).** Read before touching `services/market-data/src/backtest/` **or quoting any backtest number.** **The headline is counterintuitive: the harness does NOT overstate performance — it UNDERSTATES it by ~5.7pp on GROWTH, and its lookahead discipline is the best-built part of the codebase.** What was broken was the configuration plumbing around a sound core. **THE RETRACTION (`AUD-BT-HOLDMODELGAP`):** the 2026-09-06 scoping doc's headline claim that "GROWTH gates admit a losing population" is **NOT SUPPORTED** — the harness scores a fixed-hold-to-horizon model (no stop, no target, no slippage) while the live engine exits at ~6.8d; the SAME GROWTH signals returned **+0.26% real vs −5.45% harness**, with the gap localising entirely to `breakeven_stop` and `target_reached`. 5.7pp is **11× the 0.5 promotion threshold** and is **non-uniform** (it varies with the exit mix the tuned config itself changes) — so treat `avg_return_pct` as a RELATIVE ranking signal between candidates, never as realised performance. **Three of the four code findings are ONE failure: a required input silently defaulting to a PLAUSIBLE WRONG value** (`cfg["market"]` → "US", `signal_data["horizon"]` → "SWING") — live callers supply it, harness callers forgot, and the default was valid so nothing raised. Consequence: **HK was un-tunable for MONTHS** via two independent bugs (the cfg default, plus `_entry_as_of` building 12:00 HKT which is HKEX's exclusive morning close — the lunch break; fixing either alone still gave zero entries), and the **only risk-side promotion check was mathematically inert** (fractions compared against a percentage-point tolerance, so `regression <= 10.0` was always true). **Things checked and CLEAN — do not re-derive:** all lookahead paths (strict `<`, PIT kscore deliberately bounded, T+1 entry, no `.iloc[-1]` defect), BUG233's wall-clock fix, survivorship handling, promotion margins (they err STRICT), and a fail-open/falsy-zero sweep across all 8 modules with zero hits. **Two items recorded but deliberately NOT fixed:** the research-summary lookahead in `_should_enter`'s replay is **latent** (all 68 cached reports are past TTL so it 404s — but it becomes live if research generation resumes), and the win-rate `r > 0` drift is display-only (~3.1-3.3pp) since promotion uses `avg_return_pct`.

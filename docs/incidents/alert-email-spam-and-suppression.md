@@ -240,3 +240,19 @@ accumulating outcomes, with a scheduled evaluation. Revisit only if that evaluat
 non-momentum input is still needed.
 
 ---
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+Signal Alert Email Spam — BUY→HOLD→BUY Oscillation; Alert Email Suppression — market:refresh_failed Flag (BUG-8); BUG-MORNINGDIGEST-SENDLOOP — Same Unguarded...; **AUD-DARKPOOL-STALEPRINT (2026-09-08)** — the same dark-pool print re-emailed every 60 min, **reported by the USER from their inbox after this exact path had been audited CLEAN**. The cooldown works as designed; the DESIGN deduped on `(user, symbol)` with nothing identifying the print, and `get_dark_pool_prints()` returns UW's **multi-day rolling window** with no age filter — so the biggest block a symbol ever printed stayed the candidate forever. Carries the generalisable check: **ask what a cooldown key can and cannot distinguish** — one that omits the identity of the thing being announced will re-announce it forever. **AUD-CONVICTION-RSIDIV-NOWRITER** — `rsi_divergence` has NO producer (0 of 4,316 signals in 7d) yet 3 consumers read it, and the alert email rendered **"None detected"** to every user: a confidently FALSE statement, not a null. Same error class as `AUD-RANK-RSPLACEHOLDER` — **"not measured" collapsed into "measured as nothing"**. Two corrections placed in the SOURCE: the removal comment's "hard-zeroed (argmax bug)" claim is **WRONG** (376 bearish / 155 bullish across 4,678 rows — it DID fire), and the signal is directionally right but **n=42**, far too small to restore on. Gate left in place, marked DORMANT.

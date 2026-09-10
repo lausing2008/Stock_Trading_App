@@ -179,3 +179,19 @@ ssh -i ~/Documents/Stock_AI/lausing.pem ec2-user@18.205.121.71 \
      ROUND(100.0*COUNT(*) FILTER (WHERE is_correct_5d)/NULLIF(COUNT(*) FILTER (WHERE is_correct_5d IS NOT NULL),0),1) as win_pct \
      FROM squeeze_alert_outcomes GROUP BY alert_type;\""
 ```
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+Deep Audit Series (2026-09-03): Short Squeeze Alerts — 5 of 6 (fresh re-audit despite an exhaustive pass just 3 days prior; found genuinely new ground: return colors on both squeeze/gamma and options-flow dashboards displayed real wins in red/losses in green for every bearish-thesis row — fixed; options_flow_alert_backtest's mixed-direction buckets blended raw returns from both directions, understating performance — fixed; squeeze_alert_backtest never applied the RVOL gate the live alert has required since 2026-08-18 — fixed; short_squeeze's 9.1% win rate/9-day silence investigated and judged real-but-uninformative small-sample noise, not a bug; UW's get_short_interest confirmed unwired from the real-time alert despite being wired into the sibling screener — deferred, needs its own design pass)

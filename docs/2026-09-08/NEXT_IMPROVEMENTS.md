@@ -330,3 +330,19 @@ parameters do not support — the same error class as the original bug.
 **29 "empty" tables** including `users` and `price_alerts` (137 real rows). Only `COUNT(*)`
 answers "is this table empty" — which mattered here because an empty table was the CRITICAL
 finding.
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+open items after the two audits, plus **AUD-ING7-DELISTNEVERFIRES (tier 365)**. Two facts worth knowing before touching delisting or ingest liveness: (1) **`Stock.delisted` IS set** — by `_record_delisting_signal()` in `ingestion.py`, which is complete and now actually fires; older comments in `ml-prediction/routes.py` claiming "nothing ever sets delisted=True" are **stale**. (2) **`_symbols_for()` deliberately still INCLUDES delisted symbols** — ingestion is what detects and *reconfirms* delisting, so filtering them there disables the mechanism and makes a mistaken flag permanent; a pre-existing test guards this and is right. Also carries the generalisable trap: **yfinance behaves differently depending on how you ask** — an explicit `start`/`end` window returns a dead ticker's final stale bar and *succeeds*, while a relative `period=` raises `YFPricesMissingError`. Never infer liveness from the absence of an exception; judge the freshness of the bars actually returned. Remaining ML lever is data, not scheduling (the universe trim was **retracted** — 169 of 173 symbols produce BUY signals); next un-audited domains ranked there, with five things explicitly not worth doing.

@@ -174,3 +174,19 @@ ssh -i ~/Documents/Stock_AI/lausing.pem ec2-user@18.205.121.71 \
   "docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
    \"SELECT stock_id, horizon, COUNT(*) FROM signal_outcomes WHERE signal_direction='BUY' AND is_correct IS NOT NULL AND signal_date >= CURRENT_DATE - INTERVAL '365 days' GROUP BY stock_id, horizon HAVING COUNT(*) >= 20 ORDER BY COUNT(*) DESC LIMIT 10;\""
 ```
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+Deep Audit Series (2026-09-03): Model Training — 4 of 6 (41/249 live models had zero true positives ever observed — "dead recall" — yet cleared the only existing coin-flip suppression check; 40/249 had a large overfit-gap in the untested direction; both fixed via a new _compute_oos_suppression() with 3 conditions — 114/249 models, 46%, will newly suppress once retrained; n_outcome_rows drop-off root cause deferred, not fully isolated)

@@ -298,3 +298,19 @@ worth copying for any long batch job.
 materially; sample size, not age, is the binding constraint.
 
 ---
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+AUD-MLAGE (2026-09-07) — model training age surfaced on the ML Model Accuracy panel; carries the **three-state null rule** (known age / UNKNOWN / a genuine 0 = trained today) that must not be collapsed either direction. Also AUD-MLRETRAIN-UNKNOWNAGE: **a fleet-wide retrain is NOT warranted** — 89% of freshly-retrained models immediately self-suppress, stale models measure marginally BETTER than fresh, and the binding constraint is `n_test` median 28 (noise-dominated AUC), not model age. Read before proposing any mass retrain. Also AUD232-059 — meta_trainer.py's Per-Row Feature Recomputation Deduplicated (Fixed 2026-07-21); T237-ML2b — eps_revision_direction Reintroduced Point-in-Time-C...

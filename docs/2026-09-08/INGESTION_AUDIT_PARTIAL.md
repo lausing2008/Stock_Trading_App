@@ -450,3 +450,19 @@ zero genuinely indicates a bad bar). The `allow_zero_volume` parameter already e
 plumbing a market-aware value into it, not new machinery.
 
 **Not fixed — reported, per the one-area-at-a-time protocol.**
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+**DATA INGESTION & PRICE INTEGRITY audit (2026-09-08): 6 areas, 3 findings, all fixed (tier 364).** **Ingestion is the HEALTHIEST domain audited so far** — 123,475 daily bars with zero duplicates, zero `high<low`, zero closes outside range, zero bad volumes. Do not assume it is broken because the trading domains were. **Read before touching `validate_ohlcv()` or the DQ checks.** Key facts a future session would otherwise re-derive: `validate_ohlcv()` (`ingestion.py:110`) DOES exist and enforces OHLC ordering + positivity on every write path (`pg_insert(Price)` is the only writer anywhere); its `volume > 0` rule was a US-liquid-equity assumption that deleted ~60% of illiquid HK history until `allow_zero_volume` was made market-aware — **HK daily allows zero volume, US daily stays strict, and `allow_zero_volume` lowers the floor to `>= 0` rather than skipping the check (skipping it lets a NEGATIVE volume through)**. The DQ price checks are `MAX()` aggregates and were blind to per-symbol death until the `stale_symbols_d1` gauge was added; **DQ gauges take `counter_key`/`counter_fn`, never a SQL `query` or `max_value`**. The SPY `open`-outside-`[low,high]` anomaly is **CLOSED**: a legacy writer mixed unadjusted `open` with adjusted `high/low/close`; it no longer exists (70 clean SPY bars since), and GOOGL's `adj_close`+timestamp artifacts are the same writer's fingerprint. **Three of my own claims in that doc were wrong and are corrected in place** — trust the corrections, not the original statements.

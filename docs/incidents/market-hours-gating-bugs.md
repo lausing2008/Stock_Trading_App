@@ -252,3 +252,19 @@ incidental formatting alongside the real invariant.** Rewritten to assert the pa
 `refresh=False` and the case printed FAIL. The calendar was right and the test case was wrong.
 Re-verified against a genuine Friday (2026-09-04 → `True`). **When a calendar assertion fails,
 check the weekday of the date you chose before suspecting the calendar.**
+
+
+---
+
+## Detail relocated from CLAUDE.md's index (2026-09-10)
+
+**T382-CLAUDEMD-REINDEX.** The lines below lived in `.claude/CLAUDE.md`'s Topic File Index,
+which is read at the start of EVERY session and re-paid on every prompt-cache rebuild. They
+were verified to be **new content, not duplicates** of this file — a sampled check found only
+1-2 of 6 claims from each oversized index entry already present here — so they are moved rather
+than deleted, and the index keeps a short pointer.
+
+Preserved verbatim. Formatting is unchanged from the index entry, including its emphasis, so
+nothing is lost to a reflow.
+
+BUG-VOLANOM-STALEMARKET — Volume-Anomaly Alert Fired on a Closed Market's Frozen Daily Volume (Fixed 2026-07-21); **AUD-DIGEST-HOLIDAYBLIND (2026-09-08)** — 13 emails sent on US Labor Day presenting Friday's prices as live, while the SAME process logged the holiday skip 77 times for the refresh path: a `mon-fri` cron is NOT a market-open check. Carries a 4-point checklist for any new scheduled job, incl. that `MAX(Price.ts)` silently reaches back to the last trading day and looks completely normal. **AUD-HOLIDAY-2027GAP** — the holiday calendars are now ONE source, `shared/common/market_calendar.py` (they were 3 drifted copies, 2 expiring 2027-01-01, with 2 different element types); `assert_calendar_coverage()` enforces extension with runway. Two things to know: the **HK 2027 lunar dates are a PROVISIONAL reconstruction, not HKEX's published notice**, and `conftest` must load that module for REAL — under the blanket `common` MagicMock stub, `date(...) in NYSE_HOLIDAYS` returns a truthy Mock so every holiday test passes vacuously.
