@@ -171,8 +171,13 @@ function DarkPoolTab() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px' }}>
               <thead>
                 <tr style={{ background: 'rgba(148,163,184,0.05)' }}>
-                  {['Date', 'Symbol', 'Price', 'Premium'].map(h => (
-                    <th key={h} style={{ ...thStyle, textAlign: ['Date', 'Symbol'].includes(h) ? 'left' : 'right' }}>{h}</th>
+                  {/* T383-DARKPOOL-UI: Exec/Live/Side/Shares were stored by T377 but no
+                      endpoint exposed them, so they existed only in the DB and the digest
+                      email. Side is derived from where the print landed in the NBBO spread —
+                      NOT from exec-vs-live, which measured 66.8% agreement (wrong on one
+                      print in three). */}
+                  {['Date', 'Symbol', 'Exec', 'Live', 'Side', 'Shares', 'Premium'].map(h => (
+                    <th key={h} style={{ ...thStyle, textAlign: ['Date', 'Symbol', 'Side'].includes(h) ? 'left' : 'right' }}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -181,12 +186,18 @@ function DarkPoolTab() {
                   <tr key={`${row.symbol}-${row.fired_date}-${i}`} style={{ borderBottom: '1px solid #1e293b' }}>
                     <td style={{ ...tdStyle, color: '#64748b' }}>{row.fired_date}</td>
                     <td style={{ ...tdStyle, fontWeight: 700, color: '#e2e8f0' }}>{row.symbol}</td>
-                    <td style={{ ...tdStyle, textAlign: 'right', color: '#94a3b8' }}>${row.alert_price.toFixed(2)}</td>
+                    <td style={{ ...tdStyle, textAlign: 'right', color: '#e2e8f0' }}>${(row.exec_price ?? row.alert_price).toFixed(2)}</td>
+                    <td style={{ ...tdStyle, textAlign: 'right', color: '#94a3b8' }}>{row.live_price != null ? `$${row.live_price.toFixed(2)}` : '—'}</td>
+                    <td style={{ ...tdStyle, textAlign: 'left', fontWeight: 700, color: row.side === 'buy' ? '#4ade80' : row.side === 'sell' ? '#f87171' : '#475569' }}
+                        title={row.side ? 'Derived from where the block printed inside the NBBO spread at execution: nearer the ask = buyer-initiated, nearer the bid = seller-initiated.' : 'Undeterminable — the print crossed at the midpoint, or carried no usable quote. Not a guess.'}>
+                      {row.side === 'buy' ? 'BUY' : row.side === 'sell' ? 'SELL' : '—'}
+                    </td>
+                    <td style={{ ...tdStyle, textAlign: 'right', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>{row.shares != null ? row.shares.toLocaleString() : '—'}</td>
                     <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700, color: '#38bdf8' }}>{fmtMoney(row.premium)}</td>
                   </tr>
                 ))}
                 {data.alerts.length === 0 && (
-                  <tr><td colSpan={4} style={{ padding: 20, textAlign: 'center', color: '#475569' }}>No dark pool alerts recorded yet — either nothing has qualified, or Unusual Whales isn&apos;t configured.</td></tr>
+                  <tr><td colSpan={7} style={{ padding: 20, textAlign: 'center', color: '#475569' }}>No dark pool alerts recorded yet — either nothing has qualified, or Unusual Whales isn&apos;t configured.</td></tr>
                 )}
               </tbody>
             </table>

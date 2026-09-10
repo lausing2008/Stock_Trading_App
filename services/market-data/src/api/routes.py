@@ -4361,6 +4361,25 @@ def get_dark_pool_alerts_recent_route(
                 "symbol": symbol, "fired_date": row.fired_date.isoformat(),
                 "fired_at": row.fired_at.isoformat() if row.fired_at else None,
                 "alert_price": row.alert_price, "premium": row.qualifying_metric,
+                # T383-DARKPOOL-UI: T377 stored these but no endpoint exposed them, so the
+                # buy/sell side existed only in the DB and the Flow Digest email. `exec_price`
+                # is where the block traded; `live_price` is the stock at that moment; `side`
+                # is derived from the NBBO position, NEVER from exec-vs-live (that heuristic
+                # measured 66.8% agreement — wrong on one print in three).
+                #
+                # `shares` is DERIVED (premium / exec price), not joined: T376 tested the join
+                # to dark_pool_prints and rejected it as ambiguous — MU/AVGO matched no print,
+                # BULL matched SIX for one alert. Uses exec_price when present because that is
+                # the price the premium was actually transacted at; alert_price is the fallback
+                # for rows written before T377, where it WAS the exec price.
+                "exec_price": row.exec_price,
+                "live_price": row.live_price,
+                "side": row.side,
+                "shares": (
+                    round(row.qualifying_metric / (row.exec_price or row.alert_price))
+                    if row.qualifying_metric and (row.exec_price or row.alert_price)
+                    else None
+                ),
             }
             for row, symbol in rows
         ],

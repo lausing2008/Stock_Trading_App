@@ -1896,6 +1896,30 @@ def send_dark_pool_alert_email(to: str, candidates: list[dict], omitted_count: i
         price_str = f"${price:.2f}" if price is not None else "—"
         size_str = f"{size:,}" if size is not None else "—"
         premium_str = f"${premium:,.0f}" if premium is not None else "—"
+
+        # T383-DARKPOOL-UI: the buy/sell side and the stock's price at execution.
+        #
+        # `side` comes from where the block printed inside the NBBO SPREAD (nearer the ask =
+        # buyer-initiated, nearer the bid = seller-initiated), NOT from comparing the print
+        # against the live price. That intuitive version was measured against NBBO ground
+        # truth on 364 real prints and agreed only 66.8% of the time — wrong on one print in
+        # three — because the spread is 10-30 cents wide while the live price drifts dollars
+        # over a session.
+        #
+        # NULL is a REAL third state (~10% of prints: a midpoint cross, a crossed quote, or no
+        # quote) and renders "—". Never defaulted to a side: this email's whole framing is that
+        # it reports MEASURED facts, so a guessed direction would break the one promise it makes.
+        side = c.get("side")
+        side_str = {"buy": "BUY", "sell": "SELL"}.get(side or "", "—")
+        live = c.get("live_price")
+        live_str = f"${live:.2f}" if live is not None else "—"
+        # Percent difference is CONTEXT only — see the 66.8% note above for why it is not the
+        # side signal. Omitted entirely when either side of the comparison is missing, rather
+        # than rendering a misleading 0.00%.
+        vs_str = (
+            f"{100.0 * (price - live) / live:+.2f}% vs live"
+            if price is not None and live else "—"
+        )
         rows_html += (
             f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'
             f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
@@ -1903,11 +1927,14 @@ def send_dark_pool_alert_email(to: str, candidates: list[dict], omitted_count: i
             f'<span style="font-size:13px;color:#0369a1;font-weight:700">{premium_str}</span>'
             f'</div>'
             f'<div style="font-size:12px;color:#64748b;margin-top:2px">'
-            f'{size_str} shares @ {price_str} · venue {venue}'
+            f'{size_str} shares @ {price_str} · {side_str} · live {live_str} ({vs_str}) · venue {venue}'
             f'</div>'
             f'</div>'
         )
-        rows_text += f"  {sym}: {size_str} shares @ {price_str} = {premium_str} premium (venue {venue})\n"
+        rows_text += (
+            f"  {sym}: {size_str} shares @ {price_str} = {premium_str} premium "
+            f"[{side_str}] live {live_str} ({vs_str}, venue {venue})\n"
+        )
 
     omitted_html = (
         f'<p style="font-size:12px;color:#0369a1;margin-top:8px">+ {omitted_count} more print'
@@ -1930,6 +1957,14 @@ def send_dark_pool_alert_email(to: str, candidates: list[dict], omitted_count: i
       reported dark pool venue) — not a claim about why it happened or that the stock will move
       as a result. Institutional blocks cross dark pools for many reasons unrelated to a
       directional view. Not financial advice.
+      <br><br>
+      BUY/SELL is <strong>also a measured fact, not a forecast</strong>: it says which side was
+      the aggressor, from where the block printed inside the bid-ask spread at execution
+      (nearer the ask = buyer-initiated). It does <strong>not</strong> mean the stock will go
+      up or down — a &quot;BUY&quot; can be a hedge, an index rebalance, or the other leg of a
+      pair. This platform has not yet measured whether the side predicts anything;
+      <strong>&quot;—&quot; means undeterminable</strong> (a midpoint cross or no quote), never
+      neutral.
     </p>
   </div>
 </body></html>"""
@@ -1938,6 +1973,9 @@ def send_dark_pool_alert_email(to: str, candidates: list[dict], omitted_count: i
         + rows_text
         + omitted_text
         + "\nMeasured fact (a real off-exchange print), not a prediction of direction. Not financial advice.\n"
+        + "BUY/SELL is also measured, not forecast: it says which side was the AGGRESSOR, from\n"
+        + "where the block printed inside the bid-ask spread. It does not mean the stock will go\n"
+        + "up or down. '-' means undeterminable (a midpoint cross or no quote), never neutral.\n"
     )
     return send_email(to, subject, body_html, body_text)
 

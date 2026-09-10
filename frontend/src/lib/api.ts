@@ -1429,6 +1429,13 @@ export type DarkPoolAlertRecent = {
   fired_at: string | null;
   alert_price: number;
   premium: number | null;
+  // T383-DARKPOOL-UI. All optional: rows written before T377 genuinely lack them, and an
+  // older backend does not send them. NULL `side` is a REAL third state (no quote, a crossed
+  // quote, or a genuine mid-spread cross ~10% of prints) and must render "—", never a guess.
+  exec_price?: number | null;
+  live_price?: number | null;
+  side?: 'buy' | 'sell' | null;
+  shares?: number | null;
 };
 
 export type DarkPoolAlertsRecentResponse = {
