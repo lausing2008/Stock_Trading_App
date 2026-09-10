@@ -2274,7 +2274,19 @@ def events_calendar(
                         # the full active-stock universe this loop otherwise iterates. Redis-
                         # cached 6h inside get_historical_earnings_moves() itself, so repeated
                         # requests for the same symbol within that window cost nothing extra.
-                        _earnings_moves = _uw.get_historical_earnings_moves(stock.symbol, limit=8)
+                        # AUD-UWCAL-NONUS422: UW is US-ONLY. This loop calls it once per symbol
+                        # with earnings in the window, and 14 of 120 (13 .HK + BRK-A) can never
+                        # succeed — each 422 cost ~4.4s (3 tenacity attempts + backoff; a 422 is
+                        # neither a rate-limit nor an auth error, so it is NOT in the retry
+                        # exclusion list), which is 62s of the endpoint's measured 61s wall time.
+                        # The browser gave up first and the page showed "Failed to load events."
+                        # Skipping on the market we ALREADY have in scope avoids the request
+                        # entirely; is_us_ticker() inside the UW module is the backstop for
+                        # callers that do not know the market.
+                        _earnings_moves = (
+                            _uw.get_historical_earnings_moves(stock.symbol, limit=8)
+                            if mkt == "US" else []
+                        )
                         events.append({
                             "type": "earnings",
                             "date": ned,

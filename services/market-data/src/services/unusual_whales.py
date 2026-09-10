@@ -139,6 +139,11 @@ _FLOW_ALERT_TTL = 150
 _EARNINGS_MOVE_TTL = 21600  # 6h, matching _SHORT_INTEREST_TTL's own rationale — this is
 # HISTORICAL per-report data that only grows (a new row) once per quarter per symbol; no reason
 # to re-fetch it as often as GEX/NOPE.
+_EARNINGS_MOVE_FAIL_TTL = 1800  # 30m — AUD-UWCAL-NONUS422's negative cache. Deliberately much
+# shorter than the 6h success TTL: an empty result from a real transient outage must not be
+# pinned for a quarter of a day, while 30m is still long enough that a page reloaded a few times
+# costs one request instead of one per load. A permanently-invalid ticker is already rejected by
+# is_us_ticker() before any request, so this TTL only ever governs REAL failures.
 _TRANSCRIPT_TTL = 86400  # 24h — once a specific (ticker, quarter) transcript is published it
 # never changes again (a real historical record, not a live reading); a full trading day is a
 # safe, generous cache given this endpoint is only ever read after a report has already landed.
@@ -769,6 +774,37 @@ def get_nope(symbol: str) -> NopeReading | None:
     return result
 
 
+# AUD-UWCAL-NONUS422: UW has NO non-US coverage — /api/earnings/9868.HK returns 422
+# Unprocessable Entity, permanently. UnusualWhalesAdapter already encodes this as
+# `supported_markets = ("US",)`; this is the same fact for the per-symbol service functions,
+# which had no equivalent guard at all.
+#
+# Detecting it by SYMBOL SHAPE rather than by asking the DB for a market, deliberately: these
+# are leaf functions with only a ticker in hand, and a suffixed/dotted ticker is exactly what
+# UW rejects. A caller that DOES know the market should skip UW before calling (the earnings
+# calendar now does), and this stays as the backstop for every other caller.
+_NON_US_SYMBOL_MARKERS = (".HK", ".SS", ".SZ", ".T", ".L", ".TO", ".AX")
+
+
+def is_us_ticker(symbol: str) -> bool:
+    """False for a ticker UW structurally cannot serve, so callers can skip the request.
+
+    Covers two real production cases measured on the earnings calendar: 13 `.HK` symbols and
+    `BRK-A`. UW uses `BRK.A`-style class notation, so a DASH-suffixed class share is also not a
+    valid UW ticker — but a bare dash is NOT enough on its own to reject, since ordinary US
+    tickers do not carry one and over-rejecting would silently disable UW for real symbols.
+    """
+    sym = (symbol or "").upper()
+    if not sym:
+        return False
+    if any(sym.endswith(m) for m in _NON_US_SYMBOL_MARKERS):
+        return False
+    if "." in sym:
+        return False
+    # BRK-A / BRK-B style class shares — UW expects BRK.A and 422s on the dashed form.
+    return not (len(sym) > 2 and sym[-2] == "-" and sym[-1].isalpha())
+
+
 def get_historical_earnings_moves(symbol: str, *, limit: int = 8) -> list[HistoricalEarningsMoveRow]:
     """AUD-EARNINGSMOVE: real historical earnings-move track record for `symbol` from Unusual
     Whales' /api/earnings/{ticker} — confirmed real response shape via WebFetch against UW's own
@@ -782,6 +818,12 @@ def get_historical_earnings_moves(symbol: str, *, limit: int = 8) -> list[Histor
     if not is_available():
         return []
     sym = symbol.upper()
+    # AUD-UWCAL-NONUS422: skip a ticker UW cannot serve BEFORE spending a request on it. Each
+    # such call cost ~4.4s (3 tenacity attempts + exponential backoff, because a 422 is neither
+    # a rate-limit nor an auth error and so is NOT in the retry exclusion list) and counted
+    # against the 120k/day budget, on every single calendar load.
+    if not is_us_ticker(sym):
+        return []
     cache_key = f"stockai:uw:earnings_moves:{sym}"
     try:
         cached = _get_redis().get(cache_key)
@@ -795,7 +837,17 @@ def get_historical_earnings_moves(symbol: str, *, limit: int = 8) -> list[Histor
     try:
         data = _get(f"/api/earnings/{sym}", endpoint="/api/earnings/{symbol}")
     except Exception as exc:
+        # AUD-UWCAL-NONUS422: NEGATIVE-CACHE the failure. The original `return []` sat BEFORE
+        # the setex below, so a failing symbol re-requested on every call forever — the reason
+        # the earnings calendar took 61s with a "warm" cache. A shorter TTL than the success
+        # path so a genuinely transient outage recovers quickly, rather than being pinned empty
+        # for the full 6h.
         log.warning("unusual_whales.earnings_moves_failed", symbol=sym, error=str(exc))
+        try:
+            import json
+            _get_redis().setex(cache_key, _EARNINGS_MOVE_FAIL_TTL, json.dumps([]))
+        except Exception:
+            pass
         return []
 
     result: list[HistoricalEarningsMoveRow] = []
