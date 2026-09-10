@@ -1116,3 +1116,81 @@ send email, so they belong on the `_ALERT_JOB_IDS` (gated) side per
 35 new tests, **seven sabotages caught** (moving a digest into the midday dead zone, scheduling
 the night run in Eastern, dropping skip-if-empty, zeroing the minimum-sample threshold, checking
 the wrong day, adding a fresh UW call, and dropping `day_of_week`).
+
+---
+
+## T376-DIGEST-SIZE — the Flow Digest showed a price but never the size (2026-09-10)
+
+**Reported by the user, twice:** *"they have the price but don't have the share volume"*, then
+*"yes I want all the information"*.
+
+Both halves of the tier-371 digest were under-reporting, for different reasons:
+
+- **Dark pool** rendered only symbol/time/price. A dark-pool print's whole significance IS its
+  size — `$9.42` tells the reader nothing about whether 500 shares or 500,000 crossed.
+- **Options flow** rendered premium but not the **contract** (strike + expiry) or the
+  **volume/OI ratio**. So an alert read *"$1.5M bullish put"* with no way to know which put,
+  expiring when, or how unusual the volume actually was. **Every one of those columns already
+  existed on `options_flow_alert_outcomes` and simply was not read** — the query selects whole
+  ORM entities, so they were already in memory.
+
+### Shares are DERIVED, not JOINED — read this before "fixing" it
+
+`dark_pool_alert_outcomes` has no size column, only `alert_price` and `qualifying_metric`. The
+richer `dark_pool_prints` table **does** have `size`/`premium`/`venue`, so a join looks like the
+obvious answer. **It was tested and rejected as unreliable:**
+
+- **MU and AVGO returned no matching print at all.**
+- **BULL matched SIX rows for a single alert**, with nothing in the outcome row to disambiguate
+  which print the alert had actually fired on.
+
+`shares = qualifying_metric / alert_price` needs no join and reproduced BULL's real print
+**exactly**: 541,762 shares at $9.42 from $5,103,398.04.
+
+**`qualifying_metric` IS the premium** — verified to the cent against that print, and
+`check_dark_pool_alerts()` selects its candidate *by premium*. Worth stating plainly because the
+column name does not say so.
+
+Premium is kept **alongside** shares rather than replaced: 2,047 MU shares and 541,762 BULL shares
+are the same order of dollars, so either column alone misleads.
+
+### The bought-vs-sold axis (`ask_side_dominant`)
+
+`OptionsFlowAlertOutcome`'s own docstring says the alert encodes **four** distinct reads, not two —
+which side was aggressive is half the signal, and `direction` alone hides it.
+
+**`ask_side_dominant` is a non-nullable Boolean**, so `r.ask_side_dominant or "—"` would print a
+dash for **every aggressive SELL** — silently deleting the *"option sell"* half of the feature the
+user originally asked for. This is the falsy-zero class in Boolean form; the same shape as
+`AUD-RANK-RSPLACEHOLDER` and every other falsy-default this project keeps finding.
+
+Without that column, a **real production row** — MU 1010P, `direction=bullish`,
+`ask_side_dominant=False`, i.e. a put being **SOLD** — reads as a contradiction in the platform
+rather than as a sold-to-open position.
+
+### Two render defects in the new code, both caught by RENDERING rather than reasoning
+
+Neither would have been found by reading the diff:
+
+- the text body printed **`— sh`**, attaching a unit to a non-value;
+- a contract with no strike, type, or expiry rendered as **`?? ?`**, which reads as corruption
+  rather than as absence.
+
+A **partially**-known contract still shows what IS known (`955P ?`) — collapsing to a dash
+whenever anything is missing would discard a real strike.
+
+**The generalisable check: render the null row.** Both defects live in code that is obviously
+correct on the happy path, and production rows genuinely carry nulls (`strike`, `expiry`,
+`total_premium`, `volume_oi_ratio` are all nullable on this table).
+
+### Testing note
+
+23 cases in `services/market-data/tests/test_t376_digest_size.py`, driven through the **real**
+`_render_flow_digest`. The helpers are exec'd by **AST boundary**, not a `s.index("\ndef ")`
+scan — that naive scan lands on the first **nested** `def` inside the function and silently
+truncates it mid-body, which produced a confusing `IndentationError` on the first attempt.
+
+Eight sabotage mutations, all caught: reverting the shares cell, falsy-zero on shares,
+falsy-testing `ask_side_dominant`, dropping vol/OI, regressing the `?? ?` contract, restoring
+`— sh`, fixing only the HTML and leaving the text body stale, and collapsing a partially-known
+contract. File verified byte-identical after the sweep.
