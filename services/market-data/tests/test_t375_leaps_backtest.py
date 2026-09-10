@@ -103,9 +103,14 @@ def test_both_sides_require_a_real_two_sided_quote():
 
 
 def test_a_zero_or_negative_entry_price_is_rejected():
-    """Guards the return_pct division and an obviously bad quote."""
+    """Guards the return_pct division and an obviously bad quote.
+
+    T380-LEAPS-CONTRACTGAP moved this check inside the candidate loop, so the local is now
+    `_cand` rather than `entry`. Asserting on the VARIABLE NAME made a pure rename look like a
+    removed guard — match the condition instead, which is the invariant that actually matters.
+    """
     fn = _fn("backtest_leaps")
-    assert "entry.ask <= 0" in fn
+    assert ".ask is None or " in fn and ".ask <= 0" in fn
 
 
 @pytest.mark.parametrize("entry,exit_", [

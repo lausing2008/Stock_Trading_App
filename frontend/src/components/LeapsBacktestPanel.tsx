@@ -164,9 +164,18 @@ export default function LeapsBacktestPanel() {
           {/* The honesty banner — never hidden when the comparison is incomplete. */}
           {!result.comparable && (
             <div style={{ padding: '9px 12px', borderRadius: 8, background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.3)', fontSize: 11.5, color: '#fbbf24', marginBottom: 10 }}>
-              Incomplete comparison — no usable LEAPS quote for{' '}
-              <strong>{result.missing.join(', ')}</strong> on these dates. The ranking below
-              covers only the symbols that priced.
+              {/* T380-LEAPS-CONTRACTGAP: the old text said "no usable LEAPS quote ... on these
+                  dates", which reads as a COVERAGE problem — so the user checked the coverage
+                  panel directly above, correctly saw 629 usable QLD days, and the two lines
+                  contradicted each other on one screen. The backend now returns a specific
+                  per-symbol reason (delta band vs. no capture vs. a contract that stopped
+                  being quoted mid-hold); only the backend can see which guard actually fired. */}
+              Incomplete comparison — the ranking below covers only the symbols that priced.
+              {result.missing.map(sym => (
+                <div key={sym} style={{ marginTop: 4, opacity: 0.95 }}>
+                  <strong>{sym}</strong>: {result.missing_reasons?.[sym] ?? 'no usable LEAPS quote on these dates.'}
+                </div>
+              ))}
             </div>
           )}
           <div style={{ overflowX: 'auto' }}>

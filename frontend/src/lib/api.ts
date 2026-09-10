@@ -3429,6 +3429,10 @@ export type LeapsCompare = {
   results: Record<string, LeapsTrade>;
   /** Symbols with no usable quote — NAMED, so a shorter results list is never ambiguous. */
   missing: string[];
+  // T380-LEAPS-CONTRACTGAP: per-symbol WHY, keyed by symbol. Optional because an older
+  // backend will not send it — the panel falls back to the generic sentence rather than
+  // rendering "undefined".
+  missing_reasons?: Record<string, string>;
   ranking: string[];
   /** False when any requested symbol could not be priced; a ranking then covers a subset. */
   comparable: boolean;
