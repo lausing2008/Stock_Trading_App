@@ -620,3 +620,80 @@ alert checker never computes on the fly, only reads what the daily job already p
 
 ---
 
+
+---
+
+## T375-LEAPS-BACKTEST — Long-Dated Call Backtester for the QQQ Family (Built 2026-09-09)
+
+**USER REQUEST:** *"can we add QQQ Leap Call in Strategy Backtester with delta, date range, QQQ or
+QQQM or QLD or TQQQ, strike price, expiration date etc"*
+
+Replays **real captured option chains** — pick the contract closest to a target delta on a real
+entry date, price it at the real NBBO, re-price the *same* contract later. No Black-Scholes, no
+synthetic greeks, no interpolation.
+
+### Verified on a real trade
+
+```
+TQQQ  entry 2024-01-16  TQQQ250117C00036000  strike 36  delta 0.800  ask $20.60
+      exit  2025-01-16                                   delta 0.997  bid $41.10
+      cost $2,060 → proceeds $4,110    +99.51%    spread cost $332.50
+```
+
+### Pricing: buy the ask, sell the bid
+
+A backtest that crosses at **mid** systematically overstates every result. On that same TQQQ
+trade, mid-pricing would have reported it **20+ points higher**. The spread cost is reported
+alongside, not folded into the return.
+
+### The data constraint is half the design
+
+Days with a delta-selectable ~0.80 LEAPS, after the backfill completed:
+
+| Symbol | Usable days | From |
+|---|---|---|
+| QQQ | **727** | 2023-10-16 |
+| TQQQ | **726** | 2023-10-16 |
+| QLD | **489** | 2023-10-23 |
+| QQQM | **266** | 2024-09-11 |
+| **All four at once** | **227** | |
+
+Greeks are **sparse by design** — UW returns delta only where volume > 0 — so a symbol's
+tradeable-day count is far below its row count. A comparison ignoring that would rank symbols
+over *different date ranges* while looking authoritative: the `AUD-RANK-RSPLACEHOLDER` shape,
+where a fabricated neutral 50.0 was fed to a weight optimizer that duly learned from it.
+
+So `coverage()` is a **first-class endpoint shown before any result**, `compare_symbols()`
+**names** the symbols it could not price, and `comparable: false` surfaces as a visible warning.
+A missing entry returns `None`, never a "closest available" contract outside the delta band —
+that is a *different trade*.
+
+### What the data actually shows
+
+Two overlapping one-year holds, same 0.80 delta:
+
+| Window | QQQ | QLD | TQQQ |
+|---|---|---|---|
+| 2024-10 → 2025-10 | +70.5% | +75.6% | **+84.9%** |
+| 2025-01 → 2026-01 | **+42.9%** | −83.2% | **−99.9%** |
+
+**TQQQ went from best to near-total loss across two overlapping years.** Leveraged-ETF decay plus
+LEAPS theta, compounding — exactly the risk the QQQ LEAPS Playbook page warns about, now
+measurable rather than asserted.
+
+### No lookahead
+
+The exit-date search is **backward-only and bounded** (7 days): a contract not quoted on the exact
+exit date prices at the nearest *earlier* quote, never a later one. The actual exit date is
+reported alongside the requested one. The 2026-09-08 harness audit confirmed the existing engine
+is free of lookahead; this does not reintroduce it.
+
+### Two mistakes made while building it
+
+- **`docker restart` killed the running QQQ backfill.** A `docker cp` alone would have sufficed
+  for a route change. Resumed at no cost — `skip_existing=True` makes an already-captured day one
+  indexed lookup.
+- **Used `get_current_username` where this file uses `get_current_user`**, crash-looping
+  market-data until fixed.
+
+28 tests. `market-data` suite 3535 passed.

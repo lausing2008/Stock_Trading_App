@@ -817,6 +817,42 @@ export const api = {
   eventsCape: (months = 24) => request<CapeResponse>(`/events/valuation/cape?months=${months}`),
   eventsEarningsCalendar: (days = 14) => request<EarningsEvent[]>(`/events/earnings/calendar?days=${days}`),
   eventsEarningsSymbol: (symbol: string) => request<EarningsEvent[]>(`/events/earnings?symbol=${symbol}`),
+  // ── T375-LEAPS-BACKTEST ────────────────────────────────────────────────────
+  // Replays REAL captured option chains. leapsCoverage() is meant to be read BEFORE any
+  // comparison: greeks are sparse by design (delta only where volume > 0), so a symbol's
+  // tradeable-day count is far below its row count and a naive ranking would compare
+  // different date ranges.
+  leapsCoverage: (symbols = 'QQQ,QQQM,QLD,TQQQ', targetDelta = 0.8, minDte = 330) =>
+    request<LeapsCoverage>(
+      `/paper-portfolio/backtest/leaps/coverage?symbols=${encodeURIComponent(symbols)}`
+      + `&target_delta=${targetDelta}&min_dte=${minDte}`),
+  leapsBacktest: (p: {
+    symbol: string; entry_date: string; exit_date: string;
+    target_delta?: number; min_dte?: number; max_dte?: number | null;
+    strike?: number | null; expiry?: string | null; contracts?: number;
+  }) => {
+    const q = new URLSearchParams({
+      symbol: p.symbol, entry_date: p.entry_date, exit_date: p.exit_date,
+      target_delta: String(p.target_delta ?? 0.8), min_dte: String(p.min_dte ?? 330),
+      contracts: String(p.contracts ?? 1),
+    });
+    if (p.max_dte != null) q.set('max_dte', String(p.max_dte));
+    if (p.strike != null) q.set('strike', String(p.strike));
+    if (p.expiry) q.set('expiry', p.expiry);
+    return request<LeapsTrade>(`/paper-portfolio/backtest/leaps?${q}`);
+  },
+  leapsCompare: (p: {
+    symbols: string; entry_date: string; exit_date: string;
+    target_delta?: number; min_dte?: number; contracts?: number;
+  }) => {
+    const q = new URLSearchParams({
+      symbols: p.symbols, entry_date: p.entry_date, exit_date: p.exit_date,
+      target_delta: String(p.target_delta ?? 0.8), min_dte: String(p.min_dte ?? 330),
+      contracts: String(p.contracts ?? 1),
+    });
+    return request<LeapsCompare>(`/paper-portfolio/backtest/leaps/compare?${q}`);
+  },
+
   eventsEarningsDirectionAccuracy: (minConfidence?: number) =>
     request<EarningsDirectionAccuracy>(
       `/events/earnings/direction-accuracy${minConfidence != null ? `?min_confidence=${minConfidence}` : ''}`,
@@ -3365,6 +3401,36 @@ export type EarningsEvent = {
 /** T370-EARNINGS-DIRECTION: the directional calls' actual track record. Every rate arrives with
  *  its own `n`, and `sample_is_adequate` is false below 30 scored calls — so a UI can never
  *  render an accuracy figure without its sample size. */
+export type LeapsTrade = {
+  symbol: string; entry_date: string; exit_date: string; exit_date_requested: string;
+  option_symbol: string; strike: number | null; expiry: string | null;
+  entry_delta: number | null; entry_iv: number | null;
+  exit_delta: number | null; exit_iv: number | null;
+  contracts: number;
+  entry_ask: number | null; entry_bid: number | null; entry_mid: number | null;
+  exit_bid: number | null; exit_ask: number | null; exit_mid: number | null;
+  cost: number; proceeds: number; pnl: number; return_pct: number | null;
+  spread_cost: number; days_held: number; dte_at_entry: number | null;
+};
+
+export type LeapsCoverage = {
+  by_symbol: Record<string, { days: number; oldest: string | null; newest: string | null }>;
+  common_days: number;
+  comparison_supported: boolean;
+  min_days_for_comparison: number;
+};
+
+export type LeapsCompare = {
+  entry_date: string; exit_date: string; target_delta: number;
+  results: Record<string, LeapsTrade>;
+  /** Symbols with no usable quote — NAMED, so a shorter results list is never ambiguous. */
+  missing: string[];
+  ranking: string[];
+  /** False when any requested symbol could not be priced; a ranking then covers a subset. */
+  comparable: boolean;
+  note: string;
+};
+
 export type EarningsDirectionAccuracy = {
   by_direction: Record<string, {
     n: number;

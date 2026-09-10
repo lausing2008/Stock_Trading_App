@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import useSWR from 'swr';
+import LeapsBacktestPanel from '@/components/LeapsBacktestPanel';
 import { api, type Stock, type BacktestRun, type BacktestDetail } from '@/lib/api';
 
 type Cond = { feature: string; op: string; right: string };
@@ -865,6 +866,9 @@ export default function StrategiesPage() {
           </div>
         </div>
       )}
+      {/* T375-LEAPS-BACKTEST: real-chain LEAPS backtester for the QQQ family. */}
+      <LeapsBacktestPanel />
+
     </div>
   );
 }
