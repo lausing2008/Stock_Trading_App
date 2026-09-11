@@ -884,3 +884,41 @@ Preserved verbatim. Formatting is unchanged from the index entry, including its 
 nothing is lost to a reflow.
 
 T249-EARNINGS-LLM-IMPACT — Earnings LLM Impact Report (Built 2026-07-29); Earnings Calendar Now Shows Analyst Consensus + Beat-Rate History (Built 2026-08-25... **T370-EARNINGS-DIRECTION (2026-09-09)** — the post-earnings LLM read now gives a **direction** (`bullish`/`bearish`/`neutral`) + confidence, on the **forecast page AND the impact email**. Most plumbing already existed: the read already got EPS/revenue/surprise/strength + real transcript excerpts, and `post_earnings_return_1d/_5d` were already POPULATED (72 events) — what was missing is that it was never ASKED for a direction and **`impact_text` was never SERIALISED by any endpoint** (it was on the row and in the email, but no page could show it). **The asymmetry is deliberate and test-pinned: the PRE-earnings prompt still returns three SCENARIOS and NO direction** — before the print a direction is prophecy, after it interpretation. **It ships with its own scoreboard** (`GET /events/earnings/direction-accuracy`) because this codebase twice shipped a confident figure nobody could check (AUD-RANK-RSPLACEHOLDER's fabricated 50.0 that the optimizer LEARNED from; AUD-CONVICTION-RSIDIV-NOWRITER's "None detected"): **NULL is never coerced to `neutral`**, confidence is never defaulted to a midpoint, **`neutral` is EXCLUDED from accuracy** (scoring it needs an arbitrary flat band that would become the number doing the work), an empty sample returns **None not 0.0**, and `sample_is_adequate` is false below **30** scored calls. **STANDING CAUTION: until that reports true this is an unvalidated LLM opinion — do not wire it into any gate, score or sizing decision** (~23 impact reads today, so roughly a quarter away). Needed a **migration** (`create_all()` never adds columns). **Test lesson: a function pinned only by a COPY of itself is not pinned** — 48 tests mirrored the logic in Python and sabotaging `_clean_direction` to return `neutral` instead of `None` (the core mistake) left them ALL passing. **T373-FORECAST-REASON (2026-09-09)** — user asked why TSM had no earnings forecast; the modal said "admin-gated and off by default, or the consensus data is too thin" and **BOTH were FALSE** (flag=1, key set, TSM had 9 analysts + full `0q`; a direct call returned a real forecast). Real cause: **no cache yet, and the first request must call Claude (30-60s)**. **36 days out was irrelevant — nothing gates on `days_to_event`.** Same shape as AUD-CONVICTION-RSIDIV-NOWRITER: **a confidently stated explanation for something never checked** — the frontend cannot see the flag/key/consensus, so only the BACKEND should say why. Now returns `unavailable_reason` + `unavailable_detail`, re-checking the guards **in the generator's own order** (a test pins that, or the reason could name a guard that did not fire). `llm_failed` is the fallthrough and the ONLY code that shows a retry hint. **Also measured: `thin_coverage` essentially never occurs here** — TSM, AAPL, SSNLF and BULL all have a full `0q` consensus. **And the user's second question — why no direction:** for an UPCOMING report there deliberately is none (T370's scenarios), but the POST-earnings read was only on `/forecast` and in the email; it now also renders on this modal with its confidence, the **actual 1d return**, the reasoning, and the "not a measured edge" caveat.
+
+---
+
+## T379-CALENDAR-PRICE — the Events Calendar showed every number except the one they are relative to (2026-09-10)
+
+**User request:** *"And also in the Earning Calendar, show the current price for the stock as
+well"*.
+
+The card already showed EPS estimate, revenue/EPS growth, market cap, an analyst target and an
+expected move — **every one of which is interpreted relative to the current price**, which was
+the one number absent. The user's own screenshot made it concrete: the NVDA ex-dividend card read
+*"Annual rate $1.00 / Yield 44.00%"* with no price to sanity-check that against.
+
+### One bulk Redis read, deliberately
+
+The obvious version — look up each symbol inside the existing per-stock loop — would add **~120
+Redis round-trips** to the route `AUD-UWCAL-NONUS422` had *just* been rescued from a 61-second
+per-symbol fan-out. This reads the shared `stockai:live_prices` blob **once** (the same cache
+seven every-minute alert scanners consume) and indexes it by symbol.
+
+**Two tests pin that: the read COUNT and its POSITION before the loop.** A count of 1 *inside*
+the loop would still pass the count assertion on its own.
+
+### Null is not zero
+
+No live quote yields `None` and the card renders `—`. Emitting `0.0` would be an
+authoritative-looking wrong answer. The index fails open to `{}`, because a cold Redis after a
+restart is a real state — **it occurred twice in this session's own incidents**.
+
+Both card types are covered: earnings **and** ex-dividend. A fix that only did earnings would
+have left the very card that motivated the request unchanged.
+
+### A gap my own sabotage testing exposed
+
+This shipped with 23 tests rather than 22 because **appending `or 0.0` to the real call sites
+passed all of the original tests** — every null test exercised a *mirror* of the index
+comprehension rather than the source. **A helper that copies the logic does not pin the logic.**
+An explicit source-level assertion was added and verified to fail on that exact mutation.

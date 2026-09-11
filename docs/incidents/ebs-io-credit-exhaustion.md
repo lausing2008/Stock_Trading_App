@@ -1,6 +1,6 @@
 # EBS I/O Credit Exhaustion — a frontend rebuild took the instance down for ~50 minutes
 
-## INCIDENT 2026-09-10: `Failed to load events`, then the whole box unreachable
+## AUD-DEPLOY-IOCREDIT — INCIDENT 2026-09-10: `Failed to load events`, then the whole box unreachable
 
 **Reported by the user:** *"Failed to load events. when opening earning calendar"*, then
 *"guess the instance is not reachable but why? We didn't have any deployment."*
@@ -141,3 +141,57 @@ Preserved verbatim. Formatting is unchanged from the index entry, including its 
 nothing is lost to a reflow.
 
 **INCIDENT 2026-09-10: a frontend rebuild made the whole instance unreachable for ~50 min.** NOT network, NOT OOM (`journalctl -b -1` had zero oom-kills): **EBS I/O credit exhaustion**. The tell is `ssh` failing **"during banner exchange"** while **TCP 22/443 both ACCEPT** — sshd can be reached but cannot read its host keys off the disk. `sar` shows `%user` COLLAPSING 75.6→0.4 while `%iowait` rises to 44 and `%idle` hits **0.01**, with `%steal` flat ~2% (so not a noisy neighbour). **The cause was accumulated garbage, not the build:** 144 images / 62.23GB with **53.49GB (85%) reclaimable** and **128 dangling images** on a volume at 84%; one `docker image prune -f` reclaimed **47.25GB** and took it to 36% — more than the platform's entire live footprint. **Use `scripts/deploy.sh`**, which preflights disk+iowait, REFUSES a frontend build under 25GB free, auto-prunes before and after, and verifies after a 45s settle requiring the literal `healthy` — I previously declared a deploy clean from a check run 90s after recreation while health checks were already timing out platform-wide. **"Up" is not "healthy".** Deliberately no `docker cp` path and no `prune -a` (which would silently force a full 12-service rebuild).
+
+---
+
+## T382-CLAUDEMD-REINDEX — the index that grew back (2026-09-10)
+
+Filed here because it shares this file's root cause: **a cost that accumulates silently while
+every individual addition looks reasonable.**
+
+`T322-CLAUDE-MD-CORE-SPLIT` split a 347k-token changelog into a small core plus topic files.
+Eighteen months of one-line index entries later, measured 2026-09-10:
+
+| | tokens | |
+|---|---|---|
+| core (deploy, security, auth, ports, process) | ~3,020 | already fine |
+| **Topic File Index** | **~18,577** | **86% of the file** |
+
+**60 of 93 entries were still true one-liners** — the convention worked. **12 entries ate 43% of
+the file**, the worst being a single bullet at **1,831 tokens**.
+
+### The finding that shaped the method
+
+The bloated entries were checked for duplication against their own topic files. **They mostly
+were NOT duplicates** — only 1-2 of 6 sampled claims from each appeared in the file it pointed
+at. Findings had been written *into the index* instead of the topic file, so **a straight trim
+would have deleted knowledge, not compressed it.**
+
+### Method — verification before deletion
+
+1. Extracted **806 checkable claims** (numbers, IDs, code spans, dates, sample sizes) as a
+   baseline.
+2. Snapshotted all 29 target topic files.
+3. Relocated 33 oversized entries **verbatim**. Two needed special handling: a glob pointer
+   (`{1..6}`) resolved to its part-1 file, and the **Learning section had no topic file at all**
+   — it lived only in the index — so `docs/features/learning-section.md` was created.
+4. **Verified all 806 claims survive BEFORE trimming anything.**
+5. Only then trimmed entries to ≤300 chars.
+
+### Two real degradations caught by testing
+
+- **Trimming by character count dropped the searchable keywords.** `Polygon`, `HKEX`, `FRED`,
+  "dark pool", `retrain` and `migration` all fell to **zero occurrences** — a future session
+  grepping for them would find nothing. A compact `[keyword, keyword]` tail was restored on 20
+  entries.
+- An **index → file → answer lookup test** went 7/8, then **11/12** after that fix.
+
+**Final: 806/806 claims preserved, 89 pointers all resolving, 7 core sections intact, longest
+entry 6,593 → 300 chars, ~21,597 → ~8,686 tokens (−60%).**
+
+### The enforcement, and why the old rule failed
+
+The convention already said "one line" and the index still reached 86% of the file. **A rule
+with no number and no check degrades gradually.** Now: a hard **300-char cap** in the writing
+convention plus `scripts/check_claude_md_size.sh` (entry length, total budget, broken pointers).
+It caught one entry at 313 chars *during this very change*.

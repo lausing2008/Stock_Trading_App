@@ -219,6 +219,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/incidents/docker-deploy-staleness.md`** — Adding a Column to an EXISTING Table Doesn't Auto-Apply — `create_all()` Only Creates Missing Tables; Local Dev Containers Run Stale `shared/db/` — Attribute...
 - **`docs/incidents/ec2-disk-and-frontend-builds.md`** — EC2 Disk Fills Up from Dangling Docker Images; Slow Frontend Builds (24–47 min) — `--no-cache` Was Unnecessary
 - **`docs/incidents/ebs-io-credit-exhaustion.md`** — INCIDENT 2026-09-10: a frontend rebuild made the whole instance unreachable for ~50 min. NOT network, NOT OOM (`journalctl -b -1` had zero oom-kills): EBS I/O credit exhaustion …
+- **`docs/incidents/ebs-io-credit-exhaustion.md`** — T382-CLAUDEMD-REINDEX (2026-09-10) — this file cut 21.6k→8.7k tokens, 0 of 806 claims lost. Entries were NOT duplicates of their topic files, so relocate-then-verify before trimming [CLAUDE.md, tokens]
 
 - **`docs/incidents/ec2-reboot-and-tls-cert-incidents.md`** — INCIDENT 2026-08-05: Full EC2 Reboot Reverted signal-engine to a PRE-SPLIT Image — SA-33 No Longer Live; INCIDENT 2026-08-05 (RESOLVED): TLS Certificate Expi...
 - **`docs/incidents/external-data-source-liveness.md`** — AUD-UWCAL-NONUS422 (2026-09-10) — the earnings calendar took 61s and the page showed "Failed to load events": it returned a VALID 174-event payload, just past every timeout … [Alpha Vantage, EDGAR, HKEX, Polygon, Redis, holiday, yfinance]
@@ -261,6 +262,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/features/decision-engine-dualscorer-parity.md`** — `_should_enter()` / decision-engine Score Parity (T232-DL-DUALSCORER-DEBT, partial); T232-DL-DUALSCORER-DEBT — 4 DE-Only Hard Rejects, Test Coverage Added (2...
 - **`docs/features/delisted-stock-detection.md`** — aud14-survivorship — Real Delisting Detection Closes a Dead Column (Built 2026-07-27); T260-DELISTED-BADGE — Informational Badge, Deliberately No Auto-Remova...
 - **`docs/features/earnings-data-and-forecasts.md`** — T249-EARNINGS-LLM-IMPACT — Earnings LLM Impact Report (Built 2026-07-29); Earnings Calendar Now Shows Analyst Consensus + Beat-Rate History (Built 2026-08-25 … [migration]
+- **`docs/features/earnings-data-and-forecasts.md`** — T379-CALENDAR-PRICE (2026-09-10) — the calendar showed EPS/target/expected-move but not the PRICE they are relative to. ONE bulk Redis read, never per-symbol; NULL renders "—", never 0.0 [Events Calendar, live_prices]
 
 - **`docs/features/macro-valuation-cape.md`** — CAPE (Shiller PE) — AI Bubble Warning Indicator
 - **`docs/features/market-mover-monitoring.md`** — Tier 249 — Market-Mover Monitoring (P0/P1/P2); Reports Tab — Per-Market (US/HK) Report Aggregation (2026-07-16); Tier 257 — Four Feature Designs (2026-07-17,...
@@ -272,12 +274,14 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/features/paper-trading-gates.md`** — Paper Portfolio Badges Are Two Independent Layers — layer-1 (portfolio/market-wide gates) vs … [holiday]
 
 - **`docs/features/options-and-institutional-data.md`** — T230-DATA-OPTIONS-CHAIN — Full Strike/Expiry Options Chain (Built 2026-07-22); TIER82-FMP-ANALYST-ESTIMATES — analyst_pt_upside ML Feature (Built 2026-08-18 … [backtest, OPTHIST, options history, LEAPS]
+- **`docs/features/options-and-institutional-data.md`** — T380/T381 (2026-09-10) — a LEAPS contract can stop being quoted MID-HOLD while the symbol's coverage looks fine; walk the delta band instead of committing to `LIMIT 1`. Relaxed ±0.20 fallback is LABELLED, never silent [LEAPS, delta, QLD]
 
 - **`docs/features/research-engine-reports.md`** — Research Tab on the Stock Detail Page (Built 2026-07-29)
 - **`docs/features/self-tuning-walk-forward-harness.md`** — Per-Horizon AI Signal Strategy Tuning (2026-07-16); T255-STRATEGY-TUNER-PER-HORIZON — Joint Buy-Threshold x ML-Weight-Cap Tuner (Phase 1, Built 2026-07-18); ...
 - **`docs/features/service-architecture-splits.md`** — T233-ARCH-PORTFOLIO-CONSOLIDATE — portfolio.py Moved to portfolio-optimizer (Built 2026-07-18); T233-ARCH-INSERVICE-SPLITS (research-engine half) — Scoring F...
 - **`docs/features/signal-engine-pillars.md`** — Why a BUY Signal Can Show Low Confidence; The ↑/↓ Percentage Arrows on the Daily Chart; T232-SIG10 — Bearish Pillar Mirror (`bearish_pillars_active`, Built 2...
 - **`docs/features/squeeze-and-options-alerts.md`** — AUD-SQUEEZE250725-BATCH — 6 Squeeze-Audit Issues + 2 Performance Items (2026-08-16); AUD288-SQUEEZE-NO-VOLUME-CONFIRM — RVOL Gate for the Classic Short-Squee … [NBBO, Unusual Whales, dark pool, gamma, migration, options flow]
+- **`docs/features/squeeze-and-options-alerts.md`** — T383-DARKPOOL-UI (2026-09-10) — T377 stored the dark-pool side but NO endpoint serialised it; now on the Dark Pool tab + alert email. 0 resolved outcomes: an OBSERVATION, not an edge [dark pool, NBBO, side]
 
 - **`docs/features/squeeze-and-options-alerts.md`** — T376-DIGEST-SIZE (2026-09-10) — the Flow Digest showed a price but never the SIZE, reported by the USER … [NBBO, Unusual Whales, dark pool, gamma, migration, options flow]
 

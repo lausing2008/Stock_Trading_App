@@ -1327,3 +1327,55 @@ nothing is lost to a reflow.
 AUD-SQUEEZE250725-BATCH — 6 Squeeze-Audit Issues + 2 Performance Items (2026-08-16); AUD288-SQUEEZE-NO-VOLUME-CONFIRM — RVOL Gate for the Classic Short-Squee...; AUD-UWFINDINGS-GEXSHORT — Real UW GEX + Short-Interest Corroboration for Gamma-Unwind Alert + Signal-Engine Squeeze Boost (2026-09-04); AUD-DQCHECKS-VISIBILITY — 12 More Scheduler-Job Liveness Checks + a Unusual Whales Rate-Limit Gauge (2026-09-04); **T377-DARKPOOL-SIDE (2026-09-10)** — the user asked to stamp the execution price + current price on dark-pool rows, and to infer buy/sell from whether the print was above or below the current price. **The price stamp shipped as asked** (`exec_price`/`live_price` were being collapsed by `alert_price = live_price or exec_price`). **The buy/sell HEURISTIC WAS MEASURED WRONG: 66.8% agreement with NBBO ground truth on 364 real prints — wrong on ONE PRINT IN THREE**, because the spread is 10-30 CENTS wide while the live price drifts DOLLARS over a session. Seven real MU prints executing AT OR BELOW THE BID were all labelled 'buying' by that rule. **The mechanism was right, the reference point wrong** — fixed exactly and for FREE, since **UW already returns `nbbo_bid`/`nbbo_ask` on every print** (400/400 had a usable quote; 37.5% buy / 53.5% sell / 9.0% mid) and the adapter was parsing them away. `classify_dark_pool_side()` normalises position in the spread so it is scale-invariant, and returns **None — never a default side** — for no quote, a crossed quote, or a genuine mid-spread cross. **The RAW QUOTE is stored, not a precomputed side**, so thresholds can be retuned without re-ingesting. Needed a migration; **no backfill on purpose**. **DO NOT RESURRECT the 64,338-print OHLC study** that appeared to show 'above midpoint' predicting -1% next-day — the whole persisted history is **SIX DAYS**, so both buckets just measured a down week for semis.
 
 **T376-DIGEST-SIZE (2026-09-10)** — the Flow Digest showed a price but never the SIZE, reported by the USER. Read before touching `_render_flow_digest`: dark-pool **shares are DERIVED (`qualifying_metric / alert_price`), not joined** — the join to `dark_pool_prints` was tested and REJECTED (MU/AVGO matched NO print, BULL matched SIX for one alert), and `qualifying_metric` IS the premium despite its name. `ask_side_dominant` is a **non-nullable Boolean**, so `x or "—"` would delete every aggressive SELL — the falsy-zero class in Boolean form, and the reason a real row (bullish + put + sold) reads as a contradiction without it. Carries the generalisable check: **render the null row** — two defects (`— sh`, a unit on a non-value; `?? ?` for an all-null contract) were invisible on the happy path and in the diff. **T371-FLOW-DIGEST (2026-09-09)** — dark-pool + unusual-options summary email **3x daily**: **11:00 ET**, **16:30 ET**, **23:00 PST** (the last scheduled in `America/Los_Angeles` on purpose — 23:00 PST is 02:00 ET the NEXT day, so mon-fri in Eastern would shift the week and drop Friday). **Times came from measured data, and two of three proposed times moved:** across 337 dark-pool / 1,587 options-flow alerts, the **first 90 min carries 26% and 71%** of firings while **midday 11:00-16:00 carries 4% and 5%** — the original mid-session slot was a dead zone. The 23:00 PST run is a **full-SESSION recap, not a window** (nothing fires at 02:00 ET) and must check the **PREVIOUS** day for trading or it skips every night. **Includes each family's own hit rate, which is the finding: dark pool 46% (n=93), options flow 40% (n=1,475) — at or BELOW coin flip**, so treat these prints as observations, not signals; a rate under 20 resolved outcomes shows its **n instead of a percentage**. **Costs ZERO UW quota** — reads the outcome rows the alert checkers already wrote (a test forbids `_uw.`/`httpx` in the function). Also corrects a reading of mine: the apparent **20:00 ET firing spike is `options_flow_eod`'s snapshot job**, 293 of 383 rows on one day — a backfill, not organic flow.
+
+---
+
+## T383-DARKPOOL-UI — the side existed only in the database and one email (2026-09-10)
+
+**User:** *"where can I see those data?"* then *"also in the dark pool activity email too"*.
+
+`T377-DARKPOOL-SIDE` computed and **stored** the buy/sell side, the execution price and the live
+price — and then they were visible in exactly two places: the database, and the 3×-daily Flow
+Digest. **`/dark-pool-alerts-recent`, the endpoint behind the Options Flow page's Dark Pool tab,
+returned only `alert_price` and `premium`.** The page a person actually opens showed none of it.
+
+Same shape as `AUD-GAMEPLANBATCH-WRONGIMPORT` and `T370-EARNINGS-DIRECTION`: **data computed
+correctly and never serialised is, from the UI, indistinguishable from never having been built.**
+
+### Three surfaces now carry it
+
+| surface | shows |
+|---|---|
+| Dark Pool tab (`/options-flow`) | Exec / Live / Side / Shares, BUY green, SELL red, hover explains the derivation |
+| Dark-pool **alert** email | per-print side, live price, % vs live |
+| Flow Digest (3×/day) | already shipped in T377 |
+
+### Two storage decisions carried forward
+
+- **Shares are derived (`premium / exec price`), not joined.** T376 tested the join to
+  `dark_pool_prints` and rejected it — MU/AVGO matched *no* print, BULL matched **six** for one
+  alert.
+- **Divide by the EXEC price, not the live price.** The premium was transacted at the exec
+  price; the live price would give a share count that never traded.
+
+### The framing mattered as much as the data
+
+This email's entire premise is that it reports a **measured fact and never a prediction**, so
+adding a direction without extending that disclaimer would have broken the one promise it makes.
+Both bodies now state that BUY/SELL identifies **which side was the aggressor**, that it does
+**not** mean the stock will move, that a "BUY" can be a hedge or an index rebalance, that **this
+platform has not yet measured whether the side predicts anything**, and that **"—" means
+undeterminable, never neutral**.
+
+### Verified live
+
+611 prints classified since T377: **55.3% SELL / 34.7% BUY / 10.0% mid-spread, with zero
+missing quotes** — matching the pre-build sample (53.5 / 37.5 / 9.0), so the mechanism is stable.
+The live endpoint correctly returns a real `sell` for SMTC, `None` for the mid-spread GPN
+(position 0.478) and OSCR (0.450), and `—` for pre-T377 rows rather than fabricated values.
+
+**STANDING CAUTION — 0 resolved outcomes so far.** The side says *which side was aggressive*, not
+*whether that predicts anything*; those are different claims. The dark-pool family's own measured
+hit rate is **46% next-day (n=93)**, at or below a coin flip. **Do not wire the side into any
+gate, score or sizing decision until the scoreboard says something** — roughly 2-4 weeks, so
+revisit early October.

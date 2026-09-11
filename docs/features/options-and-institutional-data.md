@@ -1058,3 +1058,86 @@ Preserved verbatim. Formatting is unchanged from the index entry, including its 
 nothing is lost to a reflow.
 
 T230-DATA-OPTIONS-CHAIN — Full Strike/Expiry Options Chain (Built 2026-07-22); TIER82-FMP-ANALYST-ESTIMATES — analyst_pt_upside ML Feature (Built 2026-08-18,...; AUD-UWEXPAND (2026-09-07) — surveyed all 226 UW endpoints against the LIVE key (documented != entitled) and wired the 4 the tier already grants: ETF fund flows (the only NON-derived flow signal on the platform), 13F institutional ownership w/ holder cost basis, and the stock screener. Records that entitlements are **three axes** (tier / product add-ons / scopes) so an Advanced upgrade likely does NOT buy futures+private-markets too, that `get_earnings_transcript()` is **wired but 403 and silently dead**, and that the FDA calendar had to be **unscheduled** (returns oldest-first, ignores every date/pagination param — current events unreachable). Also OPTHIST-1 — Historical Option Chain Capture (Built 2026-09-07) — closes the "no historical options data anywhere" gap that hard-blocked options backtesting; UW history is a ROLLING ~2yr window not an archive, so capturing is TIME-SENSITIVE. Read it before any options-history backfill: greeks are sparse BY DESIGN (present exactly 1:1 with volume>0), and DB volume is the binding constraint, NOT the 120k/day request budget (1 request per symbol-day). **Cost splits by symbol class — never scope with one flat average:** index ETFs (SPY/QQQ) ~3.0 MB/symbol-day (~0.73 GB per symbol-year), single names ~1.06 MB/symbol-day (~0.26 GB). Earlier published figures of ~285 KB and of ~1.05 MB-as-universal are both wrong; the doc carries the postmortem. Also documents OPTHIST-DUPINDEX: per-column `index=True` PLUS explicit `__table_args__` indexes makes SQLAlchemy build every index twice, silently — worth checking on any new high-volume table.
+
+---
+
+## T380-LEAPS-CONTRACTGAP / T381-LEAPS-NEARESTDELTA — LEAPS contract gaps and the nearest-delta fallback (2026-09-10)
+
+**Reported by the user:** *"QLD has data from 2023-10-20 but why it said error: Incomplete
+comparison — no usable LEAPS quote for QLD on these dates."*
+
+The user was right to be suspicious, and **the contradiction was on one screen**: the coverage
+panel said QLD had 629 usable days from 2023-10-20, while the banner directly below said there
+was no usable quote on those dates. Both came from the same response.
+
+### What was actually true
+
+- QLD has **726 quote days** (2023-10-16 → 2026-09-08), continuous monthly coverage.
+- On the exit date there were **101 QLD 2027-01-15 calls, every one carrying a bid**.
+- The failure was **one contract**: the nearest-delta pick, strike 126 at delta 0.659, **last
+  quoted 2025-11-19** — a thin strike UW dropped from its chain after only **52 quotes in its
+  entire life**.
+
+Neither the dates nor the coverage were the problem, which is exactly what made the old message
+misleading rather than merely terse.
+
+### T380 — two fixes, because there were two distinct problems
+
+**1. The engine gave up too early.** `find_leaps_entry()` commits to one contract via SQL
+`LIMIT 1` *before* anything knows whether it is quoted at exit. The in-band candidates are now
+walked in delta order until one prices. **This recovered QQQM and TQQQ**, which had also been
+failing silently (TQQQ reports `delta_fallback_skipped=1`).
+
+Ordering is unchanged, so `candidate[0]` **is** the old pick — a fallback can only move *away*
+from the requested delta, never silently "improve" it. Bounded at 8. An explicit strike/expiry
+is **never** substituted.
+
+**2. QLD still does not price at delta 0.70, and that is correct.** With a ±0.10 band it has
+exactly one in-band contract for a 336-day hold — the dead strike 126 — and its next contracts
+sit at delta **0.802**, missing the 0.800 ceiling **by 0.002**.
+
+`_explain_no_price()` diagnoses in the **same order** `backtest_leaps` fails, and a test pins
+that ordering: diagnosing out of order could name a guard that is not the one that fired — the
+`T373-FORECAST-REASON` failure mode. Verified live across three branches: the contract gap, the
+delta band (at 0.05 → *"available deltas span 0.366-0.844. Try a target delta in that range"*),
+and a genuine capture gap.
+
+### T381 — the nearest-delta fallback, which reverses T380's refusal
+
+**User:** *"if we can't find the exact delta at that moment, we can find something near the same
+to run it."*
+
+T380 refused to auto-widen because silently pricing a 0.80-delta contract when 0.70 was asked
+for reports a result for a trade the user never described. **That objection was to silence, not
+to widening.** So the widened search is a clearly-labelled second pass: strict band first (it
+wins whenever it can price, so no existing result changes), relaxed only on failure, every
+result carrying `delta_relaxed` + its real `entry_delta`, a **NEAR** badge in the UI, and a note
+naming the symbol.
+
+**Why ±0.20 and not wider — measured:**
+
+```
+band ±0.10:  1 in-band,  0 PRICEABLE
+band ±0.15:  4 in-band,  3 PRICEABLE -> deltas 0.802 / 0.805 / 0.844
+band ±0.20:  4 in-band,  3 PRICEABLE -> the SAME three
+band ±0.25:  4 in-band,  3 PRICEABLE -> the SAME three
+```
+
+QLD's chain has a gap between 0.659 and 0.802, so a wider cap buys nothing real while admitting
+progressively less comparable trades.
+
+**The result is deliberately unflattering:** QLD prices at **−94.23%** (delta 0.802) beside
+QQQ's **+60.20%** (0.703). That gap is mostly **leveraged-ETF decay over a 336-day hold**, not
+the delta difference — which is precisely why the label exists.
+
+### Three of my own errors, worth knowing
+
+1. **A wrong suspicion that nearly widened the band on intuition.** I expected `delta 0.30` to
+   report a band miss and read its "in-band contract existed" message as a bug. It was correct —
+   QLD genuinely has one in-band candidate at delta 0.366 that is also unquoted at exit.
+2. **A pre-existing T375 test broke for a real reason**: it asserted the *variable name*
+   `entry.ask <= 0`, and the guard moved into the loop as `_cand.ask <= 0`. **Asserting a
+   variable name makes a pure rename look like a removed guard** — it now pins the condition.
+3. **My first fix of that test opened a hole.** It checked only that `_first_priceable` *exists*,
+   so replacing the call with `_candidates[0]` — restoring the original bug — still passed. A
+   second sabotage round caught it.
