@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from common.indicators import atr as _canon_atr
+from common.indicators import atr as _canon_atr, rsi as _canon_rsi
 
 
 def compute_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -40,11 +40,26 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     out["ema_12"]  = close.ewm(span=12, adjust=False, min_periods=12).mean()
     out["ema_26"]  = close.ewm(span=26, adjust=False, min_periods=26).mean()
 
-    d = close.diff()
-    g = d.clip(lower=0).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
-    l = (-d.clip(upper=0)).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
-    rs = g / l.replace(0, np.nan)
-    out["rsi_14"] = 100 - 100 / (1 + rs)
+    # T389-RSI-CONSOLIDATE: delegates to shared/common/indicators.py's canonical rsi() — the
+    # same function signal-engine, ranking-engine and market-data already import — instead of
+    # this file's own from-scratch copy. AUD-DUPLOGIC, matching the atr() consolidation above.
+    #
+    # THE TWO FORMULAS WERE BYTE-IDENTICAL EXCEPT ONE LINE: canonical ends with
+    # `.mask(avg_loss.notna() & avg_loss.eq(0), 100.0)`, which this copy lacked. That is
+    # Wilder's spec (RSI = 100 when there is no average loss).
+    #
+    # MEASURED BEFORE MIGRATING, because a 2025-08-22 audit called this a P0 "indicator formula
+    # drift" affecting live-vs-backtest parity: on 3,897 REAL production price bars across 8
+    # symbols (AAPL, HWM, META, MU, NVDA, SNDK, SOXL, XLK) the two produce **0 differing bars**.
+    # The mask only fires when avg_loss is EXACTLY 0, and ewm() decays a prior loss by 13/14 per
+    # bar without ever reaching zero — after META's real 20-day up-streak avg_loss was still
+    # 3.11e-01. It would take a series with no down bar since its very first bar.
+    #
+    # An earlier claim in this session that META/SOXL/XLK were affected was WRONG: that analysis
+    # counted consecutive up-days, which is not the trigger condition. So this is a
+    # de-duplication with no behaviour change on real data, NOT the P0 correctness fix the audit
+    # described — it removes the next opportunity for drift, nothing more.
+    out["rsi_14"] = _canon_rsi(close, window=14)
 
     macd = out["ema_12"] - out["ema_26"]
     out["macd"]        = macd

@@ -41,11 +41,47 @@ spread cost is visible rather than buried.
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import text
 
 from db import SessionLocal
+
+from common.market_calendar import is_us_trading_day as _is_us_trading_day
+
+
+# T387-LEAPS-HOLIDAY: how far forward to look for a tradable entry date.
+# 5 covers the longest real US market closure (a Thu/Fri holiday into a weekend, or the rare
+# multi-day weather/funeral closure); beyond that the requested date is so far from a trading
+# day that silently moving it would answer a different question than the one asked.
+_MAX_ENTRY_SHIFT_DAYS = 5
+
+
+def _next_trading_day(d: date, limit: int = _MAX_ENTRY_SHIFT_DAYS) -> date:
+    """`d` itself if the NYSE is open, else the next open day within `limit`.
+
+    REPORTED BY THE USER after a real run: a backtest starting 2024-01-15 returned "no option
+    chain captured" for EVERY symbol, because that is MLK Day. The archive was complete — the
+    date simply was not a trading day. Worse, the ROLLING variant still produced results
+    (it advances past dead windows), so a roll and a hold disagreed purely on the entry date's
+    tradability, which reads as a data gap rather than a calendar one.
+
+    Uses the SHARED calendar rather than a local weekday/holiday check: this repo has already
+    found FOUR divergent copies of the NYSE holiday table (AUD-ENTRY-NYSEHOLIDAY-FOURTHCOPY),
+    and a fifth here would drift the same way.
+
+    NOON UTC, deliberately: is_us_trading_day() resolves its argument in New York time, so
+    midnight UTC lands on the PREVIOUS ET day and would mis-classify every date by one — the
+    same timezone trap as AUD-EXIT-HKENTRYDATE.
+
+    Returns the ORIGINAL date when no trading day is found inside the window, so the caller
+    still fails with a real reason instead of silently testing an unrelated date.
+    """
+    for i in range(limit + 1):
+        cand = d + timedelta(days=i)
+        if _is_us_trading_day(datetime(cand.year, cand.month, cand.day, 12, tzinfo=timezone.utc)):
+            return cand
+    return d
 
 # A LEAPS is conventionally >1 year to expiry. 330 rather than 365 so a contract a few weeks
 # short of the anniversary still qualifies — the alternative silently excludes most of the
@@ -308,6 +344,15 @@ def backtest_leaps(
     if contracts < 1:
         return None
 
+    # T387-LEAPS-HOLIDAY: a non-trading entry date has no chain at all, so every symbol failed
+    # with "no option chain captured" — which reads as a data gap when it is a calendar one.
+    # Shift to the next open day and REPORT it: silently testing a different date than the one
+    # requested is exactly the substitution T380/T381 refused elsewhere.
+    _requested_entry = entry_date
+    entry_date = _next_trading_day(entry_date)
+    if exit_date <= entry_date:
+        return None  # the shift consumed the whole window
+
     # T375-EXPIRYBEFOREEXIT: the selected contract must still EXIST on the exit date.
     #
     # REPORTED BY THE USER: a 2024-10-01 -> 2026-09-01 run showed "no usable LEAPS quote for QQQ"
@@ -416,6 +461,11 @@ def backtest_leaps(
         "entry_date": entry.as_of.isoformat(),
         "exit_date": ex.as_of.isoformat(),
         "exit_date_requested": exit_date.isoformat(),
+        # T387-LEAPS-HOLIDAY: the date the caller ASKED for, and whether it had to move.
+        # Equal to entry_date on any normal run; different only when the request landed on a
+        # weekend or market holiday.
+        "entry_date_requested": _requested_entry.isoformat(),
+        "entry_date_shifted": _requested_entry != entry_date,
         # T380-LEAPS-CONTRACTGAP: how many better-delta contracts were skipped because they
         # were not quoted at the exit. 0 = the nearest-delta pick was used, i.e. identical to
         # the pre-fix behaviour. Non-zero means the delta is further from target than
@@ -470,6 +520,14 @@ def _explain_no_price(
             WHERE symbol = :sym AND as_of = :dt AND option_type = 'call'
         """), {"sym": symbol.upper(), "dt": entry_date}).scalar() or 0
     if n_entry == 0:
+        # T387-LEAPS-HOLIDAY: distinguish "the market was CLOSED" from "we failed to capture".
+        # The old message said the archive had no quotes, which is true but reads as a gap in
+        # OUR data when the real answer is that no chain exists for that date anywhere.
+        if not _is_us_trading_day(
+            datetime(entry_date.year, entry_date.month, entry_date.day, 12, tzinfo=timezone.utc)
+        ):
+            return (f"{entry_date.isoformat()} is not a US trading day (weekend or market "
+                    f"holiday), so no option chain exists for it — pick the next open day")
         return (f"no option chain captured for {symbol.upper()} on {entry_date.isoformat()} — "
                 f"the archive has no quotes for that date")
 
@@ -571,6 +629,15 @@ def backtest_leaps_rolling(
 
     cycles: list[dict] = []
     skipped: list[dict] = []
+    # T387-LEAPS-HOLIDAY: shift the SEQUENCE START the same way backtest_leaps() does, so a
+    # roll and a hold starting on the same requested date actually begin on the same day. They
+    # previously disagreed whenever that date was a holiday — the roll advanced past it and the
+    # hold failed outright, which looked like a data problem rather than a calendar one.
+    # Per-cycle entries need no shift: each subsequent cursor is a real quoted exit date.
+    _requested_start = start_date
+    start_date = _next_trading_day(start_date)
+    if end_date <= start_date:
+        return None
     _cursor = start_date
     _contracts = contracts
     _equity_mult = 1.0
@@ -657,6 +724,8 @@ def backtest_leaps_rolling(
         "target_delta": target_delta,
         "compound": compound,
         "start_date": cycles[0]["entry_date"],
+        "start_date_requested": _requested_start.isoformat(),
+        "start_date_shifted": _requested_start != start_date,
         "end_date": cycles[-1]["exit_date"],
         "cycles": cycles,
         "cycles_completed": len(cycles),
