@@ -853,22 +853,33 @@ def compare_symbols(
 _COVERAGE_CACHE_TTL = 6 * 3600
 
 
-def _coverage_cache_key(syms: list[str], target_delta: float, min_dte: int) -> str:
-    return (f"stockai:leaps:coverage:{'-'.join(sorted(syms))}"
-            f":{target_delta:.2f}:{min_dte}")
+def _symbol_usable_days(symbol: str, target_delta: float, min_dte: int) -> list[str]:
+    """The as_of dates on which `symbol` had a delta-selectable LEAPS. Cached per SYMBOL.
 
+    T397-COVERAGE-PERSYMBOL: this is the unit of caching, and the reason is a measured
+    pathology -- a multi-symbol `symbol = ANY(...)` query is catastrophically non-linear:
 
-def coverage(symbols: list[str], target_delta: float = 0.80,
-             min_dte: int = _MIN_LEAPS_DTE) -> dict:
-    """How many days each symbol actually has a delta-selectable LEAPS, plus the overlap.
+        1 symbol  ->    494 ms   (Bitmap Index Scan -> Bitmap Heap Scan)
+        6 symbols -> 42,900 ms   (Index Scan with a heap fetch per row)
 
-    Exposed as a first-class result rather than an internal detail: a user choosing dates needs
-    to know that TQQQ has 726 usable days and QQQM 266 BEFORE reading a comparison, not after.
+    **87x slower for 6x the data.** The planner abandons the bitmap path for ANY() and degrades
+    to random heap reads over a 12 GB table on an EBS volume that has already shown I/O credit
+    exhaustion (docs/incidents/ebs-io-credit-exhaustion.md). 42.9 s is past the gateway timeout,
+    which is what reached the user as "NetworkError when attempting to fetch resource".
 
-    Cached 6h — see _COVERAGE_CACHE_TTL for why that is load-bearing rather than incidental.
+    THREE PRIOR ATTEMPTS TO FIX IT AS A QUERY FAILED, recorded so they are not retried:
+      * the existing index was already covering -- `(symbol, delta, ((expiry-as_of)), as_of)`;
+      * VACUUM did not restore an index-only scan, and first failed outright with "could not
+        resize shared memory segment" because the postgres container's /dev/shm is Docker's
+        default 64 MB, too small for parallel maintenance at this scale (VACUUM (PARALLEL 0)
+        then succeeded);
+      * a new partial + covering index moved 60 s to 42.9 s and no further.
+
+    Caching per SYMBOL rather than per symbol-LIST is what makes any user selection a warm
+    lookup: a set's coverage composes from its members, so 29 warmed symbols cover all possible
+    selections instead of only the one list that happened to be warmed.
     """
-    syms = [s.upper() for s in symbols]
-    _ck = _coverage_cache_key(syms, target_delta, min_dte)
+    _ck = f"stockai:leaps:covdays:{symbol.upper()}:{target_delta:.2f}:{min_dte}"
     try:
         from common.redis_client import get_redis
         import json as _json
@@ -878,51 +889,57 @@ def coverage(symbols: list[str], target_delta: float = 0.80,
     except Exception:
         pass  # cache unavailable -> compute it; slow beats broken
     with SessionLocal() as s:
-        per = s.execute(text("""
-            SELECT symbol, COUNT(DISTINCT as_of) AS days,
-                   MIN(as_of) AS oldest, MAX(as_of) AS newest
-            FROM option_chain_history
-            WHERE symbol = ANY(:syms) AND option_type = 'call'
-              AND delta IS NOT NULL
+        rows = s.execute(text("""
+            SELECT as_of FROM option_chain_history
+            WHERE symbol = :sym AND option_type = 'call' AND delta IS NOT NULL
               AND delta BETWEEN :dlo AND :dhi
               AND (expiry - as_of) >= :dte
-            GROUP BY symbol
-        """), {"syms": syms, "dlo": target_delta - _DELTA_BAND,
+            GROUP BY as_of ORDER BY as_of
+        """), {"sym": symbol.upper(), "dlo": target_delta - _DELTA_BAND,
                "dhi": target_delta + _DELTA_BAND, "dte": min_dte}).all()
-        common = s.execute(text("""
-            SELECT COUNT(*) AS n FROM (
-                SELECT as_of FROM option_chain_history
-                WHERE symbol = ANY(:syms) AND option_type = 'call'
-                  AND delta IS NOT NULL
-                  AND delta BETWEEN :dlo AND :dhi
-                  AND (expiry - as_of) >= :dte
-                GROUP BY as_of
-                HAVING COUNT(DISTINCT symbol) = :n_syms
-            ) x
-        """), {"syms": syms, "dlo": target_delta - _DELTA_BAND,
-               "dhi": target_delta + _DELTA_BAND, "dte": min_dte,
-               "n_syms": len(syms)}).first()
-
-    by_symbol = {
-        r.symbol: {"days": r.days, "oldest": r.oldest.isoformat(),
-                   "newest": r.newest.isoformat()}
-        for r in per
-    }
-    for sym in syms:
-        by_symbol.setdefault(sym, {"days": 0, "oldest": None, "newest": None})
-    n_common = int(common.n) if common else 0
-    _out = {
-        "by_symbol": by_symbol,
-        "common_days": n_common,
-        # An explicit, machine-readable "do not rank on this" rather than a bare number a UI
-        # might render as authoritative.
-        "comparison_supported": n_common >= _MIN_COMPARE_DAYS,
-        "min_days_for_comparison": _MIN_COMPARE_DAYS,
-    }
+    out = [r.as_of.isoformat() for r in rows]
     try:
         from common.redis_client import get_redis
         import json as _json
-        get_redis().setex(_ck, _COVERAGE_CACHE_TTL, _json.dumps(_out))
+        get_redis().setex(_ck, _COVERAGE_CACHE_TTL, _json.dumps(out))
     except Exception:
         pass
-    return _out
+    return out
+
+
+def coverage(symbols: list[str], target_delta: float = 0.80,
+             min_dte: int = _MIN_LEAPS_DTE) -> dict:
+    """How many days each symbol actually has a delta-selectable LEAPS, plus the overlap.
+
+    Exposed as a first-class result rather than an internal detail: a user choosing dates needs
+    to know that TQQQ has 726 usable days and QQQM 266 BEFORE reading a comparison, not after.
+
+    T397-COVERAGE-PERSYMBOL: composed from per-SYMBOL cached day lists rather than one
+    multi-symbol query -- see _symbol_usable_days() for the 87x non-linearity that forced it.
+    `common_days` is a set intersection of those same lists, so it costs nothing extra.
+    """
+    syms = [x.upper() for x in symbols]
+    per: dict[str, list[str]] = {sym: _symbol_usable_days(sym, target_delta, min_dte)
+                                 for sym in syms}
+    by_symbol = {
+        sym: {"days": len(days),
+              "oldest": days[0] if days else None,
+              "newest": days[-1] if days else None}
+        for sym, days in per.items()
+    }
+    # Days on which EVERY requested symbol was selectable -- i.e. when a like-for-like
+    # comparison is actually possible. Zero when any symbol has no usable day at all.
+    _sets = [set(d) for d in per.values()]
+    n_common = len(set.intersection(*_sets)) if _sets and all(_sets) else 0
+    return {
+        "by_symbol": by_symbol,
+        "common_days": n_common,
+        "target_delta": target_delta,
+        "min_dte": min_dte,
+        # T375: a thin overlap must be DECLARED, not silently ranked as if it were a full
+        # comparison -- 101 common days out of TQQQ's own 726 is not the same claim as 101
+        # out of 101. The frontend reads this exact key to show an amber warning; renaming or
+        # dropping it breaks that UI silently (a missing key is falsy, so it degrades to the
+        # warning path on EVERY load rather than failing loudly).
+        "comparison_supported": n_common >= _MIN_COMPARE_DAYS,
+    }

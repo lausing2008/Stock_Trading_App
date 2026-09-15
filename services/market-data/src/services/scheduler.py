@@ -13636,10 +13636,30 @@ def _capture_option_chain_history_daily() -> None:
         # fetch resource". Warming it here means a real visitor never pays the cold cost, and
         # doing it right after the capture is what keeps the cached answer correct.
         try:
-            from ..backtest.leaps_backtest import coverage as _leaps_cov
-            for _d in (0.80, 0.70, 0.90):
-                _leaps_cov(["QQQ", "QQQM", "QLD", "TQQQ"], _d, 330)
-            log.info("opthist.leaps_coverage_warmed")
+            # T397-COVERAGE-PERSYMBOL: warm PER SYMBOL, not per symbol-list. Coverage is now
+            # composed from per-symbol cached day lists, so warming each of the 29 captured
+            # symbols covers EVERY possible user selection — the old form warmed exactly one
+            # list (["QQQ","QQQM","QLD","TQQQ"]) and any other selection paid the cold cost.
+            #
+            # That cold cost is why this matters: a multi-symbol query is 42.9 s (87x worse
+            # than a single symbol, see _symbol_usable_days), past the gateway timeout, and it
+            # reached the user as "NetworkError when attempting to fetch resource".
+            # Warm it is 0.006 s.
+            #
+            # The grid is the UI's realistic parameter space, not every possible one: a user
+            # CAN pick delta 0.37 / 412 DTE and will still pay the cold cost. Warming the full
+            # space is not feasible and pretending otherwise would be worse than saying so.
+            from ..backtest.leaps_backtest import _symbol_usable_days as _leaps_days
+            _warmed = 0
+            for _sym in _OPTHIST_SYMBOLS:
+                for _d in (0.70, 0.80):
+                    for _dte in (330, 365):
+                        try:
+                            _leaps_days(_sym, _d, _dte)
+                            _warmed += 1
+                        except Exception:
+                            pass  # one symbol must not abort the rest of the warm
+            log.info("opthist.leaps_coverage_warmed", combos=_warmed)
         except Exception as _wexc:
             # Never let a cache warm-up fail the capture it follows.
             log.warning("opthist.leaps_coverage_warm_failed", error=str(_wexc))

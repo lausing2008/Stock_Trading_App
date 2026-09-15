@@ -164,6 +164,9 @@ def test_coverage_is_a_first_class_result():
 
 
 def test_a_thin_overlap_is_declared_not_silently_ranked():
+    """T397-COVERAGE-PERSYMBOL moved the day-list computation into _symbol_usable_days(), but
+    the guard itself — comparing the intersection size against the same named constant — must
+    still live in coverage(), which is what the frontend actually calls."""
     fn = _fn("coverage")
     assert "n_common >= _MIN_COMPARE_DAYS" in fn
     assert "_MIN_COMPARE_DAYS = 30" in SRC
@@ -184,9 +187,14 @@ def test_the_missing_note_explains_sparse_greeks():
 
 def test_coverage_reports_zero_for_a_symbol_with_no_rows():
     """Absent from the GROUP BY must become an explicit 0, not a missing key a caller might
-    read as an error — the falsy/absent distinction this codebase keeps getting bitten by."""
+    read as an error — the falsy/absent distinction this codebase keeps getting bitten by.
+
+    T397-COVERAGE-PERSYMBOL changed the mechanism from a SQL setdefault to a Python dict
+    comprehension over each symbol's (possibly empty) day list — asserting on `len(days)` is
+    the behavioural invariant, not the literal SQL construct that produced it before."""
     fn = _fn("coverage")
-    assert 'by_symbol.setdefault(sym, {"days": 0' in fn
+    assert '"days": len(days)' in fn
+    assert 'days[0] if days else None' in fn, "empty list must yield None, not an index error"
 
 
 # ── The parameters the user asked for ───────────────────────────────────────────────────
@@ -260,23 +268,28 @@ def test_the_dte_predicate_is_written_in_the_INDEXABLE_form():
 
 
 def test_coverage_is_cached():
-    fn = _fn("coverage")
-    assert "_coverage_cache_key(" in fn
+    """T397-COVERAGE-PERSYMBOL moved caching from one multi-symbol key to a cache PER SYMBOL
+    (_symbol_usable_days), because a `symbol = ANY(...)` query measured 42.9s against 494ms for
+    a single symbol — 87x worse for 6x the data. coverage() itself no longer touches Redis
+    directly; it composes per-symbol results, each of which is independently cached."""
+    fn = _fn("_symbol_usable_days")
     assert "get_redis().get(_ck)" in fn
-    assert "setex(_ck, _COVERAGE_CACHE_TTL" in SRC
+    assert "setex(_ck, _COVERAGE_CACHE_TTL" in fn
 
 
 def test_the_cache_key_includes_every_parameter_that_changes_the_answer():
     """A key omitting target_delta or min_dte would serve one delta band's coverage for
-    another — a wrong answer that looks entirely plausible."""
-    fn = _fn("_coverage_cache_key")
+    another — a wrong answer that looks entirely plausible. Per-symbol keying makes the
+    symbol itself part of the key too, which the old multi-symbol `sorted(syms)` join no
+    longer needs to do — there is exactly one symbol per key by construction."""
+    fn = _fn("_symbol_usable_days")
     assert "target_delta" in fn and "min_dte" in fn
-    assert "sorted(syms)" in fn, "and be order-independent for the same symbol set"
+    assert 'f"stockai:leaps:covdays:{symbol.upper()}' in fn
 
 
 def test_a_cache_failure_falls_back_to_computing():
     """Slow beats broken: a Redis outage must not take the panel down."""
-    fn = _fn("coverage")
+    fn = _fn("_symbol_usable_days")
     assert "except Exception:" in fn
     assert "pass" in fn
 
