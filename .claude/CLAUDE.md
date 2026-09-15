@@ -274,6 +274,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/features/paper-trading-gates.md`** — Paper Portfolio Badges Are Two Independent Layers — layer-1 (portfolio/market-wide gates) vs … [holiday]
 
 - **`docs/features/options-and-institutional-data.md`** — T230-DATA-OPTIONS-CHAIN — Full Strike/Expiry Options Chain (Built 2026-07-22); TIER82-FMP-ANALYST-ESTIMATES — analyst_pt_upside ML Feature (Built 2026-08-18 … [backtest, OPTHIST, options history, LEAPS]
+- **`docs/features/options-and-institutional-data.md`** — T384-T387 (2026-09-15) — LEAPS capture 13->29. "Stable and strong" is the WRONG filter: a 0.70-delta call needs a TREND (TQQQ -73.78%/336d). Holiday entries shift + SAY SO [LEAPS, holiday, IV rank]
 - **`docs/features/options-and-institutional-data.md`** — T380/T381 (2026-09-10) — a LEAPS contract can stop being quoted MID-HOLD while the symbol's coverage looks fine; walk the delta band instead of committing to `LIMIT 1`. Relaxed ±0.20 fallback is LABELLED, never silent [LEAPS, delta, QLD]
 
 - **`docs/features/research-engine-reports.md`** — Research Tab on the Stock Detail Page (Built 2026-07-29)
@@ -334,6 +335,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/audits/2026-09-08-ranking-kscore-audit.md`** — RANKING / K-SCORE audit (2026-09-08): 6 findings, all fixed (tier 366). Read before touching `services/ranking-engine/` or `kscore.py` … [Redis, yfinance]
 
 - **`docs/audits/2026-09-08-backtest-harness-audit.md`** — BACKTEST HARNESS audit (2026-09-08): 4 findings fixed + 1 RETRACTION (tier 367). Read before touching `services/market-data/src/backtest/` or quoting any backtest number … [HKEX]
+- **`docs/audits/2026-09-08-backtest-harness-audit.md`** — T388/T389 (2026-09-15) — fee/slippage + look-ahead had ZERO tests; now 17 behavioural ones, 8 engine sabotages caught. The audit's P0 RSI "drift" is unreachable: 0 differing bars on 3,897 real rows [backtest, RSI, fees]
 
 - **`docs/audits/2026-09-08-gate-audit.md`** — ALL-GATES audit (2026-09-08): 12 findings, 6 FIXED (tier 368), run as 3 parallel audits (entry / exit+risk / signal+alert) over 158 gate constants in 14 files … [Redis, watchdog]
 

@@ -249,3 +249,68 @@ Preserved verbatim. Formatting is unchanged from the index entry, including its 
 nothing is lost to a reflow.
 
 **BACKTEST HARNESS audit (2026-09-08): 4 findings fixed + 1 RETRACTION (tier 367).** Read before touching `services/market-data/src/backtest/` **or quoting any backtest number.** **The headline is counterintuitive: the harness does NOT overstate performance — it UNDERSTATES it by ~5.7pp on GROWTH, and its lookahead discipline is the best-built part of the codebase.** What was broken was the configuration plumbing around a sound core. **THE RETRACTION (`AUD-BT-HOLDMODELGAP`):** the 2026-09-06 scoping doc's headline claim that "GROWTH gates admit a losing population" is **NOT SUPPORTED** — the harness scores a fixed-hold-to-horizon model (no stop, no target, no slippage) while the live engine exits at ~6.8d; the SAME GROWTH signals returned **+0.26% real vs −5.45% harness**, with the gap localising entirely to `breakeven_stop` and `target_reached`. 5.7pp is **11× the 0.5 promotion threshold** and is **non-uniform** (it varies with the exit mix the tuned config itself changes) — so treat `avg_return_pct` as a RELATIVE ranking signal between candidates, never as realised performance. **Three of the four code findings are ONE failure: a required input silently defaulting to a PLAUSIBLE WRONG value** (`cfg["market"]` → "US", `signal_data["horizon"]` → "SWING") — live callers supply it, harness callers forgot, and the default was valid so nothing raised. Consequence: **HK was un-tunable for MONTHS** via two independent bugs (the cfg default, plus `_entry_as_of` building 12:00 HKT which is HKEX's exclusive morning close — the lunch break; fixing either alone still gave zero entries), and the **only risk-side promotion check was mathematically inert** (fractions compared against a percentage-point tolerance, so `regression <= 10.0` was always true). **Things checked and CLEAN — do not re-derive:** all lookahead paths (strict `<`, PIT kscore deliberately bounded, T+1 entry, no `.iloc[-1]` defect), BUG233's wall-clock fix, survivorship handling, promotion margins (they err STRICT), and a fail-open/falsy-zero sweep across all 8 modules with zero hits. **Two items recorded but deliberately NOT fixed:** the research-summary lookahead in `_should_enter`'s replay is **latent** (all 68 cached reports are past TTL so it 404s — but it becomes live if research generation resumes), and the win-rate `r > 0` drift is display-only (~3.1-3.3pp) since promotion uses `avg_return_pct`.
+
+---
+
+## T388-ENGINE-COSTS / T389-RSI-CONSOLIDATE — reviewing the 2025-08-22 "Backtesting Framework Audit" document (2026-09-15)
+
+The user supplied `Improvements/Backtesting Framework Audit 2025-08-22.md` and asked whether it
+could improve the system. **Every claim was verified against the current code before acting** —
+this repo has a documented history of stale audit documents.
+
+### What was still true
+
+| audit claim | verdict |
+|---|---|
+| No fee/slippage tests | ✅ **true** — zero matching files |
+| No look-ahead tests | ✅ **true** — zero matching files |
+| No stop-loss / take-profit | ✅ true (0 references) |
+| No position sizing (100% allocation) | ✅ true, stated in the docstring |
+
+### What had gone stale
+
+- **"Only 3 test files"** → there were **5**; `test_dsl.py` and `test_atr_consolidation.py` were
+  added after the document was written.
+- **"No NaN tests / no DSL tests"** → both now exist.
+
+### The P0 claim was real but mis-severed
+
+The audit's headline finding was **"indicator formula drift"**: `compute_features()` computed
+RSI from scratch while `shared/common/indicators.py` had a canonical version with an extra
+`.mask(avg_loss.notna() & avg_loss.eq(0), 100.0)`.
+
+**The formulas do differ — but the difference is unreachable on real data.**
+
+| test | differing bars |
+|---|---|
+| 3,897 real production bars, 8 symbols | **0** |
+| 200 random-walk trials × 500 bars | **0 trials** |
+| synthetic 30-bar pure uptrend | 16 (canonical 100.0, old NaN) |
+
+The mask only fires when `avg_loss` is **exactly 0**, and `ewm(alpha=1/14)` decays a prior loss
+by 13/14 per bar without ever reaching zero — after META's real 20-day up-streak `avg_loss` was
+still `3.11e-01`. It needs a series with **no down bar since its very first bar**.
+
+**A wrong claim of mine, corrected:** I initially reported META, SOXL and XLK as affected, from a
+SQL query counting consecutive non-down days. **That is not the trigger condition.** The streaks
+were real; the inference was not. The migration shipped as **de-duplication with no behaviour
+change**, not as a P0 correctness fix.
+
+### What got built (T388-ENGINE-COSTS)
+
+The two genuinely-missing test suites, as **behavioural** tests driving the real engine with
+synthetic prices where the answer is computable by hand — a source-text test would pass against
+a re-implementation with the arithmetic backwards.
+
+**8 engine sabotages, all caught:** same-bar entry fill, same-bar exit fill, equity counting the
+fill bar's own return, flipped cost sign, bps/percent confusion (`x/1e2`), fees dropped from the
+equity curve only, stacked positions, unclosed final position.
+
+`strategy-engine` went **23 → 55 tests**.
+
+### Still open from that document, deliberately
+
+Stop-loss/take-profit, position sizing, multi-asset, walk-forward, regime awareness, intraday
+and short selling are all real gaps — but the strategy backtester is a **rule-testing tool**, and
+the paper-trading engine already has stops, sizing and regime integration. They were not
+prioritised over the missing tests.

@@ -1188,3 +1188,48 @@ said *"no option chain captured for TSM on 2024-01-15 — the archive has no quo
 date"*. The rolling variant still produced results because it advances past dead windows — so a
 roll and a hold can legitimately disagree purely on the entry date's tradability. **Start a
 comparison on a trading day**, or the hold column reads as a data gap when it is a calendar one.
+
+---
+
+## T384-LEAPS-UNIVERSE / T385-LEAPS-ROLL / T386-LEAPS-ROLL-UI / T387-LEAPS-HOLIDAY — the LEAPS universe, rolling, and holiday entries (2026-09-14/15)
+
+### T384-LEAPS-UNIVERSE — capture extended 13 → 29 symbols
+
+The user asked how to pick LEAPS candidates: *"Is it a more stable and strong company?"*
+
+**"Stable and strong" is the wrong filter.** A 0.70-delta call held ~12 months only wins if the
+underlying **trends up** enough to beat theta plus the spread. T381 measured the counterexample:
+**TQQQ returned −73.78%** over a 336-day hold while tracking an index the user is bullish on.
+
+Criteria actually applied, all measured against this platform's own price history: 2-year return
+>+30%, 1-year >+15%, max 1-year drawdown better than −40%, deep liquid chain, not leveraged.
+
+**Not measured, and disclosed rather than implied:** IV rank. UW's `iv-rank` endpoint returned
+nothing usable for all 22 probed candidates, so IV — which a LEAPS buyer *pays* at entry — is an
+unverified dimension of this list.
+
+**The rolling window moved during the work:** T374 recorded UW serving back to ~2023-10-11; that
+date now returns **403**, and bisection puts the boundary at **2023-10-23**. Uncaptured days
+become *uncapturable*.
+
+### T385-LEAPS-ROLL / T386-LEAPS-ROLL-UI — rolling, and the UI it was missing
+
+`backtest_leaps_rolling()` buys long-dated, sells after `hold_days`, repeats. **The single-cycle
+half already worked** — T380's `max(min_dte, hold_days)` only raises the expiry floor — so only
+the repeat was missing.
+
+Then the user said *"I don't see the rolling Leap backtests"*, and they were right: it had **no
+route and no UI**. That was the **third** instance in one session of computed-but-never-serialised
+(`AUD-GAMEPLANBATCH-WRONGIMPORT`, `T370-EARNINGS-DIRECTION`, `T383-DARKPOOL-UI`). **A backend
+function is not a feature until something a person can open calls it.**
+
+### T387-LEAPS-HOLIDAY — a holiday entry date read as a data gap
+
+A 2-year hold from **2024-01-15** returned `n/a` for every symbol — that is **MLK Day**. The
+explainer blamed the archive, and the *rolling* variant still worked (it advances past dead
+windows), so roll and hold disagreed purely on calendar tradability.
+
+Both entry paths now shift to the next open day and **report it** (`entry_date_shifted`), using
+the **shared** calendar at **noon UTC** (midnight would resolve to the previous ET day). Result:
+**5 of 6 symbols price where all 6 failed**; AVGO still fails for a genuine T380 contract-gap
+reason (its 2024 10:1 split re-struck the chain), now correctly named as such.
