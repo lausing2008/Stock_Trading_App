@@ -2899,6 +2899,59 @@ def backtest_leaps_run(
     return res
 
 
+@router.get("/backtest/leaps/rolling")
+def backtest_leaps_rolling_run(
+    symbol: str = Query(...),
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    hold_days: int = Query(182, ge=7, le=1095, description="Sell after this many days, then repeat"),
+    target_delta: float = Query(0.70, ge=0.05, le=0.99),
+    min_dte: int = Query(330, ge=30, le=1400, description="Minimum DTE at each entry"),
+    contracts: int = Query(1, ge=1, le=1000),
+    compound: bool = Query(True, description="Reinvest each cycle's proceeds into the next"),
+    _: User = Depends(get_current_user),
+):
+    """T385-LEAPS-ROLL: buy a long-dated LEAPS, sell after `hold_days`, repeat.
+
+    The user's own framing: "I set 2 years leaps but I wanna sell before 2 years like half a
+    year or a year, and then repeat." `min_dte` controls how long-dated the CONTRACT is;
+    `hold_days` controls how long it is HELD. They are independent — buying a 730-DTE contract
+    and selling it after 182 days is the normal case, not an edge case.
+
+    READ `total_spread_cost` BEFORE the return. Every cycle pays a full bid/ask round-trip, so
+    four 6-month rolls pay four of them: measured on QQQ 2024-07-08..2026-07-08, rolling
+    6-month returned +131.48% against +118.00% for a single 2-year hold, while paying $1,638
+    of spread against $384 — 4.3x. That one sample is a strong bull run and 4W/0L is not a
+    track record.
+
+    `cycles_skipped` names any window that could not be priced, with the reason — a gap
+    mid-sequence changes what the total return means and must never be silently dropped.
+    """
+    from datetime import date as _date
+    from ..backtest.leaps_backtest import backtest_leaps_rolling as _roll
+    try:
+        d_in = _date.fromisoformat(start_date)
+        d_out = _date.fromisoformat(end_date)
+    except ValueError:
+        raise HTTPException(400, "dates must be YYYY-MM-DD")
+    if d_out <= d_in:
+        raise HTTPException(400, "end_date must be after start_date")
+    if (d_out - d_in).days < hold_days:
+        raise HTTPException(
+            400,
+            f"the date range is {(d_out - d_in).days} days but hold_days is {hold_days} — "
+            "not even one full cycle fits, so there is nothing to roll",
+        )
+    res = _roll(symbol, d_in, d_out, hold_days, target_delta, min_dte, contracts, compound)
+    if res is None:
+        raise HTTPException(404, (
+            f"No usable LEAPS cycle for {symbol.upper()} between {start_date} and {end_date} "
+            f"(delta ~{target_delta}, >={min_dte} DTE, {hold_days}-day holds). "
+            "Greeks are sparse by design — check /backtest/leaps/coverage first."
+        ))
+    return res
+
+
 @router.get("/backtest/leaps/compare")
 def backtest_leaps_compare(
     symbols: str = Query("QQQ,QQQM,QLD,TQQQ"),

@@ -853,6 +853,22 @@ export const api = {
     return request<LeapsCompare>(`/paper-portfolio/backtest/leaps/compare?${q}`);
   },
 
+  // T385-LEAPS-ROLL: buy a long-dated LEAPS, sell after hold_days, repeat. `min_dte` controls
+  // how long-dated the CONTRACT is; `hold_days` controls how long it is HELD — independent
+  // knobs, so a 730-DTE contract sold after 182 days is the normal case, not an edge case.
+  leapsRolling: (p: {
+    symbol: string; start_date: string; end_date: string; hold_days: number;
+    target_delta?: number; min_dte?: number; contracts?: number; compound?: boolean;
+  }) => {
+    const q = new URLSearchParams({
+      symbol: p.symbol, start_date: p.start_date, end_date: p.end_date,
+      hold_days: String(p.hold_days),
+      target_delta: String(p.target_delta ?? 0.7), min_dte: String(p.min_dte ?? 330),
+      contracts: String(p.contracts ?? 1), compound: String(p.compound ?? true),
+    });
+    return request<LeapsRolling>(`/paper-portfolio/backtest/leaps/rolling?${q}`);
+  },
+
   eventsEarningsDirectionAccuracy: (minConfidence?: number) =>
     request<EarningsDirectionAccuracy>(
       `/events/earnings/direction-accuracy${minConfidence != null ? `?min_confidence=${minConfidence}` : ''}`,
@@ -3433,6 +3449,37 @@ export type LeapsCoverage = {
   common_days: number;
   comparison_supported: boolean;
   min_days_for_comparison: number;
+};
+
+// T385-LEAPS-ROLL. `total_spread_cost` is the number that decides whether rolling beats
+// holding: every cycle pays a full bid/ask round-trip, so four 6-month rolls pay four of them.
+// `cycles_skipped` names any window that could not be priced — a gap mid-sequence changes what
+// the total return means, so it is never silently dropped.
+export type LeapsRolling = {
+  symbol: string;
+  strategy: string;
+  hold_days: number;
+  target_delta: number;
+  compound: boolean;
+  start_date: string;
+  end_date: string;
+  cycles: LeapsTrade[];
+  cycles_completed: number;
+  cycles_skipped: { entry_date: string; exit_date: string; reason: string }[];
+  wins: number;
+  losses: number;
+  win_rate_pct: number;
+  total_return_pct: number | null;
+  cagr_pct: number | null;
+  total_cost: number;
+  total_proceeds: number;
+  total_pnl: number;
+  total_spread_cost: number;
+  avg_return_per_cycle_pct: number;
+  // Whole contracts are coarse: with contracts=1 the size cannot move until equity doubles,
+  // so a flat array here is quantisation, not a broken `compound` flag.
+  contracts_per_cycle: number[];
+  hit_cycle_guard: boolean;
 };
 
 export type LeapsCompare = {

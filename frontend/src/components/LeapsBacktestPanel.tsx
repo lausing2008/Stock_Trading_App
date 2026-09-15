@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import useSWR from 'swr';
-import { api, type LeapsCoverage, type LeapsCompare } from '@/lib/api';
+import { api, type LeapsCoverage, type LeapsCompare, type LeapsRolling } from '@/lib/api';
 
 /**
  * T375-LEAPS-BACKTEST — long-dated call backtester for the QQQ family.
@@ -40,6 +40,14 @@ export default function LeapsBacktestPanel() {
   const [minDte, setMinDte] = useState(330);
   const [contracts, setContracts] = useState(1);
   const [result, setResult] = useState<LeapsCompare | null>(null);
+  // T385-LEAPS-ROLL: "I set 2 years leaps but I wanna sell before 2 years like half a year or
+  // a year, and then repeat." Rolling is a genuinely different strategy, not a preset — it
+  // re-strikes at the current price each cycle and pays a full spread every time — so it gets
+  // its own mode and its own result shape rather than being folded into the compare table.
+  const [mode, setMode] = useState<'hold' | 'roll'>('hold');
+  const [holdDays, setHoldDays] = useState(182);
+  const [compound, setCompound] = useState(true);
+  const [rollResult, setRollResult] = useState<LeapsRolling | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
 
@@ -52,8 +60,19 @@ export default function LeapsBacktestPanel() {
   async function run() {
     if (selected.length === 0) { setError('Pick at least one symbol.'); return; }
     if (exitDate <= entryDate) { setError('Exit date must be after entry date.'); return; }
-    setRunning(true); setError(''); setResult(null);
+    setRunning(true); setError(''); setResult(null); setRollResult(null);
     try {
+      if (mode === 'roll') {
+        // Rolling runs ONE symbol at a time: each symbol produces its own cycle sequence, and
+        // stacking several into the compare table would imply a like-for-like ranking across
+        // sequences that may have different cycle counts and different skipped windows.
+        setRollResult(await api.leapsRolling({
+          symbol: selected[0], start_date: entryDate, end_date: exitDate,
+          hold_days: holdDays, target_delta: targetDelta, min_dte: minDte,
+          contracts, compound,
+        }));
+        return;
+      }
       setResult(await api.leapsCompare({
         symbols: selected.join(','), entry_date: entryDate, exit_date: exitDate,
         target_delta: targetDelta, min_dte: minDte, contracts,
@@ -132,9 +151,45 @@ export default function LeapsBacktestPanel() {
           <input type="number" step="1" min="1" max="1000" style={inp}
                  value={contracts} onChange={e => setContracts(parseInt(e.target.value) || 1)} />
         </div>
+        {/* T385-LEAPS-ROLL: hold_days is INDEPENDENT of Min DTE — Min DTE says how long-dated
+            the CONTRACT is, Hold says how long it is HELD. Buying a 730-DTE contract and
+            selling after 182 days is the normal case for this mode, not an edge case. */}
+        {mode === 'roll' && (
+          <>
+            <div>
+              <label style={lbl}>Hold (days)</label>
+              <input type="number" step="1" min="7" max="1095" style={inp}
+                     value={holdDays} onChange={e => setHoldDays(parseInt(e.target.value) || 182)} />
+            </div>
+            <div>
+              <label style={lbl}>Sizing</label>
+              <select style={inp} value={compound ? 'y' : 'n'}
+                      onChange={e => setCompound(e.target.value === 'y')}>
+                <option value="y">Reinvest</option>
+                <option value="n">Fixed size</option>
+              </select>
+            </div>
+          </>
+        )}
       </div>
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
+        {/* Hold vs Roll. Rolling runs ONE symbol at a time — each produces its own cycle
+            sequence, and stacking several into the compare table would imply a like-for-like
+            ranking across sequences with different cycle counts and different skipped windows. */}
+        {(['hold', 'roll'] as const).map(m => (
+          <button key={m} onClick={() => { setMode(m); setResult(null); setRollResult(null); }}
+            title={m === 'hold'
+              ? 'Buy once, hold to the exit date.'
+              : 'Buy a long-dated LEAPS, sell after the hold period, then repeat. Pays a full bid/ask round-trip every cycle.'}
+            style={{
+              padding: '5px 12px', borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: 'pointer',
+              background: mode === m ? 'rgba(168,85,247,0.15)' : 'transparent',
+              border: `1px solid ${mode === m ? 'rgba(168,85,247,0.45)' : '#1e293b'}`,
+              color: mode === m ? '#c084fc' : '#475569',
+            }}>{m === 'hold' ? 'Hold' : 'Roll'}</button>
+        ))}
+        <span style={{ width: 1, height: 20, background: '#1e293b' }} />
         {SYMBOLS.map(s => {
           const on = selected.includes(s);
           return (
@@ -157,6 +212,107 @@ export default function LeapsBacktestPanel() {
       </div>
 
       {error && <div style={{ fontSize: 12, color: '#f87171', marginTop: 10 }}>{error}</div>}
+
+      {/* T385-LEAPS-ROLL results — its own shape, deliberately not folded into the compare
+          table: a roll is a SEQUENCE of cycles, and the spread cost is the number that decides
+          whether it beat holding. */}
+      {rollResult && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'baseline',
+                        padding: '10px 12px', borderRadius: 8, background: 'rgba(168,85,247,0.06)',
+                        border: '1px solid rgba(168,85,247,0.25)' }}>
+            <div>
+              <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase' }}>Total</div>
+              <div style={{ fontSize: 18, fontWeight: 800,
+                            color: (rollResult.total_return_pct ?? 0) >= 0 ? '#4ade80' : '#f87171' }}>
+                {rollResult.total_return_pct != null ? `${rollResult.total_return_pct >= 0 ? '+' : ''}${rollResult.total_return_pct.toFixed(2)}%` : '—'}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase' }}>CAGR</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: '#e2e8f0' }}>
+                {rollResult.cagr_pct != null ? `${rollResult.cagr_pct.toFixed(2)}%` : '—'}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase' }}>Cycles</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: '#e2e8f0' }}>
+                {rollResult.cycles_completed} · {rollResult.wins}W/{rollResult.losses}L ({rollResult.win_rate_pct}%)
+              </div>
+            </div>
+            <div title="Every cycle pays a full bid/ask round-trip. This is the cost of rolling versus holding once.">
+              <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase' }}>Spread paid</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: '#fbbf24' }}>
+                ${rollResult.total_spread_cost.toLocaleString()}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase' }}>Sizing</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: '#94a3b8' }}>
+                {rollResult.compound ? 'Reinvest' : 'Fixed'}
+              </div>
+            </div>
+          </div>
+
+          {rollResult.cycles_skipped.length > 0 && (
+            <div style={{ marginTop: 10, padding: '9px 12px', borderRadius: 8, fontSize: 11.5,
+                          background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.3)', color: '#fbbf24' }}>
+              {rollResult.cycles_skipped.length} cycle(s) could not be priced — the total covers only the cycles that ran.
+              {rollResult.cycles_skipped.map(c => (
+                <div key={c.entry_date} style={{ marginTop: 4, opacity: 0.95 }}>
+                  <strong>{c.entry_date} → {c.exit_date}</strong>: {c.reason}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ overflowX: 'auto', marginTop: 10 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 660 }}>
+              <thead>
+                <tr>
+                  {['#', 'Entry', 'Exit', 'Return', 'Strike', 'Expiry', 'Δ entry', 'Held', 'Spread'].map(h => (
+                    <th key={h} style={{ textAlign: 'left', padding: '6px 9px', color: '#64748b', fontWeight: 700,
+                                         fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em',
+                                         borderBottom: '1px solid #1e293b' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rollResult.cycles.map((c, i) => (
+                  <tr key={`${c.entry_date}-${i}`}>
+                    <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', color: '#475569' }}>{i + 1}</td>
+                    <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', color: '#94a3b8' }}>{c.entry_date}</td>
+                    <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', color: '#94a3b8' }}>{c.exit_date}</td>
+                    <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', fontWeight: 700,
+                                 color: (c.return_pct ?? 0) >= 0 ? '#4ade80' : '#f87171' }}>
+                      {c.return_pct != null ? `${c.return_pct >= 0 ? '+' : ''}${c.return_pct.toFixed(2)}%` : '—'}
+                    </td>
+                    <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', color: '#94a3b8' }}>{c.strike ?? '—'}</td>
+                    <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', color: '#94a3b8' }}>{c.expiry ?? '—'}</td>
+                    <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', color: '#94a3b8' }}>
+                      {c.entry_delta != null ? c.entry_delta.toFixed(3) : '—'}
+                      {c.delta_relaxed && (
+                        <span title="No contract inside the strict ±0.10 delta band could be priced; the nearest available delta was used."
+                              style={{ marginLeft: 5, padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700,
+                                       background: 'rgba(251,191,36,0.15)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.35)' }}>NEAR</span>
+                      )}
+                    </td>
+                    <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', color: '#94a3b8' }}>{c.days_held}d</td>
+                    <td style={{ padding: '6px 9px', borderBottom: '1px solid #131c2e', color: '#fbbf24' }}>
+                      ${(c.spread_cost ?? 0).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p style={{ fontSize: 11, color: '#64748b', marginTop: 8 }}>
+            Each cycle re-strikes at the price on its own entry date. Rolling pays a full bid/ask
+            round-trip every cycle — compare <strong style={{ color: '#fbbf24' }}>Spread paid</strong>
+            against a single hold before concluding rolling wins. Past results are not a forecast.
+          </p>
+        </div>
+      )}
 
       {/* Results */}
       {result && (
