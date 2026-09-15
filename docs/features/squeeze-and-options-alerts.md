@@ -1370,7 +1370,26 @@ undeterminable, never neutral**.
 ### Verified live
 
 611 prints classified since T377: **55.3% SELL / 34.7% BUY / 10.0% mid-spread, with zero
-missing quotes** — matching the pre-build sample (53.5 / 37.5 / 9.0), so the mechanism is stable.
+missing quotes** — matching the pre-build sample (53.5 / 37.5 / 9.0).
+
+> **CORRECTION (verification sweep, 2026-09-15).** That 611-print figure was ONE afternoon on
+> ~8 symbols and did NOT generalise. Re-measured on **38,993 prints across 52 symbols over 5
+> days**: **36.8% SELL / 35.3% BUY / 27.9% mid**. The mid band is **~2.8x wider** than first
+> reported, and the sell skew largely disappears.
+>
+> **The classifier is not wrong — the small sample was.** Mid-band prints average a **0.074%**
+> spread against **0.143%** for sided prints: a tighter spread genuinely puts more prints near
+> the midpoint, which is real market structure rather than a defect. `classify_dark_pool_side()`
+> still passes 6/6 spot-checks (at-bid, at-ask, mid, locked quote, missing quote, scale
+> invariance).
+>
+> **What it changes in practice:** more than a QUARTER of prints are honestly undeterminable, so
+> any consumer must treat `—` as a first-class outcome, not an edge case. This strengthens the
+> standing caution below rather than weakening it.
+>
+> **The generalisable lesson:** a one-afternoon sample is not a distribution. Quote a percentage
+> only with the n and the window it came from — this file already carries the same lesson as
+> `AUD-CONVICTION-RSIDIV-NOWRITER` (n=42) and the discarded six-day OHLC study in T377.
 The live endpoint correctly returns a real `sell` for SMTC, `None` for the mid-spread GPN
 (position 0.478) and OSCR (0.450), and `—` for pre-T377 rows rather than fabricated values.
 
