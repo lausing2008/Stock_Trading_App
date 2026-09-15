@@ -191,7 +191,10 @@ def replay_trade(session, trade_row: dict, config_override: dict | None = None) 
             # Probe LOW first so an intraday stop breach is caught, then CLOSE. Same-day
             # stop-vs-target ordering is unknowable from a daily bar; stop wins (conservative).
             for px in (float(b["low"]), float(b["close"])):
-                _monitor_positions(session, pf, {sym: px})
+                # T391-POINTINTIME: pass the BAR'S OWN DATE so the signal, K-Score and ATR the
+                # exit logic reads are the ones that were current then — not today's. Without
+                # this the control missed by 172-202 percentage points.
+                _monitor_positions(session, pf, {sym: px}, as_of=b["d"])
                 session.flush()
                 if pt.stage != "open":
                     break

@@ -1044,14 +1044,73 @@ def _compute_atr(symbol: str, period: int = 14) -> float | None:
         return None
 
 
-def _batch_compute_atr(symbols: list[str], period: int = 14) -> dict[str, float | None]:
+def _batch_compute_atr_as_of(
+    symbols: list[str], period: int, as_of: "date",
+) -> dict[str, float | None]:
+    """T391-POINTINTIME: EWM-ATR from the LOCAL price history, as it stood on `as_of`.
+
+    Wilder/EWM ATR over the trailing bars at or before `as_of`. Returns None for a symbol with
+    fewer than `period` bars rather than a partial value — a half-warmed ATR would silently
+    widen or tighten every trailing stop derived from it.
+    """
+    from db import SessionLocal as _SL
+    out: dict[str, float | None] = {sym: None for sym in symbols}
+    if not symbols:
+        return out
+    try:
+        with _SL() as _s:
+            rows = _s.execute(text("""
+                SELECT s.symbol, p.high, p.low, p.close, p.ts
+                FROM prices p JOIN stocks s ON s.id = p.stock_id
+                WHERE s.symbol = ANY(:syms) AND p.timeframe = 'D1' AND p.ts::date <= :d
+                ORDER BY s.symbol, p.ts
+            """), {"syms": list(symbols), "d": as_of}).mappings().all()
+        by_sym: dict[str, list] = {}
+        for r in rows:
+            by_sym.setdefault(r["symbol"], []).append(r)
+        for sym, bars in by_sym.items():
+            bars = bars[-(period * 4):]          # enough history for the EWM to settle
+            if len(bars) < period + 1:
+                continue
+            trs, prev_close = [], float(bars[0]["close"])
+            for b in bars[1:]:
+                hi, lo, cl = float(b["high"]), float(b["low"]), float(b["close"])
+                trs.append(max(hi - lo, abs(hi - prev_close), abs(lo - prev_close)))
+                prev_close = cl
+            if len(trs) < period:
+                continue
+            # Wilder smoothing, matching the live path's EWM(alpha=1/period).
+            atr = sum(trs[:period]) / period
+            for tr in trs[period:]:
+                atr = (atr * (period - 1) + tr) / period
+            out[sym] = float(atr) if atr > 0 else None
+    except Exception as exc:
+        log.warning("paper.atr_as_of_failed", error=str(exc), as_of=str(as_of))
+    return out
+
+
+def _batch_compute_atr(
+    symbols: list[str], period: int = 14, as_of: "date | None" = None,
+) -> dict[str, float | None]:
     """PA-F1: Compute EWM-ATR for multiple symbols in ONE yfinance download.
 
     Reduces N individual HTTP calls to a single batch request.
     Falls back to per-symbol _compute_atr() if the batch call fails.
+
+    T391-POINTINTIME: `as_of` makes this REWINDABLE. Default None keeps the exact live
+    behaviour (a yfinance download of the trailing 40 days). When a date is given, ATR is
+    computed from the LOCAL `prices` table using only bars at or before that date — no network
+    call, and no leakage of future bars into a historical decision.
+
+    This was the one input to `_monitor_positions()` that could not be rewound at all: yfinance
+    always returns "now", so a replay of a June trade was computing ATR from September data.
+    Every trailing-stop variant in that function is ATR-driven, which is why the T390 exit
+    harness control missed by 172-202 percentage points.
     """
     if not symbols:
         return {}
+    if as_of is not None:
+        return _batch_compute_atr_as_of(symbols, period, as_of)
     result: dict[str, float | None] = {sym: None for sym in symbols}
     try:
         import yfinance as yf
@@ -2612,8 +2671,26 @@ def _build_game_plan_for_style(
 
 # ── Position monitor ──────────────────────────────────────────────────────────
 
-def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str, float], live_regime: dict | None = None) -> list[dict]:
-    """Check every open trade: stop breach, target hit, trailing stop, signal decay."""
+def _monitor_positions(
+    session, portfolio: PaperPortfolio, live_prices: dict[str, float],
+    live_regime: dict | None = None, as_of: "date | None" = None,
+) -> list[dict]:
+    """Check every open trade: stop breach, target hit, trailing stop, signal decay.
+
+    T391-POINTINTIME: `as_of` scopes every historical lookup this function makes — the latest
+    Signal, the latest Ranking/K-Score, and the ATR behind every trailing-stop variant — to the
+    state as it stood on that date. Default None is the exact live behaviour (most-recent row,
+    live yfinance ATR) and is what production always uses.
+
+    WHY IT EXISTS. `signals` (100 days) and `rankings` (107 days) DO retain history, but these
+    queries asked for `max(ts)` / `max(as_of)` — the newest row, not the one current at the time.
+    Replaying a June trade therefore fed it September's signal, September's K-Score and a
+    yfinance ATR built from September bars. The T390 exit-harness control missed by 172-202
+    percentage points for exactly this reason; a hand-written simulation missed by 28-56.
+
+    This is §3 "Point-in-Time Correctness" of the Master Prompt, and the fix turned out to be
+    date-scoping reads that were ALREADY historical — not recording new data.
+    """
     cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(portfolio.config.get("trading_style", "GROWTH"), {}), **portfolio.config}
     style = cfg["trading_style"]
 
@@ -2658,7 +2735,11 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         latest_ts_subq = (
             select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
             .join(Stock, Signal.stock_id == Stock.id)
-            .where(Stock.symbol.in_(symbols), Signal.horizon == style)
+            .where(
+                Stock.symbol.in_(symbols), Signal.horizon == style,
+                # T391-POINTINTIME: the signal current AT THE TIME, not today's.
+                *( [Signal.ts <= as_of] if as_of is not None else [] ),
+            )
             .group_by(Signal.stock_id)
             .subquery()
         )
@@ -2676,10 +2757,14 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
     # PT-H3: Batch-fetch latest K-score per open symbol — ONE query for all positions
     latest_kscores: dict[str, float] = {}
     if symbols:
+        _k_where = [Stock.symbol.in_(symbols)]
+        if as_of is not None:
+            # T391-POINTINTIME: the K-Score as it stood then, not the newest one.
+            _k_where.append(Ranking.as_of <= as_of)
         kscore_date_subq = (
             select(Ranking.stock_id, func.max(Ranking.as_of).label("max_date"))
             .join(Stock, Ranking.stock_id == Stock.id)
-            .where(Stock.symbol.in_(symbols))
+            .where(*_k_where)
             .group_by(Ranking.stock_id)
             .subquery()
         )
@@ -2777,7 +2862,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         t.symbol for t in open_trades
         if (t.highest_price or t.entry_price) >= t.entry_price * (1 + trail_trigger)
     ]
-    monitor_atr_cache: dict[str, float | None] = _batch_compute_atr(list(set(armed_symbols)))
+    monitor_atr_cache: dict[str, float | None] = _batch_compute_atr(list(set(armed_symbols)), as_of=as_of)
 
     # PT-H5: Batch-fetch latest RSI-14 for all armed positions to detect overbought peaks.
     # Uses the pre-computed indicators table (cheaper than recomputing from prices).
