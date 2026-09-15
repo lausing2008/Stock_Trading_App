@@ -127,7 +127,11 @@ export default function LeapsBacktestPanel() {
             Data coverage at delta {targetDelta.toFixed(2)} · ≥{minDte} DTE
           </div>
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11.5 }}>
-            {SYMBOLS.map(s => {
+            {/* T396: render only the SELECTED symbols. The coverage request is scoped to the
+                selection (T395, to avoid a 60s query over 49M rows), so rendering all 29 made
+                every unselected symbol show a false "0 days" — META reads 0 while the archive
+                holds 724 usable days for it. Showing a wrong number is worse than showing none. */}
+            {selected.map(s => {
               const c = coverage.by_symbol[s];
               return (
                 <div key={s}>
@@ -202,8 +206,8 @@ export default function LeapsBacktestPanel() {
         {(['hold', 'roll'] as const).map(m => (
           <button key={m} onClick={() => { setMode(m); setResult(null); setRollResult(null); }}
             title={m === 'hold'
-              ? 'Buy once, hold to the exit date.'
-              : 'Buy a long-dated LEAPS, sell after the hold period, then repeat. Pays a full bid/ask round-trip every cycle.'}
+              ? 'Buy once, hold to the exit date. Compares every selected symbol.'
+              : 'Buy a long-dated LEAPS, sell after the hold period, then repeat. Runs the FIRST selected symbol only — each roll is its own cycle sequence. Pays a full bid/ask round-trip every cycle.'}
             style={{
               padding: '5px 12px', borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: 'pointer',
               background: mode === m ? 'rgba(168,85,247,0.15)' : 'transparent',
@@ -244,6 +248,12 @@ export default function LeapsBacktestPanel() {
                         padding: '10px 12px', borderRadius: 8, background: 'rgba(168,85,247,0.06)',
                         border: '1px solid rgba(168,85,247,0.25)' }}>
             <div>
+              <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase' }}>Symbol</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: '#e2e8f0' }}>{rollResult.symbol}</div>
+            </div>
+            <div>
+              {/* T396: a roll runs ONE symbol, and the per-cycle table has no symbol column, so
+                  without this the whole result was unattributable. */}
               <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase' }}>Total</div>
               <div style={{ fontSize: 18, fontWeight: 800,
                             color: (rollResult.total_return_pct ?? 0) >= 0 ? '#4ade80' : '#f87171' }}>
