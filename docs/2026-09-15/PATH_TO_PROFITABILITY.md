@@ -173,3 +173,86 @@ system loses money.**
 
 **What I will promise:** every number in this document was measured against production, and
 anything I could not measure is labelled as unmeasured.
+
+---
+
+# UPDATE 2026-09-15 — Lever 1 is NOT testable retrospectively. Two attempts, one root cause.
+
+I chose Lever 1 (the −$11,539 SWING stop bucket) and tried to test it. **Both attempts failed
+the same validity control, and the reason turns out to be architectural.**
+
+## Attempt 1 — a hand-written daily-bar simulation
+
+Control (replay each trade with its OWN stop; must reproduce the actual result):
+
+| | actual | simulated | error |
+|---|---|---|---|
+| SWING | −25.1 pp | +2.8 pp | 28 pp |
+| GROWTH | −15.0 pp | +40.7 pp | 56 pp |
+
+**Cause:** the real engine has **10 exit paths** and takes **partial scale-outs**; the
+simulation had 4 paths and full exits. A re-implementation drifts from the real logic.
+
+## Attempt 2 — replay the REAL `_monitor_positions()`
+
+Built `services/market-data/src/backtest/exit_harness.py` to re-implement nothing and drive the
+actual production function with historical prices. **It failed worse:**
+
+| | actual | replay | error |
+|---|---|---|---|
+| SWING | −25.1 pp | **−197.4 pp** | **172.3 pp** |
+| GROWTH | −15.0 pp | **−216.7 pp** | **201.7 pp** |
+
+Exit-reason agreement: **13%**.
+
+## The root cause — and it is the Master Prompt's §3
+
+`_monitor_positions()` does not decide exits from price. It reads **five live data sources that
+cannot be rewound**:
+
+| source | references |
+|---|---|
+| `Signal` | 25 |
+| `Ranking` / kscore | 24 |
+| ATR | 32 |
+| OBV | 22 |
+| market regime | 15 |
+
+Replaying a June trade feeds it **September's** signals, rankings, ATR, OBV and regime. No amount
+of price-path fidelity fixes that.
+
+**This is §3 "POINT-IN-TIME CORRECTNESS" of the master prompt, and it is now a measured gap
+rather than a theoretical one.** Until the inputs an exit decision consumed are *recorded at
+decision time*, **no retrospective config experiment on exits is possible** — not by replay, not
+by simulation, not by any method.
+
+## What this changes in the plan
+
+**§3 point-in-time correctness is promoted.** It was previously listed as "partially built, not
+systematically enforced." It is in fact the **blocker on all retrospective strategy testing**,
+which makes it foundational rather than housekeeping.
+
+**Lever 1 needs a forward A/B test instead.** Run a second SWING portfolio with a wider stop
+alongside the current one, on the same signals, and compare realised results. It needs no replay,
+uses the real engine against real live state, and is the only method available today that can
+answer the question. Cost is calendar time, not engineering time.
+
+## Revised sequence
+
+| phase | work | status |
+|---|---|---|
+| **1** | **Forward A/B: SWING wide-stop portfolio** | the only way to test Lever 1 — needs a go/no-go |
+| **2** | **§3 record decision inputs at decision time** | unblocks ALL future retrospective testing |
+| 3 | Options income engine (§26) | unchanged — independent of direction |
+| 4 | Confidence calibration | unchanged — ~3 weeks of data |
+| 5 | §4 event unification | unchanged |
+
+## The honest summary
+
+I set out to test the largest loss bucket in the account and **could not**. That is a negative
+result, but it is a real one: it identifies why the platform cannot currently learn from its own
+history, and it promotes a section of the master prompt I had previously ranked as low priority.
+
+**Two failed attempts against the same control is stronger evidence than one successful
+backtest would have been** — a passing result from either attempt would have been believed, and
+both were wrong by 28–202 percentage points.

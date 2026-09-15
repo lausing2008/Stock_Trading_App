@@ -49,6 +49,52 @@ day. Each day is probed LOW-first then CLOSE, so an intraday stop breach is caug
 ordering of a same-day stop-vs-target is unknowable and resolved conservatively (stop wins).
 That biases AGAINST wider stops, so an improvement it reports is a floor, not a ceiling.
 
+---
+
+## ⛔ STATUS: THIS HARNESS DOES NOT WORK. DO NOT TRUST ITS OUTPUT.
+
+The control was run on 2026-09-15 over all 119 closed trades and **failed worse than the
+hand-written simulation it was built to replace**:
+
+    SWING   actual  -25.1 pp   harness replay -197.4 pp   error 172.3 pp
+    GROWTH  actual  -15.0 pp   harness replay -216.7 pp   error 201.7 pp
+    exit-reason agreement: 13%
+
+**ROOT CAUSE — and it is architectural, not a bug in this file.** `_monitor_positions()` does not
+decide exits from price alone. It reads FIVE live data sources that cannot be rewound to the
+trade's historical moment:
+
+    Signal          25 references   (latest signal per symbol)
+    Ranking/kscore  24 references
+    ATR             32 references   (drives every trailing-stop variant)
+    OBV             22 references
+    market regime   15 references
+
+A replay of a June trade feeds it SEPTEMBER's signals, rankings, ATR, OBV and regime. The exit
+decisions it produces are therefore not the decisions that function would have made at the time,
+and no amount of price-path fidelity fixes that.
+
+**This is exactly §3 "POINT-IN-TIME CORRECTNESS" of the Master Prompt, and it is a real gap:**
+until the inputs an exit decision consumed are RECORDED AT DECISION TIME, no retrospective
+config experiment on exits is possible. Not with this harness, not with a hand-written
+simulation, not with any replay.
+
+**Two independent attempts failed the same control**, which is the strongest available evidence
+that the approach — not the implementation — is wrong.
+
+### What to do instead
+
+**A forward A/B test.** Run a second SWING portfolio with a wider stop alongside the existing
+one, on the same signals, and compare realised results. It needs no replay, uses the real engine
+on real live state, and is the only method available today that can actually answer the
+stop-width question. Cost: weeks of calendar time, not engineering time.
+
+**Kept rather than deleted** because the control result and its root cause are the finding, and
+because the next person to ask "can we backtest an exit config change?" deserves to find this
+answer instead of rediscovering it. The safety and fidelity notes below remain accurate.
+
+---
+
 SAFETY. `_monitor_positions()` performs no commit/add/delete (verified: 0 commits, 0 adds, 1
 flush, mutating ORM objects in-session only). This harness creates its scratch portfolio and
 trade inside a transaction and ALWAYS rolls back in a finally block, so it cannot write to
