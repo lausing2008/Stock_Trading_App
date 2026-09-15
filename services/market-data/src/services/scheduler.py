@@ -13551,6 +13551,48 @@ _OPTHIST_SYMBOLS = [
     "SPY", "QQQ", "META", "TSLA", "AMD", "NVDA", "MSFT", "AAPL", "AMZN", "PLTR",
     # The QQQ-family comparison set (T374) — see frontend/src/pages/qqq-leaps-playbook.tsx.
     "QQQM", "QLD", "TQQQ",
+
+    # ── T384-LEAPS-UNIVERSE (2026-09-14) — the user asked which symbols make good LEAPS
+    # candidates and to extend capture beyond the QQQ family.
+    #
+    # SELECTION CRITERIA, and why "stable and strong" is NOT one of them. A 0.70-delta call
+    # held ~12 months only wins if the underlying TRENDS UP enough to beat theta plus the
+    # bid/ask spread; a rock-solid company trading sideways for a year loses most of the
+    # premium. T381 measured that directly — TQQQ returned -73.78% over a 336-day hold while
+    # tracking an index the user is bullish on, because leveraged decay ate it.
+    #
+    # Every name below passed, measured against this platform's own price history:
+    #   * 2-year return > +30% AND 1-year return > +15%  (persistent trend, not a single pop)
+    #   * max 1-year drawdown better than -40%           (a hole a LEAPS must sit through)
+    #   * a deep, liquid option chain                    (see the liquidity note below)
+    #   * NOT leveraged                                  (decay, per TQQQ above)
+    #
+    # THE LIQUIDITY BAR IS EASIER THAN T380/T381 SUGGESTED. Calibrated on the 13 symbols
+    # already captured: every mega-cap SINGLE STOCK has a delta-selectable >=330-DTE LEAPS on
+    # 100% of captured days (AAPL/MSFT/NVDA/META/AMZN/TSLA/AMD/PLTR all 130/130). Only thin
+    # ETFs degrade — QLD 82%, QQQM 50%. So the QLD failure was ETF-specific, not a general
+    # problem, and any widely-traded large-cap clears the bar comfortably.
+    #
+    # DELIBERATELY EXCLUDED: the top raw-return names (SNDK +1731%, LITE +419%, AAOI, BE,
+    # FCEL). Buying a 0.70-delta LEAPS after a 17x run is buying the top, and that profile
+    # mean-reverts. Also excluded: every leveraged product, and thin chains (ASX 278
+    # contracts, RVMD 860).
+    #
+    # NOT MEASURED, and worth knowing before trusting entries: IV rank. UW's
+    # /api/stock/{symbol}/iv-rank returned nothing usable for all 22 probed candidates, so IV
+    # — which a LEAPS buyer PAYS at entry — is currently an unverified dimension of this list.
+
+    # Tier 1 — core. Mega-cap liquidity plus a persistent multi-year uptrend.
+    "TSM", "GOOG", "AVGO", "MU", "DELL", "HPE",
+
+    # Tier 2 — diversifiers, so the set is not purely semis/AI.
+    "JPM", "CAT", "RTX", "GEV", "CRWD", "NET",
+
+    # Tier 3 — sector/index ETFs, LIQUID ones only (all >=5,000-contract chains). XLK carries
+    # `active=false` in `stocks` while still receiving fresh daily bars (verified 2026-09-14,
+    # newest bar same day) — capture works, but that flag is a real inconsistency worth
+    # resolving separately rather than silently relying on.
+    "SMH", "SOXX", "XLK", "GLD",
 ]
 
 # Keep ~2 years, matching UW's own rolling window: retaining more than the source can re-supply
