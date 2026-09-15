@@ -256,3 +256,60 @@ history, and it promotes a section of the master prompt I had previously ranked 
 **Two failed attempts against the same control is stronger evidence than one successful
 backtest would have been** — a passing result from either attempt would have been believed, and
 both were wrong by 28–202 percentage points.
+
+---
+
+# UPDATE 2 — the harness DOES work on recent trades. Fidelity decays with age.
+
+The user suggested *"try testing with this month's data and see."* That test settled it.
+
+## Two methodology errors of mine, found by controls
+
+**Error 1 — probing the daily LOW.** I fed each day's low to the engine as an observable price.
+A real stop *would* fill on an intraday low, so this looked correct. But the live engine reads a
+**5-minute price cache ~78 times a session** and essentially never observes the true daily low,
+so the replay triggered stops reality never saw.
+
+| probe | SWING error |
+|---|---|
+| LOW + CLOSE | 186.6 pp |
+| **CLOSE only** | **32.8 pp** |
+
+A **5.7× improvement** from one variable. It also fixed a second symptom I had flagged —
+`highest_price` had been stuck at entry, so breakeven/trailing never armed.
+
+**Error 2 — assuming the failure was uniform.** It was not.
+
+## Fidelity decays sharply with trade age
+
+| entry month | n (SWING/GROWTH) | SWING error | GROWTH error |
+|---|---|---|---|
+| 2026-06 (oldest) | 25 / 21 | 59.2 pp | 60.2 pp |
+| 2026-07 | 18 / 24 | 45.6 pp | 55.0 pp |
+| 2026-08 | 14 / 10 | 25.2 pp | 62.6 pp |
+| **2026-09 (newest)** | **4 / 3** | **6.0 pp** | **0.4 pp** |
+
+**September replays almost exactly.** The further back a trade sits, the more the live state the
+exit logic reads has moved on — precisely the staleness the `as_of` work targets, now measured
+rather than argued.
+
+**Caveat, stated plainly: September is n=4 and n=3.** That is a suggestive trend across four
+months, not proof. GROWTH's August error (62.6) also breaks monotonicity, so age is clearly not
+the only factor.
+
+## What this changes
+
+**The harness is not broken — its usable window is bounded.** Rather than "exits are not
+retrospectively testable" (the T390 conclusion, now superseded twice), the honest statement is:
+
+> Exit-config experiments are testable on RECENT trades, and fidelity degrades with age.
+
+That is a materially better position, and it makes the SWING stop question answerable without
+waiting weeks for a forward A/B — provided the sample is recent enough to trust.
+
+## Next: M5 replay
+
+`prices` holds **1.4M M5 bars from 2026-06-15**, which is the granularity the live engine
+actually samples. Replaying at 30-minute intervals (13 observations a session instead of one
+close) should capture the intraday path that arms breakeven and trailing — the remaining known
+source of pessimism in the daily replay. That control is running.

@@ -129,6 +129,44 @@ class ReplayResult:
     bars_used: int
 
 
+def _m5_bars(session, stock_id: int, start: date, max_days: int, every_n: int = 6):
+    """T393-M5REPLAY: intraday bars at the granularity the LIVE engine actually samples.
+
+    THE DAILY-BAR APPROACH CANNOT WORK, and three controls proved it from both directions:
+
+        probe LOW+CLOSE  -> stops OVER-trigger  (SWING err 186.6 pp)
+        probe CLOSE only -> highs UNDER-captured, so breakeven/trailing never arm and trades
+                            run to time_stop at day 60-65 that really exited at day 4-14
+                            (SWING err 32.8 pp, GROWTH err 178.2 pp)
+
+    Both are artefacts of compressing a day into one or two numbers. The live engine reads a
+    5-minute price cache ~78 times a session, so it sees a PATH — never the daily low as a
+    tradable price, but every intraday high on the way up.
+
+    `prices` holds real M5 bars (1.4M rows, 2026-06-15 onward), so the path is reconstructable.
+    `every_n=6` samples every 30 minutes: 13 observations a session rather than 78, which keeps
+    the replay tractable while preserving the intraday shape that arms breakeven and trailing.
+    """
+    return session.execute(text("""
+        SELECT ts, ts::date AS d, close
+        FROM (
+            SELECT ts, close, row_number() OVER (ORDER BY ts) AS rn
+            FROM prices
+            -- NOTE: never write a colon-prefixed word in a comment inside text() --
+            -- SQLAlchemy scans COMMENTS for bind parameters too, so a word like that in prose
+            -- becomes a required bind and the query fails with "A value is required for bind
+            -- parameter". Use CAST(...) rather than the double-colon cast for the same reason.
+            WHERE stock_id = :sid AND timeframe = 'M5'
+              AND ts >= CAST(:start AS date)
+              AND ts < CAST(:start AS date) + CAST(:days AS integer)
+        ) x
+        -- MOD(), not the percent operator: psycopg2 treats percent as parameter
+        -- interpolation and the escaping collides with SQLAlchemy's own.
+        WHERE MOD(rn - 1, :n) = 0
+        ORDER BY ts
+    """), {"sid": stock_id, "start": start, "days": max_days, "n": every_n}).mappings().all()
+
+
 def _bars(session, stock_id: int, start: date, limit: int = _MAX_REPLAY_BARS):
     return session.execute(text("""
         SELECT ts::date AS d, high, low, close
@@ -138,14 +176,18 @@ def _bars(session, stock_id: int, start: date, limit: int = _MAX_REPLAY_BARS):
     """), {"sid": stock_id, "start": start, "lim": limit}).mappings().all()
 
 
-def replay_trade(session, trade_row: dict, config_override: dict | None = None) -> ReplayResult:
+def replay_trade(session, trade_row: dict, config_override: dict | None = None,
+                 probe: str = "low_close") -> ReplayResult:
     """Replay ONE historical trade through the real exit logic. Always rolls back."""
     from ..services.paper_trading_engine import _monitor_positions
 
     sym = trade_row["symbol"]
     entry = float(trade_row["entry_price"])
     style = trade_row["trading_style"] or "GROWTH"
-    bars = _bars(session, trade_row["stock_id"], trade_row["ed"])
+    if probe == "m5":
+        bars = _m5_bars(session, trade_row["stock_id"], trade_row["ed"], _MAX_REPLAY_BARS)
+    else:
+        bars = _bars(session, trade_row["stock_id"], trade_row["ed"])
 
     res = ReplayResult(
         trade_id=trade_row["id"], symbol=sym, style=style, entry_price=entry,
@@ -187,10 +229,22 @@ def replay_trade(session, trade_row: dict, config_override: dict | None = None) 
         session.flush()
 
         for i, b in enumerate(bars):
-            pt.hold_days = i
+            # With M5 bars this must stay in DAYS — using the bar index would make a 3-day
+            # trade look 200 days old and fire max_hold_days immediately.
+            pt.hold_days = (b["d"] - trade_row["ed"]).days if probe == "m5" else i
             # Probe LOW first so an intraday stop breach is caught, then CLOSE. Same-day
             # stop-vs-target ordering is unknowable from a daily bar; stop wins (conservative).
-            for px in (float(b["low"]), float(b["close"])):
+            # T390: which intraday prices the replay shows the engine.
+            #   "low_close" — probe the day's LOW then CLOSE. A true stop order WOULD fill on an
+            #                 intraday low, so this looks right in theory.
+            #   "close"     — CLOSE only. The LIVE engine samples a 5-minute price cache ~78x a
+            #                 day and therefore almost never observes the true daily low, so
+            #                 probing it systematically triggers stops reality never saw.
+            if probe in ("close", "m5"):
+                _probes = (float(b["close"]),)
+            else:
+                _probes = (float(b["low"]), float(b["close"]))
+            for px in _probes:
                 # T391-POINTINTIME: pass the BAR'S OWN DATE so the signal, K-Score and ATR the
                 # exit logic reads are the ones that were current then — not today's. Without
                 # this the control missed by 172-202 percentage points.
@@ -214,7 +268,8 @@ def replay_trade(session, trade_row: dict, config_override: dict | None = None) 
         session.rollback()
 
 
-def closed_trades(session, style: str | None = None, limit: int = 500) -> list[dict]:
+def closed_trades(session, style: str | None = None, limit: int = 500,
+                  since: "date | None" = None, until: "date | None" = None) -> list[dict]:
     sql = """
         SELECT t.id, t.symbol, t.stock_id, t.trading_style, t.entry_price, t.shares,
                t.stop_loss, t.take_profit, t.pct_return, t.exit_reason,
@@ -227,11 +282,20 @@ def closed_trades(session, style: str | None = None, limit: int = 500) -> list[d
     if style:
         sql += " AND t.trading_style = :st"
         params["st"] = style
+    # T392: window the sample by entry date. Replay fidelity is expected to DECAY with age —
+    # the further back a trade is, the more the live state the exit logic reads has moved on.
+    if since is not None:
+        sql += " AND t.entry_date::date >= :since"
+        params["since"] = since
+    if until is not None:
+        sql += " AND t.entry_date::date <= :until"
+        params["until"] = until
     sql += " ORDER BY t.id LIMIT :lim"
     return [dict(r) for r in session.execute(text(sql), params).mappings().all()]
 
 
-def run_control(style: str, limit: int = 500) -> dict:
+def run_control(style: str, limit: int = 500, probe: str = "low_close",
+                since: "date | None" = None, until: "date | None" = None) -> dict:
     """Replay every closed trade with its OWN config. MUST approximate the actual result.
 
     This is the validity gate. A hand-written simulation failed exactly here (SWING +2.8pp
@@ -239,8 +303,8 @@ def run_control(style: str, limit: int = 500) -> dict:
     this control passes.
     """
     with SessionLocal() as s:
-        rows = closed_trades(s, style, limit)
-        out = [replay_trade(s, r) for r in rows]
+        rows = closed_trades(s, style, limit, since=since, until=until)
+        out = [replay_trade(s, r, probe=probe) for r in rows]
     actual = sum(r.actual_pct or 0.0 for r in out)
     replay = sum(r.replay_pct or 0.0 for r in out)
     matched = sum(1 for r in out if r.actual_reason == r.replay_reason)
