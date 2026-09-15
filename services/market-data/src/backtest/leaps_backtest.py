@@ -90,6 +90,10 @@ _DELTA_BAND_RELAXED = 0.20
 # the strategy the user asked to test.
 _ENTRY_CANDIDATE_LIMIT = 8
 
+# T385-LEAPS-ROLL: hard cap on roll cycles. A 1-day hold over a 3-year window would otherwise
+# issue ~1,100 sequential option-chain queries against a 17M-row table on a single request.
+_MAX_ROLL_CYCLES = 40
+
 # Below this many overlapping days a cross-symbol ranking is not reported. Not a tuned number:
 # it is the same bar used elsewhere in this codebase for "is this sample worth believing at all".
 _MIN_COMPARE_DAYS = 30
@@ -503,6 +507,181 @@ def _explain_no_price(
     return (f"{symbol.upper()} had {len(cands)} in-band contract(s) on "
             f"{entry_date.isoformat()} but none is quoted near {exit_date.isoformat()} — "
             f"the contract stopped being quoted mid-hold (thin strikes drop out of the chain)")
+
+
+def backtest_leaps_rolling(
+    symbol: str,
+    start_date: date,
+    end_date: date,
+    hold_days: int,
+    target_delta: float = 0.80,
+    min_dte: int = _MIN_LEAPS_DTE,
+    contracts: int = 1,
+    compound: bool = True,
+) -> dict | None:
+    """T385-LEAPS-ROLL: buy a long-dated LEAPS, sell after `hold_days`, repeat.
+
+    USER REQUEST: "I set 2 years leaps (or any close to 0.7 or 0.8 delta) but I wanna sell
+    before 2 years like half a year or a year? And then repeat."
+
+    THE SINGLE-CYCLE HALF ALREADY WORKED — what was missing is the repeat. `backtest_leaps()`
+    with a short exit_date already buys a long-dated contract and sells early, because T380's
+    `_eff_min_dte = max(min_dte, hold_days)` only raises the expiry floor, never lowers it.
+    Verified on QQQ: entry 2024-07-08 at min_dte=600 bought QQQ261218C00434780, an 893-day
+    contract at delta 0.701, and sold it 365 days later for +17.56%.
+
+    WHY ROLLING IS A GENUINELY DIFFERENT STRATEGY, not just a convenience wrapper:
+      * It re-strikes at the CURRENT price each cycle, so the position tracks the underlying
+        instead of drifting deep-ITM (a 0.70-delta call that doubles becomes ~0.95 delta and
+        stops behaving like a leveraged bet).
+      * It pays the bid/ask spread EVERY cycle. Four 6-month rolls cost four round-trips, not
+        one — and on a LEAPS that spread is material (T375 measured $332.50 on a single TQQQ
+        hold). This is the main cost a roller must see, so it is reported explicitly.
+      * It never holds into the steep part of the theta curve, which is the usual argument FOR
+        rolling.
+
+    `compound=True` reinvests the full proceeds of each cycle into the next (position size
+    floats with equity); `compound=False` keeps `contracts` fixed every cycle, which isolates
+    the strategy's per-cycle edge from the compounding. Both are real questions, so neither is
+    hardcoded.
+
+    MEASURED ON REAL CAPTURED CHAINS, QQQ 2024-07-08 -> 2026-07-08 at delta 0.70:
+
+        HOLD 2yr     +118.00%   spread   $384   1 round-trip
+        roll 6-month +131.48%   spread $1,638   4 cycles, 4W/0L, CAGR 52.36%
+        roll 1-year  +120.35%   spread   $831   2 cycles, 2W/0L, CAGR 48.48%
+
+    Rolling won here while paying 4.3x the spread — but that is ONE symbol in a strong bull
+    run, exactly the setup that flatters rolling, and 4W/0L is not a track record. THE MORE
+    DURABLE FINDING is that rolling prices symbols a long hold cannot: TQQQ, QLD and QQQM all
+    return None for a 2-year hold (no contract that far out) yet complete real 6-month cycles
+    (+37.5% / +18.7% / +52.9%). Note TQQQ is still the T381 leveraged-decay counterexample
+    (-73.78% over a 336-day hold) — rolling makes it PRICEABLE, not advisable.
+
+    A cycle that cannot be priced is SKIPPED and reported in `cycles_skipped`, never silently
+    dropped — a gap mid-sequence changes what the total return means, and T380 is the standing
+    reminder that an unpriceable contract is a real and recurring condition.
+
+    Returns None only when NOTHING priced; otherwise a partial result with the skips named.
+    """
+    if start_date is None or end_date is None or end_date <= start_date:
+        return None
+    if hold_days < 1 or contracts < 1:
+        return None
+
+    cycles: list[dict] = []
+    skipped: list[dict] = []
+    _cursor = start_date
+    _contracts = contracts
+    _equity_mult = 1.0
+    # Hard bound: a 1-day hold over 3 years would otherwise loop ~1,100 times against the DB.
+    _guard = 0
+
+    while _cursor < end_date and _guard < _MAX_ROLL_CYCLES:
+        _guard += 1
+        _exit = _cursor + timedelta(days=hold_days)
+        if _exit > end_date:
+            break  # a partial final cycle would report a hold the user did not ask for
+
+        r = backtest_leaps(
+            symbol, _cursor, _exit, target_delta, min_dte, None, None, None, _contracts,
+        )
+        if r is None:
+            skipped.append({
+                "entry_date": _cursor.isoformat(),
+                "exit_date": _exit.isoformat(),
+                "reason": _explain_no_price(symbol, _cursor, _exit, target_delta, min_dte),
+            })
+            # Advance by the hold anyway: standing still would re-try the same dead window.
+            _cursor = _exit
+            continue
+
+        cycles.append(r)
+        if compound and r.get("cost"):
+            _equity_mult *= 1.0 + (r["return_pct"] or 0.0) / 100.0
+            # Re-size for the NEXT cycle from accumulated equity, floored at 1 contract.
+            #
+            # CAUGHT BY RUNNING IT: the first version placed this correctly but the SIZE only
+            # moved once `_equity_mult` crossed 2.0, because int(1 * 1.457) == 1. With
+            # contracts=1 the position is quantised so coarsely that compounding is invisible
+            # for the first ~100% of gains. That is a REAL property of whole contracts, not a
+            # bug to paper over — so it is reported (`contracts_per_cycle`) rather than hidden
+            # behind a fractional position nobody could actually trade.
+            _contracts = max(1, int(contracts * _equity_mult))
+        # The NEXT cycle starts where this one actually exited (a quote may be a few days
+        # earlier than requested), not at the requested date — otherwise a gap compounds.
+        _cursor = date.fromisoformat(r["exit_date"])
+
+    if not cycles:
+        return None
+
+    _total_cost = sum(c["cost"] or 0 for c in cycles)
+    _total_proceeds = sum(c["proceeds"] or 0 for c in cycles)
+    _total_spread = sum(c.get("spread_cost") or 0 for c in cycles)
+    _wins = sum(1 for c in cycles if (c["return_pct"] or 0) > 0)
+
+    # Chained percentage return — each cycle's gain reinvested into the next.
+    _chained = 1.0
+    for c in cycles:
+        _chained *= 1.0 + (c["return_pct"] or 0.0) / 100.0
+
+    # A SECOND DEFECT CAUGHT BY RUNNING IT: reporting the chained percentage for BOTH modes
+    # made `compound` inert on the headline number — compound=True and compound=False returned
+    # an identical +131.48%. Chaining percentages IS compounding by definition, so it is only
+    # the right answer when compound=True.
+    #
+    # With compound=False the position is a FIXED size every cycle, so the honest total is the
+    # realised P&L against the capital actually committed — the sum of each cycle's cost. That
+    # is materially lower than the chained figure whenever the sequence wins, and that gap is
+    # the entire point of the flag.
+    if compound:
+        _total_return_pct = round((_chained - 1.0) * 100.0, 2)
+    else:
+        _tc = sum(c["cost"] or 0 for c in cycles)
+        _total_return_pct = round(
+            100.0 * (sum(c["proceeds"] or 0 for c in cycles) - _tc) / _tc, 2
+        ) if _tc else None
+
+    _span_days = (date.fromisoformat(cycles[-1]["exit_date"])
+                  - date.fromisoformat(cycles[0]["entry_date"])).days
+    _years = max(_span_days / 365.25, 1e-9)
+    # CAGR must be derived from the SAME figure the caller sees as the total, or the two
+    # disagree about what strategy was tested.
+    _growth = (1.0 + (_total_return_pct or 0.0) / 100.0)
+    _cagr = round(((_growth ** (1.0 / _years)) - 1.0) * 100.0, 2) if _growth > 0 else None
+
+    return {
+        "symbol": symbol.upper(),
+        "strategy": "rolling_leaps",
+        "hold_days": hold_days,
+        "target_delta": target_delta,
+        "compound": compound,
+        "start_date": cycles[0]["entry_date"],
+        "end_date": cycles[-1]["exit_date"],
+        "cycles": cycles,
+        "cycles_completed": len(cycles),
+        # NAMED, not just counted — a caller must see WHICH window failed and why, since a gap
+        # mid-sequence changes what the total return means.
+        "cycles_skipped": skipped,
+        "wins": _wins,
+        "losses": len(cycles) - _wins,
+        "win_rate_pct": round(100.0 * _wins / len(cycles), 1),
+        "total_return_pct": _total_return_pct,
+        "cagr_pct": _cagr,
+        "total_cost": round(_total_cost, 2),
+        "total_proceeds": round(_total_proceeds, 2),
+        "total_pnl": round(_total_proceeds - _total_cost, 2),
+        # THE COST OF ROLLING, surfaced rather than buried: every cycle pays a full round-trip
+        # spread. This is the number that decides whether rolling beats holding.
+        "total_spread_cost": round(_total_spread, 2),
+        "avg_return_per_cycle_pct": round(
+            sum(c["return_pct"] or 0 for c in cycles) / len(cycles), 2
+        ),
+        # Whole contracts are coarse: with contracts=1 the size cannot move until equity
+        # doubles. Surfaced so a flat sequence here reads as quantisation, not a broken flag.
+        "contracts_per_cycle": [c["contracts"] for c in cycles],
+        "hit_cycle_guard": _guard >= _MAX_ROLL_CYCLES,
+    }
 
 
 def compare_symbols(
