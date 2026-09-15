@@ -313,3 +313,83 @@ waiting weeks for a forward A/B — provided the sample is recent enough to trus
 actually samples. Replaying at 30-minute intervals (13 observations a session instead of one
 close) should capture the intraday path that arms breakeven and trailing — the remaining known
 source of pessimism in the daily replay. That control is running.
+
+---
+
+# UPDATE 3 (FINAL) — the harness validates for GROWTH, NOT for SWING. Sweep rejected.
+
+## The M5 replay is a real improvement
+
+| window | style | n | actual | replay | error | vs daily-close |
+|---|---|---|---|---|---|---|
+| 2026-08+ | **GROWTH** | 13 | −25.5 | −24.9 | **0.6 pp** | was 62.6 |
+| 2026-08+ | SWING | 18 | +5.7 | −12.6 | 18.3 pp | was 25.2 |
+| 2026-07+ | SWING | 36 | −52.1 | −33.2 | 18.9 pp | — |
+| 2026-07+ | GROWTH | 37 | −6.6 | +25.4 | 32.0 pp | — |
+
+**GROWTH on a recent window reproduces reality to 0.6 percentage points over 13 trades.** That is
+a genuine validation, and it proves the approach works when the replay has the intraday path and
+the state is fresh.
+
+## The SWING sweep ran — and must be REJECTED
+
+| stop width | replayed total | stop_hit | time_stop |
+|---|---|---|---|
+| 5.30% (current) | −32.7 pp | 5 | 27 |
+| 7.00% | −27.6 pp | 4 | 27 |
+| **9.00%** | **−20.1 pp** | 3 | 27 |
+| 12.00% | −20.1 pp | 3 | 27 |
+| 15.00% | −20.1 pp | 3 | 27 |
+
+It appears to say *"widen SWING's stop to 9%, gain +12.6 pp, and it plateaus there."* **That
+result is not trustworthy**, and the exit mix is why:
+
+| exit reason | REAL (n=36) | REPLAY |
+|---|---|---|
+| stop_hit | 16 | 5 |
+| breakeven_stop | 10 | 4 |
+| momentum_exit | 5 | 0 |
+| trailing_stop | 3 | 0 |
+| target_reached | 1 | 0 |
+| **time_stop** | **0** | **27** |
+
+**The replay exits 75% of SWING trades through a path that fired ZERO times in reality.** Only 2
+of 36 trades changed outcome across the entire sweep. A conclusion drawn from that would be an
+artefact of the harness, not a property of the strategy.
+
+**So: no SWING stop change is recommended.** The −$11,539 question remains open.
+
+## Why GROWTH validates and SWING does not — a hypothesis, not a finding
+
+GROWTH holds up to 60 days and exits mostly on breakeven/trailing, which are price-path driven
+and therefore replayable. SWING holds 20 days and depends much more on `momentum_exit` and
+signal-driven paths, which read Signal/K-Score state the replay still cannot reproduce faithfully
+even with `as_of`. That is consistent with the exit-mix table above but is **not verified**.
+
+## What was actually accomplished
+
+1. **T391 point-in-time**: Signal, Ranking and ATR reads are now date-scopeable. Zero production
+   behaviour change (every edit guarded by `as_of is not None`; 3,831 tests green). This is §3 of
+   the master prompt, and it was smaller than scoped — the data was already historical, only the
+   queries were not.
+2. **M5 intraday replay**: uses the 1.4M M5 bars at the granularity the engine actually samples.
+3. **A validated harness for GROWTH** on recent windows (0.6 pp).
+4. **Four of my own errors caught by controls** rather than shipped: a hand-simulation 28 pp
+   optimistic; probing the daily LOW (186.6 pp); assuming failure was uniform across ages; and a
+   sweep that overrode a config multiplier the engine never re-reads, which would have made every
+   row identical and looked like "stop width does not matter".
+
+## Honest bottom line
+
+**I could not answer the SWING stop question.** Four controls, three real fixes, and the result
+is a harness that works for one style and not the other.
+
+**What I would NOT do is ship the sweep's answer.** It has a clean-looking number (+12.6 pp,
+plateau at 9%) resting on a replay that gets 75% of exits wrong. That is exactly the shape of a
+confidently-wrong result, and the controls exist to catch it.
+
+**Recommended next**, in order:
+1. **Forward A/B for SWING** — still the only trustworthy route for that style. Needs a go/no-go.
+2. **Use the harness for GROWTH** where it validates — GROWTH config questions ARE answerable now.
+3. **Options income engine** — unchanged, and still the only lever independent of directional
+   accuracy at a 40% hit rate.

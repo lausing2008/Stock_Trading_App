@@ -177,7 +177,7 @@ def _bars(session, stock_id: int, start: date, limit: int = _MAX_REPLAY_BARS):
 
 
 def replay_trade(session, trade_row: dict, config_override: dict | None = None,
-                 probe: str = "low_close") -> ReplayResult:
+                 probe: str = "low_close", stop_pct: float | None = None) -> ReplayResult:
     """Replay ONE historical trade through the real exit logic. Always rolls back."""
     from ..services.paper_trading_engine import _monitor_positions
 
@@ -220,9 +220,15 @@ def replay_trade(session, trade_row: dict, config_override: dict | None = None,
             entry_time=datetime.combine(trade_row["ed"], dtime(0, 0)),
             entry_price=entry, shares=float(trade_row["shares"] or 100),
             entry_shares=float(trade_row["shares"] or 100),
-            stop_loss=float(trade_row["stop_loss"]) if trade_row["stop_loss"] else None,
+            # T394: `stop_pct` replaces the trade's ACTUAL stop price. Overriding
+            # stop_loss_atr_mult in config would NOT work -- the stop is already a concrete
+            # price on the trade row by the time _monitor_positions sees it, so the config
+            # multiplier is never re-applied. Testing stop WIDTH means moving this number.
+            stop_loss=(entry * (1.0 - stop_pct)) if stop_pct is not None
+                      else (float(trade_row["stop_loss"]) if trade_row["stop_loss"] else None),
             take_profit=float(trade_row["take_profit"]) if trade_row["take_profit"] else None,
-            current_stop=float(trade_row["stop_loss"]) if trade_row["stop_loss"] else None,
+            current_stop=(entry * (1.0 - stop_pct)) if stop_pct is not None
+                         else (float(trade_row["stop_loss"]) if trade_row["stop_loss"] else None),
             current_price=entry, highest_price=entry, stage="open", hold_days=0,
         )
         session.add(pt)
@@ -319,16 +325,26 @@ def run_control(style: str, limit: int = 500, probe: str = "low_close",
     }
 
 
-def sweep_stop_width(style: str, stop_atr_mults: list[float], limit: int = 500) -> dict:
-    """What would different stop widths have produced, using the REAL exit logic?"""
+def sweep_stop_width(style: str, stop_pcts: list[float], probe: str = "m5",
+                     since: "date | None" = None, limit: int = 500) -> dict:
+    """What would different STOP WIDTHS have produced, through the real exit logic?
+
+    Read the control for the same (style, probe, window) before trusting any of this. A sweep is
+    only as good as its control, which is the lesson three failed attempts taught.
+
+    `stop_pcts` are fractions below entry (0.05 = a stop 5% below). The first entry should be
+    the style's own current average so the sweep carries its own baseline.
+    """
     with SessionLocal() as s:
-        rows = closed_trades(s, style, limit)
-        out = {}
-        for m in stop_atr_mults:
-            res = [replay_trade(s, r, {"stop_loss_atr_mult": m}) for r in rows]
+        rows = closed_trades(s, style, limit, since=since)
+        actual = sum(float(r["pct_return"] or 0) for r in rows)
+        out: dict = {"style": style, "probe": probe, "n": len(rows),
+                     "actual_total_pp": round(actual, 1), "sweep": {}}
+        for sp in stop_pcts:
+            res = [replay_trade(s, r, probe=probe, stop_pct=sp) for r in rows]
             tot = sum(x.replay_pct or 0.0 for x in res)
             reasons: dict[str, int] = {}
             for x in res:
                 reasons[x.replay_reason or "?"] = reasons.get(x.replay_reason or "?", 0) + 1
-            out[str(m)] = {"total_pp": round(tot, 1), "n": len(res), "exits": reasons}
-    return {"style": style, "sweep": out}
+            out["sweep"][f"{sp:.3f}"] = {"total_pp": round(tot, 1), "exits": reasons}
+    return out
