@@ -19,7 +19,27 @@ import { api, type LeapsCoverage, type LeapsCompare, type LeapsRolling } from '@
  * So `missing` symbols are named and `comparable: false` is surfaced as a warning, never hidden.
  */
 
-const SYMBOLS = ['QQQ', 'QQQM', 'QLD', 'TQQQ'] as const;
+// T395-LEAPS-SYMBOLS: extended from the 4-symbol QQQ family to every symbol with a usable
+// captured option-chain history, after the T384 backfill completed (29 symbols, 16,443
+// symbol-days, 23.19M rows, zero errors).
+//
+// ORDERED BY USABLE-LEAPS DAYS, not alphabetically, so the most backtestable names sit first.
+// "Usable" means a day carrying a delta-selectable 0.60-0.80 contract at >=330 DTE with a real
+// NBBO quote -- greeks are sparse BY DESIGN (UW returns delta only where volume > 0), so raw
+// row counts overstate what is actually testable.
+//
+// QQQM (50% usable) and QLD (82%) are kept ONLY because they are the original T374 comparison
+// set the qqq-leaps-playbook page is built around. They are the counter-example, not a
+// recommendation -- QLD's thin chain is what produced the T380 "no usable quote" failure.
+const SYMBOLS = [
+  // 724 days, ~100% usable
+  'META', 'TSM', 'GOOG', 'JPM', 'AVGO', 'CRWD', 'NET', 'MU', 'GLD', 'TSLA', 'SMH', 'XLK',
+  'CAT', 'RTX', 'DELL', 'HPE', 'GEV', 'SOXX',
+  // 549 days
+  'SPY', 'QQQ', 'TQQQ', 'QLD', 'QQQM',
+  // 130 days -- captured later, shorter history but fully usable
+  'AAPL', 'MSFT', 'NVDA', 'AMZN', 'AMD', 'PLTR',
+] as const;
 
 function fmtPct(v: number | null | undefined) {
   if (v == null) return '—';
@@ -33,7 +53,9 @@ const col = (v: number | null | undefined) =>
   v == null ? '#64748b' : v >= 0 ? '#22c55e' : '#f87171';
 
 export default function LeapsBacktestPanel() {
-  const [selected, setSelected] = useState<string[]>([...SYMBOLS]);
+  // T395: default to a small comparable set, NOT all 30 -- selecting every symbol would fire
+  // 30 sequential option-chain backtests on a single click. The user adds what they want.
+  const [selected, setSelected] = useState<string[]>(['QQQ', 'TSM', 'GOOG', 'AVGO']);
   const [entryDate, setEntryDate] = useState('2024-10-01');
   const [exitDate, setExitDate] = useState('2025-10-01');
   const [targetDelta, setTargetDelta] = useState(0.80);
@@ -52,8 +74,8 @@ export default function LeapsBacktestPanel() {
   const [error, setError] = useState('');
 
   const { data: coverage } = useSWR<LeapsCoverage>(
-    `leaps-coverage-${targetDelta}-${minDte}`,
-    () => api.leapsCoverage(SYMBOLS.join(','), targetDelta, minDte),
+    `leaps-coverage-${selected.join(',')}-${targetDelta}-${minDte}`,
+    () => api.leapsCoverage(selected.join(',') || 'QQQ', targetDelta, minDte),
     { revalidateOnFocus: false },
   );
 
@@ -90,7 +112,7 @@ export default function LeapsBacktestPanel() {
   return (
     <div style={{ marginTop: 28, padding: '18px 20px', borderRadius: 12, background: '#0d1424', border: '1px solid #1e293b' }}>
       <h2 style={{ fontSize: 15, fontWeight: 800, color: '#e2e8f0', margin: 0 }}>
-        LEAPS Call Backtester — QQQ Family
+        LEAPS Call Backtester
       </h2>
       <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 5, lineHeight: 1.6 }}>
         Replays <strong style={{ color: '#94a3b8' }}>real captured option chains</strong> — no
