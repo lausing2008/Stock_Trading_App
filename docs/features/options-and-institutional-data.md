@@ -1141,3 +1141,50 @@ the delta difference — which is precisely why the label exists.
 3. **My first fix of that test opened a hole.** It checked only that `_first_priceable` *exists*,
    so replacing the call with `_candidates[0]` — restoring the original bug — still passed. A
    second sabotage round caught it.
+
+---
+
+## T384 backfill complete + the roll-vs-hold question re-measured (2026-09-15)
+
+**Tier 1 backfill finished:** TSM, GOOG, AVGO, MU, DELL, HPE — **724 days each**
+(2023-10-23 → 2026-09-11), **6.77M rows, zero errors**, ~2 hours. Archive grew 5.0 → 6.6 GB;
+host disk 40%, iowait normal.
+
+**The T384 liquidity prediction held.** Usable-LEAPS rate (a delta-selectable ≥330-DTE call
+with a real quote) on the new symbols:
+
+| AVGO | GOOG | MU | TSM | DELL | HPE |
+|---|---|---|---|---|---|
+| 100% | 100% | 100% | 100% | 98% | 93% |
+
+All far above the QQQM (50%) case that motivated the liquidity criterion.
+
+### The roll-vs-hold finding, corrected by a wider sample
+
+T385 measured rolling on **QQQ alone** and found it beat holding (+131.48% vs +118.00%). On six
+symbols over 2024-01-16 → 2026-01-16 at delta 0.70, **that does not generalise**:
+
+| symbol | hold 2y | roll 6m | roll 1y | winner |
+|---|---|---|---|---|
+| TSM | +866.3% | +895.4% | **+1087.2%** | roll 1y |
+| GOOG | +383.9% | +306.1% | **+446.3%** | roll 1y |
+| AVGO | n/a | **+520.3%** | +121.7% | roll 6m |
+| MU | **+976.3%** | +800.2% | +879.6% | **hold** |
+| DELL | +137.6% | **+248.3%** | +120.4% | roll 6m |
+| HPE | **+80.0%** | +17.4% | +77.7% | **hold** |
+
+**Rolling wins 4 of 6 and loses 2 — no consistent edge.** Which hold period wins also varies
+(1-year twice, 6-month twice). A single-symbol result was not a strategy finding, and the
+earlier QQQ number should not have been read as one.
+
+**A shorter window makes rolling look much worse**: over 2024-01-15 → 2026-01-15 the same runs
+gave DELL **−4.5%** and HPE **−46.1%**, with real losing cycles (GOOG 1W/2L, MU 2W/1L). The
+all-winners QQQ sample (4W/0L) was a bull-run artifact.
+
+### A trap worth knowing: a holiday entry date returns "no chain captured"
+
+`2024-01-15` is MLK Day. Every 2-year hold returned `n/a` and `_explain_no_price()` correctly
+said *"no option chain captured for TSM on 2024-01-15 — the archive has no quotes for that
+date"*. The rolling variant still produced results because it advances past dead windows — so a
+roll and a hold can legitimately disagree purely on the entry date's tradability. **Start a
+comparison on a trading day**, or the hold column reads as a data gap when it is a calendar one.
