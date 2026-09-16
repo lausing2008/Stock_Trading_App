@@ -152,6 +152,7 @@ const NAV_GROUPS: NavGroupDef[] = [
     adminOnly: true,
     items: [
       { label: 'Paper Portfolio',  href: '/paper-portfolio',  color: '#22c55e' },
+      { label: 'Options Income',   href: '/options-income',   color: '#a78bfa', tag: 'new' },
       { label: 'Conditional Orders', href: '/conditional-orders', color: '#22c55e', tag: 'new' },
       { label: 'E*Trade Transactions', href: '/etrade-transactions', color: '#4ade80', tag: 'new' },
       { label: 'Entry Gates',      href: '/paper-gates',      color: '#22c55e' },

@@ -984,6 +984,27 @@ export const api = {
 
   // ── Quarterly Financials (T230) ────────────────────────────────────────────
   quarterlyFinancials: (symbol: string) => request<QuarterlyRow[]>(`/stocks/${symbol}/quarterly`),
+
+  // ── T398-OPTIONS-INCOME-ENGINE ────────────────────────────────────────────
+  incomeCandidates: (params?: { strategy?: 'COVERED_CALL' | 'CASH_SECURED_PUT'; minYieldPct?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.strategy) p.set('strategy', params.strategy);
+    if (params?.minYieldPct != null) p.set('min_annualized_yield_pct', String(params.minYieldPct));
+    const qs = p.toString();
+    return request<OptionsIncomeCandidatesResponse>(`/options-income/candidates${qs ? `?${qs}` : ''}`);
+  },
+  incomePortfolios: () => request<OptionsIncomePortfolioListItem[]>('/options-income/portfolios'),
+  incomeCreatePortfolio: (body: { name: string; initial_capital: number; config?: Record<string, unknown> }) =>
+    request<{ ok: boolean; portfolio_id: number; name: string; config: Record<string, unknown> }>(
+      '/options-income/portfolios/create', { method: 'POST', body: JSON.stringify(body) },
+    ),
+  incomePositions: (portfolioId: number, stage?: 'open' | 'closed') => {
+    const q = stage ? `?stage=${stage}` : '';
+    return request<OptionsIncomePosition[]>(`/options-income/portfolios/${portfolioId}/positions${q}`);
+  },
+  incomeEquityCurve: (portfolioId: number) =>
+    request<OptionsIncomeEquityPoint[]>(`/options-income/portfolios/${portfolioId}/equity-curve`),
+  incomeRunStepNow: () => request<{ ok: boolean }>('/options-income/run-step', { method: 'POST' }),
 };
 
 export type SuppressedSignalConditions = {
@@ -2755,6 +2776,83 @@ export type PaperPosition = {
   // The raw broker-side error message when broker_status === 'failed' (e.g. a real E*Trade
   // API rejection reason) — null otherwise. Never present without broker_status === 'failed'.
   broker_error: string | null;
+};
+
+// ── T398-OPTIONS-INCOME-ENGINE ────────────────────────────────────────────────
+
+export type OptionsIncomeCandidate = {
+  symbol: string;
+  strategy: 'COVERED_CALL' | 'CASH_SECURED_PUT';
+  as_of: string;
+  option_symbol: string;
+  expiry: string;
+  days_to_expiry: number;
+  strike: number;
+  delta: number;
+  open_interest: number | null;
+  iv: number | null;
+  current_price: number;
+  annualized_yield_pct: number;
+  premium_per_contract: number;
+  premium: number;
+  collateral_required: number;
+  // Present only for the matching strategy — see compute_options_game_plan()'s own
+  // covered_call/protective_put split in routes.py for the same asymmetric-fields precedent.
+  effective_cap_price?: number;
+  effective_purchase_price?: number;
+};
+
+export type OptionsIncomeCandidatesResponse = {
+  candidates: OptionsIncomeCandidate[];
+  count: number;
+};
+
+export type OptionsIncomePortfolioListItem = {
+  id: number;
+  name: string;
+  initial_capital: number;
+  current_cash: number;
+  current_equity: number;
+  total_return_pct: number;
+  open_positions: number;
+  closed_positions: number;
+  win_rate_pct: number;
+  assignment_rate_pct: number;
+  total_premium_collected: number;
+  is_active: boolean;
+  config: Record<string, unknown>;
+  created_at: string | null;
+};
+
+export type OptionsIncomePosition = {
+  id: number;
+  symbol: string;
+  strategy: 'COVERED_CALL' | 'CASH_SECURED_PUT';
+  option_symbol: string;
+  strike: number;
+  expiry: string;
+  contracts: number;
+  entry_date: string;
+  underlying_entry_price: number;
+  delta_at_entry: number | null;
+  premium_per_contract: number;
+  total_premium_collected: number;
+  collateral_reserved: number;
+  stage: 'open' | 'closed';
+  close_date: string | null;
+  underlying_close_price: number | null;
+  assigned: boolean | null;
+  pnl: number | null;
+  pct_return_on_collateral: number | null;
+  close_reason: 'assigned' | 'expired_otm' | null;
+};
+
+export type OptionsIncomeEquityPoint = {
+  date: string;
+  equity: number;
+  cash: number;
+  open_positions_count: number;
+  collateral_committed: number;
 };
 
 export type PaperTrade = {
