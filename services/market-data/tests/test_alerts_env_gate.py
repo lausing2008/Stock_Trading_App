@@ -206,6 +206,9 @@ _NON_ALERT_JOB_IDS = {
     # non-alert side — a local dev stack should still be able to build its option archive.
     "option_chain_history_daily",
     "option_chain_history_purge",
+    # T398-OPTIONS-INCOME-ENGINE: settles/opens paper positions and writes data — sends no
+    # email, so it belongs on the non-alert side same as the OPTHIST jobs above.
+    "options_income_step",
     "us_open_burst", "us_intra", "us_close_burst", "us_post_close", "options_flow_eod", "gex_eod",
     "options_game_plan_eod",
     "hk_open_burst", "hk_intra", "hk_close_burst", "hk_post_close", "weekly_full_refresh",

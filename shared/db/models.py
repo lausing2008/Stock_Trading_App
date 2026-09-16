@@ -1000,6 +1000,115 @@ class PaperEquityCurve(Base):
     )
 
 
+class OptionsIncomePortfolio(Base):
+    """T398-OPTIONS-INCOME-ENGINE: configuration and running cash balance for an autonomous
+    covered-call / cash-secured-put income portfolio.
+
+    Deliberately a SEPARATE table from PaperPortfolio rather than a new `trading_style` value
+    on it — PaperPortfolio's style axis (SHORT/SWING/LONG/GROWTH) describes stock-entry
+    aggressiveness and is validated against that closed set in ~8 places across the codebase
+    (create_portfolio, resolve_entry_gate_params, the calibration/min-entry-score sweeps,
+    decision-engine's own style table). Options income selling isn't a stock entry style at
+    all (no ATR game plan, no shares, no directional stop/target), so reusing that axis would
+    mean either loosening every one of those checks or silently mis-modeling the strategy.
+    """
+    __tablename__ = "options_income_portfolios"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), default="Options Income Portfolio")
+    initial_capital: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+    current_cash: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+    # JSON config — see options_income_engine.py _DEFAULT_INCOME_CONFIG
+    config: Mapped[dict] = mapped_column(JSON)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    positions: Mapped[list["OptionsIncomePosition"]] = relationship(
+        back_populates="portfolio", cascade="all, delete-orphan"
+    )
+    equity_curve: Mapped[list["OptionsIncomeEquityCurve"]] = relationship(
+        back_populates="portfolio", cascade="all, delete-orphan"
+    )
+
+
+class OptionsIncomePosition(Base):
+    """One simulated covered-call or cash-secured-put position — open or closed.
+
+    Both strategies are modeled as closing AT EXPIRY (never rolled or held past it): a covered
+    call is a synthetic buy-write (shares assumed bought at entry, sold either via assignment at
+    strike or liquidated at the market close on expiry day if OTM); a cash-secured put reserves
+    strike*100*contracts in cash at entry and, if assigned, immediately marks the assigned
+    shares to market and liquidates them the same way. This keeps the engine bounded — no
+    open-ended stock inventory drifting across dozens of future expiry cycles — while still
+    producing the real economics of each strategy (premium collected, plus the underlying
+    move between entry and close).
+    """
+    __tablename__ = "options_income_positions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("options_income_portfolios.id", ondelete="CASCADE"), index=True
+    )
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    stock_id: Mapped[int | None] = mapped_column(ForeignKey("stocks.id", ondelete="SET NULL"), nullable=True, index=True)
+    strategy: Mapped[str] = mapped_column(String(20))  # COVERED_CALL | CASH_SECURED_PUT
+    option_symbol: Mapped[str] = mapped_column(String(40))  # OCC-style contract id
+    strike: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+    expiry: Mapped[date] = mapped_column(Date, index=True)
+    contracts: Mapped[int] = mapped_column(Integer, default=1)
+
+    # Entry
+    entry_date: Mapped[date] = mapped_column(Date, index=True)
+    entry_time: Mapped[datetime] = mapped_column(DateTime)
+    underlying_entry_price: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+    delta_at_entry: Mapped[float | None] = mapped_column(Float, nullable=True)
+    iv_at_entry: Mapped[float | None] = mapped_column(Float, nullable=True)
+    premium_per_contract: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+    total_premium_collected: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+    collateral_reserved: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))  # cash committed at entry
+
+    # Live tracking
+    stage: Mapped[str] = mapped_column(String(20), default="open", index=True)  # open|closed
+
+    # Close (null until closed)
+    close_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    underlying_close_price: Mapped[float | None] = mapped_column(Numeric(20, 6, asdecimal=False), nullable=True)
+    assigned: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    pnl: Mapped[float | None] = mapped_column(Numeric(20, 6, asdecimal=False), nullable=True)
+    pct_return_on_collateral: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)  # expired_otm|assigned
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    portfolio: Mapped["OptionsIncomePortfolio"] = relationship(back_populates="positions")
+
+    __table_args__ = (
+        Index("ix_options_income_positions_portfolio_stage", "portfolio_id", "stage"),
+        Index("ix_options_income_positions_expiry", "expiry"),
+    )
+
+
+class OptionsIncomeEquityCurve(Base):
+    """Daily equity snapshots for the options income portfolio equity curve chart."""
+    __tablename__ = "options_income_equity_curve"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("options_income_portfolios.id", ondelete="CASCADE"), index=True
+    )
+    date: Mapped[date] = mapped_column(Date, index=True)
+    equity: Mapped[float] = mapped_column(Float)  # cash + collateral reserved on open positions
+    cash: Mapped[float] = mapped_column(Float)
+    open_positions_count: Mapped[int] = mapped_column(Integer, default=0)
+    collateral_committed: Mapped[float] = mapped_column(Float, default=0.0)
+
+    portfolio: Mapped["OptionsIncomePortfolio"] = relationship(back_populates="equity_curve")
+
+    __table_args__ = (
+        UniqueConstraint("portfolio_id", "date", name="uq_options_income_equity_portfolio_date"),
+    )
+
+
 class Fundamental(Base):
     """Snapshot of company fundamentals — one row per stock per fetch date.
 

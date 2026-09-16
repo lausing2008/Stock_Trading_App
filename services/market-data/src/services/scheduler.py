@@ -12808,6 +12808,16 @@ def start_scheduler() -> None:
                     timezone="America/New_York"),
         id="option_chain_history_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
+    # T398-OPTIONS-INCOME-ENGINE: 19:00 ET — 15 minutes after the OPTHIST capture above
+    # finishes, so today's chain is already archived before this scans it for candidates.
+    # Settles any expired position and opens new ones on every active
+    # OptionsIncomePortfolio; a genuine no-op (returns immediately) while none exist.
+    _scheduler.add_job(
+        _run_options_income_step_safe,
+        CronTrigger(hour=19, minute=0, day_of_week="mon-fri",
+                    timezone="America/New_York"),
+        id="options_income_step", replace_existing=True, **_JOB_DEFAULTS,
+    )
     # Weekly purge — this table was 69% of the whole database with no retention policy.
     _scheduler.add_job(
         _purge_option_chain_history,
@@ -13668,6 +13678,20 @@ def _capture_option_chain_history_daily() -> None:
         log.error("opthist.daily_failed", error=str(exc), exc_info=True)
         _record_job_status("option_chain_history_daily", "error",
                            time.monotonic() - _t0, str(exc))
+
+
+def _run_options_income_step_safe() -> None:
+    """T398-OPTIONS-INCOME-ENGINE scheduled entry point — run_options_income_step() already
+    catches per-portfolio errors internally, so this wrapper only needs to guard against a
+    failure in the shared setup (e.g. DB unavailable) that would otherwise crash the job."""
+    from .options_income_engine import run_options_income_step
+    _t0 = time.monotonic()
+    try:
+        run_options_income_step()
+        _record_job_status("options_income_step", "ok", time.monotonic() - _t0)
+    except Exception as exc:
+        log.error("options_income.step_failed", error=str(exc), exc_info=True)
+        _record_job_status("options_income_step", "error", time.monotonic() - _t0, str(exc))
 
 
 
