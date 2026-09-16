@@ -61,6 +61,27 @@ _INCOME_MAX_DTE = 45
 _INCOME_MIN_ABS_DELTA = 0.15
 _INCOME_MAX_ABS_DELTA = 0.35
 _INCOME_MIN_OPEN_INTEREST = 50
+# AUD-T398-THINCUSHION: a contract can pass the delta band and still sit a rounding error from
+# the money once the underlying has moved — measured live, the engine was surfacing a QQQ put
+# 0.08% out of the money and an SPY put 0.18% out, both effectively at-the-money trades being
+# presented as ~0.33-delta ones. Require a real buffer between the strike and today's price.
+_INCOME_MIN_CUSHION_PCT = 2.0
+
+# Quality-score normalisation points — the value at which each component earns full marks.
+# These are deliberate, documented judgement calls for RANKING candidates against each other,
+# not a validated predictive edge: nothing in this engine has enough resolved outcomes yet to
+# claim one (see the guide's own "no track record" caveat). Ranking by raw yield alone is
+# actively misleading, because the richest premium in the universe is rich precisely because
+# it carries the most risk — that is adverse selection, not opportunity.
+_Q_FULL_YIELD_PCT = 40.0    # 40% annualised earns full marks; more adds nothing
+_Q_FULL_CUSHION_PCT = 10.0  # 10% out-of-the-money earns full marks
+_Q_FULL_OPEN_INTEREST = 2000
+# Cushion is weighted equal to yield on purpose: for a premium SELLER, distance-to-strike is
+# the thing that actually prevents the bad outcome, so it deserves the same weight as the
+# reward it is being traded against.
+_Q_WEIGHT_YIELD = 0.40
+_Q_WEIGHT_CUSHION = 0.40
+_Q_WEIGHT_LIQUIDITY = 0.20
 # The OPTHIST daily capture self-heals short gaps (a 5-day backfill window on every run), so a
 # healthy pipeline never approaches this. A chain older than this means the capture job itself
 # has been failing for a while — treat it as a data-pipeline outage, not a green light to trade.
@@ -90,6 +111,23 @@ def _latest_chain_as_of(session: Session, symbol: str) -> date | None:
         {"sym": symbol.upper()},
     ).first()
     return row.d if row and row.d else None
+
+
+def quality_score(*, annualized_yield_pct: float, otm_cushion_pct: float, open_interest: int | None) -> float:
+    """A 0-100 risk-adjusted ranking score. Pure — no DB access, so it is directly testable.
+
+    Blends the reward (yield) against the two things that most determine whether that reward is
+    actually keepable: how far the strike sits from today's price (cushion), and whether the
+    contract can be traded at the quoted price at all (open interest). Each component saturates
+    at its own _Q_FULL_* point so a single extreme value cannot dominate — specifically so a
+    60%-annualised contract on a name about to gap cannot outrank a 25% one with real buffer.
+
+    This is a transparent heuristic for ORDERING candidates, not a claim of predictive edge.
+    """
+    y = min(max(annualized_yield_pct, 0.0) / _Q_FULL_YIELD_PCT, 1.0)
+    c = min(max(otm_cushion_pct, 0.0) / _Q_FULL_CUSHION_PCT, 1.0)
+    liq = min(max(open_interest or 0, 0) / _Q_FULL_OPEN_INTEREST, 1.0)
+    return round(100.0 * (_Q_WEIGHT_YIELD * y + _Q_WEIGHT_CUSHION * c + _Q_WEIGHT_LIQUIDITY * liq), 1)
 
 
 def _next_earnings_by_symbol(session: Session, symbols: list[str], today: date) -> dict[str, date]:
@@ -254,6 +292,13 @@ def rank_income_candidates(
                 if strategy == "CASH_SECURED_PUT" and strike_f >= price:
                     continue
 
+                cushion_pct = round(
+                    ((strike_f - price) / price * 100) if strategy == "COVERED_CALL"
+                    else ((price - strike_f) / price * 100), 2)
+                # AUD-T398-THINCUSHION: OTM by a rounding error is not meaningfully OTM.
+                if cushion_pct < _INCOME_MIN_CUSHION_PCT:
+                    continue
+
                 premium = float(r.nbbo_bid)  # sold at the bid — the real, conservative fill
                 metrics = _score_contract(
                     strategy=strategy, strike=strike_f, premium_bid=premium,
@@ -268,17 +313,23 @@ def rank_income_candidates(
                     "open_interest": r.open_interest,
                     "iv": round(float(r.implied_volatility), 4) if r.implied_volatility is not None else None,
                     "current_price": price,
-                    "otm_cushion_pct": round(
-                        ((strike_f - price) / price * 100) if strategy == "COVERED_CALL"
-                        else ((price - strike_f) / price * 100), 2),
+                    "otm_cushion_pct": cushion_pct,
                     **metrics,
                 }
-                if best is None or cand["annualized_yield_pct"] > best["annualized_yield_pct"]:
+                cand["quality_score"] = quality_score(
+                    annualized_yield_pct=cand["annualized_yield_pct"],
+                    otm_cushion_pct=cushion_pct,
+                    open_interest=r.open_interest,
+                )
+                # Best-per-symbol is chosen on the RISK-ADJUSTED score, not raw yield — picking
+                # the highest-yielding contract per symbol just re-introduces the same adverse
+                # selection one level down, before the cross-symbol ranking ever sees it.
+                if best is None or cand["quality_score"] > best["quality_score"]:
                     best = cand
             if best is not None:
                 out.append(best)
 
-    out.sort(key=lambda c: c["annualized_yield_pct"], reverse=True)
+    out.sort(key=lambda c: c["quality_score"], reverse=True)
     return out
 
 

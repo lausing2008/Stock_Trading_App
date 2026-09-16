@@ -41,7 +41,20 @@ def get_income_candidates(
 
     candidates = rank_income_candidates(session, strategies=strategies)
     candidates = [c for c in candidates if c["annualized_yield_pct"] >= min_annualized_yield_pct]
-    return {"candidates": candidates, "count": len(candidates)}
+
+    # Staleness is surfaced as first-class response metadata, not buried per-row: the option
+    # chain going stale is the single failure mode that most silently degrades every candidate
+    # at once (a scheduler misfire during an outage left it 5 days behind once already), and
+    # nothing on the page could previously tell a fresh candidate from an old one.
+    days_stale = max((c.get("days_stale", 0) for c in candidates), default=None)
+    data_as_of = max((c["as_of"] for c in candidates), default=None)
+    return {
+        "candidates": candidates,
+        "count": len(candidates),
+        "data_as_of": data_as_of,
+        "days_stale": days_stale,
+        "is_stale": bool(days_stale is not None and days_stale >= 2),
+    }
 
 
 @router.get("/portfolios")
@@ -135,7 +148,35 @@ def get_income_positions(
         query = query.where(OptionsIncomePosition.stage == stage)
     positions = session.execute(query.order_by(OptionsIncomePosition.entry_date.desc())).scalars().all()
 
+    # AUD-T398-ASSIGNMENTRISK: an OPEN position going in-the-money is the one thing a holder
+    # most needs to know before expiry, and nothing surfaced it — the page showed entry-time
+    # figures only, so a put sitting well below its strike looked identical to a safe one.
+    # Priced against the CURRENT underlying, not the entry price.
+    live_prices: dict[str, float] = {}
+    open_syms = sorted({p.symbol for p in positions if p.stage == "open"})
+    if open_syms:
+        try:
+            from ..services.paper_trading_engine import _fetch_live_prices
+            live_prices = _fetch_live_prices(open_syms) or {}
+        except Exception:
+            live_prices = {}  # fail open — never break the position list over a quote fetch
+
+    def _risk(pos) -> dict:
+        px = live_prices.get(pos.symbol)
+        if pos.stage != "open" or not px:
+            return {"live_price": None, "is_itm": None, "cushion_pct": None, "days_to_expiry": None}
+        strike = float(pos.strike)
+        itm = px > strike if pos.strategy == "COVERED_CALL" else px < strike
+        cushion = ((strike - px) / px * 100) if pos.strategy == "COVERED_CALL" else ((px - strike) / px * 100)
+        return {
+            "live_price": round(px, 2),
+            "is_itm": bool(itm),
+            "cushion_pct": round(cushion, 2),
+            "days_to_expiry": (pos.expiry - date.today()).days,
+        }
+
     return [{
+        **_risk(pos),
         "id": pos.id,
         "symbol": pos.symbol,
         "strategy": pos.strategy,

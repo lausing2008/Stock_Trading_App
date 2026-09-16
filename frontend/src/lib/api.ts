@@ -2796,6 +2796,11 @@ export type OptionsIncomeCandidate = {
   premium_per_contract: number;
   premium: number;
   collateral_required: number;
+  // T398 audit follow-ups: how far the strike sits from TODAY's price, how old the chain the
+  // candidate was priced from is, and the risk-adjusted rank (yield alone is adverse selection).
+  otm_cushion_pct: number;
+  days_stale: number;
+  quality_score: number;
   // Present only for the matching strategy — see compute_options_game_plan()'s own
   // covered_call/protective_put split in routes.py for the same asymmetric-fields precedent.
   effective_cap_price?: number;
@@ -2805,6 +2810,11 @@ export type OptionsIncomeCandidate = {
 export type OptionsIncomeCandidatesResponse = {
   candidates: OptionsIncomeCandidate[];
   count: number;
+  // Chain freshness, surfaced as response-level metadata: a stale chain silently degrades
+  // EVERY candidate at once, so it belongs on the page as a banner, not buried per-row.
+  data_as_of: string | null;
+  days_stale: number | null;
+  is_stale: boolean;
 };
 
 export type OptionsIncomePortfolioListItem = {
@@ -2845,6 +2855,11 @@ export type OptionsIncomePosition = {
   pnl: number | null;
   pct_return_on_collateral: number | null;
   close_reason: 'assigned' | 'expired_otm' | null;
+  // Live assignment risk on OPEN positions (null on closed ones, or if the quote fetch failed).
+  live_price: number | null;
+  is_itm: boolean | null;
+  cushion_pct: number | null;
+  days_to_expiry: number | null;
 };
 
 export type OptionsIncomeEquityPoint = {

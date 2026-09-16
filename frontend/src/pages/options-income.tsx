@@ -349,7 +349,14 @@ export default function OptionsIncomePage() {
             <PositionsTable positions={closedPositions ?? []} emptyLabel="No closed positions yet." showClose />
           ))}
           {tab === 'Candidates' && (
-            <CandidatesTable candidates={candidatesResp?.candidates ?? []} />
+            <>
+              <StalenessBanner
+                daysStale={candidatesResp?.days_stale ?? null}
+                dataAsOf={candidatesResp?.data_as_of ?? null}
+              />
+              <TopPicks candidates={candidatesResp?.candidates ?? []} />
+              <CandidatesTable candidates={candidatesResp?.candidates ?? []} />
+            </>
           )}
         </div>
       </div>
@@ -361,8 +368,30 @@ function PositionsTable({ positions, emptyLabel, showClose }: { positions: Optio
   if (!positions.length) {
     return <div style={{ ...CARD, textAlign: 'center', color: '#64748b', fontSize: 13 }}>{emptyLabel}</div>;
   }
+  // AUD-T398-ASSIGNMENTRISK: a position that has gone in-the-money is the one thing worth
+  // interrupting the user about — it's the difference between keeping the premium and being
+  // assigned. Surfaced as a banner, not just a row colour that's easy to scroll past.
+  const atRisk = positions.filter(p => p.stage === 'open' && p.is_itm === true);
   return (
     <div style={{ overflowX: 'auto' }}>
+      {atRisk.length > 0 && (
+        <div style={{
+          padding: '12px 16px', borderRadius: 10, marginBottom: 14,
+          background: 'rgba(239,68,68,0.09)', border: '1px solid rgba(239,68,68,0.35)',
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: '#f87171', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 5 }}>
+            ⚠ {atRisk.length} position{atRisk.length > 1 ? 's' : ''} in the money — assignment likely
+          </div>
+          <div style={{ fontSize: 12, color: '#cbd5e1', lineHeight: 1.6 }}>
+            {atRisk.map(p => (
+              <div key={p.id}>
+                <b style={{ color: '#e2e8f0' }}>{p.symbol}</b> {STRATEGY_LABEL[p.strategy]} ${p.strike.toFixed(2)}
+                {' '}— now ${p.live_price?.toFixed(2)} ({p.cushion_pct?.toFixed(1)}%), {p.days_to_expiry}d to expiry
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr>
@@ -372,6 +401,8 @@ function PositionsTable({ positions, emptyLabel, showClose }: { positions: Optio
             <th style={TH}>Expiry</th>
             <th style={TH}>Contracts</th>
             <th style={TH}>Entry Price</th>
+            {!showClose && <th style={TH}>Price Now</th>}
+            {!showClose && <th style={TH}>Cushion</th>}
             <th style={TH}>Premium</th>
             <th style={TH}>Collateral</th>
             {showClose && <th style={TH}>Close Price</th>}
@@ -389,6 +420,15 @@ function PositionsTable({ positions, emptyLabel, showClose }: { positions: Optio
               <td style={TD}>{fmtDate(p.expiry)}</td>
               <td style={TD}>{p.contracts}</td>
               <td style={TD}>${p.underlying_entry_price.toFixed(2)}</td>
+              {!showClose && (
+                <td style={TD}>{p.live_price != null ? `$${p.live_price.toFixed(2)}` : '—'}</td>
+              )}
+              {!showClose && (
+                <td style={{ ...TD, fontWeight: 700, color: p.is_itm ? '#f87171' : (p.cushion_pct ?? 0) >= 5 ? '#4ade80' : '#f59e0b' }}>
+                  {p.cushion_pct != null ? `${p.cushion_pct.toFixed(1)}%` : '—'}
+                  {p.is_itm && <span style={{ marginLeft: 6, fontSize: 10 }}>ITM</span>}
+                </td>
+              )}
               <td style={{ ...TD, color: '#4ade80' }}>{fmtUSD(p.total_premium_collected)}</td>
               <td style={TD}>{fmtUSD(p.collateral_reserved)}</td>
               {showClose && <td style={TD}>{p.underlying_close_price != null ? `$${p.underlying_close_price.toFixed(2)}` : '—'}</td>}
@@ -403,6 +443,74 @@ function PositionsTable({ positions, emptyLabel, showClose }: { positions: Optio
   );
 }
 
+function ScorePill({ score }: { score: number }) {
+  const c = score >= 70 ? '#22c55e' : score >= 50 ? '#f59e0b' : '#64748b';
+  return (
+    <span style={{ fontSize: 11, fontWeight: 800, color: c, background: c + '18', border: `1px solid ${c}44`, borderRadius: 5, padding: '2px 7px' }}>
+      {score.toFixed(0)}
+    </span>
+  );
+}
+
+/** The engine's own best risk-adjusted picks, surfaced above the full table. Ranked by
+ *  quality_score (yield + cushion + liquidity), NOT raw yield — the highest-yielding contract
+ *  in the universe is highest-yielding precisely because it carries the most risk. */
+function TopPicks({ candidates }: { candidates: OptionsIncomeCandidate[] }) {
+  const top = candidates.slice(0, 4);
+  if (!top.length) return null;
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
+        <div style={{ fontSize: 12, fontWeight: 800, color: '#e2e8f0', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          ★ Top Picks
+        </div>
+        <span style={{ fontSize: 11, color: '#64748b' }}>
+          ranked by risk-adjusted score — yield balanced against cushion and liquidity, not yield alone
+        </span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 12 }}>
+        {top.map((c, i) => (
+          <div key={`${c.symbol}-${c.strategy}-${c.option_symbol}`} style={{
+            ...CARD, borderColor: i === 0 ? '#22c55e66' : '#1e293b',
+            background: i === 0 ? 'rgba(34,197,94,0.05)' : '#111827',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <span style={{ fontWeight: 800, fontSize: 15, color: '#f1f5f9' }}>{c.symbol}</span>
+              <ScorePill score={c.quality_score} />
+            </div>
+            <div style={{ marginBottom: 8 }}><StrategyBadge strategy={c.strategy} /></div>
+            <div style={{ fontSize: 12, color: '#cbd5e1', lineHeight: 1.7 }}>
+              <div>Strike <b style={{ color: '#e2e8f0' }}>${c.strike.toFixed(2)}</b> · {fmtDate(c.expiry)} ({c.days_to_expiry}d)</div>
+              <div>Premium <b style={{ color: '#4ade80' }}>{fmtUSD(c.premium_per_contract)}</b> · <span style={{ color: '#38bdf8' }}>{c.annualized_yield_pct.toFixed(1)}%</span> ann.</div>
+              <div>Cushion <b style={{ color: c.otm_cushion_pct >= 5 ? '#4ade80' : '#f59e0b' }}>{c.otm_cushion_pct.toFixed(1)}%</b> · OI {c.open_interest ?? '—'}</div>
+              <div style={{ color: '#64748b' }}>Collateral {fmtUSD(c.collateral_required)}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StalenessBanner({ daysStale, dataAsOf }: { daysStale: number | null; dataAsOf: string | null }) {
+  if (daysStale == null || daysStale < 2) return null;
+  return (
+    <div style={{
+      padding: '12px 16px', borderRadius: 10, marginBottom: 16,
+      background: 'rgba(245,158,11,0.09)', border: '1px solid rgba(245,158,11,0.35)',
+    }}>
+      <div style={{ fontSize: 11, fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 5 }}>
+        ⚠ Chain data is {daysStale} days old{dataAsOf ? ` (${dataAsOf})` : ''}
+      </div>
+      <div style={{ fontSize: 12, color: '#cbd5e1', lineHeight: 1.6 }}>
+        Premiums and deltas below were quoted on that date, not today. Strikes and cushions ARE
+        re-checked against the current price, so nothing here is in-the-money — but the premium
+        you&apos;d actually be filled at today will differ. Re-verify the live quote before acting.
+      </div>
+    </div>
+  );
+}
+
 function CandidatesTable({ candidates }: { candidates: OptionsIncomeCandidate[] }) {
   if (!candidates.length) {
     return <div style={{ ...CARD, textAlign: 'center', color: '#64748b', fontSize: 13 }}>No candidates found — chain data may be stale or no contracts clear the delta/liquidity filters right now.</div>;
@@ -412,11 +520,13 @@ function CandidatesTable({ candidates }: { candidates: OptionsIncomeCandidate[] 
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr>
+            <th style={TH}>Score</th>
             <th style={TH}>Symbol</th>
             <th style={TH}>Strategy</th>
             <th style={TH}>Strike</th>
             <th style={TH}>Expiry</th>
             <th style={TH}>DTE</th>
+            <th style={TH}>Cushion</th>
             <th style={TH}>Delta</th>
             <th style={TH}>Premium</th>
             <th style={TH}>Ann. Yield</th>
@@ -429,11 +539,15 @@ function CandidatesTable({ candidates }: { candidates: OptionsIncomeCandidate[] 
         <tbody>
           {candidates.map(c => (
             <tr key={`${c.symbol}-${c.strategy}-${c.option_symbol}`}>
+              <td style={TD}><ScorePill score={c.quality_score} /></td>
               <td style={{ ...TD, fontWeight: 700, color: '#f1f5f9' }}>{c.symbol}</td>
               <td style={TD}><StrategyBadge strategy={c.strategy} /></td>
               <td style={TD}>${c.strike.toFixed(2)}</td>
               <td style={TD}>{fmtDate(c.expiry)}</td>
               <td style={TD}>{c.days_to_expiry}d</td>
+              <td style={{ ...TD, fontWeight: 700, color: c.otm_cushion_pct >= 5 ? '#4ade80' : '#f59e0b' }}>
+                {c.otm_cushion_pct.toFixed(1)}%
+              </td>
               <td style={TD}>{c.delta.toFixed(2)}</td>
               <td style={{ ...TD, color: '#4ade80' }}>${c.premium.toFixed(2)}</td>
               <td style={{ ...TD, fontWeight: 700, color: '#38bdf8' }}>{c.annualized_yield_pct.toFixed(1)}%</td>

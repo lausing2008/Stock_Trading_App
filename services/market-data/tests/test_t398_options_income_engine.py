@@ -15,7 +15,7 @@ import pathlib
 from src.services.options_income_engine import (
     _score_contract, settle_position_economics, _DEFAULT_INCOME_CONFIG, _INCOME_UNIVERSE,
     _INCOME_MIN_DTE, _INCOME_MAX_DTE, _INCOME_MIN_ABS_DELTA, _INCOME_MAX_ABS_DELTA,
-    _INCOME_MAX_CHAIN_STALENESS_DAYS,
+    _INCOME_MAX_CHAIN_STALENESS_DAYS, _INCOME_MIN_CUSHION_PCT, quality_score,
 )
 
 _ENGINE_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "options_income_engine.py"
@@ -205,6 +205,51 @@ def test_settlement_reresolves_a_missing_stock_id_instead_of_zombieing_forever()
     body = body[:body.index("\ndef ")]
     assert "Stock.symbol == pos.symbol" in body
     assert "pos.stock_id = stock.id" in body
+
+
+def test_quality_score_prefers_cushion_over_raw_yield():
+    """The whole point: the richest premium in the universe is rich BECAUSE it's riskiest.
+    A high-yield contract sitting at the money must not outrank a moderate one with real
+    buffer and real liquidity — that's adverse selection, which raw-yield ranking guarantees."""
+    yield_trap = quality_score(annualized_yield_pct=60, otm_cushion_pct=0.5, open_interest=100)
+    solid = quality_score(annualized_yield_pct=25, otm_cushion_pct=8.4, open_interest=10716)
+    assert solid > yield_trap
+
+
+def test_quality_score_components_saturate():
+    """No single component may run away with the score — an absurd yield can't outweigh
+    having no cushion and no liquidity."""
+    absurd_yield = quality_score(annualized_yield_pct=100_000, otm_cushion_pct=0, open_interest=0)
+    assert absurd_yield <= 41.0  # the yield weight alone, nothing more
+
+
+def test_quality_score_is_bounded_0_to_100():
+    assert quality_score(annualized_yield_pct=0, otm_cushion_pct=0, open_interest=0) == 0.0
+    assert quality_score(annualized_yield_pct=999, otm_cushion_pct=999, open_interest=999999) == 100.0
+
+
+def test_quality_score_handles_missing_open_interest():
+    # open_interest is nullable in the chain archive — must not raise.
+    assert quality_score(annualized_yield_pct=20, otm_cushion_pct=5, open_interest=None) >= 0
+
+
+def test_candidates_need_a_real_cushion_not_just_technically_otm():
+    # AUD-T398-THINCUSHION: measured live — a QQQ put 0.08% OTM and an SPY put 0.18% OTM were
+    # being presented as ~0.33-delta trades. Those are at-the-money in all but name.
+    body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def rank_income_candidates"):]
+    body = body[:body.index("\ndef ")]
+    assert "cushion_pct < _INCOME_MIN_CUSHION_PCT" in body
+    assert _INCOME_MIN_CUSHION_PCT > 0
+
+
+def test_ranking_uses_quality_score_not_raw_yield():
+    body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def rank_income_candidates"):]
+    body = body[:body.index("\ndef ")]
+    # Both the per-symbol pick AND the final cross-symbol sort must use the risk-adjusted
+    # score; using yield for either one re-introduces adverse selection.
+    assert 'cand["quality_score"] > best["quality_score"]' in body
+    assert 'out.sort(key=lambda c: c["quality_score"], reverse=True)' in body
+    assert 'out.sort(key=lambda c: c["annualized_yield_pct"]' not in body
 
 
 def test_dte_is_measured_from_today_not_the_chains_as_of_date():
