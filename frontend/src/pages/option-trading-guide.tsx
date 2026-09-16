@@ -74,6 +74,38 @@ function StrategyCard({ name, color, when, mechanics, risk }: { name: string; co
   );
 }
 
+function DataTable({ headers, rows, highlightCol }: { headers: string[]; rows: (string | number)[][]; highlightCol?: number }) {
+  return (
+    <div style={{ borderRadius: 10, border: '1px solid #1e293b', overflow: 'hidden', marginBottom: 16, overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px' }}>
+        <thead>
+          <tr style={{ background: '#0d1424' }}>
+            {headers.map(h => (
+              <th key={h} style={{ textAlign: 'left', padding: '8px 12px', color: '#475569', fontWeight: 700, fontSize: '10.5px', textTransform: 'uppercase', letterSpacing: '0.04em', borderBottom: '1px solid #1e293b', whiteSpace: 'nowrap' }}>
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i} style={{ borderBottom: i < rows.length - 1 ? '1px solid #131c2e' : 'none' }}>
+              {row.map((cell, j) => (
+                <td key={j} style={{
+                  padding: '8px 12px', color: j === highlightCol ? '#e2e8f0' : '#94a3b8',
+                  fontWeight: j === highlightCol ? 700 : 400, whiteSpace: 'nowrap',
+                }}>
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function DiagramBox({ label, sub, color }: { label: string; sub?: string; color: string }) {
   return (
     <div style={{
@@ -202,6 +234,75 @@ export default function OptionTradingGuidePage() {
           this app for how this compares to gamma-exposure (GEX) levels when a real Unusual Whales
           subscription is configured.
         </p>
+      </Section>
+
+      <Section title="Bid vs. ask, for a CALL and for a PUT — with real numbers">
+        <p style={{ marginBottom: 12 }}>
+          The single most common source of confusion in an option chain: there are always{' '}
+          <b style={{ color: '#e2e8f0' }}>two prices</b> quoted for every contract, and which one
+          you actually pay or receive depends on whether you&apos;re <em>buying</em> or{' '}
+          <em>selling</em> — not on whether it&apos;s a call or a put. The rule is the same for both:
+        </p>
+        <Callout tone="good" title="The one rule that never changes">
+          Buying (opening a long position) → you pay near the <b style={{ color: '#e2e8f0' }}>ask</b>{' '}
+          (the higher number). Selling (opening a short/income position) → you receive near the{' '}
+          <b style={{ color: '#e2e8f0' }}>bid</b> (the lower number). This is true whether the
+          contract is a call or a put — the call/put distinction decides <em>what</em> the contract
+          does, the buy/sell distinction decides <em>which quoted price</em> applies to you.
+        </Callout>
+
+        <SubSection title="Why there are two prices at all">
+          The bid is the highest price someone right now is willing to <em>pay</em> for the
+          contract; the ask is the lowest price someone right now is willing to <em>sell</em> it
+          for. Whoever is on the other side of your trade (often a market maker, not another
+          individual trader) profits from that gap — the <b style={{ color: '#e2e8f0' }}>spread</b> —
+          as compensation for always being ready to trade instantly in either direction. A tight
+          spread (a few cents) means a liquid, efficiently-priced contract; a wide spread means thin
+          trading and a real cost to trading it (see the <Code>oi</Code> metric card above).
+        </SubSection>
+
+        <SubSection title="Worked example — one call, one put, same stock">
+          Stock XYZ is trading at $100. Here&apos;s a realistic quote for a call above that price
+          and a put below it, 30 days to expiry:
+          <DataTable
+            headers={['Contract', 'Bid', 'Ask', 'Spread']}
+            rows={[
+              ['$105 call (above the stock price)', '$2.10', '$2.30', '$0.20'],
+              ['$95 put (below the stock price)', '$1.80', '$2.00', '$0.20'],
+            ]}
+          />
+          <DataTable
+            headers={['What you want to do', 'Contract', 'Price that applies to you', 'Real dollar result (1 contract = 100 shares)']}
+            highlightCol={2}
+            rows={[
+              ['Buy the call (a bullish bet)', '$105 call', 'ASK: $2.30', 'You PAY $230'],
+              ['Sell the call (a covered call)', '$105 call', 'BID: $2.10', 'You RECEIVE $210'],
+              ['Buy the put (protective insurance)', '$95 put', 'ASK: $2.00', 'You PAY $200'],
+              ['Sell the put (a cash-secured put)', '$95 put', 'BID: $1.80', 'You RECEIVE $180'],
+            ]}
+          />
+        </SubSection>
+
+        <Callout tone="warn" title="The spread is a real cost, both ways">
+          Notice the call buyer pays $2.30 while the call seller (on a DIFFERENT trade, or the other
+          side of this one) only receives $2.10 for the exact same contract — that $0.20 gap never
+          goes to either trader. If you bought this call at $2.30 and immediately changed your mind,
+          selling it back would only get you $2.10 — an instant $20 loss with the stock having not
+          moved at all. This is why this app&apos;s own Options Game Plan and Options Income Engine
+          each pick ONE side deliberately and consistently: the Game Plan&apos;s protective-put/
+          covered-call cost estimates use the <b style={{ color: '#e2e8f0' }}>midpoint</b> ($2.20 /
+          $1.90 above) as a realistic estimate either way, while the Options Income Engine — which
+          only ever <em>sells</em> — always prices a candidate at the <b style={{ color: '#e2e8f0' }}>bid</b>,
+          the real, conservative price a seller actually receives, never the more optimistic mid or
+          ask.
+        </Callout>
+
+        <SubSection title="A quick way to remember it">
+          <ul style={{ margin: 0, paddingLeft: 20 }}>
+            <li style={{ marginBottom: 6 }}><b style={{ color: '#e2e8f0' }}>B</b>uy → <b style={{ color: '#e2e8f0' }}>A</b>sk (both start differently, but think: buying costs more, and the ask is the higher number)</li>
+            <li><b style={{ color: '#e2e8f0' }}>S</b>ell → <b style={{ color: '#e2e8f0' }}>B</b>id (selling gets you less, and the bid is the lower number)</li>
+          </ul>
+        </SubSection>
       </Section>
 
       <Section title="Three ways to use options — which ones this app helps with">
