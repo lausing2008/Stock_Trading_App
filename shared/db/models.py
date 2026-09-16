@@ -1084,7 +1084,10 @@ class OptionsIncomePosition(Base):
 
     __table_args__ = (
         Index("ix_options_income_positions_portfolio_stage", "portfolio_id", "stage"),
-        Index("ix_options_income_positions_expiry", "expiry"),
+        # NOT also indexing `expiry` here — the column already has index=True above;
+        # duplicating it as an explicit Index() with the same auto-derived name
+        # ("ix_options_income_positions_expiry") crashed create_all() with a real
+        # DuplicateTable error on the first deploy attempt (caught live, not in review).
     )
 
 
