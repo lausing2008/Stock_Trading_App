@@ -95,6 +95,12 @@ _ROUTES = {
     "conditional-orders": _settings.market_data_url,
     # IF-01: persisted VaR/CVaR + stress-test snapshots (risk_snapshots.py, market-data).
     "risk-snapshots": _settings.market_data_url,
+    # T398-OPTIONS-INCOME-ENGINE: options_income.py registers APIRouter(prefix="/options-income")
+    # on market-data — added up front this time, matching the rl-agent/conditional-orders
+    # lesson documented above (a new router prefix must land here or every request 404s at
+    # the gateway despite the backend fully implementing the feature). Caught live: the
+    # Create Portfolio modal returned a raw "404 Not Found" the first time this was deployed.
+    "options-income": _settings.market_data_url,
 }
 
 
