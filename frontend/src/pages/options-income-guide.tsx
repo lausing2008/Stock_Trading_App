@@ -144,6 +144,16 @@ export default function OptionsIncomeGuidePage() {
         math; the trades themselves are not.
       </Callout>
 
+      <Callout tone="info" title="Is this actually 'passive income'?">
+        Mostly hands-off, but not risk-free — those are two different things. Once a portfolio
+        exists, the engine picks candidates and opens/closes positions on its own daily schedule,
+        with no charts to watch or manual entries to make — that&apos;s the &quot;passive&quot;
+        part. But the premium it collects is payment for taking on real, quantifiable risk (capped
+        upside on a covered call, a real obligation to buy on a cash-secured put), not free money —
+        see §1/§2&apos;s worked examples for exactly what that risk looks like in dollars. Think of
+        it as automatic, not as risk-free.
+      </Callout>
+
       {/* Jump nav */}
       <div style={{
         display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 32, padding: '12px 14px',
@@ -272,8 +282,15 @@ export default function OptionsIncomeGuidePage() {
           percentage of the stock price, scaled up to a one-year rate —{' '}
           <Code>premium ÷ price × (365 ÷ days-to-expiry) × 100</Code>. The single best-yielding
           contract per symbol per strategy is kept; the rest are discarded. Premium is always
-          priced at the <b style={{ color: '#e2e8f0' }}>bid</b> — the real, conservative price you&apos;d
-          actually receive selling into the market, never the ask or an optimistic mid-price.
+          priced at the <b style={{ color: '#e2e8f0' }}>bid</b> — for BOTH strategies, the covered
+          call AND the cash-secured put — the real, conservative price you&apos;d actually receive
+          selling into the market, never the ask or an optimistic mid-price.
+          <br /><br />
+          It&apos;s never &quot;call = ask, put = bid&quot; or any other pairing by contract type —
+          which price applies depends only on whether you&apos;re buying or selling, not on call vs.
+          put (see the Option Trading Guide&apos;s <Link href="/option-trading-guide#bid-vs-ask" style={{ color: '#818cf8' }}>bid/ask section</Link>{' '}
+          for the full rule with worked numbers). Both strategies here are sells, so both are
+          priced at the bid, full stop.
         </SubSection>
 
         <SubSection title="What happens at expiry — always closes, never rolls">
