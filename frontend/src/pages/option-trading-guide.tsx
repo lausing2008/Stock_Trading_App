@@ -4,9 +4,9 @@ import { getSession, hasAdvancedAccess } from '@/lib/auth';
 
 // ── Shared small components — same visual language as alerts-guide.tsx/conditional-orders-guide.tsx ──
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, id, children }: { title: string; id?: string; children: React.ReactNode }) {
   return (
-    <div style={{ marginBottom: '32px' }}>
+    <div id={id} style={{ marginBottom: '32px', scrollMarginTop: 70 }}>
       <h2 style={{ fontSize: '15px', fontWeight: 800, color: '#e2e8f0', marginBottom: '10px' }}>{title}</h2>
       <div style={{ fontSize: '13px', lineHeight: 1.7, color: '#94a3b8' }}>{children}</div>
     </div>
@@ -236,7 +236,7 @@ export default function OptionTradingGuidePage() {
         </p>
       </Section>
 
-      <Section title="Bid vs. ask, for a CALL and for a PUT — with real numbers">
+      <Section id="bid-vs-ask" title="Bid vs. ask, for a CALL and for a PUT — with real numbers">
         <p style={{ marginBottom: 12 }}>
           The single most common source of confusion in an option chain: there are always{' '}
           <b style={{ color: '#e2e8f0' }}>two prices</b> quoted for every contract, and which one

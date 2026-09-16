@@ -352,42 +352,67 @@ export default function OptionsIncomeGuidePage() {
           </ul>
         </SubSection>
 
+        <SubSection title="Order-type vocabulary — this part is universal, not Fidelity-specific">
+          <Callout tone="warn" title="If your chain only shows Bid/Ask columns">
+            You will not necessarily see the words &quot;Sell to Open&quot; or &quot;Buy Write&quot;
+            printed anywhere on the chain itself — on most brokers, including Fidelity, those are
+            just the two directions any order ends up as, decided by <em>which price you click</em>{' '}
+            and what a follow-up ticket asks you to confirm, not a menu you pick from inside the
+            chain. The chain&apos;s job is only to show you the current bid and ask for every
+            strike; the buy/sell decision happens in the order ticket that opens once you click one
+            of those numbers.
+          </Callout>
+          <ul style={{ margin: 0, paddingLeft: 20 }}>
+            <li style={{ marginBottom: 8 }}><b style={{ color: '#e2e8f0' }}>Open vs. Close</b> — &quot;Open&quot; means you don&apos;t currently hold this exact contract and are starting a new position; &quot;Close&quot; means you already hold it and are exiting. Every trade in this guide is an Open, since the engine (and you, following it) is always starting from nothing on that specific contract.</li>
+            <li><b style={{ color: '#e2e8f0' }}>Buy vs. Sell</b> — a covered call and a cash-secured put are both <b style={{ color: '#e2e8f0' }}>sells</b>: you&apos;re the one collecting the premium, not paying it (see the Option Trading Guide&apos;s <Link href="/option-trading-guide#bid-vs-ask" style={{ color: '#818cf8' }}>bid/ask section</Link> for the full buy-pays-the-ask / sell-receives-the-bid rule).</li>
+          </ul>
+        </SubSection>
+
         <SubSection title="Reading the option chain for delta">
-          On Fidelity&apos;s option chain (Trade → Trade Options, or from a stock&apos;s Research
-          page), click the chain&apos;s display/column settings and add <b style={{ color: '#e2e8f0' }}>Delta</b>{' '}
-          if it isn&apos;t already shown — that&apos;s the same number the engine filters on (§3).
-          Look for calls/puts with delta between roughly 0.15 and 0.35 in absolute value, and an
-          expiration 2-6 weeks out, to match what the engine itself would consider.
+          Somewhere on Fidelity&apos;s option chain view there is usually a way to add a{' '}
+          <b style={{ color: '#e2e8f0' }}>Delta</b> column (often a gear/settings icon, or a
+          &quot;Greeks&quot; toggle above the chain) — that&apos;s the same number the engine
+          filters on (§3). Look for calls/puts with delta between roughly 0.15 and 0.35 in absolute
+          value, and an expiration 2-6 weeks out, to match what the engine itself would consider.
+          If you can&apos;t find a delta column at all, Fidelity&apos;s own chain help/tooltip
+          (often a &quot;?&quot; icon near the column headers) will show what&apos;s available in
+          your current view.
         </SubSection>
 
         <SubSection title="Step-by-step: covered call (already own 100+ shares)">
           <StepList steps={[
-            'Go to Accounts & Trade → Trade → Options (or open the stock’s option chain from its Research/quote page).',
-            'Enter the symbol, then in the chain select the call you want and choose Sell to Open.',
-            'Confirm Action = Sell to Open, Option Type = Call.',
+            'Find the stock’s option chain (from its quote/research page, or a dedicated “Trade Options” / “Options” area of the site) and locate the call strike you want.',
+            'Click directly on that call’s BID price — clicking the bid is what starts a SELL order (this is the mechanic behind “Sell to Open”; you don’t need to find that exact wording anywhere).',
+            'A trade ticket opens. Confirm it shows: this stock, this call, this strike/expiry, and that you’re opening a new sell (some tickets ask you to confirm “Open” explicitly if you also happen to hold the same contract already — unlikely the first time).',
             'Set Quantity to the number of contracts (1 contract per 100 shares you own).',
-            'Set Order Type to Limit, priced at or near the displayed bid (see the pricing note below).',
+            'Set the order to a Limit at or near that same bid price you clicked (see the pricing note below) rather than a Market order.',
             'Set Time in Force (Day is fine to start; GTC lets it sit open across sessions).',
             'Review the order preview — it will show the premium you’ll collect and confirm you have enough shares to cover it — then submit.',
           ]} />
         </SubSection>
 
-        <SubSection title="Step-by-step: covered call as a Buy Write (don't already own shares)">
+        <SubSection title="If you don't already own the shares">
+          <p style={{ marginBottom: 12 }}>
+            A &quot;Buy Write&quot; is just a name for buying the shares and selling the call in one
+            combined order instead of two separate ones — some brokers expose this as its own order
+            type (often found by searching &quot;buy write&quot; in the trade/order-type menu, or a
+            &quot;strategy&quot; selector near the ticket), others don&apos;t offer it at all. If you
+            don&apos;t see one, the two-step equivalent works exactly the same:
+          </p>
           <StepList steps={[
-            'From the option chain, select the call you want to sell, then choose the Buy Write / Buy-Write strategy from the order ticket’s strategy dropdown (bundles buying 100 shares with selling the call as one order).',
-            'Set Quantity — 1 contract buys 100 shares and sells 1 call.',
-            'Set Order Type to Limit as a net debit (share price minus the premium you’ll collect is roughly what you’re paying overall).',
-            'Review the combined order preview, confirm the net cost looks right, and submit.',
+            'Place a normal stock order: Buy 100 shares (or 100 × however many contracts you plan to sell).',
+            'Once that fills, go back to the option chain and follow the covered-call steps above — click the call’s bid to sell it.',
           ]} />
         </SubSection>
 
         <SubSection title="Step-by-step: cash-secured put">
           <StepList steps={[
-            'Confirm you have the full strike × 100 × contracts in settled cash available (check Balances first if unsure).',
-            'Go to Trade → Trade Options, enter the symbol, and in the chain select the put you want, choosing Sell to Open.',
-            'Confirm Action = Sell to Open, Option Type = Put.',
+            'Confirm you have the full strike × 100 × contracts in settled cash available (check your account balance first if unsure).',
+            'Find the stock’s option chain and locate the put strike you want.',
+            'Click directly on that put’s BID price — clicking the bid starts a SELL order, the same mechanic as the covered call above.',
+            'A trade ticket opens. Confirm it shows this stock, this put, this strike/expiry, and that you’re opening a new sell.',
             'Set Quantity to the number of contracts (1 contract = a commitment to buy 100 shares if assigned).',
-            'Set Order Type to Limit, priced at or near the displayed bid.',
+            'Set the order to a Limit at or near the bid price you clicked.',
             'Set Time in Force (Day or GTC).',
             'Review the order preview — it will show the cash that will be reserved as collateral — then submit.',
           ]} />
