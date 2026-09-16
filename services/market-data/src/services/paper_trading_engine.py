@@ -2560,8 +2560,18 @@ def _build_game_plan_for_style(
     atr: float | None,
     session=None,
     stock_id: int | None = None,
+    stop_pct_override: float | None = None,
+    atr_stop_mult_override: float | None = None,
 ) -> dict:
     """Derive entry/stop/target for paper trading from signal reasons + price.
+
+    T398-SWING-STOPWIDTH-AB: `stop_pct_override`/`atr_stop_mult_override` let ONE portfolio
+    (via `portfolio.config`, threaded through `cfg` at the _scan_for_entries call site) use a
+    wider stop than the rest of its style's fleet, without touching _STYLE_PARAMS itself —
+    _STYLE_PARAMS is shared by every portfolio of that style, so mutating it there would move
+    every existing SWING portfolio at once with no control group left to compare against.
+    Every other caller (options_game_plan_snapshot.py, gate_harness.py backtests,
+    conditional_orders.py, scheduler.py) omits these kwargs and is byte-for-byte unaffected.
 
     Falls back to style % defaults if ATR is unavailable.
 
@@ -2581,6 +2591,14 @@ def _build_game_plan_for_style(
     in for a missing real one.
     """
     params = _STYLE_PARAMS.get(style.upper(), _STYLE_PARAMS["SWING"])
+    if stop_pct_override is not None or atr_stop_mult_override is not None:
+        # Copy — never mutate the shared _STYLE_PARAMS dict, which every other portfolio of
+        # this style also reads.
+        params = dict(params)
+        if stop_pct_override is not None:
+            params["stop_pct"] = stop_pct_override
+        if atr_stop_mult_override is not None:
+            params["atr_stop_mult"] = atr_stop_mult_override
     step = _round_step(current_price)
 
     entry1   = round(current_price * params["entry1_pct"]   / step) * step
@@ -6352,6 +6370,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         game_plan = _build_game_plan_for_style(
             stock.symbol, style, live_price, sig.reasons or {}, atr,
             session=session, stock_id=stock.id,
+            stop_pct_override=cfg.get("stop_pct_override"),
+            atr_stop_mult_override=cfg.get("atr_stop_mult_override"),
         )
 
         # ── Game plan feasibility check ───────────────────────────────────────
