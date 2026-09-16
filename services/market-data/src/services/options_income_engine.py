@@ -82,6 +82,21 @@ _Q_FULL_OPEN_INTEREST = 2000
 _Q_WEIGHT_YIELD = 0.40
 _Q_WEIGHT_CUSHION = 0.40
 _Q_WEIGHT_LIQUIDITY = 0.20
+
+# AUD-T398-LEVERAGEPENALTY: leveraged ETFs carry structurally richer option premium because the
+# underlying itself moves 2-3x as hard — so they rank top on any yield-based measure BY
+# CONSTRUCTION, without that premium representing a better trade. Measured live: TQQQ took the
+# #1 and #5 slots purely on this effect. The cushion term does not correct for it either, since
+# a 10% cushion on a 3x product is roughly a 3.3% move in the underlying index.
+#
+# Penalty is the reciprocal of the leverage multiple: a 3x product needs ~3x the headline yield
+# to rank alongside an unleveraged one, which is the honest comparison. This scales the FINAL
+# score rather than any single component, because leverage inflates yield and deflates the real
+# meaning of cushion simultaneously.
+_LEVERAGED_SYMBOLS: dict[str, float] = {
+    "TQQQ": 3.0,   # 3x Nasdaq-100
+    "QLD": 2.0,    # 2x Nasdaq-100
+}
 # The OPTHIST daily capture self-heals short gaps (a 5-day backfill window on every run), so a
 # healthy pipeline never approaches this. A chain older than this means the capture job itself
 # has been failing for a while — treat it as a data-pipeline outage, not a green light to trade.
@@ -113,7 +128,18 @@ def _latest_chain_as_of(session: Session, symbol: str) -> date | None:
     return row.d if row and row.d else None
 
 
-def quality_score(*, annualized_yield_pct: float, otm_cushion_pct: float, open_interest: int | None) -> float:
+def leverage_factor(symbol: str) -> float:
+    """1.0 for an ordinary underlying; 1/leverage for a leveraged ETF (TQQQ -> 0.33).
+
+    Pure and separately testable so the penalty can be reasoned about on its own.
+    """
+    return 1.0 / _LEVERAGED_SYMBOLS.get(symbol.upper(), 1.0)
+
+
+def quality_score(
+    *, annualized_yield_pct: float, otm_cushion_pct: float, open_interest: int | None,
+    symbol: str | None = None,
+) -> float:
     """A 0-100 risk-adjusted ranking score. Pure — no DB access, so it is directly testable.
 
     Blends the reward (yield) against the two things that most determine whether that reward is
@@ -127,7 +153,8 @@ def quality_score(*, annualized_yield_pct: float, otm_cushion_pct: float, open_i
     y = min(max(annualized_yield_pct, 0.0) / _Q_FULL_YIELD_PCT, 1.0)
     c = min(max(otm_cushion_pct, 0.0) / _Q_FULL_CUSHION_PCT, 1.0)
     liq = min(max(open_interest or 0, 0) / _Q_FULL_OPEN_INTEREST, 1.0)
-    return round(100.0 * (_Q_WEIGHT_YIELD * y + _Q_WEIGHT_CUSHION * c + _Q_WEIGHT_LIQUIDITY * liq), 1)
+    raw = 100.0 * (_Q_WEIGHT_YIELD * y + _Q_WEIGHT_CUSHION * c + _Q_WEIGHT_LIQUIDITY * liq)
+    return round(raw * (leverage_factor(symbol) if symbol else 1.0), 1)
 
 
 def _next_earnings_by_symbol(session: Session, symbols: list[str], today: date) -> dict[str, date]:
@@ -320,7 +347,9 @@ def rank_income_candidates(
                     annualized_yield_pct=cand["annualized_yield_pct"],
                     otm_cushion_pct=cushion_pct,
                     open_interest=r.open_interest,
+                    symbol=sym,
                 )
+                cand["leverage_mult"] = _LEVERAGED_SYMBOLS.get(sym, 1.0)
                 # Best-per-symbol is chosen on the RISK-ADJUSTED score, not raw yield — picking
                 # the highest-yielding contract per symbol just re-introduces the same adverse
                 # selection one level down, before the cross-symbol ranking ever sees it.

@@ -12,10 +12,13 @@ accounting order.
 """
 import pathlib
 
+import pytest
+
 from src.services.options_income_engine import (
     _score_contract, settle_position_economics, _DEFAULT_INCOME_CONFIG, _INCOME_UNIVERSE,
     _INCOME_MIN_DTE, _INCOME_MAX_DTE, _INCOME_MIN_ABS_DELTA, _INCOME_MAX_ABS_DELTA,
     _INCOME_MAX_CHAIN_STALENESS_DAYS, _INCOME_MIN_CUSHION_PCT, quality_score,
+    leverage_factor, _LEVERAGED_SYMBOLS,
 )
 
 _ENGINE_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "options_income_engine.py"
@@ -231,6 +234,30 @@ def test_quality_score_is_bounded_0_to_100():
 def test_quality_score_handles_missing_open_interest():
     # open_interest is nullable in the chain archive — must not raise.
     assert quality_score(annualized_yield_pct=20, otm_cushion_pct=5, open_interest=None) >= 0
+
+
+def test_leveraged_etfs_are_penalised_relative_to_ordinary_underlyings():
+    """AUD-T398-LEVERAGEPENALTY: a 3x ETF's premium is rich because the underlying moves 3x as
+    hard, not because the trade is better. Measured live, TQQQ took the #1 and #5 slots purely
+    on that effect. Identical yield/cushion/liquidity must NOT score identically."""
+    args = dict(annualized_yield_pct=48.4, otm_cushion_pct=10.5, open_interest=3111)
+    assert quality_score(symbol="TQQQ", **args) < quality_score(symbol="NVDA", **args)
+    assert quality_score(symbol="QLD", **args) < quality_score(symbol="NVDA", **args)
+    # 3x should be penalised harder than 2x.
+    assert quality_score(symbol="TQQQ", **args) < quality_score(symbol="QLD", **args)
+
+
+def test_leverage_factor_is_the_reciprocal_of_the_multiple():
+    assert leverage_factor("TQQQ") == pytest.approx(1 / 3)
+    assert leverage_factor("QLD") == 0.5
+    assert leverage_factor("NVDA") == 1.0
+    assert leverage_factor("nvda") == 1.0  # case-insensitive
+
+
+def test_quality_score_without_a_symbol_applies_no_penalty():
+    # symbol is optional so the scorer stays usable/testable standalone.
+    args = dict(annualized_yield_pct=40, otm_cushion_pct=10, open_interest=2000)
+    assert quality_score(**args) == 100.0
 
 
 def test_candidates_need_a_real_cushion_not_just_technically_otm():

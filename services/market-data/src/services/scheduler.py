@@ -12802,21 +12802,38 @@ def start_scheduler() -> None:
     # 18:45 ET: after the 18:0x outcome evaluators, on a settled chain. NOT gated behind
     # _is_alerting_enabled() — this writes data, it sends no email, so a local dev stack
     # should still be able to build its archive.
+    #
+    # AUD-T398-MISFIREGAP: this job takes a LONG misfire grace (6h) instead of _JOB_DEFAULTS'
+    # 60 seconds. Measured live: the instance was unreachable at 18:45 ET on 2026-09-15, the
+    # job was therefore missed by more than 60s, APScheduler discarded it outright, and the
+    # archive silently fell 5 days behind — degrading every options-income candidate at once.
+    # A data-capture job is exactly the case where running LATE is strictly better than not
+    # running: UW's history is a rolling window, so a skipped day eventually becomes
+    # permanently uncapturable. Deliberately NOT applied to _JOB_DEFAULTS globally — for the
+    # alert/email jobs a late fire is actively wrong (a "morning digest" arriving mid-afternoon),
+    # so the long grace belongs only on idempotent data capture.
     _scheduler.add_job(
         _capture_option_chain_history_daily,
         CronTrigger(hour=18, minute=45, day_of_week="mon-fri",
                     timezone="America/New_York"),
-        id="option_chain_history_daily", replace_existing=True, **_JOB_DEFAULTS,
+        id="option_chain_history_daily", replace_existing=True,
+        **{**_JOB_DEFAULTS, "misfire_grace_time": 6 * 3600},
     )
     # T398-OPTIONS-INCOME-ENGINE: 19:00 ET — 15 minutes after the OPTHIST capture above
     # finishes, so today's chain is already archived before this scans it for candidates.
     # Settles any expired position and opens new ones on every active
     # OptionsIncomePortfolio; a genuine no-op (returns immediately) while none exist.
+    # Same AUD-T398-MISFIREGAP reasoning, with a shorter 4h window: missing this entirely means
+    # expired positions never settle and their collateral stays locked. Firing late is harmless
+    # here specifically because 19:00 ET is already after the close — a late run prices against
+    # the same settled closing prices, and 4h keeps it inside the same evening rather than
+    # letting it surface at some unrelated hour the next day.
     _scheduler.add_job(
         _run_options_income_step_safe,
         CronTrigger(hour=19, minute=0, day_of_week="mon-fri",
                     timezone="America/New_York"),
-        id="options_income_step", replace_existing=True, **_JOB_DEFAULTS,
+        id="options_income_step", replace_existing=True,
+        **{**_JOB_DEFAULTS, "misfire_grace_time": 4 * 3600},
     )
     # Weekly purge — this table was 69% of the whole database with no retention policy.
     _scheduler.add_job(
