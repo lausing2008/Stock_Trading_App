@@ -70,6 +70,13 @@ _DEFAULT_INCOME_CONFIG = {
     "contracts_per_position": 1,
     "min_annualized_yield_pct": 8.0,
     "max_entries_per_day": 3,
+    # A single high-priced-stock CSP (e.g. a $500 stock needs $50,000 collateral for just ONE
+    # contract) can otherwise consume an entire portfolio's cash in one trade, leaving nothing
+    # for diversification regardless of max_positions — measured live: on a $50k portfolio, one
+    # AMD CSP used the full $50k, capping the whole book at 1 position. Sized against
+    # initial_capital (a stable denominator), matching how max_position_pct already caps
+    # concentration on every stock PaperPortfolio.
+    "max_collateral_pct_per_position": 0.25,
 }
 
 
@@ -271,7 +278,8 @@ def open_income_positions(
     session: Session, portfolio: OptionsIncomePortfolio, candidates: list[dict] | None = None,
 ) -> int:
     """Open new positions on this portfolio from ranked candidates, respecting its own config
-    (max_positions, per-symbol cap, min yield, daily entry cap, and available cash)."""
+    (max_positions, per-symbol cap, min yield, daily entry cap, available cash, and a
+    per-position concentration cap so one high-priced-stock CSP can't consume the whole book)."""
     if not portfolio.is_active:
         return 0
     cfg = {**_DEFAULT_INCOME_CONFIG, **(portfolio.config or {})}
@@ -309,6 +317,9 @@ def open_income_positions(
         contracts = cfg.get("contracts_per_position", 1)
         collateral = cand["collateral_required"] * contracts
         if collateral > float(portfolio.current_cash):
+            continue
+        max_collateral = cfg.get("max_collateral_pct_per_position", 0.25) * float(portfolio.initial_capital)
+        if collateral > max_collateral:
             continue
 
         stock = session.execute(select(Stock).where(Stock.symbol == cand["symbol"])).scalar_one_or_none()

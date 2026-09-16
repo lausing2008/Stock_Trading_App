@@ -165,6 +165,23 @@ def test_entries_respect_available_cash():
     assert "continue" in body
 
 
+def test_entries_respect_the_per_position_concentration_cap():
+    # AUD-T398-CONCENTRATION: measured live — a single AMD cash-secured put needed $50,000 of
+    # collateral (one contract on a $500 stock), which on a $50k portfolio would otherwise
+    # consume the ENTIRE book in one trade regardless of max_positions. This is the gate that
+    # stops that: sized against initial_capital, not current_cash, so it doesn't get looser or
+    # tighter as the day's cash balance moves.
+    body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def open_income_positions"):]
+    body = body[:body.index("\ndef ")]
+    assert "max_collateral_pct_per_position" in body
+    assert "float(portfolio.initial_capital)" in body
+    assert "if collateral > max_collateral:" in body
+
+
+def test_concentration_cap_has_a_sane_default():
+    assert 0 < _DEFAULT_INCOME_CONFIG["max_collateral_pct_per_position"] <= 0.5
+
+
 def test_run_step_settles_before_opening_new_positions():
     body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def run_options_income_step"):]
     assert body.index("settle_expired_positions") < body.index("open_income_positions")
