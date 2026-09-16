@@ -61,6 +61,10 @@ _INCOME_MAX_DTE = 45
 _INCOME_MIN_ABS_DELTA = 0.15
 _INCOME_MAX_ABS_DELTA = 0.35
 _INCOME_MIN_OPEN_INTEREST = 50
+# The OPTHIST daily capture self-heals short gaps (a 5-day backfill window on every run), so a
+# healthy pipeline never approaches this. A chain older than this means the capture job itself
+# has been failing for a while — treat it as a data-pipeline outage, not a green light to trade.
+_INCOME_MAX_CHAIN_STALENESS_DAYS = 5
 
 _DEFAULT_INCOME_CONFIG = {
     "strategies": ["COVERED_CALL", "CASH_SECURED_PUT"],
@@ -158,6 +162,7 @@ def rank_income_candidates(
     strategies = strategies or ["COVERED_CALL", "CASH_SECURED_PUT"]
     current_prices = current_prices if current_prices is not None else _fetch_live_prices(symbols)
 
+    today = datetime.now(timezone.utc).date()
     out: list[dict] = []
     for sym in symbols:
         price = current_prices.get(sym)
@@ -165,6 +170,15 @@ def rank_income_candidates(
             continue
         as_of = _latest_chain_as_of(session, sym)
         if as_of is None:
+            continue
+        # AUD-T398-STALECHAIN: the daily OPTHIST capture job self-heals short gaps, but if it
+        # ever stopped running for a week+ (an outage, a broken credential), this would
+        # otherwise silently keep pricing candidates off a week-old chain against TODAY's live
+        # price with no warning at all. A stale chain's strike/delta/premium no longer describe
+        # a contract that's actually tradeable at that price today.
+        if (today - as_of).days > _INCOME_MAX_CHAIN_STALENESS_DAYS:
+            log.warning("options_income.stale_chain_skipped", symbol=sym, as_of=as_of.isoformat(),
+                       days_stale=(today - as_of).days)
             continue
         for strategy in strategies:
             opt_type = "call" if strategy == "COVERED_CALL" else "put"
@@ -245,7 +259,16 @@ def settle_expired_positions(session: Session, portfolio: OptionsIncomePortfolio
     settled = 0
     for pos in open_positions:
         if pos.stock_id is None:
-            continue
+            # AUD-T398-ZOMBIEPOSITION: a position whose Stock lookup failed at entry time
+            # (symbol not yet in the Stock table then) would otherwise never settle — nothing
+            # else ever re-resolves stock_id, so it would stay "open" and its collateral
+            # permanently locked forever. Re-resolve here too, once, before giving up.
+            stock = session.execute(select(Stock).where(Stock.symbol == pos.symbol)).scalar_one_or_none()
+            if stock is None:
+                log.error("options_income.settle_missing_stock", portfolio_id=portfolio.id,
+                          position_id=pos.id, symbol=pos.symbol)
+                continue
+            pos.stock_id = stock.id
         close_price = _closing_price_on_or_before(session, pos.stock_id, pos.expiry)
         if close_price is None:
             continue
@@ -303,7 +326,19 @@ def open_income_positions(
 
     opened = 0
     today = datetime.now(timezone.utc).date()
-    max_new = min(cfg.get("max_entries_per_day", 3), cfg["max_positions"] - len(open_positions))
+    # AUD-T398-PERCALL-NOT-PERDAY: max_entries_per_day names a CALENDAR-DAY budget, but was
+    # only ever enforced per function CALL — a second same-day invocation (the admin /run-step
+    # endpoint, a scheduler misfire retry, manual debugging) would silently open another full
+    # batch on top, exceeding the portfolio's own configured entry pace. Count what this
+    # portfolio has ALREADY opened today and subtract it from today's remaining budget.
+    already_opened_today = session.execute(
+        select(func.count()).select_from(OptionsIncomePosition).where(
+            OptionsIncomePosition.portfolio_id == portfolio.id,
+            OptionsIncomePosition.entry_date == today,
+        )
+    ).scalar_one()
+    todays_remaining_budget = max(0, cfg.get("max_entries_per_day", 3) - already_opened_today)
+    max_new = min(todays_remaining_budget, cfg["max_positions"] - len(open_positions))
     for cand in candidates:
         if opened >= max_new:
             break

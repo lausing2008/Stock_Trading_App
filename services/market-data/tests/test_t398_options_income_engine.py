@@ -15,6 +15,7 @@ import pathlib
 from src.services.options_income_engine import (
     _score_contract, settle_position_economics, _DEFAULT_INCOME_CONFIG, _INCOME_UNIVERSE,
     _INCOME_MIN_DTE, _INCOME_MAX_DTE, _INCOME_MIN_ABS_DELTA, _INCOME_MAX_ABS_DELTA,
+    _INCOME_MAX_CHAIN_STALENESS_DAYS,
 )
 
 _ENGINE_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "options_income_engine.py"
@@ -180,6 +181,40 @@ def test_entries_respect_the_per_position_concentration_cap():
 
 def test_concentration_cap_has_a_sane_default():
     assert 0 < _DEFAULT_INCOME_CONFIG["max_collateral_pct_per_position"] <= 0.5
+
+
+def test_entries_per_day_is_counted_across_calls_not_per_call():
+    # AUD-T398-PERCALL-NOT-PERDAY: a second same-day call (admin /run-step, a misfire retry)
+    # must NOT get a fresh max_entries_per_day budget on top of what already opened today.
+    body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def open_income_positions"):]
+    body = body[:body.index("\ndef ")]
+    assert "already_opened_today" in body
+    assert "OptionsIncomePosition.entry_date == today" in body
+    assert "todays_remaining_budget" in body
+    # The weak form of this check just confirms the variable is DEFINED somewhere in the
+    # function — it must also be the thing max_new is actually computed FROM, or a sabotage
+    # that quietly reverts max_new to the raw per-call config value passes undetected (caught
+    # exactly this way once already while writing this test).
+    assert "max_new = min(todays_remaining_budget," in body
+
+
+def test_settlement_reresolves_a_missing_stock_id_instead_of_zombieing_forever():
+    # AUD-T398-ZOMBIEPOSITION: stock_id is only set once at entry; if that lookup failed then
+    # (symbol not yet in the Stock table), the position must not be permanently unsettleable.
+    body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def settle_expired_positions"):]
+    body = body[:body.index("\ndef ")]
+    assert "Stock.symbol == pos.symbol" in body
+    assert "pos.stock_id = stock.id" in body
+
+
+def test_stale_option_chains_are_skipped_not_silently_traded():
+    # AUD-T398-STALECHAIN: a chain older than the self-healing window signals the OPTHIST
+    # capture job itself has been failing, not a green light to price candidates off it.
+    body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def rank_income_candidates"):]
+    body = body[:body.index("\ndef ")]
+    assert "_INCOME_MAX_CHAIN_STALENESS_DAYS" in body
+    assert "stale_chain_skipped" in body
+    assert 0 < _INCOME_MAX_CHAIN_STALENESS_DAYS <= 10
 
 
 def test_run_step_settles_before_opening_new_positions():
