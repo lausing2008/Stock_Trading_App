@@ -222,6 +222,8 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/incidents/ebs-io-credit-exhaustion.md`** — T382-CLAUDEMD-REINDEX (2026-09-10) — this file cut 21.6k→8.7k tokens, 0 of 806 claims lost. Entries were NOT duplicates of their topic files, so relocate-then-verify before trimming [CLAUDE.md, tokens]
 
 - **`docs/incidents/ec2-reboot-and-tls-cert-incidents.md`** — INCIDENT 2026-08-05: Full EC2 Reboot Reverted signal-engine to a PRE-SPLIT Image — SA-33 No Longer Live; INCIDENT 2026-08-05 (RESOLVED): TLS Certificate Expi...
+- **`docs/incidents/gateway-proxy-route-gaps.md`** — a new APIRouter prefix absent from proxy.py's `_ROUTES` 404s at the gateway however complete the backend is. THREE real occurrences (rl-agent, conditional-orders, options-income). Regression test now scans every service [404, api-gateway]
+- **`docs/incidents/scheduler-misfire-data-gaps.md`** — AUD-T398-MISFIREGAP (2026-09-16): a job reporting `ok` while its data is 5 days stale. `misfire_grace_time=60` makes APScheduler DISCARD a job a brief outage delayed; UW history is a rolling window so the day becomes uncapturable [OPTHIST]
 - **`docs/incidents/external-data-source-liveness.md`** — AUD-UWCAL-NONUS422 (2026-09-10) — the earnings calendar took 61s and the page showed "Failed to load events": it returned a VALID 174-event payload, just past every timeout … [Alpha Vantage, EDGAR, HKEX, Polygon, Redis, holiday, yfinance]
 
 - **`docs/incidents/external-data-source-liveness.md`** — Congress Trading Data Silently Empty — Free Source Domains Permanently Dead; "It's Reachable" ≠ "It's Current" — Always Check Last-Modified, Not Just HTTP 200 … [Alpha Vantage, EDGAR, HKEX, Polygon, Redis, holiday, yfinance]
@@ -276,6 +278,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/features/options-and-institutional-data.md`** — T230-DATA-OPTIONS-CHAIN — Full Strike/Expiry Options Chain (Built 2026-07-22); TIER82-FMP-ANALYST-ESTIMATES — analyst_pt_upside ML Feature (Built 2026-08-18 … [backtest, OPTHIST, options history, LEAPS]
 - **`docs/features/options-and-institutional-data.md`** — T384-T387 (2026-09-15) — LEAPS capture 13->29. "Stable and strong" is the WRONG filter: a 0.70-delta call needs a TREND (TQQQ -73.78%/336d). Holiday entries shift + SAY SO [LEAPS, holiday, IV rank]
 - **`docs/features/options-and-institutional-data.md`** — T380/T381 (2026-09-10) — a LEAPS contract can stop being quoted MID-HOLD while the symbol's coverage looks fine; walk the delta band instead of committing to `LIMIT 1`. Relaxed ±0.20 fallback is LABELLED, never silent [LEAPS, delta, QLD]
+- **`docs/features/options-income-engine.md`** — T398 (2026-09-15/16): covered-call/CSP engine + page + guide. Auditing its LIVE output found 6 selection defects — ranking by raw yield is adverse selection; a CSP opened already ITM on stale deltas [options income, leverage]
 
 - **`docs/features/research-engine-reports.md`** — Research Tab on the Stock Detail Page (Built 2026-07-29)
 - **`docs/features/self-tuning-walk-forward-harness.md`** — Per-Horizon AI Signal Strategy Tuning (2026-07-16); T255-STRATEGY-TUNER-PER-HORIZON — Joint Buy-Threshold x ML-Weight-Cap Tuner (Phase 1, Built 2026-07-18); ...

@@ -70,3 +70,33 @@ print(_is_alerting_enabled())"
 
 ---
 
+
+## Weekly Local Download of the Nightly EC2 DB Backups (Built 2026-09-16)
+
+`scripts/download_weekly_backup.sh` — rsyncs `/home/ec2-user/backups/` from EC2 to
+`~/Documents/Stock_AI/db_backups/` on the local workstation, keeping **90 days** locally.
+
+**Why it exists.** The nightly `pg_backup.sh` on EC2 (cron, 02:00 UTC daily) keeps only the
+last 7 daily `.sql.gz` files — **on the same instance being backed up**. Losing the instance or
+its EBS volume would have lost every backup along with the live DB. This is the off-instance
+copy. Local retention is deliberately much longer than the source's 7-day window: the whole
+point of a second copy is to outlive the original, not mirror its short rotation. No
+`--delete`, so local copies survive the source's own pruning.
+
+**Schedule.** Local cron, **Saturday 06:00** — comfortably after the 02:00 UTC backup under any
+US timezone (02:00 UTC is already the previous evening in North America). Logs to
+`db_backups/download.log`. rsync means re-runs only transfer what's new.
+
+**Tested live**: all 8 backups (8.2 GB) downloaded successfully.
+
+**Two operational notes.**
+1. **The backup has grown fast** — from ~50 MB in August to **2.1 GB on 2026-09-16** (it nearly
+   doubled from 1.1 GB the previous day), tracking the `option_chain_history` backfill. This is
+   also why the nightly dump now takes 15+ minutes rather than under one.
+2. **Do not run this while the nightly backup is still going.** First test run overlapped the
+   02:00 dump and both slowed each other on a 2-vCPU box (load average hit ~25). It was CPU
+   contention from `gzip` + SSH encryption, NOT the EBS I/O-credit exhaustion class —
+   `%iowait` was ~0 and disk `%util` under 10% throughout. The Saturday 06:00 slot avoids the
+   overlap entirely.
+3. It only runs if the workstation is awake at that time; a missed week is silently skipped
+   with no retry.

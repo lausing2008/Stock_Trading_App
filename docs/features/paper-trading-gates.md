@@ -127,3 +127,38 @@ Preserved verbatim. Formatting is unchanged from the index entry, including its 
 nothing is lost to a reflow.
 
 Paper Portfolio Badges Are Two Independent Layers — layer-1 (portfolio/market-wide gates) vs. layer-2 (per-candidate "why no entry") badges on `/paper-portfolio/list` **T372-PORTFOLIO-DIGEST-CONSOLIDATE (2026-09-09)** — user reported **10 `[Paper Portfolio]` emails at once**, 5 of them reading `+0.0% / $0`. Structural, not a bug: the loop was `for user: for portfolio: send()`, so **email count = users x active portfolios** and it silently DOUBLED the day five portfolios were added. Now **one email per MARKET** (every portfolio a row, closed trades + open positions consolidated), and **each market fires an hour after its OWN close** (`_us` 17:00 ET, `_hk` 17:00 HKT) gated on its OWN calendar — previously one 17:00 ET job reported HK ~17h late and could skip an HK digest on a US holiday (AUD-PT-CROSSMARKETSWEEP class). Market filter runs in **Python, not SQL** (`config` is `json` not `jsonb`). **Empty portfolios are still SHOWN, tagged `(no activity)`** — 0.0% with no trades means the entry gates admitted nothing, a real state; hiding it would make absence ambiguous with a dead job. **Dedup key inverted to `(user, market, date)`** — keeping the portfolio id would re-send the same consolidated email once per portfolio it contains. 10 emails/day -> 2.
+
+---
+
+## T398-SWING-STOPWIDTH-AB — per-portfolio stop-width override for A/B testing (Built 2026-09-15)
+
+**The empirical basis.** Real closed SWING trades average a **5.31% stop distance** against
+only a **4.26% favorable excursion before reversal**, producing a **52.5% stop-out rate** — the
+fixed stop floor is barely wider than the noise it has to survive. GROWTH's much wider stop
+(11.37% vs 8.00% excursion) stops out *less* often (46.6%) despite larger swings.
+
+**Why an override rather than editing `_STYLE_PARAMS`.** That dict is keyed only by style and
+is shared by every portfolio of that style — there are 5 SWING portfolios. Widening the stop
+there would move the entire existing fleet at once, retroactively changing portfolios that
+already have history and leaving **no control group to compare against**.
+
+**Mechanism.** `_build_game_plan_for_style()` gained optional `stop_pct_override` /
+`atr_stop_mult_override` kwargs (default `None`). They are threaded from a portfolio's own
+`config` via `cfg.get(...)` at the ONE production call site in `_scan_for_entries()`. All 8
+other callers (options_game_plan_snapshot.py, 6 gate_harness.py backtest sites,
+conditional_orders.py, scheduler.py) omit them and are byte-for-byte unaffected; existing
+portfolios don't set these keys, so they get `None`.
+
+`_STYLE_PARAMS` is copied before mutation — never mutated in place, since every other portfolio
+of that style reads the same dict object.
+
+**Baseline verified before choosing the test value**: `/data/models/trade_params.json` (the
+Optuna overlay `_load_tuned_params()` reads) does **not** exist on production, so the live SWING
+default really is the hardcoded `stop_pct 0.945` / `atr_stop_mult 2.0` — not an overridden value.
+
+**The test portfolio**: id 891, "US SWING Wide-Stop A/B (T398)", $50k, config identical to the
+"US SWING After 09082026" control except `stop_pct_override: 0.925` (7.5% floor vs 5.5%) and
+`atr_stop_mult_override: 2.5`. Take-profit deliberately unchanged so the test isolates stop
+width only.
+
+5 tests, including one asserting the shared `_STYLE_PARAMS` dict is never mutated.
