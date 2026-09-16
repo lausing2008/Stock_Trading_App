@@ -105,8 +105,9 @@ const JUMP_LINKS: { id: string; label: string }[] = [
   { id: 'engine', label: '3. How this engine picks trades' },
   { id: 'usage', label: '4. Step-by-step: using the page' },
   { id: 'reading', label: '5. Reading positions & P&L' },
-  { id: 'risks', label: '6. Risks & things to know' },
-  { id: 'checklist', label: '7. Checklist before creating a portfolio' },
+  { id: 'fidelity', label: '6. Placing these trades in Fidelity' },
+  { id: 'risks', label: '7. Risks & things to know' },
+  { id: 'checklist', label: '8. Checklist before creating a portfolio' },
 ];
 
 export default function OptionsIncomeGuidePage() {
@@ -331,8 +332,86 @@ export default function OptionsIncomeGuidePage() {
         </SubSection>
       </Section>
 
-      {/* ── 6. Risks ─────────────────────────────────────────────────────────── */}
-      <Section id="risks" title="6. Risks & things to know">
+      {/* ── 6. Placing these trades in Fidelity ─────────────────────────────── */}
+      <Section id="fidelity" title="6. Placing these trades in Fidelity">
+        <Callout tone="info" title="This platform doesn't place real trades">
+          The Options Income Engine is entirely simulated — it never touches a real brokerage
+          account. If you find a candidate on the <Link href="/options-income" style={{ color: '#818cf8' }}>Candidates</Link>{' '}
+          tab you want to actually put on, you place it yourself. The steps below cover
+          Fidelity&apos;s standard order-entry flow (fidelity.com and Active Trader Pro) as of how
+          it&apos;s worked for years — Fidelity can and does move buttons around, so treat this as
+          the shape of the process, not a pixel-exact walkthrough, and check Fidelity&apos;s own
+          current help pages if anything on screen looks different.
+        </Callout>
+
+        <SubSection title="Before you start — account requirements">
+          <ul style={{ margin: 0, paddingLeft: 20 }}>
+            <li style={{ marginBottom: 8 }}><b style={{ color: '#e2e8f0' }}>Options approval.</b> Both strategies here are covered calls and cash-secured puts — Fidelity&apos;s most basic options approval tier (Level 1) covers both. You apply for this once, from Accounts &amp; Trade → Trade → Options, if you haven&apos;t already; approval is usually near-instant for this tier.</li>
+            <li style={{ marginBottom: 8 }}><b style={{ color: '#e2e8f0' }}>A covered call needs the shares first</b> (or a combined order that buys them in the same trade — see below), 100 shares per contract you plan to sell.</li>
+            <li><b style={{ color: '#e2e8f0' }}>A cash-secured put needs the full cash</b> — strike × 100 × contracts — sitting available as settled cash, not margin. Fidelity checks and reserves this automatically when you submit the order; if you don&apos;t have enough, it will reject the order rather than let you accidentally use margin.</li>
+          </ul>
+        </SubSection>
+
+        <SubSection title="Reading the option chain for delta">
+          On Fidelity&apos;s option chain (Trade → Trade Options, or from a stock&apos;s Research
+          page), click the chain&apos;s display/column settings and add <b style={{ color: '#e2e8f0' }}>Delta</b>{' '}
+          if it isn&apos;t already shown — that&apos;s the same number the engine filters on (§3).
+          Look for calls/puts with delta between roughly 0.15 and 0.35 in absolute value, and an
+          expiration 2-6 weeks out, to match what the engine itself would consider.
+        </SubSection>
+
+        <SubSection title="Step-by-step: covered call (already own 100+ shares)">
+          <StepList steps={[
+            'Go to Accounts & Trade → Trade → Options (or open the stock’s option chain from its Research/quote page).',
+            'Enter the symbol, then in the chain select the call you want and choose Sell to Open.',
+            'Confirm Action = Sell to Open, Option Type = Call.',
+            'Set Quantity to the number of contracts (1 contract per 100 shares you own).',
+            'Set Order Type to Limit, priced at or near the displayed bid (see the pricing note below).',
+            'Set Time in Force (Day is fine to start; GTC lets it sit open across sessions).',
+            'Review the order preview — it will show the premium you’ll collect and confirm you have enough shares to cover it — then submit.',
+          ]} />
+        </SubSection>
+
+        <SubSection title="Step-by-step: covered call as a Buy Write (don't already own shares)">
+          <StepList steps={[
+            'From the option chain, select the call you want to sell, then choose the Buy Write / Buy-Write strategy from the order ticket’s strategy dropdown (bundles buying 100 shares with selling the call as one order).',
+            'Set Quantity — 1 contract buys 100 shares and sells 1 call.',
+            'Set Order Type to Limit as a net debit (share price minus the premium you’ll collect is roughly what you’re paying overall).',
+            'Review the combined order preview, confirm the net cost looks right, and submit.',
+          ]} />
+        </SubSection>
+
+        <SubSection title="Step-by-step: cash-secured put">
+          <StepList steps={[
+            'Confirm you have the full strike × 100 × contracts in settled cash available (check Balances first if unsure).',
+            'Go to Trade → Trade Options, enter the symbol, and in the chain select the put you want, choosing Sell to Open.',
+            'Confirm Action = Sell to Open, Option Type = Put.',
+            'Set Quantity to the number of contracts (1 contract = a commitment to buy 100 shares if assigned).',
+            'Set Order Type to Limit, priced at or near the displayed bid.',
+            'Set Time in Force (Day or GTC).',
+            'Review the order preview — it will show the cash that will be reserved as collateral — then submit.',
+          ]} />
+        </SubSection>
+
+        <Callout tone="good" title="Pricing tip — match the engine's own convention">
+          The engine always prices a candidate at the <b style={{ color: '#e2e8f0' }}>bid</b> — the
+          real, conservative price a seller actually receives — never the ask or the mid. Setting
+          your own limit order at or very near the displayed bid mirrors that and all but guarantees
+          a fill; pricing further toward the mid might collect a little more premium, at the cost of
+          the order possibly sitting unfilled.
+        </Callout>
+
+        <SubSection title="What happens after you submit">
+          Nothing else to do until expiry. If the option finishes out-of-the-money, it simply
+          expires and your shares (covered call) or cash (cash-secured put) are untouched beyond
+          the premium you already collected. If it finishes in-the-money, Fidelity handles
+          assignment automatically overnight — no action needed on your part, matching how this
+          engine itself always closes at expiry rather than rolling (§3).
+        </SubSection>
+      </Section>
+
+      {/* ── 7. Risks ─────────────────────────────────────────────────────────── */}
+      <Section id="risks" title="7. Risks & things to know">
         <ul style={{ margin: 0, paddingLeft: 20 }}>
           <li style={{ marginBottom: 10 }}><b style={{ color: '#e2e8f0' }}>A covered call caps your upside.</b> If the stock rallies hard past the strike, you only ever get the strike price for the shares — never the real market price, no matter how high it goes.</li>
           <li style={{ marginBottom: 10 }}><b style={{ color: '#e2e8f0' }}>A cash-secured put is a real obligation.</b> If the stock drops well below the strike, you&apos;re still buying at the strike — the premium collected softens that loss, it doesn&apos;t prevent it.</li>
@@ -343,7 +422,7 @@ export default function OptionsIncomeGuidePage() {
       </Section>
 
       {/* ── 7. Checklist ─────────────────────────────────────────────────────── */}
-      <Section id="checklist" title="7. Checklist before creating a portfolio">
+      <Section id="checklist" title="8. Checklist before creating a portfolio">
         <StepList steps={[
           <>Decide how much starting capital to use — since no single position can exceed 25% of it, a portfolio meant to hold several positions at once needs several times the size of the largest single collateral requirement you expect (check the Candidates tab first for a realistic sense of that).</>,
           'Understand that a covered call caps upside and a cash-secured put is a real obligation to buy — re-read §1/§2 if either is unclear.',
