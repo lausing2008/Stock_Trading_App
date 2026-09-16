@@ -207,6 +207,51 @@ def test_settlement_reresolves_a_missing_stock_id_instead_of_zombieing_forever()
     assert "pos.stock_id = stock.id" in body
 
 
+def test_dte_is_measured_from_today_not_the_chains_as_of_date():
+    # AUD-T398-DTEFROMSTALE: measuring DTE from `as_of` silently stops enforcing the stated
+    # minimum the moment the chain is stale. Measured live on a 5-day-old chain: every
+    # candidate the engine advertised as "14 DTE" was really a 9-day trade.
+    body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def rank_income_candidates"):]
+    body = body[:body.index("\ndef ")]
+    assert "dte = (r.expiry - today).days" in body
+    assert "dte = (r.expiry - as_of).days" not in body
+
+
+def test_candidates_spanning_an_earnings_report_are_skipped():
+    # AUD-T398-EARNINGSWINDOW: an earnings gap is the event that inverts the "assignment is the
+    # minority outcome" premise these strategies rest on.
+    body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def rank_income_candidates"):]
+    body = body[:body.index("\ndef ")]
+    assert "earnings_by_symbol" in body
+    assert "today <= _er <= r.expiry" in body
+
+
+def test_earnings_lookup_is_one_query_for_the_whole_universe():
+    # This runs inside the candidate scan — a per-symbol query here would be N round-trips.
+    body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def _next_earnings_by_symbol"):]
+    body = body[:body.index("\ndef ")]
+    assert "symbol = ANY(:syms)" in body
+    assert body.count("session.execute") == 1
+
+
+def test_moneyness_is_rechecked_against_the_current_price():
+    # AUD-T398-STALEMONEYNESS: measured live — a 500-strike AMD put was opened as a "0.35
+    # delta" trade with the stock already at 493.41, i.e. in the money at entry.
+    body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def rank_income_candidates"):]
+    body = body[:body.index("\ndef ")]
+    assert 'strategy == "COVERED_CALL" and strike_f <= price' in body
+    assert 'strategy == "CASH_SECURED_PUT" and strike_f >= price' in body
+
+
+def test_candidates_surface_staleness_and_cushion():
+    # Both were invisible before: a consumer could not tell a fresh candidate from a 5-day-old
+    # one, nor how much room the strike actually had left at today's price.
+    body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def rank_income_candidates"):]
+    body = body[:body.index("\ndef ")]
+    assert '"days_stale"' in body
+    assert '"otm_cushion_pct"' in body
+
+
 def test_stale_option_chains_are_skipped_not_silently_traded():
     # AUD-T398-STALECHAIN: a chain older than the self-healing window signals the OPTHIST
     # capture job itself has been failing, not a green light to price candidates off it.

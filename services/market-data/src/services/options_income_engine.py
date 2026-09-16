@@ -92,6 +92,27 @@ def _latest_chain_as_of(session: Session, symbol: str) -> date | None:
     return row.d if row and row.d else None
 
 
+def _next_earnings_by_symbol(session: Session, symbols: list[str], today: date) -> dict[str, date]:
+    """The next upcoming earnings report date per symbol, for the earnings-window filter.
+
+    ONE query for the whole universe, not one per symbol — this runs inside the candidate scan.
+    A symbol with no known upcoming report is simply absent from the result, which the caller
+    treats as "no earnings constraint" rather than as "safe": an ETF genuinely has no earnings,
+    but a missing row could equally mean the calendar just hasn't been populated for that name,
+    and failing OPEN here matches every other fail-open path in this module.
+    """
+    if not symbols:
+        return {}
+    rows = session.execute(text("""
+        SELECT s.symbol, MIN(e.report_date) AS next_report
+        FROM earnings_events e
+        JOIN stocks s ON s.id = e.stock_id
+        WHERE s.symbol = ANY(:syms) AND e.report_date >= :today
+        GROUP BY s.symbol
+    """), {"syms": [s.upper() for s in symbols], "today": today}).all()
+    return {r.symbol.upper(): r.next_report for r in rows if r.next_report is not None}
+
+
 def _score_contract(
     *, strategy: str, strike: float, premium_bid: float, current_price: float, dte: int,
 ) -> dict:
@@ -163,6 +184,7 @@ def rank_income_candidates(
     current_prices = current_prices if current_prices is not None else _fetch_live_prices(symbols)
 
     today = datetime.now(timezone.utc).date()
+    earnings_by_symbol = _next_earnings_by_symbol(session, symbols, today)
     out: list[dict] = []
     for sym in symbols:
         price = current_prices.get(sym)
@@ -201,22 +223,54 @@ def rank_income_candidates(
 
             best: dict | None = None
             for r in rows:
-                dte = (r.expiry - as_of).days
+                # AUD-T398-DTEFROMSTALE: days-to-expiry MUST be measured from today, not from
+                # the chain's as_of date. A position is opened NOW, so the real holding period
+                # is today -> expiry. Measuring from as_of silently stops enforcing the stated
+                # minimum the moment the chain is even one day stale — measured live on a
+                # 5-day-old chain, every "14 DTE" candidate the engine offered was really a
+                # 9-day trade, i.e. below its own documented floor.
+                dte = (r.expiry - today).days
                 if dte < _INCOME_MIN_DTE:
                     continue
+
+                # AUD-T398-EARNINGSWINDOW: never sell premium across an earnings report. The
+                # whole premise of these strategies is that assignment is the minority outcome;
+                # an earnings gap is precisely the event that inverts that, and it is exactly
+                # WHY the richest-looking premium is often rich. Skip any contract whose life
+                # spans a known upcoming report for this symbol.
+                _er = earnings_by_symbol.get(sym)
+                if _er is not None and today <= _er <= r.expiry:
+                    continue
+
+                # AUD-T398-STALEMONEYNESS: the delta/strike were computed against the price on
+                # `as_of`. If the underlying has moved since, a contract selected as a ~0.30
+                # delta OTM trade can already be IN the money at today's price — measured live:
+                # a 500-strike AMD put was opened as a "0.35 delta" trade with the stock at
+                # 493.41, i.e. already ITM at entry, carrying roughly double the recorded risk.
+                # Re-check moneyness against the CURRENT price and drop anything no longer OTM.
+                strike_f = float(r.strike)
+                if strategy == "COVERED_CALL" and strike_f <= price:
+                    continue
+                if strategy == "CASH_SECURED_PUT" and strike_f >= price:
+                    continue
+
                 premium = float(r.nbbo_bid)  # sold at the bid — the real, conservative fill
                 metrics = _score_contract(
-                    strategy=strategy, strike=float(r.strike), premium_bid=premium,
+                    strategy=strategy, strike=strike_f, premium_bid=premium,
                     current_price=price, dte=dte,
                 )
                 cand = {
                     "symbol": sym, "strategy": strategy, "as_of": as_of.isoformat(),
+                    "days_stale": (today - as_of).days,
                     "option_symbol": r.option_symbol, "expiry": r.expiry,
-                    "days_to_expiry": dte, "strike": float(r.strike),
+                    "days_to_expiry": dte, "strike": strike_f,
                     "delta": round(float(r.delta), 4),
                     "open_interest": r.open_interest,
                     "iv": round(float(r.implied_volatility), 4) if r.implied_volatility is not None else None,
                     "current_price": price,
+                    "otm_cushion_pct": round(
+                        ((strike_f - price) / price * 100) if strategy == "COVERED_CALL"
+                        else ((price - strike_f) / price * 100), 2),
                     **metrics,
                 }
                 if best is None or cand["annualized_yield_pct"] > best["annualized_yield_pct"]:
