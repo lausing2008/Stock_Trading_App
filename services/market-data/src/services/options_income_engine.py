@@ -79,9 +79,30 @@ _Q_FULL_OPEN_INTEREST = 2000
 # Cushion is weighted equal to yield on purpose: for a premium SELLER, distance-to-strike is
 # the thing that actually prevents the bad outcome, so it deserves the same weight as the
 # reward it is being traded against.
-_Q_WEIGHT_YIELD = 0.40
-_Q_WEIGHT_CUSHION = 0.40
-_Q_WEIGHT_LIQUIDITY = 0.20
+# T399-WEIGHTDERIV (2026-09-17): these were 0.40/0.40/0.20 — a documented judgement call. They
+# are now DERIVED from 50,787 settled backtest contracts via a chronological train/test split
+# (see backtest/options_income_weights.py). Chosen on the TRAIN slice and validated on a
+# held-out one: mean return on collateral 2.33% -> 3.16% out of sample (+0.83pp against a
+# 0.10pp required margin), win rate 65.9% -> 69.0%.
+#
+# CUSHION DOMINATES. Every one of the top 8 train configurations put cushion at 0.65-0.95, and
+# the original equal weighting was the problem: yield and cushion push assignment risk in
+# OPPOSITE directions (measured — assignment rises 10.4% -> 28.7% across yield bands, and falls
+# 66.7% -> 19.4% across cushion bands), so weighting them equally made them cancel.
+#
+# LIQUIDITY GOES TO ZERO, for a non-obvious reason worth stating so nobody "fixes" it back:
+# open interest is NEGATIVELY correlated with cushion in this pool (OI>=2000 averages 8.13%
+# cushion; OI<2000 averages 11.18%), so weighting liquidity pulls selection toward THINNER
+# cushion and fights the strongest signal. Adding even 0.05 of it cost most of the gain
+# (3.16% -> 2.40% out of sample). This does NOT mean illiquid contracts are fine — that risk is
+# already handled by the hard _INCOME_MIN_OPEN_INTEREST floor, which is a filter, not a weight.
+#
+# Deliberately kept the TRAIN winner rather than the slightly better test winner (0/100/0,
+# 3.20%): picking the configuration that won the held-out slice would turn that slice into a
+# training slice, which is the whole thing the split exists to prevent.
+_Q_WEIGHT_YIELD = 0.25
+_Q_WEIGHT_CUSHION = 0.75
+_Q_WEIGHT_LIQUIDITY = 0.0
 
 # AUD-T398-LEVERAGEPENALTY: leveraged ETFs carry structurally richer option premium because the
 # underlying itself moves 2-3x as hard — so they rank top on any yield-based measure BY

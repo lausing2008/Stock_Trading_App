@@ -236,6 +236,37 @@ def test_quality_score_handles_missing_open_interest():
     assert quality_score(annualized_yield_pct=20, otm_cushion_pct=5, open_interest=None) >= 0
 
 
+def test_cushion_dominates_the_derived_weights():
+    """T399-WEIGHTDERIV: weights are derived from 50,787 settled backtest contracts, not chosen.
+    Cushion must carry the most weight — yield and cushion push assignment risk in OPPOSITE
+    directions (assignment rises 10.4%->28.7% across yield bands, falls 66.7%->19.4% across
+    cushion bands), so the original equal weighting made them cancel."""
+    from src.services.options_income_engine import (
+        _Q_WEIGHT_YIELD, _Q_WEIGHT_CUSHION, _Q_WEIGHT_LIQUIDITY,
+    )
+    assert _Q_WEIGHT_CUSHION > _Q_WEIGHT_YIELD
+    assert pytest.approx(_Q_WEIGHT_YIELD + _Q_WEIGHT_CUSHION + _Q_WEIGHT_LIQUIDITY) == 1.0
+
+
+def test_liquidity_weight_is_zero_on_purpose():
+    """Guards a counter-intuitive derived result against being 'fixed' back. Open interest is
+    NEGATIVELY correlated with cushion in the real pool (OI>=2000 averages 8.13% cushion,
+    OI<2000 averages 11.18%), so weighting liquidity pulls selection toward THINNER cushion and
+    fights the strongest signal — adding even 0.05 cost 3.16% -> 2.40% out of sample.
+    Illiquidity risk is handled by the hard _INCOME_MIN_OPEN_INTEREST floor, a filter not a
+    weight, so OI still gates candidates even at zero weight."""
+    from src.services.options_income_engine import _Q_WEIGHT_LIQUIDITY, _INCOME_MIN_OPEN_INTEREST
+    assert _Q_WEIGHT_LIQUIDITY == 0.0
+    assert _INCOME_MIN_OPEN_INTEREST > 0, "the OI floor is what still protects against illiquidity"
+
+
+def test_open_interest_no_longer_moves_the_score():
+    # Direct consequence of the zero weight — asserted behaviourally, not just on the constant.
+    a = quality_score(annualized_yield_pct=30, otm_cushion_pct=8, open_interest=50, symbol="NVDA")
+    b = quality_score(annualized_yield_pct=30, otm_cushion_pct=8, open_interest=50_000, symbol="NVDA")
+    assert a == b
+
+
 def test_leveraged_etfs_are_penalised_relative_to_ordinary_underlyings():
     """AUD-T398-LEVERAGEPENALTY: a 3x ETF's premium is rich because the underlying moves 3x as
     hard, not because the trade is better. Measured live, TQQQ took the #1 and #5 slots purely
