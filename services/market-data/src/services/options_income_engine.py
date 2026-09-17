@@ -251,6 +251,7 @@ def rank_income_candidates(
     strategies: list[str] | None = None,
     current_prices: dict[str, float] | None = None,
     point_in_time: date | None = None,
+    all_contracts: bool = False,
 ) -> list[dict]:
     """Best current covered-call/CSP candidate per (symbol, strategy), ranked by annualized
     yield. Reads each symbol's own LATEST archived chain — never a live fetch — so this is
@@ -374,9 +375,16 @@ def rank_income_candidates(
                 # Best-per-symbol is chosen on the RISK-ADJUSTED score, not raw yield — picking
                 # the highest-yielding contract per symbol just re-introduces the same adverse
                 # selection one level down, before the cross-symbol ranking ever sees it.
-                if best is None or cand["quality_score"] > best["quality_score"]:
+                # T399-WEIGHTDERIV: `all_contracts` emits every qualifying contract instead of
+                # reducing to one per symbol. Needed specifically so the weight-derivation study
+                # can re-rank an UNBIASED pool — the best-per-symbol reduction below is itself
+                # decided by quality_score, so a pool built with it already excludes everything
+                # the current weights disliked, which would make any re-derivation circular.
+                if all_contracts:
+                    out.append(cand)
+                elif best is None or cand["quality_score"] > best["quality_score"]:
                     best = cand
-            if best is not None:
+            if best is not None and not all_contracts:
                 out.append(best)
 
     out.sort(key=lambda c: c["quality_score"], reverse=True)

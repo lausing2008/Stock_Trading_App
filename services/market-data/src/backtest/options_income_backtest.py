@@ -91,6 +91,7 @@ def backtest_options_income(
     step_days: int = _DEFAULT_STEP_DAYS,
     max_per_date: int = 3,
     contracts: int = 1,
+    all_contracts: bool = False,
 ) -> dict:
     """Replay the engine's own candidate selection across [start, end] and settle every trade.
 
@@ -122,6 +123,7 @@ def backtest_options_income(
                 cands = rank_income_candidates(
                     session, symbols=symbols, strategies=strategies,
                     current_prices=pit_prices, point_in_time=entry_date,
+                    all_contracts=all_contracts,
                 )
             except Exception as exc:
                 log.warning("income_backtest.rank_failed", entry_date=str(entry_date), error=str(exc))
