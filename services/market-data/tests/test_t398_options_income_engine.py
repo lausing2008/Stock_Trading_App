@@ -150,9 +150,13 @@ def test_candidate_sql_filters_on_the_delta_band_and_liquidity_floor():
 
 
 def test_settlement_never_guesses_a_missing_close_price():
+    """Originally asserted `if close_price is None` against the lenient 7-day-window helper.
+    AUD-T400-SETTLESUBSTITUTE replaced that with an exact-session lookup, so the guard now
+    tests the STRONGER property: a missing settlement session leaves the position open rather
+    than settling it against some other day's close."""
     body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def settle_expired_positions"):]
     body = body[:body.index("\ndef ")]
-    assert "if close_price is None:" in body
+    assert "if settled is None:" in body
     assert "continue" in body
 
 
@@ -426,3 +430,94 @@ def test_opthist_startup_check_never_takes_the_service_down():
     body = body[:body.index("\n    _scheduler.add_job(")]
     assert "except Exception as exc:" in body
     assert "startup_check_failed" in body
+
+
+# ── AUD-T400: findings from the 2026-09-17 external system audit ──────────────
+
+def test_short_option_liability_makes_opening_a_position_equity_neutral():
+    """AUD-T400-SHORTLIABILITY: the equity curve counted collected premium as cash and added
+    back full collateral while never deducting the obligation that premium paid for, so selling
+    an option MANUFACTURED equity equal to the premium. The audit's own two worked examples
+    both reported ~$200/$150 of instant phantom gain on a $10,000 account."""
+    from src.services.options_income_engine import short_option_liability
+
+    # CSP: $10k account, reserve $9,000, collect $150 -> cash 1,150 + committed 9,000
+    liab, src = short_option_liability(
+        strategy="CASH_SECURED_PUT", strike=90.0, underlying_price=100.0,
+        contracts=1, quote_ask=1.50)
+    assert src == "quote_ask"
+    assert 1150 + 9000 - liab == pytest.approx(10_000)  # was 10,150
+
+    # CC: $10k account, buy 100 shares at $100, sell a call for $200 -> cash 200 + committed 10,000
+    liab_cc, _ = short_option_liability(
+        strategy="COVERED_CALL", strike=105.0, underlying_price=100.0,
+        contracts=1, quote_ask=2.00)
+    assert 200 + 10_000 - liab_cc == pytest.approx(10_000)  # was 10,200
+
+
+def test_short_option_liability_marks_at_the_ask_not_the_bid():
+    """Closing a SHORT means BUYING it back, and a buyer pays the ask — the conservative
+    direction for a liability. Using the bid would understate what it costs to get out."""
+    from src.services.options_income_engine import short_option_liability
+    liab, src = short_option_liability(
+        strategy="CASH_SECURED_PUT", strike=100.0, underlying_price=99.0,
+        contracts=2, quote_ask=3.25)
+    assert src == "quote_ask"
+    assert liab == pytest.approx(3.25 * 100 * 2)
+
+
+def test_short_option_liability_falls_back_to_intrinsic_and_says_so():
+    """With no quote the liability is floored at intrinsic value, which is always computable
+    and never stale. It understates by any remaining time value, so the SOURCE is returned
+    rather than hidden — a stale/approximate mark must be visible, not silent."""
+    from src.services.options_income_engine import short_option_liability
+    itm, src = short_option_liability(
+        strategy="CASH_SECURED_PUT", strike=100.0, underlying_price=80.0, contracts=1)
+    assert src == "intrinsic"
+    assert itm == pytest.approx(2000.0)  # 20 points in the money
+    otm, _ = short_option_liability(
+        strategy="CASH_SECURED_PUT", strike=90.0, underlying_price=100.0, contracts=1)
+    assert otm == 0.0  # out of the money -> no intrinsic obligation
+
+
+def test_equity_snapshot_deducts_the_short_liability():
+    body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def _snapshot_income_equity_curve"):]
+    body = body[:body.index("\ndef ")]
+    assert "- short_liability" in body, "equity must be assets MINUS the short obligation"
+    assert "short_option_liability(" in body
+
+
+def test_expected_settlement_session_resolves_weekends_and_holidays():
+    """AUD-T400-SETTLESUBSTITUTE: a normal expiry settles on ITSELF; only a weekend/holiday
+    expiry legitimately rolls back. Conflating that with missing data is the actual bug."""
+    from datetime import date as _d
+    from src.services.options_income_engine import expected_settlement_session as E
+    assert E(_d(2026, 9, 18)) == _d(2026, 9, 18)   # Friday -> itself
+    assert E(_d(2026, 9, 19)) == _d(2026, 9, 18)   # Saturday -> back to Friday
+    assert E(_d(2026, 9, 20)) == _d(2026, 9, 18)   # Sunday -> back to Friday
+    assert E(_d(2026, 1, 1)) == _d(2025, 12, 31)   # New Year's Day -> prior session
+
+
+def test_settlement_requires_the_exact_session_and_never_substitutes():
+    """Previously any close within 7 days before expiry settled the position PERMANENTLY. A
+    $100 short put settled on a stale $101 books as expired-worthless even if the real
+    settlement close was $90 and it should have been assigned."""
+    body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def _settlement_close"):]
+    body = body[:body.index("\ndef ")]
+    assert "func.date(Price.ts) == want" in body, "must match the exact session, not a range"
+    assert "expected_settlement_session(expiry)" in body
+
+    settle_body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def settle_expired_positions"):]
+    settle_body = settle_body[:settle_body.index("\ndef ")]
+    assert "_settlement_close(" in settle_body
+    assert "settlement_session_missing" in settle_body, "a missing session must be logged, not silent"
+
+
+def test_backtest_settlement_uses_the_same_resolver_as_the_live_engine():
+    """Sharing one lenient helper for entry pricing AND settlement is what let this defect
+    exist in two places at once. Entry may use a nearby close; settlement may not."""
+    bt = (pathlib.Path(__file__).resolve().parents[1]
+          / "src" / "backtest" / "options_income_backtest.py").read_text()
+    assert "def _settlement_close_bt" in bt
+    assert "expected_settlement_session(expiry)" in bt
+    assert '_settlement_close_bt(closes, cand["symbol"], expiry)' in bt

@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session
 from ..services.options_income_engine import (
     rank_income_candidates,
     settle_position_economics,
+    expected_settlement_session,
     _INCOME_UNIVERSE,
 )
 
@@ -72,14 +73,35 @@ def _closes_by_symbol_date(session: Session, symbols: list[str], start: date, en
 
 
 def _close_on_or_before(closes: dict, symbol: str, target: date, window: int = 7) -> tuple[float, date] | None:
-    """Close at or before `target` — a specific date may be a weekend/holiday. BACKWARD ONLY:
-    reaching forward would settle a trade using a price from after its own expiry."""
+    """Close at or before `target` — used for ENTRY pricing, where the most recent available
+    close before the entry date is exactly what a live run would have seen. BACKWARD ONLY:
+    reaching forward would price an entry using data from after the decision.
+
+    NOT used for settlement — see _settlement_close_bt() for why.
+    """
     for back in range(window + 1):
         d = target - timedelta(days=back)
         px = closes.get((symbol.upper(), d))
         if px is not None:
             return px, d
     return None
+
+
+def _settlement_close_bt(closes: dict, symbol: str, expiry: date) -> tuple[float, date] | None:
+    """Settlement close for the EXACT expected session, or None.
+
+    AUD-T400-SETTLESUBSTITUTE: settlement previously reused `_close_on_or_before`, so a missing
+    expiry-session close silently settled the trade against an earlier day. That is fine for
+    ENTRY pricing (any recent close is a fair stand-in for "what was it worth when we decided")
+    and wrong for SETTLEMENT, where the specific session determines assignment and therefore the
+    outcome. Sharing one helper for both is what let the defect exist in two places at once.
+
+    Uses the same `expected_settlement_session()` as the live engine, so a backtested outcome
+    and a live one resolve the same session for the same expiry.
+    """
+    want = expected_settlement_session(expiry)
+    px = closes.get((symbol.upper(), want))
+    return (px, want) if px is not None else None
 
 
 def backtest_options_income(
@@ -131,7 +153,7 @@ def backtest_options_income(
 
             for cand in cands[:max_per_date]:
                 expiry = cand["expiry"] if isinstance(cand["expiry"], date) else date.fromisoformat(str(cand["expiry"]))
-                settle = _close_on_or_before(closes, cand["symbol"], expiry)
+                settle = _settlement_close_bt(closes, cand["symbol"], expiry)
                 if settle is None:
                     # No close at/near expiry (e.g. expiry beyond the price history) — dropped
                     # rather than guessed, and COUNTED so the drop rate stays visible.

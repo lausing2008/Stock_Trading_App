@@ -39,6 +39,7 @@ from db.models import (
     Stock, Price, TimeFrame,
 )
 from db.session import SessionLocal
+from common.market_calendar import NYSE_HOLIDAYS
 
 log = structlog.get_logger()
 
@@ -412,6 +413,45 @@ def rank_income_candidates(
     return out
 
 
+def expected_settlement_session(expiry: date) -> date:
+    """The trading session an expiry actually settles against.
+
+    Pure and separately testable. An expiry landing on a weekend or NYSE holiday legitimately
+    settles on the preceding session; an expiry on a normal trading day settles on ITSELF and
+    on no other day. Distinguishing those two cases is the whole point — see
+    _settlement_close() for why substituting any nearby close is unsafe.
+    """
+    d = expiry
+    for _ in range(10):
+        if d.weekday() < 5 and d not in NYSE_HOLIDAYS:
+            return d
+        d -= timedelta(days=1)
+    return expiry  # pathological input; caller still has to find a real close for it
+
+
+def _settlement_close(session: Session, stock_id: int, expiry: date) -> tuple[float, date] | None:
+    """The close for the EXACT expected settlement session, or None.
+
+    AUD-T400-SETTLESUBSTITUTE: this previously accepted any close within 7 days before expiry
+    and then closed the position permanently on it. That silently conflates two different
+    situations — "the expiry was a holiday, so the prior session IS the settlement session"
+    (legitimate) and "the settlement session's data just hasn't loaded yet" (not legitimate).
+    In the second case a stale close decides assignment, and the position is closed forever on
+    it: a $100 short put settled against a $101 close from a day earlier books as expired
+    worthless even if the real settlement close was $90 and it should have been assigned.
+    Returning None instead leaves the position open so the next run can settle it correctly.
+    """
+    want = expected_settlement_session(expiry)
+    row = session.execute(
+        select(Price.close).where(
+            Price.stock_id == stock_id,
+            Price.timeframe == TimeFrame.D1,
+            func.date(Price.ts) == want,
+        ).limit(1)
+    ).first()
+    return (float(row.close), want) if row and row.close is not None else None
+
+
 def _closing_price_on_or_before(session: Session, stock_id: int, target_date: date, window_days: int = 7) -> float | None:
     """The most recent daily close at or before target_date — bounded backward-only, matching
     leaps_backtest.py's _nearest_quote_date convention (a specific date may be a holiday; never
@@ -453,9 +493,16 @@ def settle_expired_positions(session: Session, portfolio: OptionsIncomePortfolio
                           position_id=pos.id, symbol=pos.symbol)
                 continue
             pos.stock_id = stock.id
-        close_price = _closing_price_on_or_before(session, pos.stock_id, pos.expiry)
-        if close_price is None:
+        settled = _settlement_close(session, pos.stock_id, pos.expiry)
+        if settled is None:
+            # Left OPEN on purpose and retried next run — never settled against a substitute
+            # close from a different session. Logged so a genuinely stuck position is visible
+            # rather than quietly skipped forever.
+            log.warning("options_income.settlement_session_missing", position_id=pos.id,
+                        symbol=pos.symbol, expiry=str(pos.expiry),
+                        expected_session=str(expected_settlement_session(pos.expiry)))
             continue
+        close_price, _session_date = settled
 
         econ = settle_position_economics(
             strategy=pos.strategy, strike=float(pos.strike),
@@ -562,6 +609,44 @@ def open_income_positions(
     return opened
 
 
+def short_option_liability(*, strategy: str, strike: float, underlying_price: float,
+                           contracts: int, quote_ask: float | None = None) -> tuple[float, str]:
+    """What it would COST to buy back the short option — a real liability, not zero.
+
+    Pure, so the accounting is testable without a DB. Returns (liability, mark_source).
+
+    AUD-T400-SHORTLIABILITY: the equity curve previously counted collected premium as cash and
+    added back the full collateral, while never deducting the obligation that premium was
+    payment for. Selling a put for $150 therefore "created" $150 of equity the instant it was
+    opened, and a short put moving against the portfolio stayed invisible until settlement.
+    Opening a short option must be roughly equity-NEUTRAL: you receive cash and simultaneously
+    owe a position of about the same value.
+
+    Marked at the ASK when a real quote is available, because closing a SHORT means BUYING it
+    back and a buyer pays the ask — the conservative direction for a liability. With no quote,
+    falls back to INTRINSIC value, which is always computable from the underlying and can never
+    be stale in the way a quote can; it understates the liability by whatever time value
+    remains, which is why the source is returned and recorded rather than hidden.
+    """
+    if quote_ask is not None and quote_ask >= 0:
+        return round(quote_ask * 100 * contracts, 2), "quote_ask"
+    if strategy == "COVERED_CALL":
+        intrinsic = max(0.0, underlying_price - strike)
+    else:
+        intrinsic = max(0.0, strike - underlying_price)
+    return round(intrinsic * 100 * contracts, 2), "intrinsic"
+
+
+def _latest_option_ask(session: Session, option_symbol: str) -> float | None:
+    """Most recent archived ask for one contract. None when it was never quoted."""
+    row = session.execute(text("""
+        SELECT nbbo_ask FROM option_chain_history
+        WHERE option_symbol = :os AND nbbo_ask IS NOT NULL
+        ORDER BY as_of DESC LIMIT 1
+    """), {"os": option_symbol}).first()
+    return float(row.nbbo_ask) if row and row.nbbo_ask is not None else None
+
+
 def _snapshot_income_equity_curve(session: Session, portfolios: list[OptionsIncomePortfolio], as_of: date) -> None:
     from .paper_trading_engine import _fetch_live_prices
 
@@ -573,17 +658,28 @@ def _snapshot_income_equity_curve(session: Session, portfolios: list[OptionsInco
             )
         ).scalars().all()
         collateral_committed = 0.0
+        short_liability = 0.0
         if open_positions:
-            cc_symbols = {p.symbol for p in open_positions if p.strategy == "COVERED_CALL"}
-            live_prices = _fetch_live_prices(list(cc_symbols)) if cc_symbols else {}
+            # Every open position needs a live underlying now, not just the covered calls — a
+            # short put's liability moves with the underlying too.
+            all_syms = sorted({p.symbol for p in open_positions})
+            live_prices = _fetch_live_prices(all_syms) if all_syms else {}
             for p in open_positions:
+                px = live_prices.get(p.symbol) or float(p.underlying_entry_price)
                 if p.strategy == "COVERED_CALL":
-                    px = live_prices.get(p.symbol) or float(p.underlying_entry_price)
                     collateral_committed += px * 100 * p.contracts
                 else:
                     collateral_committed += float(p.collateral_reserved)
+                liab, _src = short_option_liability(
+                    strategy=p.strategy, strike=float(p.strike), underlying_price=px,
+                    contracts=p.contracts, quote_ask=_latest_option_ask(session, p.option_symbol),
+                )
+                short_liability += liab
 
-        equity = float(portfolio.current_cash) + collateral_committed
+        # AUD-T400-SHORTLIABILITY: equity is assets MINUS the outstanding short obligation.
+        # Without the final term, opening a short option manufactured equity equal to the
+        # premium and a position moving against the book stayed invisible until settlement.
+        equity = float(portfolio.current_cash) + collateral_committed - short_liability
         existing = session.execute(
             select(OptionsIncomeEquityCurve).where(
                 OptionsIncomeEquityCurve.portfolio_id == portfolio.id,

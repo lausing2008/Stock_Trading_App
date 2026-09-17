@@ -316,9 +316,14 @@ def test_fundamental_required_sections():
         assert section in result, f"Missing section: {section}"
 
 
-def test_fundamental_empty_returns_neutral_50():
+def test_fundamental_empty_returns_uncertain_not_neutral():
+    """RES-2b (2026-06-10) deliberately lowered the missing-data default from 50 to 35:
+    absent fundamentals mean UNCERTAIN, not NEUTRAL, and scoring them as neutral quietly
+    treats "we know nothing" as "we know it's average". This test asserted the old 50 and had
+    been failing ever since — invisible because `make test` discarded non-final service
+    failures (AUD-T400-CIHIDESFAILURE)."""
     result = _score_fundamental({})
-    assert result["score"] == 50
+    assert result["score"] == 35
 
 
 def test_fundamental_excellent_revenue_growth():
@@ -354,15 +359,48 @@ def test_fundamental_excellent_roe():
 
 
 def test_fundamental_strong_balance_sheet():
-    fund = {"total_cash": 10_000_000_000, "total_debt": 3_000_000_000}
+    """D/E is debt / BOOK EQUITY (book_value x shares_outstanding) since RES-2b corrected it
+    from the earlier debt/cash. Cash and debt alone can no longer produce an assessment, so
+    these inputs must supply equity — which is also what makes the test exercise the real
+    threshold rather than an incidental one."""
+    fund = {
+        "total_cash": 10_000_000_000, "total_debt": 3_000_000_000,
+        "book_value": 60.0, "shares_outstanding": 200_000_000,  # equity 12e9 -> D/E 0.25
+    }
     result = _score_fundamental(fund)
+    assert result["balance_sheet"]["de_ratio"] == 0.25
     assert "Strong" in result["balance_sheet"]["assessment"]
 
 
 def test_fundamental_weak_balance_sheet():
-    fund = {"total_cash": 1_000_000_000, "total_debt": 5_000_000_000}
+    fund = {
+        "total_cash": 1_000_000_000, "total_debt": 5_000_000_000,
+        "book_value": 10.0, "shares_outstanding": 200_000_000,  # equity 2e9 -> D/E 2.5
+    }
     result = _score_fundamental(fund)
+    assert result["balance_sheet"]["de_ratio"] == 2.5
     assert "Weak" in result["balance_sheet"]["assessment"]
+
+
+def test_fundamental_balance_sheet_is_unknown_when_equity_is_missing():
+    """T237-RE3 regression guard, and the behaviour the two tests above used to contradict.
+    Without book equity the D/E ratio is genuinely uncomputable, so the assessment must say
+    Unknown. It previously defaulted to "Strong Balance Sheet" and never reset, printing
+    "Debt/Equity: -" directly beside "Assessment: Strong Balance Sheet" — a misleadingly
+    positive claim about a stock whose real leverage was unknown."""
+    result = _score_fundamental({"total_cash": 1_000_000_000, "total_debt": 5_000_000_000})
+    assert result["balance_sheet"]["de_ratio"] is None
+    assert result["balance_sheet"]["assessment"] == "Unknown"
+
+
+def test_fundamental_average_balance_sheet():
+    fund = {
+        "total_cash": 2_000_000_000, "total_debt": 5_000_000_000,
+        "book_value": 25.0, "shares_outstanding": 200_000_000,  # equity 5e9 -> D/E 1.0
+    }
+    result = _score_fundamental(fund)
+    assert result["balance_sheet"]["de_ratio"] == 1.0
+    assert "Average" in result["balance_sheet"]["assessment"]
 
 
 def test_fundamental_fcf_positive_excellent():

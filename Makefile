@@ -27,11 +27,31 @@ logs:
 ps:
 	docker compose -f docker/docker-compose.yml ps
 
+# AUD-T400-CIHIDESFAILURE: `exit 1` inside the per-service SUBSHELL only exits that subshell.
+# The for loop then continued, and a shell loop returns the status of its LAST iteration — so a
+# failure in any service except the last one was silently discarded and `make test` exited 0.
+# CI ran this target, so a genuinely red backend went green. Verified by reproducing the exact
+# shell shape: a loop with a failing first iteration and a passing last one exits 0. It was in
+# fact hiding 3 real research-engine failures at the time this was found.
+#
+# Now: run EVERY service (so one failure doesn't mask the rest — more useful than fail-fast for
+# a suite this size), remember whether anything failed, and exit non-zero at the end. pytest's
+# exit code 5 is "no tests collected", which stays a legitimate pass for a service without tests.
 test:
-	@for svc in market-data technical-analysis ml-prediction ranking-engine signal-engine strategy-engine portfolio-optimizer research-engine api-gateway decision-engine event-intelligence news-intelligence; do \
+	@fail=0; \
+	for svc in market-data technical-analysis ml-prediction ranking-engine signal-engine strategy-engine portfolio-optimizer research-engine api-gateway decision-engine event-intelligence news-intelligence; do \
 		echo "== $$svc =="; \
-		(cd services/$$svc && python -m pytest -q; ec=$$?; [ "$$ec" -eq 0 ] || [ "$$ec" -eq 5 ] || exit 1); \
-	done
+		(cd services/$$svc && python -m pytest -q); ec=$$?; \
+		if [ "$$ec" -ne 0 ] && [ "$$ec" -ne 5 ]; then \
+			echo "!! $$svc FAILED (pytest exit $$ec)"; \
+			fail=1; \
+		fi; \
+	done; \
+	if [ "$$fail" -ne 0 ]; then \
+		echo "make test: one or more services failed"; \
+		exit 1; \
+	fi; \
+	echo "make test: all services passed"
 
 fmt:
 	ruff format services shared
