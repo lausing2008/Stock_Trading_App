@@ -52,3 +52,47 @@ docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
 
 If `last_run` is older than the cron cadence, the job was discarded rather than failed — look
 for an outage in that window, not for an exception in the logs (there won't be one).
+
+---
+
+## AUD-T399-CRONRESTARTGAP (2026-09-17) — the misfire grace was necessary but not sufficient
+
+**The grace fix above did not prevent a recurrence**, because it addressed the wrong half of the
+problem. A 6h `misfire_grace_time` covers a job *delayed* past its slot by an outage. It does
+nothing about a job whose slot was never scheduled in the first place: **a `CronTrigger`
+recomputes its next fire time from process startup**, so a container recreated at 19:00 ET
+simply waits until tomorrow's 18:45. No misfire ever occurs — there is nothing to forgive.
+
+**What happened, and this one was self-inflicted.** Repeated market-data deploys during the
+2026-09-16/17 session each reset the scheduler. Every restart pushed the capture slot forward,
+so the job never ran on 09-15 or 09-16 despite the instance being healthy the whole time. The
+archive fell to 2026-09-11 — **6 days stale, past the options income engine's own 5-day
+staleness guard — so the engine returned ZERO candidates**. Recovered by running the capture by
+hand (374,696 rows, 0 errors).
+
+**The diagnostic that isolated it.** Job status said `"status": "ok"` with `last_run`
+2026-09-14, while an unrelated job (`data_quality_checks`) had run hours earlier that same day —
+proving the scheduler itself was alive. Every job in the 17:00-18:45 ET window was dead;
+everything outside it was fine. That pattern means slot-skipping, not scheduler failure.
+
+**Fix: a one-shot startup check**, mirroring `_avg_volume_startup_check`'s own remedy for the
+identical shape in interval triggers (MD-RVOL2, documented in scheduler.py). `opthist_startup_check`
+runs ~90s after boot, walks back to the last COMPLETED US trading day, and runs the capture only
+if `MAX(as_of)` is behind it. A routine restart with a current archive costs one indexed lookup
+— it will not re-run a 400-second capture or spend UW quota for nothing. Wrapped so a failure
+can never take the scheduler or the service down.
+
+Verified live on the very next deploy: the check fired at 06:04:03, found the archive current,
+skipped the capture, and removed itself.
+
+**The generalisable lesson.** Interval triggers and cron triggers fail differently but produce
+the same symptom, and BOTH now have precedent in this codebase:
+
+| Trigger | Failure on restart | Remedy |
+|---|---|---|
+| `IntervalTrigger` | countdown resets to the full period | MD-RVOL2 startup check |
+| `CronTrigger` | next fire recomputed from boot; slot skipped silently | AUD-T399 startup check |
+
+`misfire_grace_time` fixes neither — it only forgives lateness. **If a scheduled job produces
+data something else depends on, it needs a startup check asking "am I behind?", not just a
+generous grace window.**

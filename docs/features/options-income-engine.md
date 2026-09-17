@@ -177,3 +177,121 @@ data. Doing it safely needs a separate live-fetch path with its own cache.
   one put, covering all four buy/sell combinations. Prompted by a real user question that had
   it backwards ("is covered call = ask and CSP = bid?"). **Both are SELLS, so both use the
   bid** — which price applies depends only on buy-vs-sell, never on call-vs-put.
+
+---
+
+## T399 — the backtest that actually tested it, and the weights it corrected (2026-09-17)
+
+The engine shipped with **zero resolved outcomes**. Every claim about it — that the strategy
+makes money, that `quality_score` ranks anything useful, that 40/40/20 and the 2% cushion floor
+were right — was untested. Waiting for live paper trades would take months and sample exactly
+one market regime.
+
+### The harness (`backtest/options_income_backtest.py`)
+
+Replays the engine over the chain archive: **724 trading days x 29 symbols, 2023-10-23 ->
+2026-09-11**. First real run settled **417 trades with zero dropped**.
+
+**It replays the REAL selector.** `rank_income_candidates()` gained a `point_in_time` parameter
+rather than the backtest forking it — there is deliberately no "backtest version" to drift
+against the live one, the same single-source-of-truth discipline the engine already uses between
+its screener and its autonomous half. A backtest of a parallel implementation measures the
+parallel implementation.
+
+**Three lookahead guarantees**, because a backtest with lookahead is worse than none (this repo
+has the scar tissue: `docs/incidents/backtest-wall-clock-and-lookahead-bugs.md`):
+1. `_chain_as_of_on_or_before()` resolves each symbol's chain strictly `<=` the entry date.
+2. Selection prices are that date's own close, never a later one.
+3. The only post-entry data touched is the settlement close ON the expiry date — the outcome,
+   not an input.
+
+Trades with no close at/near expiry are **dropped and counted**, never guessed.
+
+### What it found
+
+| | |
+|---|---|
+| Trades | 417 |
+| Win rate | 69.5% |
+| Assignment rate | 23.7% |
+| Total P&L | +$183,921 |
+| Avg return on collateral | +1.371%/trade |
+
+**A suspicion that measurement disproved.** The obvious worry was that the profit was just
+"stocks went up 2024-2026" — a synthetic buy-write holds 100 shares, after all. Decomposition
+says no: covered calls earned $196,093 of premium against a **-$51,467** underlying
+contribution, CSPs $114,062 against **-$74,768**. The underlying was a **-$126k drag** and ALL
+the profit is premium. That is what a premium-selling strategy is supposed to look like — the
+caps and assignments are exactly where the upside goes.
+
+**It does lose money.** 2024 H1: **-$14,759** (57.7% win). 2025 H1 was nearly flat (+$8,172).
+Four of five half-years positive, one negative — a realistic profile, not a straight line.
+
+**The important negative finding: `quality_score` did not work.** It failed to order win rate at
+all — 85+ scored 67.9%, 70-85 scored 71.7%, 50-70 scored 66.2%. But its components each carried
+real signal: cushion predicted assignment monotonically (66.7% -> 19.4%), open interest
+predicted win rate (58.1% vs 70.5%), and yield predicted assignment (10.4% -> 28.7%, confirming
+the adverse-selection thesis — the 15-25% yield band actually **lost $29,902**).
+
+### Re-deriving the weights (`backtest/options_income_weights.py`)
+
+**40/40/20 -> 25/75/0**, derived from **50,787 settled contracts** rather than chosen.
+
+| Held-out slice | Old 40/40/20 | New 25/75/0 |
+|---|---|---|
+| Mean return on collateral | 2.33% | **3.16%** |
+| Win rate | 65.9% | **69.0%** |
+| P&L (same 126 trades) | $89,191 | **$126,585** |
+
+**+0.83pp out of sample** against a 0.10pp required margin.
+
+Discipline that makes this an edge rather than a fit:
+- **Chronological** split (train 2024-01 -> 2025-11, test -> 2026-08). Random splits leak the
+  future into training on time-series data.
+- The objective is what the engine DOES: re-rank each date, take the top `max_per_date` (the
+  live daily cap), measure the realised return of exactly those. Optimising correlation would
+  reward ordering trades the engine never opens.
+- The incumbent is evaluated on the SAME held-out slice.
+- A margin is required before adopting, mirroring `_passes_promotion_margin` in gate_harness.py
+  — which exists because `BUG233-BACKTESTHARNESS-COINFLIP` promoted a coin flip once.
+- Saturation points (`_Q_FULL_*`) deliberately NOT searched; fitting those too is how a study
+  this size starts fitting noise.
+- The pool is de-biased: `rank_income_candidates(all_contracts=True)` was added specifically so
+  the study re-ranks contracts the incumbent score never picked. Without it the best-per-symbol
+  reduction — itself decided by `quality_score` — would pre-filter the pool being used to judge
+  those very weights.
+
+**Why cushion dominates.** Every one of the top 8 train configurations put cushion at 0.65-0.95.
+The equal weighting was itself the bug: yield and cushion push assignment risk in OPPOSITE
+directions, so weighting them equally made them cancel — which is precisely why the old score
+could not order win rate.
+
+**Why liquidity went to ZERO**, stated plainly so nobody "fixes" it back (and locked by a test):
+open interest is **negatively correlated with cushion** in this pool — OI>=2000 averages 8.13%
+cushion, OI<2000 averages 11.18% — so weighting liquidity pulls selection toward THINNER cushion
+and fights the strongest signal. Adding even 0.05 cost 3.16% -> 2.40% out of sample. This does
+NOT mean illiquid contracts are safe: that risk is handled by the hard
+`_INCOME_MIN_OPEN_INTEREST` floor, which is a **filter, not a weight**.
+
+**A discipline call worth keeping.** Cushion-only (0/100/0) scored slightly BETTER on the
+held-out slice (3.20%). It was NOT adopted: picking the configuration that won the held-out
+slice would turn that slice into a training slice, defeating the split entirely. The train
+winner was kept.
+
+### A live bug the backtest surfaced
+
+**AMD was not in the `stocks` table at all** — the only symbol of the 13-name income universe
+missing. Candidate generation worked (chains key on the symbol string, live prices come from
+the Redis cache), but settlement needs `stock_id` to look up the close, so the open **$50,000**
+AMD cash-secured put had `stock_id = NULL` and could never have settled. The zombie-position
+guard correctly detected and logged it but could not repair it, because the Stock row genuinely
+did not exist. Added AMD via `add_stock()`'s own logic (752 daily bars backfilled) and repaired
+the position's `stock_id`.
+
+### What the numbers are still NOT
+
+No slippage, no commission, no market impact, no EARLY assignment (American options can assign
+any time, especially calls before a dividend — settlement here is expiry-only, exactly like the
+live engine). Fills are assumed at the quoted bid. These are the same simplifications the live
+engine makes, so the backtest measures **the engine as built**, not what a real brokerage
+account would have returned. The live engine still has zero closed positions.

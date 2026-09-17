@@ -278,7 +278,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/features/options-and-institutional-data.md`** — T230-DATA-OPTIONS-CHAIN — Full Strike/Expiry Options Chain (Built 2026-07-22); TIER82-FMP-ANALYST-ESTIMATES — analyst_pt_upside ML Feature (Built 2026-08-18 … [backtest, OPTHIST, options history, LEAPS]
 - **`docs/features/options-and-institutional-data.md`** — T384-T387 (2026-09-15) — LEAPS capture 13->29. "Stable and strong" is the WRONG filter: a 0.70-delta call needs a TREND (TQQQ -73.78%/336d). Holiday entries shift + SAY SO [LEAPS, holiday, IV rank]
 - **`docs/features/options-and-institutional-data.md`** — T380/T381 (2026-09-10) — a LEAPS contract can stop being quoted MID-HOLD while the symbol's coverage looks fine; walk the delta band instead of committing to `LIMIT 1`. Relaxed ±0.20 fallback is LABELLED, never silent [LEAPS, delta, QLD]
-- **`docs/features/options-income-engine.md`** — T398 (2026-09-15/16): covered-call/CSP engine + page + guide. Auditing its LIVE output found 6 selection defects — ranking by raw yield is adverse selection; a CSP opened already ITM on stale deltas [options income, leverage]
+- **`docs/features/options-income-engine.md`** — T398/T399: covered-call/CSP engine, then BACKTESTED (417 trades, 724 archived days). quality_score didn't order win rate, so weights were re-derived 40/40/20 -> 25/75/0, +0.83pp out of sample [options income, cushion]
 
 - **`docs/features/research-engine-reports.md`** — Research Tab on the Stock Detail Page (Built 2026-07-29)
 - **`docs/features/self-tuning-walk-forward-harness.md`** — Per-Horizon AI Signal Strategy Tuning (2026-07-16); T255-STRATEGY-TUNER-PER-HORIZON — Joint Buy-Threshold x ML-Weight-Cap Tuner (Phase 1, Built 2026-07-18); ...
@@ -296,6 +296,8 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/features/learning-section.md`** — the Learning nav group is advanced-tier/admin only, enforced by `isGroupVisible()` in `_app.tsx` AND a page-level guard on all 7 pages; plus the QQQ-LEAPS and squeeze playbooks (tiers 353-354)
 
 ### Audits — dated audit/review/session reports (`docs/audits/`)
+
+- **`docs/audits/2026-09-16-codebase-and-feature-review.md`** — Static project orientation: architecture, feature map, scoring/execution paths, backtest boundaries, and documentation reconciliation; no runtime verification.
 
 - **`docs/audits/2026-07-16-aud250-deep-audit-series.md`** — AUD250 — Deep Audit of the 2026-07-11 to 2026-07-16 Work Window (73 Commits, 11 Services); Deep Audit: Trading Gate / Chart / Reports (2026-07-17) — 10 Confi...
 - **`docs/audits/2026-07-20-duplicate-code-and-redis-pooling-audit.md`** — Full-Codebase Audit — Duplicate Code / Single-Source-of-Truth (Phase 1: Redis Connections, 2026-07-20); Full-Codebase Audit — Duplicate Code / Single-Source-...
