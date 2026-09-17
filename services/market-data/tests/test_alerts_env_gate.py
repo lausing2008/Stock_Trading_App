@@ -209,6 +209,9 @@ _NON_ALERT_JOB_IDS = {
     # T398-OPTIONS-INCOME-ENGINE: settles/opens paper positions and writes data — sends no
     # email, so it belongs on the non-alert side same as the OPTHIST jobs above.
     "options_income_step",
+    # AUD-T399-CRONRESTARTGAP: one-shot startup check that re-runs the chain capture when a
+    # restart pushed its cron slot. Pure data capture, no email.
+    "opthist_startup_check",
     "us_open_burst", "us_intra", "us_close_burst", "us_post_close", "options_flow_eod", "gex_eod",
     "options_game_plan_eod",
     "hk_open_burst", "hk_intra", "hk_close_burst", "hk_post_close", "weekly_full_refresh",

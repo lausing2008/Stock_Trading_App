@@ -395,3 +395,34 @@ def test_options_income_job_registered_with_replace_existing_and_job_defaults():
     surrounding = _SCHEDULER_SOURCE[idx - 50:idx + 100]
     assert "replace_existing=True" in surrounding
     assert "_JOB_DEFAULTS" in surrounding
+
+
+# ── AUD-T399-CRONRESTARTGAP: capture must survive restarts, not just outages ──
+
+def test_opthist_startup_check_exists_and_is_registered():
+    """A CronTrigger recomputes its next fire time from startup, so a container recreated
+    after 18:45 ET simply waits until tomorrow — the 6h misfire grace does NOT cover that.
+    It bit for real on 2026-09-16/17: repeated deploys pushed the slot each time, the archive
+    fell 6 days behind past the engine's own staleness guard, and the engine returned ZERO
+    candidates. Same shape as the MD-RVOL2 interval-reset bug already documented in this file."""
+    assert 'id="opthist_startup_check"' in _SCHEDULER_SOURCE
+    idx = _SCHEDULER_SOURCE.index('id="opthist_startup_check"')
+    surrounding = _SCHEDULER_SOURCE[idx - 400:idx + 120]
+    assert '"date"' in surrounding, "must be a one-shot startup job, not another recurring cron"
+    assert "run_date=" in surrounding
+
+
+def test_opthist_startup_check_skips_when_the_archive_is_current():
+    """A routine restart must not re-run a 400s capture that burns UW quota for nothing —
+    it returns early unless the archive is genuinely behind the last completed trading day."""
+    body = _SCHEDULER_SOURCE[_SCHEDULER_SOURCE.index("def _opthist_startup_check"):]
+    body = body[:body.index("\n    _scheduler.add_job(")]
+    assert "if newest is not None and newest >= probe:" in body
+    assert "return" in body
+
+
+def test_opthist_startup_check_never_takes_the_service_down():
+    body = _SCHEDULER_SOURCE[_SCHEDULER_SOURCE.index("def _opthist_startup_check"):]
+    body = body[:body.index("\n    _scheduler.add_job(")]
+    assert "except Exception as exc:" in body
+    assert "startup_check_failed" in body

@@ -12823,6 +12823,53 @@ def start_scheduler() -> None:
     # finishes, so today's chain is already archived before this scans it for candidates.
     # Settles any expired position and opens new ones on every active
     # OptionsIncomePortfolio; a genuine no-op (returns immediately) while none exist.
+    # AUD-T399-CRONRESTARTGAP: the 6h misfire grace above covers an OUTAGE at 18:45 ET, but not
+    # a RESTART landing after it — a CronTrigger recomputes its next fire time from startup, so
+    # a container recreated at 19:00 simply waits until tomorrow. Exactly the same shape as the
+    # MD-RVOL2 interval-reset bug documented on _avg_volume_startup_check below, and it bit for
+    # real on 2026-09-16/17: repeated deploys pushed the slot each time and the chain archive
+    # fell 6 days behind, past the income engine's own staleness guard, so it returned ZERO
+    # candidates. UW's window is rolling, so those days were at risk of becoming uncapturable.
+    #
+    # Runs once ~90s after startup and ONLY if the archive is genuinely behind the last
+    # completed US trading day — a routine restart with a current archive costs one indexed
+    # MAX() lookup and nothing else.
+    def _opthist_startup_check() -> None:
+        from datetime import timedelta as _td
+        try:
+            # The most recent COMPLETED trading day: the capture stores settled chains, so
+            # today is never expected to be present. _is_us_trading_day() takes a DATETIME
+            # (it converts to America/New_York internally), not a date.
+            probe_dt = datetime.now(timezone.utc) - _td(days=1)
+            for _ in range(10):
+                if _is_us_trading_day(probe_dt):
+                    break
+                probe_dt -= _td(days=1)
+            else:
+                return  # no trading day found in 10 days — nothing sensible to compare against
+            probe = probe_dt.astimezone(ZoneInfo("America/New_York")).date()
+
+            from db import SessionLocal as _SL
+            from sqlalchemy import text as _text
+            with _SL() as _s:
+                newest = _s.execute(_text("SELECT MAX(as_of) AS d FROM option_chain_history")).scalar()
+            if newest is not None and newest >= probe:
+                return  # archive is current — skip the expensive capture entirely
+            log.warning("opthist.behind_at_startup_capturing",
+                        newest_as_of=str(newest), expected_through=str(probe))
+            _capture_option_chain_history_daily()
+        except Exception as exc:
+            # Never let a startup check take the scheduler (or the service) down with it.
+            log.error("opthist.startup_check_failed", error=str(exc), exc_info=True)
+
+    _scheduler.add_job(
+        _opthist_startup_check,
+        "date",
+        run_date=datetime.now(timezone.utc) + timedelta(seconds=90),
+        id="opthist_startup_check", replace_existing=True,
+        max_instances=1, coalesce=True, misfire_grace_time=3600,
+    )
+
     # Same AUD-T398-MISFIREGAP reasoning, with a shorter 4h window: missing this entirely means
     # expired positions never settle and their collateral stays locked. Firing late is harmless
     # here specifically because 19:00 ET is already after the close — a late run prices against
