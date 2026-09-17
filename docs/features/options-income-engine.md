@@ -295,3 +295,72 @@ any time, especially calls before a dividend — settlement here is expiry-only,
 live engine). Fills are assumed at the quoted bid. These are the same simplifications the live
 engine makes, so the backtest measures **the engine as built**, not what a real brokerage
 account would have returned. The live engine still has zero closed positions.
+
+---
+
+## T400 — accounting fixes from the external system audit (2026-09-17)
+
+The [2026-09-17 system audit](../audits/2026-09-17-system-audit-and-trading-roadmap.md) found
+two real accounting defects in this engine. Both were independently reproduced against the
+source before fixing, and both are now sabotage-verified.
+
+### AUD-T400-SHORTLIABILITY — the equity curve manufactured money (audit A04)
+
+`open_income_positions` adds collected premium to cash, and `_snapshot_income_equity_curve`
+added back the committed collateral — but **nothing ever deducted the short option itself**.
+Selling an option therefore created equity equal to its premium the instant it opened, and a
+short put moving against the book stayed invisible until settlement.
+
+| Audit's worked example | Old snapshot | Now |
+|---|---:|---:|
+| $10k account, buy 100 shares at $100, sell a call for $200 | $10,200 | **$10,000** |
+| $10k account, reserve $9,000 for a put, collect $150 | $10,150 | **$10,000** |
+
+Confirmed on the live portfolio: equity read **$251,667** on $250,000 of capital — $1,667 of
+"profit" that was exactly the premium collected on three freshly-opened positions. It now reads
+**$250,050**, essentially flat, which is the honest picture.
+
+`short_option_liability()` is pure and separately testable. It marks at the **ask**, because
+closing a short means BUYING it back and a buyer pays the ask — the conservative direction for
+a liability. With no quote it falls back to **intrinsic** value, which is always computable from
+the underlying and cannot go stale the way a quote can; that understates the obligation by any
+remaining time value, so the mark **source is returned rather than hidden**.
+
+Opening a short option is now approximately equity-neutral, which is the economically correct
+starting point: you receive cash and simultaneously owe a position of about the same value.
+
+**Note this does NOT change the backtest's reported P&L.** Settlement P&L comes from
+`settle_position_economics()`, where the obligation has already resolved to zero (assigned or
+expired). The defect was in the mark-to-market *curve*, not in realised per-trade outcomes — so
+the 417-trade result stands, while any drawdown or equity reading taken from the old curve was
+overstated.
+
+### AUD-T400-SETTLESUBSTITUTE — settlement could use the wrong session (audit A05)
+
+Settlement accepted any daily close within **7 days before** expiry and then closed the position
+**permanently** on it. That conflated two genuinely different situations:
+
+- *the expiry fell on a weekend/holiday, so the prior session IS the settlement session* — legitimate
+- *the settlement session's data simply has not loaded yet* — not legitimate
+
+In the second case a stale close decides assignment. A $100 short put settled against a $101
+close from a day earlier books as expired-worthless even if the real settlement close was $90
+and it should have been assigned — and the position is closed forever on that.
+
+`expected_settlement_session()` now resolves the correct session from the shared NYSE calendar
+(a normal expiry settles on **itself**; only weekends/holidays roll back), and settlement
+requires **that exact date**. A missing session leaves the position OPEN, logs
+`options_income.settlement_session_missing`, and retries on the next run.
+
+Fixed in the backtest too, which shared the same helper. The split is now explicit: **entry
+pricing may use a nearby close** (any recent close is a fair stand-in for "what was it worth
+when we decided"), **settlement may not** (the specific session determines the outcome). Sharing
+one lenient helper for both is what allowed the same defect to exist in two places at once.
+
+### Still outstanding from that audit
+
+A06 (archived bids treated as current fills), A08 (the weight study does not reproduce live
+capital/selection constraints) and A09 (the chronological split does not purge trades whose
+expiry crosses the boundary) remain open. A08 and A09 in particular mean the **+0.83pp
+out-of-sample weight result is softer evidence than first presented** — the direction
+(cushion >> yield) is a large and consistent effect, but the magnitude is not yet promotion-grade.

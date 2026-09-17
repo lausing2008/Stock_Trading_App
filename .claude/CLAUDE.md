@@ -223,6 +223,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 - **`docs/incidents/ec2-reboot-and-tls-cert-incidents.md`** — INCIDENT 2026-08-05: Full EC2 Reboot Reverted signal-engine to a PRE-SPLIT Image — SA-33 No Longer Live; INCIDENT 2026-08-05 (RESOLVED): TLS Certificate Expi...
 - **`docs/incidents/gateway-proxy-route-gaps.md`** — a new APIRouter prefix absent from proxy.py's `_ROUTES` 404s at the gateway however complete the backend is. THREE real occurrences (rl-agent, conditional-orders, options-income). Regression test now scans every service [404, api-gateway]
+- **`docs/incidents/ci-failure-masking.md`** — AUD-T400: `exit 1` in a subshell + a loop returning its LAST status made `make test` exit 0 over a red suite. CI was green for 3+ months over 3 real failures. Verify an aggregate runner actually goes RED [make, CI, subshell]
 - **`docs/incidents/scheduler-misfire-data-gaps.md`** — AUD-T398-MISFIREGAP (2026-09-16): a job reporting `ok` while its data is 5 days stale. `misfire_grace_time=60` makes APScheduler DISCARD a job a brief outage delayed; UW history is a rolling window so the day becomes uncapturable [OPTHIST]
 - **`docs/incidents/external-data-source-liveness.md`** — AUD-UWCAL-NONUS422 (2026-09-10) — the earnings calendar took 61s and the page showed "Failed to load events": it returned a VALID 174-event payload, just past every timeout … [Alpha Vantage, EDGAR, HKEX, Polygon, Redis, holiday, yfinance]
 
@@ -298,6 +299,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
 - **`docs/audits/2026-09-16-codebase-and-feature-review.md`** — Static project orientation: architecture, feature map, scoring/execution paths, backtest boundaries, and documentation reconciliation; no runtime verification.
+- **`docs/audits/2026-09-17-audit-review-and-t400-fixes.md`** — verified 6 claims from the 09-16/09-17 audits; all 6 correct. Fixed A13/A04/A05. A01-A03 (broker lifecycle) left open as design work. The reported service timeouts were a harness artefact [audit review]
 
 - **`docs/audits/2026-07-16-aud250-deep-audit-series.md`** — AUD250 — Deep Audit of the 2026-07-11 to 2026-07-16 Work Window (73 Commits, 11 Services); Deep Audit: Trading Gate / Chart / Reports (2026-07-17) — 10 Confi...
 - **`docs/audits/2026-07-20-duplicate-code-and-redis-pooling-audit.md`** — Full-Codebase Audit — Duplicate Code / Single-Source-of-Truth (Phase 1: Redis Connections, 2026-07-20); Full-Codebase Audit — Duplicate Code / Single-Source-...
