@@ -128,6 +128,19 @@ def _latest_chain_as_of(session: Session, symbol: str) -> date | None:
     return row.d if row and row.d else None
 
 
+def _chain_as_of_on_or_before(session: Session, symbol: str, as_of: date) -> date | None:
+    """The newest archived chain date at or BEFORE `as_of` — the lookahead guard for the
+    backtest. `<=` is the entire point: selecting a contract on date D must never see a chain
+    captured after D, which is exactly the class of bug
+    docs/incidents/backtest-wall-clock-and-lookahead-bugs.md exists to record.
+    """
+    row = session.execute(
+        text("SELECT MAX(as_of) AS d FROM option_chain_history WHERE symbol = :sym AND as_of <= :as_of"),
+        {"sym": symbol.upper(), "as_of": as_of},
+    ).first()
+    return row.d if row and row.d else None
+
+
 def leverage_factor(symbol: str) -> float:
     """1.0 for an ordinary underlying; 1/leverage for a leveraged ETF (TQQQ -> 0.33).
 
@@ -237,6 +250,7 @@ def rank_income_candidates(
     symbols: list[str] | None = None,
     strategies: list[str] | None = None,
     current_prices: dict[str, float] | None = None,
+    point_in_time: date | None = None,
 ) -> list[dict]:
     """Best current covered-call/CSP candidate per (symbol, strategy), ranked by annualized
     yield. Reads each symbol's own LATEST archived chain — never a live fetch — so this is
@@ -248,14 +262,21 @@ def rank_income_candidates(
     strategies = strategies or ["COVERED_CALL", "CASH_SECURED_PUT"]
     current_prices = current_prices if current_prices is not None else _fetch_live_prices(symbols)
 
-    today = datetime.now(timezone.utc).date()
+    # T399-INCOME-BACKTEST: `point_in_time` turns this into the backtest's own selector without
+    # forking it. The whole value of a backtest here is that it exercises the REAL ranking, so
+    # there must not be a second "backtest version" of this function to drift against the live
+    # one — the same mistake the engine deliberately avoided by having the screener and the
+    # autonomous engine share this single source of truth. When set, "today" becomes that date
+    # and each symbol's chain is the one AS OF that date (never a later one), which is what
+    # makes the replay lookahead-free.
+    today = point_in_time or datetime.now(timezone.utc).date()
     earnings_by_symbol = _next_earnings_by_symbol(session, symbols, today)
     out: list[dict] = []
     for sym in symbols:
         price = current_prices.get(sym)
         if not price or price <= 0:
             continue
-        as_of = _latest_chain_as_of(session, sym)
+        as_of = _chain_as_of_on_or_before(session, sym, today) if point_in_time else _latest_chain_as_of(session, sym)
         if as_of is None:
             continue
         # AUD-T398-STALECHAIN: the daily OPTHIST capture job self-heals short gaps, but if it
