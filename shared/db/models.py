@@ -1104,6 +1104,16 @@ class OptionsIncomeEquityCurve(Base):
     cash: Mapped[float] = mapped_column(Float)
     open_positions_count: Mapped[int] = mapped_column(Integer, default=0)
     collateral_committed: Mapped[float] = mapped_column(Float, default=0.0)
+    # AUD-A19-EQUITYMIXEDBASIS: WHICH DEFINITION OF EQUITY this row used.
+    #   "cash_collateral"                 — pre-2026-09-17: equity = cash + collateral. This
+    #                                       OVERSTATES equity, because nothing deducted the short
+    #                                       option the portfolio still owes (AUD-T400-SHORTLIABILITY).
+    #   "cash_collateral_less_liability"  — current: equity = cash + collateral - short liability.
+    # Without this column the two are indistinguishable in the table, so a return or drawdown
+    # computed across the 2026-09-17 boundary silently measures a CHANGE OF DEFINITION as if it
+    # were a change in the market. Nullable because rows written before this column existed are
+    # backfilled by migration 013 from their own arithmetic, not guessed from a date.
+    equity_basis: Mapped[str | None] = mapped_column(String(48), nullable=True)
 
     portfolio: Mapped["OptionsIncomePortfolio"] = relationship(back_populates="equity_curve")
 

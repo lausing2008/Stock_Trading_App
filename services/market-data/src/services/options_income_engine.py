@@ -119,6 +119,13 @@ _LEVERAGED_SYMBOLS: dict[str, float] = {
     "TQQQ": 3.0,   # 3x Nasdaq-100
     "QLD": 2.0,    # 2x Nasdaq-100
 }
+
+# AUD-A19-EQUITYMIXEDBASIS: the definition of "equity" every curve row written from here on uses.
+# Stamped onto each row so a later reader can tell whether two rows are actually comparable.
+# Change this string ONLY together with a change to the equity formula in
+# _snapshot_income_equity_curve, and ship a migration that labels the pre-existing rows — never
+# silently redefine equity in place, which is exactly how the 2026-09-16/09-17 mixed pair arose.
+_EQUITY_BASIS = "cash_collateral_less_liability"
 # The OPTHIST daily capture self-heals short gaps (a 5-day backfill window on every run), so a
 # healthy pipeline never approaches this. A chain older than this means the capture job itself
 # has been failing for a while — treat it as a data-pipeline outage, not a green light to trade.
@@ -703,6 +710,7 @@ def _snapshot_income_equity_curve(session: Session, portfolios: list[OptionsInco
         ).scalar_one_or_none()
         if existing:
             existing.equity = equity
+            existing.equity_basis = _EQUITY_BASIS
             existing.cash = float(portfolio.current_cash)
             existing.open_positions_count = len(open_positions)
             existing.collateral_committed = collateral_committed
@@ -710,6 +718,7 @@ def _snapshot_income_equity_curve(session: Session, portfolios: list[OptionsInco
             session.add(OptionsIncomeEquityCurve(
                 portfolio_id=portfolio.id, date=as_of, equity=equity, cash=float(portfolio.current_cash),
                 open_positions_count=len(open_positions), collateral_committed=collateral_committed,
+                equity_basis=_EQUITY_BASIS,
             ))
     session.commit()
 

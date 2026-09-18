@@ -2863,6 +2863,17 @@ export type OptionsIncomePosition = {
 };
 
 export type OptionsIncomeEquityPoint = {
+  /**
+   * AUD-A19-EQUITYMIXEDBASIS: which definition of equity this point used.
+   * "cash_collateral"                — pre-2026-09-17, equity = cash + collateral (no short
+   *                                    option liability deducted, so equity is OVERSTATED).
+   * "cash_collateral_less_liability" — current.
+   * null                             — a row predating the column whose basis could not be
+   *                                    derived from its own arithmetic.
+   * Points with different values are NOT comparable: the gap between them includes a change
+   * of definition, not only a change in the market.
+   */
+  equity_basis?: string | null;
   date: string;
   equity: number;
   cash: number;

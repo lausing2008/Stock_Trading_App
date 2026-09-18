@@ -51,4 +51,10 @@ run_migration "010_add_skip_reason_to_signal_outcomes.sql"
 # T232-PT6: scale-out realized P&L accumulator + entry_shares snapshot
 run_migration "011_add_realized_pnl_to_paper_trades.sql"
 
+# AUD-PT1: broker fill confirmation flag
+run_migration "012_add_broker_fill_confirmed_to_paper_trades.sql"
+
+# AUD-A19: which definition of equity each options-income curve row used
+run_migration "013_add_equity_basis_to_options_income_equity_curve.sql"
+
 echo "=== All migrations complete ==="

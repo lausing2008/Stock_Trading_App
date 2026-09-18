@@ -217,6 +217,11 @@ def get_income_equity_curve(
     return [{
         "date": c.date.isoformat(), "equity": c.equity, "cash": c.cash,
         "open_positions_count": c.open_positions_count, "collateral_committed": c.collateral_committed,
+        # AUD-A19-EQUITYMIXEDBASIS: WHICH definition of equity this point used. Points with
+        # different values here are NOT comparable — the difference between them includes a
+        # change of definition, not only a change in the market. NULL means a row predating the
+        # column whose basis could not be derived from its own arithmetic.
+        "equity_basis": c.equity_basis,
     } for c in curve]
 
 

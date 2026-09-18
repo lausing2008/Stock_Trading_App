@@ -80,10 +80,39 @@ function Sparkline({ points }: { points: OptionsIncomeEquityPoint[] }) {
   }).join(' ');
   const up = values[values.length - 1] >= values[0];
   const color = up ? '#22c55e' : '#ef4444';
+
+  // AUD-A19-EQUITYMIXEDBASIS: a curve can span two different DEFINITIONS of equity. Before
+  // 2026-09-17 equity was cash + collateral with no deduction for the short option the
+  // portfolio still owes; after, the liability is subtracted. Drawn as one continuous line,
+  // the step between those two rows reads as a loss when it is mostly a change of definition.
+  // The line is still drawn — hiding real data would be worse — but the discontinuity is
+  // marked and stated rather than left to be misread.
+  const bases = [...new Set(points.map(p => p.equity_basis ?? 'unknown'))];
+  const mixed = bases.length > 1;
+  const breakIdx = mixed
+    ? points.findIndex((p, i) => i > 0 && (p.equity_basis ?? 'unknown') !== (points[i - 1].equity_basis ?? 'unknown'))
+    : -1;
+
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ width: '100%', height: 48 }}>
-      <path d={path} fill="none" stroke={color} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
-    </svg>
+    <>
+      <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ width: '100%', height: 48 }}>
+        {breakIdx > 0 && (
+          <line
+            x1={(pad + breakIdx * xStep).toFixed(2)} y1={0}
+            x2={(pad + breakIdx * xStep).toFixed(2)} y2={h}
+            stroke="#f59e0b" strokeWidth={1} strokeDasharray="2,2" vectorEffect="non-scaling-stroke"
+          />
+        )}
+        <path d={path} fill="none" stroke={color} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+      </svg>
+      {mixed && (
+        <div style={{ fontSize: 10, color: '#f59e0b', marginTop: 4, lineHeight: 1.4 }}>
+          ⚠ This curve spans two different definitions of equity (marked). Points before the
+          marker do not deduct the short option the portfolio still owes, so they read higher.
+          The step across it is not a return.
+        </div>
+      )}
+    </>
   );
 }
 
