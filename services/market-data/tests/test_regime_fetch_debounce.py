@@ -90,7 +90,14 @@ def test_stale_cache_beyond_30_minutes_triggers_a_real_refetch(monkeypatch):
 
     result = pte._fetch_market_regime({})
 
-    assert call_counter["n"] == 1, "a stale cache must trigger a real yfinance call, not another short-circuit"
+    # >= 1, not == 1. AUD-A18 (2026-09-17): this asserted == 1 and failed in CI with 3.
+    # _fetch_market_regime ALSO calls hmm_regime.predict_current() (QW-8 overlay) inside a
+    # blanket `except Exception`, and that makes its own yf.download calls. hmmlearn is declared
+    # in requirements.txt but was absent from the local dev env, so the overlay silently raised
+    # and was swallowed — one call locally, three in a complete environment. The property under
+    # test is "the debounce did NOT short-circuit", which is >= 1; the exact count belongs to
+    # the HMM overlay and is not this test's business.
+    assert call_counter["n"] >= 1, "a stale cache must trigger a real yfinance call, not another short-circuit"
     # A real classification ran (not the exception-fallback path) — state reflects the fixture
     # data, not the stale cached "bull" value verbatim.
     assert "state" in result
@@ -106,7 +113,9 @@ def test_empty_cache_always_triggers_a_real_fetch(monkeypatch):
 
     pte._fetch_market_regime({})
 
-    assert call_counter["n"] == 1
+    # >= 1 for the same reason as the stale-cache test above: the HMM overlay contributes
+    # additional downloads whenever hmmlearn is actually installed.
+    assert call_counter["n"] >= 1
 
 
 def test_debounce_ttl_matches_hk_regimes_own_proven_1800_second_value():
