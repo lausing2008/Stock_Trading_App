@@ -150,14 +150,25 @@ def test_candidate_sql_filters_on_the_delta_band_and_liquidity_floor():
 
 
 def test_settlement_never_guesses_a_missing_close_price():
-    """Originally asserted `if close_price is None` against the lenient 7-day-window helper.
-    AUD-T400-SETTLESUBSTITUTE replaced that with an exact-session lookup, so the guard now
-    tests the STRONGER property: a missing settlement session leaves the position open rather
-    than settling it against some other day's close."""
+    """SUPERSEDED BY A BEHAVIORAL TEST — see test_a17_settlement_behavior.py.
+
+    This asserted `"if settled is None:" in body`: a check on a local VARIABLE NAME. It was
+    satisfied by source that raised TypeError on every successful settlement (AUD-A17), and it
+    broke the moment that variable was correctly renamed — failing for a rename while passing
+    for a real defect, which is precisely backwards.
+
+    The property it meant to guard (a missing settlement session leaves the position OPEN rather
+    than settling against another day's close) is now asserted against real behaviour by
+    `test_missing_settlement_price_returns_int_not_none`, which checks `pos.stage == "open"`,
+    an integer return of 0, and that nothing was committed.
+
+    What remains here is the one thing worth pinning textually: settlement resolves the exact
+    expected session and never falls back to the lenient entry-pricing helper.
+    """
     body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def settle_expired_positions"):]
     body = body[:body.index("\ndef ")]
-    assert "if settled is None:" in body
-    assert "continue" in body
+    assert "_settlement_close(" in body, "settlement must use the exact-session helper"
+    assert "_chain_as_of_on_or_before" not in body, "must never use the lenient backward window"
 
 
 def test_open_positions_credits_premium_and_debits_collateral():

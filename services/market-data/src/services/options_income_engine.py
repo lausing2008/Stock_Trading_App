@@ -480,52 +480,67 @@ def settle_expired_positions(session: Session, portfolio: OptionsIncomePortfolio
         )
     ).scalars().all()
 
-    settled = 0
-    for pos in open_positions:
-        if pos.stock_id is None:
-            # AUD-T398-ZOMBIEPOSITION: a position whose Stock lookup failed at entry time
-            # (symbol not yet in the Stock table then) would otherwise never settle — nothing
-            # else ever re-resolves stock_id, so it would stay "open" and its collateral
-            # permanently locked forever. Re-resolve here too, once, before giving up.
-            stock = session.execute(select(Stock).where(Stock.symbol == pos.symbol)).scalar_one_or_none()
-            if stock is None:
-                log.error("options_income.settle_missing_stock", portfolio_id=portfolio.id,
-                          position_id=pos.id, symbol=pos.symbol)
+    # AUD-A17: `settled_count` (the integer this function contracts to return) and
+    # `settlement` (the (price, session_date) tuple from _settlement_close) MUST be separate
+    # names. They were the same name until 2026-09-17, so the tuple clobbered the counter and
+    # `settled += 1` raised TypeError on the FIRST successful settlement every time.
+    settled_count = 0
+    try:
+        for pos in open_positions:
+            if pos.stock_id is None:
+                # AUD-T398-ZOMBIEPOSITION: a position whose Stock lookup failed at entry time
+                # (symbol not yet in the Stock table then) would otherwise never settle — nothing
+                # else ever re-resolves stock_id, so it would stay "open" and its collateral
+                # permanently locked forever. Re-resolve here too, once, before giving up.
+                stock = session.execute(select(Stock).where(Stock.symbol == pos.symbol)).scalar_one_or_none()
+                if stock is None:
+                    log.error("options_income.settle_missing_stock", portfolio_id=portfolio.id,
+                              position_id=pos.id, symbol=pos.symbol)
+                    continue
+                pos.stock_id = stock.id
+            settlement = _settlement_close(session, pos.stock_id, pos.expiry)
+            if settlement is None:
+                # Left OPEN on purpose and retried next run — never settled against a substitute
+                # close from a different session. Logged so a genuinely stuck position is visible
+                # rather than quietly skipped forever.
+                log.warning("options_income.settlement_session_missing", position_id=pos.id,
+                            symbol=pos.symbol, expiry=str(pos.expiry),
+                            expected_session=str(expected_settlement_session(pos.expiry)))
                 continue
-            pos.stock_id = stock.id
-        settled = _settlement_close(session, pos.stock_id, pos.expiry)
-        if settled is None:
-            # Left OPEN on purpose and retried next run — never settled against a substitute
-            # close from a different session. Logged so a genuinely stuck position is visible
-            # rather than quietly skipped forever.
-            log.warning("options_income.settlement_session_missing", position_id=pos.id,
-                        symbol=pos.symbol, expiry=str(pos.expiry),
-                        expected_session=str(expected_settlement_session(pos.expiry)))
-            continue
-        close_price, _session_date = settled
+            close_price, _session_date = settlement
 
-        econ = settle_position_economics(
-            strategy=pos.strategy, strike=float(pos.strike),
-            premium_collected=float(pos.total_premium_collected), contracts=pos.contracts,
-            underlying_entry_price=float(pos.underlying_entry_price), close_price=close_price,
-        )
+            econ = settle_position_economics(
+                strategy=pos.strategy, strike=float(pos.strike),
+                premium_collected=float(pos.total_premium_collected), contracts=pos.contracts,
+                underlying_entry_price=float(pos.underlying_entry_price), close_price=close_price,
+            )
 
-        portfolio.current_cash = float(portfolio.current_cash) + econ["cash_released"]
-        pos.stage = "closed"
-        pos.close_date = pos.expiry
-        pos.underlying_close_price = close_price
-        pos.assigned = econ["assigned"]
-        pos.pnl = round(econ["pnl"], 2)
-        pos.pct_return_on_collateral = (
-            round(econ["pnl"] / float(pos.collateral_reserved) * 100, 2) if pos.collateral_reserved else None
-        )
-        pos.close_reason = "assigned" if econ["assigned"] else "expired_otm"
-        settled += 1
+            portfolio.current_cash = float(portfolio.current_cash) + econ["cash_released"]
+            pos.stage = "closed"
+            pos.close_date = pos.expiry
+            pos.underlying_close_price = close_price
+            pos.assigned = econ["assigned"]
+            pos.pnl = round(econ["pnl"], 2)
+            pos.pct_return_on_collateral = (
+                round(econ["pnl"] / float(pos.collateral_reserved) * 100, 2) if pos.collateral_reserved else None
+            )
+            pos.close_reason = "assigned" if econ["assigned"] else "expired_otm"
+            settled_count += 1
+    except Exception:
+        # AUD-A17: a mid-batch failure leaves ORM objects already mutated (cash released,
+        # stage="closed") but uncommitted. run_options_income_step's own `except` only LOGS —
+        # so without this rollback that partial state stays live in the session, and the next
+        # unconditional commit (_snapshot_income_equity_curve's) silently persists a settlement
+        # this function reported as failed. Roll the whole batch back: all-or-nothing.
+        session.rollback()
+        log.error("options_income.settle_batch_failed", portfolio_id=portfolio.id,
+                  settled_before_failure=settled_count, exc_info=True)
+        raise
 
-    if settled:
+    if settled_count:
         session.commit()
-        log.info("options_income.settled", portfolio_id=portfolio.id, count=settled)
-    return settled
+        log.info("options_income.settled", portfolio_id=portfolio.id, count=settled_count)
+    return settled_count
 
 
 def open_income_positions(
