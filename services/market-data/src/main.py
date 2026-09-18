@@ -22,6 +22,7 @@ from .api.push import router as push_router
 from .api.conditional_orders import router as conditional_orders_router
 from .api.risk_snapshots import router as risk_snapshots_router
 from .api.options_income import router as options_income_router
+from .api.fed_watch import router as fed_watch_router
 from .services.scheduler import start_scheduler
 from .services.alpaca_quote_stream import run_quote_stream
 
@@ -44,6 +45,6 @@ async def on_startup():
 
 app = create_app(
     "market-data-service",
-    routers=[data_router, admin_router, auth_router, watchlists_router, watchlist_router, news_router, alerts_router, signal_alerts_router, journal_router, board_router, positions_router, app_notifications_router, paper_portfolio_router, broker_router, rl_router, push_router, conditional_orders_router, risk_snapshots_router, options_income_router],
+    routers=[data_router, admin_router, auth_router, watchlists_router, watchlist_router, news_router, alerts_router, signal_alerts_router, journal_router, board_router, positions_router, app_notifications_router, paper_portfolio_router, broker_router, rl_router, push_router, conditional_orders_router, risk_snapshots_router, options_income_router, fed_watch_router],
     on_startup=on_startup,
 )

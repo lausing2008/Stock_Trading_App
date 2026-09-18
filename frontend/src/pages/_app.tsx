@@ -133,6 +133,8 @@ const NAV_GROUPS: NavGroupDef[] = [
       // T402-OPTIONS-CALCULATOR: pure client-side expiry-payoff arithmetic — no data
       // fetch, so it is ungated like the other general Tools entries.
       { label: 'Options Calculator', href: '/options-calculator', color: '#38bdf8', tag: 'new' },
+      // T405-FEDWATCH: market-implied FOMC odds from Fed Funds futures.
+      { label: 'Fed Watch', href: '/fed-watch', color: '#a78bfa', tag: 'new' },
     ],
   },
   {

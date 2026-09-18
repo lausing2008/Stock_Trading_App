@@ -416,3 +416,89 @@ nothing is lost to a reflow.
 **AUD-UWCAL-NONUS422 (2026-09-10)** — the earnings calendar took **61s** and the page showed "Failed to load events": it returned a VALID 174-event payload, just past every timeout. **My first hypothesis (120 analyst-consensus DB queries) was WRONG — measured at 0.52s, ~1%.** The cost was **14 of 120 symbols (13 `.HK` + `BRK-A`) at ~4,400ms EACH** vs ~1ms for the 106 cached US ones. Three compounding facts: **UW has NO non-US coverage** (`/api/earnings/9868.HK` → permanent **422**); `_get()`'s tenacity decorator excludes ONLY rate-limit/auth, so a 422 hits `raise_for_status()` and is **retried 3x with `wait_exponential(min=2)`**; and `get_historical_earnings_moves()` did **`return []` BEFORE its `setex`**, so failures were **never cached** — every load paid full price forever, and the inline comment claiming the 6h cache made repeats free was true only of SUCCESSES. Fixed at BOTH layers (caller skips on the `mkt` already in scope; `is_us_ticker()` + a **30m** negative-cache TTL vs 6h success, so a transient outage is not pinned empty). **Result 61s → ~0.7-1.3s settled.** Guard detects by symbol SHAPE (leaf functions hold only a ticker) and the dash rule is deliberately NARROW — over-rejecting silently disables UW for real US symbols and is invisible since `[]` is returned either way. **Also surfaced: `BRK-A` 422s on THREE other UW paths** (`/api/darkpool/`, `/api/stock/*/ohlc/1d`, `/ohlc/5m`) — same root cause, wider blast radius, NOT yet fixed.
 
 Congress Trading Data Silently Empty — Free Source Domains Permanently Dead; "It's Reachable" ≠ "It's Current" — Always Check Last-Modified, Not Just HTTP 200; **AUD-ING-POLYGONDELAYED (2026-09-09)** — 4 US symbols frozen at 2026-09-04 for four days with zero errors: the Polygon key is on a **`DELAYED` plan whose newest bar WAS 2026-09-04** (the stall date IS the cutoff) and Polygon sat FIRST in `_PRIORITY`, answering out-of-range windows with `{"status":"DELAYED","resultsCount":0}` — an empty HTTP 200. **Only 4 of 131 were hit because a symbol whose head was further back still overlapped Polygon's coverage** — which is why it read as four broken tickers, not one broken provider. **SELF-CONCEALING: `ingest_symbol` returned `{inserted: 5}` and logged a clean `ingest.done`, because `rowcount` on an `ON CONFLICT DO UPDATE` counts rows SENT, not rows CHANGED.** Fixed with a new **`UnusualWhalesAdapter`** (**US-only — HK stays on yfinance**), a reordered priority, a Polygon guard that RAISES rather than returning empty, and an `ingest.done` that reports whether the head actually **moved**. **RETRACTS the 2026-09-04 audit's "Polygon is dead in production" claim** — it was live, preferred, and silently 2 days stale, which is worse than dead; verify a source by ISSUING A REQUEST, not by reading its config. **Read before touching the UW adapter — three silent traps:** it returns **3 rows per date** (`pr`/`r`/`po`; only `r` is the daily bar, else you write 3 bars/day), **`limit=5000` returns an EMPTY list** with HTTP 200, and **`/api/screener/stocks` cannot substitute** (batches 131 symbols in 3 requests but silently caps at 50 AND returns `open: None`, which `validate_ohlcv()` requires). Per-symbol costs **655 req/day = 0.55% of the 120k quota**; batching saves 640 of 120,000 by fabricating `open` — deliberately not done. **AUD-ING-POLYGONBUDGET-SKIPSPRIMARY (2026-09-09, same file)** — the follow-on found ONE DAY later, by DOCUMENTING the pipeline rather than by any alert: `_polygon_budget_available()`'s branch read `adapters = [get_adapter("yfinance")]`, correct while Polygon was FIRST, but after the reorder it hardcoded yfinance and **skipped the new primary**. The counter increments on EVERY US incremental ingest regardless of whether Polygon is reached, so with a budget of 5 and 131 symbols **only the first 5/minute saw UW — ~126 were forced to yfinance-only**, making the previous day's fix **inert for 96% of the universe** with clean success logs throughout. Fixed to **exclude Polygon** rather than select a replacement. **THE LESSON: a guard written as "fall back to X" encodes the priority order current when it was written — reordering the list does not update the guard. Prefer "exclude Y" over "use X", and after any priority/routing change grep for guards naming a specific member of that order.** **AUD-ING-SCHEDULER-GATINGGAPS (2026-09-09)** — four gating gaps found in the same pass and ALL FIXED, each a different way ON PURPOSE because what a job COSTS on a non-trading day decides where to gate it. `live_price_cache_refresh` used raw `weekday() >= 5` so it ran every market HOLIDAY — and it is a **yfinance bulk download of ~173 stocks**, ≈480 wasted downloads/holiday against the source that rate-limits us, caching **stale quotes** for all 16 minute-scanners; now gated **per market** (a US holiday is often a normal HKEX session — verified 2026-09-07: us=False, hk=True). `edgar_8k_ingest_daily` had `mon-fri` but no holiday check, and its sweep is **rate-limited 0.15s/CIK for SEC fair-use**, so a no-op pass still spends real budget; gated in-function like its HK sibling, and the skip path **still records a job status** (a silent skip is indistinguishable from a dead job). The six `18:0x` evaluators had no `day_of_week`; fixed at the **TRIGGER**, not with an internal guard, because they resolve returns by querying real `Price` rows — a weekend run is **waste, not corruption**, and a date guard would also block a legitimate **Monday catch-up**. `avg_volume_cache_refresh` was the only interval job with no `misfire_grace_time` (a missed fire is DROPPED; with `max_instances=1` that can retire the schedule — the AUD-MISFIREGRACE-OPTIONSFLOW shape); set to 300s, and a **repo-wide parity test now requires one on every interval job**. Two process notes: a pre-existing test **failed on a change that strengthened it** (it asserted the EXACT trigger string, so adding `day_of_week` broke it — asserting a whole literal line pins formatting alongside the invariant), and one of my behavioural checks printed FAIL because I labelled **2026-09-05 a "Friday" when it is a Saturday** — when a calendar assertion fails, check the weekday of the date you chose before suspecting the calendar. All surfaced on **Admin → Data Pipeline** (`frontend/src/pages/data-pipeline.tsx`), a new end-to-end reference for sources, adapter selection, the write path, all 70 schedules, cache TTLs, downstream consumers and the 46 DQ gauges. **CLOSED — AUD-PROVIDERKEY-ZOMBIEPUSH + AUD-POLYGONKEY-INURL (2026-09-09):** the key was rotated by the user (now `HTTP 401`) and moved to an `Authorization: Bearer` header. **Two corrections worth knowing.** (1) **The leak path was NOT httpx's request logging** — its effective level is already **WARNING**, so it logs no request lines; all 58 `apiKey` occurrences came from **`raise_for_status()`, whose exception message embeds the full URL**, then logged as `ingest.symbol_failed` at **ERROR — which no level filter suppresses**. Suppressing a logger would have fixed nothing. **Check where a secret actually surfaces before blaming the request logger.** (2) **A deleted key came BACK**: `_app.tsx` re-pushed the **browser's localStorage** copy on every app load, resurrecting it with the identical fingerprint after we verified it absent from Redis. **Removed entirely, not made conditional** — from the browser, "deleted" and "never configured" are indistinguishable, so any seed is a potential revival, and the block was redundant since `AUD-PROVIDERKEY-INMEMORY` already made keys Redis-backed. **A browser cache must never be authoritative over server state for a credential.** Also recorded but NOT fixed: **`configure_logging()` is called by no service `main.py`** (only `hk_connect.py`), so its httpx suppression is inactive platform-wide — harmless today since the effective level is already WARNING; and **Alpha Vantage must keep its key in the query string** (no header auth), so the same exception path would leak one if ever configured.
+
+---
+
+## T404-OPTIONS-UW-MIGRATION / AUD-T403 (2026-09-18) — the options chain left yfinance
+
+**The outage.** From ~2026-09-15 Yahoo's options endpoint returned empty for **every symbol**.
+Verified with a bare `yfinance` call touching none of this app's code:
+
+```
+INTC  t.options -> EMPTY     t.history -> 1 row  ✓
+AAPL  t.options -> EMPTY
+SPY   t.options -> EMPTY
+```
+
+The crumb fetch is rate-limited (`HTTP 429`), and without a crumb the options endpoint yields
+nothing. Note `history()` kept working throughout — **only the options endpoint broke**, which
+is why price-dependent features were unaffected and made the failure look narrower than it was.
+
+**It went unnoticed for three days.** Four endpoints (flow, chain, expirations, game-plan)
+reported an empty chain as `reason: "no_options_listed"`, and three UI panels render nothing on
+that reason. A dead feed was pixel-identical to "this symbol has no listed options", so the
+Options tab simply emptied out. The EOD snapshot job produced **zero rows on 09-15, 09-16 and
+09-17** and said nothing. It surfaced only when a user asked why their page looked different
+after an unrelated deploy — and the first hypothesis, reasonably, was that the deploy broke it.
+
+Two independent facts settled that it was not the deploy: the snapshot gap predated it by three
+days, and the Unusual Whales chain archive was current to 09-17 the whole time.
+
+### Fix 1 (AUD-T403): make an outage distinguishable from an absence
+
+Shared `_empty_chain_reason()` classifies the two using a fact already in the database: if a
+symbol produced a real game-plan snapshot in the last 30 days, it demonstrably *has* listed
+options, so an empty fetch today is the feed. **No extra network call** — the failure being
+diagnosed *is* rate limiting, and probing the upstream to ask why it is rate-limiting is how
+`yfinance-rate-limit-amplification.md` opens. Applied to all four endpoints, because fixing one
+leaves the page three-quarters silent.
+
+Three of those four endpoints had **no DB session at all**; calling the helper there would have
+raised `NameError` on the already-failing path, turning a blank panel into a 500. Caught before
+deploy by a test that walks each call site back to its `def`.
+
+### Fix 2 (T404): move the chain to the provider we already pay for
+
+| Surface | Was | Now |
+|---|---|---|
+| Options Flow | yfinance | **Unusual Whales** |
+| Options Chain matrix | yfinance | **Unusual Whales** |
+| Expirations / term structure / OI concentration | yfinance | **Unusual Whales** |
+| Options Game Plan | yfinance | **Unusual Whales** |
+| EOD game-plan snapshot job | yfinance | **Unusual Whales** |
+| GEX, dark pool, NOPE, income-engine archive | UW | UW *(unchanged — and why those cards survived)* |
+
+`services/uw_option_chain.py` reads `option_chain_history` first (free, zero quota) and on a
+miss fetches **and persists** from UW, so the second view of a symbol/session costs nothing and
+the archive grows toward what people actually look at instead of a fixed 29-symbol list.
+Measured live: AAPL served from the archive (1,733 calls, 24 expiries, 0 quota); **INTC, which
+was not in the captured universe, fetched on demand — 14,616 rows in 8.2 s** — and now serves
+1,186 calls / 1,186 puts / 23 expiries.
+
+**What UW adds:** real per-contract greeks. **872 of 1,733** AAPL calls carry
+delta/gamma/theta/vega (UW supplies them for contracts that actually traded, ~48% of rows — its
+documented behaviour, not a fetch failure). yfinance gave implied volatility only, and the
+Option Trading Guide listed "no real Greeks" as a known limitation.
+
+**What it costs, surfaced rather than buried:** UW's chain is a **settled session**, not live
+quotes. Every response carries `as_of` / `is_settled_session` / `chain_source`, and the game
+plan returns `chain_as_of`. A settled bid presented as a live fill is the A06 finding already on
+the tracker; this makes it visible instead of repeating it silently.
+
+**Quota was not the constraint.** Measured 2026-09-17: **9,773 UW calls against a 120,000/day
+allowance — 8%**. An earlier project note that "2 jobs = 95% of quota" was written when the
+allowance was 30k, before the upgrade, and had quietly become false.
+
+**Implementation shape.** A duck-type of yfinance's `option_chain()` — `.calls`/`.puts` as
+DataFrames with yfinance's *own* column names — so the three consumers keep their existing
+pandas bodies (`calls["openInterest"].sum()`, `.fillna(0)`, `_options_chain_rows()`) untouched.
+Rewriting three loop bodies would have been the same migration with strictly more ways to get it
+wrong.
+
+### The lesson
+
+This file already said "reachable ≠ current". The new half is: **an empty result is not
+self-explaining.** Four endpoints collapsed two very different conditions into one reason
+string, and three panels rendered that reason as silence. When a data source can return nothing,
+the code must be able to say *which kind of nothing* — and a daily job producing zero rows for
+three days should be loud on its own, not something a user discovers by accident.

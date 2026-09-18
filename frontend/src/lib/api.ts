@@ -1005,6 +1005,7 @@ export const api = {
   incomeEquityCurve: (portfolioId: number) =>
     request<OptionsIncomeEquityPoint[]>(`/options-income/portfolios/${portfolioId}/equity-curve`),
   incomeRunStepNow: () => request<{ ok: boolean }>('/options-income/run-step', { method: 'POST' }),
+  getFedWatch: () => request<FedWatch>('/fed-watch'),
 };
 
 export type SuppressedSignalConditions = {
@@ -2923,6 +2924,40 @@ export type OptionsIncomePosition = {
   is_itm: boolean | null;
   cushion_pct: number | null;
   days_to_expiry: number | null;
+};
+
+// ── T405-FEDWATCH ────────────────────────────────────────────────────────────────────────
+export type FedWatchOutcome = { move_bp: number; label: string; probability_pct: number };
+
+export type FedWatchMeeting = {
+  meeting_date: string;
+  contract: string;
+  available: boolean;
+  reason?: string;
+  rate_before_pct: number;
+  rate_after_pct?: number;
+  contract_price?: number;
+  implied_month_avg_pct?: number;
+  expected_change_bp?: number;
+  direction?: 'cut' | 'hike' | 'hold';
+  outcomes?: FedWatchOutcome[];
+  most_likely?: string;
+  probability_of_any_move_pct?: number;
+  /** Meeting late in its month — few days remain to infer the post-meeting rate from. */
+  low_precision?: boolean;
+  days_after_meeting?: number;
+  meeting_day?: number;
+  days_in_month?: number;
+};
+
+export type FedWatch = {
+  available: boolean;
+  reason?: string;
+  as_of?: string;
+  current_implied_rate_pct?: number;
+  source?: string;
+  meetings?: FedWatchMeeting[];
+  limitations?: string[];
 };
 
 export type OptionsIncomeEquityPoint = {

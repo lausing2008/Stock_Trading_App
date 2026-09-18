@@ -101,6 +101,10 @@ _ROUTES = {
     # the gateway despite the backend fully implementing the feature). Caught live: the
     # Create Portfolio modal returned a raw "404 Not Found" the first time this was deployed.
     "options-income": _settings.market_data_url,
+    # T405-FEDWATCH: market-implied FOMC odds. Added here at the same time as the router —
+    # docs/incidents/gateway-proxy-route-gaps.md records THREE separate occasions where a
+    # complete backend 404'd purely because its prefix never reached this dict.
+    "fed-watch": _settings.market_data_url,
 }
 
 
