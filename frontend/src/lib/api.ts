@@ -2015,6 +2015,62 @@ export type CoveredCallLeg = {
   reference_take_profit: number;
 };
 
+// T402-OPTIONS-STRATEGY-MATRIX: one leg of a structure. A structure is 1 leg (long call,
+// cash-secured put, ...) or 2 (collar, vertical spread).
+export type OptionStrategyLeg = {
+  action: 'buy' | 'sell';
+  right: 'call' | 'put' | string;
+  strike: number;
+  price_per_share: number;
+  cost_per_contract: number;
+  expiry: string | null;
+  days_to_expiry: number | null;
+  iv?: number | null;
+  oi?: number | null;
+  /** Bid-ask width as a % of mid. A large value means the quoted cost will not be the fill. */
+  spread_pct?: number | null;
+};
+
+export type OptionStrategy = {
+  name: string;
+  direction: string;
+  /** 'debit' = you pay to open; 'credit' = you are paid to open. */
+  net: 'debit' | 'credit';
+  legs: OptionStrategyLeg[];
+  net_per_share: number;
+  net_per_contract: number;
+  /** null where genuinely unbounded (a long call's upside, a protective put's). Never 0. */
+  max_loss_per_contract: number | null;
+  max_profit_per_contract: number | null;
+  breakeven: number;
+  breakeven_move_pct: number | null;
+  requires_shares: boolean;
+  collateral_per_contract: number;
+  reward_risk?: number | null;
+  effective_floor?: number;
+  effective_entry?: number;
+  what_it_does: string;
+  use_when: string;
+};
+
+export type OptionStrategyRecommendation = {
+  primary: string | null;
+  name?: string;
+  reason: string;
+  iv_regime?: 'rich' | 'cheap' | 'normal' | 'unknown';
+  iv_note?: string;
+  constraint?: string;
+  alternatives?: { key: string; name: string; reason: string }[];
+};
+
+export type OptionStrategyMatrix = {
+  singles: Record<string, OptionStrategy>;
+  combos: Record<string, OptionStrategy>;
+  recommendation: OptionStrategyRecommendation;
+  iv_rank: number | null;
+  iv_regime: 'rich' | 'cheap' | 'normal' | 'unknown';
+};
+
 export type OptionsGamePlan = {
   symbol: string;
   available: boolean;
@@ -2024,6 +2080,9 @@ export type OptionsGamePlan = {
   signal?: string | null;
   protective_put: ProtectivePutLeg | null;
   covered_call: CoveredCallLeg | null;
+  /** T402: all four legs + combinations + a recommendation. Null if the matrix could not be
+   *  built — the two legs above are the older contract and remain independent of it. */
+  strategy_matrix?: OptionStrategyMatrix | null;
 };
 
 // AUD-OPTIONS4-GAMEPLANBATCH: the compact snapshot shape a scan-list/signals-table row reads —

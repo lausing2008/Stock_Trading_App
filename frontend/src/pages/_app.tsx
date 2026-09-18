@@ -130,6 +130,9 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Market Regime',   href: '/regime',   color: '#6366f1', tag: 'new' },
       { label: 'Insider Trading', href: '/insider',  color: '#fb923c' },
       { label: 'Congress Trades', href: '/congress', color: '#f97316' },
+      // T402-OPTIONS-CALCULATOR: pure client-side expiry-payoff arithmetic — no data
+      // fetch, so it is ungated like the other general Tools entries.
+      { label: 'Options Calculator', href: '/options-calculator', color: '#38bdf8', tag: 'new' },
     ],
   },
   {

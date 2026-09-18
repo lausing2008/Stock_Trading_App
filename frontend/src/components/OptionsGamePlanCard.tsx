@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { api } from '@/lib/api';
 import type { OptionsGamePlan } from '@/lib/api';
+import OptionStrategyMatrixPanel from './OptionStrategyMatrix';
 
 /** T322-OPTIONS-GAMEPLAN: composes AI Signal's existing stop-loss/take-profit levels (same
  * numbers PositionSizer already shows) with a REAL, currently-listed options contract to
@@ -61,7 +63,13 @@ export default function OptionsGamePlanCard({
 
   const pp = plan.protective_put;
   const cc = plan.covered_call;
-  if (!pp && !cc) return null;
+  const matrix = plan.strategy_matrix;
+  const hasMatrix = !!matrix && (Object.keys(matrix.singles).length > 0 || Object.keys(matrix.combos).length > 0);
+  // T402: previously `if (!pp && !cc) return null`. That now also hides the four-leg matrix in
+  // the case where the two original legs could not be priced but other structures could —
+  // e.g. no stop-loss set, so there is nothing to anchor a protective put to, yet a long call
+  // and a cash-secured put are both perfectly constructible.
+  if (!pp && !cc && !hasMatrix) return null;
 
   return (
     <div style={{ background: '#1e293b', borderRadius: 10, padding: '14px 18px', border: '1px solid #334155', marginTop: 12 }}>
@@ -116,12 +124,19 @@ export default function OptionsGamePlanCard({
           </div>
         )}
       </div>
+      {hasMatrix && plan.current_price != null && (
+        <OptionStrategyMatrixPanel matrix={matrix!} spot={plan.current_price} />
+      )}
       {currentPrice != null && (
         <div style={{ fontSize: 10.5, color: '#475569', marginTop: 10 }}>
-          Requires shares of the underlying to actually execute either leg — this card shows the
-          numbers, it doesn't place trades. See{' '}
+          The two legs above require owning shares; the four-leg grid says for each structure
+          whether it does. This card shows numbers, it doesn't place trades. See{' '}
           <a href="/option-trading-guide" style={{ color: '#818cf8' }}>Option Trading Guide</a>{' '}
-          for how to read and use these.
+          for how to read them, or{' '}
+          <Link href={`/options-calculator?symbol=${plan.symbol}&spot=${plan.current_price ?? ''}`} style={{ color: '#818cf8' }}>
+            open the options calculator
+          </Link>{' '}
+          to price your own strikes and contract counts.
         </div>
       )}
     </div>

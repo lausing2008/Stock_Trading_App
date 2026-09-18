@@ -20,7 +20,24 @@ def _extract_shared_namespace():
     start = _ROUTES_SOURCE.index("_OPTIONS_GAME_PLAN_MIN_PUT_DTE = ")
     end = _ROUTES_SOURCE.index('\n@router.get("/{symbol}/options-game-plan")', start)
     func_source = _ROUTES_SOURCE[start:end]
-    namespace = {"date": date, "datetime": datetime, "timezone": timezone}
+    # T402: compute_options_game_plan() now also builds the strategy matrix, which means the
+    # exec'd source has two dependencies it did not have before — `log`, and a RELATIVE import
+    # (`from ..services.options_strategies import ...`) that needs a real package context.
+    # Supplying them here is the honest fix: the harness must provide what the function actually
+    # depends on. A no-op `log` keeps the test from asserting on logging it does not care about;
+    # `__name__`/`__package__` give the relative import a package to resolve against, so the
+    # REAL build_strategy_matrix runs rather than a stub — these tests then exercise the same
+    # code path production does.
+    class _NullLog:
+        def info(self, *a, **k): pass
+        def warning(self, *a, **k): pass
+        def error(self, *a, **k): pass
+
+    namespace = {
+        "date": date, "datetime": datetime, "timezone": timezone,
+        "log": _NullLog(),
+        "__name__": "src.api.routes", "__package__": "src.api",
+    }
     exec(func_source, namespace)  # noqa: S102 — isolated eval of these pure functions' real source
     return namespace
 

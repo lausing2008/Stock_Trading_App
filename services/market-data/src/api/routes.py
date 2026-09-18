@@ -4444,6 +4444,7 @@ def compute_options_game_plan(
     call_expiries: list[str],
     call_rows: list[dict],
     shares: float | None = None,
+    iv_rank: float | None = None,
     today: date | None = None,
 ) -> dict:
     """MPE / T322-OPTIONS-GAMEPLAN: composes a real protective-put hedge (against `stop_loss`)
@@ -4520,6 +4521,25 @@ def compute_options_game_plan(
     result["signal"] = signal
     result["current_price"] = current_price
     result["shares"] = shares
+
+    # T402-OPTIONS-STRATEGY-MATRIX: the other two legs (BUY a call, SELL a put) plus the
+    # combinations, and a recommendation among them. Strictly ADDITIVE — the two keys above
+    # keep their exact existing shape, so compute_options_game_plan_snapshot() and the batch
+    # endpoint, which read only those, are unaffected. Pure arithmetic over the SAME two
+    # already-fetched chains: no extra network call.
+    try:
+        from ..services.options_strategies import build_strategy_matrix
+        result["strategy_matrix"] = build_strategy_matrix(
+            current_price=current_price, stop_loss=stop_loss, take_profit=take_profit,
+            signal=signal, put_rows=put_rows, put_expiry=(put_expiries[0] if put_expiries else None),
+            call_rows=call_rows, call_expiry=(call_expiries[0] if call_expiries else None),
+            shares=shares, iv_rank=iv_rank, today=today,
+        )
+    except Exception as exc:
+        # The two original legs are the contract this function has always honoured; a fault in
+        # the additive matrix must never take them down with it.
+        log.warning("options_game_plan.strategy_matrix_failed", error=str(exc))
+        result["strategy_matrix"] = None
     return result
 
 
@@ -4592,7 +4612,11 @@ def get_options_game_plan(
             today=today,
         )
         plan["symbol"] = sym
-        plan["available"] = bool(plan["protective_put"] or plan["covered_call"])
+        matrix = plan.get("strategy_matrix") or {}
+        plan["available"] = bool(
+            plan["protective_put"] or plan["covered_call"]
+            or matrix.get("singles") or matrix.get("combos")
+        )
         return plan
 
     except Exception as exc:
