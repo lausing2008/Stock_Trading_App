@@ -59,6 +59,33 @@ export default function OptionsGamePlanCard({
       </div>
     );
   }
+  // AUD-T403-SILENTFEEDOUTAGE: this used to `return null` for every unavailable reason, and so
+  // did MarketPressurePanel and the Options Chain section. When the upstream chain feed went
+  // down, all three vanished at once and the page looked like a deploy had broken it — which is
+  // exactly how a multi-day outage went unnoticed. A feed outage now SAYS SO. A symbol that
+  // genuinely has no listed options still renders nothing, because that is not news.
+  if (plan && !plan.available && plan.reason === 'options_feed_unavailable') {
+    return (
+      <div style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.35)',
+                    borderRadius: 10, padding: '12px 16px', marginTop: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#f59e0b' }}>
+          Options data feed unavailable
+        </div>
+        <div style={{ fontSize: 11.5, color: '#cbd5e1', marginTop: 6, lineHeight: 1.6 }}>
+          The upstream options-chain provider is not returning contracts right now, so the game
+          plan, options flow, open-interest structure and chain are all unavailable for every
+          symbol — not just {plan.symbol}. This is a data-source outage, not a change to this
+          stock and not a problem with your view.
+          {plan.last_known_chain_date && (
+            <> The last chain we recorded for {plan.symbol} was <b>{plan.last_known_chain_date}</b>.</>
+          )}
+        </div>
+        <div style={{ fontSize: 10.5, color: '#64748b', marginTop: 8 }}>
+          Dealer gamma, dark-pool prints and NOPE come from a different provider and are still live.
+        </div>
+      </div>
+    );
+  }
   if (!plan || !plan.available) return null;
 
   const pp = plan.protective_put;

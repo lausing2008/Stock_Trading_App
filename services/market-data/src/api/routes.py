@@ -34,7 +34,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text as sa_text
 from sqlalchemy.orm import Session
 import redis as redis_lib
 import yfinance as yf
@@ -3354,7 +3354,7 @@ def relative_performance(
 _OPTIONS_TTL = 900  # 15-min cache — options volume refreshes intraday
 
 @router.get("/{symbol}/options-flow")
-def get_options_flow(symbol: str):
+def get_options_flow(symbol: str, session: Session = Depends(get_session)):
     """Unusual options activity for a symbol, derived from yfinance options chain.
 
     Fetches the two nearest expiration dates, aggregates call and put volume,
@@ -3382,7 +3382,7 @@ def get_options_flow(symbol: str):
         # rather than dependent on yfinance's own (undocumented) ordering of t.options.
         expiries = sorted(t.options)
         if not expiries:
-            result = {"symbol": sym, "available": False, "reason": "no_options_listed"}
+            result = {"symbol": sym, "available": False, **_empty_chain_reason(session, sym)}
             return result
 
         total_call_vol = 0
@@ -3821,7 +3821,7 @@ def compute_short_squeeze_score(
 
 
 @router.get("/{symbol}/options-chain")
-def get_options_chain(symbol: str, expiry: str | None = None):
+def get_options_chain(symbol: str, expiry: str | None = None, session: Session = Depends(get_session)):
     """T230-DATA-OPTIONS-CHAIN: full strike/expiry matrix for one expiration date.
 
     CORRECTION vs. this tracker item's original claim: no paid Polygon.io tier is needed —
@@ -3844,7 +3844,7 @@ def get_options_chain(symbol: str, expiry: str | None = None):
         # t.options.
         expiries = sorted(t.options)
         if not expiries:
-            return {"symbol": sym, "available": False, "reason": "no_options_listed"}
+            return {"symbol": sym, "available": False, **_empty_chain_reason(session, sym)}
 
         exp = expiry if expiry in expiries else expiries[0]
         cache_key = f"options_chain:{sym}:{exp}"
@@ -3947,7 +3947,7 @@ def compute_expiration_rollup(per_expiry: list[dict]) -> list[dict]:
 
 
 @router.get("/{symbol}/options-expirations")
-def get_options_expirations(symbol: str):
+def get_options_expirations(symbol: str, session: Session = Depends(get_session)):
     """MPE-03: per-expiration open-interest/volume rollup across every listed expiration date
     (not just the nearest 4 get_options_flow()/get_options_chain() already fetch), with a
     NORMAL/ELEVATED/HIGH/EXTREME concentration classification per expiry (see
@@ -3974,7 +3974,7 @@ def get_options_expirations(symbol: str):
         t = yf.Ticker(sym)
         expiries = sorted(t.options)
         if not expiries:
-            return {"symbol": sym, "available": False, "reason": "no_options_listed"}
+            return {"symbol": sym, "available": False, **_empty_chain_reason(session, sym)}
 
         per_expiry = []
         for exp in expiries[:6]:
@@ -4388,6 +4388,38 @@ def get_dark_pool_alerts_recent_route(
 
 # ── T322-OPTIONS-GAMEPLAN: AI Signal + Options Game Plan ─────────────────────
 
+# ── AUD-T403-SILENTFEEDOUTAGE ────────────────────────────────────────────────────────────
+# "yfinance returned no expiries" has TWO causes that are indistinguishable at the call site
+# and are not remotely the same thing:
+#   (a) this symbol genuinely has no listed options, and
+#   (b) the upstream feed is down, so EVERY symbol returns empty.
+# All four options endpoints (flow, chain, gamma-exposure, game-plan) reported both as
+# "no_options_listed", and all four UI panels render nothing on that reason — so a multi-day
+# Yahoo outage (crumb fetch 429 -> the options endpoint returns empty for AAPL, SPY, INTC,
+# everything) looked exactly like "this stock has no options" and sat unnoticed from
+# 2026-09-15 to 2026-09-18, with the EOD snapshot job silently producing zero rows.
+#
+# Distinguished with NO extra network call — which matters, because the failure mode here is
+# rate limiting and probing it harder is how docs/incidents/yfinance-rate-limit-amplification.md
+# starts. If this stock produced a real game-plan snapshot in the last 30 days it demonstrably
+# HAS listed options, so an empty fetch today is the feed, not the symbol.
+def _empty_chain_reason(session: Session, sym: str) -> dict:
+    """Returns the `reason` (+ evidence) for an empty options chain, as a dict to merge into
+    the endpoint's own unavailable response."""
+    try:
+        row = session.execute(sa_text("""
+            SELECT max(g.as_of) AS d
+            FROM options_game_plan_snapshots g JOIN stocks s ON s.id = g.stock_id
+            WHERE s.symbol = :sym AND g.as_of >= CURRENT_DATE - 30
+        """), {"sym": sym.upper()}).first()
+        last_seen = row.d if row and row.d else None
+    except Exception:
+        last_seen = None  # diagnosis only — never turn a clean "unavailable" into a 500
+    if last_seen is None:
+        return {"reason": "no_options_listed"}
+    return {"reason": "options_feed_unavailable", "last_known_chain_date": last_seen.isoformat()}
+
+
 _OPTIONS_GAME_PLAN_MIN_PUT_DTE = 25   # protective puts need enough runway to be worth the premium
 _OPTIONS_GAME_PLAN_MAX_PUT_DTE = 60   # beyond ~2 months, premium decay cost rises without much extra protection
 _OPTIONS_GAME_PLAN_MIN_CALL_DTE = 14  # covered calls can be shorter-dated — income, not insurance
@@ -4567,7 +4599,7 @@ def get_options_game_plan(
         t = yf.Ticker(sym)
         expiries = sorted(t.options)
         if not expiries:
-            return {"symbol": sym, "available": False, "reason": "no_options_listed"}
+            return {"symbol": sym, "available": False, **_empty_chain_reason(session, sym)}
 
         current_price = _goal_current_price(session, sym)
         if current_price is None:
