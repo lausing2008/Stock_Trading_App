@@ -38,6 +38,17 @@ const ITEMS: Item[] = [
   // Every claim below was re-derived against production or source before being recorded.
   // Of 18 checkable claims across the three documents, 18 were correct.
   {
+    id: 'AUD-A19-DEPLOYMASK',
+    tier: 384, severity: 'high', defaultStatus: 'done',
+    title: 'AUD-A19-DEPLOYMASK — my own deploy script reported EXIT=0 over a ~10 minute live API outage',
+    file: 'scripts/rebuild_backend_images.sh, docs/incidents/ci-failure-masking.md',
+    effort: 'S',
+    impact: 'Third instance of this bug class in two days, and self-inflicted ONE DAY after writing the lesson.',
+    what: 'While rebuilding all 12 images for A19, an ad-hoc inline loop ran `docker compose up -d --force-recreate $svc >/dev/null 2>&1` then polled health. api-gateway declares depends_on market-data condition service_healthy. market-data was briefly unhealthy — several services issue `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` at startup and concurrent starts DEADLOCK on it (confirmed in the logs: two processes each holding a lock the other wants). So compose CREATED the api-gateway container and refused to START it, printing the explanation straight into /dev/null. The health poll then inspected a container with no Health key at all, got a template error rather than a status, shrugged, and the script wrote EXIT=0.',
+    fix: 'The API was down ~10 minutes while the deploy reported success — static pages still served 200 from Next.js so the site LOOKED fine, but /api/health returned 500. Three independent masking mistakes, each sufficient alone: output discarded, a health check that could not tell "unhealthy" from "no health state at all" (and Created is the latter, so the WORST outcome read as the least alarming), and a bounded wait that expired into "continue anyway" instead of "stop and report". Replaced with scripts/rebuild_backend_images.sh: never discards output on failure, requires BOTH running AND healthy with a missing Health key treated as failure, stops at the first failure rather than compounding it across 12 interdependent services, exits non-zero naming what broke.',
+    implementedNote: 'VERIFIED IN BOTH DIRECTIONS — exit 1 for a service that cannot build, exit 0 on a clean run. A POSTSCRIPT THAT IS THE SAME MISTAKE AGAIN: the first attempt to verify that exit code ran `bash rebuild.sh no-such-service 2>&1 | tail -6; echo "exit=$?"` and read exit=0. `$?` after a pipeline is TAIL\'s status, not the script\'s — the script had been correct all along and the MEASUREMENT was wrong. THE PATTERN ACROSS ALL THREE: AUD-T400 was the test RUNNER, AUD-A17 was the ASSERTION, this is the DEPLOY SCRIPT — each one layer further out, all three the same shape, something that could only ever report success. Make it fail on purpose, and check you are reading the exit code of the thing you are testing rather than of the last command in your pipe.',
+  },
+  {
     id: 'AUD-A17-SETTLECOUNTER',
     tier: 384, severity: 'critical', defaultStatus: 'done',
     title: 'AUD-A17 — options settlement raised TypeError on EVERY successful settlement, then left the mutation uncommitted-but-live',
@@ -83,13 +94,13 @@ const ITEMS: Item[] = [
   },
   {
     id: 'AUD-A19-EQUITYMIXEDBASIS',
-    tier: 384, severity: 'medium', defaultStatus: 'todo',
+    tier: 384, severity: 'medium', defaultStatus: 'done',
     title: 'AUD-A19 — the options equity curve silently mixes pre- and post-A04 accounting, so any drawdown across it is meaningless',
     file: 'services/market-data/src/services/options_income_engine.py, options_income_equity_curve',
     effort: 'S',
     impact: 'The curve has exactly two rows and they use two different definitions of equity. Every metric derived from it right now is a comparison between those definitions, not between two market days.',
     what: 'NOT RAISED BY ANY OF THE THREE AUDITS — found while checking their equity arithmetic. The 2026-09-17 row reconciles as 66,467 + 186,600 - 3,087 = 249,980, exactly as the production audit reports. But the 2026-09-16 row is 178,567 + 73,100 = 251,667 with an implied short liability of EXACTLY ZERO, despite three open positions. The A04 liability fix landed 2026-09-17 in commit 0459097, so 09-16 is a pre-fix row. The apparent -1,687 move from 09-16 to 09-17 therefore conflates a real change with a change of definition.',
-    fix: 'Add a basis/version column to the curve so rows are never silently comparable across an accounting change, then either recompute the 09-16 row from the archived chain or drop it. Only two rows exist, so this is cheap now and gets permanently harder. Do not compute or publish drawdown from this curve until it is one basis.',
+    fix: 'New nullable equity_basis column, an _EQUITY_BASIS constant stamped on BOTH write paths (the update-today path and the insert path — stamping only one reproduces the bug for whichever runs second), the column returned per point by the equity-curve endpoint, and a sparkline that MARKS the discontinuity and states plainly that the step across it is not a return. The line is still drawn; hiding real data would be worse. Migration 013 backfills from each row\'s OWN ARITHMETIC rather than a cutoff date — a date-based backfill is a guess that mislabels any row written by an older deploy still running past the cutoff. Applied in production: 09-16 classified cash_collateral, 09-17 cash_collateral_less_liability, exactly as the tests predicted. Also registered migration 012, which existed in the directory but was never wired into run_migrations.sh, so nothing ran it.',
   },
   {
     id: 'AUD-C02-HORIZONBLOCKING',

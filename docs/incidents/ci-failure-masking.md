@@ -138,3 +138,63 @@ cannot go red for the bug it names is decoration.
 
 The check is the same in both cases and costs under a minute: break the code on purpose and
 confirm the test goes red.
+
+---
+
+## AUD-A19-DEPLOYMASK (2026-09-17) — a deploy script reported success over a live API outage
+
+The third instance of this bug class in two days, and the worst, because it was **self-inflicted
+one day after writing the lesson above**.
+
+**What happened.** While rebuilding all 12 backend images (AUD-A15), an ad-hoc inline loop did:
+
+```bash
+docker compose up -d --force-recreate "$svc" >/dev/null 2>&1
+for i in $(seq 1 60); do
+  [ "$(docker inspect -f '{{.State.Health.Status}}' stockai-$svc-1)" = "healthy" ] && break
+  sleep 3
+done
+echo "$svc: $(docker inspect -f '{{.State.Health.Status}}' stockai-$svc-1)"
+```
+
+`api-gateway` declares `depends_on: market-data: condition: service_healthy`. At that moment
+market-data was briefly **unhealthy** — several services start by issuing
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` and concurrent starts deadlock on it:
+
+```
+Process 25617 waits for AccessExclusiveLock on relation 33181; blocked by process 25559.
+Process 25559 waits for AccessShareLock  on relation 33167; blocked by process 25617.
+```
+
+So compose **created** the api-gateway container and refused to **start** it, printing an error
+— into `/dev/null`. The health poll then inspected a container that had no Health key at all,
+and `docker inspect` emitted a template error rather than a status. The loop moved on. The
+script wrote `EXIT=0`.
+
+**Result: the API was down for ~10 minutes while the deploy reported success.** Static pages
+still returned 200 from Next.js, so the site *looked* fine; `/api/health` returned 500.
+
+**Three separate masking mistakes, each sufficient on its own:**
+
+1. `>/dev/null 2>&1` discarded the one message that explained everything.
+2. The health check could not distinguish *unhealthy* from *no health state at all* — and
+   `Created` is the latter, so the worst outcome read as the least alarming.
+3. The loop's bounded wait expired into "continue anyway" rather than "stop and report".
+
+**Fix:** `scripts/rebuild_backend_images.sh`. Never discards output on failure; requires BOTH
+`running` and `healthy`, treating a missing Health key as failure; stops at the first failure
+rather than compounding it across 12 interdependent services; exits non-zero naming what broke.
+Verified in both directions — exit 1 with a service that cannot build, exit 0 on a clean run.
+
+**A postscript, because it is the same mistake again.** The first attempt to verify that exit
+code did `bash rebuild.sh no-such-service 2>&1 | tail -6; echo "exit=$?"` and read `exit=0` —
+`$?` after a pipeline is **tail's** status, not the script's. The script had been correct all
+along; the *measurement* was wrong. Re-run without the pipe: exit 1, as designed.
+
+### The lesson, third time
+
+Each instance has been one layer further out: the test runner (`make test`), the assertion
+(`settled is None`), and now the deploy script. All three shared one shape — **something that
+could only ever report success**. The check is always the same and always cheap: make it fail on
+purpose and confirm you can see it. And when you do check, make sure you are reading the exit
+code of the thing you are testing, not of the last command in your pipe.
