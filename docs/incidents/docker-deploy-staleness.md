@@ -524,3 +524,92 @@ Preserved verbatim. Formatting is unchanged from the index entry, including its 
 nothing is lost to a reflow.
 
 **AUD-DEPLOYDRIFT-T370REVERT (2026-09-10)** — found by RUNNING `scripts/check_deploy_drift.sh` while answering "everything looks good now?"; the honest answer was NO. **10 of 12 services ran a stale `shared/db/models.py`** missing T370's columns, because they were deployed by `docker cp` and **the reboot reverted them** — at least the NINTH time this pattern has bitten this repo. **Impact was assessed BEFORE rebuilding:** the DB columns exist, only 2 services read them, both were already clean, and the one apparent risk (`ml-prediction`) referenced `EarningsEvent` only in a **COMMENT** — so nothing was broken, but a stale shared model is a latent trap. Fixed by rebuilding all 10 as **IMAGES**, never another `docker cp`. **First-ever fully clean run: 0 of 12 drifted.** Also caught: EC2's checkout sat one commit behind because a docs commit was pushed AFTER the deploy's `git pull`. **Two things checked rather than dismissed:** 39 ml-prediction + 6 research-engine tracebacks were real but `QueuePool limit reached` confined to ONE MINUTE during the restart window (10 services reconnecting at once), zero since; and **load 9.65 on 2 vCPUs with iowait 0.00%** is a BUSY box, not a dying one — yesterday hit 7.65 at the same hour. **The distinction that matters: high load + LOW iowait is work; low user CPU + HIGH iowait is starvation.**
+
+---
+
+## AUD-A15-SHAREDDRIFT (2026-09-17) — the drift was resolved, and the reason it mattered was not the drift
+
+**The reported finding.** An external audit found 10 of 12 backend containers running a stale
+`shared/db` package. Independently re-verified by per-file SHA-256 across every `.py` under
+`shared/`: `market-data` and `api-gateway` matched exactly; the other ten differed in **exactly
+two paths each** — `db/models.py` and `db/__init__.py`, the 112 lines adding the three
+options-income tables plus their imports. No other shared file differed anywhere.
+
+Immediate compatibility risk was genuinely low: no other service references those models. The
+latent risk is sharper — **`db/__init__.py` imports the model exports eagerly**, so copying a new
+`__init__.py` over an old `models.py` fails at package import. Treat `shared/` as one versioned
+unit, never per-file.
+
+### What actually made this urgent
+
+Not the stale models. **The same day's own fixes were sitting in container writable layers.**
+
+`docker cp` writes to the container, not the image. Verified directly rather than assumed:
+
+```
+A17 settlement fix — running container : 1
+A17 settlement fix — image it came from: 0
+C01 cutoff fix     — running container : 2
+C01 cutoff fix     — image it came from: 0
+```
+
+So a `docker compose up --force-recreate` — which had been run twice that day for frontend
+builds — or a reboot that recreated containers would have **silently reverted the options
+settlement fix eight days before the first expiry**. That is not hypothetical here: the
+2026-08-05 entry in `ec2-reboot-and-tls-cert-incidents.md` records a full reboot reverting
+signal-engine to a pre-split image, and there had been five unexplained reboots that week.
+
+**A fix that exists only in a container layer is not deployed. It is staged, with an unknown
+expiry date.**
+
+### How it was done
+
+Rehearsed on `technical-analysis` first — chosen because it owns no scheduled work — to validate
+the whole loop (build → verify the image's own content → recreate → health) before touching
+anything critical. Then the two services carrying that day's fixes, then the remaining nine,
+with `api-gateway` **last** because nginx proxies the site through it. Image IDs were recorded
+first so any service could be rolled back with `docker tag <id> stockai-<svc>:latest`.
+
+Each build: `DOCKER_BUILDKIT=0 docker build -f services/<svc>/Dockerfile -t stockai-<svc>:latest .`
+(~52 s each), then `docker compose up -d --force-recreate <svc>`.
+
+**Acceptance, measured rather than assumed:**
+
+| Check | Before | After |
+|---|---|---|
+| Differing `shared/*.py` across 12 backends | 20 (2 × 10 services) | **0** |
+| `check_deploy_drift.sh` | 10 drifted | **12/12 OK** |
+| A17 + C01 survive `--force-recreate` | no | **yes** |
+| Containers healthy | 15 | 15 |
+
+The three boot-time catch-ups (`_avg_volume`, `_fixeff`, `_opthist`) all fired on the recreated
+market-data. `opthist.behind_at_startup_capturing` triggered for real — the archive was at
+09-16 with 09-17 expected — which is `AUD-T399-CRONRESTARTGAP`'s guard doing precisely its job
+against a restart this deploy caused.
+
+### The checker was also part of the problem
+
+`scripts/check_deploy_drift.sh` had two defects, both fixed:
+
+1. **It printed `Comparing local git HEAD (<sha>)` while hashing the WORKING TREE.** With
+   uncommitted edits that misattributes your own unstaged work to the commit — reporting drift
+   against a sha that does not contain the difference, or OK for a container matching edits that
+   were never committed. It now detects a dirty tree and says so:
+   `Comparing local WORKING TREE (dirty — differs from f4de347)`. Verified in both directions.
+2. **Its remediation advice was `docker cp … && docker restart`** — the exact session-scoped
+   practice that produces the drift it reports. A tool that detects a problem and then
+   recommends the cause of it will keep finding the same problem forever. It now prints the
+   durable rebuild command, plus the `shared/`-is-one-unit warning.
+
+### The lesson
+
+This file already said `docker cp` is a hotfix, not a deploy. What was missing was a way to
+**notice** when a hotfix had quietly become the only copy of an important fix. The check is one
+command and worth running after any `docker cp` you intend to keep:
+
+```bash
+docker run --rm --entrypoint sh $(docker inspect -f '{{.Config.Image}}' stockai-<svc>-1) \
+  -c 'grep -c "<a string unique to your fix>" /app/src/<path>'
+```
+
+If that prints `0`, the fix is one recreation away from gone.

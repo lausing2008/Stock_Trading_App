@@ -61,7 +61,19 @@ fi
 drifted=0
 checked=0
 
-echo "Comparing local git HEAD ($(cd "$REPO_ROOT" && git rev-parse --short HEAD)) against EC2 running containers..."
+# AUD-A15 (2026-09-17): this line used to read "Comparing local git HEAD (<sha>)" while every
+# hash below is computed from the WORKING TREE, not from `git show HEAD:<path>`. With
+# uncommitted edits present that misattributes your own unstaged work to the commit — it can
+# report drift against a sha that does not contain the difference, or report OK for a container
+# matching edits that were never committed. The comparison is still working-tree-based (that is
+# usually what you want when deploying), but it now SAYS so, and flags a dirty tree.
+_git_sha=$(cd "$REPO_ROOT" && git rev-parse --short HEAD)
+if [ -n "$(cd "$REPO_ROOT" && git status --porcelain -- shared services 2>/dev/null)" ]; then
+  _tree_state="WORKING TREE (dirty — differs from $_git_sha)"
+else
+  _tree_state="working tree (clean, == $_git_sha)"
+fi
+echo "Comparing local $_tree_state against EC2 running containers..."
 echo
 
 # shared/ is repo-root-level (not per-service) and gets docker cp'd into EVERY container's
@@ -106,9 +118,11 @@ for svc in "${SERVICES[@]}"; do
   elif [ "$local_hash" = "$remote_hash" ]; then
     src_ok=1
   else
-    echo "DRIFT $svc (src)    — running container's /app/src does NOT match local git HEAD"
-    echo "        redeploy with:"
-    echo "        ssh -i $EC2_KEY $EC2_HOST \"cd /home/ec2-user/Stock_Trading_App && docker cp services/$svc/src stockai-${svc}-1:/app/ && docker restart stockai-${svc}-1\""
+    echo "DRIFT $svc (src)    — running container's /app/src does NOT match the local working tree"
+    echo "        DURABLE fix (rebuild the image — survives recreation and reboots):"
+    echo "        ssh -i $EC2_KEY $EC2_HOST \"cd /home/ec2-user/Stock_Trading_App && git pull origin prod && DOCKER_BUILDKIT=0 docker build -q -f services/$svc/Dockerfile -t stockai-$svc:latest . && docker compose -f docker/docker-compose.yml up -d --force-recreate $svc\""
+    echo "        (a 'docker cp' hotfix also works but is SESSION-SCOPED — any recreation or"
+    echo "         reboot reverts it, which is the bug class this script exists to detect)"
   fi
 
   if [ -z "$shared_local_hash" ]; then
@@ -118,9 +132,11 @@ for svc in "${SERVICES[@]}"; do
   elif [ "$shared_local_hash" = "$shared_remote_hash" ]; then
     shared_ok=1
   else
-    echo "DRIFT $svc (shared) — running container's /app/shared does NOT match local git HEAD"
-    echo "        redeploy with:"
-    echo "        ssh -i $EC2_KEY $EC2_HOST \"cd /home/ec2-user/Stock_Trading_App && docker cp shared stockai-${svc}-1:/app/ && docker restart stockai-${svc}-1\""
+    echo "DRIFT $svc (shared) — running container's /app/shared does NOT match the local working tree"
+    echo "        DURABLE fix (rebuild the image):"
+    echo "        ssh -i $EC2_KEY $EC2_HOST \"cd /home/ec2-user/Stock_Trading_App && git pull origin prod && DOCKER_BUILDKIT=0 docker build -q -f services/$svc/Dockerfile -t stockai-$svc:latest . && docker compose -f docker/docker-compose.yml up -d --force-recreate $svc\""
+    echo "        NOTE: treat shared/ as ONE versioned unit — db/__init__.py imports the model"
+    echo "        exports eagerly, so copying a new __init__ over an old models.py fails on import."
   fi
 
   if [ "$src_ok" -eq 1 ] && [ "$shared_ok" -eq 1 ]; then
