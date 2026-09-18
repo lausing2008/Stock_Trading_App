@@ -61,8 +61,14 @@ def _front_month_rate() -> float | None:
 def _contract_prices(meetings: list[date]) -> dict[str, float]:
     """One quote per distinct contract month — never one per meeting, since two meetings can
     share a month and a duplicate fetch buys nothing."""
+    from ..services.fed_watch import next_month
+    # Both the meeting's own month AND the month after it: the preferred inference reads the
+    # post-meeting rate straight off the FOLLOWING month's contract when that month has no
+    # meeting of its own.
+    wanted = {contract_symbol(m.year, m.month) for m in meetings}
+    wanted |= {contract_symbol(*next_month(m.year, m.month)) for m in meetings}
     prices: dict[str, float] = {}
-    for sym in sorted({contract_symbol(m.year, m.month) for m in meetings}):
+    for sym in sorted(wanted):
         try:
             h = yf.Ticker(sym).history(period="5d")
             if not h.empty:

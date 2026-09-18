@@ -103,3 +103,70 @@ def test_a_late_month_meeting_is_flagged_low_precision():
                               prices={"ZQV26.CBT": 96.05}, current_rate=3.95)
     assert path[0]["low_precision"] is True
     assert path[0]["days_after_meeting"] == 2
+
+
+# ── The amplification bug, and the method that fixes it ──────────────────────────────────
+
+# Real ZQ closes measured 2026-09-18. The curve is smooth and entirely sensible — a gradual
+# rise from 3.895% to 4.46% across seven months — which is exactly what makes it a good
+# regression fixture: any absurd output from THESE inputs is the arithmetic's fault, not the
+# market's.
+_REAL_PRICES = {
+    "ZQV26.CBT": 96.1050,   # Oct 2026 -> 3.895%
+    "ZQX26.CBT": 95.9000,   # Nov 2026 -> 4.100%  (no FOMC meeting in November)
+    "ZQZ26.CBT": 95.8450,   # Dec 2026 -> 4.155%
+    "ZQF27.CBT": 95.7850,   # Jan 2027 -> 4.215%
+    "ZQG27.CBT": 95.7000,   # Feb 2027 -> 4.300%  (no FOMC meeting in February)
+    "ZQH27.CBT": 95.6300,   # Mar 2027 -> 4.370%
+    "ZQJ27.CBT": 95.5400,   # Apr 2027 -> 4.460%
+}
+_REAL_MEETINGS = [date(2026, 10, 28), date(2026, 12, 9), date(2027, 1, 27), date(2027, 3, 17)]
+
+
+def test_no_meeting_implies_an_absurd_move_from_a_smooth_curve():
+    """THE REGRESSION. The first live run reported 'Hike 100bp, 85.3%' for March 2027 from
+    precisely these prices.
+
+    Cause: meetings at Oct-28-of-31 and Jan-27-of-31 left the within-month solver dividing by
+    3 and 4 days, so ordinary pricing differences exploded — and each distorted result became
+    the next meeting's rate_before, compounding down the chain.
+
+    The futures curve moves ~57bp across seven months. No single meeting can honestly imply
+    100bp out of that."""
+    path = build_meeting_path(meetings=_REAL_MEETINGS, prices=_REAL_PRICES, current_rate=3.895)
+    for r in path:
+        if r["available"]:
+            assert abs(r["expected_change_bp"]) <= 50, (
+                f"{r['meeting_date']} implies {r['expected_change_bp']}bp — "
+                f"more than two increments from a curve that only moves ~57bp in total"
+            )
+
+
+def test_the_next_month_method_is_preferred_when_it_is_available():
+    """November 2026 and February 2027 contain no FOMC meeting, so the post-meeting rate is in
+    effect for every day of them and can be read straight off the contract — no division, so
+    nothing to amplify."""
+    path = build_meeting_path(meetings=_REAL_MEETINGS, prices=_REAL_PRICES, current_rate=3.895)
+    by_date = {r["meeting_date"]: r for r in path}
+    assert by_date["2026-10-28"]["method"] == "next_month_average"
+    assert by_date["2026-10-28"]["contract_used"] == "ZQX26.CBT"
+    assert by_date["2027-01-27"]["method"] == "next_month_average"
+    assert by_date["2027-01-27"]["contract_used"] == "ZQG27.CBT"
+
+
+def test_the_next_month_method_reads_the_rate_directly_off_the_contract():
+    """November implies 4.100%, so that IS the rate after the October meeting."""
+    path = build_meeting_path(meetings=[date(2026, 10, 28)], prices=_REAL_PRICES, current_rate=3.895)
+    assert path[0]["rate_after_pct"] == pytest.approx(4.100, abs=0.0001)
+    assert path[0]["low_precision"] is False, "reading a contract directly cannot be imprecise"
+
+
+def test_within_month_fallback_is_still_used_and_still_flagged():
+    """When the following month DOES hold a meeting, the fallback is the only option — and a
+    late-month meeting using it must stay flagged, because that is the amplifying path."""
+    path = build_meeting_path(
+        meetings=[date(2026, 10, 28), date(2026, 11, 20)],   # November now has a meeting
+        prices=_REAL_PRICES, current_rate=3.895)
+    oct_row = path[0]
+    assert oct_row["method"] == "within_month_decomposition"
+    assert oct_row["low_precision"] is True, "3 days of inference must be flagged"

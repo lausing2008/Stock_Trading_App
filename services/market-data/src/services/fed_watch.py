@@ -114,43 +114,72 @@ def probabilities(*, rate_before: float, rate_after: float) -> dict:
     }
 
 
+def next_month(y: int, m: int) -> tuple[int, int]:
+    return (y + 1, 1) if m == 12 else (y, m + 1)
+
+
 def build_meeting_path(*, meetings: list[date], prices: dict[str, float],
                        current_rate: float) -> list[dict]:
     """Chain the decomposition across consecutive meetings.
 
-    Each meeting's `rate_before` is the PREVIOUS meeting's derived `rate_after` — the market's
-    path is cumulative, and treating every meeting as starting from today's rate would double
-    count moves already priced into earlier ones.
+    TWO METHODS, and choosing between them is the whole correctness story.
 
-    Meetings whose contract is missing are returned with `available: False` rather than skipped,
-    so a gap in the futures data is visible instead of silently shortening the path.
+    (a) NEXT-MONTH (preferred). If the month AFTER the meeting contains no FOMC meeting, then
+        the post-meeting rate is in effect for every single day of it, so that contract's
+        implied average IS the post-meeting rate. No division, nothing to amplify.
+
+    (b) WITHIN-MONTH (fallback). Solve `avg = (D/N)*before + ((N-D)/N)*after` using the
+        meeting's own month. Correct, but its `N-D` denominator is tiny for a late-month
+        meeting — and this is not a theoretical worry. The first live run produced
+        "85% chance of a 100bp hike" at the March 2027 meeting from a perfectly smooth futures
+        curve (3.895% Oct rising to 4.46% Apr), purely because Oct-28-of-31 and Jan-27-of-31
+        each divided by 3 and 4 days respectively, and each distorted result became the next
+        meeting's input. Method (b) is now used only when (a) is unavailable, and its result is
+        marked `low_precision` so a reader is never handed an amplified number as though it
+        were as solid as the rest.
     """
     out: list[dict] = []
     rate_before = current_rate
+    meeting_months = {(m.year, m.month) for m in meetings}
+
     for m in meetings:
         sym = contract_symbol(m.year, m.month)
-        price = prices.get(sym)
+        ny, nm = next_month(m.year, m.month)
+        nsym = contract_symbol(ny, nm)
         n_days = calendar.monthrange(m.year, m.month)[1]
+        days_after = n_days - m.day
         row: dict = {
             "meeting_date": m.isoformat(), "contract": sym,
             "days_in_month": n_days, "meeting_day": m.day,
             "rate_before_pct": round(rate_before, 4),
         }
-        if price is None:
-            out.append({**row, "available": False, "reason": "no_futures_quote"})
-            continue
-        avg = implied_rate(price)
-        after = rate_after_meeting(implied_avg=avg, rate_before=rate_before,
-                                   meeting_day=m.day, days_in_month=n_days)
+
+        after = None
+        method = None
+        # (a) The clean case: next month is meeting-free, so its average IS the new rate.
+        if (ny, nm) not in meeting_months and nsym in prices:
+            after = implied_rate(prices[nsym])
+            method, row["contract_used"] = "next_month_average", nsym
+        # (b) Otherwise fall back to solving within the meeting's own month.
+        elif sym in prices:
+            avg = implied_rate(prices[sym])
+            row["implied_month_avg_pct"] = avg
+            row["contract_price"] = prices[sym]
+            after = rate_after_meeting(implied_avg=avg, rate_before=rate_before,
+                                       meeting_day=m.day, days_in_month=n_days)
+            method, row["contract_used"] = "within_month_decomposition", sym
+
         if after is None:
-            out.append({**row, "available": False, "reason": "meeting_on_final_day_of_month",
-                        "contract_price": price, "implied_month_avg_pct": avg})
+            reason = ("meeting_on_final_day_of_month" if days_after <= 0
+                      else "no_futures_quote")
+            out.append({**row, "available": False, "reason": reason})
             continue
+
         probs = probabilities(rate_before=rate_before, rate_after=after)
-        out.append({**row, "available": True, "contract_price": price,
-                    "implied_month_avg_pct": avg, "rate_after_pct": after,
-                    # See limit (1): a meeting near month-end leaves few days to infer from.
-                    "low_precision": (n_days - m.day) < _LOW_PRECISION_DAYS,
-                    "days_after_meeting": n_days - m.day, **probs})
+        out.append({**row, "available": True, "rate_after_pct": after, "method": method,
+                    # Only (b) can amplify; (a) reads the rate straight off a contract.
+                    "low_precision": (method == "within_month_decomposition"
+                                      and days_after < _LOW_PRECISION_DAYS),
+                    "days_after_meeting": days_after, **probs})
         rate_before = after
     return out
