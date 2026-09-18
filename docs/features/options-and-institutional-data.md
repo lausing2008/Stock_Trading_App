@@ -1233,3 +1233,88 @@ Both entry paths now shift to the next open day and **report it** (`entry_date_s
 the **shared** calendar at **noon UTC** (midnight would resolve to the previous ET day). Result:
 **5 of 6 symbols price where all 6 failed**; AVGO still fails for a genuine T380 contract-gap
 reason (its 2024 10:1 split re-struck the chain), now correctly named as such.
+
+---
+
+## T402-OPTIONS-STRATEGY-MATRIX (2026-09-18) — the other two legs, the combinations, and a calculator
+
+**The gap.** The Options Game Plan priced exactly two structures: BUY a put (protective) and
+SELL a call (covered). Those are two corners of a 2×2 grid. The missing two answer questions a
+holder asks constantly:
+
+| | BUY | SELL |
+|---|---|---|
+| **CALL** | **Long Call** — leveraged upside, loss capped at the premium | **Covered Call** — income, upside capped *(existed)* |
+| **PUT** | **Protective Put** — insurance, upside kept *(existed)* | **Cash-Secured Put** — paid to wait for a lower entry |
+
+And the structures people actually use are combinations:
+
+| Combo | Legs | What it buys you |
+|---|---|---|
+| **Collar** | long put @stop + short call @target | The short call funds the put — the usual answer to "hedging costs too much" |
+| **Bull call spread** | long ATM call + short call @target | Bullish for a fraction of the outright call, by selling upside past your own target |
+| **Bear put spread** | long put @stop + short put below | Cheaper partial hedge — but **unprotected again below the short strike** |
+
+All seven are built from the **same two chains the endpoint already fetched**. No extra network
+call, and `services/options_strategies.py` is pure, so every payoff is tested against a synthetic
+chain with no live quote.
+
+### The numbers each structure reports
+
+Net debit/credit, max loss, max profit, breakeven and the % move to reach it, capital required,
+and whether it needs shares. Two deliberate choices:
+
+- **Unbounded outcomes are `null`, not `0`.** A long call's max profit rendered as "$0.00" reads
+  as "this cannot make money". It renders as "Unlimited".
+- **Bid-ask spread is surfaced per leg.** Every price here is the *mid*. On a 100%-wide spread
+  the quoted "cost" is fiction, and the UI says so on the leg rather than burying it.
+
+### How the recommendation is made, and what it is not
+
+Two inputs, in this order:
+
+1. **What you already own.** A covered call or collar is unavailable to someone holding no
+   shares — a *hard constraint*, and there is a test asserting no shares-requiring structure is
+   ever recommended (or listed as an alternative) to a flat account.
+2. **Where IV sits in the symbol's own 1-year range.** Rich IV (≥60) favours **selling**
+   premium; cheap IV (≤30) favours **buying** it. This is the piece most people get backwards:
+   the same bullish view points at a long call when premium is cheap and at a cash-secured put
+   when it is expensive. Between 30 and 60 the engine says volatility gives no edge rather than
+   inventing one.
+
+**The AI signal is deliberately the weakest input.** The 2026-09 audits found the displayed
+confidence does not reliably order outcomes (`docs/audits/2026-09-17-september-cohort-audit-and-recommendations.md`
+§4.3: the 40+ confidence band had the *worst* hit rate of four). So the signal chooses among
+structures that already satisfy the constraints; it never overrides them.
+
+**When IV rank is unavailable the reasoning says so** rather than defaulting to "normal" and
+presenting the same confident ranking over a missing input.
+
+This ranks structures against a stated objective. It cannot know whether the trade wins, and it
+does not know your tax or margin situation — both stated on the card.
+
+### `/options-calculator`
+
+Build any structure leg by leg (action, call/put, strike, premium, contracts, plus shares held),
+with 8 presets from long call through iron condor and straddle. Exact expiry payoff, breakevens
+found by sign-change interpolation across 400 samples, max loss/profit with unbounded detected
+by whether the extreme sits at a sampled edge, capital required, and a payoff chart marking spot
+and each breakeven.
+
+**Entirely client-side arithmetic, and it says what it is not:** no theoretical value before
+expiry, no Greeks. That needs Black-Scholes and an IV surface this app does not compute — the
+Option Trading Guide already documents that as a known limitation. A confident mid-life P&L from
+a model that does not exist would be worse than none. Commissions, dividends and early
+assignment are also not modelled, and the page says so.
+
+### Backwards compatibility
+
+`protective_put` and `covered_call` keep their exact existing shape, so
+`compute_options_game_plan_snapshot()` and the batch endpoint — which read only those — are
+untouched. The matrix is built inside a `try/except`: a fault in the additive part can never take
+down the two legs that were the function's contract.
+
+The card's old guard was `if (!pp && !cc) return null`, which would have hidden the whole grid
+whenever the two original legs could not be priced — e.g. no stop-loss set, so nothing anchors a
+protective put, while a long call and cash-secured put are both perfectly constructible. Now it
+renders if *anything* could be built.
