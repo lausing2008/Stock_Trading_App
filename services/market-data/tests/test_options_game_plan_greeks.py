@@ -25,17 +25,23 @@ class _FakeStrikeGreeks:
 
 
 def _fake_ticker(current_price=100.0, expiries=("2026-10-01",)):
+    """Still needed for the PRICE fallback only. T404 moved the option CHAIN to Unusual
+    Whales, but yfinance remains the price source — and only its options endpoint broke."""
     t = MagicMock()
-    t.options = list(expiries)
     hist = MagicMock()
     hist.empty = False
     hist.__getitem__.return_value.iloc.__getitem__.return_value = current_price
     t.history.return_value = hist
-    chain = MagicMock()
-    chain.puts = []
-    chain.calls = []
-    t.option_chain.return_value = chain
     return t
+
+
+def _fake_uw_chain():
+    """T404: duck-types _uw_option_chain()'s return — .calls/.puts, which the snapshot job
+    hands straight to _options_chain_rows (itself patched to [] in these tests, since this
+    file isolates GREEKS matching, not chain parsing)."""
+    ch = MagicMock()
+    ch.calls, ch.puts, ch.as_of = [], [], "2026-09-17"
+    return ch
 
 
 def _session():
@@ -58,7 +64,9 @@ def _run(put_strike=95.0, call_strike=105.0, put_exp="2026-10-01", call_exp="202
          patch("src.services.unusual_whales.get_iv_rank", return_value=None), \
          patch("src.services.unusual_whales.get_greeks", side_effect=greeks_side_effect) as mock_greeks, \
          patch.object(m, "log"), \
-         patch("yfinance.Ticker", return_value=_fake_ticker(expiries=(put_exp, call_exp))):
+         patch("yfinance.Ticker", return_value=_fake_ticker(expiries=(put_exp, call_exp))), \
+         patch("src.api.routes._uw_expiries", return_value=[put_exp, call_exp]), \
+         patch("src.api.routes._uw_option_chain", return_value=_fake_uw_chain()):
         result = m.compute_options_game_plan_snapshot(_session(), stock_id=1, symbol="AAPL")
     return result, mock_greeks
 

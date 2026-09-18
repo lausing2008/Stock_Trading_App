@@ -22,6 +22,14 @@ class _FakeIVRank:
         self.iv_rank_1y = iv_rank_1y
 
 
+def _fake_uw_chain():
+    """T404-OPTIONS-UW-MIGRATION: the option CHAIN moved to Unusual Whales. yfinance is still
+    patched above because it remains the PRICE source — only its options endpoint broke."""
+    ch = MagicMock()
+    ch.calls, ch.puts, ch.as_of = [], [], "2026-09-17"
+    return ch
+
+
 def _fake_ticker(current_price=100.0, expiries=("2026-10-01",)):
     t = MagicMock()
     t.options = list(expiries)
@@ -53,6 +61,8 @@ def _stub_chain_and_plan():
 
 def test_expected_move_computed_from_a_real_fractional_iv():
     with patch("yfinance.Ticker", return_value=_fake_ticker()), \
+         patch("src.api.routes._uw_expiries", return_value=["2026-10-01"]), \
+         patch("src.api.routes._uw_option_chain", return_value=_fake_uw_chain()), \
          patch("src.services.unusual_whales.get_iv_rank", return_value=_FakeIVRank(0.35)), \
          patch("sqlalchemy.select"), \
          patch.object(m, "compute_options_game_plan_snapshot", wraps=m.compute_options_game_plan_snapshot):
@@ -69,6 +79,8 @@ def test_expected_move_normalizes_a_percent_style_iv_value_above_10():
     """A `volatility` value > 10.0 is treated as already a percent (e.g. 35.0 meaning 35%) and
     divided by 100 first — the defensive unit-ambiguity guard this module's docstring flags."""
     with patch("yfinance.Ticker", return_value=_fake_ticker()), \
+         patch("src.api.routes._uw_expiries", return_value=["2026-10-01"]), \
+         patch("src.api.routes._uw_option_chain", return_value=_fake_uw_chain()), \
          patch("src.services.unusual_whales.get_iv_rank", return_value=_FakeIVRank(35.0)):
         session = MagicMock()
         session.execute.return_value.scalars.return_value.first.return_value = None
@@ -80,6 +92,8 @@ def test_expected_move_normalizes_a_percent_style_iv_value_above_10():
 
 def test_expected_move_is_none_when_iv_rank_unavailable():
     with patch("yfinance.Ticker", return_value=_fake_ticker()), \
+         patch("src.api.routes._uw_expiries", return_value=["2026-10-01"]), \
+         patch("src.api.routes._uw_option_chain", return_value=_fake_uw_chain()), \
          patch("src.services.unusual_whales.get_iv_rank", return_value=None):
         session = MagicMock()
         session.execute.return_value.scalars.return_value.first.return_value = None
@@ -92,6 +106,8 @@ def test_expected_move_is_none_when_iv_rank_unavailable():
 def test_expected_move_is_none_when_volatility_is_none_or_zero():
     for vol in (None, 0.0):
         with patch("yfinance.Ticker", return_value=_fake_ticker()), \
+         patch("src.api.routes._uw_expiries", return_value=["2026-10-01"]), \
+         patch("src.api.routes._uw_option_chain", return_value=_fake_uw_chain()), \
              patch("src.services.unusual_whales.get_iv_rank", return_value=_FakeIVRank(vol)):
             session = MagicMock()
             session.execute.return_value.scalars.return_value.first.return_value = None
@@ -104,6 +120,8 @@ def test_iv_rank_failure_fails_open_leaving_the_rest_of_the_snapshot_intact():
     """A get_iv_rank() exception must only cost the expected_move fields, never the whole
     snapshot (which still has real put/call legs from the options chain)."""
     with patch("yfinance.Ticker", return_value=_fake_ticker()), \
+         patch("src.api.routes._uw_expiries", return_value=["2026-10-01"]), \
+         patch("src.api.routes._uw_option_chain", return_value=_fake_uw_chain()), \
          patch("src.services.unusual_whales.get_iv_rank", side_effect=RuntimeError("boom")):
         session = MagicMock()
         session.execute.return_value.scalars.return_value.first.return_value = None
@@ -119,6 +137,8 @@ def test_iv_rank_failure_fails_open_leaving_the_rest_of_the_snapshot_intact():
 
 def test_iv_rank_1y_is_captured_from_the_same_iv_rank_fetch():
     with patch("yfinance.Ticker", return_value=_fake_ticker()), \
+         patch("src.api.routes._uw_expiries", return_value=["2026-10-01"]), \
+         patch("src.api.routes._uw_option_chain", return_value=_fake_uw_chain()), \
          patch("src.services.unusual_whales.get_iv_rank", return_value=_FakeIVRank(0.35, iv_rank_1y=72.0)):
         session = MagicMock()
         session.execute.return_value.scalars.return_value.first.return_value = None
@@ -132,6 +152,8 @@ def test_iv_rank_1y_captured_even_when_volatility_itself_is_none():
     reading but a missing/zero volatility field should still get its IV Rank captured, even
     though expected_move_pct itself stays None in that case."""
     with patch("yfinance.Ticker", return_value=_fake_ticker()), \
+         patch("src.api.routes._uw_expiries", return_value=["2026-10-01"]), \
+         patch("src.api.routes._uw_option_chain", return_value=_fake_uw_chain()), \
          patch("src.services.unusual_whales.get_iv_rank", return_value=_FakeIVRank(None, iv_rank_1y=15.0)):
         session = MagicMock()
         session.execute.return_value.scalars.return_value.first.return_value = None
@@ -143,6 +165,8 @@ def test_iv_rank_1y_captured_even_when_volatility_itself_is_none():
 
 def test_iv_rank_1y_is_none_when_iv_rank_unavailable():
     with patch("yfinance.Ticker", return_value=_fake_ticker()), \
+         patch("src.api.routes._uw_expiries", return_value=["2026-10-01"]), \
+         patch("src.api.routes._uw_option_chain", return_value=_fake_uw_chain()), \
          patch("src.services.unusual_whales.get_iv_rank", return_value=None):
         session = MagicMock()
         session.execute.return_value.scalars.return_value.first.return_value = None

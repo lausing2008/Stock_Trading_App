@@ -45,14 +45,32 @@ def test_endpoint_is_registered():
     assert "def get_options_chain(" in _ROUTES_SOURCE
 
 
-def test_endpoint_reuses_the_same_yfinance_option_chain_call_as_options_flow():
-    """The whole point of this fix: no new/paid data source — same t.option_chain(exp) call
-    get_options_flow() already makes, just not thrown away this time."""
-    start = _ROUTES_SOURCE.index("def get_options_chain(")
-    end = _ROUTES_SOURCE.index("\n@router.get", start + 1)
-    body = _ROUTES_SOURCE[start:end]
-    assert "t.option_chain(exp)" in body
-    assert "yf.Ticker(sym)" in body
+def _fn_body(fn_marker: str) -> str:
+    """Source of exactly ONE function — stopping at the next TOP-LEVEL def, not at the next
+    `@router.get`. The looser marker made get_options_flow's slice 524 lines, swallowing
+    unrelated module-level helpers and producing assertions about code the function does not
+    contain. A body-extraction test is only as good as its boundary."""
+    start = _ROUTES_SOURCE.index(fn_marker)
+    rest = _ROUTES_SOURCE[start + len(fn_marker):]
+    nxt = rest.find("\ndef ")
+    return _ROUTES_SOURCE[start:start + len(fn_marker) + (nxt if nxt != -1 else len(rest))]
+
+
+def test_endpoint_reuses_the_same_chain_helper_as_options_flow():
+    """Originally asserted `t.option_chain(exp)` and `yf.Ticker(sym)`, because the point then
+    was "no new/paid data source — reuse the call options-flow already makes".
+
+    T404-OPTIONS-UW-MIGRATION inverted the premise: yfinance's options endpoint began returning
+    empty for EVERY symbol on ~2026-09-15, and the chain moved to Unusual Whales, which this
+    app already pays for and which carries real per-contract greeks yfinance never had.
+
+    The INVARIANT the test existed to protect is unchanged and still worth pinning: these two
+    endpoints must read the chain through the SAME helper, so they cannot drift onto different
+    providers or different staleness."""
+    for fn in ("def get_options_chain(", "def get_options_flow("):
+        body = _fn_body(fn)
+        assert "_uw_option_chain(session, sym, exp)" in body, f"{fn} must use the shared UW helper"
+        assert "yf.Ticker(sym)" not in body, f"{fn} must not fetch a chain from yfinance"
 
 
 # ── behavioral checks against the real, extracted _options_chain_rows() ───────────────────────
@@ -131,12 +149,12 @@ def test_volume_and_oi_are_plain_ints_not_floats():
 
 def test_get_options_chain_sorts_expiries_before_defaulting_to_the_nearest_one():
     """get_options_chain()'s `expiry` param defaults to expiries[0] when omitted — that must be
-    the CHRONOLOGICALLY nearest expiry, not whatever yfinance's t.options happened to return
-    first (an undocumented implementation detail, not a contract)."""
+    the CHRONOLOGICALLY nearest expiry, not whatever order the provider happened to return
+    (an implementation detail, not a contract — true of UW exactly as it was of yfinance)."""
     start = _ROUTES_SOURCE.index("def get_options_chain(")
     end = _ROUTES_SOURCE.index("\n@router.get", start + 1)
     body = _ROUTES_SOURCE[start:end]
-    assert "expiries = sorted(t.options)" in body
+    assert "expiries = sorted(_uw_expiries(session, sym))" in body
     # The default-to-first-expiry logic must still be present (this is a sort-before-index
     # fix, not a removal of the "default to nearest" behavior).
     assert "expiries[0]" in body
@@ -148,5 +166,5 @@ def test_get_options_flow_sorts_expiries_before_taking_the_nearest_four():
     start = _ROUTES_SOURCE.index("def get_options_flow(")
     end = _ROUTES_SOURCE.index("\n@router.get", start + 1)
     body = _ROUTES_SOURCE[start:end]
-    assert "expiries = sorted(t.options)" in body
+    assert "expiries = sorted(_uw_expiries(session, sym))" in body
     assert "expiries[:4]" in body

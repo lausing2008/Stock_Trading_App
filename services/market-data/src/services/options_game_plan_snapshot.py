@@ -121,8 +121,12 @@ def compute_options_game_plan_snapshot(session, stock_id: int, symbol: str) -> O
     try:
         import yfinance as yf
 
-        t = yf.Ticker(symbol)
-        expiries = sorted(t.options)
+        # T404-OPTIONS-UW-MIGRATION: the chain now comes from Unusual Whales. This job is the
+        # reason the outage was measurable at all — it produced zero rows on 09-15/16/17 while
+        # yfinance returned empty, and that gap is what proved the failure predated the deploy
+        # it was blamed on.
+        from ..api.routes import _uw_expiries, _uw_option_chain
+        expiries = sorted(_uw_expiries(session, symbol))
         if not expiries:
             return None
 
@@ -159,14 +163,14 @@ def compute_options_game_plan_snapshot(session, stock_id: int, symbol: str) -> O
         call_rows: list[dict] = []
         try:
             if put_exp:
-                put_rows = _options_chain_rows(t.option_chain(put_exp).puts)
+                put_rows = _options_chain_rows(_uw_option_chain(session, symbol, put_exp).puts)
         except Exception as exc:
             log.warning("options_game_plan_snapshot.put_fetch_failed", symbol=symbol, expiry=put_exp, error=str(exc))
         try:
             if call_exp == put_exp:
-                call_rows = _options_chain_rows(t.option_chain(call_exp).calls) if call_exp else []
+                call_rows = _options_chain_rows(_uw_option_chain(session, symbol, call_exp).calls) if call_exp else []
             elif call_exp:
-                call_rows = _options_chain_rows(t.option_chain(call_exp).calls)
+                call_rows = _options_chain_rows(_uw_option_chain(session, symbol, call_exp).calls)
         except Exception as exc:
             log.warning("options_game_plan_snapshot.call_fetch_failed", symbol=symbol, expiry=call_exp, error=str(exc))
 

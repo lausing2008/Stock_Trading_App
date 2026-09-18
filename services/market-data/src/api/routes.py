@@ -3377,10 +3377,10 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
         import yfinance as yf
         import pandas as pd
 
-        t = yf.Ticker(sym)
+        # T404: the option chain now comes from Unusual Whales, not yfinance.
         # AUD265-GAMMA-ASSUMES-SORTED-EXPIRIES: sorted() makes "nearest 4 expiries" structural
         # rather than dependent on yfinance's own (undocumented) ordering of t.options.
-        expiries = sorted(t.options)
+        expiries = sorted(_uw_expiries(session, sym))
         if not expiries:
             result = {"symbol": sym, "available": False, **_empty_chain_reason(session, sym)}
             return result
@@ -3391,7 +3391,7 @@ def get_options_flow(symbol: str, session: Session = Depends(get_session)):
 
         for exp in expiries[:4]:  # nearest four expiries
             try:
-                chain = t.option_chain(exp)
+                chain = _uw_option_chain(session, sym, exp)
             except Exception:
                 continue
 
@@ -3607,6 +3607,65 @@ def compute_options_pressure_score(
 
 
 _OPTIONS_CHAIN_TTL = 900  # 15-min — matches _OPTIONS_TTL's own refresh cadence
+
+
+# ── T404-OPTIONS-UW-MIGRATION ────────────────────────────────────────────────────────────
+# Every option chain now comes from Unusual Whales, not yfinance. Yahoo's options endpoint
+# began returning empty for EVERY symbol on ~2026-09-15 (crumb fetch 429'd) and four panels
+# went dark for three days; meanwhile UW's chain was current the whole time and the
+# options-income engine was already using it.
+#
+# This is a DUCK-TYPE of yfinance's `option_chain(exp)` result — `.calls`/`.puts` as DataFrames
+# carrying yfinance's OWN column names — deliberately, so the three consumers keep their
+# existing pandas bodies (`calls["openInterest"].sum()`, `.fillna(0)`, `_options_chain_rows()`)
+# untouched. Rewriting three loop bodies to a new shape would have been the same migration with
+# strictly more ways to get it wrong.
+#
+# WHAT CHANGES FOR THE READER: UW serves the chain of a SETTLED session, not live quotes. The
+# `as_of` comes back with it and callers must surface it — a settled bid shown as a live quote
+# is the A06 finding already on the tracker.
+class _ChainPair:
+    __slots__ = ("calls", "puts", "as_of")
+
+    def __init__(self, calls, puts, as_of):
+        self.calls, self.puts, self.as_of = calls, puts, as_of
+
+
+def _uw_option_chain(session: Session, sym: str, exp: str | None = None, spot: float | None = None):
+    """UW chain for one expiry, shaped exactly like yfinance's option_chain(). Raises on
+    unavailability so existing `try/except Exception: continue` call sites behave as before."""
+    import pandas as _pd
+    from datetime import date as _date
+    from ..services.uw_option_chain import get_chain as _uw_get_chain
+
+    exp_d = _date.fromisoformat(exp) if exp else None
+    ch = _uw_get_chain(session, sym, expiry=exp_d, spot=spot)
+    if not ch["available"]:
+        raise ValueError(f"no UW chain for {sym} {exp or ''}: {ch.get('reason')}")
+
+    def _df(rows):
+        return _pd.DataFrame([{
+            "strike": r["strike"], "bid": r["bid"], "ask": r["ask"],
+            "lastPrice": r["last_price"], "volume": r["volume"],
+            "openInterest": r["oi"],
+            # yfinance stored IV as a FRACTION and _options_chain_rows multiplies by 100; the
+            # adapter hands back percent, so divide here to keep that contract intact.
+            "impliedVolatility": (r["iv"] or 0) / 100.0,
+            "inTheMoney": r["itm"],
+            # Beyond anything yfinance ever provided.
+            "delta": r.get("delta"), "gamma": r.get("gamma"), "theta": r.get("theta"),
+            "vega": r.get("vega"), "rho": r.get("rho"),
+        } for r in rows] or [], columns=[
+            "strike", "bid", "ask", "lastPrice", "volume", "openInterest",
+            "impliedVolatility", "inTheMoney", "delta", "gamma", "theta", "vega", "rho"])
+
+    return _ChainPair(_df(ch["calls"]), _df(ch["puts"]), ch["as_of"])
+
+
+def _uw_expiries(session: Session, sym: str) -> list[str]:
+    """Replacement for `sorted(yf.Ticker(sym).options)`."""
+    from ..services.uw_option_chain import get_expiries as _uw_get_expiries
+    return _uw_get_expiries(session, sym)
 
 
 def _options_chain_rows(df) -> list[dict]:
@@ -3838,11 +3897,11 @@ def get_options_chain(symbol: str, expiry: str | None = None, session: Session =
     """
     sym = symbol.upper()
     try:
-        t = yf.Ticker(sym)
+        # T404: the option chain now comes from Unusual Whales, not yfinance.
         # AUD265-GAMMA-ASSUMES-SORTED-EXPIRIES: sorted() makes "the nearest expiry" default
         # structural rather than dependent on yfinance's own (undocumented) ordering of
         # t.options.
-        expiries = sorted(t.options)
+        expiries = sorted(_uw_expiries(session, sym))
         if not expiries:
             return {"symbol": sym, "available": False, **_empty_chain_reason(session, sym)}
 
@@ -3857,7 +3916,7 @@ def get_options_chain(symbol: str, expiry: str | None = None, session: Session =
             rdb = None
 
         try:
-            chain = t.option_chain(exp)
+            chain = _uw_option_chain(session, sym, exp)
         except Exception as exc:
             log.warning("options_chain.fetch_failed", symbol=sym, expiry=exp, error=str(exc))
             return {"symbol": sym, "available": False, "reason": "fetch_error"}
@@ -3971,15 +4030,15 @@ def get_options_expirations(symbol: str, session: Session = Depends(get_session)
         rdb = None
 
     try:
-        t = yf.Ticker(sym)
-        expiries = sorted(t.options)
+        # T404: the option chain now comes from Unusual Whales, not yfinance.
+        expiries = sorted(_uw_expiries(session, sym))
         if not expiries:
             return {"symbol": sym, "available": False, **_empty_chain_reason(session, sym)}
 
         per_expiry = []
         for exp in expiries[:6]:
             try:
-                chain = t.option_chain(exp)
+                chain = _uw_option_chain(session, sym, exp)
             except Exception:
                 continue
             calls = chain.calls.fillna(0)
@@ -4596,14 +4655,16 @@ def get_options_game_plan(
     """
     sym = symbol.upper()
     try:
-        t = yf.Ticker(sym)
-        expiries = sorted(t.options)
+        # T404: the option chain now comes from Unusual Whales, not yfinance.
+        expiries = sorted(_uw_expiries(session, sym))
         if not expiries:
             return {"symbol": sym, "available": False, **_empty_chain_reason(session, sym)}
 
         current_price = _goal_current_price(session, sym)
         if current_price is None:
-            hist = t.history(period="1d")
+            # yfinance is still the PRICE source and still works — only its OPTIONS endpoint
+            # broke. Kept deliberately rather than swapped for symmetry's sake.
+            hist = yf.Ticker(sym).history(period="1d")
             current_price = float(hist["Close"].iloc[-1]) if not hist.empty else None
         if not current_price:
             return {"symbol": sym, "available": False, "reason": "no_price"}
@@ -4618,16 +4679,17 @@ def get_options_game_plan(
 
         put_rows: list[dict] = []
         call_rows: list[dict] = []
+        chain_as_of: str | None = None
         try:
             if put_exp:
-                put_rows = _options_chain_rows(t.option_chain(put_exp).puts)
+                _pc = _uw_option_chain(session, sym, put_exp, spot=current_price)
+                put_rows, chain_as_of = _options_chain_rows(_pc.puts), _pc.as_of
         except Exception as exc:
             log.warning("options_game_plan.put_fetch_failed", symbol=sym, expiry=put_exp, error=str(exc))
         try:
-            if call_exp == put_exp:
-                call_rows = _options_chain_rows(t.option_chain(call_exp).calls) if call_exp else []
-            elif call_exp:
-                call_rows = _options_chain_rows(t.option_chain(call_exp).calls)
+            if call_exp:
+                _cc = _uw_option_chain(session, sym, call_exp, spot=current_price)
+                call_rows, chain_as_of = _options_chain_rows(_cc.calls), _cc.as_of
         except Exception as exc:
             log.warning("options_game_plan.call_fetch_failed", symbol=sym, expiry=call_exp, error=str(exc))
 
@@ -4644,6 +4706,10 @@ def get_options_game_plan(
             today=today,
         )
         plan["symbol"] = sym
+        # T404: these are SETTLED closes from UW, not live quotes. Say so, every time — an
+        # archived bid presented as a current fill is the A06 finding already on the tracker.
+        plan["chain_as_of"] = chain_as_of
+        plan["chain_source"] = "unusual_whales"
         matrix = plan.get("strategy_matrix") or {}
         plan["available"] = bool(
             plan["protective_put"] or plan["covered_call"]
