@@ -22,7 +22,12 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # AUD-A18: was "3.11" while every service Dockerfile is python:3.12-slim and
+          # production runs 3.12.14 — so CI was testing against a Python this project uses
+          # NOWHERE. The first CI run on prod failed with "f-string expression part cannot
+          # include a backslash" in email_service.py:2254: valid 3.12 (PEP 701), a
+          # SyntaxError in 3.11. CI must track the deployed runtime, not lag it.
+          python-version: "3.12"
           cache: pip
 
       - name: Install per-service dependencies

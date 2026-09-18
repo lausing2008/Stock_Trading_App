@@ -1,4 +1,4 @@
-.PHONY: help build up down logs ps test fmt clean migrate seed
+.PHONY: help build up down logs ps test fmt clean migrate seed test-all test-frontend
 
 help:
 	@echo "Stock Intelligence Platform"
@@ -66,3 +66,16 @@ seed:
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
+
+# AUD-A18-CIPRODBRANCH (2026-09-17): `make test` covers ONLY the 12 Python services. The
+# frontend has its own 291-test vitest suite plus a typecheck, which CI runs as a SEPARATE
+# job — so a local "make test: all services passed" is NOT the same green CI reports.
+# That gap is not theoretical: it shipped a Tier 384 whose items rendered NOTHING (they were
+# absent from TIER_LABEL/TIER_COLOR, so the render loop never visited them). The guard for it,
+# tierLabelCoverage.test.ts, already existed and worked — it simply was never run locally.
+# Use `make test-all` before pushing; it is what CI actually checks.
+test-all: test test-frontend
+
+test-frontend:
+	@cd frontend && npx vitest run && npx tsc --noEmit -p tsconfig.json
+	@echo "make test-frontend: frontend tests + typecheck passed"
