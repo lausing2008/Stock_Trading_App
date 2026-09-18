@@ -113,6 +113,14 @@ def _compute_ai_signal_win_rate_metrics(session: Session, since: date | None = N
     return {"by_bucket": by_bucket, "total_resolved_5d": total_resolved_5d}
 
 
+# AUD-C01-FIXSNAPSHOTCUTOFF: which domains can actually be measured. A dict rather than an
+# inline `!= "ai_signal"` so adding a domain is a one-line registration, and so both the snapshot
+# route and the dashboard read the SAME source of truth for "is this measurable".
+_SNAPSHOT_METRIC_FNS = {
+    "ai_signal": _compute_ai_signal_win_rate_metrics,
+}
+
+
 @router.get("")
 def list_fix_records(session: Session = Depends(get_session), _: str = Depends(get_current_username)):
     """All tracked fixes with their baseline + every snapshot taken so far — the data behind
@@ -130,6 +138,9 @@ def list_fix_records(session: Session = Depends(get_session), _: str = Depends(g
             "baseline_metrics": r.baseline_metrics_json,
             "success_criteria": r.success_criteria,
             "recheck_after_days": r.recheck_after_days,
+            # AUD-C01: a registered fix whose domain has no metric function is NOT silently
+            # equivalent to one that simply has no snapshots yet. Say which it is.
+            "snapshot_supported": r.domain in _SNAPSHOT_METRIC_FNS,
             "snapshots": [
                 {
                     "taken_at": s.taken_at.isoformat(),
@@ -151,10 +162,13 @@ def take_fix_snapshot(fix_id: str, session: Session = Depends(get_session), _: s
     FixRecord.recheck_after_days cadence) — each call is a genuine new timestamped snapshot,
     never an update to a prior one, matching FixSnapshot's own append-only design.
 
-    Only AI-Signal-domain fixes are computable today (the one metric function implemented so
-    far); a future domain's fix registers its own metric function and this dispatch grows a
-    new branch — never a generic "compute something" fallback that would silently produce a
-    meaningless snapshot for a domain with no real metric definition yet.
+    Dispatch is via _SNAPSHOT_METRIC_FNS — a future domain's fix registers its own metric
+    function there. There is deliberately no generic "compute something" fallback, which would
+    silently produce a meaningless snapshot for a domain with no real metric definition; an
+    unsupported domain records an EXPLICIT unsupported snapshot instead.
+
+    Metrics are computed over the POST-FIX cohort only (signal_date >= the record's own
+    fixed_at). See AUD-C01-FIXSNAPSHOTCUTOFF below for why that is the whole point.
     """
     record = session.execute(
         select(FixRecord).where(FixRecord.fix_id == fix_id)
@@ -162,20 +176,58 @@ def take_fix_snapshot(fix_id: str, session: Session = Depends(get_session), _: s
     if record is None:
         raise HTTPException(404, f"No FixRecord registered for fix_id={fix_id!r}")
 
-    if record.domain != "ai_signal":
-        raise HTTPException(400, f"No snapshot metric function implemented yet for domain={record.domain!r}")
+    metric_fn = _SNAPSHOT_METRIC_FNS.get(record.domain)
+    if metric_fn is None:
+        # AUD-C01: previously a bare HTTP 400. That made the scheduled recheck log a failure for
+        # this record EVERY DAY FOREVER while still reporting the job itself as "ok", and left no
+        # durable trace that the fix is unmeasurable. Record an explicit unsupported snapshot
+        # instead: it advances the recheck clock, it is visible on the dashboard, and it says
+        # "could not measure" rather than the much worse "measured nothing".
+        unsupported = {
+            "status": "unsupported",
+            "domain": record.domain,
+            "reason": f"no snapshot metric function is implemented for domain={record.domain!r}",
+            "supported_domains": sorted(_SNAPSHOT_METRIC_FNS),
+        }
+        snapshot = FixSnapshot(
+            fix_record_id=record.id,
+            metrics_json=unsupported,
+            sample_size=None,
+            note=f"UNSUPPORTED DOMAIN — {record.domain!r} has no metric function; nothing was measured.",
+        )
+        session.add(snapshot)
+        session.commit()
+        log.warning("fix_effectiveness.snapshot_unsupported_domain", fix_id=fix_id, domain=record.domain)
+        return {"fix_id": fix_id, "status": "unsupported", **unsupported}
 
-    metrics = _compute_ai_signal_win_rate_metrics(session)
+    # AUD-C01-FIXSNAPSHOTCUTOFF: the `since` cutoff. This argument existed, was documented in
+    # _compute_ai_signal_win_rate_metrics' own docstring, was spelled out in this record's stored
+    # success_criteria ("compare only NEW rows... mixing them would understate any real
+    # improvement"), and had its own passing unit test — and this, its only call site, omitted it.
+    # A snapshot without it measures ALL history, including the exact pre-fix population the fix
+    # was meant to correct, and so dilutes the very improvement it is supposed to detect.
+    since = record.fixed_at.date()
+    metrics = metric_fn(session, since=since)
+    metrics["since"] = since.isoformat()
+    # Labelled, per the audit: signal_date is a DATE, so signals raised EARLIER on the fix's own
+    # deployment day are included. That is a deliberate, disclosed inclusion, not a silent one.
+    metrics["cutoff_note"] = (
+        f"signal_date >= {since.isoformat()} (date-granular; includes same-day signals raised "
+        f"before the fix landed at {record.fixed_at.isoformat()})"
+    )
     snapshot = FixSnapshot(
         fix_record_id=record.id,
         metrics_json=metrics,
         sample_size=metrics["total_resolved_5d"],
+        note=f"post-fix cohort only: signal_date >= {since.isoformat()}",
     )
     session.add(snapshot)
     session.commit()
-    log.info("fix_effectiveness.snapshot_taken", fix_id=fix_id, sample_size=metrics["total_resolved_5d"])
+    log.info("fix_effectiveness.snapshot_taken", fix_id=fix_id,
+             sample_size=metrics["total_resolved_5d"], since=since.isoformat())
     return {
         "fix_id": fix_id,
+        "status": "ok",
         "taken_at": snapshot.taken_at.isoformat() if snapshot.taken_at else datetime.now(timezone.utc).isoformat(),
         "metrics": metrics,
     }

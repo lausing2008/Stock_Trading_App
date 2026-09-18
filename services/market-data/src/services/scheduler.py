@@ -6323,6 +6323,8 @@ def recheck_fix_effectiveness() -> None:
             records = session.execute(select(FixRecord)).scalars().all()
             now = datetime.now(timezone.utc)
             due = 0
+            ok_n = 0
+            failed_ids: list[str] = []
             for record in records:
                 latest_snapshot_at = session.execute(
                     select(func.max(FixSnapshot.taken_at)).where(FixSnapshot.fix_record_id == record.id)
@@ -6334,10 +6336,24 @@ def recheck_fix_effectiveness() -> None:
                 due += 1
                 try:
                     _post(f"{_settings.signal_engine_url}/fix-effectiveness/{record.fix_id}/snapshot")
+                    ok_n += 1
                 except Exception as exc:
+                    failed_ids.append(record.fix_id)
                     log.warning("fix_effectiveness.recheck_failed", fix_id=record.fix_id, error=str(exc))
-        _record_job_status("recheck_fix_effectiveness", "ok", time.monotonic() - _t0)
-        log.info("fix_effectiveness.recheck_done", total_records=len(records), due=due)
+        # AUD-C01: this used to record "ok" unconditionally — so a run in which EVERY due
+        # snapshot failed still reported success, and the job status was not a signal at all.
+        # An unsupported domain no longer reaches here as a failure: the route records an
+        # explicit "unsupported" snapshot and returns 200, so anything still raising is a real
+        # fault worth surfacing.
+        if failed_ids:
+            _record_job_status(
+                "recheck_fix_effectiveness", "error", time.monotonic() - _t0,
+                f"{len(failed_ids)}/{due} due snapshots failed: {', '.join(failed_ids)}",
+            )
+        else:
+            _record_job_status("recheck_fix_effectiveness", "ok", time.monotonic() - _t0)
+        log.info("fix_effectiveness.recheck_done", total_records=len(records), due=due,
+                 succeeded=ok_n, failed=len(failed_ids))
     except Exception as exc:
         log.error("fix_effectiveness.recheck_job_failed", error=str(exc), exc_info=True)
         _record_job_status("recheck_fix_effectiveness", "error", time.monotonic() - _t0, str(exc))
@@ -12923,10 +12939,53 @@ def start_scheduler() -> None:
     # FixRecord — realistically a handful of rows total), no real reason to wait for
     # post-close specifically, but placed right after signal_outcomes-touching jobs so any
     # snapshot taken the same day reflects that day's own evaluate_signal_outcomes() run.
+    # AUD-C01-FIXSNAPSHOTCUTOFF: misfire_grace_time is raised from _JOB_DEFAULTS' 60s to 6h.
+    # Same reasoning as AUD-T398-MISFIREGAP (docs/incidents/scheduler-misfire-data-gaps.md): 60s
+    # makes APScheduler DISCARD a run that a brief restart delayed, and this job's whole purpose
+    # is to notice a date having passed. Firing late is harmless — it measures settled outcomes.
     _scheduler.add_job(
         recheck_fix_effectiveness,
         CronTrigger(hour=18, minute=5, day_of_week="mon-fri", timezone="America/New_York"),
-        id="fix_effectiveness_recheck_daily", replace_existing=True, **_JOB_DEFAULTS,
+        id="fix_effectiveness_recheck_daily", replace_existing=True,
+        max_instances=1, coalesce=True, misfire_grace_time=6 * 3600,
+    )
+
+    # ── AUD-C01: startup catch-up, same pattern as _opthist_startup_check above ──
+    # CronTrigger recomputes its next fire time from process start, so a restart after 18:05 ET
+    # silently skips that day entirely — and this service restarts often. That is exactly what
+    # happened: both registered fixes came due 2026-09-17 and the job's last recorded run was
+    # 2026-09-14, leaving ZERO snapshots for two overdue fixes. Unlike the chain-capture case
+    # there is no rolling data window here (signal_outcomes rows persist), so a late snapshot is
+    # not a lost one — but "due" is a date that passes silently, so nothing would ever notice.
+    def _fixeff_startup_check() -> None:
+        try:
+            from db import SessionLocal as _SL
+            with _SL() as _s:
+                _records = _s.execute(select(FixRecord)).scalars().all()
+                _now = datetime.now(timezone.utc)
+                _overdue = 0
+                for _r in _records:
+                    _latest = _s.execute(
+                        select(func.max(FixSnapshot.taken_at)).where(FixSnapshot.fix_record_id == _r.id)
+                    ).scalar_one_or_none()
+                    _last = _latest or _r.fixed_at
+                    _last_utc = _last if _last.tzinfo else _last.replace(tzinfo=timezone.utc)
+                    if (_now - _last_utc).days >= _r.recheck_after_days:
+                        _overdue += 1
+            if not _overdue:
+                return  # nothing due — skip entirely rather than taking a redundant snapshot
+            log.warning("fix_effectiveness.overdue_at_startup_rechecking", overdue=_overdue)
+            recheck_fix_effectiveness()
+        except Exception as exc:
+            # Never let a startup check take the scheduler (or the service) down with it.
+            log.error("fix_effectiveness.startup_check_failed", error=str(exc), exc_info=True)
+
+    _scheduler.add_job(
+        _fixeff_startup_check,
+        "date",
+        run_date=datetime.now(timezone.utc) + timedelta(seconds=120),
+        id="fixeff_startup_check", replace_existing=True,
+        max_instances=1, coalesce=True, misfire_grace_time=3600,
     )
 
     # ── T264-SQUEEZEALERT-PERFORMANCE: squeeze/gamma-unwind alert outcome evaluator — 18:15 ET ──

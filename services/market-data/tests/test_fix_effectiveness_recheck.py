@@ -72,3 +72,49 @@ def test_job_does_not_send_any_email():
     """Structural confirmation this is genuinely a non-alert job — no email-sending call
     anywhere in its body."""
     assert "send_" not in _JOB_SOURCE
+
+
+# ── AUD-C01-FIXSNAPSHOTCUTOFF (2026-09-17) ────────────────────────────────────────────
+# Production evidence that drove these: both registered fixes came due 2026-09-17 with 14-day
+# recheck windows, and fix_snapshots held ZERO rows. Two independent causes — the job's last
+# recorded run was 2026-09-14 (a bare CronTrigger silently skips a day when the process restarts
+# after its slot), and a run in which every due snapshot failed still recorded itself as "ok".
+
+def test_job_reports_error_when_a_due_snapshot_fails():
+    """The job used to record "ok" unconditionally, so its status could not distinguish "all
+    snapshots taken" from "every snapshot failed". A status that cannot go bad is not a status."""
+    assert 'if failed_ids:' in _JOB_SOURCE
+    assert '"recheck_fix_effectiveness", "error"' in _JOB_SOURCE
+    assert "due snapshots failed" in _JOB_SOURCE
+
+
+def test_job_counts_successes_and_failures_separately():
+    assert "failed_ids.append(record.fix_id)" in _JOB_SOURCE
+    assert "succeeded=ok_n" in _JOB_SOURCE
+
+
+def test_a_startup_catch_up_job_is_registered():
+    """CronTrigger recomputes its next fire time from PROCESS START, so a restart after the
+    18:05 ET slot skips that day entirely — and this service restarts often. Same bug class as
+    AUD-T398-MISFIREGAP / AUD-T399-CRONRESTARTGAP; same remedy as _opthist_startup_check."""
+    assert 'id="fixeff_startup_check"' in _SCHEDULER_SOURCE
+    assert "def _fixeff_startup_check(" in _SCHEDULER_SOURCE
+
+
+def test_startup_check_skips_entirely_when_nothing_is_overdue():
+    """A catch-up that always fires would take a redundant snapshot on every restart, polluting
+    the very series it exists to protect."""
+    start = _SCHEDULER_SOURCE.index("def _fixeff_startup_check(")
+    body = _SCHEDULER_SOURCE[start:_SCHEDULER_SOURCE.index("_scheduler.add_job(", start)]
+    assert "if not _overdue:" in body
+    assert "return" in body
+
+
+def test_recheck_job_misfire_grace_is_not_the_60s_default():
+    """misfire_grace_time=60 (the _JOB_DEFAULTS value) makes APScheduler DISCARD a run that a
+    brief restart delayed — documented in docs/incidents/scheduler-misfire-data-gaps.md. This
+    job's entire purpose is noticing that a date has passed, so it must tolerate lateness."""
+    start = _SCHEDULER_SOURCE.index('id="fix_effectiveness_recheck_daily"')
+    window = _SCHEDULER_SOURCE[start - 400:start + 200]
+    assert "**_JOB_DEFAULTS" not in window, "must not inherit the 60s default"
+    assert "misfire_grace_time=6 * 3600" in window

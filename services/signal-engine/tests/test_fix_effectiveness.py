@@ -52,11 +52,138 @@ def test_snapshot_endpoint_404s_for_an_unregistered_fix_id():
     assert "404" in _FIX_EFF_SOURCE
 
 
-def test_snapshot_endpoint_rejects_a_domain_with_no_metric_function_yet():
+def test_snapshot_dispatch_is_an_explicit_registry_not_a_generic_fallback():
     """The dispatch must explicitly refuse an unimplemented domain rather than silently
-    producing a meaningless/empty snapshot."""
-    assert 'if record.domain != "ai_signal":' in _FIX_EFF_SOURCE
-    assert "No snapshot metric function implemented yet for domain" in _FIX_EFF_SOURCE
+    producing a meaningless/empty snapshot. Asserted structurally because it is a design
+    constraint (there must be no "compute something" fallback); the BEHAVIOUR of both branches
+    is covered by the wiring tests below."""
+    assert "_SNAPSHOT_METRIC_FNS = {" in _FIX_EFF_SOURCE
+    assert "_SNAPSHOT_METRIC_FNS.get(record.domain)" in _FIX_EFF_SOURCE
+
+
+# ── take_fix_snapshot() wiring — the gap that allowed AUD-C01 ──────────────────────────
+#
+# `_compute_ai_signal_win_rate_metrics`'s `since` parameter was documented in its own docstring,
+# spelled out in the stored success_criteria of the fix it exists for, AND covered by a passing
+# unit test (test_since_filter_excludes_rows_before_the_given_date, below). Its single CALL SITE
+# omitted it for two weeks, so every snapshot would have measured all history — including the
+# exact pre-fix population the fix corrected. A tested unit behind untested wiring.
+
+def _run_take_snapshot(record, *, metric_fns, session):
+    """exec() take_fix_snapshot's real source with fakes for its FastAPI/DB surface, so the
+    actual deployed control flow runs. Same isolation technique the module already uses for
+    _compute_ai_signal_win_rate_metrics."""
+    start = _FIX_EFF_SOURCE.index("def take_fix_snapshot(")
+    body = textwrap.dedent(_FIX_EFF_SOURCE[start:])
+
+    class _FakeSnapshot:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+            self.taken_at = None
+
+    class _HTTPError(Exception):
+        def __init__(self, code, detail): self.code, self.detail = code, detail
+
+    namespace = {
+        "select": lambda *a, **k: _Q(record),
+        "FixRecord": _FakeFixRecordModel, "FixSnapshot": _FakeSnapshot,
+        "HTTPException": _HTTPError,
+        "Session": object, "Depends": lambda *a, **k: None,
+        "get_session": None, "get_current_username": None,
+        "_SNAPSHOT_METRIC_FNS": metric_fns,
+        "log": _NullLog(), "datetime": __import__("datetime").datetime,
+        "timezone": __import__("datetime").timezone,
+    }
+    exec(body, namespace)  # noqa: S102 — isolated eval of real source
+    return namespace["take_fix_snapshot"](record.fix_id, session=session, _="tester")
+
+
+class _Col:
+    """Stand-in for a SQLAlchemy column so `FixRecord.fix_id == x` builds instead of raising."""
+    def __eq__(self, o): return True
+    def __hash__(self): return id(self)
+
+
+class _FakeFixRecordModel:
+    fix_id = _Col()
+
+
+class _Q:
+    def __init__(self, record): self._r = record
+    def where(self, *a, **k): return self
+
+
+class _NullLog:
+    def info(self, *a, **k): pass
+    def warning(self, *a, **k): pass
+    def error(self, *a, **k): pass
+
+
+class _FakeRecord:
+    def __init__(self, domain, fixed_at):
+        self.id = 1; self.fix_id = "AUD-TEST"; self.domain = domain; self.fixed_at = fixed_at
+
+
+class _FakeSession:
+    def __init__(self, record): self._r = record; self.added = []; self.commits = 0
+    def execute(self, *a, **k):
+        outer = self
+        class R:
+            def scalar_one_or_none(s): return outer._r
+        return R()
+    def add(self, o): self.added.append(o)
+    def commit(self): self.commits += 1
+
+
+def test_snapshot_passes_the_records_own_fixed_at_as_the_since_cutoff():
+    """AUD-C01-FIXSNAPSHOTCUTOFF, stated as behaviour: the snapshot must measure the POST-FIX
+    cohort only. Without the cutoff a snapshot blends in the pre-fix rows the fix corrected and
+    dilutes exactly the improvement it exists to detect."""
+    from datetime import datetime as _dt, timezone as _tz
+    seen = {}
+
+    def _spy(session, since=None):
+        seen["since"] = since
+        return {"by_bucket": {}, "total_resolved_5d": 7}
+
+    rec = _FakeRecord("ai_signal", _dt(2026, 9, 3, 1, 57, 54, tzinfo=_tz.utc))
+    sess = _FakeSession(rec)
+    out = _run_take_snapshot(rec, metric_fns={"ai_signal": _spy}, session=sess)
+
+    assert seen["since"] == date(2026, 9, 3), "must pass the record's own fixed_at date as `since`"
+    assert out["status"] == "ok"
+    assert out["metrics"]["since"] == "2026-09-03"
+    assert sess.commits == 1 and len(sess.added) == 1
+    assert sess.added[0].sample_size == 7
+
+
+def test_snapshot_records_the_cutoff_on_the_snapshot_itself():
+    """A stored snapshot whose window is unknowable is not evidence. The cutoff must travel
+    with the numbers, including the disclosure that signal_date is date-granular."""
+    from datetime import datetime as _dt, timezone as _tz
+    rec = _FakeRecord("ai_signal", _dt(2026, 9, 3, 1, 57, 54, tzinfo=_tz.utc))
+    sess = _FakeSession(rec)
+    out = _run_take_snapshot(
+        rec, metric_fns={"ai_signal": lambda s, since=None: {"by_bucket": {}, "total_resolved_5d": 0}},
+        session=sess)
+    assert "2026-09-03" in sess.added[0].note
+    assert "date-granular" in out["metrics"]["cutoff_note"]
+
+
+def test_unsupported_domain_records_an_explicit_snapshot_instead_of_failing():
+    """Previously a bare HTTP 400, which made the daily scheduled recheck log a failure for this
+    record forever while still reporting itself "ok", and left no durable trace. An explicit
+    unsupported snapshot advances the recheck clock AND stays visible on the dashboard."""
+    from datetime import datetime as _dt, timezone as _tz
+    rec = _FakeRecord("decision_making", _dt(2026, 9, 3, 3, 19, 40, tzinfo=_tz.utc))
+    sess = _FakeSession(rec)
+    out = _run_take_snapshot(rec, metric_fns={"ai_signal": lambda s, since=None: {}}, session=sess)
+
+    assert out["status"] == "unsupported"
+    assert out["domain"] == "decision_making"
+    assert sess.commits == 1 and len(sess.added) == 1
+    assert sess.added[0].sample_size is None, "nothing was measured — must not claim a sample"
+    assert "UNSUPPORTED" in sess.added[0].note
 
 
 def test_main_py_registers_the_router_before_the_catch_all_router():

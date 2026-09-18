@@ -1,10 +1,15 @@
 name: Tests
 
 on:
+  # AUD-A18-CIPRODBRANCH: `prod` is the branch that actually deploys (CLAUDE.md's deploy pattern
+  # is commit to prod -> push -> git pull on EC2), and it was 607 commits ahead of main when this
+  # was found — so before this line existed, NO deployed commit had ever had `make test` run
+  # against it by CI. Tier 383 repaired `make test` so it CAN fail; without prod here, that
+  # repair reached nobody.
   push:
-    branches: [main, dev]
+    branches: [main, dev, prod]
   pull_request:
-    branches: [main, dev]
+    branches: [main, dev, prod]
 
 jobs:
   unit-tests:

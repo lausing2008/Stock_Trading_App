@@ -212,6 +212,8 @@ _NON_ALERT_JOB_IDS = {
     # AUD-T399-CRONRESTARTGAP: one-shot startup check that re-runs the chain capture when a
     # restart pushed its cron slot. Pure data capture, no email.
     "opthist_startup_check",
+    # AUD-C01: sibling catch-up for the fix-effectiveness recheck — pure measurement, no email.
+    "fixeff_startup_check",
     "us_open_burst", "us_intra", "us_close_burst", "us_post_close", "options_flow_eod", "gex_eod",
     "options_game_plan_eod",
     "hk_open_burst", "hk_intra", "hk_close_burst", "hk_post_close", "weekly_full_refresh",
