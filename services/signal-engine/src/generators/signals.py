@@ -2711,6 +2711,21 @@ def _apply_style_signal(
         reasons["hk_short_sell_disabled"] = True
     else:
         reasons["hk_short_sell_disabled"] = False
+    # AUD-A11-CONFIDENCESEMANTICS: this is STRENGTH, not a probability of profit. It measures
+    # how far the fused score sits from neutral (0.5), so 0 means "no view" and 100 means "as
+    # far from neutral as possible" — neither says anything about being RIGHT.
+    #
+    # That distinction is not pedantic here. Measured on the frozen Sept 2026 US SHORT BUY
+    # cohort, the bands ordered BACKWARDS against outcomes: below-10 hit 45.5%, while 40+ hit
+    # 19.0% (docs/audits/2026-09-17-september-cohort-audit-and-recommendations.md §4.3). So a
+    # higher number is not a better trade, and anything that gates on it as though it were a
+    # probability — a UI label, a sizing multiplier, an entry threshold — is asserting something
+    # the data contradicts.
+    #
+    # Calibrating it into a real probability needs independent matured outcomes per
+    # market/style/direction, which is blocked on AUD-C02 (the longer BUY styles still have no
+    # resolved 5-day outcomes at all). Until then the honest move is to LABEL it correctly
+    # rather than quietly reinterpret it.
     confidence = round(abs(fused - 0.5) * 200, 2)
     return AIConfidence(
         signal=signal,

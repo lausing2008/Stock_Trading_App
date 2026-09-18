@@ -47,7 +47,7 @@ export default function RankingsTable({
             <th className="px-3 py-2 text-right">K-Score</th>
             <th className="px-3 py-2 text-center">Signal</th>
             <th className="px-3 py-2 text-right" title="Fused ML bullish probability (0–100%). >65% = BUY threshold">Bull%</th>
-            <th className="px-3 py-2 text-right" title="Signal confidence 0–100: composite measure of signal strength and indicator alignment">Conf%</th>
+            <th className="px-3 py-2 text-right" title="Signal STRENGTH 0–100 (distance from a neutral model score), not a probability of profit. Higher has not historically meant more accurate — see the Signal card for the measured win rate by confidence band.">Conf%</th>
             <th className="px-3 py-2 text-right" title="Relative Strength vs sector ETF (0-100). >60 = leading sector, <40 = lagging">RS</th>
             <th className="px-3 py-2 text-right">Confluence</th>
             <th className="px-3 py-2 text-right">Fair Price</th>

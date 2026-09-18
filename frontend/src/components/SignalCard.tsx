@@ -694,7 +694,7 @@ export default function SignalCard({ signal }: { signal: Signal }) {
       {/* Scores */}
       <div className="grid grid-cols-3 gap-2 mb-3">
         <div className="text-center">
-          <div className="text-lg font-bold text-slate-100" title="TA composite score (0–100): higher = stronger conviction">{(signal.confidence ?? 0).toFixed(0)}%</div>
+          <div className="text-lg font-bold text-slate-100" title="AUD-A11: signal STRENGTH, not probability of profit. Computed as |fused_probability − 0.5| × 200, i.e. how far the model sits from neutral — so it measures conviction, not accuracy. Measured Sept 2026 on the frozen US SHORT BUY cohort, the 40+ band had the WORST hit rate of four (19.0% vs 45.5% below 10), so do NOT read a higher number as a better trade. The win rate shown beside it is the empirical figure.">{(signal.confidence ?? 0).toFixed(0)}%</div>
           <div className="text-xs text-slate-500">Confidence</div>
         </div>
         <div className="text-center">
