@@ -232,5 +232,7 @@ def run_income_step_now(
     """Admin-only manual trigger — mirrors paper-portfolio's own /run-step escape hatch for
     testing without waiting for the scheduled cadence."""
     from ..services.options_income_engine import run_options_income_step
-    run_options_income_step()
-    return {"ok": True}
+    # AUD-A07: returns the engine's own verdict rather than an unconditional {"ok": True}. If
+    # the scheduled run is already in flight this call is SKIPPED, and reporting that as success
+    # would tell an admin their manual trigger did something it did not.
+    return run_options_income_step()

@@ -723,21 +723,66 @@ def _snapshot_income_equity_curve(session: Session, portfolios: list[OptionsInco
     session.commit()
 
 
-def run_options_income_step() -> None:
+_INCOME_STEP_LOCK_KEY = "stockai:lock:options_income_step"
+# Generous: a real run settles expiries, ranks the universe and opens positions, and the last
+# measured duration was 344s. A TTL shorter than the work it guards is not a lock, it is a
+# delay — the second caller would simply take it mid-run.
+_INCOME_STEP_LOCK_TTL = 1800
+
+
+def run_options_income_step() -> dict:
     """Scheduler entry point: settle expired positions, then open new ones, across every
     active OptionsIncomePortfolio. Ranks candidates ONCE across the union of every active
     portfolio's own symbol universe, not once per portfolio — matching the established
     once-per-batch convention every other systematic scan in this codebase already follows."""
+    # AUD-A07-INCOMECONCURRENCY: TWO entry points reach this function — the 19:00 ET scheduled
+    # job and the admin POST /options-income/run-step escape hatch — and it does read/check/write
+    # on portfolio cash, collateral and positions with no isolation between them. Two concurrent
+    # runs can both read the same `current_cash`, both decide the same candidate is affordable,
+    # and both open it: the per-position concentration cap and the daily entry cap are enforced
+    # in Python against a snapshot, so neither would notice.
+    #
+    # The lock lives HERE rather than in the scheduler wrapper deliberately. Guarding only the
+    # scheduled path would leave the admin route — the one a human triggers impatiently, most
+    # likely while the scheduled run is already going — completely unprotected, which is
+    # precisely the collision worth preventing.
+    try:
+        if not _get_income_redis().set(_INCOME_STEP_LOCK_KEY, "1", nx=True, ex=_INCOME_STEP_LOCK_TTL):
+            log.info("options_income.step_skipped_already_running")
+            return {"ok": False, "skipped": "already_running"}
+    except Exception:
+        # Fail OPEN on a Redis outage, matching every other locked job in this codebase: losing
+        # the evening run entirely is worse than the small risk of an overlap, and overlap
+        # requires someone to be manually triggering at the same moment.
+        log.warning("options_income.lock_unavailable_proceeding", exc_info=True)
+
+    try:
+        return _run_options_income_step_locked()
+    finally:
+        try:
+            _get_income_redis().delete(_INCOME_STEP_LOCK_KEY)
+        except Exception:
+            pass
+
+
+def _get_income_redis():
+    from common.redis_client import get_redis
+    return get_redis()
+
+
+def _run_options_income_step_locked() -> dict:
+    """The real body. Separated so the lock's acquire/release stays readable and so a test can
+    exercise the work without needing Redis."""
     today = datetime.now(timezone.utc).date()
     if today.weekday() >= 5:
-        return  # weekend — option_chain_history won't have a newer as_of anyway
+        return {"ok": True, "skipped": "weekend"}  # option_chain_history has no newer as_of
 
     with SessionLocal() as session:
         portfolios = session.execute(
             select(OptionsIncomePortfolio).where(OptionsIncomePortfolio.is_active.is_(True))
         ).scalars().all()
         if not portfolios:
-            return
+            return {"ok": True, "skipped": "no_active_portfolios"}
 
         for portfolio in portfolios:
             try:
@@ -762,3 +807,5 @@ def run_options_income_step() -> None:
             _snapshot_income_equity_curve(session, portfolios, today)
         except Exception:
             log.error("options_income.equity_snapshot_failed", exc_info=True)
+
+        return {"ok": True, "portfolios": len(portfolios)}

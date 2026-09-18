@@ -2906,14 +2906,24 @@ def _monitor_positions(
     if armed_symbols:
         try:
             from sqlalchemy import text as sa_text
+            # AUD-A10-EXITREPLAYCUTOFF: the `sig.ts <= :as_of` bound. Without it this reads the
+            # LATEST signal row unconditionally, which is correct in a live run (latest IS now)
+            # and silently wrong in any replay or backtest of exits — the position would be
+            # exited using an RSI reading published after the simulated moment.
+            #
+            # This codebase already has the right pattern ~3,400 lines below: the SA-26
+            # confidence-trajectory query bounds itself with `Signal.ts < sig.ts`. This was an
+            # inconsistency, not a missing idea. `_as_of` defaults to now, so live behaviour is
+            # byte-identical and only a replay passing an explicit cutoff sees any difference.
             _rsi_rows = session.execute(
                 sa_text(
                     "SELECT DISTINCT ON (s.symbol) s.symbol, sig.reasons->>'rsi' AS rsi "
                     "FROM signals sig JOIN stocks s ON s.id = sig.stock_id "
                     "WHERE s.symbol = ANY(:syms) AND sig.reasons->>'rsi' IS NOT NULL "
+                    "AND sig.ts <= :as_of "
                     "ORDER BY s.symbol, sig.ts DESC"
                 ),
-                {"syms": list(armed_symbols)},
+                {"syms": list(armed_symbols), "as_of": _exit_as_of()},
             ).all()
             for sym, rsi_val in _rsi_rows:
                 # Keep the original > 75 threshold. `float()` rather than a truthiness test:
@@ -5129,6 +5139,58 @@ def _bar_is_incomplete(market: str) -> bool:
         return False
 
 
+from contextvars import ContextVar
+
+# Set by a replay harness; None in every live path.
+_EXIT_AS_OF_OVERRIDE: ContextVar[datetime | None] = ContextVar("_EXIT_AS_OF_OVERRIDE", default=None)
+
+_MAX_ENTRY_PRICE_STALENESS_DAYS = 5
+
+
+def _entry_price_cutoff(now: datetime) -> datetime:
+    """Oldest daily bar that may still authorise a NEW entry (AUD-C04-SSNLFSTALE).
+
+    Extracted as a pure function on purpose. The first version of this gate was covered only by
+    a source-text assertion that `func.max(Price.ts) >= cutoff_fresh` appeared in the query —
+    which happily passed when the expression was sabotaged to
+    `>= cutoff_fresh - timedelta(days=99999)`, because the substring was still there. A
+    threshold is a number; test it as one.
+    """
+    return now - timedelta(days=_MAX_ENTRY_PRICE_STALENESS_DAYS)
+
+
+def is_price_fresh_enough_to_enter(latest_bar_ts: datetime | None, now: datetime) -> bool:
+    """Whether a stock's newest daily bar is current enough to open a position against.
+
+    A missing bar is NOT fresh: a stock with no price history at all must never be entered,
+    and returning True on None would make the absence of data look like the absence of a
+    problem.
+    """
+    if latest_bar_ts is None:
+        return False
+    if latest_bar_ts.tzinfo is None:
+        latest_bar_ts = latest_bar_ts.replace(tzinfo=timezone.utc)
+    return latest_bar_ts >= _entry_price_cutoff(now)
+
+
+
+def _exit_as_of() -> datetime:
+    """The cutoff every historical read on the EXIT path must respect.
+
+    AUD-A10-EXITREPLAYCUTOFF. Exits currently only ever run live, so this returns now and the
+    behaviour is unchanged. It exists as a named seam so a replay harness has ONE place to set
+    the simulated clock, rather than needing to find and bound each query individually — which
+    is how the unbounded read got there in the first place.
+
+    Honest about its own limit: making a full exit replay leak-proof means routing EVERY
+    historical read through a cutoff-aware context, not just this one. This closes the query the
+    audit identified and marks the pattern for the rest.
+    """
+    override = _EXIT_AS_OF_OVERRIDE.get()
+    return override if override is not None else datetime.now(timezone.utc)
+
+
+
 def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str, float], live_regime: dict | None = None) -> None:
     """Find fresh BUY signals and evaluate them for entry."""
     cfg = resolve_entry_config(portfolio.config)
@@ -5144,6 +5206,10 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     # valid signals are 72h+ old and excluded entirely. 5 days (120h) covers any weekend or
     # long-weekend gap. The signal engine's own 3-day price-staleness guard handles truly stale data.
     cutoff  = now - timedelta(days=5)
+    # AUD-C04-SSNLFSTALE: how old the newest daily bar may be and still authorise a new
+    # entry. 5 days covers a long weekend plus a holiday without letting a genuinely
+    # abandoned symbol through.
+    cutoff_fresh = _entry_price_cutoff(now)
 
     # Current portfolio state
     open_count = session.execute(
@@ -5252,6 +5318,23 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             # paper trade, the highest-stakes site this bug class could exist at.
             Stock.delisted.is_(False),
             Stock.market == cfg.get("market", "US"),
+            # AUD-C04-SSNLFSTALE: the stock's own price data must be CURRENT. `active` and
+            # `not delisted` are administrative flags a stock keeps wearing long after its data
+            # stops arriving — SSNLF sat active, non-delisted and tradeable here with a latest
+            # daily bar from 2025-11-07, ten months stale, because nothing in this query looked
+            # at the data itself. A stop, a target and a position size computed off a
+            # ten-month-old close are arithmetic on a fossil.
+            #
+            # A hard filter, not a warning: this is the new-ENTRY path, and the audit's own
+            # acceptance criterion was that stale critical data must not authorise new exposure.
+            # EXITS are deliberately untouched — a held position with a stale quote needs more
+            # attention, not less, and already has its own escalation path.
+            Stock.id.in_(
+                select(Price.stock_id)
+                .where(Price.timeframe == TimeFrame.D1)
+                .group_by(Price.stock_id)
+                .having(func.max(Price.ts) >= cutoff_fresh)
+            ),
         )
         .order_by(desc(Signal.confidence))
     ).all()
