@@ -5,18 +5,18 @@
 **Requested outcome:** market forecasts, useful AI signals and alerts with executable playbooks, profitable stock and options strategies, trustworthy paper trading, and staged real automation.  
 **Deliverable:** audit and implementation recommendations. No trading rules, broker settings, credentials, application code, or deployment were changed by this audit.
 
-**Latest status:** the user subsequently authorized read-only production access. Section 14 records the September 17 production snapshot and reconciles fixes made by separate work. A04's core liability omission, A05's earlier-close substitution, and A13's shell failure masking have been patched; A14's research fixtures have changed. A newly reproduced settlement-counter regression, **A17**, needs attention before options expiry. Earlier findings/probes below retain their original baseline unless marked otherwise.
+**Latest status:** the user subsequently authorized read-only production access. The [production verification audit](2026-09-17-production-verification-audit.md) records the September 17 production snapshot and reconciles fixes made by separate work. A04's core liability omission, A05's earlier-close substitution, and A13's shell failure masking have been patched; A14's research fixtures have changed. A newly reproduced settlement-counter regression, **A17**, needs attention before options expiry. Earlier findings/probes below retain their original baseline unless marked otherwise.
 
 ## 1. Assessment and recommended direction
 
 StockAI already has a substantial research and trading platform: market ingestion, technical analysis, tree-model ensembles, rankings, news and event intelligence, research reports, decision gates, paper portfolios, broker adapters, and options analysis. The next investment should concentrate on **measurement integrity, demonstrable strategy value, and execution correctness**.
 
-The reviewed implementation does **not yet justify unattended real trading**. This is a release-readiness assessment based on identifiable order-lifecycle and accounting gaps, not a claim that an actual broker account has suffered a loss. The later read-only snapshot found only an unauthorized sandbox connection and no broker order IDs in stored trades; external broker account state was not queried. See section 14 for the verified configuration and remaining limits.
+The reviewed implementation does **not yet justify unattended real trading**. This is a release-readiness assessment based on identifiable order-lifecycle and accounting gaps, not a claim that an actual broker account has suffered a loss. The later read-only snapshot found only an unauthorized sandbox connection and no broker order IDs in stored trades; external broker account state was not queried. See the [production verification audit](2026-09-17-production-verification-audit.md) for the verified configuration and remaining limits.
 
 Three conclusions drive the plan:
 
 1. **Signal strength is not a measured probability of making money.** The displayed confidence is distance from a neutral fused score. ML classification accuracy, trade win rate, and portfolio return describe different outcomes. They need separate labels and evaluations.
-2. **Some paper results and backtests are not yet suitable for promotion decisions.** The original options liability and settlement-date defects have received T400 fixes, with a remaining settlement regression and valuation limitations documented in section 14. Stock exit replay still has unbounded data reads, and the options weight study does not reproduce all live selection constraints.
+2. **Some paper results and backtests are not yet suitable for promotion decisions.** The original options liability and settlement-date defects have received T400 fixes, with a remaining settlement regression and valuation limitations documented in the [production verification audit](2026-09-17-production-verification-audit.md). Stock exit replay still has unbounded data reads, and the options weight study does not reproduce all live selection constraints.
 3. **A broker connection is already an execution path.** The paper engine can submit real orders to a linked account. Simulated positions and broker fills are not sufficiently separated, especially for partial exits, pending orders, rejection, and retries.
 
 The recommended sequence is:
@@ -41,7 +41,7 @@ Evidence is distinguished throughout:
 
 The initial review baseline was `26a8159`. While work was in progress, other changes introduced an options-income backtest, weight derivation, weights of **25% yield / 75% cushion / 0% liquidity**, and chain-capture restart recovery. Those changes through `985d12e` were inspected. The earlier orientation document describes its own older baseline, including the former 40/40/20 weights.
 
-The original audit used no production queries. The subsequent user-authorized follow-up used database-enforced read-only queries, selected Redis reads, container status and source hashes, described in section 14. No live broker API calls, model retraining, dependency installation, infrastructure changes, or deployments were performed by this audit. Tests used the installed local environment. Many tests mock database and service dependencies; a pass does not establish transaction safety or production readiness.
+The original audit used no production queries. The subsequent user-authorized follow-up used database-enforced read-only queries, selected Redis reads, container status and source hashes, described in the [production verification audit](2026-09-17-production-verification-audit.md). No live broker API calls, model retraining, dependency installation, infrastructure changes, or deployments were performed by this audit. Tests used the installed local environment. Many tests mock database and service dependencies; a pass does not establish transaction safety or production readiness.
 
 ### Historical performance is motivation, not fresh evidence
 
@@ -111,7 +111,7 @@ The reviewed engine route submits market orders; support for stop order types in
 
 ### A04 — P1: options equity omits the short-option liability
 
-**Update:** the core omission described below was patched by T400. Production's latest snapshot includes a liability deduction. Quote freshness and fallback mark limitations remain; see section 14.3. This finding describes the original baseline.
+**Update:** the core omission described below was patched by T400. Production's latest snapshot includes a liability deduction. Quote freshness and fallback mark limitations remain; see the [options valuation follow-up](2026-09-17-production-verification-audit.md#3-options-status-and-fixes-now-present). This finding describes the original baseline.
 
 **Observed and reproduced.** In [options_income_engine.py](../../services/market-data/src/services/options_income_engine.py), `open_income_positions` adds collected premium to cash. `_snapshot_income_equity_curve` adds underlying market value for covered calls or reserved cash for puts, but does not deduct the value of the outstanding short option.
 
@@ -128,7 +128,7 @@ The precise liquidation equity depends on the bid/ask mark and costs, but collec
 
 ### A05 — P1: missing expiry data can settle a contract at an earlier close
 
-**Update:** T400 now requires the expected settlement session in the engine and backtest. The updated engine introduced the separate counter regression A17; see section 14.4. This finding describes the original baseline.
+**Update:** T400 now requires the expected settlement session in the engine and backtest. The updated engine introduced the separate counter regression A17; see the [production verification audit](2026-09-17-production-verification-audit.md). This finding describes the original baseline.
 
 **Observed and reproduced.** `_closing_price_on_or_before` accepts any daily close within seven days before expiry. `settle_expired_positions` permanently closes the position using that value. The new [options backtest](../../services/market-data/src/backtest/options_income_backtest.py) similarly uses `_close_on_or_before` for settlement.
 
@@ -218,7 +218,7 @@ The decision service, local fallback, preview sizing, paper sizing, alerts, sign
 
 ### A14 — P1: local verification is incomplete and research expectations disagree
 
-**Update:** T400 revises the research fixtures. Section 14.5 records follow-up checks; the original results below remain an audit history, not the latest research test verdict.
+**Update:** T400 revises the research fixtures. See the [follow-up test results](2026-09-17-production-verification-audit.md#5-follow-up-test-results-and-interpretation); the original results below remain an audit history, not the latest research test verdict.
 
 **Measured.** Eight backend service suites completed successfully. Research-engine completed with three failures and 76 passes. API gateway, decision engine and event intelligence reached the audit's 240-second per-service timeout and have no complete verdict. Detailed results appear in section 12.
 
@@ -567,112 +567,3 @@ The original recommended first implementation batch was **W01 + W02**, while des
 Do not prioritize a new predictive model family, more alert categories, automatic model promotion, margin trading or additional option-selling strategies ahead of these foundations. They increase the number of behaviors to evaluate before the current measurement and execution paths are dependable.
 
 The project can retain its broad intelligence features while focusing promotion decisions on a narrow question: **does this versioned playbook produce repeatable net value under realistic data, capital, costs and execution constraints, and can every resulting position be accounted for and controlled?**
-
-## 14. Authorized production verification and T400 follow-up
-
-**Observation window:** 2026-09-17, approximately 23:39–23:42 UTC (16:39–16:42 America/Los_Angeles). This section supersedes earlier runtime-unknown statements only for the specific checks listed here.
-
-The user supplied production SSH access after the original report. Checks used SSH, `docker ps`, Git revision reads, selected file hashes, aggregate SQL and allowlisted Redis job-status reads. Database connections enforced `default_transaction_read_only=on`, repeatable-read isolation, an eight-second statement timeout and a one-second lock timeout. The transaction itself reported `read_only=on`. No broker APIs, application run-step endpoints, schedulers, migrations or administrative mutations were invoked. No credential values, personal user records or broker account identifiers were returned.
-
-### 14.1 Deployment and broker mode
-
-All 15 containers reported healthy: 12 backend services, frontend, PostgreSQL and Redis. This confirms their configured health checks at observation time, not correctness of predictions or execution.
-
-The host checkout initially reported `985d12e3` and later `cb00e42c` while separate T400 work was landing. Files inside the running market-data container matched the local final checkout for these paths:
-
-| File | SHA-256 prefix, matching local/container |
-|---|---|
-| `services/paper_trading_engine.py` | `1ee087a710ea35f0` |
-| `services/options_income_engine.py` | `a0bcbb5e06838122` |
-| `services/scheduler.py` | `11aa4eb7bf59de58` |
-
-These are file-level checks, not proof that every module loaded by every worker, image, model artifact and runtime flag matches the repository. The latest options equity record also provides behavioral evidence consistent with the liability fix.
-
-There were **11 active stock paper portfolios**: ten without a broker link and one with a link. The broker-connections table contained **one active `etrade_sandbox` connection, marked unauthorized**. Across all 128 stored stock trades, **zero had a broker order ID**; four closed US records had a non-null broker-error field. Error contents were not retrieved.
-
-**Interpretation:** no current production-money connection or recorded executed broker order was found in the inspected tables. A01–A03 remain blockers before enabling real execution, but this snapshot does not establish an ongoing live-money exposure. It also does not prove anything about external brokerage activity outside these application records.
-
-### 14.2 Current stock paper records and the SWING experiment
-
-The following are aggregate **stored closed-trade** results across the retained history and strategy/configuration versions, not a fresh backtest or return on total portfolio equity:
-
-| Market inferred from symbol | Closed trades | Winners | Win rate | Sum of stored P&L, native ledger units | Profit factor |
-|---|---:|---:|---:|---:|---:|
-| US | 103 | 33 | 32.0% | −3,446.06 | 0.666 |
-| HK | 19 | 7 | 36.8% | −4,295.99 | 0.671 |
-
-US units are presumed USD and HK units presumed HKD from the market conventions; the query did not verify an explicit currency field on every trade. **Do not add these P&L values together.** The source rows span entries beginning June 16 for US and June 25 for HK. There were also five open US stock trades and one open HK stock trade; unrealized results are excluded above.
-
-Style slices were US GROWTH 46 closed / 34.8% wins / −1,232.25; US SWING 57 / 29.8% / −2,213.81; HK GROWTH 15 / 46.7% / +2,314.68; HK SWING four / 0% / −6,610.67. These small, overlapping and differently sized paper samples do not support selecting a winning style simply from the positive HK GROWTH sum. Dollar-weighted P&L and mean percentage return can differ because trade sizes differ.
-
-Portfolio **891** exists, is active, was created on September 16, and has `stop_pct_override=0.925` and `atr_stop_mult_override=2.5`. The price multiplier corresponds to a 7.5% fixed stop distance. It had **zero trades** at the snapshot. Other sampled US SWING portfolios had no explicit values for those override keys. This verifies experiment configuration, not outcomes or complete matching of every control variable/runtime overlay.
-
-The recent signal-outcomes query found **2,154 stored resolved primary outcomes** with signal dates in the previous 30 days: 995 SHORT BUY, 165 SHORT SELL, 268 SWING BUY, 178 SWING SELL, 154 LONG SELL, 252 GROWTH BUY and 142 GROWTH SELL. It did not establish that these rows satisfy the clean/frozen cohort criteria needed for calibration. Do not replace a historical clean-sample threshold with this raw count. Missing or unresolved signals not yet represented in that table were not counted.
-
-### 14.3 Options status and fixes now present
-
-Separate T400 work is described in [its review record](2026-09-17-audit-review-and-t400-fixes.md). Direct source inspection confirms:
-
-- **A04 core fix:** equity now subtracts a short-option liability based on an archived ask, with an intrinsic-value fallback.
-- **A05 date fix:** the engine and backtest require the expected settlement session instead of substituting any previous close. A separate regression in the engine is documented below.
-- **A13 shell fix:** the Makefile accumulates failures across services and exits nonzero if any required service failed. The previously noted `main`/`dev` workflow triggers remain a separate release-coverage issue.
-- **A14 fixture update:** research tests now reflect the implementation's documented missing-data behavior; the local follow-up passes.
-
-Production had **one active options-income portfolio**, initial capital **250,000**, with **six open cash-secured puts and no closed positions**. Entries were September 16–17; expiries ranged from September 25 to October 30. No open position was overdue. Thus there is still **no resolved forward options-income track record** in these tables; the historical contract backtest is a different source of evidence.
-
-The latest options curve, dated September 17, contained:
-
-```text
-Cash                          66,467
-Reserved collateral          186,600
-Implied short liability        3,087
-Reported equity              249,980
-
-66,467 + 186,600 − 3,087 = 249,980
-```
-
-Open premium receipts totaled 3,067. The observed curve therefore no longer simply adds the full premium to starting equity. The 20-unit difference from initial capital is not a validated strategy return or independently priced broker equity. Earlier curve rows were not re-audited or corrected by this follow-up.
-
-**Remaining valuation limits:** `_latest_option_ask` takes the latest archived ask without a freshness bound; an intrinsic-only fallback can omit substantial time value. The function returns a mark-source label, but the snapshot loop does not persist that label or its quote time. Add mark timestamp/source/quality and flag insufficient marks rather than treating fallback equity as comparable to a complete liquidation valuation. This makes A04's central omission fixed while leaving a broader mark-quality task open.
-
-All 13 sampled income-universe symbols had a latest archived chain date of **September 16**. The chain-capture Redis status recorded `ok` at 22:45:22 UTC on September 17; this is consistent with capturing the previous session's archive and is not by itself a missed-current-day diagnosis. It remains unsuitable to treat that archived bid as a synchronous executable September 17 quote (A06).
-
-The income-step status recorded `ok` at 23:05:44 UTC with a duration of **344 seconds**. The deployed `_latest_option_ask` makes one contract lookup per position; the inspected index list had no index beginning with `option_symbol`. Profile that query and consider a batched lookup or suitable composite index in an approved migration. The 344-second measurement alone does **not** prove those lookups caused the duration; no expensive production `EXPLAIN ANALYZE` or backtest was run here.
-
-### 14.4 A17 — P1: T400 settlement counter is overwritten by the price/date tuple
-
-**New finding; source-confirmed and locally reproduced against `cb00e42`.** In `settle_expired_positions`, the numeric variable `settled` is initialized to zero, then reused for `_settlement_close(...)`, whose successful return is a `(price, session_date)` tuple. After mutating cash and position fields, the code executes `settled += 1`.
-
-The isolated source-function probe supplied one expired position and a valid settlement result. It produced:
-
-```text
-TypeError: can only concatenate tuple (not "int") to tuple
-position.stage after exception: closed
-portfolio cash after exception: changed from 100 to 10,100
-session.commit calls inside the settlement function: 0
-```
-
-These were fake in-memory objects, not production records. The deployed file hash matches the inspected source. No production settlement was invoked, and the earliest currently open income expiry was September 25, so this check does not establish a historical settlement incident.
-
-**Impact:** the first valid expiry settlement raises after mutating ORM objects but before the intended commit/count return. The caller catches the exception without an explicit rollback, so later operations may flush or commit partial state. Multiple expired positions may not all be processed. If the last attempted lookup is missing, the same variable reuse can also return `None` rather than the advertised integer count. An `ok` scheduler status is not sufficient to detect this class of inner failure.
-
-**Solution:** use distinct variables such as `settlement_result` and `settled_count`; keep the result count an integer in every path. Ensure the transaction boundary either commits the intended settlement set or rolls back failed mutations, and reports partial batch failure accurately. This audit documents the fix but does not implement it.
-
-**Required acceptance tests:** execute the actual settlement function with zero, one and multiple expired positions, mixed available/missing session closes, and a failure after the first mutation. Assert integer return values, processed-position count, cash conservation, atomic commit/rollback behavior and correct retry behavior. The current source-string checks for the new helper do not catch this regression.
-
-### 14.5 Follow-up test results and interpretation
-
-At `cb00e42`, local sequential checks produced:
-
-| Check | Result |
-|---|---|
-| Entire research-engine suite | **81 passed** |
-| Options-income test file | **54 passed** |
-| API gateway suite | No completion within the follow-up's 45-second limit |
-| Decision-engine suite | No completion within 45 seconds |
-| Event-intelligence suite | No completion within 45 seconds |
-| A17 isolated settlement probe | Reproduced the tuple/integer error described above |
-
-The separate T400 review reports successful runs of the three previously timed-out suites in its environment. That is useful additional evidence, but its explanation that concurrency alone caused this audit's timeouts is **not established**: this follow-up ran those suites one at a time and still reached its limits. Environment differences or test behavior need diagnosis before assigning a root cause. No claim of a production outage follows from these local timeouts.
-
-The passing options test file alongside the reproduced A17 failure reinforces the need for behavior-level settlement tests. No application source was changed by this follow-up, no production state was repaired, and `CLAUDE.md` was left untouched by this audit.

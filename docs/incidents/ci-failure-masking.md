@@ -64,3 +64,77 @@ When touching any aggregate runner (`make`, a shell loop, a CI matrix, a `for` o
 verify it FAILS on a deliberately broken member — the same sabotage discipline already applied
 to individual tests elsewhere in this codebase. A runner that has never been observed to go red
 has not been shown to work.
+
+---
+
+## AUD-A17-SETTLECOUNTER (found 2026-09-17, by the external production-verification audit)
+
+The companion to the bug above. That one was **the runner** unable to report a failure; this one
+is **the assertion** unable to detect one. Same consequence: a green signal over broken code.
+
+**The bug.** `settle_expired_positions` in `options_income_engine.py`:
+
+```python
+settled = 0                                              # the integer this returns
+for pos in open_positions:
+    settled = _settlement_close(session, pos.stock_id, pos.expiry)   # a (price, date) TUPLE
+    ...
+    settled += 1        # TypeError: can only concatenate tuple (not "int") to tuple
+```
+
+Introduced 2026-09-16 by the T400 fix for A05, which replaced a lenient backward-window lookup
+with an exact-session one and reused the counter's name for its result. It raised on the **first
+position that actually settled**, every run. Two further paths were broken: the counter reset
+each iteration (so a multi-position batch would have miscounted even without the raise), and the
+missing-price path returned `None` from a function annotated `-> int`.
+
+**Why it was worse than a counter bug.** The exception fires *after* the mutations:
+
+```
+portfolio.current_cash += econ["cash_released"]   # done
+pos.stage = "closed"                              # done
+...
+settled += 1                                      # <-- raises here
+```
+
+`run_options_income_step` catches it and only logs. It then proceeds to
+`_snapshot_income_equity_curve`, whose `session.commit()` is **unconditional**. So a settlement
+this function reported as *failed* would have been committed anyway, by a different function,
+several steps later. The fix wraps the batch in `try/except` that calls `session.rollback()` and
+re-raises — settlement is now all-or-nothing.
+
+**Why the test did not catch it.** It asserted on source text:
+
+```python
+body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def settle_expired_positions"):]
+assert "if settled is None:" in body        # a check on a local VARIABLE NAME
+```
+
+This passed against code that raised on every run, and then **failed when the variable was
+correctly renamed**. Failing for a safe rename while passing for a real defect is exactly
+backwards.
+
+The file's own docstring states the policy that produced it: the DB-facing functions are "thin
+glue… nothing meaningful to assert against a MagicMock session". A17 disproves it — a ~40-line
+fake session (`execute().scalars().all()` returning a list, plus `commit`/`rollback` counters)
+drives the real function end to end. Seven behavioural tests now cover zero/one/multiple expired
+positions, mixed available and missing session closes, an injected mid-batch failure, and cash
+conservation.
+
+**Sabotage-verified in both directions**, as the lesson below requires: reintroducing the name
+collision fails 6 of 7; removing the `session.rollback()` fails exactly 1; restoring the fix
+returns all 7 to green.
+
+**One source-text assertion was kept deliberately** — that the function calls `_settlement_close`
+and never `_chain_as_of_on_or_before`. That pins a *choice of function*, which is a real design
+constraint, rather than a variable name. That is where the line belongs: text assertions are for
+"this must not call that", never for behaviour a fake session can exercise.
+
+### The lesson, extended
+
+A test is a signal only if **both** halves hold: the runner must propagate a failure (above),
+**and the assertion must be able to tell the defect apart from the fix** (here). A test that
+cannot go red for the bug it names is decoration.
+
+The check is the same in both cases and costs under a minute: break the code on purpose and
+confirm the test goes red.
