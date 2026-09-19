@@ -58,6 +58,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 from db import OptionsGamePlanSnapshot
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -151,7 +152,11 @@ def compute_options_game_plan_snapshot(session, stock_id: int, symbol: str) -> O
         stop_loss = game_plan.get("stop")
         take_profit = game_plan.get("take_profit")
 
-        today = datetime.now(timezone.utc).date()
+        # AUD-T409-UTCDATEBOUNDARY: ET, not a naive UTC truncation — see
+        # options_income_engine._today_et() for the full finding. This job runs at 17:30 ET,
+        # before the affected evening window, but a late/retried/manually-triggered run
+        # should not depend on that timing coincidence for its DTE math to be correct.
+        today = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
         put_exp = _nearest_expiry_in_dte_window(
             expiries, today, _OPTIONS_GAME_PLAN_MIN_PUT_DTE, _OPTIONS_GAME_PLAN_MAX_PUT_DTE
         )
@@ -303,7 +308,10 @@ def upsert_options_game_plan_snapshot(
     Does NOT commit — the caller (the EOD batch job) commits once after the whole batch,
     matching options_flow_snapshot.py's own convention of one commit per batch rather than per-row.
     """
-    as_of = as_of or datetime.now(timezone.utc).date()
+    # AUD-T409-UTCDATEBOUNDARY: the persisted snapshot's OWN calendar date must be the real
+    # ET trading day, not whatever UTC happened to read at call time — a wrong `as_of` here
+    # is a wrong primary-key date on a stored row, not just a display glitch.
+    as_of = as_of or datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
     values = dict(
         stock_id=stock_id,
         as_of=as_of,

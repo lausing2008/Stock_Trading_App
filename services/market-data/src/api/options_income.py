@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from db import get_session
 from db.models import OptionsIncomeEquityCurve, OptionsIncomePortfolio, OptionsIncomePosition, User
 from .auth import get_admin_user, get_advanced_user
+from ..services.options_income_engine import _today_et
 from common.logging import get_logger
 
 log = get_logger("options_income_api")
@@ -172,7 +173,11 @@ def get_income_positions(
             "live_price": round(px, 2),
             "is_itm": bool(itm),
             "cushion_pct": round(cushion, 2),
-            "days_to_expiry": (pos.expiry - date.today()).days,
+            # AUD-T409-UTCDATEBOUNDARY: date.today() is this server's LOCAL date, which on this
+            # EC2 instance is UTC — the same off-by-one-evening bug as datetime.now(timezone.utc)
+            # .date(), reached via a different spelling. Reused the engine's single ET-aware helper
+            # rather than re-deriving the conversion a third way in this file.
+            "days_to_expiry": (pos.expiry - _today_et()).days,
         }
 
     return [{

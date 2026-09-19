@@ -27,6 +27,7 @@ toward the symbols people actually look at rather than a hardcoded list.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import structlog
 from sqlalchemy import text
@@ -110,7 +111,10 @@ def get_chain(
     `calls`/`puts` are in the legacy `_options_chain_rows()` shape. Never raises.
     """
     sym = symbol.upper()
-    today = datetime.now(timezone.utc).date()
+    # AUD-T409-UTCDATEBOUNDARY: ET, not a naive UTC truncation (see the same finding in
+    # options_income_engine._today_et()) — otherwise the staleness check and the fetch
+    # window both run one day ahead of the real US trading day for part of every evening.
+    today = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
     as_of = latest_as_of(session, sym)
 
     # Fetch when we have nothing, or nothing recent enough to be worth showing.

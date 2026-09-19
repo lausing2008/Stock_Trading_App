@@ -27,6 +27,7 @@ view you should take, and it is why a "bullish" view does not automatically mean
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 # Above this IV percentile, SELLING premium is favoured; below the low mark, BUYING is.
 # Deliberately wide and neutral in the middle — a 50th-percentile IV is not information, and
@@ -124,7 +125,11 @@ def build_strategy_matrix(
     falls back to at-the-money only where the plan says nothing. Nothing here invents a
     stop or target.
     """
-    today = today or datetime.now(timezone.utc).date()
+    # AUD-T409-UTCDATEBOUNDARY: ET, not a naive UTC truncation — see the same finding in
+    # options_income_engine._today_et(). A naive UTC date reads one calendar day ahead of
+    # the real US trading day for ~4-5 hours every evening, which would understate every
+    # days_to_expiry shown on the game plan and calculator by one during that window.
+    today = today or datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
     put_dte, call_dte = _dte(put_expiry, today), _dte(call_expiry, today)
 
     # Tag each row with its right so a leg is self-describing once detached from its chain.

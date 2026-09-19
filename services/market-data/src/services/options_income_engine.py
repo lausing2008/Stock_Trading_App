@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import structlog
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -274,6 +275,33 @@ def settle_position_economics(
     }
 
 
+def _today_et() -> date:
+    """AUD-T409-UTCDATEBOUNDARY: 'today' for every date computation in this module, as a US
+    market participant means it — the calendar date in America/New_York, NOT a truncation of
+    the current UTC instant.
+
+    `datetime.now(timezone.utc).date()` is wrong for roughly 4-5 hours of every single evening.
+    UTC crosses midnight at 8pm EDT / 7pm EST, while the US trading day these dates are meant
+    to describe does not end until well after that. Confirmed live 2026-09-18: at 8:40pm ET
+    (00:40 UTC, already Sept 19 in UTC), the naive UTC version reported the freshest chain
+    (Thursday 09-17's settled close — Friday's own close is not captured until Monday's job
+    sweeps back through it, by design) as "2 days old" instead of the correct 1. The banner was
+    accurate given ITS OWN inputs; the inputs were one day wrong.
+
+    THE MORE SERIOUS CONSEQUENCE, dormant until DST ends (~Nov 1): the scheduled options-income
+    step fires at 19:00 America/New_York, which is 00:00 UTC the FOLLOWING day during EST
+    (winter). On a true Friday, the naive UTC date at that moment is Saturday —
+    `today.weekday() >= 5` — so the entire Friday evening settlement/entry run would have been
+    silently skipped as "the weekend" every single EST-season Friday, indefinitely, with no
+    error and no log line distinguishing it from a genuine non-trading day.
+
+    This is the SAME conversion `_is_us_trading_day()` already performs correctly elsewhere in
+    this codebase (scheduler.py) — this module just never adopted it, despite computing `today`
+    at three separate call sites with the naive (wrong) version.
+    """
+    return datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
+
+
 def rank_income_candidates(
     session: Session,
     symbols: list[str] | None = None,
@@ -299,7 +327,7 @@ def rank_income_candidates(
     # autonomous engine share this single source of truth. When set, "today" becomes that date
     # and each symbol's chain is the one AS OF that date (never a later one), which is what
     # makes the replay lookahead-free.
-    today = point_in_time or datetime.now(timezone.utc).date()
+    today = point_in_time or _today_et()
     earnings_by_symbol = _next_earnings_by_symbol(session, symbols, today)
     out: list[dict] = []
     for sym in symbols:
@@ -477,8 +505,15 @@ def _closing_price_on_or_before(session: Session, stock_id: int, target_date: da
 def settle_expired_positions(session: Session, portfolio: OptionsIncomePortfolio, as_of: date | None = None) -> int:
     """Close every OPEN position on this portfolio whose expiry has arrived. A position whose
     settlement price isn't available yet (price data lags the expiry date) is left open and
-    retried on the next call — never guessed."""
-    as_of = as_of or datetime.now(timezone.utc).date()
+    retried on the next call — never guessed.
+
+    AUD-T409-UTCDATEBOUNDARY: the default falls back to _today_et(), not a naive UTC .date().
+    The only live caller already passes `today` explicitly (itself now ET-correct), so this
+    default is currently unexercised in production — but a wrong default here is a dormant
+    footgun for the next direct/manual/test caller, and `expiry <= as_of` computed one day too
+    high would settle a position a full day BEFORE its real expiry, against a session that
+    has not happened yet for that contract."""
+    as_of = as_of or _today_et()
     open_positions = session.execute(
         select(OptionsIncomePosition).where(
             OptionsIncomePosition.portfolio_id == portfolio.id,
@@ -578,7 +613,7 @@ def open_income_positions(
         )
 
     opened = 0
-    today = datetime.now(timezone.utc).date()
+    today = _today_et()
     # AUD-T398-PERCALL-NOT-PERDAY: max_entries_per_day names a CALENDAR-DAY budget, but was
     # only ever enforced per function CALL — a second same-day invocation (the admin /run-step
     # endpoint, a scheduler misfire retry, manual debugging) would silently open another full
@@ -773,7 +808,7 @@ def _get_income_redis():
 def _run_options_income_step_locked() -> dict:
     """The real body. Separated so the lock's acquire/release stays readable and so a test can
     exercise the work without needing Redis."""
-    today = datetime.now(timezone.utc).date()
+    today = _today_et()
     if today.weekday() >= 5:
         return {"ok": True, "skipped": "weekend"}  # option_chain_history has no newer as_of
 
