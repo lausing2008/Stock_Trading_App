@@ -8,9 +8,10 @@ Configure via .env:
 from __future__ import annotations
 
 import smtplib
-from datetime import date
+from datetime import date, datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from zoneinfo import ZoneInfo
 
 from common.config import get_settings
 from common.logging import get_logger
@@ -515,6 +516,27 @@ Key Risk: {risk}
         _ogp = options_game_plan
         _ogp_rows_html = ""
         _ogp_rows_text = ""
+        # AUD-E02-STALEGAMEPLAN (2026-09-19): get_latest_options_game_plan() has no freshness
+        # or expiry check at all — the caller could attach a snapshot several days old with an
+        # already-expired leg, while this template unconditionally called the marks "real,
+        # currently-listed contract prices." Measured live: 26 of 64 latest snapshots predated
+        # the report date. `_today_et` uses America/New_York, not a naive UTC date, matching
+        # this session's other AUD-*-DATEBOUNDARY fixes — this is a day-granularity comparison
+        # against a daily EOD batch snapshot, so the exact same UTC-evening drift would
+        # otherwise misreport a same-day snapshot as "1 day old" for several hours each evening.
+        _today_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
+        _ogp_as_of = getattr(_ogp, "as_of", None)
+        _ogp_age_days = (_today_et - _ogp_as_of).days if _ogp_as_of else None
+
+        def _leg_expired(expiry_str: str | None) -> bool:
+            # Fail CLOSED on an unparseable/missing expiry — an expiry this code cannot verify
+            # must not be presented as a currently-listed, actionable contract.
+            if not expiry_str:
+                return True
+            try:
+                return date.fromisoformat(expiry_str) < _today_et
+            except ValueError:
+                return True
         def _greeks_suffix(prefix: str) -> tuple[str, str]:
             # AUD-GREEKS: a compact delta/theta/vega suffix when Unusual Whales had real
             # per-contract Greeks for this exact strike/expiry — omitted entirely (not a
@@ -536,7 +558,7 @@ Key Risk: {risk}
             text_suffix = f" ({' '.join(p.replace('&Delta;', 'D').replace('&Theta;', 'T') for p in parts)})"
             return html_suffix, text_suffix
 
-        if _ogp.put_strike is not None:
+        if _ogp.put_strike is not None and not _leg_expired(_ogp.put_expiry):
             _put_greeks_html, _put_greeks_text = _greeks_suffix("put")
             _ogp_rows_html += (
                 f'<tr><td style="padding:6px 10px;font-size:12px;color:#166534;font-weight:600">🛡️ Protective Put</td>'
@@ -545,7 +567,7 @@ Key Risk: {risk}
                 f'</td></tr>'
             )
             _ogp_rows_text += f"  Protective Put: ${_ogp.put_strike:.2f} exp {_ogp.put_expiry}, mid ${_ogp.put_mid_price:.2f}{_put_greeks_text}\n"
-        if _ogp.call_strike is not None:
+        if _ogp.call_strike is not None and not _leg_expired(_ogp.call_expiry):
             _call_greeks_html, _call_greeks_text = _greeks_suffix("call")
             _ogp_rows_html += (
                 f'<tr><td style="padding:6px 10px;font-size:12px;color:#166534;font-weight:600">💰 Covered Call</td>'
@@ -575,15 +597,41 @@ Key Risk: {risk}
             )
             _ogp_rows_text += f"  Implied Volatility: {' · '.join(_iv_parts_text)}\n"
         if _ogp_rows_html:
+            _ogp_as_of_str = _ogp_as_of.isoformat() if hasattr(_ogp_as_of, "isoformat") else _ogp_as_of
+            # AUD-E02-STALEGAMEPLAN: a batch snapshot computed today is a genuinely current
+            # mark; anything older is a historical reference the underlying/IV may have moved
+            # away from since. Never claim "currently-listed" for a mark this template cannot
+            # verify is still current — put the SAME wording in both bodies (the audit's own
+            # finding was that the text-only version omitted this footer entirely).
+            # AUD-E02-STALEGAMEPLAN: a protective put presupposes owning the stock; a covered
+            # call requires the deliverable shares and sufficient available coverage. This
+            # template has no holdings/portfolio context to verify either — label both legs as
+            # conditional illustrations rather than implying a recommendation for a reader with
+            # no position at all.
+            _ogp_holdings_caveat = " Protective put/covered call legs assume you already hold the underlying shares — conditional illustrations, not a recommendation to open a position."
+            if _ogp_age_days is not None and _ogp_age_days > 0:
+                _ogp_provenance = (
+                    f"As of {_ogp_as_of_str} ({_ogp_age_days} day{'s' if _ogp_age_days != 1 else ''} old) "
+                    f"— historical reference; refresh required before treating as an executable price."
+                    f"{_ogp_holdings_caveat}"
+                )
+            else:
+                _ogp_provenance = (
+                    f"As of {_ogp_as_of_str} — real, currently-listed contract prices, not a prediction."
+                    f"{_ogp_holdings_caveat}"
+                )
             options_game_plan_html = f"""
     <div style="margin-top:16px">
       <div style="font-size:11px;font-weight:700;color:#38bdf8;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">📊 Options Game Plan — {symbol} (Advanced tier)</div>
       <table style="width:100%;border-collapse:collapse;background:#eff6ff;border-radius:8px;overflow:hidden;border:1px solid #bfdbfe">
         {_ogp_rows_html}
       </table>
-      <div style="font-size:10px;color:#64748b;margin-top:4px">As of {_ogp.as_of.isoformat() if hasattr(_ogp.as_of, "isoformat") else _ogp.as_of} — real, currently-listed contract prices, not a prediction.</div>
+      <div style="font-size:10px;color:#64748b;margin-top:4px">{_ogp_provenance}</div>
     </div>"""
-            options_game_plan_text = f"\n--- Options Game Plan for {symbol} (Advanced tier) ---\n{_ogp_rows_text}"
+            options_game_plan_text = (
+                f"\n--- Options Game Plan for {symbol} (Advanced tier) ---\n{_ogp_rows_text}"
+                f"{_ogp_provenance}\n"
+            )
 
     is_exit_alert = mood == "bearish"
     if new_signal == "SELL":

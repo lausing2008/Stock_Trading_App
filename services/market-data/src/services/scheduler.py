@@ -4962,7 +4962,21 @@ def check_options_flow_alerts() -> None:
                 except Exception:
                     prev_seen = set()
                 current_chains = set(candidates.keys())
-                newly_seen = sorted(current_chains - prev_seen)
+                # AUD-E10-COOLDOWNORDER (2026-09-19): previously sorted() here, i.e. by the
+                # option_chain CONTRACT STRING — an alphabetical accident, not a ranking. The
+                # cooldown-claim loop below only lets the FIRST chain per (symbol, direction)
+                # pair through; since the later premium-based ranking only ever ranks among
+                # that loop's survivors, a $250,000 contract whose chain string happened to
+                # sort first permanently squeezed out a $5,000,000 contract for the same
+                # symbol/direction, with no way for the ranking step to recover it. Sorting by
+                # premium FIRST means the cooldown key for each (symbol, direction) pair is now
+                # claimed by its own largest-premium contract, matching what "largest premium
+                # first" already claims to do a few lines below.
+                newly_seen = sorted(
+                    current_chains - prev_seen,
+                    key=lambda c: candidates[c].get("total_premium") or 0.0,
+                    reverse=True,
+                )
                 send_ok = True
                 # AUD-OPTIONSFLOW-FLOODED: a second, coarser dedup on top of the per-chain one
                 # above — a (symbol, direction) pairing that already emailed this user inside the
@@ -6910,14 +6924,26 @@ def check_signal_alerts() -> None:
             except Exception as exc:
                 log.warning("signal_alert.freshness_check_failed", error=str(exc))
                 fresh_symbols = set(symbols)  # fall through on DB error
+                price_rows = None  # sentinel: the query itself never ran, distinct from "ran and found 0 rows"
 
-            # If freshness check returned nothing (empty DB / no prices yet), allow all symbols
-            # through rather than silently suppressing every alert.
-            if not fresh_symbols and symbols:
+            # AUD-E08-FRESHNESSFAILOPEN (2026-09-19): "the query found zero price rows for any
+            # symbol" (missing data — a cold-start/empty-DB case, safe to fail open on) and "the
+            # query found rows, but EVERY one of them is stale" (a real, current data problem —
+            # NOT safe to fail open on) used to collapse into the exact same `not fresh_symbols`
+            # check and get the exact same treatment: allow every symbol through as if it were
+            # fresh. price_rows being empty is the ONLY case this fallback is actually meant
+            # for; a genuinely stale universe must stay suppressed, not get waved through with a
+            # log line that reads as if no data existed at all.
+            if not fresh_symbols and symbols and not price_rows:
                 log.warning("signal_alert.freshness_no_prices",
                             note="No price bars found for any alert symbol — assuming fresh to avoid silent blackout",
                             symbol_count=len(symbols))
                 fresh_symbols = set(symbols)
+            elif not fresh_symbols and symbols:
+                log.error("signal_alert.freshness_all_stale",
+                          note="Price bars exist but EVERY alert symbol is stale — suppressing "
+                               "this run rather than treating a real data problem as fresh",
+                          symbol_count=len(symbols))
 
             _ALL_HORIZONS = ["SHORT", "SWING", "LONG", "GROWTH"]
 

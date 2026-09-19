@@ -177,6 +177,61 @@ this session's earlier `AUD-MINRR-STYLEBLIND` work), zero skipped-but-should-run
   project's own established discipline for a shared-model change, then `check_deploy_drift.sh`
   confirmed zero drift across all 12.
 
+## Follow-up pass (same day, continued): E02, E08, E10
+
+The user asked to continue with "the rest" after the first pass above shipped. Picked up three
+more bounded, well-specified findings — each a targeted logic/labeling fix, none touching the
+broker/live-money path.
+
+### E08 — a stale-price freshness gate collapsed "no data" and "all data is stale" (P1, partial)
+
+The audit's E08 has two halves; only the first is fixed here. The second (the BUY-path DE gate
+admits `HOLD` alongside `BUY`, and a DE timeout/non-200 response also fails open, with neither
+the verdict nor the unreachable-DE status disclosed anywhere in the sent email) needs a genuine
+degraded-state concept threaded into the email body, not a logic-only fix — left open below.
+
+`check_signal_alerts()`'s DP-3 freshness gate built `fresh_symbols` from a price-bar query, then
+had one fallback: `if not fresh_symbols and symbols: fresh_symbols = set(symbols)` — "assume
+fresh to avoid silent blackout." That fallback is correct for a genuinely missing-data case (no
+price rows at all — a cold start) but was firing identically when the query found real rows and
+EVERY one of them was too old to count as fresh, silently waving a real data problem through
+with a log line that read "no price bars found," which was false. Fixed by tracking whether the
+query returned any rows at all (`price_rows` — `None` on a DB error, `[]` on a genuine empty
+result) and only falling open in that case; a non-empty, all-stale result now logs at ERROR and
+leaves `fresh_symbols` empty, which the existing per-alert `if symbol not in fresh_symbols:
+continue` loop already handles safely. 4 tests, 1 sabotage cycle.
+
+### E10 — cooldown claim raced newly-seen flow contracts by contract-string, not size (P2)
+
+`check_options_flow_alerts()`'s per-`(symbol, direction)` cooldown key was claimed by whichever
+contract came first in `sorted(current_chains - prev_seen)` — alphabetical by the option-chain
+identifier string, not a ranking. Only the first contract per pair could ever claim the cooldown
+key; the later "largest premium first" ranking step only ever ranked among that loop's
+survivors, so a $250,000 contract whose chain string sorted first could permanently squeeze out
+a $5,000,000 contract for the same symbol/direction with no way to recover it downstream. Fixed
+by sorting by premium (descending) *before* the cooldown-claim loop, so each pair's cooldown key
+is now claimed by its own largest-premium contract. 4 tests, 1 sabotage cycle.
+
+### E02 — stale options game plan attached to a BUY email with no freshness or expiry check (P1)
+
+`get_latest_options_game_plan()` has no freshness check at all — it returns whichever snapshot
+row is newest, however old, and the email unconditionally called its marks "real,
+currently-listed contract prices, not a prediction." Measured live at audit time: 26 of 64
+latest snapshots predated the report date. Fixed in `send_signal_alert_email()`: computes the
+snapshot's age against `_today_et()` (America/New_York, matching this session's other
+`*-DATEBOUNDARY` fixes — a day-granularity comparison against a daily batch snapshot has the
+same UTC-evening drift risk as the alert-firing bugs fixed earlier) and relabels a snapshot older
+than today as "historical reference; refresh required" in **both** HTML and text bodies (the
+audit's own finding was that the text-only version omitted the as-of footer entirely). Each leg
+(put/call) additionally checks its own `expiry` string against today and fails closed — an
+expired or unparseable expiry is not rendered at all, rather than presented as a currently-listed
+contract. Also added a one-line holdings caveat ("assume you already hold the underlying shares
+— conditional illustrations, not a recommendation") per the audit's note that a protective
+put/covered call presupposes stock exposure this template has no way to verify. 6 new tests
+(reusing the file's existing pure-composition test harness), 2 sabotage cycles.
+
+Full market-data suite after this follow-up pass: **4082 passing**.
+
 ## Deliberately NOT implemented this pass, and why
 
 ### Broker lifecycle: B03, B06-B12 (the review's own "durable execution core")
@@ -232,27 +287,24 @@ timezone-class defect in this list) is fixed above. The rest are either:
   confidence intervals) that the audit itself frames as a phased roadmap (Phase 0 through 5), not
   a punch list.
 
-### Alert-email findings E02, E04, E05, E07-E11, E13, E14
+### Alert-email findings E04, E05, E07, E09, E11, E13, E14
 
-Reviewed in full; deliberately not built this pass:
+E02, E08, and E10 are fixed above (follow-up pass). Reviewed in full; deliberately not built:
 
-- **E02 (stale options game plan attached to a BUY email)** and **E04 (flow alerts can fire
-  outside the real US session, "right now" can describe an old event)** both need a real
-  freshness/session-calendar model threaded through the scheduler jobs, not a one-line label
-  change — worth doing but a distinct unit of work from the labeling fixes above.
+- **E04 (flow alerts can fire outside the real US session, "right now" can describe an old
+  event)** needs a real product-specific session-calendar model (early closes, holidays) threaded
+  through the scheduler job, not a one-line label change — a distinct unit of work from the
+  labeling/freshness fixes above.
 - **E05 (flow evidence envelope)**, **E09 (cooldown consumed by a failed send)**, **E11
   (recipient scope doesn't match "your watched symbols")**, **E13 (outcome records can't
   establish emitted-email accuracy)** each require a genuine data-model or delivery-pipeline
   addition (an immutable event/setup/delivery chain, a transactional outbox, per-family
   subscription preferences) — the audit's own Phase 2 grouping, distinct from Phase 1's
   message-correctness fixes shipped here.
-- **E07 (90-day accuracy badge mixes horizons/directions)** and **E08 (freshness/DE checks can
-  fail open without showing degraded status)** are real measurement-integrity gaps that need a
-  states-not-booleans redesign (`fresh`/`stale`/`missing`/`unavailable`) touching more call sites
-  than the scope of this pass.
-- **E10 (cooldown order can pick a smaller flow before ranking by premium)** is a small, bounded
-  fix (episode-then-rank instead of sort-by-contract-string-then-cooldown) — a reasonable next
-  small item, not implemented in this pass purely for time, not difficulty.
+- **E07 (90-day accuracy badge mixes horizons/directions)** and **E08's second half (the DE gate
+  fail-open path doesn't disclose the DE verdict or unreachable status anywhere in the email)**
+  are real measurement-integrity gaps that need a states-not-booleans redesign
+  (`fresh`/`stale`/`missing`/`unavailable`) touching more call sites than the scope of this pass.
 - **E14 (Options Expiry Watch mixes a cautious watch with a directional win statistic)** needs
   the same three-message-class redesign (Observation / Setup / READY) the audit proposes for the
   whole alert family in section 5.1 — a design decision, not a bug fix.

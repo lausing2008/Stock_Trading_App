@@ -263,3 +263,90 @@ def test_scheduler_gate_also_accepts_iv_only_snapshots_with_no_legs():
     ogp_section_end = body.index("email_ok = send_signal_alert_email(")
     ogp_section = body[ogp_section_start:ogp_section_end]
     assert "_snap.expected_move_pct is not None or _snap.iv_rank_1y is not None" in ogp_section
+
+
+# ── AUD-E02-STALEGAMEPLAN — freshness and expiry gating ──────────────────────────────────────
+
+def test_a_same_day_snapshot_still_claims_currently_listed_prices():
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    today_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
+    snap = _fake_snapshot(as_of=today_et, put_strike=140.0, put_expiry="2099-10-15", put_mid_price=3.0)
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_signal_alert_email("user@example.com", "AAPL", "HOLD", "BUY", "buy", options_game_plan=snap)
+    html = calls[0]["html"]
+    assert "real, currently-listed contract prices" in html
+    assert "historical reference" not in html
+
+
+def test_a_stale_snapshot_is_relabeled_historical_reference_not_currently_listed():
+    """AUD-E02-STALEGAMEPLAN: the exact reported defect — a several-days-old snapshot's marks
+    were called 'real, currently-listed contract prices' with no freshness check at all."""
+    from datetime import date as _date, timedelta as _td
+    stale_date = _date(2020, 1, 1)  # unambiguously old relative to any real "today"
+    snap = _fake_snapshot(as_of=stale_date, put_strike=140.0, put_expiry="2099-10-15", put_mid_price=3.0)
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_signal_alert_email("user@example.com", "AAPL", "HOLD", "BUY", "buy", options_game_plan=snap)
+    html, text = calls[0]["html"], calls[0]["text"]
+    assert "historical reference" in html
+    assert "refresh required" in html
+    assert "real, currently-listed contract prices, not a prediction." not in html
+    # AUD-E02-STALEGAMEPLAN: the text-only version previously omitted the as-of footer
+    # entirely — must now carry the identical provenance statement.
+    assert "historical reference" in text
+
+
+def test_an_expired_leg_is_not_rendered_even_though_its_strike_exists():
+    """AUD-E02-STALEGAMEPLAN: an already-expired leg must never be presented as an actionable,
+    currently-listed contract — regardless of how fresh the snapshot's own as_of date is."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    today_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
+    snap = _fake_snapshot(
+        as_of=today_et,
+        put_strike=140.0, put_expiry="2020-01-01", put_mid_price=3.0,  # expired
+        call_strike=168.0, call_expiry="2099-09-30", call_mid_price=1.85,  # not expired
+    )
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_signal_alert_email("user@example.com", "AAPL", "HOLD", "BUY", "buy", options_game_plan=snap)
+    html = calls[0]["html"]
+    assert "Protective Put" not in html
+    assert "Covered Call" in html
+
+
+def test_an_unparseable_expiry_fails_closed_not_shown():
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    today_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
+    snap = _fake_snapshot(as_of=today_et, put_strike=140.0, put_expiry="not-a-date", put_mid_price=3.0)
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_signal_alert_email("user@example.com", "AAPL", "HOLD", "BUY", "buy", options_game_plan=snap)
+    assert "Protective Put" not in calls[0]["html"]
+
+
+def test_both_legs_expired_renders_no_section_at_all_even_with_iv_absent():
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    today_et = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
+    snap = _fake_snapshot(
+        as_of=today_et,
+        put_strike=140.0, put_expiry="2020-01-01", put_mid_price=3.0,
+        call_strike=168.0, call_expiry="2020-01-01", call_mid_price=1.85,
+    )
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_signal_alert_email("user@example.com", "AAPL", "HOLD", "BUY", "buy", options_game_plan=snap)
+    assert "Options Game Plan" not in calls[0]["html"]
+
+
+def test_holdings_caveat_is_present_whenever_a_leg_renders():
+    snap = _fake_snapshot(put_strike=140.0, put_expiry="2099-10-15", put_mid_price=3.0)
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_signal_alert_email("user@example.com", "AAPL", "HOLD", "BUY", "buy", options_game_plan=snap)
+    html = calls[0]["html"]
+    assert "conditional illustrations" in html

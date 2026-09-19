@@ -312,7 +312,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 - **`docs/audits/2026-09-18-a01-a03-broker-lifecycle-scoping.md`** — re-verified A01-A03 still true; found 2 more: conditional_orders.py duplicates A02's exact bug in a hand-maintained "reimplementation," and manual_exit/liquidate never touch the broker at all [broker lifecycle]
 - **`docs/audits/2026-09-18-uw-and-broker-report-review.md`** — independent review of the UW/broker audits: defects confirmed, but call-site counts overstated; expanded broker scope to B01-B12 (partial fills, scale-in/out, reconciliation) [audit review]
-- **`docs/audits/2026-09-19-four-audit-implementation-batch.md`** — fixed UW-01, B01/B02/B05 (broker fail-closed + exit-ID poller + manual/liquidate wiring), E01/E03/E06/E12 (email accuracy). B03/B06-B12, UW-02-09, rest of E-series scoped not built [broker, UW, email]
+- **`docs/audits/2026-09-19-four-audit-implementation-batch.md`** — fixed UW-01, B01/B02/B05 (broker), E01/E02/E03/E06/E08(partial)/E10/E12 (email accuracy). B03/B06-B12, UW-02-09, rest of E-series scoped not built [broker, UW, email]
 
 - **`docs/audits/2026-07-16-aud250-deep-audit-series.md`** — AUD250 — Deep Audit of the 2026-07-11 to 2026-07-16 Work Window (73 Commits, 11 Services); Deep Audit: Trading Gate / Chart / Reports (2026-07-17) — 10 Confi...
 - **`docs/audits/2026-07-20-duplicate-code-and-redis-pooling-audit.md`** — Full-Codebase Audit — Duplicate Code / Single-Source-of-Truth (Phase 1: Redis Connections, 2026-07-20); Full-Codebase Audit — Duplicate Code / Single-Source-...
