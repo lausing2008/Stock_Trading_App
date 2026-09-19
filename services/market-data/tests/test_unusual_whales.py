@@ -1621,25 +1621,61 @@ def test_options_screener_reads_from_cache_when_present():
     mock_get.assert_not_called()
 
 
+# AUD-T407-SCREENERTICKERFIELD (found 2026-09-18). This test's mock previously read
+# `{"ticker": "aapl", ...}` — a GUESSED shape, never checked against a real response, per this
+# module's own docstring ("this endpoint's exact response shape is NOT independently documented
+# ... parsing below probes plausible key names defensively"). The real endpoint returns
+# `ticker_symbol`, not `ticker` or `underlying_symbol`. Because the mock matched the guess
+# instead of reality, this test passed for months while every live call returned an empty list
+# under EVERY filter combination — `result = [r for r in result if r.ticker]` silently dropped
+# every single row, since `ticker` was always "".
+#
+# _REAL_SCREENER_ROW is trimmed but otherwise VERBATIM from a live
+# GET /api/screener/option-contracts response captured 2026-09-18 (SPY, 2026-09-18 0DTE call).
+# Keeping the untrimmed field set as a literal fixture is deliberate: a hand-shortened mock is
+# exactly how the wrong shape got embedded here in the first place.
+_REAL_SCREENER_ROW = {
+    "ticker_symbol": "SPY", "option_symbol": "SPY260918C00760000", "option_type": "call",
+    "strike": "760", "expiry": "2026-09-18", "volume": 815132, "open_interest": 30193,
+    "premium": "59935790.00", "stock_price": "761.69", "delta": "0.929873690930847",
+    "gamma": "0.0706098582148875", "theta": "-12.4071797597249", "vega": "0.00546988470604517",
+    "prev_iv": "0.0639006604249734", "iv_change": "0.4041637581705686",
+    "days_of_vol_greater_than_oi": 3, "issue_type": "ETF", "sector": None,
+}
+
+
 def test_options_screener_parses_a_real_response():
     fake_redis = _FakeRedis()
     with patch.object(uw, "is_available", return_value=True), \
          patch.object(uw, "_get_redis", return_value=fake_redis), \
-         patch.object(uw, "_get", return_value=[
-             {"ticker": "aapl", "option_symbol": "AAPL240119C00200000", "type": "Call",
-              "strike": "200.0", "expiry": "2024-01-19", "volume": 5000, "open_interest": 1000,
-              "premium": "500000.0", "implied_volatility": "0.35"},
-         ]):
+         patch.object(uw, "_get", return_value=[_REAL_SCREENER_ROW]):
         result = uw.get_options_screener()
     assert len(result) == 1
     r = result[0]
-    assert r.ticker == "AAPL"
+    assert r.ticker == "SPY"
     assert r.option_type == "call"
-    assert r.strike == 200.0
-    assert r.volume == 5000
-    assert r.open_interest == 1000
-    assert r.premium == 500_000.0
-    assert r.implied_volatility == 0.35
+    assert r.strike == 760.0
+    assert r.volume == 815132
+    assert r.open_interest == 30193
+    assert r.premium == 59935790.0
+    # This endpoint's real payload has NO `iv`/`implied_volatility` field at all (only
+    # `prev_iv`/`iv_change`) — confirmed against the live response, not assumed. None here is
+    # the honest value, not a bug: the frontend already renders it as "—".
+    assert r.implied_volatility is None
+
+
+def test_options_screener_still_accepts_the_older_guessed_field_names():
+    """`ticker`/`underlying_symbol` were the ORIGINAL (wrong) guess. Kept as a fallback in case
+    a different UW screener variant or a future response shape uses them — but they must never
+    be the ONLY names checked, which is the regression above."""
+    with patch.object(uw, "is_available", return_value=True), \
+         patch.object(uw, "_get", return_value=[
+             {"ticker": "aapl", "option_symbol": "AAPL240119C00200000", "type": "Call",
+              "strike": "200.0", "expiry": "2024-01-19", "volume": 5000, "open_interest": 1000,
+              "premium": "500000.0"},
+         ]):
+        result = uw.get_options_screener()
+    assert len(result) == 1 and result[0].ticker == "AAPL"
 
 
 def test_options_screener_sends_type_param_only_when_option_type_given():

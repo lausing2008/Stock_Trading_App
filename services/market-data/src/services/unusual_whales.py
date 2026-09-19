@@ -1702,7 +1702,14 @@ def get_options_screener(
         for row in data:
             try:
                 result.append(OptionsScreenerRow(
-                    ticker=(row.get("ticker") or row.get("underlying_symbol") or "").upper(),
+                    # AUD-T407-SCREENERTICKERFIELD: UW's REAL response uses `ticker_symbol`
+                    # (confirmed against a live response, 2026-09-18) — not `ticker` or
+                    # `underlying_symbol`, which this defensive probe checked instead. Every
+                    # row therefore got ticker="" and was dropped by the `if r.ticker` filter
+                    # a few lines down, so the screener returned an empty list under EVERY
+                    # filter combination, including min_premium=0 with no filters at all.
+                    ticker=(row.get("ticker_symbol") or row.get("ticker")
+                            or row.get("underlying_symbol") or "").upper(),
                     option_symbol=row.get("option_symbol") or row.get("option_chain"),
                     option_type=(row.get("type") or row.get("option_type") or "").lower() or None,
                     strike=_to_float(row.get("strike")),
