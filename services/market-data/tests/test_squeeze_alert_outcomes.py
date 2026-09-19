@@ -80,6 +80,19 @@ _SCHEDULER_SOURCE = _SCHEDULER_PATH.read_text()
 _ADMIN_PATH = pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "admin.py"
 _ADMIN_SOURCE = _ADMIN_PATH.read_text()
 
+
+def _real_today_et():
+    """AUD-UW01-ALERTDATEBOUNDARY: evaluate_squeeze_alert_outcomes() now calls the real
+    `_today_et()` helper instead of a bare `date.today()` — extracts scheduler.py's own real
+    source for it (not a hand-copied stub) so a future change to the helper is automatically
+    reflected here, matching this file's own established discipline for shared constants."""
+    start = _SCHEDULER_SOURCE.index("def _today_et() -> date:")
+    end = _SCHEDULER_SOURCE.index("\n\n\ndef _is_us_trading_day", start)
+    namespace = {}
+    exec("from datetime import date, datetime, timezone\nfrom zoneinfo import ZoneInfo\n"
+         + _SCHEDULER_SOURCE[start:end], namespace)  # noqa: S102 — isolated eval of real source
+    return namespace["_today_et"]
+
 _next_id = [1000]
 
 
@@ -149,6 +162,7 @@ def _extract_evaluate_squeeze_alert_outcomes():
         "log": MagicMock(),
         "_get_redis": lambda: _fake_redis,
         "_record_job_status": MagicMock(),
+        "_today_et": _real_today_et(),
     }
     exec(body, namespace)  # noqa: S102 — isolated eval of real source
     return namespace["evaluate_squeeze_alert_outcomes"], namespace["_squeeze_outcome_lookup_price"]

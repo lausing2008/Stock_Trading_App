@@ -62,9 +62,16 @@ class _Row:
         self.__dict__.update(kw)
 
 
-def _dp(symbol="BULL", price=9.42, premium=5103398.04, hour=16):
+def _dp(symbol="BULL", price=9.42, premium=5103398.04, hour=16, exec_price=None):
+    # AUD-E01-DARKPOOLWRONGPRICE: _shares() now derives from exec_price, not alert_price (the
+    # live-or-execution ambiguous field) — exec_price defaults to the same value as `price`
+    # here so every existing test's real-print arithmetic (BULL: $5,103,398.04 / $9.42 =
+    # 541,762 shares) keeps its original intended meaning: `price` in these fixtures always
+    # represented the actual execution price, alert_price just happened to be the only column
+    # that existed before T377-DARKPOOL-SIDE split the two.
     return _Row(symbol=symbol, fired_at=datetime(2026, 9, 9, hour, 30),
-                alert_price=price, qualifying_metric=premium)
+                alert_price=price, exec_price=exec_price if exec_price is not None else price,
+                qualifying_metric=premium)
 
 
 def _of(**kw):

@@ -412,3 +412,27 @@ def test_evaluator_never_re_evaluates_an_already_closed_window():
     body = _func_body("evaluate_options_flow_alert_outcomes")
     assert "if getattr(row, price_field) is not None:" in body
     assert "continue" in body
+
+
+def test_aud_e03_win_rate_label_states_instrument_horizon_and_hurdle_explicitly():
+    """AUD-E03-FLOWWINRATE: the old label ("Measured historical win rate (bullish): 56%
+    (n=733)") let a reader assume this was an OPTION trade result. It measures the UNDERLYING
+    stock's directional hit rate, entry at next-session close, +10 CALENDAR days, >0.5% hurdle
+    — none of which the old label disclosed. Must now be spelled out on the row itself."""
+    calls, fake = _capture_send()
+    with patch("src.services.email_service.send_email", fake):
+        send_options_flow_alert_email("user@example.com", [
+            {"symbol": "AAA", "option_chain": "AAA1", "option_type": "call", "direction": "bullish",
+             "strike": 100.0, "expiry": "2026-09-05", "price": 98.0, "total_premium": 60000.0,
+             "ask_side_dominant": True, "volume_oi_ratio": 1.5, "has_sweep": True, "alert_rule": "RepeatedHits",
+             "calibrated_win_rate": 0.62, "calibrated_win_rate_count": 45},
+        ])
+    html = calls[0]["html"]
+    text = calls[0]["text"]
+    for body in (html, text):
+        assert "Underlying directional hit rate" in body
+        assert "10 calendar-day" in body
+        assert "next-session close entry" in body
+        assert "0.5% favorable move" in body
+        assert "NOT an option P" in body
+    assert "Measured historical win rate" not in html

@@ -170,6 +170,19 @@ def _extract_squeeze_outcome_lookup_price():
     return namespace["_squeeze_outcome_lookup_price"]
 
 
+def _real_today_et():
+    """AUD-UW01-ALERTDATEBOUNDARY: evaluate_prebreakout_alert_outcomes() now calls the real
+    `_today_et()` helper instead of a bare `date.today()` — extracts scheduler.py's own real
+    source for it rather than a hand-copied stub, matching this file's established discipline
+    for the shared constants below."""
+    start = _SCHEDULER_SOURCE.index("def _today_et() -> date:")
+    end = _SCHEDULER_SOURCE.index("\n\n\ndef _is_us_trading_day", start)
+    namespace = {}
+    exec("from datetime import date, datetime, timezone\nfrom zoneinfo import ZoneInfo\n"
+         + _SCHEDULER_SOURCE[start:end], namespace)  # noqa: S102 — isolated eval of real source
+    return namespace["_today_et"]
+
+
 def _extract_evaluate_prebreakout_alert_outcomes():
     lookup = _extract_squeeze_outcome_lookup_price()
     win_hurdle_start = _SCHEDULER_SOURCE.index("_SQUEEZE_OUTCOME_WIN_HURDLE_PCT = ")
@@ -196,6 +209,7 @@ def _extract_evaluate_prebreakout_alert_outcomes():
         "_squeeze_outcome_lookup_price": lookup,
         "_SQUEEZE_OUTCOME_WIN_HURDLE_PCT": const_namespace["_SQUEEZE_OUTCOME_WIN_HURDLE_PCT"],
         "_SQUEEZE_OUTCOME_WINDOWS": const_namespace["_SQUEEZE_OUTCOME_WINDOWS"],
+        "_today_et": _real_today_et(),
     }
     exec(body, namespace)  # noqa: S102 — isolated eval of real source
     return namespace["evaluate_prebreakout_alert_outcomes"]

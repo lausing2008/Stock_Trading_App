@@ -204,10 +204,21 @@ def _place_broker_entry(session, trade: "PaperTrade", portfolio: "PaperPortfolio
     except Exception as _bp_exc:
         if not _handle_broker_error_if_token_rejected(session, portfolio, _bp_exc):
             log.warning("broker.buying_power_check_failed", symbol=trade.symbol, error=str(_bp_exc))
-        # fail open — the broker's own margin rejection is the backstop for this specific case.
-        # A genuine token rejection is now marked unauthorized + the user notified immediately
-        # (matching every other broker call site in this function) rather than silently falling
-        # through to attempt a real order placement on a connection already known to be dead.
+        # AUD-B01-PREFLIGHTFAILCLOSED (2026-09-19): previously fell through to place_order()
+        # here, reasoning that "the broker's own margin rejection is the backstop." That
+        # backstop is the BROKER's own risk control, not this app's own preflight — a real
+        # order was submitted from a fake buying-power number (0) every time this check
+        # couldn't run (network blip, timeout, or a dead token), which is not what an
+        # "unavailable check" should ever silently become. Fail CLOSED instead: the simulated
+        # trade (already committed by the caller before this function runs) is untouched, but
+        # no REAL order goes out this cycle without a real, current buying-power figure to
+        # check it against. `poll_broker_order_fills`/the next scan cycle gets another chance
+        # once the account/token issue clears.
+        trade.broker_error = (
+            f"Skipped real order: buying-power check failed ({_bp_exc.__class__.__name__}); "
+            f"blocked rather than submitted without a verified buying-power figure"
+        )[:512]
+        return
     try:
         from src.services.broker.interface import OrderSide, OrderType
         order = broker.place_order(
@@ -262,6 +273,11 @@ def _place_broker_exit(session, trade: "PaperTrade", portfolio: "PaperPortfolio"
             order_type=OrderType.MARKET,
         )
         trade.broker_error = None  # a successful exit placement clears any prior failure
+        # AUD-B02-EXITIDPERSISTED: persisted BEFORE the immediate-fill-check below, not after —
+        # if that check raises or the fill simply isn't ready yet, the order ID must already be
+        # durable so poll_broker_exit_fills() can find and reconcile it later. Previously this
+        # ID only ever reached two log lines and was then discarded.
+        trade.broker_exit_order_id = order.order_id
         log.info("broker.exit_order_placed",
                  symbol=trade.symbol, order_id=order.order_id, shares=int(trade.shares))
         try:
@@ -281,6 +297,7 @@ def _place_broker_exit(session, trade: "PaperTrade", portfolio: "PaperPortfolio"
                 total_pnl_pct = (total_pnl_dollar / _cost_basis) if _cost_basis else 0.0
                 trade.pnl         = total_pnl_dollar
                 trade.pct_return  = round(total_pnl_pct * 100, 4)
+                trade.broker_exit_fill_confirmed = True  # AUD-B02-EXITIDPERSISTED
                 log.info("broker.exit_filled", symbol=trade.symbol, fill_price=fill_p,
                          pnl=trade.pnl)
         except Exception as exc:
@@ -379,6 +396,96 @@ def poll_broker_order_fills(session=None) -> None:
             session.commit()  # persists any broker_fill_confirmed=True set on the no-delta branch
     except Exception as exc:
         log.warning("broker.poll_error", error=str(exc))
+    finally:
+        if own_session:
+            session.close()
+
+
+def poll_broker_exit_fills(session=None) -> None:
+    """AUD-B02-EXITIDPERSISTED: the exit-leg counterpart to poll_broker_order_fills() above —
+    now buildable at all because trade.broker_exit_order_id exists to poll.
+
+    A closed paper trade whose broker exit hasn't been confirmed yet is NOT a contradiction:
+    _place_broker_exit()'s own immediate-fill-check can miss a fill that resolves moments
+    later (after-hours, partial fill, a slow response), and previously there was no durable
+    way to find that order again — it was orphaned, real and live at the broker, with the
+    paper trade already reporting closed. This poller is what makes that reconcilable instead
+    of merely detectable in principle.
+
+    Reuses the SAME reconciliation math _place_broker_exit()'s own immediate-fill-check
+    already applies (delta vs the trade's current exit_price, realized_pnl fold-in for
+    scale-out partials) — kept as its own copy here rather than factored into a shared
+    helper, matching poll_broker_order_fills()'s own established precedent of not sharing
+    its entry-side reconciliation logic with _place_broker_entry()'s immediate check either.
+    """
+    own_session = session is None
+    if own_session:
+        session = SessionLocal()
+    try:
+        pending = session.execute(
+            select(PaperTrade).where(
+                PaperTrade.stage == "closed",
+                PaperTrade.broker_exit_order_id.isnot(None),
+                PaperTrade.broker_exit_fill_confirmed.is_(False),
+            )
+        ).scalars().all()
+        if not pending:
+            return
+        portfolio_ids = list({t.portfolio_id for t in pending})
+        portfolios = {
+            p.id: p for p in session.execute(
+                select(PaperPortfolio).where(PaperPortfolio.id.in_(portfolio_ids))
+            ).scalars().all()
+        }
+        updated = 0
+        for trade in pending:
+            port = portfolios.get(trade.portfolio_id)
+            if not port:
+                continue
+            broker = _get_portfolio_broker(session, port)
+            if broker is None:
+                continue
+            try:
+                filled = broker.get_order(trade.broker_exit_order_id)
+                if filled.status == "filled" and filled.filled_avg_price:
+                    fill_p = round(float(filled.filled_avg_price), 4)
+                    old_exit = trade.exit_price or fill_p
+                    if abs(fill_p - old_exit) > 0.001:
+                        delta = round((fill_p - old_exit) * trade.shares, 2)
+                        # AUD-CASHRACE: same per-portfolio lock-then-commit discipline
+                        # poll_broker_order_fills() already uses above, for the same reason —
+                        # never held across a subsequent iteration's own network call.
+                        session.refresh(port, with_for_update=True)
+                        port.current_cash = round(port.current_cash + delta, 2)
+                        trade.exit_price = fill_p
+                        remaining_pnl_dollar = round((fill_p - trade.entry_price) * trade.shares, 2)
+                        total_pnl_dollar = round((trade.realized_pnl or 0.0) + remaining_pnl_dollar, 2)
+                        _cost_basis = trade.entry_price * (trade.entry_shares or trade.shares)
+                        total_pnl_pct = (total_pnl_dollar / _cost_basis) if _cost_basis else 0.0
+                        trade.pnl = total_pnl_dollar
+                        trade.pct_return = round(total_pnl_pct * 100, 4)
+                        trade.broker_exit_fill_confirmed = True
+                        session.commit()
+                        updated += 1
+                        log.info("broker.poll_exit_fill_updated", symbol=trade.symbol, fill_price=fill_p)
+                    else:
+                        trade.broker_exit_fill_confirmed = True
+                # A terminal cancelled/rejected exit status is deliberately NOT marked
+                # broker_exit_fill_confirmed here, matching poll_broker_order_fills()'s own
+                # identical deferral on the entry side — what should happen to a paper trade
+                # already marked closed whose real broker SELL never filled at all is a
+                # distinct, not-yet-investigated question (likely: re-attempt the exit), left
+                # for a future pass rather than silently folded into this fix.
+            except Exception as exc:
+                if not _handle_broker_error_if_token_rejected(session, port, exc):
+                    log.debug("broker.poll_exit_check_failed",
+                              order_id=trade.broker_exit_order_id, error=str(exc))
+        if updated:
+            log.info("broker.poll_exit_fills_updated", count=updated)
+        else:
+            session.commit()  # persists any broker_exit_fill_confirmed=True set on the no-delta branch
+    except Exception as exc:
+        log.warning("broker.poll_exit_error", error=str(exc))
     finally:
         if own_session:
             session.close()

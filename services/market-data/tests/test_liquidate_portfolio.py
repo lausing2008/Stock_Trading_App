@@ -109,14 +109,15 @@ def _extract_liquidate_portfolio():
     sig_end = raw.index(") -> dict:\n") + len(") -> dict:\n")
     body = raw[sig_end:]
     func_source = "def liquidate_portfolio(portfolio_id, confirm=False, session=None):\n" + body
-    assert "from ..services.paper_trading_engine import _fetch_live_prices" in func_source, (
+    # AUD-B05-MANUALEXITBROKERGAP added _place_broker_exit to this same import line.
+    assert "from ..services.paper_trading_engine import _fetch_live_prices, _place_broker_exit" in func_source, (
         "the real relative import path changed — this test's own stub-out below needs updating "
         "to match, or a real ModuleNotFoundError (src.api.services doesn't exist — "
         "paper_trading_engine.py lives at src/services/, a SIBLING of src/api/, not a child of "
         "it) would silently regress uncaught, exactly as it did once already in production."
     )
     func_source = func_source.replace(
-        "from ..services.paper_trading_engine import _fetch_live_prices\n\n    ",
+        "from ..services.paper_trading_engine import _fetch_live_prices, _place_broker_exit\n\n    ",
         "",
     )
     namespace = {
@@ -125,6 +126,7 @@ def _extract_liquidate_portfolio():
         "_get_portfolio": _fake_get_portfolio,
         "_fetch_live_prices": _fake_fetch_live_prices,
         "_close_one_paper_trade": _close_one_paper_trade,
+        "_place_broker_exit": _fake_place_broker_exit,
         "log": _FakeLog(),
     }
     exec(func_source, namespace)  # noqa: S102 — real source, not a duplicate
@@ -141,6 +143,13 @@ _fetch_live_prices_return: dict = {}
 
 def _fake_fetch_live_prices(symbols):
     return dict(_fetch_live_prices_return)
+
+
+_place_broker_exit_calls: list = []
+
+
+def _fake_place_broker_exit(session, trade, portfolio):
+    _place_broker_exit_calls.append((trade.id, trade.symbol))
 
 
 def _fake_get_portfolio(session, portfolio_id=None, *, for_update=False):
@@ -166,8 +175,9 @@ def _make_session():
     return session
 
 
-def _make_portfolio(session, id_=1, current_cash=10_000.0, config=None):
-    p = PaperPortfolio(id=id_, name="Test", initial_capital=10_000.0, current_cash=current_cash, config=config or {})
+def _make_portfolio(session, id_=1, current_cash=10_000.0, config=None, broker_connection_id=None):
+    p = PaperPortfolio(id=id_, name="Test", initial_capital=10_000.0, current_cash=current_cash, config=config or {},
+                        broker_connection_id=broker_connection_id)
     session.add(p)
     session.commit()
     return p
@@ -176,13 +186,14 @@ def _make_portfolio(session, id_=1, current_cash=10_000.0, config=None):
 _next_trade_id = [1]
 
 
-def _make_open_trade(session, portfolio_id, symbol="AAPL", entry_price=100.0, shares=10.0, current_price=None):
+def _make_open_trade(session, portfolio_id, symbol="AAPL", entry_price=100.0, shares=10.0, current_price=None, broker_order_id=None):
     trade = PaperTrade(
         id=_next_trade_id[0], portfolio_id=portfolio_id, symbol=symbol,
         trading_style="SWING", entry_date=(datetime.now(timezone.utc) - timedelta(days=5)).date(),
         entry_time=datetime.now(timezone.utc) - timedelta(days=5),
         entry_price=entry_price, shares=shares, stop_loss=entry_price * 0.9, take_profit=entry_price * 1.2,
         current_stop=entry_price * 0.9, current_price=current_price, stage="open",
+        broker_order_id=broker_order_id,
     )
     session.add(trade)
     session.commit()
@@ -376,4 +387,78 @@ def test_404s_for_a_nonexistent_portfolio():
         except _FakeHTTPException as exc:
             assert exc.status_code == 404
     finally:
+        session.close()
+
+
+# ── AUD-B05-MANUALEXITBROKERGAP — liquidation now submits real exits for broker-backed trades ──
+
+def test_broker_backed_trade_gets_a_real_exit_submitted():
+    """The exact reported gap: a broker-linked portfolio's open position must actually be sold
+    at the broker during liquidation, not just marked closed in the simulated ledger."""
+    global _fetch_live_prices_return, _place_broker_exit_calls
+    _place_broker_exit_calls = []
+    session = _make_session()
+    try:
+        p = _make_portfolio(session, broker_connection_id=1)
+        t = _make_open_trade(session, p.id, symbol="AAPL", entry_price=100.0, broker_order_id="order-123")
+        _fetch_live_prices_return = {"AAPL": 110.0}
+        liquidate_portfolio(p.id, confirm=True, session=session)
+        assert (t.id, "AAPL") in _place_broker_exit_calls
+    finally:
+        _fetch_live_prices_return = {}
+        _place_broker_exit_calls = []
+        session.close()
+
+
+def test_simulated_only_trade_never_calls_broker_exit():
+    """A trade with no broker_order_id (never broker-entered) must not trigger a broker call
+    even when the portfolio itself is broker-linked — matches _place_broker_exit()'s own guard,
+    checked here again at the call site."""
+    global _fetch_live_prices_return, _place_broker_exit_calls
+    _place_broker_exit_calls = []
+    session = _make_session()
+    try:
+        p = _make_portfolio(session, broker_connection_id=1)
+        _make_open_trade(session, p.id, symbol="AAPL", entry_price=100.0, broker_order_id=None)
+        _fetch_live_prices_return = {"AAPL": 110.0}
+        liquidate_portfolio(p.id, confirm=True, session=session)
+        assert _place_broker_exit_calls == []
+    finally:
+        _fetch_live_prices_return = {}
+        _place_broker_exit_calls = []
+        session.close()
+
+
+def test_unlinked_portfolio_never_calls_broker_exit_even_with_a_stale_broker_order_id():
+    """A portfolio with no broker_connection_id must never attempt a broker exit, even if a
+    trade somehow still carries an old broker_order_id (e.g. after the connection was removed)."""
+    global _fetch_live_prices_return, _place_broker_exit_calls
+    _place_broker_exit_calls = []
+    session = _make_session()
+    try:
+        p = _make_portfolio(session, broker_connection_id=None)
+        _make_open_trade(session, p.id, symbol="AAPL", entry_price=100.0, broker_order_id="stale-order")
+        _fetch_live_prices_return = {"AAPL": 110.0}
+        liquidate_portfolio(p.id, confirm=True, session=session)
+        assert _place_broker_exit_calls == []
+    finally:
+        _fetch_live_prices_return = {}
+        _place_broker_exit_calls = []
+        session.close()
+
+
+def test_multiple_broker_backed_trades_each_get_their_own_exit_call():
+    global _fetch_live_prices_return, _place_broker_exit_calls
+    _place_broker_exit_calls = []
+    session = _make_session()
+    try:
+        p = _make_portfolio(session, broker_connection_id=1)
+        t1 = _make_open_trade(session, p.id, symbol="AAPL", entry_price=100.0, broker_order_id="order-1")
+        t2 = _make_open_trade(session, p.id, symbol="MSFT", entry_price=200.0, broker_order_id="order-2")
+        _fetch_live_prices_return = {"AAPL": 110.0, "MSFT": 210.0}
+        liquidate_portfolio(p.id, confirm=True, session=session)
+        assert {c[0] for c in _place_broker_exit_calls} == {t1.id, t2.id}
+    finally:
+        _fetch_live_prices_return = {}
+        _place_broker_exit_calls = []
         session.close()

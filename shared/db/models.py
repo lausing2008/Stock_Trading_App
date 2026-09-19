@@ -1045,6 +1045,22 @@ class PaperTrade(Base):
     # it, every broker-entered position gets silently re-polled against the broker API forever,
     # not just until its fill is confirmed.
     broker_fill_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    # AUD-B02-EXITIDPERSISTED (2026-09-19): the exit leg's counterpart to broker_order_id/
+    # broker_fill_confirmed above. Before this, _place_broker_exit() held a broker-returned
+    # SELL order's ID in a local variable long enough to log it twice and then discarded it —
+    # no column existed to persist it to, so poll_broker_order_fills() (which is entry-only,
+    # filtering on broker_order_id/broker_fill_confirmed) had no equivalent exit poller to
+    # exist for. If the immediate-fill check inside _place_broker_exit() didn't resolve the
+    # fill right away (after-hours, partial fill, a slow response), the exit order was
+    # orphaned: real and live at the broker, with no durable link back to the paper trade the
+    # UI had already marked closed. See docs/audits/2026-09-18-a01-a03-broker-lifecycle-
+    # scoping.md (A02/B02) for the full incident this closes.
+    broker_exit_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Mirrors broker_fill_confirmed's own semantics exactly, for the exit leg: False means
+    # poll_broker_exit_fills() still needs to check this order; set True once a fill (or a
+    # confirmed non-fillable terminal status) has been reconciled, so a closed paper trade
+    # doesn't get polled against the broker API forever once its real exit has resolved.
+    broker_exit_fill_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     # Set when a broker-linked portfolio's entry/exit order placement genuinely fails (e.g. a
     # real E*Trade rejection) — distinguishes "attempted and failed" from "never attempted"
     # (both otherwise leave broker_order_id null, making the two indistinguishable without a

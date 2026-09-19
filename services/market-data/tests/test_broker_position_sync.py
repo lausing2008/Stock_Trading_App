@@ -164,7 +164,9 @@ def test_wired_into_the_scheduler_next_to_the_order_fill_poll():
     scheduler_source = _scheduler_path.read_text()
     assert "sync_broker_positions" in scheduler_source
     idx = scheduler_source.index("poll_broker_order_fills()")
-    assert "sync_broker_positions()" in scheduler_source[idx:idx + 500]
+    # AUD-B02-EXITIDPERSISTED added poll_broker_exit_fills()'s own try/except in between —
+    # still the same piggyback-on-one-locked-cycle grouping, just a wider window now.
+    assert "sync_broker_positions()" in scheduler_source[idx:idx + 800]
 
 
 def test_never_overwrites_a_manual_position_for_the_same_symbol():

@@ -60,4 +60,7 @@ run_migration "013_add_equity_basis_to_options_income_equity_curve.sql"
 # T410-AUD-C02-C03: independent per-window signal outcome resolution (additive, new table)
 run_migration "014_create_signal_outcome_horizons.sql"
 
+# AUD-B02-EXITIDPERSISTED: exit order ID + fill-confirmed flag (mirrors migration 012's entry leg)
+run_migration "015_add_broker_exit_order_id_to_paper_trades.sql"
+
 echo "=== All migrations complete ==="

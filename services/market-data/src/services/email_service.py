@@ -130,6 +130,16 @@ def send_signal_alert_email(
         ("BUY",  "HOLD"): ("cautious",  "momentum fading — signal weakening from BUY"),
         ("BUY",  "WAIT"): ("bearish",   "deteriorating from BUY — consider reviewing position"),
         ("BUY",  "SELL"): ("bearish",   "reversing from BUY to SELL — exit signal"),
+        # AUD-E12-SIGNALEXPLANATIONS (2026-09-19): prev_signal=None means "no prior stored
+        # signal exists" (a stock's first-ever evaluation), not "the signal is unchanged" — the
+        # old fallback ("neutral", "unchanged") applied to EVERY unmapped pair, including this
+        # one, so a brand-new BUY read as "unchanged" in the email body. These are initial
+        # signals, described as such rather than folded into the same fallback every genuinely
+        # unmapped transition also hits.
+        (None, "BUY"):    ("bullish",   "initial BUY signal"),
+        (None, "SELL"):   ("bearish",   "initial SELL signal"),
+        (None, "HOLD"):   ("cautious",  "initial HOLD signal"),
+        (None, "WAIT"):   ("cautious",  "initial WAIT signal"),
     }
     mood, desc = direction_map.get((prev_signal, new_signal), ("neutral", "unchanged"))
     color = "#22c55e" if mood == "bullish" else "#ef4444" if mood == "bearish" else "#facc15"
@@ -150,6 +160,11 @@ def send_signal_alert_email(
     current_price = reasons.get("last_price")
 
     def _yn(v) -> str:
+        # AUD-E12-SIGNALEXPLANATIONS: None (the measurement was never computed/recorded) must
+        # not render identically to a genuine, measured False — "No" asserts the check ran and
+        # came back negative, which is a different, stronger claim than "this wasn't measured."
+        if v is None:
+            return "Unknown"
         return "Yes" if v else "No"
     def _fmt(v, d=1) -> str:
         return f"{v:.{d}f}" if v is not None else "—"
@@ -235,9 +250,24 @@ def send_signal_alert_email(
     death_cross = reasons.get("death_cross_event", False)
 
     # Market regime
+    # AUD-E12-SIGNALEXPLANATIONS (2026-09-19): the old map recognized only bull/bear — every
+    # other real, valid regime state this codebase's own regime classifier produces (neutral,
+    # choppy, risk_off) fell through to the SAME "Unknown" text a genuinely missing/unrecognized
+    # value would show, which misleadingly reads as "this signal has no regime data" rather
+    # than "the regime is a known state that just isn't bull or bear." Also hardcoded "S&P" as
+    # the benchmark even for HK symbols, where the regime classifier actually uses HSI —
+    # matches this codebase's established `symbol.upper().endswith(".HK")` convention
+    # (paper_trading_engine.py) for telling the two apart, since this email has no separate
+    # market parameter of its own.
     regime = reasons.get("market_regime", "unknown")
-    regime_note = {"bull": "Bull (S&P above 200MA) — normal thresholds",
-                   "bear": "Bear (S&P below 200MA) — higher BUY threshold applied"}.get(regime, "Unknown")
+    _benchmark = "HSI" if symbol.upper().endswith(".HK") else "S&P"
+    regime_note = {
+        "bull":     f"Bull ({_benchmark} above 200MA) — normal thresholds",
+        "bear":     f"Bear ({_benchmark} below 200MA) — higher BUY threshold applied",
+        "neutral":  "Neutral — no directional regime tilt applied",
+        "choppy":   "Choppy — stricter entry gate applied",
+        "risk_off": "Risk-off — new entries paused or heavily reduced",
+    }.get(regime, "Unknown — no regime data recorded for this signal")
 
     # T174: catalyst intelligence scores from event-intelligence service (stored in signal reasons)
     _cat_score    = reasons.get("catalyst_score")
@@ -403,6 +433,10 @@ def send_signal_alert_email(
       {horizon_note_html}
 
       <!-- Entry levels -->
+      <!-- AUD-E12-SIGNALEXPLANATIONS (2026-09-19): three rows each independently labelled
+           "50%"/"50%" read as additive (150% of a position), with no indication these are
+           alternative entry tranches against ONE shared position-risk budget. -->
+      <div style="font-size:10px;color:#64748b;margin-bottom:4px">These are alternative entry tranches against ONE total position budget — the percentages are shares of that one budget, not three separate full positions.</div>
       <table style="width:100%;border-collapse:collapse;background:#f0fdf4;border-radius:8px;overflow:hidden;border:1px solid #bbf7d0;margin-bottom:10px">
         <tr style="background:#dcfce7">
           <td colspan="3" style="padding:6px 10px;font-size:11px;font-weight:700;color:#15803d;text-transform:uppercase;letter-spacing:.05em">Entry Strategy</td>
@@ -459,6 +493,7 @@ def send_signal_alert_email(
         game_plan_text = f"""
 --- Game Plan ({plan_label}) for {symbol} ---
 {horizon_note}
+(Alternative entry tranches against ONE total position budget — percentages are shares of that one budget, not three separate full positions.)
 Entry 1 (50%): ${e1:.2f}{_pct(e1)} — {game_plan["entry1_note"]}
 Entry 2 (50%): ${e2:.2f}{_pct(e2)} — {game_plan["entry2_note"]}
 Breakout (50%): ${bo:.2f}{_pct(bo)} — {game_plan["breakout_note"]}
@@ -558,7 +593,12 @@ Key Risk: {risk}
     else:
         subject_prefix = "Signal Alert"
     horizon_tag = f" [{horizon}]" if horizon else ""
-    _conf_tag = f" · {float(confidence):.0f}% conf" if confidence is not None else ""
+    # AUD-E06-CONFIDENCEPCT (2026-09-19): confidence = abs(fused - 0.5) * 200 is DISTANCE from a
+    # neutral fused score, not an observed trade-win probability — the generator's own comment
+    # already warns against reading it as accuracy. Rendering it with a "%" suffix (the same
+    # unit real probabilities use) invites exactly that misreading, so this is now labelled
+    # "strength N/100" instead of "N% conf".
+    _conf_tag = f" · strength {float(confidence):.0f}/100" if confidence is not None else ""
     _bp_tag = f" · {float(bullish_prob)*100:.0f}%BP" if bullish_prob is not None else ""
     _price_tag = f" · ${current_price:,.2f}" if current_price is not None else ""
     subject = f"{subject_prefix}: {symbol} {prev_signal} → {new_signal}{horizon_tag}{_price_tag}{_conf_tag}{_bp_tag}"
@@ -571,7 +611,7 @@ Key Risk: {risk}
         f"Your signal alert for {symbol} has fired.\n\n"
         f"AI Signal: {prev_signal} → {new_signal}{horizon_tag} ({desc})\n"
         f"Analyst consensus: {analyst.upper()}\n"
-        + (f"Bullish probability: {float(bullish_prob)*100:.1f}%  |  Confidence: {float(confidence):.1f}%\n" if bullish_prob is not None else "")
+        + (f"Fused bullish score: {float(bullish_prob)*100:.1f}%  |  Signal strength: {float(confidence):.1f}/100\n" if bullish_prob is not None else "")
         + f"\nWhy the signal changed:\n{rows_text}\n\n"
         + conviction_text
         + (f"{earnings_warn}\n\n" if earnings_warn else "")
@@ -623,7 +663,7 @@ Key Risk: {risk}
         <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em">To</div>
         <div style="font-size:22px;font-weight:800;color:{new_color}">{new_signal}</div>
       </div>
-      {f'<div style="margin-left:auto;text-align:right"><div style="font-size:11px;color:#94a3b8">Bullish prob</div><div style="font-size:20px;font-weight:800;color:{new_color}">{float(bullish_prob)*100:.0f}%</div><div style="font-size:10px;color:#94a3b8">Confidence {float(confidence):.0f}%</div></div>' if bullish_prob is not None else ""}
+      {f'<div style="margin-left:auto;text-align:right"><div style="font-size:11px;color:#94a3b8">Fused bullish score</div><div style="font-size:20px;font-weight:800;color:{new_color}">{float(bullish_prob)*100:.0f}%</div><div style="font-size:10px;color:#94a3b8">Strength {float(confidence):.0f}/100</div></div>' if bullish_prob is not None else ""}
     </div>
 
     <p style="font-size:14px;color:#475569;margin:0 0 16px">
@@ -1804,13 +1844,25 @@ def send_options_flow_alert_email(to: str, candidates: list[dict], omitted_count
         cal_count = c.get("calibrated_win_rate_count")
         cal_html = ""
         cal_text = ""
+        # AUD-E03-FLOWWINRATE (2026-09-19): the old label ("Measured historical win rate
+        # (bullish): 56% (n=733)") let the reader assume this was an OPTION trade result. It is
+        # actually the UNDERLYING STOCK's directional hit rate — entry at next-session close,
+        # target 10 CALENDAR days later, hurdle >0.5% favorable move — with no cost/spread/theta
+        # model at all. Spelled out explicitly per-row rather than left to a one-time disclaimer
+        # elsewhere, since this is the exact number a reader would otherwise use to size an
+        # options trade.
         if cal_win_rate is not None and cal_count is not None:
             cal_html = (
                 f'<div style="font-size:11px;color:#475569;margin-top:4px">'
-                f'Measured historical win rate ({direction}): {cal_win_rate * 100:.0f}% '
-                f'<span style="color:#94a3b8">(n={cal_count})</span></div>'
+                f'Underlying directional hit rate ({direction}): {cal_win_rate * 100:.0f}% '
+                f'<span style="color:#94a3b8">(n={cal_count} contracts; +10 calendar-day target '
+                f'after next-session close entry; &gt;0.5% favorable move — NOT an option P&amp;L)</span></div>'
             )
-            cal_text = f"    Measured historical win rate ({direction}): {cal_win_rate * 100:.0f}% (n={cal_count})\n"
+            cal_text = (
+                f"    Underlying directional hit rate ({direction}): {cal_win_rate * 100:.0f}% "
+                f"(n={cal_count} contracts; +10 calendar-day target after next-session close "
+                f"entry; >0.5% favorable move — NOT an option P&L)\n"
+            )
         else:
             cal_html = '<div style="font-size:11px;color:#94a3b8;margin-top:4px">Not enough resolved history yet for a measured win rate</div>'
             cal_text = "    Not enough resolved history yet for a measured win rate\n"
@@ -1889,7 +1941,15 @@ def send_dark_pool_alert_email(to: str, candidates: list[dict], omitted_count: i
     rows_text = ""
     for c in candidates:
         sym = c["symbol"]
-        price = c.get("price")
+        # AUD-E01-DARKPOOLWRONGPRICE (2026-09-19): "shares @ price" and the vs-live comparison
+        # must use the ACTUAL EXECUTION price (exec_price), not `price` — which the caller sets
+        # to `price or biggest.price`, i.e. the LIVE quote whenever one exists. Since live is
+        # almost always available, this rendered as "10,000 shares @ $105.00 ... +0.00% vs
+        # live" for a block that actually executed at $100 — the live quote presented AS the
+        # execution price, and the comparison against itself always showing 0%. exec_price only
+        # exists on rows captured after T377-DARKPOOL-SIDE; a legacy row without it has no
+        # execution price to fall back to and must render unknown, not the live price relabeled.
+        price = c.get("exec_price")
         size = c.get("size")
         premium = c.get("premium")
         venue = c.get("venue") or "—"

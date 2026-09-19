@@ -69,8 +69,13 @@ def _render(cands, omitted=0):
 
 
 def _c(**kw):
-    base = dict(symbol="MU", price=977.89, size=190, premium=185765.0, venue="L",
-                side="buy", live_price=977.20)
+    # AUD-E01-DARKPOOLWRONGPRICE: the real caller (check_dark_pool_alerts()) always sets
+    # exec_price separately from the live-or-execution `price` field — exec_price defaults to
+    # the same value as `price` here so every EXISTING test below (written when the email read
+    # `price` directly) keeps its original intended semantics unchanged; the dedicated E01
+    # regression tests further down override exec_price to a genuinely different value.
+    base = dict(symbol="MU", price=977.89, exec_price=977.89, size=190, premium=185765.0,
+                venue="L", side="buy", live_price=977.20)
     base.update(kw)
     return base
 
@@ -129,7 +134,7 @@ def test_a_seller_priced_above_live_still_reads_SELL():
     """THE CASE THAT JUSTIFIES USING NBBO AT ALL. A real shape: the print is 0.63% ABOVE the
     live price, so the intuitive rule says "buying", while the spread position says the seller
     hit the bid."""
-    _, _, text = _render([_c(symbol="INTC", price=24.10, live_price=23.95, side="sell")])
+    _, _, text = _render([_c(symbol="INTC", price=24.10, exec_price=24.10, live_price=23.95, side="sell")])
     assert "SELL" in text
     assert "+0.63%" in text, "the difference is still shown, as context"
 
@@ -235,3 +240,74 @@ def test_the_type_marks_every_new_field_optional():
     """An older backend must render "—" rather than "undefined"."""
     for f in ("exec_price?:", "live_price?:", "side?:", "shares?:"):
         assert f in API_TS, f
+
+
+# ── AUD-E01-DARKPOOLWRONGPRICE — instant email must render exec_price, not the live quote ────
+
+def test_the_exact_reported_example_renders_the_execution_price_not_live():
+    """The audit's own reproduction: execution $100, live $105, size 10,000, premium
+    $1,000,000. Before the fix this rendered "10,000 shares @ $105.00 ... +0.00% vs live" —
+    the live quote presented AS the execution price, with the comparison against itself always
+    reading zero. Must now read the real $100 execution price and the real -4.76% gap."""
+    _, _, text = _render([_c(
+        symbol="ZZZZ", price=105.0, exec_price=100.0, live_price=105.0,
+        size=10_000, premium=1_000_000.0, side="buy",
+    )])
+    assert "$100.00" in text
+    assert "-4.76%" in text
+    # The old bug's exact symptom must NOT appear: the live price standing in as the shown
+    # execution price, or a 0.00% gap that only happens when the two are silently equal.
+    assert "10,000 shares @ $105.00" not in text
+    assert "+0.00%" not in text
+
+
+def test_a_legacy_row_with_no_exec_price_renders_unknown_not_the_live_quote():
+    """A row captured before T377-DARKPOOL-SIDE has no exec_price at all — it must render "—",
+    never silently fall back to the live price relabeled as the execution price (that fallback
+    is exactly what produced the original bug)."""
+    _, _, text = _render([_c(exec_price=None, live_price=977.20)])
+    assert "shares @ —" in text
+
+
+# ── AUD-E01-DARKPOOLWRONGPRICE — digest's _shares() must derive from exec_price ──────────────
+
+def _extract_shares_fn():
+    _scheduler_source = (
+        pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "scheduler.py"
+    ).read_text()
+    start = _scheduler_source.index("        def _shares(r) -> str:")
+    end = _scheduler_source.index("\n\n        _cells = ", start)
+    body = _scheduler_source[start:end]
+    dedented = "\n".join(line[8:] if line.startswith("        ") else line for line in body.splitlines())
+    namespace = {}
+    exec(dedented, namespace)  # noqa: S102 — isolated eval of the real source
+    return namespace["_shares"]
+
+
+class _Row:
+    def __init__(self, qualifying_metric=None, alert_price=None, exec_price=None):
+        self.qualifying_metric = qualifying_metric
+        self.alert_price = alert_price
+        self.exec_price = exec_price
+
+
+def test_digest_shares_divides_by_exec_price_not_alert_price():
+    """The exact reported bug: premium $1,000,000 executed at $100 (10,000 real shares) must
+    not become 9,524 shares by dividing through the $105 live/alert price instead."""
+    shares_fn = _extract_shares_fn()
+    row = _Row(qualifying_metric=1_000_000.0, alert_price=105.0, exec_price=100.0)
+    assert shares_fn(row) == "10,000"
+
+
+def test_digest_shares_is_unknown_for_a_legacy_row_with_no_exec_price():
+    """Must not silently divide by alert_price for a row with no recorded exec_price — that is
+    exactly how the original bug computed a confidently wrong number."""
+    shares_fn = _extract_shares_fn()
+    row = _Row(qualifying_metric=1_000_000.0, alert_price=105.0, exec_price=None)
+    assert shares_fn(row) == "—"
+
+
+def test_digest_shares_is_unknown_when_premium_is_missing():
+    shares_fn = _extract_shares_fn()
+    row = _Row(qualifying_metric=None, alert_price=105.0, exec_price=100.0)
+    assert shares_fn(row) == "—"

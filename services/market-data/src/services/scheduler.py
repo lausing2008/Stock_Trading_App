@@ -90,7 +90,7 @@ from db import AlertCondition, AnalystPriceTarget, DarkPoolAlertOutcome, DarkPoo
 
 from .ingestion import ingest_universe
 from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification, send_post_open_digest_email, send_data_quality_alert_email, send_llm_usage_spike_email, is_quota_exceeded
-from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists, poll_broker_order_fills, sync_broker_positions
+from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists, poll_broker_order_fills, poll_broker_exit_fills, sync_broker_positions
 from ..api.routes import refresh_live_price_cache, refresh_avg_volume_cache, _AVG_VOLUME_KEY
 # AUD-DQCHECKS-VISIBILITY: a plain constant/function (not something with import-time side
 # effects), so importing it at module level carries none of the circularity/import-order risk
@@ -442,6 +442,20 @@ def _is_hk_trading_day(dt: datetime | None = None) -> bool:
 _NYSE_HOLIDAYS: frozenset[tuple[int, int, int]] = frozenset(
     (d.year, d.month, d.day) for d in _NYSE_HOLIDAY_DATES
 )
+
+
+def _today_et() -> date:
+    """AUD-UW01-ALERTDATEBOUNDARY: 'today' as a US market participant means it — the calendar
+    date in America/New_York, not a truncation of the current UTC instant. `date.today()` in a
+    UTC container reads one calendar day ahead of the true US trading date for ~4-5 hours every
+    evening (UTC crosses midnight at 8pm EDT / 7pm EST). Confirmed live: a DarkPoolAlertOutcome
+    row dated 2026-09-19 while New York was still on September 18.
+
+    Same bug class T409 already fixed in signal-engine's evaluate_signal_outcomes() and
+    options_income_engine.py's own _today_et() — this is scheduler.py's own copy for the
+    flow/dark-pool/squeeze alert-outcome recorders and evaluators, which never adopted it.
+    """
+    return datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
 
 
 def _is_us_trading_day(dt: datetime | None = None) -> bool:
@@ -1481,6 +1495,12 @@ def _run_paper_trading_step(label: str = "refresh", market: str | None = None) -
             poll_broker_order_fills()
         except Exception as _bpe:
             log.warning("broker.poll_step_failed", error=str(_bpe))
+        # AUD-B02-EXITIDPERSISTED: exit-leg counterpart to the entry poll immediately above —
+        # same piggyback-on-the-already-locked-step reasoning, not a new cron job.
+        try:
+            poll_broker_exit_fills()
+        except Exception as _bpxe:
+            log.warning("broker.poll_exit_step_failed", error=str(_bpxe))
         # T230-PORTFOLIO-BROKER-SYNC: same cycle as the order-fill poll above — piggybacks on
         # the already-scheduled/locked step rather than adding a new cron job. No-op if no
         # BrokerConnection is active+authorized.
@@ -4699,7 +4719,7 @@ def _record_options_flow_alert_outcome(
     try:
         expiry_str = candidate.get("expiry")
         expiry_date = date.fromisoformat(expiry_str) if expiry_str else None
-        today = date.today()
+        today = _today_et()  # AUD-UW01-ALERTDATEBOUNDARY
         existing = session.execute(
             select(OptionsFlowAlertOutcome).where(
                 OptionsFlowAlertOutcome.option_chain == candidate["option_chain"],
@@ -5156,7 +5176,7 @@ def _record_dark_pool_alert_outcome(
     of qualification), not 5, since this table measures "did dark-pool activity on this day
     predict anything," not a per-print backtest."""
     try:
-        today = date.today()
+        today = _today_et()  # AUD-UW01-ALERTDATEBOUNDARY
         existing = session.execute(
             select(DarkPoolAlertOutcome).where(
                 DarkPoolAlertOutcome.alert_type == "dark_pool_block",
@@ -5910,7 +5930,7 @@ def evaluate_squeeze_alert_outcomes() -> None:
         pass
     _t0 = time.monotonic()
     try:
-        today = date.today()
+        today = _today_et()  # AUD-UW01-ALERTDATEBOUNDARY
         with SessionLocal() as session:
             pending = session.execute(
                 select(SqueezeAlertOutcome).where(
@@ -6012,7 +6032,7 @@ def evaluate_prebreakout_alert_outcomes() -> None:
         pass
     _t0 = time.monotonic()
     try:
-        today = date.today()
+        today = _today_et()  # AUD-UW01-ALERTDATEBOUNDARY
         with SessionLocal() as session:
             pending = session.execute(
                 select(PreBreakoutAlertOutcome).where(
@@ -6112,7 +6132,7 @@ def evaluate_options_flow_alert_outcomes() -> None:
         pass
     _t0 = time.monotonic()
     try:
-        today = date.today()
+        today = _today_et()  # AUD-UW01-ALERTDATEBOUNDARY
         with SessionLocal() as session:
             pending = session.execute(
                 select(OptionsFlowAlertOutcome).where(
@@ -6221,7 +6241,7 @@ def evaluate_dark_pool_alert_outcomes() -> None:
         pass
     _t0 = time.monotonic()
     try:
-        today = date.today()
+        today = _today_et()  # AUD-UW01-ALERTDATEBOUNDARY
         with SessionLocal() as session:
             pending = session.execute(
                 select(DarkPoolAlertOutcome).where(
@@ -12172,9 +12192,18 @@ def _render_flow_digest(dp_rows, of_rows, dp_acc, of_acc, lookback, since) -> tu
             return {"buy": "BUY", "sell": "SELL"}.get(getattr(r, "side", None) or "", "—")
 
         def _shares(r) -> str:
-            if r.qualifying_metric is None or not r.alert_price:
+            """AUD-E01-DARKPOOLWRONGPRICE: must derive from exec_price, not alert_price —
+            alert_price is `price or biggest.price` (the LIVE quote whenever one existed at
+            capture time), while qualifying_metric (the premium) was computed from the print's
+            own ACTUAL execution price × size. Dividing premium by the live price instead of
+            the execution price silently produces the wrong share count whenever the two
+            differ. A row with no exec_price (pre-T377-DARKPOOL-SIDE) has no reliable way to
+            tell whether its own alert_price was ever the live or the execution price either —
+            left unknown rather than guessed, matching this digest's own established
+            "unknown is a real third state" convention for _dp_side()/_dp_live() above."""
+            if r.qualifying_metric is None or not getattr(r, "exec_price", None):
                 return "—"
-            n = float(r.qualifying_metric) / float(r.alert_price)
+            n = float(r.qualifying_metric) / float(r.exec_price)
             return f"{n:,.0f}"
 
         _cells = "".join(

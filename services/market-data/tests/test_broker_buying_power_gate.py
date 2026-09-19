@@ -78,22 +78,26 @@ def test_insufficient_buying_power_is_logged_distinctly_from_a_real_order_failur
     assert 'log.warning(\n                "broker.entry_skipped_insufficient_buying_power"' in _BODY
 
 
-def test_buying_power_check_fails_open_on_a_fetch_error_not_open_on_a_real_shortfall():
-    """Two DIFFERENT failure modes must be handled DIFFERENTLY: a genuine, successfully-
-    measured insufficient-buying-power result must BLOCK the order (tested above); a failure
-    to even FETCH the account (e.g. a transient network blip) must fail OPEN — matching this
-    function's own pre-existing fail-open posture for every other broker call — rather than
-    also blocking every real order whenever the account-fetch call itself is flaky."""
-    fetch_try_idx = _BODY.index("account = broker.get_account()")
-    outer_except_idx = _BODY.index("except Exception as _bp_exc:")
-    fetch_block = _BODY[fetch_try_idx:outer_except_idx]
-    assert "return" not in fetch_block or _BODY.index("return", fetch_try_idx) < outer_except_idx
-    # The fetch-error branch itself must NOT return early (i.e. must fall through to placing
-    # the order) — confirmed by checking the except body has no bare `return` of its own.
+def test_buying_power_check_fails_closed_on_a_fetch_error_same_as_a_real_shortfall():
+    """AUD-B01-PREFLIGHTFAILCLOSED (2026-09-19): a genuine, successfully-measured insufficient-
+    buying-power result BLOCKS the order (tested above) — and now a failure to even FETCH the
+    account (e.g. a transient network blip or a dead token) must ALSO block it, not fall
+    through to placing a real order sized against a buying-power figure that was never
+    actually obtained. Previously this failed open on the reasoning that "the broker's own
+    margin rejection is the backstop" — but that submits a real order from effectively no
+    buying-power check at all whenever this fetch is flaky, which independent review
+    (2026-09-18-uw-and-broker-report-review.md, B01) confirmed via direct reproduction: a fake
+    broker whose account request raised TimeoutError still produced a captured BUY submission."""
     except_body_start = _BODY.index("except Exception as _bp_exc:")
     except_body_end = _BODY.index("\n    try:", except_body_start)
     except_body = _BODY[except_body_start:except_body_end]
-    assert "return" not in except_body
+    assert "return" in except_body, (
+        "the buying-power-fetch-error branch must return before broker.place_order() — "
+        "it must not fail open toward placing a real order"
+    )
+    return_idx = except_body_start + except_body.index("return")
+    place_order_idx = _BODY.index("broker.place_order(")
+    assert return_idx < place_order_idx
 
 
 def test_buying_power_check_runs_before_the_order_placement_try_block():
@@ -126,15 +130,21 @@ def test_buying_power_fetch_error_checks_for_token_rejection():
     assert "_handle_broker_error_if_token_rejected(session, portfolio, _bp_exc)" in except_body
 
 
-def test_buying_power_fetch_error_still_fails_open_on_a_non_token_error():
-    """A genuine token rejection must not change the overall fail-open contract for this
-    check — the function must still fall through to attempt a real order placement on ANY
-    exception here (transient network blip or a genuine token rejection alike), since the
-    token-rejection handling only marks the connection unauthorized/notifies the user; it does
-    not (and must not) itself block this specific order attempt, matching the pre-existing
-    fail-open posture confirmed by test_buying_power_check_fails_open_on_a_fetch_error_not_
-    open_on_a_real_shortfall above."""
+def test_buying_power_fetch_error_blocks_regardless_of_token_rejection_status():
+    """Whether or not this specific exception WAS a token rejection must not change the
+    fail-closed outcome — _handle_broker_error_if_token_rejected() only marks the connection
+    unauthorized/notifies the user, it does not gate the return below. The return must sit
+    AFTER that call (so token-rejection detection still runs first, matching every other
+    broker call site's convention) but must fire unconditionally on any exception here."""
     except_body_start = _BODY.index("except Exception as _bp_exc:")
     except_body_end = _BODY.index("\n    try:", except_body_start)
     except_body = _BODY[except_body_start:except_body_end]
-    assert "return" not in except_body
+    token_check_idx = except_body.index("_handle_broker_error_if_token_rejected(session, portfolio, _bp_exc)")
+    return_idx = except_body.index("return")
+    assert token_check_idx < return_idx
+    # The return is NOT nested inside the `if not _handle_broker_error_if_token_rejected(...)`
+    # block — it must fire on the token-rejected path too, not only the generic-warning path.
+    if_block_start = except_body.index("if not _handle_broker_error_if_token_rejected")
+    if_block_line_end = except_body.index("\n", if_block_start)
+    if_body_line = except_body[if_block_line_end:except_body.index("\n", if_block_line_end + 1)]
+    assert "return" not in if_body_line, "return must be unconditional, not nested inside the if"

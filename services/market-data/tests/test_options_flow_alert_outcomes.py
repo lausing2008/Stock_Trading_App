@@ -92,12 +92,27 @@ def _make_price(session, stock_id, ts_date: date, close: float):
     session.commit()
 
 
+def _real_today_et():
+    """AUD-UW01-ALERTDATEBOUNDARY: both functions below now call the real `_today_et()` helper
+    instead of a bare `date.today()` — extracts scheduler.py's own real source for it rather
+    than a hand-copied stub, matching this file's established discipline for shared constants."""
+    start = _SCHEDULER_SOURCE.index("def _today_et() -> date:")
+    end = _SCHEDULER_SOURCE.index("\n\n\ndef _is_us_trading_day", start)
+    namespace = {}
+    exec("from datetime import date, datetime, timezone\nfrom zoneinfo import ZoneInfo\n"
+         + _SCHEDULER_SOURCE[start:end], namespace)  # noqa: S102 — isolated eval of real source
+    return namespace["_today_et"]
+
+
 def _extract_record_options_flow_alert_outcome():
     start = _SCHEDULER_SOURCE.index("def _record_options_flow_alert_outcome(")
     end = _SCHEDULER_SOURCE.index("\n\n\n_OPTIONS_FLOW_ALERT_CAL_MIN_COUNT", start)
     body = _SCHEDULER_SOURCE[start:end]
     fake_log = MagicMock()
-    namespace = {"select": select, "OptionsFlowAlertOutcome": OptionsFlowAlertOutcome, "date": date, "log": fake_log}
+    namespace = {
+        "select": select, "OptionsFlowAlertOutcome": OptionsFlowAlertOutcome, "date": date,
+        "log": fake_log, "_today_et": _real_today_et(),
+    }
     exec(body, namespace)  # noqa: S102 — isolated eval of real source
     return namespace["_record_options_flow_alert_outcome"], fake_log
 
@@ -154,6 +169,7 @@ def _extract_evaluate_options_flow_alert_outcomes(session):
         "_squeeze_outcome_lookup_price": const_namespace["_squeeze_outcome_lookup_price"],
         "_SQUEEZE_OUTCOME_WINDOWS": const_namespace["_SQUEEZE_OUTCOME_WINDOWS"],
         "_SQUEEZE_OUTCOME_WIN_HURDLE_PCT": const_namespace["_SQUEEZE_OUTCOME_WIN_HURDLE_PCT"],
+        "_today_et": _real_today_et(),
     }
     exec(body, namespace)  # noqa: S102 — isolated eval of real source
     return namespace["evaluate_options_flow_alert_outcomes"]

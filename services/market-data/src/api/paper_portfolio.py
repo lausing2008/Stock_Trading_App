@@ -543,6 +543,21 @@ def manual_exit_trade(
         exit_price = trade.current_price or trade.entry_price
 
     result = _close_one_paper_trade(session, p, trade, exit_price, "manual_exit")
+    # AUD-B05-MANUALEXITBROKERGAP (2026-09-19): previously this endpoint marked a broker-backed
+    # position closed and credited simulated cash WITHOUT ever selling it at the broker — the
+    # UI reported closed while the real position silently stayed open, with no warning. Reuses
+    # the SAME shared _place_broker_exit() helper _monitor_positions()'s automatic exit flow and
+    # conditional_orders.py's own close path already call — not a new, fourth broker-routing
+    # implementation — matching their exact guard shape (belt-and-suspenders check on both the
+    # portfolio's broker link and this specific trade's own broker-entered flag) and their
+    # try/except-and-log posture, since a broker-side reconciliation failure here must surface,
+    # not silently undo the manual close the user just explicitly requested.
+    if p.broker_connection_id and trade.broker_order_id:
+        try:
+            from ..services.paper_trading_engine import _place_broker_exit
+            _place_broker_exit(session, trade, p)
+        except Exception as exc:
+            log.error("paper.manual_exit_broker_exit_failed", trade_id=trade_id, error=str(exc))
     session.commit()
     log.info("paper.manual_exit", symbol=trade.symbol, exit_price=result["exit_price"],
              pnl=result["pnl"], pnl_pct=result["pnl_pct"], trade_id=trade_id)
@@ -579,9 +594,14 @@ def liquidate_portfolio(
     established fallback convention.
 
     Reuses _close_one_paper_trade() per open trade — the SAME close-math manual_exit_trade()
-    already uses — rather than a third independent reimplementation.
+    already uses — rather than a third independent reimplementation. AUD-B05-MANUALEXITBROKERGAP
+    (2026-09-19): also reuses the SAME _place_broker_exit() helper manual_exit_trade() now calls
+    for each broker-backed position, per trade — liquidating a broker-linked portfolio used to
+    mark every position closed and credit simulated cash without selling any of them at the
+    broker, which is the single most consequential instance of that gap since it is this
+    endpoint's own explicit purpose to fully exit a portfolio in one confirmed action.
     """
-    from ..services.paper_trading_engine import _fetch_live_prices
+    from ..services.paper_trading_engine import _fetch_live_prices, _place_broker_exit
 
     p = _get_portfolio(session, portfolio_id, for_update=True)
     if not confirm:
@@ -606,6 +626,12 @@ def liquidate_portfolio(
             closed.append(result)
         except Exception as exc:
             log.error("paper.liquidate_trade_failed", trade_id=trade.id, symbol=trade.symbol, error=str(exc))
+            continue
+        if p.broker_connection_id and trade.broker_order_id:
+            try:
+                _place_broker_exit(session, trade, p)
+            except Exception as exc:
+                log.error("paper.liquidate_broker_exit_failed", trade_id=trade.id, symbol=trade.symbol, error=str(exc))
 
     session.commit()
     log.info("paper.portfolio_liquidated", portfolio_id=p.id, closed=len(closed),
