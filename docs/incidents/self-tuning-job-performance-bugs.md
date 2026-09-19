@@ -441,6 +441,67 @@ independent per-style EV-maximizing sweep (rather than this cap-to-the-original-
 interim fix) becomes worth building — this fix deliberately never fabricates a SWING-specific
 number, only refuses to apply a cross-style one it wasn't evidence for.
 
+**CORRECTION (2026-09-19, same day, found by an independent audit —
+`docs/audits/2026-09-19-paper-trading-horizon-threshold-audit.md`, finding PT-H01): the root-
+cause diagnosis above is wrong. The calibrated `min_rr_ratio` — pooled OR this fix's own
+by-style-corrected value — was never the effective floor blocking SWING's base (neutral-regime)
+entries, before or after this fix.**
+
+`_DEFAULT_CONFIG["min_rr_ratio"] = 2.0` (a literal, not a calibration read). No entry in
+`_STYLE_OVERRIDES` or `_HK_MARKET_OVERRIDES` sets `min_rr_ratio` at all — checked directly,
+grep confirms zero occurrences outside `_DEFAULT_CONFIG` and the read sites themselves. So
+`resolve_entry_config()`'s merge (`cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}`,
+then apply the user's own config) leaves `cfg["min_rr_ratio"]` at exactly `2.0` for every
+style unless a portfolio's own stored config genuinely differs from `2.0` — and **every one of
+the 11 active production portfolios stores `min_rr_ratio: 2.0` explicitly** (confirmed live via
+direct query, 2026-09-19). Since the key is therefore always PRESENT in the resolved config
+(never absent), `cfg.get("min_rr_ratio", _default_min_rr_ratio(...))` always returns the
+present `2.0` — `dict.get()`'s default argument is only used when the key is missing, not when
+it's merely equal to what the fallback would have produced. `_default_min_rr_ratio()` — pooled,
+or with this fix's own by-style cap — is computed by that line (Python evaluates the argument
+regardless) but its return value is silently discarded every single time, for every portfolio,
+in the real trading scan **and** in the real request `_call_decision_engine()` sends to
+decision-engine (same `cfg.get(...)` pattern, same always-present key). Verified live against
+the running container:
+
+```text
+>>> resolve_entry_config({"trading_style": "SWING", "market": "US", "min_rr_ratio": 2.0})["min_rr_ratio"]
+2.0
+```
+
+The one place this fix's by-style logic DOES have a real, live effect: `regime_min_rr_ratio`
+(the CHOPPY/RISK_OFF-only stiffened floor) is genuinely absent from `_DEFAULT_CONFIG` — so its
+own `cfg.get("regime_min_rr_ratio", _default_min_rr_ratio(regime_state, ...))` correctly falls
+through to the calibrated/by-style value when a portfolio hasn't customized it. The base-floor
+half of this fix (the half actually relevant to a bull/neutral regime, which is what SWING was
+in at the time) never took effect on real scans, before or after deployment.
+
+Separately, the ad-hoc live reproduction earlier in the same session that appeared to confirm
+the 2.25-blocks-SWING theory (direct `_decide()` calls showing "R:R 2.18:1 below minimum
+2.2:1") used `config_overrides={"market": "US"}` only — no `min_rr_ratio` key. That is exactly
+decision-engine's own documented "standalone caller, no config_overrides" case
+(`routes.py`'s `T234-CONFIG-DECIDE-DEFAULT-MISMATCH` comment): when `min_rr_ratio` is genuinely
+absent from `config_overrides`, decision-engine fills it in from `resolve_entry_gate_params()` —
+which DOES read the calibrated value. The real trading path (`_call_decision_engine()`) never
+hits that fill-in branch, because it always sends `min_rr_ratio` explicitly. The reproduction
+was real and reproducible, but of a code path the live scheduler never actually uses for a real
+scan — an artifact of how the test was constructed, not evidence about production behavior.
+
+**What this means:** the fix itself (style-aware `by_style` capping, plus the STUCKFILE
+refresh-decoupling fix) is not wrong code and is not being reverted — it correctly closes a
+real style-blindness bug in the calibration diagnostic and in the regime-stiffened floor, and
+remains useful once PT-H01's actual resolution bug is fixed. But it did not fix — and could not
+have fixed — the reported symptom (US SWING portfolios not trading). Why SWING specifically
+stopped entering on 2026-09-03/04 remains **unestablished**: the `paper:gate_block:{id}` and
+`paper:no_entry_summary:{id}` Redis caches that would have recorded the real rejection reason
+carry a 4-hour TTL and had long since expired by the time either this session or the
+independent audit looked. PT-H01's own recommended fix (a canonical, explicit manual/calibrated
+threshold resolver, replacing the current silent-echo merge) is real, high-priority, and
+deliberately NOT implemented in this pass — it would change the effective base R:R floor for
+all 11 live portfolios with no experiment/validation framework in place yet, which is exactly
+the kind of unvetted threshold change both this file's own history and the new audit warn
+against making outside a proper before/after comparison.
+
 ---
 
 ## Recurring Issue: AUD-MISFIREGRACE-OPTIONSFLOW — 3 of 17 "Every-Minute" Scheduler Jobs Silently Stopped Re-Firing (Fixed 2026-09-04)
