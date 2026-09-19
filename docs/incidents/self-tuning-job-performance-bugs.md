@@ -316,6 +316,89 @@ value interim fix) becomes worth revisiting.
 
 ---
 
+## Recurring Issue: AUD-MINRR-STYLEBLIND — Same Bug, Different Axis: Style Instead of Market (Fixed 2026-09-19)
+
+**Symptom:** user asked why "US SWING After 09082026" (portfolio id=6) wasn't trading at all.
+Direct DB queries showed it genuinely had zero trades of any kind since creation
+(2026-09-08). Broadening the check: **every** US SWING portfolio (id=3, id=5, id=6, id=891)
+had gone without a single new entry since **2026-09-03/04** — 16+ days — while GROWTH and
+LONG portfolios entered normally within the same window (as recently as the day before). HK
+SWING (id=2) was worse still: no entry since 2026-06-25, three months.
+
+**Root cause:** exactly AUD-MINRR-MARKETBLIND above, one axis over. `calibrate_min_rr_ratio()`
+pools every closed trade **across all trading styles** with no style split — the by_market fix
+above never touched this dimension. GROWTH's stop/target geometry (`_STYLE_PARAMS`:
+`stop_pct=0.880`, `default_tp_pct=1.35`) structurally produces a much higher
+`rr_ratio_at_entry` than SWING's (`stop_pct=0.945`, `default_tp_pct=1.12`). Measured live on
+123 pooled closed trades (62 GROWTH, 61 SWING, zero LONG/SHORT closed yet): GROWTH's own
+median R:R is 2.94 (75th percentile 3.35), SWING's is 2.19 (75th percentile 2.23). The live
+calibrated floor was 2.25 (from 2026-08-31, 103 trades) — a threshold that clears virtually
+every GROWTH trade ever entered but only the top quartile of SWING's, and since GROWTH
+supplied roughly half the pooled sample, the EV-maximizing sweep learned mostly from GROWTH
+and applied the result to SWING regardless.
+
+Checked whether SWING's own data could support an independently-calibrated number instead:
+no — SWING's 61 closed trades are short of `_MIN_RR_MIN_TRADES` (100), and a 70/30 split on
+SWING-only data is noisy enough that the train-optimal threshold flips to 1.25 with a
+**negative** train EV, with validation EV roughly breakeven regardless of threshold. Not a
+number worth shipping — the honest finding is "SWING doesn't yet have enough of its own data
+to say what its floor should be," not "SWING's floor should be X."
+
+**Fixed:** mirrors the by_market fix's own shape exactly, as a parallel, independent
+dimension (not a replacement for it — both `by_market` and `by_style` now exist side by side
+in `min_rr_calibration.json`). `_default_min_rr_ratio()` (`paper_trading_engine.py`) now also
+takes an optional `style` parameter, checked **before** the market-specific value (most
+specific evidence wins). `calibrate_min_rr_ratio()` computes, per style, that style's own
+qualifying-trade count and its own 75th-percentile observed R:R (not the 90th the by_market
+fix uses — checked directly: SWING's own 90th percentile is 2.84, ABOVE the pooled 2.25, so a
+literal port of the by_market percentile would not have caught this at all; sabotage-verified
+this specific choice by swapping to 90th and confirming the targeted test fails). When a style
+both lacks enough of its own trades for independent calibration AND the pooled floor sits
+above that style's own 75th percentile (meaning the pooled number would exclude more than a
+quarter of that style's own historical opportunities), that style's effective floor reverts to
+the **original pre-calibration literal** (2.0 / 3.0) rather than a new mined number — the same
+"insufficient same-slice evidence" judgment the market fix already makes for HK, expressed as
+a floor instead of a ceiling since the risk here is silently starving a whole style rather
+than over-trading a thin one. A style with plenty of its own volume, or one the pooled floor
+doesn't actually squeeze (checked: LONG's own 75th percentile already clears the pooled
+floor), is left exactly as before. All 6 real call sites in `paper_trading_engine.py`
+(`resolve_entry_gate_params()`'s two calls, `_should_enter()`'s own fallback gate's two calls,
+and the two `config_overrides` entries sent to decision-engine) now thread
+`cfg.get("trading_style")` / the function's own `style` parameter through.
+
+13 new/updated tests: 7 in a new `test_min_rr_calibration_by_style.py` (source-extraction,
+same technique as the by_market sibling — `paper_portfolio.py` can't be imported directly in
+this test environment), 2 in `test_regime_min_rr_config_wiring.py` updated to match the call
+sites' new argument shape (mirroring how that same file was already updated once before for
+the market argument). One extraction-boundary fix was needed in the EXISTING
+`test_min_rr_calibration_by_market.py`: its own end-of-block marker (`result = {`) now
+swallowed the newly-inserted by_style block too, since the two blocks sit adjacent in source —
+moved its end marker to the by_style block's own leading comment instead. 2 sabotage cycles
+(dropping the under-evidenced gate so every style gets capped regardless of trade count;
+swapping the 75th percentile for the 90th, which reproduces the exact real-world miss) — both
+caught cleanly by targeted tests, both restored. Full 4017-test market-data suite green.
+
+**What to check if this looks wrong**:
+```bash
+docker exec stockai-market-data-1 cat /data/models/min_rr_calibration.json | python3 -m json.tool
+# Confirm by_style exists alongside by_market, and SWING's entry carries min_rr_ratio: 2.0
+# rather than the pooled value, once the calibration job has re-run since this fix deployed.
+
+docker exec stockai-market-data-1 grep -n "_default_min_rr_ratio(\"neutral\", cfg.get" /app/src/services/paper_trading_engine.py
+# Confirm the trading_style argument is present at all 6 call sites.
+
+# Confirm US SWING is actually entering again after the next scheduled entry scan:
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c \
+  "SELECT pp.id, pp.name, max(pt.entry_time) FROM paper_trades pt JOIN paper_portfolios pp \
+   ON pp.id=pt.portfolio_id WHERE pp.config->>'trading_style'='SWING' GROUP BY pp.id, pp.name;"
+```
+If SWING's own qualifying-trade count ever grows past `_MIN_RR_MIN_TRADES=100`, a real
+independent per-style EV-maximizing sweep (rather than this cap-to-the-original-literal
+interim fix) becomes worth building — this fix deliberately never fabricates a SWING-specific
+number, only refuses to apply a cross-style one it wasn't evidence for.
+
+---
+
 ## Recurring Issue: AUD-MISFIREGRACE-OPTIONSFLOW — 3 of 17 "Every-Minute" Scheduler Jobs Silently Stopped Re-Firing (Fixed 2026-09-04)
 
 **Context:** while auditing Unusual Whales API call volume (user asked "let's...review and

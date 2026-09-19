@@ -16,7 +16,10 @@ _SOURCE = _PATH.read_text()
 
 def _extract_by_market_block():
     start = _SOURCE.index("    _by_market_rr: dict[str, list[float]] = {}")
-    end = _SOURCE.index("\n\n    result = {", start)
+    # AUD-MINRR-STYLEBLIND added a by_style block between this one and `result = {` — end the
+    # extraction at that block's own leading comment so it isn't swept in here too (it indexes
+    # market_rows[2] for pnl, which this test's 2-tuple _row() helper doesn't provide).
+    end = _SOURCE.index("\n\n    # AUD-MINRR-STYLEBLIND", start)
     func_source = _SOURCE[start:end]
     # Dedent (the real source sits inside calibrate_min_rr_ratio(), indented one level)
     lines = func_source.splitlines()

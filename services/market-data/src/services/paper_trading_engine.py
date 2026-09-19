@@ -555,7 +555,7 @@ def reload_min_rr_override() -> None:
     _min_rr_override_cache = None
 
 
-def _default_min_rr_ratio(regime_state: str, market: str = "US") -> float:
+def _default_min_rr_ratio(regime_state: str, market: str = "US", style: str | None = None) -> float:
     """The calibrated default for a portfolio that hasn't explicitly set min_rr_ratio/
     regime_min_rr_ratio in its own config — falls back to the original hardcoded 2.0/3.0
     literals if no calibration has ever been applied yet.
@@ -573,12 +573,31 @@ def _default_min_rr_ratio(regime_state: str, market: str = "US") -> float:
     same-market trades to compute one, and falls back to the pooled/global value (then the
     hardcoded 2.0/3.0 literal) otherwise, so a market that's too thin to calibrate on its own
     isn't left with no default at all.
+
+    AUD-MINRR-STYLEBLIND (2026-09-19): the exact same blindness existed along the STYLE axis —
+    the pooled sweep never separated GROWTH from SWING despite their structurally different
+    R:R distributions (GROWTH's own median rr_ratio_at_entry measured 2.94 vs SWING's 2.19),
+    and GROWTH's larger trade count dominated the fit. Confirmed as the root cause of every US
+    SWING portfolio going 16+ days with zero new entries starting the day this calibration
+    first landed. `by_style` is checked FIRST (most specific real evidence), then `by_market`,
+    then the pooled/global value — see calibrate_min_rr_ratio()'s own docstring for why a
+    style entry only ever appears when that style both lacks enough of its own trades to
+    calibrate independently AND the pooled floor would have excluded most of its own history;
+    it is a floor on how far a cross-slice number is trusted, never a stricter number than the
+    original literal.
     """
     override = _load_min_rr_override()
     key = "regime_min_rr_ratio" if regime_state in ("choppy", "risk_off") else "min_rr_ratio"
+    by_style = override.get("by_style") or {}
+    style_override = (by_style.get(style.upper()) or {}) if style else {}
     by_market = override.get("by_market") or {}
     market_override = by_market.get(market) or {}
-    value = market_override.get(key) or override.get(key) or (3.0 if key == "regime_min_rr_ratio" else 2.0)
+    value = (
+        style_override.get(key)
+        or market_override.get(key)
+        or override.get(key)
+        or (3.0 if key == "regime_min_rr_ratio" else 2.0)
+    )
     return float(value)
 
 
@@ -996,7 +1015,7 @@ def resolve_entry_gate_params(style: str, market: str = "US") -> dict:
                 cfg[_k] = _v
     result = {k: cfg.get(k) for k in _ENTRY_GATE_KEYS if k in cfg}
     _rr_market = (market or "US").upper()
-    result["min_rr_ratio"] = _default_min_rr_ratio("neutral", _rr_market)
+    result["min_rr_ratio"] = _default_min_rr_ratio("neutral", _rr_market, style)
     # T234-CONFIG-UNJUSTIFIED-THRESHOLDS item #2: regime_min_rr_ratio was never included here
     # at all — decision-engine's hard_rejects.py had its own disconnected bare `3.0` fallback
     # for the choppy/risk_off-tier R:R floor, with no way to pick up a calibrated value the way
@@ -1004,7 +1023,7 @@ def resolve_entry_gate_params(style: str, market: str = "US") -> dict:
     # already resolves this correctly (see _should_enter()'s own identical read at line ~1906);
     # the gap was purely that this endpoint — the one thing threading a calibration-aware
     # default into decision-engine's standalone /decide callers — never surfaced it.
-    result["regime_min_rr_ratio"] = _default_min_rr_ratio("choppy", _rr_market)
+    result["regime_min_rr_ratio"] = _default_min_rr_ratio("choppy", _rr_market, style)
     # min_ta_score has no _DEFAULT_CONFIG entry — 0.0 (gate disabled) is the correct default
     # when no style/market override set it, matching every other read site's own fallback.
     result.setdefault("min_ta_score", 0.0)
@@ -2097,9 +2116,10 @@ def _should_enter(
     # HK isn't held to a floor calibrated almost entirely off US trade volume — see that
     # function's own docstring.
     _rr_market = (cfg.get("market") or "US").upper()
-    min_rr = cfg.get("min_rr_ratio", _default_min_rr_ratio("neutral", _rr_market))
+    _rr_style = cfg.get("trading_style")
+    min_rr = cfg.get("min_rr_ratio", _default_min_rr_ratio("neutral", _rr_market, _rr_style))
     if regime_state in ("choppy", "risk_off"):
-        min_rr = max(min_rr, cfg.get("regime_min_rr_ratio", _default_min_rr_ratio(regime_state, _rr_market)))
+        min_rr = max(min_rr, cfg.get("regime_min_rr_ratio", _default_min_rr_ratio(regime_state, _rr_market, _rr_style)))
     if rr < min_rr:
         return False, -99, [f"R:R {rr:.1f}:1 below minimum {min_rr:.1f}:1 at ${live_price:.2f}"]
 
@@ -3805,7 +3825,7 @@ def _call_decision_engine(
                     # AUD-MINRR-MARKETBLIND: both resolved with THIS portfolio's own market so a
                     # DE-routed HK candidate is checked against HK's own calibrated floor, not one
                     # dominated by US trade volume — see _default_min_rr_ratio()'s own docstring.
-                    "min_rr_ratio":           cfg.get("min_rr_ratio", _default_min_rr_ratio("neutral", cfg.get("market", "US"))),
+                    "min_rr_ratio":           cfg.get("min_rr_ratio", _default_min_rr_ratio("neutral", cfg.get("market", "US"), cfg.get("trading_style"))),
                     # AUD256: regime_min_rr_ratio was never sent at all — decision-engine's own
                     # hard_rejects.py has a read-side default of 3.0 for choppy/risk_off regimes
                     # (T190) that DE always fell back to, completely blind to calibration, even
@@ -3813,7 +3833,7 @@ def _call_decision_engine(
                     # Threaded through unconditionally (matches min_rr_ratio's own always-sent
                     # convention above) so DE's choppy/risk_off floor tracks the SAME calibrated
                     # value _should_enter() already uses, not a permanently-stale literal.
-                    "regime_min_rr_ratio":    cfg.get("regime_min_rr_ratio", _default_min_rr_ratio(regime_state, cfg.get("market", "US"))),
+                    "regime_min_rr_ratio":    cfg.get("regime_min_rr_ratio", _default_min_rr_ratio(regime_state, cfg.get("market", "US"), cfg.get("trading_style"))),
                     "risk_per_trade_pct":     cfg.get("risk_per_trade_pct", 0.01),
                     "max_position_pct":       cfg.get("max_position_pct", 0.10),
                     "max_loss_per_trade_pct": cfg.get("max_loss_per_trade_pct", 0.02),

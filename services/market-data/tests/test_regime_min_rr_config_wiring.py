@@ -42,12 +42,14 @@ def test_min_rr_ratio_routes_through_the_calibrated_default_not_a_bare_literal()
 
     AUD-MINRR-MARKETBLIND: _default_min_rr_ratio() now also takes this portfolio's own market
     (cfg.get("market", "US")) so a HK candidate isn't checked against a floor calibrated almost
-    entirely off US trade volume — the assertion below is updated to match that real, still-
-    calibration-routed call shape, not reverted back to the pre-fix single-argument form."""
+    entirely off US trade volume. AUD-MINRR-STYLEBLIND: and this portfolio's own trading style
+    (cfg.get("trading_style")), for the same reason along the style axis — the assertion below
+    is updated to match that real, still-calibration-routed call shape, not reverted back to an
+    earlier, narrower argument list."""
     assert '"min_rr_ratio":' in _decision_body
     start = _decision_body.index('"min_rr_ratio":')
     line = _decision_body[start:_decision_body.index("\n", start)]
-    assert '_default_min_rr_ratio("neutral", cfg.get("market", "US"))' in line
+    assert '_default_min_rr_ratio("neutral", cfg.get("market", "US"), cfg.get("trading_style"))' in line
     assert "2.0" not in line, "must not fall back to a bare hardcoded literal — that bypasses calibration"
 
 
@@ -63,11 +65,11 @@ def test_regime_min_rr_ratio_falls_back_to_the_calibrated_default_via_regime_sta
     regime_state parameter, not a hardcoded "neutral"/"choppy" literal that could silently
     drift from the real regime the candidate is being evaluated under.
 
-    AUD-MINRR-MARKETBLIND: also must pass this portfolio's own market — see the sibling
-    min_rr_ratio test's docstring above for why."""
+    AUD-MINRR-MARKETBLIND / AUD-MINRR-STYLEBLIND: also must pass this portfolio's own market
+    and trading style — see the sibling min_rr_ratio test's docstring above for why."""
     start = _decision_body.index('"regime_min_rr_ratio":')
     line = _decision_body[start:_decision_body.index("\n", start)]
-    assert '_default_min_rr_ratio(regime_state, cfg.get("market", "US"))' in line
+    assert '_default_min_rr_ratio(regime_state, cfg.get("market", "US"), cfg.get("trading_style"))' in line
     assert "3.0" not in line, "must not fall back to a bare hardcoded literal — that bypasses calibration"
 
 

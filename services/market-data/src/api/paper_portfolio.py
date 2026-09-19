@@ -2348,7 +2348,7 @@ def calibrate_min_rr_ratio() -> dict:
             ).order_by(PaperTrade.entry_date)
         ).all()
         market_rows = session.execute(
-            select(PaperTrade.rr_ratio_at_entry, PaperPortfolio.config)
+            select(PaperTrade.rr_ratio_at_entry, PaperPortfolio.config, PaperTrade.pnl)
             .join(PaperPortfolio, PaperPortfolio.id == PaperTrade.portfolio_id)
             .where(
                 PaperTrade.stage == "closed",
@@ -2443,6 +2443,55 @@ def calibrate_min_rr_ratio() -> dict:
         else:
             _info["regime_min_rr_ratio"] = _pooled_regime_rr
 
+    # AUD-MINRR-STYLEBLIND (2026-09-19): this sweep also pools every closed trade across ALL
+    # trading styles, exactly the same blindness AUD-MINRR-MARKETBLIND fixed for market above,
+    # now confirmed along the style axis instead. GROWTH's own stop/target math (_STYLE_PARAMS:
+    # stop_pct=0.880, default_tp_pct=1.35) structurally produces a much higher rr_ratio_at_entry
+    # than SWING's (stop_pct=0.945, default_tp_pct=1.12) — measured live 2026-09-19 on 123
+    # pooled trades: GROWTH's own median R:R is 2.94 (p75=3.35), SWING's is 2.19 (p75=2.23).
+    # A pooled threshold of 2.25 clears virtually every GROWTH trade ever entered but only the
+    # top quartile of SWING's — and since GROWTH supplied roughly half the pooled sample, the
+    # EV-maximizing sweep above learns mostly from GROWTH, then applies the result to SWING too.
+    # Confirmed as the root cause of a real production incident: EVERY US SWING portfolio went
+    # from 2026-09-03 to at least 2026-09-19 (16+ days) without a single new entry once this
+    # calibration first landed (2026-08-31), while GROWTH/LONG kept trading normally throughout.
+    #
+    # SWING alone has 61 closed trades — short of _MIN_RR_MIN_TRADES (100), so an independently
+    # EV-maximized SWING-only threshold isn't trustworthy yet (checked: a 70/30 split on
+    # SWING-only data is noisy enough that the train-optimal threshold flips to 1.25 with a
+    # NEGATIVE train EV, and validation EV is roughly breakeven regardless of threshold — not a
+    # number worth shipping). Rather than invent a SWING-specific floor this data can't support,
+    # any style that BOTH lacks enough of its own trades for independent calibration AND would
+    # have the pooled floor exclude more than a quarter of its own historical opportunities
+    # (pooled threshold above that style's own 75th-percentile observed R:R) falls back to the
+    # ORIGINAL pre-calibration literal (2.0 / 3.0) for that style specifically — the same
+    # "insufficient same-slice evidence" judgment by_market already makes for HK above, as a
+    # floor instead of a ceiling since the risk here is silently starving a whole style, not
+    # over-trading a thin one. A style with plenty of its own volume (or one the pooled floor
+    # doesn't actually squeeze) is left exactly as it was — this never raises a threshold, only
+    # ever prevents a cross-style number from suppressing a style it was never evidence for.
+    _by_style_pairs: dict[str, list[tuple[float, float]]] = {}
+    for r in market_rows:
+        _style = ((r[1] or {}).get("trading_style") or "GROWTH").upper()
+        _by_style_pairs.setdefault(_style, []).append((float(r[0]), float(r[2])))
+
+    by_style: dict[str, dict] = {}
+    for _style, _pairs in _by_style_pairs.items():
+        _style_rrs = [rr for rr, _pnl in _pairs]
+        _s = sorted(_style_rrs)
+        _style_p75 = _s[min(len(_s) - 1, int(round(0.75 * (len(_s) - 1))))] if _s else None
+        _entry = {
+            "n_trades": len(_pairs),
+            "observed_rr_p75": round(_style_p75, 2) if _style_p75 is not None else None,
+        }
+        _under_evidenced = len(_pairs) < _MIN_RR_MIN_TRADES
+        if _under_evidenced and _style_p75 is not None:
+            if _style_p75 < best_threshold:
+                _entry["min_rr_ratio"] = 2.0
+            if _style_p75 < _pooled_regime_rr:
+                _entry["regime_min_rr_ratio"] = 3.0
+        by_style[_style] = _entry
+
     result = {
         "min_rr_ratio": best_threshold,
         # T190's regime-stiffened floor keeps its own +50% relative bump over the calibrated
@@ -2452,6 +2501,7 @@ def calibrate_min_rr_ratio() -> dict:
         # reach it (see this function's own docstring).
         "regime_min_rr_ratio": _pooled_regime_rr,
         "by_market": by_market,
+        "by_style": by_style,
         "n_trades": len(rows),
         "validation_n": len(val_rows),
         "candidate_validation_ev": round(candidate_ev, 4),
