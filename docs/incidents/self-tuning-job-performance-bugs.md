@@ -378,11 +378,44 @@ moved its end marker to the by_style block's own leading comment instead. 2 sabo
 swapping the 75th percentile for the 90th, which reproduces the exact real-world miss) — both
 caught cleanly by targeted tests, both restored. Full 4017-test market-data suite green.
 
+**A second bug found trying to actually apply the fix (AUD-MINRR-STYLEBLIND-STUCKFILE):**
+deployed the above, then ran `calibrate_min_rr_ratio()` for real to generate a live `by_style`
+entry — it returned `{"error": "candidate threshold did not beat the current default on the
+validation slice", ...}` with `candidate_ev == baseline_ev == -27.39` **exactly**. Root cause:
+`baseline_threshold` is always "whatever is currently live," and once the pooled sweep
+converges on that same number (as it had — 2.25 since 2026-08-31), comparing the candidate
+against the baseline degenerates into comparing a number against itself on the same data,
+which can never satisfy the strict `candidate_ev > baseline_ev` gate. The function's own
+"only apply if it beats the baseline" anti-regression check is correct and was working as
+designed — the actual defect is that the ENTIRE by_market/by_style refresh sat downstream of
+that check inside the same early `return`, so a stable pooled number silently froze per-slice
+diagnostics forever too: the live override file was 19 days stale (103 trades) despite the
+job running on schedule weekly, and would have stayed that way indefinitely — meaning the
+by_style fix above could never have taken effect through the normal scheduled path at all,
+only ever having a chance to run right after a rare event that shifts the pooled optimum.
+
+Fixed by splitting the two concerns: introduced `pooled_updated` (the actual boolean result of
+the beat-baseline check) and `effective_threshold` (`best_threshold` when updated, otherwise
+the existing `baseline_threshold`) — the pooled `min_rr_ratio`/`regime_min_rr_ratio` only ever
+change when `pooled_updated` is true (identical behavior to before), but `by_market`/`by_style`
+now always get computed and the file always gets written, using `effective_threshold` as their
+reference point. A `TuneHistory` row (which means "promoted") is now written only when
+`pooled_updated` is true, so a refresh-only run — old value equals new value — is never
+recorded as a change that didn't happen. 5 new tests in
+`test_min_rr_calibration_pooled_unchanged_refresh.py` (source-extraction of the decision block
+in isolation), covering the exact tied-EV case, a real update, a losing candidate, and both
+`None`-EV edge cases. Sabotage: loosened the comparison from `>` to `>=` (would treat a tie as
+an update) — caught immediately by the tied-EV test, restored. Full 4022-test suite green.
+Ran the real calibration against production data after this fix: `by_style` now exists with
+`SWING: {"n_trades": 61, "observed_rr_p75": 2.23, "min_rr_ratio": 2.0, "regime_min_rr_ratio":
+3.0}` — the actual, intended effect of the whole session's worth of work.
+
 **What to check if this looks wrong**:
 ```bash
 docker exec stockai-market-data-1 cat /data/models/min_rr_calibration.json | python3 -m json.tool
 # Confirm by_style exists alongside by_market, and SWING's entry carries min_rr_ratio: 2.0
-# rather than the pooled value, once the calibration job has re-run since this fix deployed.
+# rather than the pooled value — this should be true immediately after this fix deployed, not
+# only after some future event nudges the pooled candidate past the live baseline.
 
 docker exec stockai-market-data-1 grep -n "_default_min_rr_ratio(\"neutral\", cfg.get" /app/src/services/paper_trading_engine.py
 # Confirm the trading_style argument is present at all 6 call sites.

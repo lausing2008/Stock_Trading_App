@@ -2390,24 +2390,32 @@ def calibrate_min_rr_ratio() -> dict:
     baseline_threshold = _default_min_rr_ratio("neutral")
     candidate_ev, candidate_n = _ev_at(best_threshold, val_rows)
     baseline_ev, baseline_n = _ev_at(baseline_threshold, val_rows)
+    pooled_updated = candidate_ev is not None and baseline_ev is not None and candidate_ev > baseline_ev
 
-    if candidate_ev is None or baseline_ev is None or candidate_ev <= baseline_ev:
+    # AUD-MINRR-STYLEBLIND-STUCKFILE (2026-09-19): a pooled candidate can only ever be
+    # compared against the CURRENTLY LIVE baseline — so once the sweep converges on a stable
+    # value (candidate keeps re-selecting the same number that's already live), this check
+    # degenerates into comparing a number against itself, which can never satisfy a STRICT ">"
+    # and rejects forever. Confirmed live 2026-09-19: candidate_ev == baseline_ev == -27.39
+    # exactly (both resolve to threshold 2.25, the value already live since 2026-08-31),
+    # meaning the override file had gone 19 days without a fresh write despite the job running
+    # on schedule — by_market/by_style would NEVER get a chance to refresh through the normal
+    # path once the pooled number stabilizes, silently freezing per-slice diagnostics right
+    # when new trades (like the ones proving SWING needed a cap) are exactly what should have
+    # refreshed them. Previously this branch returned immediately with nothing written; now it
+    # falls through and still refreshes by_market/by_style off the FULL current dataset, only
+    # keeping the pooled min_rr_ratio/regime_min_rr_ratio unchanged rather than aborting
+    # everything downstream of a headline number that legitimately isn't changing.
+    effective_threshold = best_threshold if pooled_updated else baseline_threshold
+    if not pooled_updated:
         log.info(
-            "paper.min_rr_calibration_rejected",
+            "paper.min_rr_calibration_pooled_unchanged",
             n_trades=len(rows), val_n=len(val_rows),
             candidate_threshold=best_threshold, candidate_ev=round(candidate_ev, 4) if candidate_ev is not None else None,
             baseline_threshold=baseline_threshold, baseline_ev=round(baseline_ev, 4) if baseline_ev is not None else None,
-            reason="candidate did not beat the current default threshold's own validation-slice EV",
+            reason="candidate did not beat the current default threshold's own validation-slice EV — "
+                   "keeping the pooled value as-is, still refreshing by_market/by_style below",
         )
-        return {
-            "error": "candidate threshold did not beat the current default on the validation slice",
-            "candidate_threshold": best_threshold,
-            "candidate_validation_ev": round(candidate_ev, 4) if candidate_ev is not None else None,
-            "baseline_threshold": baseline_threshold,
-            "baseline_validation_ev": round(baseline_ev, 4) if baseline_ev is not None else None,
-            "val_n": len(val_rows),
-            "curve": curve,
-        }
 
     # AUD-MINRR-MARKETBLIND: per-market qualifying-trade counts + each market's own observed
     # R:R ceiling (90th percentile of its rr_ratio_at_entry values) — used below to cap the
@@ -2430,7 +2438,7 @@ def calibrate_min_rr_ratio() -> dict:
         for mkt, vals in _by_market_rr.items()
     }
 
-    _pooled_regime_rr = round(best_threshold * 1.5, 2)
+    _pooled_regime_rr = round(effective_threshold * 1.5, 2)
     for _mkt, _info in by_market.items():
         _ceiling = _info["observed_rr_ceiling_p90"]
         # A market whose own trades rarely if ever reach the pooled floor gets that floor
@@ -2486,14 +2494,14 @@ def calibrate_min_rr_ratio() -> dict:
         }
         _under_evidenced = len(_pairs) < _MIN_RR_MIN_TRADES
         if _under_evidenced and _style_p75 is not None:
-            if _style_p75 < best_threshold:
+            if _style_p75 < effective_threshold:
                 _entry["min_rr_ratio"] = 2.0
             if _style_p75 < _pooled_regime_rr:
                 _entry["regime_min_rr_ratio"] = 3.0
         by_style[_style] = _entry
 
     result = {
-        "min_rr_ratio": best_threshold,
+        "min_rr_ratio": effective_threshold,
         # T190's regime-stiffened floor keeps its own +50% relative bump over the calibrated
         # base rather than a second independent sweep — no real per-regime R:R/PnL volume
         # exists yet to calibrate choppy/risk_off separately from neutral. Per-market entries
@@ -2502,39 +2510,53 @@ def calibrate_min_rr_ratio() -> dict:
         "regime_min_rr_ratio": _pooled_regime_rr,
         "by_market": by_market,
         "by_style": by_style,
+        "pooled_threshold_updated": pooled_updated,
+        "candidate_threshold": best_threshold,
         "n_trades": len(rows),
         "validation_n": len(val_rows),
-        "candidate_validation_ev": round(candidate_ev, 4),
+        "candidate_validation_ev": round(candidate_ev, 4) if candidate_ev is not None else None,
         "baseline_threshold": baseline_threshold,
-        "baseline_validation_ev": round(baseline_ev, 4),
+        "baseline_validation_ev": round(baseline_ev, 4) if baseline_ev is not None else None,
         "curve": curve,
         "calibrated_at": datetime.utcnow().isoformat(),
     }
+    if not pooled_updated:
+        result["note"] = (
+            "candidate threshold did not beat the current default on the validation slice — "
+            "pooled min_rr_ratio/regime_min_rr_ratio kept as-is; by_market/by_style refreshed "
+            "against the full current dataset regardless (AUD-MINRR-STYLEBLIND-STUCKFILE)"
+        )
 
     _MIN_RR_OVERRIDE_PATH.parent.mkdir(parents=True, exist_ok=True)
     _MIN_RR_OVERRIDE_PATH.write_text(json.dumps(result, indent=2))
-    log.info("paper.min_rr_calibration_applied", threshold=best_threshold,
-             validation_ev=round(candidate_ev, 4), baseline_validation_ev=round(baseline_ev, 4),
+    log.info("paper.min_rr_calibration_applied", threshold=effective_threshold,
+             pooled_threshold_updated=pooled_updated,
+             validation_ev=round(candidate_ev, 4) if candidate_ev is not None else None,
+             baseline_validation_ev=round(baseline_ev, 4) if baseline_ev is not None else None,
              n_trades=len(rows))
 
-    try:
-        from db import TuneHistory
-        with SessionLocal() as session:
-            import uuid as _uuid
-            session.add(TuneHistory(
-                run_id=str(_uuid.uuid4()), parameter_class="entry_gate", parameter_name="min_rr_ratio",
-                style="ALL", market="ALL",
-                old_value={"min_rr_ratio": baseline_threshold},
-                new_value={"min_rr_ratio": best_threshold, "regime_min_rr_ratio": result["regime_min_rr_ratio"]},
-                train_window_start=train_rows[0].entry_date, train_window_end=train_rows[-1].entry_date,
-                validation_window_start=val_rows[0].entry_date, validation_window_end=val_rows[-1].entry_date,
-                train_ev_pct=round(best_ev, 4), validation_ev_pct=round(candidate_ev, 4),
-                baseline_validation_ev_pct=round(baseline_ev, 4), validation_n=candidate_n,
-                promoted=True, gate_failures=[], triggered_by="manual",
-            ))
-            session.commit()
-    except Exception as exc:
-        log.warning("paper.min_rr_calibration_tune_history_failed", error=str(exc))
+    if pooled_updated:
+        # Only record a TuneHistory row when the pooled headline number actually changed —
+        # "promoted" would be misleading (old_value == new_value) on a refresh-only run that
+        # only updated by_market/by_style while keeping the pooled value unchanged.
+        try:
+            from db import TuneHistory
+            with SessionLocal() as session:
+                import uuid as _uuid
+                session.add(TuneHistory(
+                    run_id=str(_uuid.uuid4()), parameter_class="entry_gate", parameter_name="min_rr_ratio",
+                    style="ALL", market="ALL",
+                    old_value={"min_rr_ratio": baseline_threshold},
+                    new_value={"min_rr_ratio": effective_threshold, "regime_min_rr_ratio": result["regime_min_rr_ratio"]},
+                    train_window_start=train_rows[0].entry_date, train_window_end=train_rows[-1].entry_date,
+                    validation_window_start=val_rows[0].entry_date, validation_window_end=val_rows[-1].entry_date,
+                    train_ev_pct=round(best_ev, 4), validation_ev_pct=round(candidate_ev, 4),
+                    baseline_validation_ev_pct=round(baseline_ev, 4), validation_n=candidate_n,
+                    promoted=True, gate_failures=[], triggered_by="manual",
+                ))
+                session.commit()
+        except Exception as exc:
+            log.warning("paper.min_rr_calibration_tune_history_failed", error=str(exc))
 
     reload_min_rr_override()
     return result
