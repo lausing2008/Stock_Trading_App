@@ -250,6 +250,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/incidents/sqlalchemy-raw-sql-gotchas.md`** — SQLAlchemy text() Named Params with PostgreSQL ::type Casts (BUG-6)
 - **`docs/incidents/stale-price-and-data-bugs.md`** — BUG-MONITORPOS-STALEPRICE — `_monitor_positions()` Could Run Exit Checks Against a Frozen Price Forever (Fixed 2026-07-21) … [backtest]
 
+- **`docs/incidents/utc-vs-et-date-boundary.md`** — T409: naive UTC `.date()` reads ONE DAY AHEAD for 4-5h every evening. Dormant: EST-season Fridays get silently skipped as "weekend". 6 sites fixed, ~16 more SCOPED [timezone, DST]
 - **`docs/incidents/tracker-status-staleness.md`** — Stale Tracker Entries Can Point Either Direction — Verify Before Trusting Severity/Status; Stale Tracker Entry — T171-RETURN-TARGET-ANALYSIS Was Already Full...
 - **`docs/incidents/wire-shape-mismatches.md`** — `/events/overview`'s Nested `top_buys` Is a DIFFERENT Shape Than the Standalone Leaderboard Endpoints — Reused the Wrong Type … [Polygon, Redis]
 
