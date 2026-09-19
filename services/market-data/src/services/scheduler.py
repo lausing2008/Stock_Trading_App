@@ -13726,6 +13726,34 @@ _OPTHIST_SYMBOLS = [
     # newest bar same day) — capture works, but that flag is a real inconsistency worth
     # resolving separately rather than silently relying on.
     "SMH", "SOXX", "XLK", "GLD",
+
+    # ── User-requested additions (2026-09-18) ── INTC, QQQ, QLD, SOXL, CRWV, MRVL, PLTR, AAOI,
+    # AAOX were all asked for together. QQQ/QLD/PLTR were ALREADY present (QQQ-family / base
+    # ten) — only the six below are new. Deliberately kept as ONE labelled group rather than
+    # merged into Tier 1/2/3 above, because two of them are explicit REVERSALS of this file's
+    # own stated selection criteria, and that needs to stay visible at the point of decision,
+    # not buried by looking like an ordinary addition.
+    #
+    # AAOI and SOXL directly contradict T384-LEAPS-UNIVERSE's criteria a few lines up:
+    #   - AAOI is one of the FIVE NAMES that section explicitly says were excluded ("buying a
+    #     0.70-delta LEAPS after a 17x run is buying the top, and that profile mean-reverts").
+    #   - SOXL is a 3x leveraged product — the same class T381 MEASURED losing -73.78% over a
+    #     336-day LEAPS hold (TQQQ) purely to decay, while the index it tracked rose. The
+    #     criteria above say "NOT leveraged" for exactly this reason.
+    # Overridden here on explicit user request, not because either finding was wrong — both
+    # measurements stand. test_t384_leaps_universe.py's own exclusion tests for these two names
+    # were updated in the SAME change, not silently deleted, so the reversal is visible in the
+    # test diff and not just in this comment.
+    #
+    # INTC, MRVL: mega-cap semis, same liquidity profile already calibrated as safe for this
+    # universe (100% chain availability on every captured day for every included single stock).
+    # CRWV: CoreWeave — real price history only from its 2025-03-28 IPO, so its capture window
+    # starts there rather than the 2023-10-23 UW boundary the others use; there is no earlier
+    # underlying to have a chain against.
+    # AAOX: real price history only from 2026-03-24 — six months. Capture proceeds on request;
+    # a chain this short is not yet enough for a 12-month LEAPS decision and that limit is not
+    # solved by capturing it, only made visible once enough days accumulate.
+    "INTC", "MRVL", "CRWV", "AAOI", "AAOX", "SOXL",
 ]
 
 # Keep ~2 years, matching UW's own rolling window: retaining more than the source can re-supply

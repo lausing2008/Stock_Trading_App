@@ -87,22 +87,41 @@ def test_every_symbol_is_a_plain_uppercase_ticker():
 
 # ── What must NOT be in the list ────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("sym", ["SOXL", "SQQQ", "TNA", "SPXL", "UPRO", "LABU"])
+@pytest.mark.parametrize("sym", ["SQQQ", "TNA", "SPXL", "UPRO", "LABU"])
 def test_no_new_leveraged_products_were_added(sym):
     """MEASURED: TQQQ returned -73.78% over a 336-day hold in T381 while the index it tracks
     rose. Leveraged decay is fatal to a year-long LEAPS.
 
     TQQQ and QLD stay ONLY because they are the pre-existing T374 comparison set that the
     qqq-leaps-playbook page is built around — they are a deliberate counter-example, not an
-    endorsement."""
+    endorsement.
+
+    SOXL is DELIBERATELY absent from this list now — see test_soxl_and_aaoi_are_explicit_
+    overrides_not_silent_reversals below. It was added on explicit user request 2026-09-18,
+    which is a decision this test must not silently re-forbid."""
     assert sym not in _symbols()
 
 
-@pytest.mark.parametrize("sym", ["SNDK", "LITE", "AAOI", "BE", "FCEL", "RXT"])
+@pytest.mark.parametrize("sym", ["SNDK", "LITE", "BE", "FCEL", "RXT"])
 def test_the_highest_raw_return_names_were_excluded(sym):
     """SNDK was +1731% over one year. Buying a 0.70-delta LEAPS after a 17x run is buying the
-    top, and that profile mean-reverts — the opposite of the persistent trend a LEAPS needs."""
+    top, and that profile mean-reverts — the opposite of the persistent trend a LEAPS needs.
+
+    AAOI is DELIBERATELY absent from this list now — see test_soxl_and_aaoi_are_explicit_
+    overrides_not_silent_reversals below."""
     assert sym not in _symbols()
+
+
+def test_soxl_and_aaoi_are_explicit_overrides_not_silent_reversals():
+    """2026-09-18: the user asked for SOXL and AAOI by name, alongside INTC/MRVL/CRWV/AAOX.
+    Both were previously EXCLUDED by this file's own stated criteria — AAOI as a post-17x-run
+    name (test above, until this change), SOXL as a leveraged product (ditto). Neither
+    measurement was wrong; the user's request overrides the criteria for these two names.
+
+    This test exists so that reversal is a decision on record, not a quietly weakened
+    parametrize list. If this test is ever the only thing keeping SOXL/AAOI in the universe,
+    that is the correct place for that fact to live."""
+    assert {"SOXL", "AAOI"} <= set(_symbols())
 
 
 @pytest.mark.parametrize("sym", ["ASX", "RVMD"])
