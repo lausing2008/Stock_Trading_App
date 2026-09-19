@@ -408,7 +408,18 @@ in isolation), covering the exact tied-EV case, a real update, a losing candidat
 an update) — caught immediately by the tied-EV test, restored. Full 4022-test suite green.
 Ran the real calibration against production data after this fix: `by_style` now exists with
 `SWING: {"n_trades": 61, "observed_rr_p75": 2.23, "min_rr_ratio": 2.0, "regime_min_rr_ratio":
-3.0}` — the actual, intended effect of the whole session's worth of work.
+3.0}` — the actual, intended effect of the whole session's worth of work. Verified end-to-end
+against the LIVE read side, not just the written file: `_default_min_rr_ratio("neutral", "US",
+"SWING")` now returns `2.0` (was `2.25`) while `_default_min_rr_ratio("neutral", "US",
+"GROWTH")` is untouched at `2.25`, and the pooled (no-style) call is also untouched at `2.25`.
+
+One more real finding fell out of running this for real, not anticipated when the fix was
+designed: GROWTH also got a `regime_min_rr_ratio: 3.0` entry (its own 75th percentile, 3.35,
+sits just barely below the pooled choppy/risk_off floor of 3.38) — GROWTH's `min_rr_ratio`
+stays uncapped (3.35 comfortably clears the neutral-regime 2.25), but even GROWTH can't
+consistently clear the CHOPPY-regime floor on its own historical R:R distribution. The same
+mechanism that fixed SWING generalized correctly to a second, smaller case nobody was looking
+for, rather than needing a SWING-specific carve-out.
 
 **What to check if this looks wrong**:
 ```bash
