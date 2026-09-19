@@ -11,8 +11,8 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
-import { api } from '@/lib/api';
-import type { FixRecordResponse, FixMetricBucket } from '@/lib/api';
+import { api, isFixMetricsUnsupported } from '@/lib/api';
+import type { FixRecordResponse, FixMetricBucket, FixSnapshotEntry, FixMetricsMeasured } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 function fmtPct(v: number | null): string {
@@ -51,14 +51,25 @@ function BucketRow({ label, baseline, latest }: { label: string; baseline: FixMe
 }
 
 function FixCard({ record, onSnapshot, snapshotting }: { record: FixRecordResponse; onSnapshot: (fixId: string) => void; snapshotting: boolean }) {
-  const latest = record.snapshots.length > 0 ? record.snapshots[record.snapshots.length - 1] : null;
+  const rawLatest = record.snapshots.length > 0 ? record.snapshots[record.snapshots.length - 1] : null;
+  // AUD-FIXEFFECTIVENESS-UNSUPPORTEDSHAPE: a snapshot for a domain with no metric function
+  // registered carries a completely different shape (status/domain/reason, no by_bucket at
+  // all) — reading .metrics.by_bucket on it used to crash this card's whole render. `latest`
+  // stays usable for measured metrics; `unsupportedLatest` carries the honest explanation when
+  // the most recent snapshot couldn't measure anything.
+  const latest: (Omit<FixSnapshotEntry, 'metrics'> & { metrics: FixMetricsMeasured }) | null =
+    rawLatest && !isFixMetricsUnsupported(rawLatest.metrics)
+      ? { ...rawLatest, metrics: rawLatest.metrics }
+      : null;
+  const unsupportedLatest = rawLatest && isFixMetricsUnsupported(rawLatest.metrics) ? rawLatest.metrics : null;
   const daysSinceFixed = Math.floor((Date.now() - new Date(record.fixed_at).getTime()) / 86_400_000);
-  const daysUntilDue = record.recheck_after_days - (latest
-    ? Math.floor((Date.now() - new Date(latest.taken_at).getTime()) / 86_400_000)
+  const daysUntilDue = record.recheck_after_days - (rawLatest
+    ? Math.floor((Date.now() - new Date(rawLatest.taken_at).getTime()) / 86_400_000)
     : daysSinceFixed);
   const isDue = daysUntilDue <= 0;
 
-  const bucketKeys = Object.keys(record.baseline_metrics.by_bucket).sort();
+  const measuredBaseline = isFixMetricsUnsupported(record.baseline_metrics) ? null : record.baseline_metrics;
+  const bucketKeys = measuredBaseline ? Object.keys(measuredBaseline.by_bucket).sort() : [];
 
   return (
     <div style={{ borderRadius: 10, border: '1px solid #1e293b', padding: '16px 18px', marginBottom: 16, background: '#0d1424' }}>
@@ -90,35 +101,50 @@ function FixCard({ record, onSnapshot, snapshotting }: { record: FixRecordRespon
         </div>
       )}
 
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
-          <thead>
-            <tr style={{ background: 'rgba(148,163,184,0.05)' }}>
-              <th style={{ textAlign: 'left', padding: '8px 10px', color: '#475569', fontWeight: 700, fontSize: 10.5, textTransform: 'uppercase' }}>Bucket</th>
-              <th style={{ textAlign: 'right', padding: '8px 10px', color: '#475569', fontWeight: 700, fontSize: 10.5, textTransform: 'uppercase' }}>Baseline win%</th>
-              <th style={{ textAlign: 'right', padding: '8px 10px', color: '#475569', fontWeight: 700, fontSize: 10.5, textTransform: 'uppercase' }}>Baseline ret%</th>
-              <th style={{ textAlign: 'right', padding: '8px 10px', color: '#475569', fontWeight: 700, fontSize: 10.5, textTransform: 'uppercase' }}>Latest win%</th>
-              <th style={{ textAlign: 'right', padding: '8px 10px', color: '#475569', fontWeight: 700, fontSize: 10.5, textTransform: 'uppercase' }}>Latest ret%</th>
-              <th style={{ textAlign: 'right', padding: '8px 10px', color: '#475569', fontWeight: 700, fontSize: 10.5, textTransform: 'uppercase' }}>N</th>
-            </tr>
-          </thead>
-          <tbody>
-            {bucketKeys.map(key => (
-              <BucketRow
-                key={key}
-                label={key.replace('|', ' ')}
-                baseline={record.baseline_metrics.by_bucket[key]}
-                latest={latest ? latest.metrics.by_bucket[key] ?? null : null}
-              />
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {isFixMetricsUnsupported(record.baseline_metrics) ? (
+        <div style={{ padding: '10px 12px', borderRadius: 8, background: 'rgba(148,163,184,0.06)', border: '1px solid #1e293b', fontSize: 12, color: '#94a3b8' }}>
+          No metric function is implemented for domain &quot;{record.baseline_metrics.domain}&quot; — this fix cannot be measured yet.
+        </div>
+      ) : (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+            <thead>
+              <tr style={{ background: 'rgba(148,163,184,0.05)' }}>
+                <th style={{ textAlign: 'left', padding: '8px 10px', color: '#475569', fontWeight: 700, fontSize: 10.5, textTransform: 'uppercase' }}>Bucket</th>
+                <th style={{ textAlign: 'right', padding: '8px 10px', color: '#475569', fontWeight: 700, fontSize: 10.5, textTransform: 'uppercase' }}>Baseline win%</th>
+                <th style={{ textAlign: 'right', padding: '8px 10px', color: '#475569', fontWeight: 700, fontSize: 10.5, textTransform: 'uppercase' }}>Baseline ret%</th>
+                <th style={{ textAlign: 'right', padding: '8px 10px', color: '#475569', fontWeight: 700, fontSize: 10.5, textTransform: 'uppercase' }}>Latest win%</th>
+                <th style={{ textAlign: 'right', padding: '8px 10px', color: '#475569', fontWeight: 700, fontSize: 10.5, textTransform: 'uppercase' }}>Latest ret%</th>
+                <th style={{ textAlign: 'right', padding: '8px 10px', color: '#475569', fontWeight: 700, fontSize: 10.5, textTransform: 'uppercase' }}>N</th>
+              </tr>
+            </thead>
+            <tbody>
+              {measuredBaseline && bucketKeys.map(key => (
+                <BucketRow
+                  key={key}
+                  label={key.replace('|', ' ')}
+                  baseline={measuredBaseline.by_bucket[key]}
+                  latest={latest ? latest.metrics.by_bucket[key] ?? null : null}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
-      {record.snapshots.length > 0 && (
+      {/* AUD-FIXEFFECTIVENESS-UNSUPPORTEDSHAPE: the most recent snapshot may itself be the
+          "unsupported" shape even when the baseline was measurable (e.g. a manual re-measure
+          click after the domain lost its metric function) — show its own honest reason rather
+          than reusing the baseline's unsupported message or crashing on `latest!.taken_at`. */}
+      {unsupportedLatest && (
+        <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 8, background: 'rgba(148,163,184,0.06)', border: '1px solid #1e293b', fontSize: 12, color: '#94a3b8' }}>
+          Most recent re-measure attempt ({rawLatest && new Date(rawLatest.taken_at).toLocaleDateString()}) could not measure anything: {unsupportedLatest.reason}
+        </div>
+      )}
+      {!unsupportedLatest && rawLatest && (
         <div style={{ marginTop: 10, fontSize: 11, color: '#475569' }}>
-          {record.snapshots.length} snapshot{record.snapshots.length !== 1 ? 's' : ''} taken · most recent {new Date(latest!.taken_at).toLocaleDateString()}
-          {latest!.note && <> · {latest!.note}</>}
+          {record.snapshots.length} snapshot{record.snapshots.length !== 1 ? 's' : ''} taken · most recent {new Date(rawLatest.taken_at).toLocaleDateString()}
+          {rawLatest.note && <> · {rawLatest.note}</>}
         </div>
       )}
       {record.snapshots.length === 0 && (

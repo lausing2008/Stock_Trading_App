@@ -1496,10 +1496,30 @@ export type FixMetricBucket = {
   avg_pct_return_base: number | null;
 };
 
-export type FixMetrics = {
+export type FixMetricsMeasured = {
   by_bucket: Record<string, FixMetricBucket>;
   total_resolved_5d: number;
 };
+
+// AUD-FIXEFFECTIVENESS-UNSUPPORTEDSHAPE: fix_effectiveness.py's take_fix_snapshot() (AUD-C01)
+// deliberately records THIS shape — no by_bucket at all — for a domain with no snapshot metric
+// function registered, rather than a 400 that would silently fail the recheck job forever. The
+// frontend type previously declared FixMetrics as always having by_bucket, which was simply
+// untrue of a real, already-recorded snapshot (AUD-DECIDE1-LOWGATECONFIG's decision_making
+// domain) — reading `.by_bucket[key]` on this shape crashed the whole page's render, since
+// nothing here ever accounted for the union the backend actually sends.
+export type FixMetricsUnsupported = {
+  status: 'unsupported';
+  domain: string;
+  reason: string;
+  supported_domains: string[];
+};
+
+export type FixMetrics = FixMetricsMeasured | FixMetricsUnsupported;
+
+export function isFixMetricsUnsupported(m: FixMetrics): m is FixMetricsUnsupported {
+  return (m as FixMetricsUnsupported).status === 'unsupported';
+}
 
 export type FixSnapshotEntry = {
   taken_at: string;
