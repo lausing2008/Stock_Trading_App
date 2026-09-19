@@ -4857,7 +4857,15 @@ def check_options_flow_alerts() -> None:
     # pressure documented in unusual_whales.py.
     try:
         from .paper_trading_engine import _is_market_hours
-        if not _is_market_hours("US") and not _is_market_hours("HK"):
+        # AUD-E04-FLOWHOURSGATE (2026-09-19): this alert's own universe is US-ONLY
+        # (_bounded_options_flow_symbols(), per this function's own docstring above) — gating
+        # on "both US and HK closed" meant the job kept running through the entire US
+        # overnight session whenever HK happened to be open (HK's ~9:30pm-4am ET session
+        # overlaps almost exactly with US closed hours), which is most weeknight hours.
+        # Measured live: of 247 candidate rows dated 2026-09-05 onward, 97 were recorded
+        # outside 09:30-16:15 New York time — this alert firing on a universe that has no HK
+        # symbols in it, gated by whether a market it never trades in happens to be open.
+        if not _is_market_hours("US"):
             _record_job_status("check_options_flow_alerts", "ok", time.monotonic() - _t0)
             return
     except Exception as _mh_exc:
@@ -4939,6 +4947,12 @@ def check_options_flow_alerts() -> None:
                             "alert_rule": row.alert_rule,
                             "calibrated_win_rate": cal["win_rate"] if cal else None,
                             "calibrated_win_rate_count": cal["count"] if cal else None,
+                            # AUD-E04-RIGHTNOWCLAIM (2026-09-19): the adapter's FlowAlert
+                            # already carries this — it was simply never copied into the
+                            # candidate dict, so the email template's "detected right now"
+                            # applied to an event that could be up to 48h old (get_flow_alerts'
+                            # own lookback window) with no way to tell the difference.
+                            "created_at": row.created_at,
                         }
                 except Exception as exc:
                     log.warning("options_flow_alert.symbol_error", symbol=symbol, error=str(exc))

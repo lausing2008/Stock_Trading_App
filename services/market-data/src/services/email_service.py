@@ -1888,6 +1888,30 @@ def send_options_flow_alert_email(to: str, candidates: list[dict], omitted_count
         sweep_str = " · SWEEP" if has_sweep else ""
         vol_oi = c.get("volume_oi_ratio")
         vol_oi_str = f" · {vol_oi:.1f}x existing OI" if vol_oi is not None else ""
+        # AUD-E04-RIGHTNOWCLAIM (2026-09-19): get_flow_alerts()'s own 48h lookback window keeps
+        # the SAME UW row eligible for up to two days — the header used to say every candidate
+        # was "detected right now" regardless of how long it had actually been sitting there.
+        # Rendered per-row (not just once in the header) since candidates in the same email can
+        # have genuinely different ages. Missing/unparseable created_at renders nothing, never
+        # a fabricated "just now".
+        age_str = ""
+        _created_at = c.get("created_at")
+        if _created_at:
+            try:
+                _created_dt = datetime.fromisoformat(_created_at.replace("Z", "+00:00"))
+                if _created_dt.tzinfo is None:
+                    _created_dt = _created_dt.replace(tzinfo=timezone.utc)
+                _age_min = (datetime.now(timezone.utc) - _created_dt).total_seconds() / 60.0
+                if _age_min < 1:
+                    age_str = " · detected <1m ago"
+                elif _age_min < 60:
+                    age_str = f" · detected {_age_min:.0f}m ago"
+                elif _age_min < 24 * 60:
+                    age_str = f" · detected {_age_min / 60:.1f}h ago"
+                else:
+                    age_str = f" · detected {_age_min / (24 * 60):.1f}d ago"
+            except (ValueError, TypeError):
+                pass
         cal_win_rate = c.get("calibrated_win_rate")
         cal_count = c.get("calibrated_win_rate_count")
         cal_html = ""
@@ -1921,14 +1945,14 @@ def send_options_flow_alert_email(to: str, candidates: list[dict], omitted_count
             f'<span style="font-size:13px;color:{dir_color};font-weight:700">{direction.upper()} · {opt_type.upper()}</span>'
             f'</div>'
             f'<div style="font-size:12px;color:#64748b;margin-top:2px">'
-            f'{price_str} underlying · {strike_str} strike, exp {expiry_str} · {premium_str} premium, {side_str}{sweep_str}{vol_oi_str}'
+            f'{price_str} underlying · {strike_str} strike, exp {expiry_str} · {premium_str} premium, {side_str}{sweep_str}{vol_oi_str}{age_str}'
             f'</div>'
             f'{cal_html}'
             f'</div>'
         )
         rows_text += (
             f"  {sym}: {direction.upper()} {opt_type.upper()}, {price_str} underlying, "
-            f"{strike_str} strike exp {expiry_str}, {premium_str} premium, {side_str}{sweep_str}{vol_oi_str}\n"
+            f"{strike_str} strike exp {expiry_str}, {premium_str} premium, {side_str}{sweep_str}{vol_oi_str}{age_str}\n"
             + cal_text
         )
 
@@ -1945,7 +1969,7 @@ def send_options_flow_alert_email(to: str, candidates: list[dict], omitted_count
     body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
   <div style="max-width:480px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
     <h2 style="margin-top:0;color:#6d28d9">🎯 Unusual Options Activity</h2>
-    <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} real Unusual Whales flow alert{'s' if n != 1 else ''} — large, urgent options positioning detected right now.</p>
+    <p style="font-size:13px;color:#64748b;margin-top:-8px">{n} real Unusual Whales flow alert{'s' if n != 1 else ''} — large, urgent options positioning (see each row's own detection age below).</p>
     <div style="margin-top:12px">{rows_html}</div>
     {omitted_html}
     <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:14px">

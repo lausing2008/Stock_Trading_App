@@ -232,6 +232,30 @@ put/covered call presupposes stock exposure this template has no way to verify. 
 
 Full market-data suite after this follow-up pass: **4082 passing**.
 
+### E04 — flow alerts could fire outside the real US session, and claimed stale events were fresh (P1)
+
+Two related defects in `check_options_flow_alerts()`:
+
+1. Its market-hours gate was `if not _is_market_hours("US") and not _is_market_hours("HK"):
+   return` — this alert's own candidate universe is US-only, but the gate only skipped when
+   BOTH markets were closed, so it kept running through the entire US overnight session
+   whenever HK happened to be open (HK's session sits almost exactly inside US's closed hours,
+   so this was most weeknight hours). Measured live: 97 of 247 candidate rows dated 2026-09-05
+   onward were recorded outside 09:30–16:15 New York time. Fixed to gate on US alone.
+2. The email's header unconditionally said "detected right now," but `get_flow_alerts()`'s own
+   48-hour lookback window keeps the same UW row eligible for up to two days, and the adapter's
+   `FlowAlert.created_at` was never even copied into the candidate dict — there was no way to
+   tell an old event from a fresh one. Fixed by capturing `created_at` and rendering a real
+   per-row age ("detected 2m ago" / "detected 1.3d ago"); the header no longer makes a blanket
+   freshness claim since different rows in the same email can have genuinely different ages.
+
+9 new tests, 2 sabotage cycles. 2 existing tests in `test_opt6_expired_and_clustering.py`
+pinned the old "both closed" gate literally and needed updating to the new US-only assertion —
+matching this session's established practice of updating a test when the behavior it pins
+legitimately changes, never reverting the fix to keep a stale assertion green.
+
+Full market-data suite after E04: **4091 passing**.
+
 ## Deliberately NOT implemented this pass, and why
 
 ### Broker lifecycle: B03, B06-B12 (the review's own "durable execution core")
@@ -287,14 +311,16 @@ timezone-class defect in this list) is fixed above. The rest are either:
   confidence intervals) that the audit itself frames as a phased roadmap (Phase 0 through 5), not
   a punch list.
 
-### Alert-email findings E04, E05, E07, E09, E11, E13, E14
+### Alert-email findings E05, E07, E09, E11, E13, E14
 
-E02, E08, and E10 are fixed above (follow-up pass). Reviewed in full; deliberately not built:
+E02, E04, E08 (partial), and E10 are fixed above. Reviewed in full; deliberately not built:
 
-- **E04 (flow alerts can fire outside the real US session, "right now" can describe an old
-  event)** needs a real product-specific session-calendar model (early closes, holidays) threaded
-  through the scheduler job, not a one-line label change — a distinct unit of work from the
-  labeling/freshness fixes above.
+- **E04's remaining gap**: `_is_market_hours()` (the shared helper this fix now correctly gates
+  on) hardcodes 9:30-16:00 ET every trading day — it does not special-case early-close sessions
+  (the day after Thanksgiving, Christmas Eve). That's a pre-existing limitation of a helper used
+  across many call sites throughout this codebase, not specific to this alert — widening it
+  correctly needs its own audit of every caller's assumptions, not a change bundled into one
+  email fix.
 - **E05 (flow evidence envelope)**, **E09 (cooldown consumed by a failed send)**, **E11
   (recipient scope doesn't match "your watched symbols")**, **E13 (outcome records can't
   establish emitted-email accuracy)** each require a genuine data-model or delivery-pipeline

@@ -162,10 +162,16 @@ def _flow_job_src() -> str:
 
 
 def test_options_flow_job_has_a_market_hours_gate():
-    """Its sibling check_short_squeeze_alerts() has one; this job ran every minute, 24/7."""
+    """Its sibling check_short_squeeze_alerts() has one; this job ran every minute, 24/7.
+
+    AUD-E04-FLOWHOURSGATE (2026-09-19): originally gated on "both US and HK closed" — but this
+    job's own candidate universe is US-only, so it kept firing through the whole US overnight
+    session whenever HK happened to be open (which is most weeknight hours). Now gates on US
+    alone."""
     body = _flow_job_src()
     assert "_is_market_hours" in body
-    assert 'not _is_market_hours("US") and not _is_market_hours("HK")' in body
+    assert 'if not _is_market_hours("US"):' in body
+    assert 'not _is_market_hours("US") and not _is_market_hours("HK")' not in body
 
 
 def test_market_hours_gate_precedes_any_uw_work():
@@ -179,7 +185,7 @@ def test_market_hours_gate_precedes_any_uw_work():
 def test_market_hours_check_fails_open():
     """A market-calendar lookup failure must not silently disable a real alert."""
     body = _flow_job_src()
-    blk = body[body.index("_is_market_hours") - 400:body.index("_is_market_hours") + 700]
+    blk = body[body.index("_is_market_hours") - 400:body.index("_is_market_hours") + 1200]
     assert "except Exception" in blk
     assert "market_hours_check_failed" in blk, "the fail-open must be logged, not silent"
 
