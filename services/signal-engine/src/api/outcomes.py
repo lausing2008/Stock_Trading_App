@@ -19,12 +19,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from common.jwt_auth import get_current_username
-from db import Price, Signal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, TuneHistory, get_session
+from db import Price, Signal, SignalHorizon, SignalOutcome, SignalOutcomeHorizon, SignalType, Stock, TimeFrame, TuneHistory, get_session
 
 from .signals_shared import (
     _CONF_CAL_CACHE_KEY, _OUTCOME_CENSOR_GRACE_DAYS, _OUTCOME_HOLD_DAYS,
     _OUTCOME_WIN_HURDLE_PCT, _SELL_OUTCOME_HOLD_DAYS,
-    _get_redis, _service_token, _settings, log,
+    _get_redis, _service_token, _settings, _today_et, log,
 )
 
 router = APIRouter(prefix="/signals", tags=["signals"])
@@ -185,11 +185,20 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
     import httpx as _httpx
     from sqlalchemy import or_
 
-    today = date.today()
+    # AUD-T409-UTCDATEBOUNDARY: ET, not a naive local/UTC truncation — `today` here decides
+    # whether a signal's hold window has matured (`target_date > today`), the exact class of
+    # decision that bug was found in. See signals_shared._today_et()'s own docstring.
+    today = _today_et()
     # T232-SIG10: consider both tables — SELL's shortest window (5d SHORT) is smaller than
     # BUY's shortest (7d SHORT), so the candidate-signal cutoff must use whichever is smaller
     # or SELL signals eligible under their own shorter window would be filtered out too early.
-    min_hold = min(min(_OUTCOME_HOLD_DAYS.values()), min(_SELL_OUTCOME_HOLD_DAYS.values()))
+    #
+    # T410-AUD-C02-C03: the explicit `, 5` is a FLOOR, not currently a behavior change — SELL
+    # SHORT's own 5-day hold already makes 5 the effective minimum today. It exists so that if
+    # _SELL_OUTCOME_HOLD_DAYS["SHORT"] is ever raised, the candidate cutoff cannot silently
+    # narrow past 5 days and stop a signal becoming eligible for its own 5-day
+    # SignalOutcomeHorizon row as soon as the data allows.
+    min_hold = min(min(_OUTCOME_HOLD_DAYS.values()), min(_SELL_OUTCOME_HOLD_DAYS.values()), 5)
     cutoff = today - timedelta(days=min_hold)
 
     # IDs already in signal_outcomes — skip re-evaluation by signal_id
@@ -577,6 +586,134 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
 
         session.commit()
 
+    # ── Phase 3 (T410-AUD-C02-C03): independent per-window resolution ──────────────────────
+    # Everything above is UNCHANGED — signal_outcomes still gets exactly one row per signal,
+    # created only once its PRIMARY window closes. This phase writes to a SEPARATE, purely
+    # additive table (signal_outcome_horizons) so a 5/10/20-day result becomes available the
+    # moment ITS OWN target date's price exists, regardless of whether the signal's primary —
+    # or any other window on the same signal — has closed. See SignalOutcomeHorizon's own
+    # docstring (shared/db/models.py) for why this is a new table rather than an early/pending
+    # row on signal_outcomes itself: a 201-reference audit found every real consumer keys off
+    # is_correct/pct_return being non-NULL, and outcomes.py's OWN dedup guard above
+    # (evaluated_ids/evaluated_sighd) would treat an early row as "already evaluated" and
+    # permanently skip the signal's real primary resolution — exactly backwards.
+    #
+    # Reuses _lookup_outcome_price/_window_return UNCHANGED — no parallel price-lookup
+    # implementation to drift against the one signal_outcomes itself trusts (the same
+    # discipline options_income_backtest.py's own docstring names: "a backtest of a parallel
+    # implementation measures the parallel implementation").
+    horizon_created = horizon_resolved = horizon_missing = 0
+    if pending_signals:
+        _sig_ids = [sig.id for sig, _, _ in pending_signals]
+        _existing_horizon_rows = session.execute(
+            select(SignalOutcomeHorizon).where(SignalOutcomeHorizon.signal_id.in_(_sig_ids))
+        ).scalars().all()
+        _horizon_by_key: dict[tuple[int, int], SignalOutcomeHorizon] = {
+            (r.signal_id, r.window_days): r for r in _existing_horizon_rows
+        }
+
+        for sig, symbol, is_delisted in pending_signals:
+            signal_date = sig.first_buy_sell_at.date()
+            sig_dir = sig.first_buy_sell_signal.value  # "BUY" or "SELL"
+            hold_days = (
+                _SELL_OUTCOME_HOLD_DAYS[sig.horizon.value] if sig_dir == "SELL"
+                else _OUTCOME_HOLD_DAYS[sig.horizon.value]
+            )
+            # A set, not a list: SELL SHORT's own hold_days (5) coincides with the 5-day
+            # auxiliary window, so this collapses to ONE row for that case, with
+            # is_primary_window=True on it — never two rows racing for the same
+            # (signal_id, window_days) unique key.
+            windows = {5, 10, 20, hold_days}
+
+            entry_result = _lookup_outcome_price(sig.stock_id, signal_date + timedelta(days=1))
+            if entry_result is None:
+                continue  # no entry fill yet — nothing to anchor any window to; retried next run
+            entry_date, entry_price = entry_result
+            if entry_price <= 0:
+                continue
+
+            for window_days in windows:
+                key = (sig.id, window_days)
+                existing = _horizon_by_key.get(key)
+                if existing is not None and existing.status != "pending":
+                    continue  # AUD-C02-C03 requirement 4: a resolved row is never rewritten
+
+                target_date = entry_date + timedelta(days=window_days)
+                is_primary = (window_days == hold_days)
+
+                if target_date > today:
+                    if existing is None:
+                        session.add(SignalOutcomeHorizon(
+                            signal_id=sig.id, stock_id=sig.stock_id, symbol=symbol,
+                            horizon=sig.horizon, signal_direction=sig_dir, signal_date=signal_date,
+                            window_days=window_days, is_primary_window=is_primary,
+                            entry_date=entry_date, entry_price=entry_price,
+                            target_date=target_date, status="pending",
+                        ))
+                        horizon_created += 1
+                    continue  # still pending — nothing to resolve yet, existing row unchanged
+
+                price, ret, correct = _window_return(sig.stock_id, entry_date, entry_price,
+                                                     window_days, sig_dir)
+                if price is not None:
+                    if existing is not None:
+                        existing.exit_date = target_date
+                        existing.exit_price = price
+                        existing.pct_return = ret
+                        existing.is_correct = correct
+                        existing.status = "resolved"
+                        existing.resolved_at = datetime.now(timezone.utc)
+                    else:
+                        session.add(SignalOutcomeHorizon(
+                            signal_id=sig.id, stock_id=sig.stock_id, symbol=symbol,
+                            horizon=sig.horizon, signal_direction=sig_dir, signal_date=signal_date,
+                            window_days=window_days, is_primary_window=is_primary,
+                            entry_date=entry_date, entry_price=entry_price, target_date=target_date,
+                            exit_date=target_date, exit_price=price, pct_return=ret,
+                            is_correct=correct, status="resolved",
+                            resolved_at=datetime.now(timezone.utc),
+                        ))
+                    horizon_resolved += 1
+                    continue
+
+                # Target date passed but no price found yet — same grace window as the primary's
+                # own delisting/censoring branch above, so a brief ingestion lag isn't mistaken
+                # for a permanently missing price. Deliberately NOT delisting-loss-scored the
+                # way the PRIMARY row is: the existing 5/10/20d columns on signal_outcomes
+                # itself never applied that special case either (_window_return has no
+                # is_delisted parameter), so this stays consistent with that established
+                # precedent rather than inventing a new rule for auxiliary windows.
+                if today - target_date > timedelta(days=_OUTCOME_CENSOR_GRACE_DAYS):
+                    if existing is not None:
+                        existing.status = "missing_price"
+                        existing.resolved_at = datetime.now(timezone.utc)
+                    else:
+                        session.add(SignalOutcomeHorizon(
+                            signal_id=sig.id, stock_id=sig.stock_id, symbol=symbol,
+                            horizon=sig.horizon, signal_direction=sig_dir, signal_date=signal_date,
+                            window_days=window_days, is_primary_window=is_primary,
+                            entry_date=entry_date, entry_price=entry_price, target_date=target_date,
+                            status="missing_price", resolved_at=datetime.now(timezone.utc),
+                        ))
+                    horizon_missing += 1
+                elif existing is None:
+                    session.add(SignalOutcomeHorizon(
+                        signal_id=sig.id, stock_id=sig.stock_id, symbol=symbol,
+                        horizon=sig.horizon, signal_direction=sig_dir, signal_date=signal_date,
+                        window_days=window_days, is_primary_window=is_primary,
+                        entry_date=entry_date, entry_price=entry_price, target_date=target_date,
+                        status="pending",
+                    ))
+                    horizon_created += 1
+
+        session.commit()
+
+    log.info(
+        "outcomes.evaluate_horizons_done",
+        horizon_created=horizon_created, horizon_resolved=horizon_resolved,
+        horizon_missing=horizon_missing,
+    )
+
     # AUD232-003: confidence-calibration's Redis cache (1h TTL) previously had no
     # invalidation tied to this endpoint actually writing new/updated rows — it would
     # rebuild every hour from whatever signal_outcomes data existed, self-consistently,
@@ -605,6 +742,9 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         "censored": censored,
         "failed": failed,
         "updated_windows": updated,
+        "horizon_created": horizon_created,
+        "horizon_resolved": horizon_resolved,
+        "horizon_missing": horizon_missing,
     }
 
 

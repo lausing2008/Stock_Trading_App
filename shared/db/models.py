@@ -814,6 +814,91 @@ class SignalOutcome(Base):
     )
 
 
+class SignalOutcomeHorizon(Base):
+    """T410-AUD-C02-C03: one window's resolution state for one signal, resolved INDEPENDENTLY
+    of every other window on the same signal.
+
+    WHY THIS IS A SEPARATE TABLE, NOT A COLUMN ON SignalOutcome. `SignalOutcome.signal_id` is
+    UNIQUE — one row per signal, created ONLY once its PRIMARY hold window closes (7/14/28/14
+    calendar days for SHORT/SWING/LONG/GROWTH BUY), with the 5/10/20-day auxiliary windows
+    filled in on that SAME row at that SAME moment (AUD-C02). So a LONG BUY's 5-day result —
+    fully determined and sitting in the price table after 5 days — sits unrecorded for the
+    other 23 days until the 28-day primary closes, and three of the four BUY styles therefore
+    supply ZERO resolved 5-day outcomes at any given time (measured 2026-09-18: SWING 279
+    actionable/0 resolved, LONG 880/0, GROWTH 369/0).
+
+    The direct fix — insert a PENDING SignalOutcome row at signal time, fill it in per-window —
+    was audited against its own consequences before being built this way instead. 201 non-test
+    references across 12 modules (ml-prediction training/features, signal-engine calibration/
+    analytics/outcomes, decision-engine, market-data) read SignalOutcome, and EVERY real query
+    among them keys off `is_correct.is_not(None)` / `pct_return.is_not(None)` (the maturity
+    signal) or looks up one exact `signal_id` (which already returns nothing for an unresolved
+    signal, identical to today). None expects or wants a pending row. Worse, `outcomes.py`'s own
+    dedup guard — `evaluated_ids`/`evaluated_sighd`, built by reading which signal_ids/
+    (stock,horizon,date) tuples ALREADY have a row — would see an early pending row as "already
+    evaluated" and permanently skip that signal's real primary-window resolution, which is
+    exactly backwards. Retrofitting a state column onto a table 201 places already trust to mean
+    "resolved" would have required either patching an unaudited majority of those call sites or
+    accepting a silent regression matching the confidence-inversion this project has already
+    lost a full session chasing once (docs/2026-09-05/).
+
+    So: SignalOutcome's own population semantics are UNCHANGED — still one row, still only once
+    the primary closes, still meaning exactly what all 201 references already assume. This table
+    is purely ADDITIVE: nothing reads it yet, so nothing existing can regress by its existing.
+    One row per (signal_id, window_days), each resolved the moment ITS OWN target date's price
+    is available, regardless of whether the signal's primary window — or any other window on the
+    same signal — has closed.
+
+    C03 (horizon units): `horizon_unit` is explicit and stored per row from day one, rather than
+    inferred from context the way SignalOutcome's calendar-day windows are. A future
+    trading-session-based window is a NEW `horizon_unit` value here, never a silent reinterpretation
+    of an existing one — every stored calendar-day calibration stays valid exactly as computed.
+    """
+    __tablename__ = "signal_outcome_horizons"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    signal_id: Mapped[int] = mapped_column(ForeignKey("signals.id", ondelete="CASCADE"), index=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    horizon: Mapped[SignalHorizon] = mapped_column(SAEnum(SignalHorizon), index=True)
+    signal_direction: Mapped[str] = mapped_column(String(8))          # BUY | SELL
+    signal_date: Mapped[date] = mapped_column(Date, index=True)
+
+    # The window this ROW resolves — independent of every other row for the same signal_id.
+    window_days: Mapped[int] = mapped_column(Integer)
+    # 'calendar_days' today; C03 gives a future trading-session window its OWN value here
+    # rather than overloading this one, so nothing has to guess which unit an old row used.
+    horizon_unit: Mapped[str] = mapped_column(String(16), default="calendar_days")
+    # Whether window_days equals this (horizon, direction)'s own PRIMARY hold period — lets a
+    # reader ask "give me only primary-equivalent rows" without hardcoding the hold-day table
+    # a second time.
+    is_primary_window: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    entry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_date: Mapped[date] = mapped_column(Date)                   # entry_date + window
+    exit_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pct_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+    # Explicit state — AUD-C02-C03's own required fix over inferring maturity from NULLs, which
+    # is how the ambiguity this table exists to resolve first arose. 'pending': target_date not
+    # yet reached. 'resolved': exit price found, is_correct/pct_return set. 'missing_price':
+    # target_date passed, no exit price within the grace window (mirrors SignalOutcome's own
+    # skip_reason). 'skipped': signal-level reason to never resolve this window (e.g. no entry
+    # price at all).
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("signal_id", "window_days", name="uq_signal_outcome_horizons_signal_window"),
+        Index("ix_signal_outcome_horizons_status_target", "status", "target_date"),
+        Index("ix_signal_outcome_horizons_lookup", "horizon", "signal_direction", "window_days", "status"),
+    )
+
+
 class TradePlan(Base):
     """Kanban board card — persisted AI game plan or forecast pick."""
     __tablename__ = "trade_plans"

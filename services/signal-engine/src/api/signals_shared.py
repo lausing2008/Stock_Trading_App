@@ -13,7 +13,8 @@ circular import between the three route modules.
 Verbatim extraction from routes.py — no logic changes. If something here looks wrong, it was
 already wrong before this split; the split itself only moved code, it did not change it.
 """
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import json
 import math
 
@@ -23,6 +24,26 @@ from sqlalchemy.orm import Session
 from common.config import get_settings
 from common.logging import get_logger
 from db import Signal, SignalHorizon, SignalOutcome, Stock, TuneHistory
+
+
+def _today_et() -> date:
+    """'Today' as a US market participant means it — the calendar date in America/New_York,
+    not a truncation of the current UTC instant (or this server's local clock, which is also
+    UTC). See market-data's docs/incidents/utc-vs-et-date-boundary.md (AUD-T409) for the full
+    finding: naive `date.today()`/`datetime.now(timezone.utc).date()` reads one calendar day
+    AHEAD of the true US trading day for roughly 4-5 hours of every single evening, because
+    UTC crosses midnight at 8pm EDT / 7pm EST while the trading day these dates describe runs
+    on New York wall-clock time.
+
+    Added here specifically because evaluate_signal_outcomes() (outcomes.py) uses `today` to
+    decide whether a signal's hold window has matured (`target_date > today`) — the exact same
+    class of decision the T409 finding was about. `date.today()` was in wide use elsewhere in
+    this service (calibration.py, analytics.py) before this fix; those were NOT swept, since
+    most of them are lookback-window cutoffs (`date.today() - timedelta(days=N)`) where being
+    a day wide for part of an evening is a much lower-severity mismatch than a maturity
+    decision — recorded as expanded scope in the T409 incident doc rather than fixed here.
+    """
+    return datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date()
 
 _settings = get_settings()
 log = get_logger("signals")

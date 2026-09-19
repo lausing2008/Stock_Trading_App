@@ -304,6 +304,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
 - **`docs/audits/2026-09-16-codebase-and-feature-review.md`** — Static project orientation: architecture, feature map, scoring/execution paths, backtest boundaries, and documentation reconciliation; no runtime verification.
+- **`docs/features/independent-horizon-resolution.md`** — T410 (AUD-C02/C03): audited all 201 SignalOutcome refs, found EVERY one is safe, built an ADDITIVE table instead of patching. LONG/SWING/GROWTH BUY now get 5-day outcomes without waiting for a 14-28 day primary [outcomes, calibration]
 - **`docs/audits/2026-09-18-c02-c03-outcome-horizon-scoping.md`** — why C02/C03 was SCOPED not built: pending outcome rows change what "a SignalOutcome row exists" means across 201 non-test refs incl. ML TRAINING. Audit those first [outcomes, horizons, calibration]
 - **`docs/audits/2026-09-17-three-audit-verification.md`** — verified 3 audits, 18/18 claims correct. Fixed A17 (T400's own regression: settlement raised on EVERY success, uncommitted mutation then committed by a LATER function). Found A18 (CI never runs on `prod`) + A19 [audit review]
 - **`docs/audits/2026-09-17-audit-review-and-t400-fixes.md`** — verified 6 claims from the 09-16/09-17 audits; all 6 correct. Fixed A13/A04/A05. A01-A03 (broker lifecycle) left open as design work. The reported service timeouts were a harness artefact [audit review]

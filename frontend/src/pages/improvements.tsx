@@ -152,14 +152,14 @@ const ITEMS: Item[] = [
   },
   {
     id: 'AUD-C02-C03-SCOPED',
-    tier: 384, severity: 'high', defaultStatus: 'todo',
+    tier: 384, severity: 'high', defaultStatus: 'done',
     title: 'AUD-C02/C03 — scoped and deliberately NOT built: pending rows change what a SignalOutcome means',
     file: 'docs/audits/2026-09-18-c02-c03-outcome-horizon-scoping.md',
     effort: 'L',
     impact: 'Blocks AUD-A11 calibration: three of four BUY styles have ZERO resolved 5-day outcomes (SWING 279 actionable/0 resolved, LONG 880/0, GROWTH 369/0).',
     what: 'evaluate_signal_outcomes() creates a row only once the PRIMARY horizon matures, then computes the 5/10/20-day windows on it. A LONG BUY\'s 5-day result is fully determined and sitting in the price table, and is withheld for 28 days. C03 separately: return_5d means 5 CALENDAR days while the ML/style vocabulary means trading sessions, and nothing records which was meant.',
     fix: 'The fix — pending rows resolved per-horizon — changes what "a SignalOutcome row EXISTS" means, and the codebase leans on that meaning in 201 non-test references across 12 modules INCLUDING ML TRAINING (trainer, meta_trainer, ev_gate, feature builder), calibration and the decision engine. 45 of those already filter on is_correct/pct_return and NULL-exclude correctly; the remaining ~156 are unaudited. If any training query selects rows without a maturity filter, pending rows enter the training set silently — no error, just models quietly degrading, discovered weeks later with this change long out of sight. This project has already spent a session tracing a confidence inversion to exactly that kind of invisible data-shape change.',
-    implementedNote: 'STOPPED ON PURPOSE at the end of a long session, with the reasoning written down rather than left as a backlog line. The scoping doc specifies the order: audit all 201 references FIRST and ship nothing until the "needs a filter" bucket is empty; add an explicit state column rather than inferring maturity from NULLs (inferring from NULL is how the ambiguity arose); keep primary maturity as its own field; make re-evaluation idempotent; and for C03 add session-based metrics as NEW fields, never relabelling the calendar-based ones, because every stored calibration was fitted against them. ACCEPTANCE: every existing win-rate, calibration and ML query must return the SAME numbers on the same data — the change may add visibly-pending rows, never alter the meaning of a query nobody revisited.',
+    implementedNote: 'BUILT 2026-09-19 (docs/features/independent-horizon-resolution.md). The 201-reference audit found EVERY reference safe (is_correct.is_not(None)/pct_return filters, or a point signal_id lookup) — including outcomes.py\'s OWN dedup guard, which would have treated an early pending row as "already evaluated" and permanently skipped the real primary resolution. That flipped the plan: instead of patching SignalOutcome + ~156 unaudited call sites, built a NEW additive table (signal_outcome_horizons) that nothing existing reads, satisfying the acceptance criterion by construction. Test-proven: a LONG BUY 6 days old gets a RESOLVED 5-day row while its 28-day primary stays pending, same run, same entry fill. Reuses the real _lookup_outcome_price/_window_return closures — no parallel implementation to drift. Found the T409 UTC/ET date bug AGAIN in this exact function (today = date.today()), fixed the one site this build depends on, and then wrote the SAME bug fresh in the new coverage endpoint\'s own default lookback — caught by a test written specifically to pin it, sabotage-verified. 22 tests total, 3 sabotage directions all caught: the never-rewrite guard, delisting-loss-scoring an auxiliary window (never done for the primary\'s own 5/10/20d columns either — stayed consistent with that precedent), and the fresh date bug. NOT wired: calibration.py does not yet consume the new table — the ask was making the data available, not recalibrating; a new GET /signals/horizon_coverage reports resolution coverage for verification.',
   },
   {
     id: 'AUD-A17-SETTLECOUNTER',
@@ -217,7 +217,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'AUD-C02-HORIZONBLOCKING',
-    tier: 384, severity: 'medium', defaultStatus: 'todo',
+    tier: 384, severity: 'medium', defaultStatus: 'done',
     title: 'AUD-C02 — a 5-day outcome that is already observable stays absent until the 28-day primary window matures',
     file: 'services/signal-engine/src/api/outcomes.py',
     effort: 'M',
@@ -227,7 +227,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'AUD-C03-HORIZONUNITS',
-    tier: 384, severity: 'medium', defaultStatus: 'todo',
+    tier: 384, severity: 'medium', defaultStatus: 'done',
     title: 'AUD-C03 — return_5d means 5 CALENDAR days; the style/ML vocabulary around it means trading sessions',
     file: 'services/signal-engine/src/api/outcomes.py, signals_shared.py',
     effort: 'M',

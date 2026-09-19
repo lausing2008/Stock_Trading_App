@@ -57,4 +57,7 @@ run_migration "012_add_broker_fill_confirmed_to_paper_trades.sql"
 # AUD-A19: which definition of equity each options-income curve row used
 run_migration "013_add_equity_basis_to_options_income_equity_curve.sql"
 
+# T410-AUD-C02-C03: independent per-window signal outcome resolution (additive, new table)
+run_migration "014_create_signal_outcome_horizons.sql"
+
 echo "=== All migrations complete ==="

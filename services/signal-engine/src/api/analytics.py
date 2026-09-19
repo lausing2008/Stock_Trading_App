@@ -17,7 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from common.jwt_auth import get_current_username
-from db import Price, Signal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, get_session
+from db import Price, Signal, SignalHorizon, SignalOutcome, SignalOutcomeHorizon, SignalType, Stock, TimeFrame, get_session
 
 from .signals_shared import (
     _CONF_CAL_MIN_COUNT,
@@ -2395,3 +2395,43 @@ def gate_backtest(
     }
     _cache_set(cache_key, result, ttl=3600)
     return result
+
+
+@router.get("/horizon_coverage")
+def get_horizon_coverage(
+    since: str | None = Query(None, description="ISO date; defaults to 30 days ago"),
+    session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
+):
+    """T410-AUD-C02-C03: per (horizon, direction, window_days) resolution coverage from
+    signal_outcome_horizons — the table that answers C02 directly. Before this table existed,
+    SWING/LONG/GROWTH BUY supplied ZERO resolved 5-day outcomes at any given time, because no
+    signal_outcomes row existed at all until each style's own longer primary window closed;
+    this reports the SAME cohort's coverage now that each window resolves independently.
+
+    Read-only, additive: this endpoint is the only new consumer of the new table — nothing
+    else was changed to read it, matching the scoping decision to leave signal_outcomes and
+    its 201 existing readers completely untouched.
+    """
+    from .signals_shared import _today_et
+    since_date = date.fromisoformat(since) if since else _today_et() - timedelta(days=30)
+
+    rows = session.execute(
+        select(
+            SignalOutcomeHorizon.horizon, SignalOutcomeHorizon.signal_direction,
+            SignalOutcomeHorizon.window_days, SignalOutcomeHorizon.status,
+            func.count().label("n"),
+        )
+        .where(SignalOutcomeHorizon.signal_date >= since_date)
+        .group_by(SignalOutcomeHorizon.horizon, SignalOutcomeHorizon.signal_direction,
+                  SignalOutcomeHorizon.window_days, SignalOutcomeHorizon.status)
+    ).all()
+
+    by_bucket: dict[str, dict[str, int]] = {}
+    for r in rows:
+        horizon = r.horizon.value if hasattr(r.horizon, "value") else r.horizon
+        key = f"{horizon}|{r.signal_direction}|{r.window_days}d"
+        by_bucket.setdefault(key, {"pending": 0, "resolved": 0, "missing_price": 0, "skipped": 0})
+        by_bucket[key][r.status] = by_bucket[key].get(r.status, 0) + r.n
+
+    return {"since": since_date.isoformat(), "by_bucket": by_bucket}
