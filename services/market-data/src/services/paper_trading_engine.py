@@ -708,6 +708,61 @@ def _default_min_rr_ratio(regime_state: str, market: str = "US", style: str | No
     return float(value)
 
 
+# AUD-PTH01-EXPLICITRESOLVER (2026-09-21): the canonical resolution point for the real R:R
+# floor — base (`min_rr_ratio`) and choppy/risk_off-tier (`regime_min_rr_ratio`).
+#
+# PT-H01 (docs/audits/2026-09-19-paper-trading-horizon-threshold-audit.md), independently
+# re-derived and confirmed against running code and live production data (see
+# docs/audits/2026-09-19-paper-trading-horizon-audit-review.md): `cfg.get("min_rr_ratio",
+# _default_min_rr_ratio(...))`'s fallback NEVER actually fires for the base floor, because
+# `_DEFAULT_CONFIG["min_rr_ratio"] = 2.0` is a hardcoded literal that every portfolio's
+# resolved config carries EXPLICITLY (confirmed live: all 11 active portfolios store
+# min_rr_ratio=2.0). `dict.get()`'s default only triggers when the key is ABSENT, never when
+# it merely equals what the calibrated value would produce — so AUD-MINRR-MARKETBLIND/
+# AUD-MINRR-STYLEBLIND's calibration never actually reached a live entry decision through the
+# base floor, only through `regime_min_rr_ratio` (genuinely absent from `_DEFAULT_CONFIG`).
+#
+# The audit's own recommended remediation — swap the resolver so calibration always wins —
+# was deliberately NOT taken as-is: that would change the effective R:R floor for all 11 live
+# portfolios at once, with no experiment/validation framework yet in place to tell whether the
+# result is better or worse (docs/audits/2026-09-19-paper-trading-horizon-audit-review.md's
+# "What this review does NOT do" section names this explicitly as the same class of unvetted
+# live-trading change this session's own AUD-MINRR-STYLEBLIND correction warns against).
+#
+# Instead, `min_rr_ratio_mode` makes the choice EXPLICIT rather than accidental:
+#   - "manual" (default — every existing portfolio, since none set this key): byte-identical
+#     to today's actual behavior. Reads the stored/default numeric value; only a portfolio
+#     with NO min_rr_ratio key at all would ever reach the calibrated fallback — true today,
+#     stays true here.
+#   - "calibrated": ALWAYS resolves via `_default_min_rr_ratio()`, ignoring any stored numeric
+#     value outright — an explicit, opt-in way to let calibration actually drive this
+#     threshold, for a portfolio someone deliberately switches over.
+#
+# No live portfolio's resolved value changes as a result of these functions existing — mode
+# defaults to "manual", so every current portfolio's config (all of which store an explicit
+# numeric min_rr_ratio) resolves exactly as before. Switching the mode is a deliberate,
+# visible, one-line config change, not an unannounced behavior shift.
+def resolve_min_rr_ratio(cfg: dict) -> float:
+    """Explicit resolver for the base (neutral-regime) min_rr_ratio floor — see the module
+    comment immediately above for the full rationale."""
+    mode = (cfg.get("min_rr_ratio_mode") or "manual").lower()
+    market = (cfg.get("market") or "US").upper()
+    style = cfg.get("trading_style")
+    base = _default_min_rr_ratio("neutral", market, style)
+    return base if mode == "calibrated" else cfg.get("min_rr_ratio", base)
+
+
+def resolve_regime_min_rr_ratio(cfg: dict, regime_state: str) -> float:
+    """Explicit resolver for the choppy/risk_off-tier regime_min_rr_ratio floor — same
+    `min_rr_ratio_mode` semantics as resolve_min_rr_ratio() above, applied to the stiffer
+    regime-tiered key instead of the base one."""
+    mode = (cfg.get("min_rr_ratio_mode") or "manual").lower()
+    market = (cfg.get("market") or "US").upper()
+    style = cfg.get("trading_style")
+    regime_default = _default_min_rr_ratio(regime_state, market, style)
+    return regime_default if mode == "calibrated" else cfg.get("regime_min_rr_ratio", regime_default)
+
+
 # ── Default portfolio config ──────────────────────────────────────────────────
 
 _DEFAULT_CONFIG: dict[str, Any] = {
@@ -2216,17 +2271,14 @@ def _should_enter(
     # when this fallback is most likely to be the only thing standing between a candidate and
     # a real paper entry (DE unreachable).
     regime_state = (live_regime.get("state", "neutral") if live_regime else "neutral")
-    # SELFIMPROVE-NEVER-CALIBRATED-PARAMS: cfg.get(..., 2.0)'s literal fallback is now the
-    # calibrated default (falls back further to the original 2.0/3.0 literals if calibration
-    # has never run) — an explicit portfolio.config value still always wins.
-    # AUD-MINRR-MARKETBLIND: _default_min_rr_ratio() now takes this portfolio's own market so
-    # HK isn't held to a floor calibrated almost entirely off US trade volume — see that
-    # function's own docstring.
-    _rr_market = (cfg.get("market") or "US").upper()
-    _rr_style = cfg.get("trading_style")
-    min_rr = cfg.get("min_rr_ratio", _default_min_rr_ratio("neutral", _rr_market, _rr_style))
+    # AUD-PTH01-EXPLICITRESOLVER: resolve_min_rr_ratio()/resolve_regime_min_rr_ratio() are the
+    # canonical resolution point — see their own module-level comment for the full PT-H01
+    # rationale. Byte-identical result to the previous inline cfg.get(...) for every existing
+    # portfolio (all "manual" mode by default); only a portfolio explicitly opted into
+    # min_rr_ratio_mode="calibrated" resolves differently.
+    min_rr = resolve_min_rr_ratio(cfg)
     if regime_state in ("choppy", "risk_off"):
-        min_rr = max(min_rr, cfg.get("regime_min_rr_ratio", _default_min_rr_ratio(regime_state, _rr_market, _rr_style)))
+        min_rr = max(min_rr, resolve_regime_min_rr_ratio(cfg, regime_state))
     if rr < min_rr:
         return False, -99, [f"R:R {rr:.1f}:1 below minimum {min_rr:.1f}:1 at ${live_price:.2f}"]
 
@@ -3941,25 +3993,13 @@ def _call_decision_engine(
                 "config_overrides": {
                     "min_entry_score":        cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]),
                     "min_confidence":         cfg.get("min_confidence", _DEFAULT_CONFIG["min_confidence"]),
-                    # AUD256: min_rr_ratio's own fallback literal (2.0) bypassed calibration —
-                    # _should_enter() resolves this same key via _default_min_rr_ratio("neutral"),
-                    # which returns the calibrated value once SELFIMPROVE-NEVER-CALIBRATED-PARAMS'
-                    # min_rr_calibration.json has been written, falling back to 2.0 only if
-                    # calibration has never run. Route through the same resolver so DE and the
-                    # fallback agree on the SAME baseline instead of DE silently using a stale
-                    # hardcoded literal forever regardless of calibration.
-                    # AUD-MINRR-MARKETBLIND: both resolved with THIS portfolio's own market so a
-                    # DE-routed HK candidate is checked against HK's own calibrated floor, not one
-                    # dominated by US trade volume — see _default_min_rr_ratio()'s own docstring.
-                    "min_rr_ratio":           cfg.get("min_rr_ratio", _default_min_rr_ratio("neutral", cfg.get("market", "US"), cfg.get("trading_style"))),
-                    # AUD256: regime_min_rr_ratio was never sent at all — decision-engine's own
-                    # hard_rejects.py has a read-side default of 3.0 for choppy/risk_off regimes
-                    # (T190) that DE always fell back to, completely blind to calibration, even
-                    # though _should_enter() has been correctly regime-aware here since AUD232-060.
-                    # Threaded through unconditionally (matches min_rr_ratio's own always-sent
-                    # convention above) so DE's choppy/risk_off floor tracks the SAME calibrated
-                    # value _should_enter() already uses, not a permanently-stale literal.
-                    "regime_min_rr_ratio":    cfg.get("regime_min_rr_ratio", _default_min_rr_ratio(regime_state, cfg.get("market", "US"), cfg.get("trading_style"))),
+                    # AUD-PTH01-EXPLICITRESOLVER: routed through the same canonical resolver
+                    # _should_enter() uses (see its own module-level comment for the full PT-H01
+                    # rationale) — DE and the fallback path always agree on the SAME baseline,
+                    # and both stay byte-identical to before for every "manual"-mode (i.e. every
+                    # existing) portfolio.
+                    "min_rr_ratio":           resolve_min_rr_ratio(cfg),
+                    "regime_min_rr_ratio":    resolve_regime_min_rr_ratio(cfg, regime_state),
                     "risk_per_trade_pct":     cfg.get("risk_per_trade_pct", 0.01),
                     "max_position_pct":       cfg.get("max_position_pct", 0.10),
                     "max_loss_per_trade_pct": cfg.get("max_loss_per_trade_pct", 0.02),

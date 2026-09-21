@@ -37,19 +37,20 @@ _decision_body = _decision_call_body()
 
 
 def test_min_rr_ratio_routes_through_the_calibrated_default_not_a_bare_literal():
-    """The exact fix for gap 1: min_rr_ratio's fallback must call _default_min_rr_ratio("neutral", ...),
-    not a hardcoded 2.0 literal that would silently bypass calibration forever.
+    """The exact fix for gap 1: min_rr_ratio must route through a resolver that ultimately
+    calls _default_min_rr_ratio("neutral", ...), not a hardcoded 2.0 literal that would
+    silently bypass calibration forever.
 
-    AUD-MINRR-MARKETBLIND: _default_min_rr_ratio() now also takes this portfolio's own market
-    (cfg.get("market", "US")) so a HK candidate isn't checked against a floor calibrated almost
-    entirely off US trade volume. AUD-MINRR-STYLEBLIND: and this portfolio's own trading style
-    (cfg.get("trading_style")), for the same reason along the style axis — the assertion below
-    is updated to match that real, still-calibration-routed call shape, not reverted back to an
-    earlier, narrower argument list."""
+    AUD-PTH01-EXPLICITRESOLVER (2026-09-21): this now goes through resolve_min_rr_ratio(cfg)
+    rather than an inline cfg.get(...) — see that function's own module-level comment
+    (paper_trading_engine.py) for the full PT-H01 rationale. resolve_min_rr_ratio() itself
+    still calls _default_min_rr_ratio("neutral", market, style) internally for a "manual"-mode
+    (i.e. every existing) portfolio, so calibration routing is unchanged — verified directly
+    against the resolver's own source in test_aud_pth01_explicit_rr_resolver.py."""
     assert '"min_rr_ratio":' in _decision_body
     start = _decision_body.index('"min_rr_ratio":')
     line = _decision_body[start:_decision_body.index("\n", start)]
-    assert '_default_min_rr_ratio("neutral", cfg.get("market", "US"), cfg.get("trading_style"))' in line
+    assert "resolve_min_rr_ratio(cfg)" in line
     assert "2.0" not in line, "must not fall back to a bare hardcoded literal — that bypasses calibration"
 
 
@@ -61,15 +62,16 @@ def test_regime_min_rr_ratio_is_threaded_into_config_overrides():
 
 
 def test_regime_min_rr_ratio_falls_back_to_the_calibrated_default_via_regime_state():
-    """Must resolve through _default_min_rr_ratio(regime_state, ...) — using the ACTUAL
-    regime_state parameter, not a hardcoded "neutral"/"choppy" literal that could silently
-    drift from the real regime the candidate is being evaluated under.
+    """Must resolve through a resolver that ultimately calls
+    _default_min_rr_ratio(regime_state, ...) — using the ACTUAL regime_state parameter, not a
+    hardcoded "neutral"/"choppy" literal that could silently drift from the real regime the
+    candidate is being evaluated under.
 
-    AUD-MINRR-MARKETBLIND / AUD-MINRR-STYLEBLIND: also must pass this portfolio's own market
-    and trading style — see the sibling min_rr_ratio test's docstring above for why."""
+    AUD-PTH01-EXPLICITRESOLVER: routed through resolve_regime_min_rr_ratio(cfg, regime_state)
+    — see the sibling min_rr_ratio test's docstring above for why."""
     start = _decision_body.index('"regime_min_rr_ratio":')
     line = _decision_body[start:_decision_body.index("\n", start)]
-    assert '_default_min_rr_ratio(regime_state, cfg.get("market", "US"), cfg.get("trading_style"))' in line
+    assert "resolve_regime_min_rr_ratio(cfg, regime_state)" in line
     assert "3.0" not in line, "must not fall back to a bare hardcoded literal — that bypasses calibration"
 
 
