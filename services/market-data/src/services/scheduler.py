@@ -4998,12 +4998,17 @@ def check_options_flow_alerts() -> None:
                 # looks "new" to the set-diff above (UW's own feed reshuffles which contract ids
                 # are currently hot far faster than a real trading decision should be re-alerted).
                 cooldown_ok_chains = []
+                # AUD-E09-COOLDOWNRELEASE: maps chain -> the cooldown key THIS attempt actually
+                # claimed via a real, successful nx=True SET (never the fail-open except branch
+                # below, which never touched Redis) — see the release step after the send call.
+                _claimed_cd_keys: dict[str, str] = {}
                 for chain in newly_seen:
                     cand = candidates[chain]
                     cd_key = f"stockai:options_flow_alert_cooldown:{uid}:{cand['symbol']}:{cand['direction']}"
                     try:
                         if _rc.set(cd_key, "1", nx=True, ex=_OPTIONS_FLOW_ALERT_COOLDOWN_MINUTES * 60):
                             cooldown_ok_chains.append(chain)
+                            _claimed_cd_keys[chain] = cd_key
                     except Exception:
                         cooldown_ok_chains.append(chain)  # fail open — a Redis hiccup must not silently drop a real alert
 
@@ -5026,6 +5031,20 @@ def check_options_flow_alerts() -> None:
                         log.warning("options_flow_alert.recipient_send_error", user=uid, error=str(_send_exc))
                     if send_ok:
                         sent += 1
+                    elif _claimed_cd_keys:
+                        # AUD-E09-COOLDOWNRELEASE: the send failed — release every cooldown key
+                        # this attempt claimed so the NEXT cycle can retry, instead of silently
+                        # suppressing a real alert for the full cooldown window because delivery
+                        # failed (SMTP/SES error, disabled provider, etc.), not because it was
+                        # actually seen. Without this, the retry-via-seen-set logic below (which
+                        # DOES correctly exclude a failed send's chains from the resync) never
+                        # gets a chance to run — the cooldown claim above blocks the candidate
+                        # from ever reaching `newly_seen` again until its TTL expires on its own.
+                        for _cd_key in _claimed_cd_keys.values():
+                            try:
+                                _rc.delete(_cd_key)
+                            except Exception:
+                                pass
                 resync_set = current_chains if send_ok else (current_chains - set(newly_seen))
                 try:
                     _rc.delete(state_key)
@@ -5412,6 +5431,10 @@ def check_dark_pool_alerts() -> None:
             sent = 0
             for uid, user in recipients.items():
                 cooldown_ok_symbols = []
+                # AUD-E09-COOLDOWNRELEASE: symbol -> the cooldown key THIS attempt actually
+                # claimed via a real, successful nx=True SET (never the fail-open except branch
+                # below) — see the release step after the send call.
+                _claimed_cd_keys: dict[str, str] = {}
                 for symbol in candidates.keys():
                     # AUD-DARKPOOL-STALEPRINT: key on the PRINT, not just (user, symbol). The
                     # old key could not tell two prints apart, so it suppressed for 60 minutes
@@ -5428,6 +5451,7 @@ def check_dark_pool_alerts() -> None:
                     try:
                         if _rc.set(cd_key, "1", nx=True, ex=_DARK_POOL_ALERT_COOLDOWN_MINUTES * 60):
                             cooldown_ok_symbols.append(symbol)
+                            _claimed_cd_keys[symbol] = cd_key
                     except Exception:
                         cooldown_ok_symbols.append(symbol)  # fail open — a Redis hiccup must not silently drop a real alert
 
@@ -5448,6 +5472,18 @@ def check_dark_pool_alerts() -> None:
                     log.warning("dark_pool_alert.recipient_send_error", user=uid, error=str(_send_exc))
                 if send_ok:
                     sent += 1
+                elif _claimed_cd_keys:
+                    # AUD-E09-COOLDOWNRELEASE: no seen-set exists for this job at all (per this
+                    # function's own AUD-DARKPOOL-STALEPRINT comment above — the print-specific
+                    # cooldown key IS the only suppression mechanism here), so on a failed send
+                    # this is the ONLY place a retry can be restored from — without it, a print
+                    # that fails to send stays suppressed for the full cooldown TTL regardless
+                    # of whether it was ever actually delivered.
+                    for _cd_key in _claimed_cd_keys.values():
+                        try:
+                            _rc.delete(_cd_key)
+                        except Exception:
+                            pass
 
             _record_job_status("check_dark_pool_alerts", "ok", time.monotonic() - _t0)
             log.info("dark_pool_alert.done", candidates=len(candidates), sent=sent, recipients=len(recipients))
