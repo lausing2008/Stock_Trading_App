@@ -1078,6 +1078,57 @@ class PaperTrade(Base):
     )
 
 
+class PaperEntryScanLog(Base):
+    """AUD-PTH08-PERSISTENTGATELOG (2026-09-19): a durable counterpart to
+    `paper:gate_block:{id}`/`paper:no_entry_summary:{id}` (Redis, 4-hour TTL).
+
+    An independent audit (PT-H08, docs/audits/2026-09-19-paper-trading-horizon-threshold-
+    audit.md) and this project's own live investigation of a portfolio that had gone 16+ days
+    without a trade both hit the exact same wall: by the time anyone actually asked "why isn't
+    this trading," the Redis keys that would have recorded the real per-scan rejection reason
+    had already expired hours earlier — leaving the question permanently unanswerable after the
+    fact. This table is the additive fix: every time `_scan_for_entries()` would have written
+    one of those two Redis keys (a portfolio-level gate blocked the whole scan, or every
+    individual candidate failed its own per-symbol check), it also writes a row here that never
+    expires on its own — only the retention purge below removes it, after 90 days.
+
+    Deliberately NOT the audit's full proposed design (per-candidate raw features, policy/model
+    version stamps, a `candidate -> valid data -> eligible setup -> risk approved -> order ->
+    fill` funnel) — that is real, higher-value future work, but a larger schema and instrumentation
+    effort than this addition. This captures exactly what the existing Redis writes already
+    compute (nothing new is measured), just durably instead of on a 4-hour clock — the smallest
+    change that turns "we can't know anymore" into "we can query the history."
+
+    One row per (portfolio, scan cycle) that resulted in a portfolio-level gate block OR a
+    non-empty per-candidate skip tally — NOT one row per scan cycle unconditionally, matching
+    the existing Redis writes' own "only write when there's something to explain" convention,
+    so this table's growth rate mirrors what a human would have actually wanted to look up, not
+    every 1-5-minute tick regardless of outcome.
+    """
+    __tablename__ = "paper_entry_scan_logs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("paper_portfolios.id", ondelete="CASCADE"), index=True)
+    scanned_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    # Portfolio-level gate (drawdown / daily_loss / weekly_loss / ...) that blocked the ENTIRE
+    # scan before any candidate was even evaluated — mirrors _write_gate_block()'s own "gate"
+    # field. NULL when this row instead records a per-candidate skip tally (the two Redis keys
+    # are mutually exclusive within one scan: a portfolio-level gate returns before the
+    # candidate loop ever runs).
+    portfolio_gate: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    portfolio_gate_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Per-candidate outcome — mirrors _write_no_entry_summary()'s own fields. candidates_seen is
+    # the count of BUY signals evaluated this cycle; skip_tally is {reason_code: count} across
+    # ALL individually-failed candidates (not just the top 5 the Redis version truncates to —
+    # this durable copy keeps the complete tally since storage cost here is trivial).
+    candidates_seen: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    skip_tally: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    __table_args__ = (
+        Index("ix_paper_entry_scan_logs_portfolio_time", "portfolio_id", "scanned_at"),
+    )
+
+
 class PaperEquityCurve(Base):
     """Daily equity snapshots for the paper portfolio equity curve chart."""
     __tablename__ = "paper_equity_curve"

@@ -63,4 +63,7 @@ run_migration "014_create_signal_outcome_horizons.sql"
 # AUD-B02-EXITIDPERSISTED: exit order ID + fill-confirmed flag (mirrors migration 012's entry leg)
 run_migration "015_add_broker_exit_order_id_to_paper_trades.sql"
 
+# AUD-PTH08-PERSISTENTGATELOG: durable counterpart to the 4-hour-TTL Redis gate-block/no-entry keys
+run_migration "016_create_paper_entry_scan_logs.sql"
+
 echo "=== All migrations complete ==="

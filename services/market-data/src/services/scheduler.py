@@ -10152,8 +10152,8 @@ def check_sector_rotation_alerts(rotation: dict[str, dict]) -> None:
 
 
 def _purge_old_data() -> None:
-    """Delete rows older than 90 days from intraday price bars and signal outcomes, plus
-    signals rows older than 365 days.
+    """Delete rows older than 90 days from intraday price bars, signal outcomes, and
+    paper_entry_scan_logs, plus signals rows older than 365 days.
 
     5-minute intraday bars (prices WHERE timeframe='M5') grow ~3.5M rows/year.
     After 90 days they have no analytical value — all signals use daily bars.
@@ -10187,12 +10187,20 @@ def _purge_old_data() -> None:
             ressig = session.execute(
                 _text("DELETE FROM signals WHERE ts < NOW() - INTERVAL '365 days'")
             )
+            # AUD-PTH08-PERSISTENTGATELOG: paper_entry_scan_logs is the durable counterpart to
+            # the 4h-TTL Redis gate-block/no-entry keys — kept 90 days, long enough to
+            # investigate a "why hasn't this portfolio traded" question days after the fact
+            # (the whole reason this table exists), short enough not to grow unbounded.
+            resscan = session.execute(
+                _text("DELETE FROM paper_entry_scan_logs WHERE scanned_at < NOW() - INTERVAL '90 days'")
+            )
             session.commit()
             log.info(
                 "scheduler.purge_done",
                 m5_bars_deleted=res5m.rowcount,
                 signal_outcomes_deleted=resout.rowcount,
                 signals_deleted=ressig.rowcount,
+                paper_entry_scan_logs_deleted=resscan.rowcount,
             )
     except Exception as exc:
         log.error("scheduler.purge_failed", error=str(exc), exc_info=True)

@@ -41,9 +41,9 @@ import pandas as pd
 from common.logging import get_logger
 from common.indicators import atr as _canon_atr
 from db import (
-    BrokerConnection, Indicator, PaperEquityCurve, PaperPortfolio, PaperTrade, Price, TimeFrame,
-    Ranking, SessionLocal, Signal, SignalAlert, Stock, User, UserPosition, Watchlist, WatchlistItem,
-    RestrictedSymbol, PaperTradeDecisionLog,
+    BrokerConnection, Indicator, PaperEntryScanLog, PaperEquityCurve, PaperPortfolio, PaperTrade,
+    Price, TimeFrame, Ranking, SessionLocal, Signal, SignalAlert, Stock, User, UserPosition,
+    Watchlist, WatchlistItem, RestrictedSymbol, PaperTradeDecisionLog,
 )
 from sqlalchemy import desc, func, select
 from .email_service import send_trade_exit_email
@@ -4604,6 +4604,34 @@ def _compute_portfolio_vol_targeting_mult(session, portfolio_id: int) -> float:
     return round(min(_VOL_TARGET_MULT_MAX, max(_VOL_TARGET_MULT_MIN, vol_mult)), 3)
 
 
+def _persist_scan_log(
+    portfolio_id: int,
+    *,
+    portfolio_gate: str | None = None,
+    portfolio_gate_reason: str | None = None,
+    candidates_seen: int | None = None,
+    skip_tally: dict[str, int] | None = None,
+) -> None:
+    """AUD-PTH08-PERSISTENTGATELOG: durable counterpart to the 4h-TTL Redis gate-block /
+    no-entry-summary keys below — same data, written once more to a row that never expires on
+    its own (see PaperEntryScanLog's own docstring, shared/db/models.py). Fail-silent, matching
+    the Redis writes it accompanies: this is observability only, never load-bearing for trading
+    decisions.
+    """
+    try:
+        with SessionLocal() as session:
+            session.add(PaperEntryScanLog(
+                portfolio_id=portfolio_id,
+                portfolio_gate=portfolio_gate,
+                portfolio_gate_reason=portfolio_gate_reason,
+                candidates_seen=candidates_seen,
+                skip_tally=skip_tally,
+            ))
+            session.commit()
+    except Exception:
+        pass
+
+
 def _write_gate_block(portfolio_id: int, gate: str, reason: str) -> None:
     """Record the most recent portfolio-level gate that blocked new entries.
 
@@ -4623,6 +4651,7 @@ def _write_gate_block(portfolio_id: int, gate: str, reason: str) -> None:
         )
     except Exception:
         pass
+    _persist_scan_log(portfolio_id, portfolio_gate=gate, portfolio_gate_reason=reason)
 
 
 _SKIP_REASON_LABEL: dict[str, str] = {
@@ -4678,6 +4707,7 @@ def _write_no_entry_summary(portfolio_id: int, candidates_seen: int, skip_tally:
         )
     except Exception:
         pass
+    _persist_scan_log(portfolio_id, candidates_seen=candidates_seen, skip_tally=skip_tally)
 
 
 def _clear_no_entry_summary(portfolio_id: int) -> None:
