@@ -2286,3 +2286,170 @@ class TestGetFunctionRealHttpBehavior:
 
         with patch.object(self.real_uw, "_get_redis", return_value=_BrokenRedis()):
             self.real_uw._incr_call_counter("/api/stock/{symbol}/gex-levels")  # must not raise
+
+
+class TestAudUw07CallStatus:
+    """AUD-UW07-CALLSTATUS: `_get()` records the outcome of its own most recent real call, so
+    `get_uw_last_call_status()` can tell "the feed is broken" (disabled/rate_limited/
+    unauthorized/error) apart from "this symbol legitimately has nothing to say" (no_data) —
+    two shapes every existing caller currently collapses into the same None/[] return. Uses
+    TestGetFunctionRealHttpBehavior's real (unstubbed) httpx/tenacity module, since _get()'s
+    own status-code branches are what actually call _record_call_status()."""
+
+    @classmethod
+    def setup_class(cls):
+        cls.real_uw = TestGetFunctionRealHttpBehavior.real_uw
+
+    class _FakeRedis:
+        def __init__(self):
+            self.store: dict[str, str] = {}
+        def get(self, key):
+            return self.store.get(key)
+        def setex(self, key, ttl, value):
+            self.store[key] = value
+
+    def test_get_uw_last_call_status_returns_none_when_nothing_recorded_yet(self):
+        with patch.object(self.real_uw, "_get_redis", return_value=self._FakeRedis()):
+            assert self.real_uw.get_uw_last_call_status() is None
+
+    def test_get_uw_last_call_status_fails_open_on_a_redis_exception(self):
+        class _BrokenRedis:
+            def get(self, key):
+                raise ConnectionError("redis unavailable")
+
+        with patch.object(self.real_uw, "_get_redis", return_value=_BrokenRedis()):
+            assert self.real_uw.get_uw_last_call_status() is None
+
+    def test_no_key_configured_records_disabled(self):
+        fake_redis = self._FakeRedis()
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value=""), \
+             patch.object(self.real_uw, "_get_redis", return_value=fake_redis):
+            self.real_uw._get("/api/stock/AAPL/gex-levels")
+            status = self.real_uw.get_uw_last_call_status()
+        assert status["ok"] is False
+        assert status["reason"] == "disabled"
+
+    def test_a_real_200_response_records_ok(self):
+        class _FakeResp:
+            status_code = 200
+            headers = {}
+            def json(self):
+                return {"data": {"call_wall": 250.0}}
+            def raise_for_status(self):
+                pass
+        class _FakeClient:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def get(self, *a, **kw):
+                return _FakeResp()
+
+        fake_redis = self._FakeRedis()
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value="real-token"), \
+             patch.object(self.real_uw.httpx, "Client", return_value=_FakeClient()), \
+             patch.object(self.real_uw, "_get_redis", return_value=fake_redis):
+            self.real_uw._get("/api/stock/AAPL/gex-levels")
+            status = self.real_uw.get_uw_last_call_status()
+        assert status["ok"] is True
+        assert status["reason"] == "ok"
+
+    def test_a_404_records_no_data_as_a_healthy_outcome(self):
+        """The whole point of this fix: a real, expected empty response must be
+        distinguishable from a broken feed — ok=True, reason="no_data", never conflated with
+        an actual failure."""
+        class _FakeResp:
+            status_code = 404
+            headers = {}
+        class _FakeClient:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def get(self, *a, **kw):
+                return _FakeResp()
+
+        fake_redis = self._FakeRedis()
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value="real-token"), \
+             patch.object(self.real_uw.httpx, "Client", return_value=_FakeClient()), \
+             patch.object(self.real_uw, "_get_redis", return_value=fake_redis):
+            self.real_uw._get("/api/stock/ZZZZ/gex-levels")
+            status = self.real_uw.get_uw_last_call_status()
+        assert status["ok"] is True
+        assert status["reason"] == "no_data"
+
+    def test_a_429_records_rate_limited_not_conflated_with_no_data(self):
+        class _FakeResp:
+            status_code = 429
+            headers = {}
+        class _FakeClient:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def get(self, *a, **kw):
+                return _FakeResp()
+
+        fake_redis = self._FakeRedis()
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value="real-token"), \
+             patch.object(self.real_uw.httpx, "Client", return_value=_FakeClient()), \
+             patch.object(self.real_uw, "_get_redis", return_value=fake_redis):
+            try:
+                self.real_uw._get("/api/stock/AAPL/gex-levels")
+            except self.real_uw.UnusualWhalesRateLimitError:
+                pass
+            status = self.real_uw.get_uw_last_call_status()
+        assert status["ok"] is False
+        assert status["reason"] == "rate_limited"
+
+    def test_a_401_records_unauthorized(self):
+        class _FakeResp:
+            status_code = 401
+            headers = {}
+        class _FakeClient:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def get(self, *a, **kw):
+                return _FakeResp()
+
+        fake_redis = self._FakeRedis()
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value="real-token"), \
+             patch.object(self.real_uw.httpx, "Client", return_value=_FakeClient()), \
+             patch.object(self.real_uw, "_get_redis", return_value=fake_redis):
+            try:
+                self.real_uw._get("/api/stock/AAPL/gex-levels")
+            except self.real_uw.UnusualWhalesAuthError:
+                pass
+            status = self.real_uw.get_uw_last_call_status()
+        assert status["ok"] is False
+        assert status["reason"] == "unauthorized"
+
+    def test_recording_a_status_never_raises_even_if_redis_is_broken(self):
+        """A metrics-observability failure must never be able to break a real UW call —
+        matches every other fail-open counter in this module."""
+        class _BrokenRedis:
+            def setex(self, *a, **kw):
+                raise ConnectionError("redis unavailable")
+
+        class _FakeResp:
+            status_code = 200
+            headers = {}
+            def json(self):
+                return {"data": {"call_wall": 250.0}}
+            def raise_for_status(self):
+                pass
+        class _FakeClient:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def get(self, *a, **kw):
+                return _FakeResp()
+
+        with patch.object(self.real_uw, "get_unusual_whales_key", return_value="real-token"), \
+             patch.object(self.real_uw.httpx, "Client", return_value=_FakeClient()), \
+             patch.object(self.real_uw, "_get_redis", return_value=_BrokenRedis()):
+            result = self.real_uw._get("/api/stock/AAPL/gex-levels")  # must not raise
+        assert result == {"call_wall": 250.0}

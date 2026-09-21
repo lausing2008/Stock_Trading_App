@@ -503,6 +503,56 @@ def _get_redis():
     return _get_pool_redis()
 
 
+# AUD-UW07-CALLSTATUS (2026-09-21): every one of this module's ~20 public getters wraps its
+# own `_get()` call in a bare `except Exception: return None`/`[]` — a real, empty-options
+# symbol, a disabled feature, a missing key, an expired/invalid token, and an exhausted rate
+# limit ALL collapse into the exact same "no data" shape at the caller. `_get()` itself already
+# distinguishes these internally (UnusualWhalesRateLimitError/UnusualWhalesAuthError raised
+# separately from a genuine 404-no-data `None`) — the distinction exists, it just never
+# survives past the first caller. Confirmed real (docs/audits/2026-09-18-uw-and-broker-report-
+# review.md, finding UW-07): there is currently no way to tell "the feed is broken" from
+# "this symbol legitimately has nothing to say" from outside this module.
+#
+# Deliberately NOT a rewrite of all ~20 consumers to propagate a new return shape — that would
+# touch every playbook/alert/screener that reads this module and is real, larger, riskier work
+# for another pass. This is the additive, zero-risk slice: `_get()` now also records the
+# outcome of its own most recent real call (mirrors `_record_usage_headers()`'s own pattern
+# exactly, same Redis key shape, same short TTL), and `get_uw_last_call_status()` reads it
+# back. No existing function's signature, return type, or behavior changes — an admin/health
+# view (or a future caller that wants to know WHY it got nothing) can now ask "was the last
+# real UW call actually healthy?" without any of the ~20 existing callers being touched.
+_LAST_CALL_STATUS_KEY = "stockai:metric:uw_last_call_status"
+_LAST_CALL_STATUS_TTL_S = 120
+
+
+def _record_call_status(ok: bool, reason: str, path: str) -> None:
+    """reason is one of: "ok", "disabled", "rate_limited", "unauthorized", "no_data", "error"."""
+    try:
+        import json as _json
+        snapshot = {
+            "ok": ok,
+            "reason": reason,
+            "path": path,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _get_redis().setex(_LAST_CALL_STATUS_KEY, _LAST_CALL_STATUS_TTL_S, _json.dumps(snapshot))
+    except Exception:
+        pass
+
+
+def get_uw_last_call_status() -> dict | None:
+    """The outcome of the most recent real `_get()` call, however long ago (up to the 2-minute
+    TTL) — None if no real call has happened recently, or the module fails to reach Redis at
+    all (fails open to "nothing known," never raises). See `_LAST_CALL_STATUS_KEY`'s own
+    comment above for the full rationale and the set of possible `reason` values."""
+    try:
+        import json as _json
+        raw = _get_redis().get(_LAST_CALL_STATUS_KEY)
+        return _json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
 def is_available() -> bool:
     """True only when BOTH a real key is configured AND the admin has turned the feature on —
     the single check every caller should make before attempting any real fetch, so a caller
@@ -537,45 +587,64 @@ def _get(path: str, params: dict | None = None, *, endpoint: str | None = None) 
     """
     key = get_unusual_whales_key()
     if not key:
+        _record_call_status(False, "disabled", path)
         return None
-    with httpx.Client(timeout=15) as client:
-        r = client.get(
-            f"{_BASE_URL}{path}",
-            params=params,
-            headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
-        )
-        # AUD-UWUSAGE: count every real request against the daily budget regardless of outcome
-        # (a 429/401/403/404 still consumed one of today's ~30,000 allotted requests) — placed
-        # right after the real network call completes, before any status-code branch below.
-        _incr_call_counter(endpoint or path)
-        # AUD-UWUSAGE-REALHEADERS (2026-09-06): UW's own response headers carry the REAL,
-        # authoritative usage/limit numbers — confirmed via UW's own published guide
-        # (unusualwhales.substack.com/i/188524666/how-to-check-your-api-usage): every response
-        # (any status code) includes x-uw-daily-req-count / x-uw-token-req-limit /
-        # x-uw-minute-req-counter / x-uw-req-per-minute-remaining / x-uw-req-per-minute-reset.
-        # This is strictly better than this module's own Redis call-volume counter (which is
-        # this app's OWN estimate of usage, inferred from the requests it happens to remember
-        # making) and than _UW_ASSUMED_DAILY_BUDGET (a guess of 30,000/day from an incident
-        # writeup, not a confirmed real limit) — UW itself reports both the real daily count
-        # AND the real limit on every single call, no extra request needed. Snapshot the
-        # latest values into Redis so the dashboard can show real headroom, not an estimate.
-        # getattr, not r.headers directly: a real httpx.Response always has .headers, but this
-        # keeps the call defensive against anything else _get() might ever be handed.
-        _record_usage_headers(getattr(r, "headers", None) or {})
-        if r.status_code == 429:
-            log.warning("unusual_whales.rate_limit", path=path)
-            _incr_rate_limit_counter()
-            raise UnusualWhalesRateLimitError(f"Unusual Whales rate limit on {path}")
-        if r.status_code in (401, 403):
-            log.warning("unusual_whales.auth_error", path=path, status=r.status_code)
-            raise UnusualWhalesAuthError(f"Unusual Whales auth failed on {path} ({r.status_code})")
-        if r.status_code == 404:
-            # A real, expected "no data for this symbol/expiry" case (e.g. no listed options,
-            # not delisted-in-UW's-own-sense) — never an error worth logging as one.
-            return None
-        r.raise_for_status()
-        body = r.json()
-        return body.get("data") if isinstance(body, dict) else None
+    try:
+        with httpx.Client(timeout=15) as client:
+            r = client.get(
+                f"{_BASE_URL}{path}",
+                params=params,
+                headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+            )
+            # AUD-UWUSAGE: count every real request against the daily budget regardless of
+            # outcome (a 429/401/403/404 still consumed one of today's ~30,000 allotted
+            # requests) — placed right after the real network call completes, before any
+            # status-code branch below.
+            _incr_call_counter(endpoint or path)
+            # AUD-UWUSAGE-REALHEADERS (2026-09-06): UW's own response headers carry the REAL,
+            # authoritative usage/limit numbers — confirmed via UW's own published guide
+            # (unusualwhales.substack.com/i/188524666/how-to-check-your-api-usage): every
+            # response (any status code) includes x-uw-daily-req-count / x-uw-token-req-limit /
+            # x-uw-minute-req-counter / x-uw-req-per-minute-remaining / x-uw-req-per-minute-reset.
+            # This is strictly better than this module's own Redis call-volume counter (which is
+            # this app's OWN estimate of usage, inferred from the requests it happens to
+            # remember making) and than _UW_ASSUMED_DAILY_BUDGET (a guess of 30,000/day from an
+            # incident writeup, not a confirmed real limit) — UW itself reports both the real
+            # daily count AND the real limit on every single call, no extra request needed.
+            # Snapshot the latest values into Redis so the dashboard can show real headroom,
+            # not an estimate. getattr, not r.headers directly: a real httpx.Response always
+            # has .headers, but this keeps the call defensive against anything else _get()
+            # might ever be handed.
+            _record_usage_headers(getattr(r, "headers", None) or {})
+            if r.status_code == 429:
+                log.warning("unusual_whales.rate_limit", path=path)
+                _incr_rate_limit_counter()
+                _record_call_status(False, "rate_limited", path)
+                raise UnusualWhalesRateLimitError(f"Unusual Whales rate limit on {path}")
+            if r.status_code in (401, 403):
+                log.warning("unusual_whales.auth_error", path=path, status=r.status_code)
+                _record_call_status(False, "unauthorized", path)
+                raise UnusualWhalesAuthError(f"Unusual Whales auth failed on {path} ({r.status_code})")
+            if r.status_code == 404:
+                # A real, expected "no data for this symbol/expiry" case (e.g. no listed
+                # options, not delisted-in-UW's-own-sense) — never an error worth logging as
+                # one, and a HEALTHY call outcome for AUD-UW07-CALLSTATUS's purposes (the feed
+                # answered; it just had nothing to say).
+                _record_call_status(True, "no_data", path)
+                return None
+            r.raise_for_status()
+            body = r.json()
+            _record_call_status(True, "ok", path)
+            return body.get("data") if isinstance(body, dict) else None
+    except (UnusualWhalesRateLimitError, UnusualWhalesAuthError):
+        raise
+    except Exception:
+        # Any other failure (timeout, connection error, 5xx via raise_for_status(), a
+        # malformed body) — tenacity retries these up to 3x per this function's own @retry
+        # decorator; each attempt records its own outcome, so the LAST recorded status (after
+        # retries exhaust) reflects the real final state, not a transient blip.
+        _record_call_status(False, "error", path)
+        raise
 
 
 def get_gex_levels(symbol: str) -> GexLevels | None:
