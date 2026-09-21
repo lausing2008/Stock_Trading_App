@@ -66,4 +66,8 @@ run_migration "015_add_broker_exit_order_id_to_paper_trades.sql"
 # AUD-PTH08-PERSISTENTGATELOG: durable counterpart to the 4-hour-TTL Redis gate-block/no-entry keys
 run_migration "016_create_paper_entry_scan_logs.sql"
 
+# AUD-PTH03-MONITORCONFIGDRIFT: per-trade exit-config snapshot, so fixing _monitor_positions()'s
+# stale config merge can't silently move stops on already-open positions
+run_migration "017_add_exit_config_snapshot_to_paper_trades.sql"
+
 echo "=== All migrations complete ==="

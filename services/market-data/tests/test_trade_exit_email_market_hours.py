@@ -106,11 +106,15 @@ def test_after_hours_note_explains_why_the_exit_still_correctly_fired():
 def test_monitor_positions_records_market_hours_open_on_every_closed_exit():
     """The exit dict appended to closed_exits must record market_hours_open, computed via the
     existing _is_market_hours() helper (not a new, second implementation) at the trade's own
-    market — not the wall-clock 'now' of whenever the email happens to be sent."""
+    market — not the wall-clock 'now' of whenever the email happens to be sent.
+
+    AUD-PTH03-MONITORCONFIGDRIFT: this read moved from the stale portfolio-level `cfg` to the
+    per-trade `_trade_cfg` (trade.exit_config_snapshot or cfg) — same key, correctly resolved
+    per trade instead of unconditionally from the pre-AUD-DE1-CONFIGMERGE merge."""
     start = _ENGINE_SOURCE.index("closed_exits.append({")
     end = _ENGINE_SOURCE.index("\n            continue", start)
     body = _ENGINE_SOURCE[start:end]
-    assert '"market_hours_open": _is_market_hours(cfg.get("market"' in body
+    assert '"market_hours_open": _is_market_hours(_trade_cfg.get("market"' in body
 
 
 def test_send_exit_emails_forwards_market_hours_open_to_the_email_builder():

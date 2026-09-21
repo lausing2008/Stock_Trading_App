@@ -1,0 +1,16 @@
+-- Migration: add exit_config_snapshot to paper_trades (AUD-PTH03-MONITORCONFIGDRIFT)
+-- Run once: psql -U stockai -d stockai -f 017_add_exit_config_snapshot_to_paper_trades.sql
+--
+-- _monitor_positions() built its own config every cycle with the pre-AUD-DE1-CONFIGMERGE
+-- (2026-09-07) merge — no _HK_MARKET_OVERRIDES applied, style overrides defeated by echoed
+-- defaults — a real, confirmed bug (PT-H03, docs/audits/2026-09-19-paper-trading-horizon-
+-- threshold-audit.md). Fixing the resolver in place would have silently moved trailing-stop
+-- distance / partial-TP triggers / hold-day exits for every currently OPEN position the moment
+-- the fix deployed, since those are recomputed every monitoring cycle, not frozen at entry.
+--
+-- This column instead snapshots resolve_entry_config()'s output at the moment each trade
+-- opens — the exact config _open_paper_trade() already sized and priced the trade against.
+-- NULL on every existing row (safe: _monitor_positions() falls back to its old merge for any
+-- trade with no snapshot, so no already-open position's stop/trailing behavior changes on
+-- deploy). Every trade opened from here on gets one and _monitor_positions() always prefers it.
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS exit_config_snapshot JSON;

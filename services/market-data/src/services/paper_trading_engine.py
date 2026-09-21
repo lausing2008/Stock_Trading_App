@@ -2836,6 +2836,15 @@ def _monitor_positions(
     This is §3 "Point-in-Time Correctness" of the Master Prompt, and the fix turned out to be
     date-scoping reads that were ALREADY historical — not recording new data.
     """
+    # AUD-PTH03-MONITORCONFIGDRIFT: this is deliberately the OLD merge — the one
+    # `resolve_entry_config()` (AUD-DE1-CONFIGMERGE, 2026-09-07) replaced on the entry path,
+    # never applying `_HK_MARKET_OVERRIDES` and letting an echoed-default value in
+    # `portfolio.config` silently defeat a style override. Confirmed as a real, live bug (PT-H03
+    # audit, docs/audits/2026-09-19-paper-trading-horizon-threshold-audit.md) but kept here on
+    # purpose as the fallback for trades that predate `PaperTrade.exit_config_snapshot` — see
+    # that column's docstring (shared/db/models.py) and the `_trade_cfg` line inside the loop
+    # below. Only used directly for the pre-loop armed-symbols ATR-prefetch heuristic and as
+    # that per-trade fallback; every actual stop/trailing/exit decision below reads `_trade_cfg`.
     cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(portfolio.config.get("trading_style", "GROWTH"), {}), **portfolio.config}
     style = cfg["trading_style"]
 
@@ -3070,6 +3079,16 @@ def _monitor_positions(
         _et_date = now.date()
 
     for trade in open_trades:
+        # AUD-PTH03-MONITORCONFIGDRIFT: every exit-relevant read below this point uses
+        # `_trade_cfg`, NOT the portfolio-level `cfg` computed above — see this function's own
+        # module-level fix comment near its top and exit_config_snapshot's column docstring
+        # (shared/db/models.py) for the full rationale. A trade opened before this column
+        # existed has no snapshot and falls back to `cfg` (the exact stale pre-AUD-DE1-
+        # CONFIGMERGE merge this function has always used), so its monitoring behavior is
+        # byte-identical to before this fix. A trade opened from here on always uses its own
+        # snapshot, so it gets the SAME correctly-resolved config (HK overrides, un-defeated
+        # style overrides) the entry path already used to size and price it.
+        _trade_cfg = trade.exit_config_snapshot or cfg
         # PT-B3: hold days in trading days (excludes weekends/holidays)
         # +1 so today counts as day 1 (busday_count is exclusive of end date)
         #
@@ -3273,7 +3292,7 @@ def _monitor_positions(
 
         # ── Time stop ────────────────────────────────────────────────────────
 
-        elif trade.hold_days >= cfg.get("max_hold_days", 60):
+        elif trade.hold_days >= _trade_cfg.get("max_hold_days", 60):
             exit_reason = "time_stop"
             exit_notes = {**_base_notes,
                 "message": f"Time stop: {trade.hold_days} days without resolution",
@@ -3283,8 +3302,8 @@ def _monitor_positions(
         # ── WF-4: HOLD stall exit — zombie positions stuck < threshold gain for too long ──
 
         elif sig_type == "HOLD":
-            stall_days = cfg.get("hold_stall_days", 30)
-            stall_max_gain = cfg.get("hold_stall_max_gain", 0.05)
+            stall_days = _trade_cfg.get("hold_stall_days", 30)
+            stall_max_gain = _trade_cfg.get("hold_stall_max_gain", 0.05)
             if days_held >= stall_days and pnl_pct < stall_max_gain:
                 exit_reason = "hold_stall_timeout"
                 exit_notes = {**_base_notes,
@@ -3302,8 +3321,8 @@ def _monitor_positions(
         elif (
             exit_reason is None
             and pnl_pct > 0
-            and cfg.get("momentum_exit_enabled", True)
-            and days_held >= cfg.get("momentum_exit_min_days", 3)
+            and _trade_cfg.get("momentum_exit_enabled", True)
+            and days_held >= _trade_cfg.get("momentum_exit_min_days", 3)
             and _obv_divergence.get(trade.symbol)
             and _rsi_overbought.get(trade.symbol)
         ):
@@ -3362,7 +3381,7 @@ def _monitor_positions(
                 )
             ).scalar()
 
-            wait_days = cfg.get("wait_exit_days", 5)
+            wait_days = _trade_cfg.get("wait_exit_days", 5)
             # BUG-MONITORPOS-NAIVEAWARE: last_non_wait_ts comes back naive (Signal.ts is a
             # plain DateTime column, no timezone=True) while `now` is tz-aware
             # (datetime.now(timezone.utc), needed elsewhere in this function for exit_time
@@ -3432,13 +3451,13 @@ def _monitor_positions(
             # fills at live_price regardless of label. Fixed by using live_price directly for
             # every exit_reason, matching what the code already did, rather than leaving a
             # conditional that describes logic that doesn't run.
-            _base_slippage = cfg.get("entry_slippage_pct", 0.001)
+            _base_slippage = _trade_cfg.get("entry_slippage_pct", 0.001)
             slippage = (
                 _size_aware_slippage_pct(trade.shares, _avg_daily_volume_for(trade.symbol), _base_slippage)
-                if cfg.get("size_aware_slippage_enabled", True) else _base_slippage
+                if _trade_cfg.get("size_aware_slippage_enabled", True) else _base_slippage
             )
             exit_price = round(live_price * (1 - slippage), 4)
-            exit_commission = round(cfg.get("commission_per_share", 0.0) * trade.shares, 4)
+            exit_commission = round(_trade_cfg.get("commission_per_share", 0.0) * trade.shares, 4)
             exit_value = round(exit_price * trade.shares, 2)
             pnl_dollar = round((exit_price - entry) * trade.shares, 2)
             pnl_pct    = (exit_price - entry) / entry  # recalc with slipped exit; unweighted, kept in exit_notes for reference
@@ -3553,7 +3572,7 @@ def _monitor_positions(
                 # hours into the overnight. Records whether the market was actually open AT THE
                 # MOMENT of this exit so the email can label it honestly rather than the caller
                 # re-deriving this after the fact against a DIFFERENT (later, wall-clock) moment.
-                "market_hours_open": _is_market_hours(cfg.get("market", "US")),
+                "market_hours_open": _is_market_hours(_trade_cfg.get("market", "US")),
             })
             continue
 
@@ -3562,25 +3581,25 @@ def _monitor_positions(
         # Level 2: +12% → sell 50% of remaining (≈33% of original), move stop to +5%
         # Backward compat: treats legacy "PARTIAL_TAKEN" marker as level-1 done.
 
-        partial_tp_pct  = cfg.get("partial_tp_pct",  0.07)   # level-1 trigger
-        partial_tp2_pct = cfg.get("partial_tp2_pct", 0.12)   # level-2 trigger
+        partial_tp_pct  = _trade_cfg.get("partial_tp_pct",  0.07)   # level-1 trigger
+        partial_tp2_pct = _trade_cfg.get("partial_tp2_pct", 0.12)   # level-2 trigger
         _P1 = "PARTIAL1_TAKEN"
         _P2 = "PARTIAL2_TAKEN"
         notes_list = list(trade.entry_decision_notes or [])
         p1_done = _P1 in notes_list or "PARTIAL_TAKEN" in notes_list
         p2_done = _P2 in notes_list
-        _base_slippage = cfg.get("entry_slippage_pct", 0.001)
+        _base_slippage = _trade_cfg.get("entry_slippage_pct", 0.001)
 
         if not p1_done and partial_tp_pct and pnl_pct >= partial_tp_pct and trade.shares > 0.01:
             partial_shares = round(trade.shares * 0.33, 4)
             slippage = (
                 _size_aware_slippage_pct(partial_shares, _avg_daily_volume_for(trade.symbol), _base_slippage)
-                if cfg.get("size_aware_slippage_enabled", True) else _base_slippage
+                if _trade_cfg.get("size_aware_slippage_enabled", True) else _base_slippage
             )
             partial_price  = round(live_price * (1 - slippage), 4)
             partial_value  = round(partial_shares * partial_price, 2)
             partial_pnl    = round((partial_price - entry) * partial_shares, 2)
-            partial_commission = round(cfg.get("commission_per_share", 0.0) * partial_shares, 4)
+            partial_commission = round(_trade_cfg.get("commission_per_share", 0.0) * partial_shares, 4)
             trade.shares = round(trade.shares - partial_shares, 4)
             trade.realized_pnl = round((trade.realized_pnl or 0.0) + partial_pnl - partial_commission, 2)
             portfolio.current_cash = round(portfolio.current_cash + partial_value - partial_commission, 2)
@@ -3603,12 +3622,12 @@ def _monitor_positions(
             partial_shares = round(trade.shares * 0.50, 4)
             slippage = (
                 _size_aware_slippage_pct(partial_shares, _avg_daily_volume_for(trade.symbol), _base_slippage)
-                if cfg.get("size_aware_slippage_enabled", True) else _base_slippage
+                if _trade_cfg.get("size_aware_slippage_enabled", True) else _base_slippage
             )
             partial_price  = round(live_price * (1 - slippage), 4)
             partial_value  = round(partial_shares * partial_price, 2)
             partial_pnl    = round((partial_price - entry) * partial_shares, 2)
-            partial_commission = round(cfg.get("commission_per_share", 0.0) * partial_shares, 4)
+            partial_commission = round(_trade_cfg.get("commission_per_share", 0.0) * partial_shares, 4)
             trade.shares = round(trade.shares - partial_shares, 4)
             trade.realized_pnl = round((trade.realized_pnl or 0.0) + partial_pnl - partial_commission, 2)
             portfolio.current_cash = round(portfolio.current_cash + partial_value - partial_commission, 2)
@@ -3630,8 +3649,8 @@ def _monitor_positions(
 
         # ── Trailing stop management (still open) ─────────────────────────────
 
-        trail_trigger = cfg.get("trail_trigger_pct", 0.05)
-        be_trigger    = cfg.get("breakeven_trigger_pct", 0.03)
+        trail_trigger = _trade_cfg.get("trail_trigger_pct", 0.05)
+        be_trigger    = _trade_cfg.get("breakeven_trigger_pct", 0.03)
 
         # PT-M2: Earnings proximity — freeze trail updates within 2 trading days of earnings.
         # Binary events gap both ways; stopping out 2 days before a blowout quarter is costly.
@@ -3650,7 +3669,7 @@ def _monitor_positions(
         if trail_armed and not earnings_near:
             atr = monitor_atr_cache.get(trade.symbol)
             if atr is not None and atr > 0.01:  # guard against None, NaN, or near-zero
-                mult = cfg.get("trail_atr_mult", 2.0) * regime_trail_adj
+                mult = _trade_cfg.get("trail_atr_mult", 2.0) * regime_trail_adj
                 new_trail = (trade.highest_price or live_price) - atr * mult
                 # Never let trail fall below initial stop_loss
                 floored_trail = max(new_trail, trade.stop_loss)
@@ -3682,7 +3701,7 @@ def _monitor_positions(
                 from sqlalchemy import text as sa_text
                 sig_reasons = session.execute(
                     sa_text("SELECT reasons FROM signals WHERE stock_id = :sid AND horizon = :h ORDER BY ts DESC LIMIT 1"),
-                    {"sid": trade.stock_id, "h": trade.trading_style or cfg.get("trading_style", "GROWTH")},
+                    {"sid": trade.stock_id, "h": trade.trading_style or _trade_cfg.get("trading_style", "GROWTH")},
                 ).mappings().one_or_none()
                 sig_reasons = dict(sig_reasons["reasons"] or {}) if sig_reasons else {}
             except Exception:
@@ -5207,6 +5226,11 @@ def _open_paper_trade(
         rr_ratio_at_entry     = round(rr, 2),
         market_regime_at_entry= (live_regime or {}).get("state") or (sig.reasons or {}).get("market_regime"),
         entry_reasons         = sig.reasons,
+        # AUD-PTH03-MONITORCONFIGDRIFT: the exact resolve_entry_config() output this trade was
+        # sized/priced against — see the column's own docstring (shared/db/models.py) and
+        # _monitor_positions()'s per-trade `_trade_cfg` fallback for why this must be frozen
+        # at entry rather than re-resolved every monitoring cycle.
+        exit_config_snapshot  = dict(cfg),
         stage                 = "open",
         hold_days             = 0,
     )

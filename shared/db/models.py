@@ -1010,6 +1010,23 @@ class PaperTrade(Base):
     rr_ratio_at_entry: Mapped[float | None] = mapped_column(Float, nullable=True)
     market_regime_at_entry: Mapped[str | None] = mapped_column(String(16), nullable=True)
     entry_reasons: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Signal.reasons snapshot
+    # AUD-PTH03-MONITORCONFIGDRIFT (2026-09-21): a snapshot of resolve_entry_config()'s output
+    # at the moment this trade opened — the exact config _open_paper_trade() sized and priced
+    # this trade against. Exists because _monitor_positions() built its OWN config every
+    # cycle with the pre-AUD-DE1-CONFIGMERGE (2026-09-07) merge (no `_HK_MARKET_OVERRIDES`,
+    # style overrides defeated by echoed defaults) — a real, confirmed bug (PT-H01-H09 audit,
+    # docs/audits/2026-09-19-paper-trading-horizon-threshold-audit.md, finding PT-H03) that
+    # was deliberately NOT fixed by simply swapping the resolver in place, because every
+    # currently open position's trailing-stop distance / partial-TP triggers / hold-day exit
+    # are recomputed from that config on EVERY monitoring cycle (not frozen at entry) — a
+    # same-pass resolver swap would have silently moved live stops out from under open
+    # positions the moment the fix deployed (e.g. an HK trailing ATR multiplier moving
+    # 2.0x -> 1.5x mid-trade). NULL for every trade opened before this column existed — those
+    # keep the OLD (bug-for-bug identical) monitoring behavior for the rest of their life via
+    # _monitor_positions()'s fallback; every trade opened from here on carries its own
+    # correctly-resolved snapshot and always uses it, regardless of what portfolio.config or
+    # the style/HK override tables later become.
+    exit_config_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Live tracking
     current_price: Mapped[float | None] = mapped_column(Numeric(20, 6, asdecimal=False), nullable=True)

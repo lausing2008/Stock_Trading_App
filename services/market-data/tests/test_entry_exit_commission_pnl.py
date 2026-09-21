@@ -23,7 +23,10 @@ _engine_source = _engine_path.read_text()
 
 
 def _final_close_block() -> str:
-    start = _engine_source.index("exit_commission = round(cfg.get(")
+    # AUD-PTH03-MONITORCONFIGDRIFT: this read moved from the stale portfolio-level `cfg` to
+    # the per-trade `_trade_cfg` (trade.exit_config_snapshot or cfg) — same key, correctly
+    # resolved per trade instead of unconditionally from the pre-AUD-DE1-CONFIGMERGE merge.
+    start = _engine_source.index("exit_commission = round(_trade_cfg.get(")
     end = _engine_source.index("trade.stage               = \"closed\"", start)
     return _engine_source[start:end]
 
