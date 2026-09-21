@@ -306,6 +306,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
 - **`docs/audits/2026-09-19-session-index.md`** — START HERE for the 2026-09-18/19 session: T410, A01-A03 scoping, the AUD-MINRR-STYLEBLIND fix-then-correction arc, the four-audit implementation batch (3 rounds), the fix-effectiveness crash, and the PT-H0x audit review, all in one place with links.
+- **`docs/audits/2026-09-21-deferred-audit-items-batch.md`** — PT-H08/PT-H03/PT-H01's own deferred real fixes, built without changing any live portfolio's resolved behavior; plus UW-07 and E09 from the broader deferred list. Records what's still deliberately unbuilt and why.
 - **`docs/audits/2026-09-16-codebase-and-feature-review.md`** — Static project orientation: architecture, feature map, scoring/execution paths, backtest boundaries, and documentation reconciliation; no runtime verification.
 - **`docs/features/independent-horizon-resolution.md`** — T410 (AUD-C02/C03): audited all 201 SignalOutcome refs, found EVERY one is safe, built an ADDITIVE table instead of patching. LONG/SWING/GROWTH BUY now get 5-day outcomes without waiting for a 14-28 day primary [outcomes, calibration]
 - **`docs/audits/2026-09-18-c02-c03-outcome-horizon-scoping.md`** — why C02/C03 was SCOPED not built: pending outcome rows change what "a SignalOutcome row exists" means across 201 non-test refs incl. ML TRAINING. Audit those first [outcomes, horizons, calibration]
