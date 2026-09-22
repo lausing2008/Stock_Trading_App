@@ -914,7 +914,7 @@ def filter_audit(
         horizon_enum = SignalHorizon.SWING
 
     rows = session.execute(
-        select(Signal.ts, Signal.reasons, Signal.stock_id, Stock.symbol)
+        select(Signal.ts, Signal.reasons, Signal.stock_id, Stock.symbol, Stock.market)
         .join(Stock, Signal.stock_id == Stock.id)
         .where(
             Signal.signal == SignalType.BUY,
@@ -924,6 +924,29 @@ def filter_audit(
         )
         .order_by(Signal.ts)
     ).all()
+
+    # AUD-ALPHAEVAL (2026-09-22): every verdict below used to be computed on ABSOLUTE return,
+    # which credits a BUY simply for firing in a rising market and penalises one in a falling
+    # market — so a filter's "harmful"/"predictive" label partly measured market drift rather
+    # than the filter. Measured over the same window, that distinction is the whole story: BUY
+    # signals returned -1.11% while SPY over each signal's OWN matched window returned -0.03%,
+    # so the real selection effect is -1.08pp, not -1.11%. Per-market benchmark matters too —
+    # an HK audit re-run against 2800.HK instead of SPY moved HK alpha from -5.56% to -6.71%,
+    # i.e. the wrong benchmark was FLATTERING it. Alpha fields are added ALONGSIDE the existing
+    # absolute ones (never replacing them) so no existing consumer breaks.
+    # See docs/audits/2026-09-22-news-llm-hmm-prediction-audit.md.
+    _BENCH_SYMBOL_BY_MARKET = {"US": "SPY", "HK": "2800.HK"}
+    _bench_id_by_symbol = {
+        sym: sid for sid, sym in session.execute(
+            select(Stock.id, Stock.symbol).where(
+                Stock.symbol.in_(list(_BENCH_SYMBOL_BY_MARKET.values()))
+            )
+        ).all()
+    }
+
+    def _bench_symbol_for(market) -> str | None:
+        mkt = str(getattr(market, "value", market) or "").upper()
+        return _BENCH_SYMBOL_BY_MARKET.get(mkt)
 
     SUPPRESSION_BOOLEAN = [
         "weekly_gate_fired", "adx_compression",
@@ -950,7 +973,11 @@ def filter_audit(
         "hot_news_flag":       lambda v: v == "material_negative",
     }
 
-    stock_ids = list({r.stock_id for r in rows})
+    # AUD-ALPHAEVAL: benchmark ids are loaded through the SAME price query and the SAME
+    # _nearest_price() lookup as the traded symbols — deliberately, so a benchmark return can
+    # never be computed on a different date-resolution rule than the trade it is subtracted
+    # from. A mismatched rule here would silently manufacture or destroy alpha.
+    stock_ids = list({r.stock_id for r in rows} | set(_bench_id_by_symbol.values()))
     price_rows = session.execute(
         select(Price.stock_id, Price.ts, Price.close)
         .where(
@@ -974,8 +1001,27 @@ def filter_audit(
         future = [(abs((d - target).days), c) for d, c in candidates if d >= target]
         return min(future, key=lambda x: x[0])[1] if future else None
 
+    def _bench_return(market, entry_target: date, exit_target: date) -> float | None:
+        """Benchmark return over the trade's OWN matched window. Returns None (never 0.0) when
+        the benchmark is unavailable — a missing benchmark must drop the row from alpha
+        aggregates, not silently be treated as a flat market, which would report the raw
+        return as if it were alpha."""
+        sym = _bench_symbol_for(market)
+        bid = _bench_id_by_symbol.get(sym) if sym else None
+        if bid is None:
+            return None
+        b_entry = _nearest_price(bid, entry_target)
+        b_exit = _nearest_price(bid, exit_target)
+        if not (b_entry and b_exit and b_entry > 0):
+            return None
+        return (b_exit - b_entry) / b_entry
+
+    def _mean_pct(vals: list[float]) -> float | None:
+        return round(sum(vals) / len(vals) * 100, 2) if vals else None
+
     from collections import defaultdict as _dd
     buckets: dict[int, list[float]] = _dd(list)
+    alpha_buckets: dict[int, list[float]] = _dd(list)
     per_trade = []
 
     for row in rows:
@@ -1003,11 +1049,18 @@ def filter_audit(
         if entry_price and exit_price and entry_price > 0:
             ret = (exit_price - entry_price) / entry_price
             buckets[count].append(ret)
+            # AUD-ALPHAEVAL: benchmark measured over this trade's own entry/exit targets.
+            _bench = _bench_return(row.market, signal_date + timedelta(days=1), exit_date)
+            _alpha = (ret - _bench) if _bench is not None else None
+            if _alpha is not None:
+                alpha_buckets[count].append(_alpha)
             per_trade.append({
                 "symbol":       row.symbol,
                 "signal_date":  signal_date.isoformat(),
                 "filter_count": count,
                 "return_pct":   round(ret * 100, 2),
+                "benchmark_pct": round(_bench * 100, 2) if _bench is not None else None,
+                "alpha_pct":    round(_alpha * 100, 2) if _alpha is not None else None,
                 # AUD261-BARE-GT-ZERO-NO-HURDLE: matches evaluate_signal_outcomes'/
                 # rolling_accuracy's canonical _OUTCOME_WIN_HURDLE_PCT convention — BUY-only
                 # here (line 978's SignalType.BUY filter), so no sign error, but a +0.1% move
@@ -1021,12 +1074,19 @@ def filter_audit(
     for fc in sorted(buckets):
         rets = buckets[fc]
         wins = sum(1 for r in rets if r > _OUTCOME_WIN_HURDLE_PCT)
+        _alphas = alpha_buckets.get(fc, [])
         summary.append({
             "filter_count":     fc,
             "trade_count":      len(rets),
             "win_rate_pct":     round(wins / len(rets) * 100, 1) if rets else None,
             "avg_return_pct":   round(sum(rets) / len(rets) * 100, 2) if rets else None,
             "median_return_pct": round(float(sorted(rets)[len(rets) // 2]) * 100, 2) if rets else None,
+            # AUD-ALPHAEVAL: n_with_alpha can be < trade_count when a benchmark bar is missing.
+            "avg_alpha_pct":    _mean_pct(_alphas),
+            "alpha_win_rate_pct": round(
+                sum(1 for a in _alphas if a > 0) / len(_alphas) * 100, 1
+            ) if _alphas else None,
+            "n_with_alpha":     len(_alphas),
         })
 
     # Per-filter win rate: for each flag compare win rate when active vs inactive.
@@ -1034,6 +1094,7 @@ def filter_audit(
     # edge_pct positive = filter incorrectly suppresses stronger signals (harmful).
     all_filter_names = list(SUPPRESSION_BOOLEAN) + list(SUPPRESSION_NAMED.keys())
     filter_buckets: dict[str, dict[str, list[float]]] = {f: {"active": [], "inactive": []} for f in all_filter_names}
+    filter_alpha: dict[str, dict[str, list[float]]] = {f: {"active": [], "inactive": []} for f in all_filter_names}
 
     for row in rows:
         r = row.reasons or {}
@@ -1059,9 +1120,13 @@ def filter_audit(
         if not (entry_price and exit_price and entry_price > 0):
             continue
         ret = (exit_price - entry_price) / entry_price
+        _bench = _bench_return(row.market, signal_date + timedelta(days=1), exit_date)
+        _alpha = (ret - _bench) if _bench is not None else None
         for fname, is_active in filter_flags.items():
             bucket = "active" if is_active else "inactive"
             filter_buckets[fname][bucket].append(ret)
+            if _alpha is not None:
+                filter_alpha[fname][bucket].append(_alpha)
 
     by_filter = []
     for fname in all_filter_names:
@@ -1072,6 +1137,19 @@ def filter_audit(
         act_avg   = round(sum(act)   / len(act)   * 100, 2) if act   else None
         inact_avg = round(sum(inact) / len(inact) * 100, 2) if inact else None
         edge = round((act_wr or 0) - (inact_wr or 0), 1)  # negative = filter correctly suppresses bad trades
+        # AUD-ALPHAEVAL: the alpha-based twin of edge_pct/verdict. Same sign convention
+        # (positive = the filter suppresses trades that went on to do BETTER = harmful), but
+        # measured in benchmark-relative percentage points rather than raw win-rate points, so
+        # a filter is no longer credited or blamed for market drift it had no part in. Reported
+        # ALONGSIDE the originals rather than replacing them — existing consumers read
+        # edge_pct/verdict, and silently changing what those mean would be exactly the kind of
+        # unannounced semantic shift this audit was called in to find.
+        a_act, a_inact = filter_alpha[fname]["active"], filter_alpha[fname]["inactive"]
+        a_act_avg, a_inact_avg = _mean_pct(a_act), _mean_pct(a_inact)
+        alpha_edge = (
+            round(a_act_avg - a_inact_avg, 2)
+            if (a_act_avg is not None and a_inact_avg is not None) else None
+        )
         by_filter.append({
             "filter":           fname,
             "n_active":         len(act),
@@ -1082,12 +1160,23 @@ def filter_audit(
             "avg_return_inactive": inact_avg,
             "edge_pct": edge,  # negative means filter correctly blocks worse signals; positive means filter is harmful
             "verdict": "harmful" if edge > 5 else ("weak" if edge > -3 else "predictive"),
+            "avg_alpha_active":   a_act_avg,
+            "avg_alpha_inactive": a_inact_avg,
+            "n_alpha_active":     len(a_act),
+            "alpha_edge_pct":     alpha_edge,
+            "alpha_verdict": (
+                None if alpha_edge is None
+                else "harmful" if alpha_edge > 0.5
+                else "predictive" if alpha_edge < -0.5
+                else "weak"
+            ),
         })
     by_filter.sort(key=lambda x: x["edge_pct"])  # most predictive (most negative) first
 
     n_signals = len(rows)
     n_with_returns = len(per_trade)
     overall_wr = round(sum(1 for t in per_trade if t["win"]) / n_with_returns * 100, 1) if n_with_returns else None
+    _all_alphas = [a for vals in alpha_buckets.values() for a in vals]
     result = {
         "lookback_days":          lookback_days,
         "style":                  style,
@@ -1095,7 +1184,15 @@ def filter_audit(
         "n_buy_signals_found":    n_signals,
         "n_with_return_data":     n_with_returns,
         "overall_win_rate_pct":   overall_wr,
-        "note": "n_with_return_data < n_buy_signals_found when exit date is in the future or price data is missing.",
+        # AUD-ALPHAEVAL: the headline number this endpoint should be read on. Absolute win rate
+        # and absolute return both credit a BUY for firing in a rising market; alpha does not.
+        "overall_avg_alpha_pct":  _mean_pct(_all_alphas),
+        "overall_alpha_win_rate_pct": round(
+            sum(1 for a in _all_alphas if a > 0) / len(_all_alphas) * 100, 1
+        ) if _all_alphas else None,
+        "n_with_alpha":           len(_all_alphas),
+        "benchmarks":             _BENCH_SYMBOL_BY_MARKET,
+        "note": "n_with_return_data < n_buy_signals_found when exit date is in the future or price data is missing. alpha = trade return minus its OWN market's benchmark over the same entry/exit window; n_with_alpha can be lower still when a benchmark bar is missing.",
         "by_filter_count":        summary,
         "by_filter_name":         by_filter,
         "trades":                 per_trade,
