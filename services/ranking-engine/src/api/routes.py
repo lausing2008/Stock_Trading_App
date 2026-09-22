@@ -1,7 +1,7 @@
 """Ranking API — per-symbol + market-wide leaderboard."""
 from collections import defaultdict
 from dataclasses import asdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import threading
 import time as _time
 
@@ -998,7 +998,10 @@ def _leaderboard_live(market: str | None, limit: int, session: Session) -> dict:
         except Exception as _stock_exc:
             log.warning("ranking.leaderboard_live_stock_failed", symbol=s.symbol, error=str(_stock_exc))
     results.sort(key=lambda r: r["score"] or 0, reverse=True)
-    return {"as_of": str(date.today()), "rankings": results[:limit]}
+    # AUD-T409-RANKINGENGINE: a live-computed "as of" label — no `market` filter defaults to
+    # ET (matching this file's own general US-first convention elsewhere), a real market
+    # filter uses that market's own trading day.
+    return {"as_of": str(_today_for_market(market or "US")), "rankings": results[:limit]}
 
 
 # ── T288-KSCORE-WEIGHT-SWEEP: walk-forward validated sweep of K-Score's factor weights ──
@@ -1822,6 +1825,26 @@ def refresh(
     return {"status": "scheduled", "count": len(stocks)}
 
 
+def _today_for_market(market) -> date:
+    """The correct "today" for a stock's own market — America/New_York for US, Asia/Hong_Kong
+    for HK — not a naive UTC truncation. See market-data's docs/incidents/utc-vs-et-date-
+    boundary.md (AUD-T409) for the general finding; this file additionally needs the HK half
+    since /rankings/refresh with no `market` filter processes stocks from BOTH markets in one
+    batch (an admin/manually-triggered call — the scheduler itself always passes a market).
+
+    AUD-T409-RANKINGENGINE (2026-09-21): _persist_rankings()'s Ranking.as_of upsert key used
+    one shared `date.today()` (naive UTC) for the whole batch regardless of each stock's
+    market. The scheduler's own real invocation is safe by luck (US cron runs 9:25am-4:30pm ET,
+    HK cron runs 9:25am-4:30pm HKT — both stay inside one UTC calendar day), but a manual
+    POST /rankings/refresh with no market filter, run during the evening US bug window (8pm
+    EDT/7pm EST to midnight UTC), would mis-date every US row under tomorrow's ET date.
+    """
+    from zoneinfo import ZoneInfo
+    mkt = str(market.value if hasattr(market, "value") else market).upper()
+    tz = ZoneInfo("Asia/Hong_Kong") if mkt == "HK" else ZoneInfo("America/New_York")
+    return datetime.now(tz).date()
+
+
 def _persist_rankings(stock_ids: list[int]) -> None:
     # T232-RANKSTALE: this function runs inside a FastAPI BackgroundTasks callback, whose
     # exceptions are NOT surfaced anywhere by default — no response to fail, no automatic
@@ -1833,7 +1856,6 @@ def _persist_rankings(stock_ids: list[int]) -> None:
     # crash is now visible in container logs instead of just an aging as_of column.
     from db import SessionLocal, Stock as StockModel
 
-    today = date.today()
     log.info("ranking.persist_rankings_started", count=len(stock_ids))
     t0 = _time.time()
     try:
@@ -1864,6 +1886,11 @@ def _persist_rankings(stock_ids: list[int]) -> None:
                     stock = all_stocks.get(sid)
                     if not stock:
                         continue
+                    # AUD-T409-RANKINGENGINE: resolved per-stock, not once for the whole
+                    # batch — a mixed-market batch (an admin POST /rankings/refresh with no
+                    # market filter) must date a US row's Ranking.as_of by the US trading day
+                    # and an HK row's by the HK trading day, not one shared "today" for both.
+                    today = _today_for_market(stock.market)
                     df = _load_prices(session, sid)
                     if df.empty or len(df) < 60:
                         skipped += 1

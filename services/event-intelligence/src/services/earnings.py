@@ -20,6 +20,26 @@ log = structlog.get_logger()
 _settings = get_settings()
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="yf_earnings")
 
+
+def _today_et() -> date:
+    """'Today' as a US market participant means it — the calendar date in America/New_York,
+    not a truncation of the current UTC instant. See market-data's docs/incidents/utc-vs-et-
+    date-boundary.md (AUD-T409) for the full finding: naive `date.today()`/`datetime.now(
+    timezone.utc).date()` reads one calendar day AHEAD of the true US trading day for roughly
+    4-5 hours of every single evening, because UTC crosses midnight at 8pm EDT / 7pm EST while
+    the trading day these dates describe runs on New York wall-clock time.
+
+    AUD-T409-EVENTINTEL (2026-09-21): this file had 8 `date.today()` call sites at the time
+    this was added. Only the 4 that directly gate a user-facing "is this upcoming/due" decision
+    were migrated (get_upcoming_earnings, get_days_to_earnings, _row_to_dict's is_upcoming, and
+    check_earnings_impact_poll's yesterday-to-today recheck window) — the other 3 are wide
+    lookback-window cutoffs (2/45/365 days back) where being off by one calendar day for part
+    of an evening is harmless, matching this session's own established triage discipline for
+    this exact bug class (see docs/audits/2026-09-21-utc-date-boundary-triage.md).
+    """
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/New_York")).date()
+
 # T249-EARNINGS-LLM-IMPACT: unlike macro_reaction.py's blocking httpx.get()/feedparser calls
 # (which needed a dedicated executor — AUD-EI-MACRO-REACTION-BLOCKING), generate_earnings_
 # impact() below uses httpx.AsyncClient, which is natively async and does not block the
@@ -1336,8 +1356,11 @@ async def sync_todays_earnings() -> dict:
     nobody reporting, or once all of today's reporters have already resolved, this is a
     single cheap indexed query with zero yfinance calls at all.
     """
-    cutoff_start = date.today() - timedelta(days=1)
-    cutoff_end = date.today()
+    # AUD-T409-EVENTINTEL: yesterday-to-today recheck window — must reflect the real US
+    # trading date, not a naive UTC truncation, or this silently shifts to [today, tomorrow]
+    # during the evening bug window and misses a real yesterday-after-market report.
+    cutoff_start = _today_et() - timedelta(days=1)
+    cutoff_end = _today_et()
     with SessionLocal() as s:
         rows = s.execute(
             select(EarningsEvent.stock_id, Stock.symbol)
@@ -1374,7 +1397,7 @@ def get_earnings_for_symbol(stock_id: int, days_back: int = 365) -> list[dict]:
 
 
 def get_upcoming_earnings(days: int = 14) -> list[dict]:
-    today = date.today()
+    today = _today_et()  # AUD-T409-EVENTINTEL
     cutoff = today + timedelta(days=days)
     with SessionLocal() as s:
         rows = s.execute(
@@ -1394,7 +1417,7 @@ def get_upcoming_earnings(days: int = 14) -> list[dict]:
 
 
 def get_days_to_earnings(stock_id: int) -> int | None:
-    today = date.today()
+    today = _today_et()  # AUD-T409-EVENTINTEL
     with SessionLocal() as s:
         row = s.execute(
             select(EarningsEvent.report_date)
@@ -1422,7 +1445,7 @@ def get_beat_rate(stock_id: int, lookback: int = 8) -> float | None:
 
 
 def _row_to_dict(e: EarningsEvent) -> dict:
-    today = date.today()
+    today = _today_et()  # AUD-T409-EVENTINTEL
     return {
         "id": e.id,
         "stock_id": e.stock_id,
