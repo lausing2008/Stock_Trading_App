@@ -4664,6 +4664,7 @@ def _compute_portfolio_vol_targeting_mult(session, portfolio_id: int) -> float:
 
 
 def _persist_scan_log(
+    session,
     portfolio_id: int,
     *,
     portfolio_gate: str | None = None,
@@ -4676,9 +4677,30 @@ def _persist_scan_log(
     its own (see PaperEntryScanLog's own docstring, shared/db/models.py). Fail-silent, matching
     the Redis writes it accompanies: this is observability only, never load-bearing for trading
     decisions.
+
+    AUD-CONNPOOL-NESTEDSESSION (2026-09-22 production incident): reuses the CALLER's already-
+    open `session` — this used to open its OWN separate `SessionLocal()` here instead. Every
+    portfolio whose scan hit this path (i.e. every "no entry" cycle — the exact condition this
+    logging exists to diagnose) opened an ADDITIONAL connection from the pool while
+    paper_trading_step()'s own outer session was STILL checked out for its entire multi-
+    portfolio loop. With most portfolios hitting "no entry" (why PT-H08 was built in the first
+    place) and a small shared pool (5 + 10 overflow = 15 connections, split across a dozen
+    other 1-minute-interval scheduled jobs), this compounded into full pool exhaustion within
+    hours — confirmed live via a py-spy thread dump showing a worker thread stuck exactly at
+    this call's own `session.commit()`, and `QueuePool limit ... connection timed out` errors
+    cascading into completely unrelated jobs across the whole service.
+
+    Uses a SAVEPOINT (`session.begin_nested()`), not the caller's own outer transaction
+    directly — a failure here (e.g. a constraint violation) rolls back only this one insert on
+    exit and is then swallowed, leaving the caller's own in-progress transaction exactly as it
+    was; a bare `session.add()` + swallowed exception would instead leave the session in
+    SQLAlchemy's "inert, needs rollback" state, silently breaking every later use of the SAME
+    session for the rest of this scan cycle. The row itself becomes part of the caller's own
+    transaction, committed whenever paper_trading_step()'s surrounding commit() runs — exactly
+    like every other DB write _scan_for_entries() already makes on this same session.
     """
     try:
-        with SessionLocal() as session:
+        with session.begin_nested():
             session.add(PaperEntryScanLog(
                 portfolio_id=portfolio_id,
                 portfolio_gate=portfolio_gate,
@@ -4686,12 +4708,11 @@ def _persist_scan_log(
                 candidates_seen=candidates_seen,
                 skip_tally=skip_tally,
             ))
-            session.commit()
     except Exception:
         pass
 
 
-def _write_gate_block(portfolio_id: int, gate: str, reason: str) -> None:
+def _write_gate_block(session, portfolio_id: int, gate: str, reason: str) -> None:
     """Record the most recent portfolio-level gate that blocked new entries.
 
     Stored in Redis as paper:gate_block:{portfolio_id} (JSON, 4h TTL).
@@ -4710,7 +4731,7 @@ def _write_gate_block(portfolio_id: int, gate: str, reason: str) -> None:
         )
     except Exception:
         pass
-    _persist_scan_log(portfolio_id, portfolio_gate=gate, portfolio_gate_reason=reason)
+    _persist_scan_log(session, portfolio_id, portfolio_gate=gate, portfolio_gate_reason=reason)
 
 
 _SKIP_REASON_LABEL: dict[str, str] = {
@@ -4738,7 +4759,7 @@ _SKIP_REASON_LABEL: dict[str, str] = {
 }
 
 
-def _write_no_entry_summary(portfolio_id: int, candidates_seen: int, skip_tally: dict[str, int]) -> None:
+def _write_no_entry_summary(session, portfolio_id: int, candidates_seen: int, skip_tally: dict[str, int]) -> None:
     """Record why zero entries happened this cycle when no portfolio-level gate fired.
 
     T232-WHYNOTRADE: complements _write_gate_block — that only covers portfolio-level
@@ -4766,7 +4787,7 @@ def _write_no_entry_summary(portfolio_id: int, candidates_seen: int, skip_tally:
         )
     except Exception:
         pass
-    _persist_scan_log(portfolio_id, candidates_seen=candidates_seen, skip_tally=skip_tally)
+    _persist_scan_log(session, portfolio_id, candidates_seen=candidates_seen, skip_tally=skip_tally)
 
 
 def _clear_no_entry_summary(portfolio_id: int) -> None:
@@ -5598,7 +5619,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         current_dd_pct=round(current_dd * 100, 1),
                         limit_pct=round(max_dd_cfg * 100, 1),
                         note="new entries suspended until equity recovers")
-            _write_gate_block(portfolio.id, "drawdown",
+            _write_gate_block(session, portfolio.id, "drawdown",
                               f"Portfolio drawdown {current_dd*100:.1f}% exceeds {max_dd_cfg*100:.0f}% limit — no new entries until equity recovers")
             return
 
@@ -5632,7 +5653,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         daily_net_pnl_pct=round(daily_net_pnl / equity * 100, 1),
                         limit_pct=round(max_daily_loss * 100, 1),
                         note="new entries suspended for today")
-            _write_gate_block(portfolio.id, "daily_loss",
+            _write_gate_block(session, portfolio.id, "daily_loss",
                               f"Daily loss {abs(daily_net_pnl)/equity*100:.1f}% exceeds {max_daily_loss*100:.0f}% limit — no more entries today")
             return
 
@@ -5672,7 +5693,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         weekly_net_pnl_pct=round(weekly_net_pnl / equity * 100, 1),
                         limit_pct=round(max_weekly_loss * 100, 1),
                         note="new entries suspended for remainder of week")
-            _write_gate_block(portfolio.id, "weekly_loss",
+            _write_gate_block(session, portfolio.id, "weekly_loss",
                               f"Weekly loss {abs(weekly_net_pnl)/equity*100:.1f}% exceeds {max_weekly_loss*100:.0f}% limit — no entries until next week")
             return
         # T191: Weekly gain lock — don't give back a good week by overtrading.
@@ -5683,7 +5704,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      weekly_pnl_pct=round(weekly_net_pnl / equity * 100, 1),
                      lock_pct=round(max_weekly_gain * 100, 1),
                      note="weekly gain target reached — protecting profits, no new entries")
-            _write_gate_block(portfolio.id, "weekly_gain_lock",
+            _write_gate_block(session, portfolio.id, "weekly_gain_lock",
                               f"Weekly gain lock — up {weekly_net_pnl/equity*100:.1f}% this week; protecting profits until Monday")
             return
 
@@ -5697,7 +5718,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         portfolio=portfolio.name,
                         consecutive_losses=_consec_losses,
                         note="new entries suspended until a trade closes positive")
-            _write_gate_block(portfolio.id, "consecutive_losses",
+            _write_gate_block(session, portfolio.id, "consecutive_losses",
                               f"{_consec_losses} consecutive losses — no new entries until a winning trade")
             return
         elif _recovery_grant_used(portfolio.id, _consec_losses):
@@ -5709,7 +5730,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         portfolio=portfolio.name,
                         consecutive_losses=_consec_losses,
                         note="recovery entry already used for this streak — entries suspended")
-            _write_gate_block(portfolio.id, "consecutive_losses",
+            _write_gate_block(session, portfolio.id, "consecutive_losses",
                               f"{_consec_losses} consecutive losses — recovery entry already used; "
                               f"no new entries until a winning trade")
             return
@@ -5739,7 +5760,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         ).scalar() or 0
         if entries_today >= max_entries_day:
             log.info("paper.daily_entry_cap", entries_today=entries_today, limit=max_entries_day)
-            _write_gate_block(portfolio.id, "daily_entry_cap",
+            _write_gate_block(session, portfolio.id, "daily_entry_cap",
                               f"Daily entry cap reached ({entries_today}/{max_entries_day}) — no more entries today")
             return
 
@@ -5808,7 +5829,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      note="all new entries suspended in bear regime")
             _bear_msg = (f"Bear market — {_idx_note}; all new entries suspended" if _is_hk else
                          f"Bear market — SPY below 200EMA + VIX {_vix_str}; all new entries suspended")
-            _write_gate_block(portfolio.id, "regime_bear", _bear_msg)
+            _write_gate_block(session, portfolio.id, "regime_bear", _bear_msg)
             return
         # T173/T226-A: risk_off gate — blocks all new entries when regime_risk_off_gate=True.
         # T226-A changed default to True: 9/30 closed paper trades in risk_off had 0% win rate.
@@ -5827,7 +5848,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      note="all new entries suspended in risk_off regime (strict gate enabled)")
             _risk_off_msg = (f"Risk-off regime — {_idx_note}; no new entries until regime improves" if _is_hk else
                               f"Risk-off regime — SPY below 50EMA + VIX {_vix_str}; no new entries until regime improves")
-            _write_gate_block(portfolio.id, "regime_risk_off", _risk_off_msg)
+            _write_gate_block(session, portfolio.id, "regime_risk_off", _risk_off_msg)
             return
 
         # T210: Regime suspension circuit breaker — if the market has been risk_off or bear
@@ -5853,7 +5874,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                                 days=_regime_suspend_days,
                                 recent_states=[s for _, s in _all_days[:_regime_suspend_days]],
                                 note="market in sustained stress — all entries suspended until regime improves")
-                    _write_gate_block(portfolio.id, "regime_suspension",
+                    _write_gate_block(session, portfolio.id, "regime_suspension",
                                       f"Market in sustained stress for {_regime_suspend_days}+ days — entries suspended until regime improves")
                     return
             except Exception:
@@ -5981,7 +6002,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      regime=regime_state,
                      entries_today=_te_count,
                      note="choppy/risk_off: max 1 new entry per day")
-            _write_gate_block(portfolio.id, "entry_throttle",
+            _write_gate_block(session, portfolio.id, "entry_throttle",
                               f"Entry throttle — {regime_state} regime limits 1 entry/day; already entered today")
             return
 
@@ -6011,7 +6032,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         recent_stops=_recent_stops,
                         window_hours=_heat_h,
                         note=f"{_recent_stops} stops hit in {_heat_h}h — adverse conditions, pausing entries")
-            _write_gate_block(portfolio.id, "heat_brake",
+            _write_gate_block(session, portfolio.id, "heat_brake",
                               f"Heat brake — {_recent_stops} stops hit in {_heat_h}h; entries paused until market conditions improve")
             return
 
@@ -6048,7 +6069,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                              index_return_pct=round(_idx_ret * 100, 2),
                              threshold_pct=round(_idx_threshold * 100, 1),
                              note=f"index down {abs(_idx_ret)*100:.1f}% today — blocking new entries")
-                    _write_gate_block(portfolio.id, "index_trend",
+                    _write_gate_block(session, portfolio.id, "index_trend",
                                       f"{_idx_sym} down {abs(_idx_ret)*100:.1f}% today — no new entries on bad index days")
                     return
         except Exception:
@@ -6121,7 +6142,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                  portfolio=portfolio.name, market=_mkt,
                  open=_mkt_open_count, max=_max_mkt_pos,
                  note="market position cap reached — prevent single-market cluster loss")
-        _write_gate_block(portfolio.id, "market_cluster_cap",
+        _write_gate_block(session, portfolio.id, "market_cluster_cap",
                           f"{_mkt} position cap reached ({_mkt_open_count}/{_max_mkt_pos}) — no new entries until a position closes")
         return
 
@@ -6910,7 +6931,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     # is visible in the UI (paper-gates.tsx / paper-portfolio.tsx) instead of requiring a
     # container-log dig, same place _write_gate_block's portfolio-level reason shows up.
     if entries_made == 0:
-        _write_no_entry_summary(portfolio.id, len(buy_signals), _skip_tally)
+        _write_no_entry_summary(session, portfolio.id, len(buy_signals), _skip_tally)
     else:
         _clear_no_entry_summary(portfolio.id)
 
