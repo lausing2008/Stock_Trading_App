@@ -441,8 +441,25 @@ def _fetch_ml_data(symbol: str, style_key: str = "SWING") -> tuple[float | None,
     return None, 0.0, {}
 
 
-def _fetch_market_regime() -> tuple[str, float | None]:
-    """Returns (regime, fear_greed_score).
+def _fetch_market_regime(market: str = "US") -> tuple[str, float | None]:
+    """Returns (regime, fear_greed_score) for `market` ("US" or "HK").
+
+    AUD-REGIME-MARKETBLIND (2026-09-22): this function hardcoded market="US" for EVERY stock,
+    so HK signals had their style decision (_decide_style) and their main compression gates
+    driven by SPY/VIX. Measured in production: 2,462 of 2,604 HK BUY outcomes (94.5%) were
+    tagged regime "bull". Confirmed live at audit time that the two genuinely disagree — the
+    US endpoint returned "bull" (SPY above 20/50EMA, VIX 14.9) while HK returned "choppy"
+    (HSI 1.9% below its SMA200) at the same instant. The file already knew this was wrong: the
+    T224-B comment at the _fetch_hsi_regime() call site says "US SPY/VIX regime is irrelevant
+    for HK timing", but that fix only wired HSI into ONE gate (hsi_bear_gate) and left the
+    main regime path market-blind.
+
+    NOTE the deliberate asymmetry: fear_greed below is NOT market-scoped. /stocks/fear_greed
+    takes no market parameter (it is a US crowd-sentiment index), so an HK caller still gets
+    the US reading. That is a pre-existing limitation left as-is rather than silently faked —
+    fear/greed is a global risk-appetite proxy, and inventing an HK variant here would be a
+    new unvalidated signal, not a fix. See
+    docs/audits/2026-09-22-news-llm-hmm-prediction-audit.md.
 
     AUD264-SIGNALENGINE-SECOND-REGIME-CLASSIFIER: previously derived regime independently
     from /stocks/fear_greed (a bull/high_vol/bear/unknown vocabulary that could never emit
@@ -465,7 +482,7 @@ def _fetch_market_regime() -> tuple[str, float | None]:
     regime = "unknown"
     try:
         with httpx.Client(timeout=5) as c:
-            r = c.get(f"{_settings.market_data_url}/stocks/regime", params={"market": "US"})
+            r = c.get(f"{_settings.market_data_url}/stocks/regime", params={"market": market})
             if r.status_code == 200:
                 regime = r.json().get("state", "unknown")
     except Exception:
@@ -2802,7 +2819,11 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
         sk: f.result() for sk, f in _ml_futures.items()
     }
     ml_prob, ml_test_auc, ml_meta = ml_by_style["SWING"]  # canonical for shared reasons
-    market_regime, fg_score = _fetch_market_regime()
+    # AUD-REGIME-MARKETBLIND: scope the regime to the stock's OWN market. ".HK" suffix is this
+    # file's established market test (same check the hsi_regime block below already uses).
+    market_regime, fg_score = _fetch_market_regime(
+        "HK" if symbol.upper().endswith(".HK") else "US"
+    )
     breadth_pct = _fetch_market_breadth()
     days_to_earnings = _fetch_earnings_proximity(symbol)
     earnings_beat_rate = _fetch_earnings_beat_rate(symbol)
