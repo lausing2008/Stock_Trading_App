@@ -306,6 +306,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
+- **`docs/audits/2026-09-22-news-llm-hmm-prediction-audit.md`** — BUY signals measure −1.08pp alpha vs SPY (t=−9.24); confidence is INVERTED; hot-news gate's sign is backwards; HMM never uses its transition matrix; EDGAR news 97% unusable [alpha, HMM, news]
 - **`docs/audits/2026-09-19-session-index.md`** — START HERE for the 2026-09-18/19 session: T410, A01-A03 scoping, the AUD-MINRR-STYLEBLIND fix-then-correction arc, the four-audit implementation batch (3 rounds), the fix-effectiveness crash, and the PT-H0x audit review, all in one place with links.
 - **`docs/audits/2026-09-21-deferred-audit-items-batch.md`** — PT-H08/PT-H03/PT-H01's own deferred real fixes, built without changing any live portfolio's resolved behavior; plus UW-07 and E09 from the broader deferred list. Records what's still deliberately unbuilt and why.
 - **`docs/audits/2026-09-21-utc-date-boundary-triage.md`** — triaged the 16 files docs/incidents/utc-vs-et-date-boundary.md scoped but deferred; fixed 3 risk-limit gates + 13 more real sites, ~90 left as likely-fine. Follow-up resolved the UNCLEAR tail + swept every remaining service: event-intelligence (4 sites) + ranking-engine's own US/HK-aware fix [timezone, DST]
