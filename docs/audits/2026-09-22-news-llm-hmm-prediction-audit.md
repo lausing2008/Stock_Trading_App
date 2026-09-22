@@ -13,7 +13,47 @@ their numbers was found wrong and corrected (see "A correction made during this 
 
 ---
 
-## TL;DR
+> ## ⚠ MATERIAL CORRECTION (added same day, after the user challenged the framing)
+>
+> **The user asked "check only this month on avg returns, it should be better" — and was right.
+> The pooled figures below are dominated by June–August and overstate the CURRENT state.**
+>
+> Benchmark-matched alpha (each outcome vs SPY over its own `entry_date` → `exit_date` window),
+> by month:
+>
+> | month | N | BUY alpha | t | SELL alpha | t | BUY−SELL gap |
+> |---|---|---|---|---|---|---|
+> | **2026-09** | 588 | **−0.32%** | **−0.99 (ns)** | +0.40% | 1.15 (ns) | **0.72 pp (ns)** |
+> | 2026-08 | 5,148 | −1.81% | −14.06 | +1.49% | 5.72 | 3.30 pp |
+> | 2026-07 | 4,387 | −2.02% | −13.20 | −0.20% | −0.83 | 1.82 pp |
+> | 2026-06 | 2,884 | −6.53% | −24.95 | +1.03% | 4.74 | 7.56 pp |
+> | 2026-05 | 122 | −3.13% | −4.14 | +0.79% | 0.79 | 3.92 pp |
+>
+> **September BUY alpha is statistically indistinguishable from zero (t = −0.99), and the
+> BUY/SELL inversion is no longer significant either.** The trajectory is a monotone improvement:
+> **−6.53% → −2.02% → −1.81% → −0.32%** over four months. The system is now roughly break-even
+> on a benchmark-relative basis, not the badly-inverted engine the pooled numbers imply.
+>
+> **Three caveats that keep this from being a clean "fixed" verdict:**
+> 1. **Lower power.** n=588 vs August's 5,148; the 95% CI on September's alpha spans roughly
+>    −0.95% to +0.31%. A real but smaller negative alpha cannot be ruled out.
+> 2. **September is censored and horizon-biased.** Only 649 of its BUY outcomes have resolved, and
+>    **75.5% are SHORT-horizon** (vs 39% in August) because longer horizons have not matured yet.
+>    SHORT is consistently the least-bad horizon. Horizon-matched, September still beats August
+>    (SHORT −0.55% vs −1.15%; SWING −2.05% vs −3.11%; GROWTH −2.44% vs −2.81%), so the improvement
+>    is real — but the headline number flatters it.
+> 3. **The measurement regime changed on 2026-09-02** (`AUD-SIGNAL3-EVALSELECTIONBIAS`). September
+>    is the first month measured under the fixed selection logic, so part of the improvement may be
+>    *measurement* rather than *system*. This cannot be separated with current data; it resolves
+>    naturally as October accumulates.
+>
+> **What this changes:** the Tier-3 "the ranking must be rebuilt" recommendation is **downgraded**.
+> The right read is that something between June and September worked, and the priority is to
+> identify what, protect it, and keep going — not to rebuild from scratch. Everything in §3C
+> remains a correct description of the **pooled May–September** population; it is no longer a safe
+> description of the system as it stands today.
+
+## TL;DR (pooled May–September — read the correction above first)
 
 **THE HEADLINE: the signal engine is inverted, not merely weak.** SELL signals outperform BUY
 signals by **3.67 pp** (SELL +1.19%, n=4,838 vs BUY −2.48%, n=13,238), confirmed on two
@@ -679,7 +719,16 @@ without waiting on the hard problem in item 5.
 
 ### Tier 3 — the actual problem
 
-8. **The entry ranking must be rebuilt; filtering cannot save it** (§3C). Unfiltered −1.55% →
+8. **[DOWNGRADED by the correction box at the top of this document.]** The rebuild framing below
+   describes the **pooled May–September** population. On September data alone, BUY alpha is
+   −0.32% (t = −0.99, not significant) and the inversion is no longer significant. **The revised
+   priority is diagnostic, not reconstructive: find out what changed between June and September,
+   confirm it is a system change rather than the 2026-09-02 measurement-regime change, and
+   protect it.** Re-read the rest of this item only if October data reverts to the June–August
+   pattern.
+
+   *(Original text, still accurate for the pooled population:)*
+   **The entry ranking must be rebuilt; filtering cannot save it** (§3C). Unfiltered −1.55% →
    fully filtered −1.11%; ~1,020 cells searched with no positive subset; no holding period from
    1–20 days is profitable. **But the inversion evidence says the raw features do contain signal**
    — a monotone −3.67 pp BUY/SELL spread is information, pointed the wrong way.

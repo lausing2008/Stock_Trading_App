@@ -936,6 +936,18 @@ def filter_audit(
         "news_sentiment_flag": lambda v: v in ("strongly_negative", "negative"),
         "rs_flag":             lambda v: v == "lagging_sector",
         "options_flag":        lambda v: v in ("elevated_put_volume", "slightly_elevated_puts"),
+        # AUD-NEWSGATE-UNMEASURED (2026-09-22): hot_news_flag was the ONE compressing gate in this
+        # engine that no measurement path ever scored — absent from both this dict and
+        # SUPPRESSION_BOOLEAN, and with no outcome table of its own (unlike squeeze / prebreakout /
+        # options-flow / dark-pool, which all have one). That blind spot is how a BACKWARDS sign
+        # survived: measured over 150 days, material-NEGATIVE news is followed by the HIGHEST
+        # benchmark-relative return of any news bucket (+1.64pp alpha, n=977), yet
+        # "material_negative" is precisely the value that compresses the fused score by x0.70/x0.85
+        # at generators/signals.py:2466-2470. Only "material_negative" belongs here:
+        # "material_other" is logged-but-never-applied (signals.py:2470) and "none" is the default,
+        # so scoring either as a suppression would dilute the very effect this is meant to expose.
+        # See docs/audits/2026-09-22-news-llm-hmm-prediction-audit.md.
+        "hot_news_flag":       lambda v: v == "material_negative",
     }
 
     stock_ids = list({r.stock_id for r in rows})
