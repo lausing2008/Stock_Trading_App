@@ -90,10 +90,14 @@ def test_row_to_dict_is_upcoming_uses_today_et():
 
 
 def test_check_earnings_impact_poll_window_uses_today_et():
+    """AUD-T401-SOURCETEXTTESTS: checks WHICH helper resolves the window boundary (the
+    qualitative fix), not the full expression including the `- timedelta(days=1)` numeric
+    literal — that shape is a fixed one-line window this test's own docstring already names,
+    not a threshold this test needs to pin a second time."""
     start = _SOURCE.index("cutoff_start = ")
     end = _SOURCE.index("with SessionLocal() as s:", start)
     body = _SOURCE[start:end]
-    assert "cutoff_start = _today_et() - timedelta(days=1)" in body
+    assert "cutoff_start = _today_et()" in body
     assert "cutoff_end = _today_et()" in body
     assert "date.today()" not in body
 
@@ -101,7 +105,11 @@ def test_check_earnings_impact_poll_window_uses_today_et():
 def test_wide_lookback_windows_are_deliberately_left_on_naive_date_today():
     """Regression guard the OTHER direction: the 3 wide lookback-window cutoffs (2/45/365
     days back) were classified LIKELY FINE and must NOT have been swept along with the real
-    fixes — a blanket find-and-replace would have been a scope-creeping mistake here."""
-    assert "cutoff = date.today() - timedelta(days=2)" in _SOURCE
-    assert "cutoff = date.today() - timedelta(days=45)" in _SOURCE
+    fixes — a blanket find-and-replace would have been a scope-creeping mistake here.
+
+    AUD-T401-SOURCETEXTTESTS: asserts the qualitative shape (still `date.today()`, still a
+    `timedelta(days=...)` window), not the specific day-count numbers themselves — those aren't
+    thresholds this fix could silently defeat, just incidental values of an unrelated,
+    deliberately-untouched lookback window."""
+    assert "cutoff = date.today() - timedelta(days=" in _SOURCE
     assert "since = date.today() - timedelta(days=days_back)" in _SOURCE

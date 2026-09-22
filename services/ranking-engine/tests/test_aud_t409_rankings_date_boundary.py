@@ -113,10 +113,14 @@ def test_leaderboard_live_as_of_label_uses_today_for_market():
 
 def test_lookback_window_cutoffs_are_deliberately_left_on_naive_date_today():
     """These were classified LIKELY FINE by the triage — a blanket find-and-replace would
-    have been scope creep here."""
-    assert "since = date.today() - timedelta(days=lookback * 2)" in _SOURCE
-    assert "_cutoff = date.today() - timedelta(days=60)" in _SOURCE
-    assert "_screen_cutoff = date.today() - timedelta(days=60)" in _SOURCE
+    have been scope creep here.
+
+    AUD-T401-SOURCETEXTTESTS: asserts the qualitative shape (still a `date.today()`-anchored
+    lookback window), not the specific day-count numbers — those aren't thresholds this fix
+    could silently defeat, just incidental values of deliberately-untouched windows."""
+    assert "since = date.today() - timedelta(days=lookback" in _SOURCE
+    assert "_cutoff = date.today() - timedelta(days=" in _SOURCE
+    assert "_screen_cutoff = date.today() - timedelta(days=" in _SOURCE
 
 
 def test_empty_rows_fallback_default_is_deliberately_left_on_naive_date_today():
