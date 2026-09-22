@@ -1569,3 +1569,38 @@ a bug in this new page's own composition logic.
 
 ---
 
+## AUD-REPORTSTAB-DEDUP — Reports' News/CAPE Tabs Deduped Against Event Intelligence (2026-09-22)
+
+User asked to review the Reports tab (this section's own Phase 1 build) against
+`intelligence.tsx` ("Event Intelligence" in the Research nav group) for duplication. Found two
+real ones: Reports' `NewsTab` and `intelligence.tsx`'s `OverviewTab` both compose the same
+`GET /events/overview`, and Reports' `CapeTab` and `intelligence.tsx`'s `ValuationTab` both
+compose the same `GET /events/valuation/cape` — two separate nav destinations rendering near-
+identical dashboards from the same data. In both cases `intelligence.tsx`'s version was
+strictly more complete: `OverviewTab` also renders the Market Pulse card and the cross-asset
+(yield curve/credit spread/dollar index) card that Reports' `NewsTab` lacked entirely, and
+Reports' `NewsTab` carried a now-false note claiming Market Pulse "is designed but not yet
+built" (T249-MARKETMOVER-P4, documented as **built** earlier in this very file). `ValuationTab`
+also carries a staleness warning (`stale`/`age_days`/`frozen_value_days`) and a CAPE history
+table that Reports' `CapeTab` never had.
+
+**Fix (user chose "delete duplicates, deep-link instead" over merging pages or patching both
+copies):** removed `NewsTab`/`CapeTab` and the `'news'`/`'cape'` tab keys from
+`frontend/src/pages/reports.tsx` entirely — Reports is now 5 tabs (Trend, Assets, Top Stocks,
+Money Flow, Self-Tuning), not 7. The two corresponding Reports nav items in `_app.tsx`'s
+`NAV_GROUPS` now point at `/intelligence?tab=overview` and `/intelligence?tab=valuation`
+instead of `/reports?tab=news`/`/reports?tab=cape`. `intelligence.tsx` didn't previously support
+`?tab=` deep-linking at all (always opened to Overview) — added the same `tabFromQuery()` +
+`router.query` + one-time-effect pattern `reports.tsx` already used, so both pages now support
+being deep-linked into any tab consistently. One consequence, left as-is rather than engineered
+around: the Reports nav GROUP now highlights as active when on `/intelligence` (since one of
+its items' path is `/intelligence`), alongside the Research group's own "Event Intelligence"
+item — a page reachable from two menus lights up both, which is correct given the deep-link,
+not a bug.
+
+Everything else on both pages (Trend/Assets/Top-Stocks/Money-Flow/Self-Tuning on Reports;
+Economic Calendar/Earnings/Insider/Congress/Catalyst/Risk/Political on Event Intelligence) was
+confirmed to be genuinely distinct content, not touched.
+
+---
+

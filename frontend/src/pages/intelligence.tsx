@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import {
@@ -33,6 +33,16 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'political', label: 'Political Contracts' },
   { key: 'valuation', label: 'Bubble Warning' },
 ];
+
+const VALID_TABS: Tab[] = ['overview', 'economic', 'earnings', 'insider', 'congress', 'catalyst', 'risk', 'political', 'valuation'];
+
+// AUD-REPORTSTAB-DEDUP (2026-09-22): Reports' own 'News & Macro' and 'CAPE / Bubble Warning'
+// nav items now deep-link here (?tab=overview / ?tab=valuation) instead of maintaining their
+// own duplicate tabs — mirrors reports.tsx's own tabFromQuery()/router.query pattern exactly.
+function tabFromQuery(q: string | string[] | undefined): Tab {
+  const v = Array.isArray(q) ? q[0] : q;
+  return (VALID_TABS as string[]).includes(v ?? '') ? (v as Tab) : 'overview';
+}
 
 function fmt(n: number | null | undefined, digits = 0): string {
   if (n == null) return '—';
@@ -739,7 +749,14 @@ export default function IntelligencePage() {
     return null;
   }
 
-  const [tab, setTab] = useState<Tab>('overview');
+  // Deep-linked from the Reports nav group (/intelligence?tab=X), matching reports.tsx's own
+  // tabFromQuery()/router.query pattern — router.query isn't populated until after hydration
+  // on first render (Next.js), so a one-time effect syncs the tab once it's ready.
+  const [tab, setTab] = useState<Tab>(() => tabFromQuery(router.query.tab));
+  useEffect(() => {
+    if (router.isReady) setTab(tabFromQuery(router.query.tab));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router.isReady, router.query.tab]);
 
   return (
     <div style={{ minHeight: '100vh', background: '#0a0a0a', color: '#f9fafb', fontFamily: 'system-ui, sans-serif' }}>
@@ -762,7 +779,7 @@ export default function IntelligencePage() {
           {TABS.map(t => (
             <button
               key={t.key}
-              onClick={() => setTab(t.key)}
+              onClick={() => { setTab(t.key); router.replace({ pathname: '/intelligence', query: { tab: t.key } }, undefined, { shallow: true }); }}
               style={{
                 background: 'none', border: 'none', cursor: 'pointer', padding: '12px 16px', fontSize: 13, fontWeight: 500,
                 color: tab === t.key ? '#f9fafb' : '#6b7280',

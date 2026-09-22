@@ -4,10 +4,12 @@
  * endpoint inventory this was built from). Same tab-array + per-tab-component structure as
  * intelligence.tsx, which this page follows deliberately rather than inventing a new layout.
  *
- * Six tabs: Trend, Assets, Top Stocks, Money Flow, News & Macro, Self-Tuning. Market toggle
- * (US/HK) scopes the market-specific tabs; Self-Tuning is market-agnostic (signal/paper-trading
- * calibration is global) and News & Macro is currently US-only at the source (economic
- * calendar / macro reactions are US Fed/BLS data).
+ * Five tabs: Trend, Assets, Top Stocks, Money Flow, Self-Tuning. Market toggle (US/HK) scopes
+ * the market-specific tabs; Self-Tuning is market-agnostic (signal/paper-trading calibration is
+ * global). AUD-REPORTSTAB-DEDUP (2026-09-22): the former News & Macro and CAPE / Bubble Warning
+ * tabs were removed as near-duplicates of intelligence.tsx's own Overview/Bubble Warning tabs —
+ * see CapeTab/NewsTab's own removal note further down for the full reasoning. Their nav items
+ * now deep-link straight to /intelligence.
  */
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
@@ -16,15 +18,20 @@ import { api, type RankingRow, type SectorGroup } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 type Market = 'US' | 'HK';
-type Tab = 'trend' | 'assets' | 'top' | 'flow' | 'news' | 'cape' | 'tuning';
+type Tab = 'trend' | 'assets' | 'top' | 'flow' | 'tuning';
 
+// AUD-REPORTSTAB-DEDUP (2026-09-22): 'News & Macro' and 'CAPE / Bubble Warning' tabs were
+// removed from here — both were near-duplicates of intelligence.tsx's own 'Overview' and
+// 'Bubble Warning' tabs (same /events/overview and /events/valuation/cape endpoints), and the
+// intelligence.tsx versions were strictly more complete (Market Pulse card, cross-asset card,
+// composite leaders, CAPE staleness warning + history table — none of which this page had).
+// The two Reports nav items for them now deep-link straight to /intelligence instead — see
+// _app.tsx's NAV_GROUPS.
 const TABS: { key: Tab; label: string }[] = [
   { key: 'trend',  label: 'Market Trend' },
   { key: 'assets', label: 'Key Assets' },
   { key: 'top',    label: 'Top Stocks' },
   { key: 'flow',   label: 'Money Flow' },
-  { key: 'news',   label: 'News & Macro' },
-  { key: 'cape',   label: 'CAPE / Bubble Warning' },
   { key: 'tuning', label: 'Self-Tuning' },
 ];
 
@@ -95,62 +102,6 @@ function TrendTab({ market }: { market: Market }) {
             </div>
           </>
         ) : <div style={{ color: '#6b7280' }}>Loading…</div>}
-      </div>
-    </div>
-  );
-}
-
-// ── CAPE / Bubble Warning ─────────────────────────────────────────────────────
-// Promoted from a card inside TrendTab to its own tab (2026-07-16) — a user asked "where is
-// the CAPE tab?", expecting a dedicated tab matching intelligence.tsx's "Bubble Warning" tab
-// precedent rather than a card buried inside Market Trend.
-function CapeTab() {
-  const { data: cape } = useSWR('cape', () => api.eventsCape());
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={card}>
-        <div style={sectionTitle}>CAPE / Bubble Warning</div>
-        {cape?.latest ? (
-          <>
-            <div style={{ fontSize: 32, fontWeight: 700, color: cape.latest.band === 'extreme' ? '#f87171' : cape.latest.band === 'high' ? '#fb923c' : cape.latest.band === 'elevated' ? '#f59e0b' : '#4ade80' }}>
-              {cape.latest.cape_value.toFixed(1)} <span style={{ fontSize: 16, fontWeight: 400, color: '#9ca3af', textTransform: 'capitalize' }}>{cape.latest.band}</span>
-            </div>
-            <div style={{ fontSize: 13, color: '#6b7280', marginTop: 10 }}>
-              Shiller CAPE (cyclically-adjusted P/E, S&amp;P 500) — a slow-moving macro valuation
-              signal. Historically elevated readings have preceded major corrections, but CAPE can
-              stay elevated for years before any correction — this is macro context, not a trade
-              trigger.
-            </div>
-          </>
-        ) : <div style={{ color: '#6b7280' }}>Loading…</div>}
-      </div>
-
-      <div style={card}>
-        <div style={sectionTitle}>Warning Bands</div>
-        <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
-          <thead>
-            <tr style={{ color: '#9ca3af', textAlign: 'left' }}>
-              <th style={{ padding: '6px 8px' }}>Band</th>
-              <th style={{ padding: '6px 8px' }}>CAPE Range</th>
-              <th style={{ padding: '6px 8px' }}>Basis</th>
-            </tr>
-          </thead>
-          <tbody>
-            {[
-              { band: 'Normal', color: '#4ade80', range: '< 30', basis: 'Long-run mean/median (1871–present) is ~16-17' },
-              { band: 'Elevated', color: '#f59e0b', range: '30–35', basis: 'Above historical norm' },
-              { band: 'High', color: '#fb923c', range: '35–40', basis: '1929 pre-crash peak was ~32-33' },
-              { band: 'Extreme', color: '#f87171', range: '≥ 40', basis: '2021 post-COVID peak ~38.6; Dec 1999 dot-com peak (all-time high) 44.19' },
-            ].map(row => (
-              <tr key={row.band} style={{ borderTop: '1px solid #1f2937', background: cape?.latest?.band?.toLowerCase() === row.band.toLowerCase() ? 'rgba(255,255,255,0.04)' : undefined }}>
-                <td style={{ padding: '6px 8px', fontWeight: 700, color: row.color }}>{row.band}</td>
-                <td style={{ padding: '6px 8px' }}>{row.range}</td>
-                <td style={{ padding: '6px 8px', color: '#9ca3af' }}>{row.basis}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
       </div>
     </div>
   );
@@ -444,73 +395,6 @@ function FlowTab({ market }: { market: Market }) {
   );
 }
 
-// ── News & Macro ──────────────────────────────────────────────────────────────
-function NewsTab() {
-  const { data } = useSWR('events-overview-reports', () => api.eventsOverview());
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={card}>
-        <div style={sectionTitle}>Latest Macro Reaction</div>
-        {data?.latest_macro_reaction ? (
-          <>
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>{data.latest_macro_reaction.title}</div>
-            <div style={{ fontSize: 13, color: '#d1d5db', lineHeight: 1.6 }}>{data.latest_macro_reaction.reaction_text}</div>
-          </>
-        ) : <div style={{ color: '#6b7280', fontSize: 13 }}>No macro reaction generated yet — fires automatically after a CPI/PPI/GDP/NFP release or FOMC statement.</div>}
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
-        <div style={card}>
-          <div style={sectionTitle}>Upcoming Calendar</div>
-          {data ? (
-            <div style={{ fontSize: 13, color: '#d1d5db', lineHeight: 2 }}>
-              <div>Economic events: <span style={{ fontWeight: 700 }}>{data.economic.upcoming_count}</span></div>
-              <div>Earnings: <span style={{ fontWeight: 700 }}>{data.earnings.upcoming_count}</span></div>
-              {data.economic.fomc_days_away != null && <div>Next FOMC: <span style={{ fontWeight: 700 }}>{data.economic.fomc_days_away}d away</span></div>}
-            </div>
-          ) : <div style={{ color: '#6b7280' }}>Loading…</div>}
-        </div>
-
-        <div style={card}>
-          <div style={sectionTitle}>Insider Top Buys</div>
-          {data?.insider.top_buys?.length ? (
-            <div style={{ fontSize: 13, lineHeight: 1.9 }}>
-              {data.insider.top_buys.slice(0, 6).map(b => (
-                <div key={b.symbol} style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ fontWeight: 600 }}>{b.symbol}</span>
-                  <span style={{ color: '#9ca3af' }}>{b.purchases} buys{b.net_value != null ? ` / $${(b.net_value / 1000).toFixed(0)}k` : ''}</span>
-                </div>
-              ))}
-            </div>
-          ) : <div style={{ color: '#6b7280', fontSize: 13 }}>No recent insider buys.</div>}
-        </div>
-
-        <div style={card}>
-          <div style={sectionTitle}>Congress Top Buys</div>
-          {data?.congress.top_buys?.length ? (
-            <div style={{ fontSize: 13, lineHeight: 1.9 }}>
-              {data.congress.top_buys.slice(0, 6).map(b => (
-                <div key={b.symbol} style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ fontWeight: 600 }}>{b.symbol}</span>
-                  <span style={{ color: '#9ca3af' }}>{b.company ?? ''}</span>
-                </div>
-              ))}
-            </div>
-          ) : <div style={{ color: '#6b7280', fontSize: 13 }}>No recent congress buys.</div>}
-        </div>
-      </div>
-
-      <div style={{ ...card, color: '#f59e0b', fontSize: 13 }}>
-        Market-level news sentiment monitoring (a "Market Pulse" mood score across general
-        headlines, distinct from the per-symbol news already on each stock page) is designed
-        but not yet built — see T249-MARKETMOVER-P4-MARKET-PULSE-NEWS-CARD in the improvements
-        tracker.
-      </div>
-    </div>
-  );
-}
-
 // ── Self-Tuning / Backtest Reports ───────────────────────────────────────────
 function TuningTab() {
   const { data: tuneStatus } = useSWR('signal-tune-status-reports', () => api.signalTuneStatus());
@@ -613,7 +497,7 @@ function TuningTab() {
   );
 }
 
-const VALID_TABS: Tab[] = ['trend', 'assets', 'top', 'flow', 'news', 'cape', 'tuning'];
+const VALID_TABS: Tab[] = ['trend', 'assets', 'top', 'flow', 'tuning'];
 
 function tabFromQuery(q: string | string[] | undefined): Tab {
   const v = Array.isArray(q) ? q[0] : q;
@@ -649,7 +533,7 @@ export default function ReportsPage() {
             ← Back
           </button>
           <h1 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Reports</h1>
-          <span style={{ color: '#6b7280', fontSize: 13 }}>Trend · Assets · Top Stocks · Money Flow · News · CAPE · Self-Tuning</span>
+          <span style={{ color: '#6b7280', fontSize: 13 }}>Trend · Assets · Top Stocks · Money Flow · Self-Tuning</span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
             {(['US', 'HK'] as Market[]).map(m => (
               <button
@@ -692,8 +576,6 @@ export default function ReportsPage() {
         {tab === 'assets' && <AssetsTab market={market} />}
         {tab === 'top'    && <TopStocksTab market={market} />}
         {tab === 'flow'   && <FlowTab market={market} />}
-        {tab === 'news'   && <NewsTab />}
-        {tab === 'cape'   && <CapeTab />}
         {tab === 'tuning' && <TuningTab />}
       </div>
     </div>
