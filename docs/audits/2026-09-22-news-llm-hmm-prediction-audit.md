@@ -843,6 +843,106 @@ significant). The HK headline gap is ~all universe composition: the 42 tracked "
 
 ---
 
+## 7. Measurement plan — how to tell whether any of this worked
+
+Written BEFORE the results are known, so the success criteria cannot be rationalised afterwards.
+
+### 7.1 The central finding: measure at the SIGNAL level, not the trade level
+
+Power analysis on the real distributions:
+
+| layer | unit | mean | sd | rate | to detect full closure to zero |
+|---|---|---|---|---|---|
+| Paper trades | P&L per trade | −$66.85 | $640.01 | 1.31/day | **~719 trades ≈ 550 trading days** |
+| Signals (day-clustered) | day-mean alpha | −1.967% | 5.152% | 144 signals/day over 91 days | **~52 trading days** |
+
+Trade-level P&L is the intuitive thing to watch and it is **the wrong instrument**: at 1.31
+trades/day with a $640 standard deviation, detecting that expectancy reached breakeven takes
+roughly **1.5 years**. Detecting the sizing fix's own +$11.58/trade effect would take ~24,000
+trades — infeasible by two orders of magnitude.
+
+Day-clustered signal alpha is ~10× more efficient. Clustering by day (not treating 144 same-day
+signals as independent) is required — within-day signals are heavily correlated, and naive
+per-signal t-statistics overstate significance badly.
+
+**Detectable effect sizes at the day level** (80% power, α=0.05, n_days ≈ 208/d²):
+
+| improvement to detect | trading days needed |
+|---|---|
+| 2.0 pp | ~52 (≈10 weeks) |
+| 1.5 pp | ~92 |
+| 1.0 pp | ~208 (≈10 months) |
+
+So: closing the whole −1.97pp gap is detectable in about ten weeks. Anything subtler than ~1.5pp
+is not practically measurable on this data rate, which is itself a design constraint — prefer
+few large changes over many small ones, because small ones cannot be validated.
+
+### 7.2 Pre-registered criteria, per change
+
+| change | primary metric | success | failure | earliest read |
+|---|---|---|---|---|
+| **Confidence sizing off** (`327eb47`) | already measured counterfactually | — | — | **done: +$1,425 (17% of loss), expectancy −66.85 → −55.27** |
+| | forward: no `Size 1.25×` notes on new entries | 0 occurrences | any occurrence | next entry |
+| | forward: Spearman(notional, pct_return) | ≥ −0.10 | still ≤ −0.20 | ~60 trades |
+| **HK regime scoped** (`af74d29`) | HK `market_regime` tag mix | `bull` share < 60% | still > 90% | ~10 trading days |
+| | HK day-clustered alpha | improves ≥ 1.5pp | unchanged/worse | ~90 trading days (HK volume is lower) |
+| **Gates instrumented** (`0d2ecc3`, `e55f216`) | `alpha_edge_pct` per filter, tracked over time | trend visible | — | continuous |
+
+Note the asymmetry: the sizing change is **already validated** on historical data because position
+size scales P&L linearly, so the counterfactual is computable. The HK regime change is **not**
+counterfactually computable — it alters which signals fire and at what score — so it genuinely
+requires forward data.
+
+**Caveat on the sizing counterfactual:** it is first-order. Position size interacts with finite
+capital (a smaller position leaves more for the next trade) and with `min_position_value` gates,
+so the true effect is approximately, not exactly, +$1,425.
+
+### 7.3 The queries
+
+```bash
+# 1. Counterfactual / actual sizing effect (re-runnable as trades accumulate)
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c "
+WITH t AS (SELECT pnl, CASE WHEN entry_decision_notes::text LIKE '%Size 1.25%' THEN 1.25
+  WHEN entry_decision_notes::text LIKE '%Size 0.75%' THEN 0.75 ELSE 1.00 END AS mult
+  FROM paper_trades WHERE exit_time IS NOT NULL AND pnl IS NOT NULL)
+SELECT count(*), round(sum(pnl)::numeric,0) actual, round(sum(pnl/mult)::numeric,0) flat FROM t;"
+
+# 2. Day-clustered alpha (THE headline metric) — add a date filter to compare periods
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c "
+WITH spy AS (SELECT p.ts::date d, p.close FROM prices p JOIN stocks s ON s.id=p.stock_id
+  WHERE s.symbol='SPY' AND p.timeframe='D1' AND p.ts >= '2026-04-01'),
+per_day AS (SELECT o.signal_date::date d, avg(o.pct_return-(se.close-sb.close)/sb.close) a
+  FROM signal_outcomes o JOIN spy sb ON sb.d=o.entry_date::date
+  JOIN spy se ON se.d=o.exit_date::date WHERE o.signal_direction='BUY' GROUP BY 1)
+SELECT count(*) n_days, round((100*avg(a))::numeric,3) mean_alpha_pct,
+       round((avg(a)/(stddev(a)/sqrt(count(*))))::numeric,2) t_day FROM per_day;"
+
+# 3. HK regime tag mix — should shift away from 'bull'
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c "
+SELECT s.market, o.market_regime, count(*) FROM signal_outcomes o JOIN stocks s ON s.id=o.stock_id
+WHERE o.signal_direction='BUY' AND o.signal_date >= '2026-09-22' GROUP BY 1,2 ORDER BY 1,3 DESC;"
+
+# 4. Filter verdicts on alpha (watch alpha_edge_pct move)
+docker exec stockai-signal-engine-1 python3 -c "
+import httpx; d=httpx.get('http://localhost:8005/signals/filter_audit',
+  params={'lookback_days':180,'hold_days':6},timeout=240).json()
+print(d['overall_avg_alpha_pct'], d['n_with_alpha'])
+[print(f['filter'], f['alpha_edge_pct'], f['alpha_verdict']) for f in d['by_filter_name']]"
+```
+
+### 7.4 What this implies for the remaining work
+
+Running query 2 manually every few weeks is exactly the failure mode that let a backwards news
+gate survive for months. **Phase 0d (scheduled `filter_audit` persistence) is therefore the
+highest-value remaining item** — it converts this plan from "remember to check" into "it tells
+you", and it is the only remaining Phase 0 item.
+
+Second implication: because nothing below ~1.5pp is measurable at this data rate, **resist
+shipping many small unvalidated changes**. Each one consumes the same ten-week measurement window
+while making attribution harder. Prefer one substantial change per window.
+
+---
+
 ## What to check if this looks wrong
 
 ```bash
