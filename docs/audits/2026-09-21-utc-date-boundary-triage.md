@@ -125,3 +125,46 @@ that pinned the old expression in source text — reworded to avoid tripping
 literal inside an otherwise-qualitative "which helper is called" check would have counted as a
 new numeric threshold pin). Full suite: market-data 4164 passing (0 failures — the two
 pre-existing flaky ones now fixed too), signal-engine 504 passing.
+
+## Follow-up: the UNCLEAR tail + every remaining service (commit `ad23af2`)
+
+The pass above left several sites flagged UNCLEAR ("not read in depth, worth the same triage in
+a future pass") and was itself scoped to market-data/signal-engine only. A second research pass
+resolved every UNCLEAR site with a definitive verdict and grepped the same pattern across every
+remaining service (event-intelligence, ranking-engine, ml-prediction, portfolio-optimizer,
+strategy-engine, technical-analysis — api-gateway and news-intelligence have zero occurrences).
+
+**Confirmed real, fixed:**
+- **`event-intelligence/earnings.py`** (4 sites): `get_upcoming_earnings()` and
+  `get_days_to_earnings()` both used `today` as an inclusive lower bound for "is this earnings
+  event upcoming" — a real today-ET event could silently drop off for part of an evening.
+  `_row_to_dict()`'s `is_upcoming` flag had the same defect per-row. `check_earnings_impact_
+  poll()`'s `[yesterday, today]` recheck window shifted to `[today, tomorrow]` during the bug
+  window, missing a real yesterday-after-market report still unresolved (self-heals once the
+  date rolls over, so exposure is narrow but real). This file had no shared `_today_et()`
+  helper at all before this fix — added as this file's own copy.
+- **`ranking-engine/routes.py`** (`_persist_rankings()` + `_leaderboard_live()`): the more
+  interesting case — this file ranks BOTH US and HK stocks, sometimes in the same batch (a
+  manual/admin `POST /rankings/refresh` with no `market` filter processes every active stock
+  across every market in one call; the scheduler itself always passes a market, so the real
+  scheduled path was never actually at risk). A single shared `date.today()` for the whole
+  batch would have mis-dated `Ranking.as_of` for US rows specifically during the evening bug
+  window. A plain ET-only `_today_et()` copy would have been the WRONG fix here — it would
+  still mis-date HK rows, which run on a genuinely different trading day. Built
+  `_today_for_market()` instead, resolving the correct trading day PER STOCK (America/New_York
+  for US, Asia/Hong_Kong for HK) rather than once for the whole batch.
+
+**Resolved UNCLEAR sites with a definitive LIKELY FINE, not fixed:** `congress.py` (recency-
+decay smoothing and a display-only field, no gate reads either), `political.py` (lookback
+windows), `macro_reaction.py` (gated by cron jobs confirmed scheduled only 8am-2pm ET, contingent
+on that scheduling holding; the one admin-triggerable site's off-by-one only reruns an
+idempotent query one day early, never writes a wrong value), and most of `ranking-engine/
+routes.py`'s own remaining sites (empty-data fallback defaults that never override real
+persisted data, and wide lookback-window cutoffs).
+
+**Other services** (ml-prediction, portfolio-optimizer, strategy-engine, technical-analysis):
+every occurrence is a training lookback window, a leakage guard, or a rotation index — all
+LIKELY FINE, consistent with the original blanket classification.
+
+19 new tests across 2 files, all sabotage-verified. Full suites: ranking-engine 169 passing,
+event-intelligence 459 passing, both 0 failures.
