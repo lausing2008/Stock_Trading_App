@@ -340,7 +340,7 @@ def _execute_buy(order: ConditionalOrder, portfolio: PaperPortfolio, live_price:
     else:
         gate_source = "fallback"
         should_enter, score, se_notes = _should_enter(
-            order.symbol, signal_data, live_price, game_plan, cfg, kscore=kscore_f,
+            session, order.symbol, signal_data, live_price, game_plan, cfg, kscore=kscore_f,
         )
         if not should_enter:
             return False, (se_notes[0] if se_notes else "Entry gate rejected"), None

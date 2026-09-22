@@ -1799,7 +1799,7 @@ _hk_regime_cache: dict = {}
 _hk_regime_cache_ts: float = 0.0
 
 
-def _compute_hk_breadth() -> float | None:
+def _compute_hk_breadth(session=None) -> float | None:
     """% of tracked HK stocks trading above their own 200-day SMA.
 
     Distinguishes a broad HSI decline from a handful of mega-caps dragging the index
@@ -1807,45 +1807,60 @@ def _compute_hk_breadth() -> float | None:
     tell these apart. Uses the existing tracked HK universe (no HSI constituent list
     needed) — only stocks with >=200 daily bars are counted, mirroring the sample the
     US breadth_pct calculation implicitly relies on via its own universe.
+
+    AUD-CONNPOOL-NESTEDSESSION (2026-09-22): `session` is optional — pass the CALLER's
+    already-open session when one exists (this function is reachable from
+    `paper_trading_step()`'s own per-scan-cycle regime lookup, which already holds one open
+    for its whole multi-portfolio loop; the previous version always opened a second,
+    independent connection here on top of that, the same bug class as the production
+    incident this comment's own audit tag names — see docs/incidents/db-connection-pool-
+    exhaustion.md). Falls back to opening its own session when called standalone (e.g. the
+    `/stocks/regime?market=HK` route, which has no session of its own to lend).
     """
     try:
-        with SessionLocal() as session:
-            rows = session.execute(
-                select(Stock.id, Stock.symbol).where(
-                    Stock.market == "HK", Stock.active.is_(True),
-                    # BUG-DELISTED-GENERATION-BLIND: a delisted stock frozen at its last real
-                    # price shouldn't count toward the market-wide breadth %, which feeds
-                    # regime classification.
-                    Stock.delisted.is_(False),
-                )
-            ).all()
-            if not rows:
-                return None
-            stock_ids = [r.id for r in rows]
-            price_rows = session.execute(
-                select(Price.stock_id, Price.close)
-                .where(Price.stock_id.in_(stock_ids), Price.timeframe == TimeFrame.D1)
-                .order_by(Price.stock_id, Price.ts.desc())
-            ).all()
-            from collections import defaultdict as _dd
-            closes_by_stock: dict[int, list[float]] = _dd(list)
-            for sid, close in price_rows:
-                if len(closes_by_stock[sid]) < 200:
-                    closes_by_stock[sid].append(float(close))
-            above = total = 0
-            for sid, closes in closes_by_stock.items():
-                if len(closes) < 200:
-                    continue
-                total += 1
-                sma200 = sum(closes) / len(closes)
-                if closes[0] >= sma200:  # closes[0] is most recent (DESC order)
-                    above += 1
-            if total < 10:  # too small a sample to be meaningful
-                return None
-            return round(above / total * 100, 1)
+        if session is not None:
+            return _compute_hk_breadth_with(session)
+        with SessionLocal() as _own_session:
+            return _compute_hk_breadth_with(_own_session)
     except Exception as exc:
         log.warning("paper.hk_breadth_calc_failed", error=str(exc))
         return None
+
+
+def _compute_hk_breadth_with(session) -> float | None:
+    rows = session.execute(
+        select(Stock.id, Stock.symbol).where(
+            Stock.market == "HK", Stock.active.is_(True),
+            # BUG-DELISTED-GENERATION-BLIND: a delisted stock frozen at its last real
+            # price shouldn't count toward the market-wide breadth %, which feeds
+            # regime classification.
+            Stock.delisted.is_(False),
+        )
+    ).all()
+    if not rows:
+        return None
+    stock_ids = [r.id for r in rows]
+    price_rows = session.execute(
+        select(Price.stock_id, Price.close)
+        .where(Price.stock_id.in_(stock_ids), Price.timeframe == TimeFrame.D1)
+        .order_by(Price.stock_id, Price.ts.desc())
+    ).all()
+    from collections import defaultdict as _dd
+    closes_by_stock: dict[int, list[float]] = _dd(list)
+    for sid, close in price_rows:
+        if len(closes_by_stock[sid]) < 200:
+            closes_by_stock[sid].append(float(close))
+    above = total = 0
+    for sid, closes in closes_by_stock.items():
+        if len(closes) < 200:
+            continue
+        total += 1
+        sma200 = sum(closes) / len(closes)
+        if closes[0] >= sma200:  # closes[0] is most recent (DESC order)
+            above += 1
+    if total < 10:  # too small a sample to be meaningful
+        return None
+    return round(above / total * 100, 1)
 
 
 # T237-REG3: HK regime had no hysteresis at all, unlike the US side's T232-DE7 mechanism —
@@ -1857,7 +1872,7 @@ _hk_regime_pending_state: str | None = None
 _hk_regime_pending_count: int = 0
 
 
-def _fetch_hk_market_regime(cfg: dict) -> dict:
+def _fetch_hk_market_regime(cfg: dict, session=None) -> dict:
     """HK regime detection using dual SMA (50 + 200) + breadth confirmation.
 
     Returns a simplified regime dict compatible with the US version.
@@ -1951,7 +1966,7 @@ def _fetch_hk_market_regime(cfg: dict) -> dict:
         # concentrated in a few heavyweights (breadth NOT weak) is downgraded one tier —
         # broad-based weakness (breadth IS weak, <40%) leaves the call unchanged. Never
         # escalates a milder reading — this only softens bear/risk_off, one direction.
-        breadth_pct = _compute_hk_breadth()
+        breadth_pct = _compute_hk_breadth(session)
         result["breadth_pct"] = breadth_pct
         if breadth_pct is not None:
             result["breadth_weak"] = breadth_pct < 40.0
@@ -2177,6 +2192,7 @@ _MAX_ROC10_FOR_ENTRY_PAPER = 10.0
 
 
 def _should_enter(
+    session,
     symbol: str,
     signal_data: dict,
     live_price: float,
@@ -2355,7 +2371,6 @@ def _should_enter(
     _macro_evt = reasons.get("macro_blackout")
     if _macro_evt is None:
         try:
-            from db import SessionLocal
             from sqlalchemy import text
             # BUG232-DEADCODE: this redundant local `from datetime import datetime, timezone,
             # timedelta` (datetime/timezone are already imported at module level, line ~34)
@@ -2368,16 +2383,28 @@ def _should_enter(
             # of-day gate's OWN try/except, making both AUD232-005 hard rejects dead code in
             # production despite looking correctly ported. Found while writing regression
             # tests for T232-DL-DUALSCORER-DEBT's already-ported DE-only hard rejects.
+            #
+            # AUD-CONNPOOL-NESTEDSESSION (2026-09-22): this used to open its own `with
+            # SessionLocal() as _evsess:` here — a SECOND connection from the pool, opened on
+            # EVERY candidate whose signal reasons didn't already carry macro_blackout,
+            # while _scan_for_entries()'s own outer session was still held open for its whole
+            # scan cycle. Same bug class as the production incident that took down
+            # event-intelligence the same day (see docs/incidents/db-connection-pool-
+            # exhaustion.md) — here potentially worse, since this runs per-CANDIDATE rather
+            # than per-portfolio, though dormant unless decision-engine is down/not primary
+            # (this is the fallback scorer). Fixed by reusing the CALLER's already-open
+            # `session` (a plain read — no begin_nested() needed, unlike _persist_scan_log()'s
+            # own INSERT: a failed SELECT never leaves the session in flush-error state the
+            # way a failed write can).
             _window_end = _now + timedelta(hours=2)
-            with SessionLocal() as _evsess:
-                _ev_row = _evsess.execute(text(
-                    "SELECT title FROM economic_events "
-                    "WHERE event_date >= :now AND event_date <= :end "
-                    "AND importance IN ('high', 'critical') "
-                    "LIMIT 1"
-                ), {"now": _now.isoformat(), "end": _window_end.isoformat()}).fetchone()
-                if _ev_row:
-                    _macro_evt = _ev_row.title
+            _ev_row = session.execute(text(
+                "SELECT title FROM economic_events "
+                "WHERE event_date >= :now AND event_date <= :end "
+                "AND importance IN ('high', 'critical') "
+                "LIMIT 1"
+            ), {"now": _now.isoformat(), "end": _window_end.isoformat()}).fetchone()
+            if _ev_row:
+                _macro_evt = _ev_row.title
         except Exception:
             pass  # DB query failure → allow entry (fail-open)
     if _macro_evt:
@@ -6835,7 +6862,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             session, stock.id, _open_stock_ids, _open_closes_cache,
         )
         se_result = _should_enter(
-            stock.symbol, signal_data, live_price, game_plan, cfg, live_regime,
+            session, stock.symbol, signal_data, live_price, game_plan, cfg, live_regime,
             kscore=kscore_f, max_open_corr=_max_corr, recent_win_rate=_recent_wr,
         )
 
@@ -7245,7 +7272,7 @@ def paper_trading_step(market: str | None = None) -> None:
                     if not pcfg.get("enable_regime_filter", True):
                         _regime_by_market[mkt] = None
                     elif mkt == "HK":
-                        _regime_by_market[mkt] = _fetch_hk_market_regime(pcfg)
+                        _regime_by_market[mkt] = _fetch_hk_market_regime(pcfg, session)
                     else:
                         _regime_by_market[mkt] = _fetch_market_regime(pcfg)
                 return _regime_by_market[mkt]

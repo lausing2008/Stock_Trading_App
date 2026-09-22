@@ -303,7 +303,7 @@ def replay_should_enter(
             "confidence_delta": confidence_delta,
         }
         should, _score, _notes = _should_enter(
-            stock.symbol, signal_data, live_price, game_plan, cfg, live_regime=None, kscore=None,
+            session, stock.symbol, signal_data, live_price, game_plan, cfg, live_regime=None, kscore=None,
             as_of=_entry_as_of(outcome.entry_date or outcome.signal_date, market),
         )
         if not should:
@@ -466,7 +466,7 @@ def replay_extended_gates(
             "confidence_delta": confidence_delta,
         }
         should, _score, _notes = _should_enter(
-            stock.symbol, signal_data, live_price, game_plan, cfg, live_regime=None, kscore=kscore,
+            session, stock.symbol, signal_data, live_price, game_plan, cfg, live_regime=None, kscore=kscore,
             as_of=_entry_as_of(outcome.entry_date or outcome.signal_date, market),
         )
         if not should:
@@ -790,7 +790,7 @@ def replay_should_enter_excluding_scores(
             "confidence_delta": confidence_delta,
         }
         should, score, _notes = _should_enter(
-            stock.symbol, signal_data, live_price, game_plan, cfg, live_regime=None, kscore=None,
+            session, stock.symbol, signal_data, live_price, game_plan, cfg, live_regime=None, kscore=None,
             as_of=_entry_as_of(outcome.entry_date or outcome.signal_date, market),
         )
         if not should or score in excluded_scores:
@@ -1563,7 +1563,7 @@ def verify_replay_fidelity(
             "confidence_delta": confidence_delta,
         }
         should, _score, _notes = _should_enter(
-            stock.symbol, signal_data, live_price, game_plan, cfg, live_regime=None, kscore=None,
+            session, stock.symbol, signal_data, live_price, game_plan, cfg, live_regime=None, kscore=None,
             as_of=_entry_as_of(outcome.entry_date or outcome.signal_date, market),
         )
         if should:
@@ -1716,7 +1716,7 @@ def replay_full_signal_history(
             "confidence_delta": confidence_delta,
         }
         should, _score, _notes = _should_enter(
-            stock.symbol, signal_data, live_price, game_plan, cfg, live_regime=None, kscore=None,
+            session, stock.symbol, signal_data, live_price, game_plan, cfg, live_regime=None, kscore=None,
             as_of=_entry_as_of(outcome.entry_date or outcome.signal_date, market),
         )
         if not should:

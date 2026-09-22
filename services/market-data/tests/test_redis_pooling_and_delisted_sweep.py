@@ -113,8 +113,12 @@ def test_scan_for_entries_buy_candidate_query_excludes_delisted_stocks():
 
 
 def test_compute_hk_breadth_excludes_delisted_stocks():
+    """AUD-CONNPOOL-NESTEDSESSION (2026-09-22): _compute_hk_breadth() is now a thin wrapper
+    (session=None -> opens its own; a passed-in session is reused, avoiding a second pool
+    connection when called from inside paper_trading_step()'s own already-open scan) around
+    _compute_hk_breadth_with(), which carries the real query — extract both."""
     start = _PTE_SOURCE.index("def _compute_hk_breadth(")
-    end = _PTE_SOURCE.index("\ndef ", start + 1)
+    end = _PTE_SOURCE.index("\ndef ", _PTE_SOURCE.index("\ndef _compute_hk_breadth_with(") + 1)
     body = _PTE_SOURCE[start:end]
     assert "Stock.delisted.is_(False)" in body
 

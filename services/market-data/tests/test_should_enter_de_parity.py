@@ -88,7 +88,7 @@ def _score_only(live_regime=None, kscore=None, cfg_overrides=None, game_plan_ove
     if signal_data_overrides:
         signal_data.update(signal_data_overrides)
     should_enter, score, notes = _should_enter(
-        "TEST", signal_data, live_price, game_plan, cfg, live_regime, kscore=kscore,
+        None, "TEST", signal_data, live_price, game_plan, cfg, live_regime, kscore=kscore,
         max_open_corr=max_open_corr, as_of=as_of, recent_win_rate=recent_win_rate,
     )
     return should_enter, score, notes
@@ -222,7 +222,7 @@ def test_market_closed_hard_rejects_with_score_negative_99_and_no_further_checks
     import src.services.paper_trading_engine as pte
     monkeypatch.setattr(pte, "_is_market_hours", lambda market="US", as_of=None: False)
     live_price, game_plan, signal_data, cfg = _neutral_inputs()
-    should_enter, score, notes = pte._should_enter("TEST", signal_data, live_price, game_plan, cfg, None)
+    should_enter, score, notes = pte._should_enter(None, "TEST", signal_data, live_price, game_plan, cfg, None)
     assert should_enter is False
     assert score == -99
     assert any("Market closed" in n for n in notes)
@@ -298,7 +298,7 @@ def test_price_more_than_6_percent_above_breakout_is_a_hard_reject():
     live_price, game_plan, signal_data, cfg = _neutral_inputs()
     game_plan.update({"breakout": 100.0, "stop": 100.0, "take_profit": 130.0})
     should_enter, score, notes = _should_enter(
-        "TEST", signal_data, 107.0, game_plan, cfg, None,
+        None, "TEST", signal_data, 107.0, game_plan, cfg, None,
     )
     assert should_enter is False
     assert score == -99
@@ -312,7 +312,7 @@ def test_price_comfortably_below_the_6_percent_threshold_does_not_reject():
     live_price, game_plan, signal_data, cfg = _neutral_inputs()
     game_plan.update({"breakout": 100.0, "stop": 96.5, "take_profit": 125.5})
     should_enter, score, notes = _should_enter(
-        "TEST", signal_data, 105.5, game_plan, cfg, None,
+        None, "TEST", signal_data, 105.5, game_plan, cfg, None,
     )
     assert not any("extended move" in n for n in notes)
 
@@ -327,7 +327,7 @@ def test_extension_threshold_is_configurable_via_cfg():
     game_plan.update({"breakout": 100.0, "stop": 98.0, "take_profit": 116.0})  # rr = 13/5 = 2.6
     cfg["max_breakout_extension_pct"] = 2.0
     should_enter, score, notes = _should_enter(
-        "TEST", signal_data, 103.0, game_plan, cfg, None,  # 3% above breakout
+        None, "TEST", signal_data, 103.0, game_plan, cfg, None,  # 3% above breakout
     )
     assert should_enter is False
     assert any("extended move" in n for n in notes)
@@ -340,7 +340,7 @@ def test_choppy_regime_raises_the_minimum_rr_floor():
     # clears the neutral-regime floor (2.0) but not the choppy-regime floor (3.0 uncalibrated).
     live_price, game_plan, signal_data, cfg = _neutral_inputs()
     should_enter, score, notes = _should_enter(
-        "TEST", signal_data, live_price, game_plan, cfg, {"state": "choppy"},
+        None, "TEST", signal_data, live_price, game_plan, cfg, {"state": "choppy"},
     )
     assert should_enter is False
     assert score == -99
@@ -350,7 +350,7 @@ def test_choppy_regime_raises_the_minimum_rr_floor():
 def test_risk_off_regime_also_raises_the_minimum_rr_floor():
     live_price, game_plan, signal_data, cfg = _neutral_inputs()
     should_enter, score, notes = _should_enter(
-        "TEST", signal_data, live_price, game_plan, cfg, {"state": "risk_off"},
+        None, "TEST", signal_data, live_price, game_plan, cfg, {"state": "risk_off"},
     )
     assert should_enter is False
     assert any("R:R" in n and "below minimum" in n for n in notes)
@@ -359,7 +359,7 @@ def test_risk_off_regime_also_raises_the_minimum_rr_floor():
 def test_same_rr_passes_in_neutral_regime_that_fails_in_choppy():
     live_price, game_plan, signal_data, cfg = _neutral_inputs()
     should_enter_neutral, score_neutral, notes_neutral = _should_enter(
-        "TEST", signal_data, live_price, game_plan, cfg, {"state": "neutral"},
+        None, "TEST", signal_data, live_price, game_plan, cfg, {"state": "neutral"},
     )
     assert not any("below minimum" in n for n in notes_neutral)
 
@@ -368,7 +368,7 @@ def test_choppy_regime_rr_floor_can_be_cleared_with_a_wider_take_profit():
     live_price, game_plan, signal_data, cfg = _neutral_inputs()
     game_plan["take_profit"] = 130.0  # rr = (130-100)/5 = 6.0, clears the 3.0 choppy floor
     should_enter, score, notes = _should_enter(
-        "TEST", signal_data, live_price, game_plan, cfg, {"state": "choppy"},
+        None, "TEST", signal_data, live_price, game_plan, cfg, {"state": "choppy"},
     )
     assert not any("below minimum" in n for n in notes)
 
@@ -568,7 +568,7 @@ def _score_only_with_research(fake_response, live_regime=None, cfg_overrides=Non
         cfg.update(cfg_overrides)
     with patch.object(_httpx, "get", return_value=fake_response), \
          patch.object(pte, "_svc_token", return_value="fake-token"):
-        return _should_enter("TEST", signal_data, live_price, game_plan, cfg, live_regime)
+        return _should_enter(None, "TEST", signal_data, live_price, game_plan, cfg, live_regime)
 
 
 class _FakeResearchResponse:
@@ -630,7 +630,7 @@ def test_research_network_exception_is_fail_open_no_score_change():
     live_price, game_plan, signal_data, cfg = _neutral_inputs()
     with patch.object(_httpx, "get", side_effect=ConnectionError("no network in tests")), \
          patch.object(pte, "_svc_token", return_value="fake-token"):
-        should_enter, score, notes = _should_enter("TEST", signal_data, live_price, game_plan, cfg, None)
+        should_enter, score, notes = _should_enter(None, "TEST", signal_data, live_price, game_plan, cfg, None)
     assert not any(n.startswith("Research:") for n in notes)
 
 
@@ -658,7 +658,7 @@ def test_large_gap_alone_still_hard_rejects_as_before():
     """The pre-existing T171 behavior must be unchanged: a gap alone, above the full
     threshold, rejects regardless of volume."""
     live_price, game_plan, signal_data, cfg = _gap_inputs(gap_pct=0.05, volume_z=None)
-    should_enter, score, notes = _should_enter("TEST", signal_data, live_price, game_plan, cfg, None)
+    should_enter, score, notes = _should_enter(None, "TEST", signal_data, live_price, game_plan, cfg, None)
     assert should_enter is False
     assert score == -99
     assert any("exceeds limit" in n for n in notes)
@@ -668,7 +668,7 @@ def test_small_gap_with_normal_volume_is_not_rejected():
     """Half-threshold gap with normal (low) volume must NOT trip the new combined check —
     it's specifically the pairing with elevated volume that's suspicious."""
     live_price, game_plan, signal_data, cfg = _gap_inputs(gap_pct=0.03, volume_z=0.5)
-    should_enter, score, notes = _should_enter("TEST", signal_data, live_price, game_plan, cfg, None)
+    should_enter, score, notes = _should_enter(None, "TEST", signal_data, live_price, game_plan, cfg, None)
     assert not any("chasing a fresh spike" in n for n in notes)
 
 
@@ -676,7 +676,7 @@ def test_moderate_gap_with_elevated_volume_is_rejected():
     """The exact SNOW/DELL pattern this fix targets: a gap that clears half the threshold
     (but not the full threshold) combined with clearly-elevated same-day volume (z >= 1.5)."""
     live_price, game_plan, signal_data, cfg = _gap_inputs(gap_pct=0.03, volume_z=1.78, max_entry_gap_pct=0.04)
-    should_enter, score, notes = _should_enter("TEST", signal_data, live_price, game_plan, cfg, None)
+    should_enter, score, notes = _should_enter(None, "TEST", signal_data, live_price, game_plan, cfg, None)
     assert should_enter is False
     assert score == -99
     assert any("chasing a fresh spike" in n for n in notes)
@@ -686,7 +686,7 @@ def test_moderate_gap_with_volume_just_under_threshold_is_not_rejected():
     """volume_z just below the 1.5 cutoff must not trip the combined reject — confirms the
     threshold is a real boundary, not a low bar that fires on any positive volume_z."""
     live_price, game_plan, signal_data, cfg = _gap_inputs(gap_pct=0.03, volume_z=1.4, max_entry_gap_pct=0.04)
-    should_enter, score, notes = _should_enter("TEST", signal_data, live_price, game_plan, cfg, None)
+    should_enter, score, notes = _should_enter(None, "TEST", signal_data, live_price, game_plan, cfg, None)
     assert not any("chasing a fresh spike" in n for n in notes)
 
 
@@ -694,7 +694,7 @@ def test_gap_just_under_half_threshold_with_high_volume_is_not_rejected():
     """The gap side of the combined check must also be a real boundary — high volume alone,
     with a gap below half the max, must not trip it."""
     live_price, game_plan, signal_data, cfg = _gap_inputs(gap_pct=0.015, volume_z=3.0, max_entry_gap_pct=0.04)
-    should_enter, score, notes = _should_enter("TEST", signal_data, live_price, game_plan, cfg, None)
+    should_enter, score, notes = _should_enter(None, "TEST", signal_data, live_price, game_plan, cfg, None)
     assert not any("chasing a fresh spike" in n for n in notes)
 
 
@@ -703,5 +703,130 @@ def test_missing_volume_z_does_not_crash_the_combined_check():
     spurious reject — matching every other optional-reasons-field read in this function."""
     live_price, game_plan, signal_data, cfg = _gap_inputs(gap_pct=0.03, volume_z=None)
     del signal_data["reasons"]["volume_z"]
-    should_enter, score, notes = _should_enter("TEST", signal_data, live_price, game_plan, cfg, None)
+    should_enter, score, notes = _should_enter(None, "TEST", signal_data, live_price, game_plan, cfg, None)
+    assert not any("chasing a fresh spike" in n for n in notes)
+
+
+# ── AUD-CONNPOOL-NESTEDSESSION: macro-blackout check reuses the caller's session ───────────
+#
+# _should_enter() used to open its own `with SessionLocal() as _evsess:` here — a SECOND
+# connection from the pool on top of whatever _scan_for_entries()'s own outer session already
+# held, on EVERY candidate whose signal reasons didn't already carry macro_blackout. Same bug
+# class as docs/incidents/db-connection-pool-exhaustion.md's production incident (there, in
+# _persist_scan_log()) — here potentially worse, since this runs per-CANDIDATE rather than
+# per-portfolio, though dormant unless decision-engine is down/not primary (this is the
+# fallback scorer). Fixed by threading the caller's `session` through as _should_enter()'s
+# first parameter instead.
+
+def test_should_enter_takes_session_as_its_first_parameter():
+    import inspect
+    params = list(inspect.signature(_should_enter).parameters)
+    assert params[0] == "session"
+
+
+def test_should_enter_never_opens_its_own_sessionlocal():
+    """The exact regression this fix prevents — the live CODE must never actually OPEN a
+    SessionLocal() of its own (a second, independent connection from the pool), only use the
+    `session` parameter the caller already has open. Checks for the actual `with SessionLocal`
+    usage pattern specifically, not the bare word — the fix's own explanatory comment
+    legitimately mentions "SessionLocal()" in prose while describing what the old code did."""
+    import pathlib
+    src = pathlib.Path(_pte_module.__file__).read_text()
+    start = src.index("def _should_enter(")
+    end = src.index("\n\ndef ", start)
+    body = src[start:end]
+    assert "with SessionLocal(" not in body
+    assert "= SessionLocal(" not in body
+
+
+def test_should_enter_call_site_in_scan_for_entries_passes_session():
+    import pathlib
+    src = pathlib.Path(_pte_module.__file__).read_text()
+    assert (
+        "se_result = _should_enter(\n"
+        "            session, stock.symbol, signal_data, live_price, game_plan, cfg, live_regime,"
+    ) in src
+
+
+def test_should_enter_call_site_in_conditional_orders_passes_session():
+    import pathlib
+    co_path = pathlib.Path(_pte_module.__file__).resolve().parent / "conditional_orders.py"
+    src = co_path.read_text()
+    assert (
+        "should_enter, score, se_notes = _should_enter(\n"
+        "            session, order.symbol, signal_data, live_price, game_plan, cfg, kscore=kscore_f,"
+    ) in src
+
+
+def test_macro_blackout_query_reuses_a_real_passed_in_session_and_finds_a_real_event():
+    """Real, end-to-end proof the reused session actually works — not just that the source
+    text was edited correctly. Pops the sqlalchemy/db stubs, builds a real in-memory SQLite
+    engine + the real EconomicEvent model (matching test_drawdown_alert.py's established
+    technique), and confirms _should_enter(), given a real session with a real blackout row
+    inside the 2h window, actually queries it and rejects the candidate — proving the
+    session-reuse path is not just wired but functional."""
+    import sys
+    stubbed = ("sqlalchemy", "sqlalchemy.orm", "sqlalchemy.dialects", "sqlalchemy.dialects.postgresql", "db")
+    saved = {m: sys.modules.pop(m, None) for m in stubbed}
+
+    import importlib.util
+    import pathlib as _pl
+    from sqlalchemy import create_engine, text as _sa_text
+    from sqlalchemy.orm import Session as _RealSession
+
+    models_path = _pl.Path(__file__).resolve().parents[3] / "shared" / "db" / "models.py"
+    spec = importlib.util.spec_from_file_location("db_models_macro_blackout_test", models_path)
+    models = importlib.util.module_from_spec(spec)
+    sys.modules["db_models_macro_blackout_test"] = models
+    spec.loader.exec_module(models)
+
+    engine = create_engine("sqlite:///:memory:")
+    models.Base.metadata.create_all(engine, tables=[models.EconomicEvent.__table__])
+
+    # NOTE: the sqlalchemy/db stubs stay POPPED (real sqlalchemy stays active) through the
+    # entire _should_enter() call below, not just table setup — _should_enter()'s macro-
+    # blackout block does `from sqlalchemy import text` as a LOCAL import INSIDE the function
+    # body, evaluated at call time. Restoring the stub before calling _should_enter() would
+    # make that local import resolve to the MagicMock stub instead of the real `text`, which a
+    # real SQLAlchemy Session.execute() then rejects — silently swallowed by the function's own
+    # fail-open except-Exception, making the test pass for the wrong reason (or, as first
+    # written, fail with should_enter=True because the "query" never really ran at all).
+    try:
+        # Matches the autouse `_always_market_hours` fixture's own fixed clock exactly (noon
+        # ET on a Monday) — the event must land inside _should_enter()'s real 2h lookahead window.
+        _fixed_now = datetime(2026, 6, 15, 17, 0, tzinfo=timezone.utc)
+        with _RealSession(engine) as real_session:
+            # Inserted via raw SQL with the SAME .isoformat() string shape the real query below
+            # compares against — SQLite has no native datetime type and stores whatever format
+            # it's given; going through the ORM's own datetime adapter here would store a
+            # DIFFERENT (naive, space-separated) format that the query's tz-aware ISO strings
+            # could never lexicographically compare against correctly. Production Postgres has
+            # a real timestamp type and isn't affected by this — this is purely a
+            # same-format-in, same-format-out test-fixture concern.
+            real_session.execute(_sa_text(
+                "INSERT INTO economic_events (event_type, title, country, event_date, importance, source) "
+                "VALUES (:et, :t, :c, :ed, :imp, :src)"
+            ), {
+                "et": "fomc_meeting", "t": "FOMC Decision", "c": "US",
+                "ed": (_fixed_now + timedelta(minutes=30)).isoformat(),
+                "imp": "high", "src": "fed_calendar",
+            })
+            real_session.commit()
+
+            live_price, game_plan, signal_data, cfg = _neutral_inputs()
+            del signal_data["reasons"]["macro_blackout"]  # force the DB fallback path
+
+            should_enter, score, notes = _should_enter(
+                real_session, "TEST", signal_data, live_price, game_plan, cfg, None,
+            )
+    finally:
+        for m, stub in saved.items():
+            if stub is not None:
+                sys.modules[m] = stub
+            else:
+                sys.modules.pop(m, None)
+
+    assert should_enter is False
+    assert score == -99
+    assert any("Macro blackout" in n and "FOMC Decision" in n for n in notes)
     assert not any("chasing a fresh spike" in n for n in notes)
