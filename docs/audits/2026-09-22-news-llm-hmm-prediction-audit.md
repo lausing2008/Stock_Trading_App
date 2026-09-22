@@ -761,7 +761,36 @@ the reason a backwards news gate survived for months is that nothing scored it.
 | 0a | Score `hot_news_flag` in `filter_audit` | **DONE, deployed** | `0d2ecc3` |
 | 0b | Benchmark-relative (alpha) evaluation | **DONE, deployed** | `e55f216` |
 | 0c | News outcome table | **DESCOPED — see below** | — |
-| 0d | Scheduled `filter_audit` verdict persistence | **NOT DONE** | — |
+| 0d | Durable, scheduled effectiveness tracking | **DONE, deployed** | `8a72385` |
+
+**0d — built on what already existed, not a new table.** The `FixRecord`/`FixSnapshot` mechanism
+(from the user's own 2026-09-02 request: *"a dashboard to show the performance after we applied
+the fix… see if the fix really works"*) already had a register endpoint, a snapshot endpoint, a
+daily scheduled recheck job on `recheck_after_days`, and a UI at `/fix-effectiveness`. The only
+gap was WHAT it measured — absolute win rate and return, which §7.1 shows has no power.
+
+Added `_compute_day_clustered_alpha()` and composed it **at the snapshot route**, not inside the
+domain metric function, so it is domain-agnostic, leaves each metric function pure and
+independently testable, and lands as a new top-level key that leaves the UI's existing
+baseline/snapshot key-zip untouched on older records. Fail-soft: it reads the large `prices`
+table, and an observability failure must never cost a snapshot its primary metrics.
+
+Verified against real production data at deploy: **day-mean alpha −2.066%, sd 5.633, t_day −3.5,
+n_days 91, n_signals 13,238**. That is slightly worse than the −1.967% computed earlier in §7.1,
+and the difference is itself confirmation — §7.1 used SPY for every row, while this uses 2800.HK
+for HK, and the HK investigation found SPY was *flattering* HK.
+
+**Registered for tracking:** `AUD-REGIME-MARKETBLIND` (FixRecord #4), with the pre-registered
+criteria from §7.2 stored in `success_criteria` so they cannot be rewritten later. First snapshot
+correctly returned *"no resolved BUY outcomes with a matched benchmark window yet"* — the honest
+not-yet-measurable state rather than a misleading zero.
+
+**Deliberately NOT registered: `AUD-CONFSIZE-INVERTED`.** It changes position size, not signals,
+so day-clustered signal alpha would measure nothing about it and tracking it here would be
+misleading. Its validation is the trade-level counterfactual in §7.2, which is already complete
+(**+$1,425**) because position size scales P&L linearly — no forward data required. Per §7.1,
+forward trade-level validation of an $11.58/trade effect would need ~24,000 trades and is simply
+not available at this data rate; saying so is more useful than manufacturing a metric for it.
 
 **0a** — `hot_news_flag` was absent from both `SUPPRESSION_NAMED` and `SUPPRESSION_BOOLEAN`.
 Now scored on `material_negative` only (`material_other` is logged-but-never-applied;
