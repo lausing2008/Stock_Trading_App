@@ -749,6 +749,100 @@ without waiting on the hard problem in item 5.
 
 ---
 
+## 6. Implementation progress (updated as work lands)
+
+Redesign agreed with the user: Phase 0 (instrumentation) before Phase 1 (risk fixes), because
+the reason a backwards news gate survived for months is that nothing scored it.
+
+### Phase 0 — instrumentation
+
+| # | Item | Status | Commit |
+|---|---|---|---|
+| 0a | Score `hot_news_flag` in `filter_audit` | **DONE, deployed** | `0d2ecc3` |
+| 0b | Benchmark-relative (alpha) evaluation | **DONE, deployed** | `e55f216` |
+| 0c | News outcome table | **DESCOPED — see below** | — |
+| 0d | Scheduled `filter_audit` verdict persistence | **NOT DONE** | — |
+
+**0a** — `hot_news_flag` was absent from both `SUPPRESSION_NAMED` and `SUPPRESSION_BOOLEAN`.
+Now scored on `material_negative` only (`material_other` is logged-but-never-applied;
+scoring it would dilute the effect). 7 tests, 2 sabotage cycles.
+
+**0b** — `filter_audit` now reports `avg_alpha_pct` / `alpha_win_rate_pct` / `alpha_edge_pct` /
+`alpha_verdict` alongside every absolute field, using **per-market benchmarks** (SPY / 2800.HK).
+Implemented as a query-time computation against the existing `prices` table rather than a stored
+column — this deliberately avoided a `shared/db/models.py` change and its all-12-backend rebuild,
+at no loss of capability. 13 tests, 2 sabotage cycles.
+
+*Cross-validation:* the live endpoint reports **−1.13%** alpha on 180d/6d SWING; an
+independently-written standalone computation over the same population gave **−1.076%**. Two
+implementations built separately agreeing is the strongest available check that the instrument
+is right.
+
+*A hole found in the tests themselves:* the first sabotage round pointed HK's benchmark at SPY —
+the exact bug 0b exists to fix — and **all 12 tests passed**, because the test hardcoded the
+benchmark map into its exec namespace and shadowed the source. Fixed to read the mapping from
+source; the re-run then caught it (3 failures). Recorded because a test that cannot fail is the
+same failure class as the unmeasured gate this whole audit is about.
+
+**0c descoped:** its purpose was to make the news gate measurable, which 0a+0b now achieve at the
+gate level. A per-event outcome table would add event-level granularity, but it needs a
+`models.py` change plus an all-12-backend rebuild — disproportionate now that the measurement
+question is answered. Revisit only if per-event attribution is actually needed.
+
+### What the instrument found immediately
+
+Re-running `filter_audit` on 180d/6d SWING with alpha verdicts (n=4,136):
+
+| filter | n_active | alpha active | alpha inactive | alpha edge | verdict |
+|---|---|---|---|---|---|
+| **earnings_warning** | 149 | **+1.66%** | −1.24% | **+2.90** | harmful |
+| insufficient_history_warning | 16 | +0.60% | −1.14% | +1.74 | harmful |
+| weekly_alignment | 243 | +0.35% | −1.23% | +1.58 | harmful |
+| high_vol_compression | 151 | −0.30% | −1.17% | +0.87 | harmful |
+| options_flag | 466 | −0.75% | −1.18% | +0.43 | weak |
+| news_sentiment_flag | 92 | −0.73% | −1.14% | +0.41 | weak |
+| hot_news_flag | 27 | −0.73% | −1.14% | +0.41 | weak |
+| weekly_gate_fired | 15 | −1.76% | −1.13% | −0.63 | predictive |
+
+**`earnings_warning` is now the largest harmful filter** — and it is a *genuine* suppressor, not
+an informational tag the tool mislabelled: verified at `signals.py:2290-2301`, where
+`caution`/`note`/`watch` each apply `fused = 0.5 + (fused - 0.5) * adj_mult`. It suppresses a
+cohort that earned **+1.66% alpha** against −1.24% for everything else, on n=149. This is
+better-powered than the hot-news finding and was invisible before 0b.
+
+Note also the refinement on `hot_news_flag`: **"harmful" on absolute win-rate but only "weak" on
+alpha** (+0.41). The absolute view was partly measuring market drift. The n=977 event study still
+supports the flip, but the gate-level evidence is weaker than the absolute numbers suggested —
+which is exactly the kind of correction alpha-based evaluation exists to supply.
+
+### Phase 1 — risk fixes
+
+| # | Item | Status | Commit |
+|---|---|---|---|
+| 1a | Market-scoped regime (`AUD-REGIME-MARKETBLIND`) | **DONE, deployed** | `af74d29` |
+| 1b | Flat / confidence-decoupled position sizing | **NOT DONE** | — |
+| 1c | GROWTH exit config (target ~1.5 ATR, hold ~10) | **NOT DONE** | — |
+| 1d | HK watchlist prune | **NOT DONE — user decision** | — |
+
+**1a** — `_fetch_market_regime()` hardcoded `market="US"` for every stock; 94.5% of HK BUY
+outcomes were tagged `bull` while HK was actually `choppy`. Now scoped by the stock's own
+market. `fear_greed` deliberately left US-only (the endpoint takes no market parameter) and that
+limitation is documented in the docstring and locked by a test rather than silently faked.
+8 tests, 2 sabotage cycles.
+
+**Sizing decision (1b):** the user likes confidence-driven sizing as a concept. Resolution —
+keep it as the design, but **gate it on the polarity fix**: confidence is currently inverted, so
+confidence-weighted sizing amplifies losses. Size on volatility until recalibration demonstrates
+positive out-of-sample correlation, then re-enable confidence weighting behind a flag.
+
+**HK (1d):** the root-cause investigation concluded HK is *not* a distinct problem — within-symbol,
+US BUY signals underperform their own stocks by −5.07pp/14d versus HK's −5.67pp (t = 0.30, not
+significant). The HK headline gap is ~all universe composition: the 42 tracked "HK" names are
+~33 Technology, dominated by newly-listed China semis that fell 15–25%. Recommendation is to
+**prune the watchlist, not suspend the market** — but the universe is the user's call.
+
+---
+
 ## What to check if this looks wrong
 
 ```bash
