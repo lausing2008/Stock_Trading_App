@@ -21,9 +21,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from common.jwt_auth import get_current_username
-from db import FixRecord, FixSnapshot, SignalOutcome, get_session
+from db import FixRecord, FixSnapshot, Price, SignalOutcome, Stock, TimeFrame, get_session
 
 from .signals_shared import log
+
+# AUD-ALPHAEVAL / 0d: per-market benchmarks. Benchmarking HK against SPY is not a harmless
+# approximation — re-running the HK population against 2800.HK instead moved its measured alpha
+# from -5.56% to -6.71%, i.e. the wrong benchmark was FLATTERING it.
+_BENCH_SYMBOL_BY_MARKET = {"US": "SPY", "HK": "2800.HK"}
 
 router = APIRouter(prefix="/fix-effectiveness", tags=["fix-effectiveness"])
 
@@ -64,6 +69,113 @@ def register_fix(req: RegisterFixRequest, session: Session = Depends(get_session
     session.commit()
     log.info("fix_effectiveness.registered", fix_id=req.fix_id, domain=req.domain)
     return {"fix_id": req.fix_id, "id": record.id, "fixed_at": record.fixed_at.isoformat()}
+
+
+def _compute_day_clustered_alpha(session: Session, since: date | None = None) -> dict:
+    """Day-clustered, benchmark-relative alpha for BUY signals — the metric with enough
+    statistical power to actually detect a change.
+
+    WHY THIS EXISTS (0d). A power analysis on the real distributions says the intuitive metrics
+    cannot do the job:
+
+      * Paper-trade P&L: mean -$66.85, sd $640, 1.31 trades/day -> detecting that expectancy
+        reached breakeven needs ~719 trades, about **550 trading days**.
+      * Day-clustered signal alpha: day-mean -1.967%, sd across days 5.152%, ~144 signals/day
+        -> the same detection needs **~52 trading days**.
+
+    Roughly a 10x difference, which is the whole reason this function is not simply "average the
+    per-signal returns".
+
+    TWO PROPERTIES THAT ARE NOT OPTIONAL:
+
+    1. **Clustered by DAY, not by signal.** ~144 signals share a single day and are heavily
+       correlated (same market, often same sector move). Treating them as 144 independent
+       observations inflates the t-statistic enormously and would manufacture significance out
+       of one good or bad week. Each trading day contributes exactly one observation here.
+    2. **Benchmark-relative, per market.** Absolute return credits a BUY simply for firing in a
+       rising market. Every conclusion in the audit that motivated this work changed once the
+       benchmark was matched per signal window.
+
+    A missing benchmark bar yields None and the row is DROPPED, never treated as a flat market —
+    silently substituting 0.0 would report the raw return as if it were alpha.
+    """
+    bench_rows = session.execute(
+        select(Stock.symbol, Price.ts, Price.close)
+        .join(Price, Price.stock_id == Stock.id)
+        .where(
+            Stock.symbol.in_(list(_BENCH_SYMBOL_BY_MARKET.values())),
+            Price.timeframe == TimeFrame.D1,
+        )
+        .order_by(Stock.symbol, Price.ts)
+    ).all()
+    bench: dict[str, list[tuple]] = {}
+    for sym, ts, close in bench_rows:
+        bench.setdefault(sym, []).append(
+            ((ts.date() if hasattr(ts, "date") else ts), float(close))
+        )
+
+    def _bench_px(sym: str, target) -> float | None:
+        series = bench.get(sym) or []
+        for d, c in series:  # ordered ascending; first bar on/after the target
+            if d >= target:
+                return c
+        return None
+
+    q = (
+        select(
+            SignalOutcome.signal_date, SignalOutcome.pct_return,
+            SignalOutcome.entry_date, SignalOutcome.exit_date, Stock.market,
+        )
+        .join(Stock, Stock.id == SignalOutcome.stock_id)
+        .where(
+            SignalOutcome.signal_direction == "BUY",
+            SignalOutcome.pct_return.is_not(None),
+            SignalOutcome.entry_date.is_not(None),
+            SignalOutcome.exit_date.is_not(None),
+        )
+    )
+    if since is not None:
+        q = q.where(SignalOutcome.signal_date >= since)
+
+    by_day: dict[date, list[float]] = {}
+    n_signals = 0
+    for sig_date, pct_return, entry_dt, exit_dt, market in session.execute(q).all():
+        mkt = str(getattr(market, "value", market) or "").upper()
+        sym = _BENCH_SYMBOL_BY_MARKET.get(mkt)
+        if sym is None:
+            continue
+        e = entry_dt.date() if hasattr(entry_dt, "date") else entry_dt
+        x = exit_dt.date() if hasattr(exit_dt, "date") else exit_dt
+        b_in, b_out = _bench_px(sym, e), _bench_px(sym, x)
+        if not (b_in and b_out and b_in > 0):
+            continue
+        d = sig_date.date() if hasattr(sig_date, "date") else sig_date
+        by_day.setdefault(d, []).append(float(pct_return) - (b_out - b_in) / b_in)
+        n_signals += 1
+
+    day_means = [sum(v) / len(v) for v in by_day.values()]
+    n_days = len(day_means)
+    if n_days == 0:
+        return {"n_days": 0, "n_signals": 0, "mean_day_alpha_pct": None, "t_day": None,
+                "benchmarks": dict(_BENCH_SYMBOL_BY_MARKET),
+                "note": "no resolved BUY outcomes with a matched benchmark window yet"}
+    mean = sum(day_means) / n_days
+    var = sum((x - mean) ** 2 for x in day_means) / (n_days - 1) if n_days > 1 else 0.0
+    sd = var ** 0.5
+    return {
+        "n_days": n_days,
+        "n_signals": n_signals,
+        "mean_day_alpha_pct": round(mean * 100, 3),
+        "sd_day_alpha_pct": round(sd * 100, 3),
+        # None (not 0.0) at n_days == 1: a t-statistic is undefined on a single observation, and
+        # emitting 0.0 would read as "measured, no effect" rather than "not yet measurable".
+        "t_day": round(mean / (sd / (n_days ** 0.5)), 2) if (n_days > 1 and sd > 0) else None,
+        "benchmarks": dict(_BENCH_SYMBOL_BY_MARKET),
+        "detectable_effect_note": (
+            "80% power at alpha=0.05 needs roughly 208/d^2 trading days to detect a d-pp shift "
+            "(2.0pp ~52 days, 1.5pp ~92, 1.0pp ~208). Treat |t_day| < 2 as 'not yet measurable'."
+        ),
+    }
 
 
 def _compute_ai_signal_win_rate_metrics(session: Session, since: date | None = None) -> dict:
@@ -208,6 +320,17 @@ def take_fix_snapshot(fix_id: str, session: Session = Depends(get_session), _: s
     # was meant to correct, and so dilutes the very improvement it is supposed to detect.
     since = record.fixed_at.date()
     metrics = metric_fn(session, since=since)
+    # 0d: alpha is composed HERE, not inside metric_fn, for three reasons: it is domain-agnostic
+    # (any future domain's fix gets it for free), it keeps each domain's metric function pure and
+    # independently testable, and it is added as a NEW top-level key so the UI's existing
+    # baseline/snapshot key-zip (see FixSnapshot's docstring) is untouched on older records.
+    # Fail-soft: this reads the large `prices` table, and a measurement failure must never cost
+    # the snapshot its primary metrics — an error is recorded IN the payload rather than raised.
+    try:
+        metrics["alpha"] = _compute_day_clustered_alpha(session, since=since)
+    except Exception as exc:  # noqa: BLE001 — observability must not break the snapshot
+        log.warning("fix_effectiveness.alpha_failed", fix_id=fix_id, error=str(exc))
+        metrics["alpha"] = {"status": "error", "error": str(exc)[:300]}
     metrics["since"] = since.isoformat()
     # Labelled, per the audit: signal_date is a DATE, so signals raised EARLIER on the fix's own
     # deployment day are included. That is a deliberate, disclosed inclusion, not a silent one.
