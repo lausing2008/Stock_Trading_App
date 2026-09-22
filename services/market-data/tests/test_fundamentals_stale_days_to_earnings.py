@@ -14,11 +14,22 @@ days_to_earnings integer itself is never trusted.
 from datetime import date, timedelta
 from unittest.mock import patch
 
-from src.api.routes import _refresh_days_to_earnings
+from src.api.routes import _refresh_days_to_earnings, _today_et
 
 
 def _iso(delta_days: int) -> str:
-    return (date.today() + timedelta(days=delta_days)).strftime("%Y-%m-%d")
+    """Anchor to the SAME clock the code under test uses.
+
+    Was `date.today()` — the machine's LOCAL date — while _refresh_days_to_earnings() computes
+    against `_today_et()` (AUD-T409-UTCDATEBOUNDARY). Those agree only when the developer's
+    local date happens to match the US Eastern date, so the whole file went red for anyone
+    running it late evening on the US West Coast (PDT 23:45 on the 21st is already the 22nd in
+    ET) or across the UTC boundary. The code was right; this helper was measuring against a
+    different day. Same class as the two clock-drift failures recorded in
+    docs/audits/2026-09-21-utc-date-boundary-triage.md — a test that passes only on the
+    timezone it was written in.
+    """
+    return (_today_et() + timedelta(days=delta_days)).strftime("%Y-%m-%d")
 
 
 def test_recomputes_days_to_earnings_from_next_earnings_date():

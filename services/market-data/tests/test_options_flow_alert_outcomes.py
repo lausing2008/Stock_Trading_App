@@ -194,7 +194,10 @@ def test_record_creates_a_new_row_on_first_fire():
     assert rows[0].option_chain == "MSFT231222C00375000"
     assert rows[0].direction == "bullish"
     assert rows[0].expiry == date(2023, 12, 22)
-    assert rows[0].fired_date == date.today()
+    # AUD-T409: the code records _today_et(); asserting against the machine's LOCAL date
+    # made this file red for anyone running it when local and US Eastern dates differ
+    # (e.g. 23:45 PDT is already the next day in ET). The code was right, the test was not.
+    assert rows[0].fired_date == _real_today_et()()
 
 
 def test_record_is_a_noop_on_a_second_call_same_contract_same_day():
@@ -324,7 +327,7 @@ def test_evaluate_scores_a_bullish_row_as_a_loss_when_price_falls():
 def test_evaluate_leaves_a_window_open_when_it_hasnt_closed_yet():
     session = _make_session()
     stock = _make_stock(session, "AAPL")
-    fired = date.today() - timedelta(days=2)  # far too recent for the 10d window to have closed
+    fired = _real_today_et()() - timedelta(days=2)  # far too recent for the 10d window to have closed
     session.add(OptionsFlowAlertOutcome(
         id=_new_id(), stock_id=stock.id, symbol="AAPL", option_chain="AAPL4", option_type="call",
         direction="bullish", strike=100.0, fired_date=fired, alert_price=100.0, ask_side_dominant=True,

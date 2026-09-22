@@ -181,13 +181,38 @@ def test_absolute_fields_are_preserved_alongside_alpha():
         assert key in _SOURCE, f"{key} was removed — this change must be additive"
 
 
+def _alpha_verdict(alpha_edge):
+    """Evaluate the REAL verdict expression from source.
+
+    Deliberately not `assert '"alpha_edge > 0.5"' in source`: that form passes even if the code
+    is changed to `alpha_edge > 0.5 - 99999`, because the substring survives — which is exactly
+    what this repo's AUD-T401 source-text-assertion ratchet exists to prevent. Testing the VALUE
+    catches a moved threshold; testing the text does not.
+    """
+    start = _SOURCE.index('"alpha_verdict": (')
+    expr = _SOURCE[start + len('"alpha_verdict": ('):_SOURCE.index("\n            ),", start)]
+    ns = {"alpha_edge": alpha_edge}
+    # Re-wrap in the parentheses the slice dropped — without them the conditional expression's
+    # line continuations are a syntax error.
+    return eval("(" + textwrap.dedent(expr) + ")", ns)  # noqa: S307 — repo-own source
+
+
 def test_alpha_verdict_sign_convention_matches_the_absolute_one():
     """Positive edge = the filter suppresses trades that did BETTER = harmful. The alpha twin
     must not invert that, or the two verdicts would contradict each other on the same row."""
-    start = _SOURCE.index('"alpha_verdict"')
-    body = _SOURCE[start:start + 320]
-    assert 'alpha_edge > 0.5' in body and '"harmful"' in body
-    assert 'alpha_edge < -0.5' in body and '"predictive"' in body
+    assert _alpha_verdict(2.9) == "harmful"      # e.g. earnings_warning, measured +2.90
+    assert _alpha_verdict(-2.5) == "predictive"
+    assert _alpha_verdict(0.0) == "weak"
+    assert _alpha_verdict(None) is None
+
+
+def test_alpha_verdict_thresholds_are_where_they_are_claimed():
+    """Pins the actual boundary VALUES, so widening the dead band (which would quietly reclassify
+    a harmful filter as merely 'weak') fails here."""
+    assert _alpha_verdict(0.51) == "harmful"
+    assert _alpha_verdict(0.5) == "weak", "boundary is exclusive: >0.5, not >=0.5"
+    assert _alpha_verdict(-0.51) == "predictive"
+    assert _alpha_verdict(-0.5) == "weak"
 
 
 def test_alpha_edge_is_none_when_either_side_has_no_alpha_rows():
