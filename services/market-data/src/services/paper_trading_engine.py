@@ -777,6 +777,22 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     # e.g. bull_prob=72.5%→conf=45; bull_prob=75%→conf=50; bull_prob=81%→conf=62.
     # Style-specific minimums in _STYLE_OVERRIDES below.
     "min_confidence":       45.0,      # Signal.confidence threshold (bull_prob ≥ 72.5%)
+    # AUD-CONFSIZE-INVERTED (2026-09-22): DEFAULT OFF. Confidence is currently ANTI-predictive
+    # of return magnitude, so scaling position size by it amplified the worst trades. Measured
+    # on 13,238 BUY outcomes, avg return degrades monotonically across seven consecutive
+    # confidence buckets: <=40 -1.67%, <=60 -2.73%, <=80 -3.65%, <=100 -6.39%, >100 -11.43%,
+    # while hit rate stays flat ~38-43% (i.e. confidence carries no directional information at
+    # all, only a reliable NEGATIVE relationship with magnitude). It is inverted independently
+    # within each market (US and HK) and at every hold from 2 to 20 days.
+    # Realised consequence: size followed confidence (Spearman +0.224, p=0.013) and size was
+    # inversely related to outcome (Spearman -0.253, p=0.005). The two largest size quartiles
+    # lost $10,188 against an $8,222 NET loss — the two smallest quartiles were profitable.
+    # This flag preserves the DESIGN (confidence-weighted sizing is a reasonable idea) while
+    # refusing to act on an input that is currently pointed the wrong way. Turn it back on only
+    # once recalibration demonstrates POSITIVE out-of-sample correlation between confidence and
+    # forward alpha — not merely that the pipeline runs.
+    # See docs/audits/2026-09-22-news-llm-hmm-prediction-audit.md.
+    "confidence_sizing_enabled": False,
     "min_kscore":           48.0,      # Ranking.score threshold
     "min_rr_ratio":         2.0,       # minimum risk:reward at entry
     "min_entry_score":      4,         # _should_enter() score threshold (raised from 3 → 4)
@@ -5050,7 +5066,20 @@ def _open_paper_trade(
     _conf_floor = float(cfg.get("min_confidence", _DEFAULT_CONFIG["min_confidence"])) * 0.90
     _hi_band = _conf_floor * _HI_BAND_RATIO
     _lo_band = _conf_floor * _LO_BAND_RATIO
-    if sig_conf >= _hi_band:
+    # AUD-CONFSIZE-INVERTED: gated OFF by default — see "confidence_sizing_enabled" in
+    # _DEFAULT_CONFIG for the measurements. The band arithmetic above is deliberately left
+    # intact and still evaluated: it costs nothing, keeps the US-floor boundary behaviour (and
+    # its regression test) meaningful, and means re-enabling is a pure config change rather
+    # than a code restore. Only the multiplier is neutralised.
+    if not cfg.get("confidence_sizing_enabled", _DEFAULT_CONFIG["confidence_sizing_enabled"]):
+        confidence_size_mult = 1.0
+        if sig_conf >= _hi_band or sig_conf < _lo_band:
+            # Note only when it WOULD have moved size, so the log shows what was suppressed.
+            notes = notes + [
+                f"Size 1.00× (confidence {sig_conf:.0f}% — confidence sizing disabled: "
+                "confidence is currently anti-predictive, see AUD-CONFSIZE-INVERTED)"
+            ]
+    elif sig_conf >= _hi_band:
         confidence_size_mult = 1.25
         notes = notes + [f"Size 1.25× (confidence {sig_conf:.0f}% — high conviction)"]
     elif sig_conf >= _lo_band:
