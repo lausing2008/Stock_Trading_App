@@ -58,9 +58,19 @@ def test_the_exact_reported_moment_reads_the_correct_et_date():
 
 
 def test_naive_utc_truncation_would_have_gotten_this_wrong():
-    """Not a strawman: this IS what every fixed call site used to compute."""
-    with _frozen_at("2026-09-19T00:40:00"):
-        naive = datetime.now(timezone.utc).date()
+    """Not a strawman: this IS what every fixed call site used to compute.
+
+    AUD-NEXTIMPROV-FROZENTIME-LEAK (2026-09-21): `_frozen_at()` patches
+    `src.services.options_income_engine.datetime`, not this TEST file's own module-level
+    `datetime` import — so the original version of this test called the REAL, unpatched
+    `datetime.now(timezone.utc)` and silently depended on the actual wall-clock date matching
+    2026-09-19. It passed by coincidence on the day it was written and started failing the
+    moment the real system clock moved past that date, with no code regression at all — the
+    exact "test tripped by real clock drift" bug class this repo's own CI-failure-masking
+    incident history warns about. Fixed by constructing the frozen instant directly rather
+    than relying on any patch or the real clock."""
+    frozen = datetime(2026, 9, 19, 0, 40, 0, tzinfo=timezone.utc)
+    naive = frozen.date()
     assert naive.isoformat() == "2026-09-19", "confirms the bug this test module exists to prevent"
 
 
@@ -78,8 +88,11 @@ def test_a_friday_evening_est_run_is_not_seen_as_saturday():
 
 
 def test_naive_utc_would_have_misread_that_friday_as_saturday():
-    with _frozen_at("2026-01-17T00:00:00"):
-        naive = datetime.now(timezone.utc).date()
+    """AUD-NEXTIMPROV-FROZENTIME-LEAK: see test_naive_utc_truncation_would_have_gotten_this_
+    wrong's own docstring above — same fix, constructing the frozen instant directly instead
+    of relying on a patch that only ever covered the module under test, not this test file."""
+    frozen = datetime(2026, 1, 17, 0, 0, 0, tzinfo=timezone.utc)
+    naive = frozen.date()
     assert naive.weekday() == 5, "confirms the dormant EST-season Friday-skip this replaces"
 
 

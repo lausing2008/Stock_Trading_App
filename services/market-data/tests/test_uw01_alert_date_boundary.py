@@ -67,8 +67,14 @@ def test_the_exact_reported_moment_reads_the_correct_et_date():
 
 
 def test_naive_utc_truncation_would_have_gotten_this_wrong():
-    with _frozen_at("2026-09-19T00:40:00"):
-        naive = datetime.now(timezone.utc).date()
+    """AUD-NEXTIMPROV-FROZENTIME-LEAK (2026-09-21): the original version called this TEST
+    file's own real, unpatched `datetime.now(timezone.utc)` — `_frozen_at()` only patches
+    `_today_et.__globals__`, a different namespace — so it silently depended on the actual
+    wall-clock date matching 2026-09-19 and started failing the moment the real system clock
+    moved past it, with no code regression at all. Fixed by constructing the frozen instant
+    directly."""
+    frozen = datetime(2026, 9, 19, 0, 40, 0, tzinfo=timezone.utc)
+    naive = frozen.date()
     assert naive.isoformat() == "2026-09-19", "confirms the bug this test module exists to prevent"
 
 
