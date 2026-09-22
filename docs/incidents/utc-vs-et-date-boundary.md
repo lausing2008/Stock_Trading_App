@@ -82,6 +82,29 @@ without a plan: when touching any of the sixteen files above, check whether its 
 computation needs to respect market hours, and if so, use `_today_et()` (or the equivalent
 inline `ZoneInfo("America/New_York")` conversion) rather than a bare UTC truncation.
 
+**TRIAGED AND FIXED (2026-09-21).** The full sweep across `paper_trading_engine.py`,
+`conditional_orders.py`, `routes.py`, three snapshot-upsert modules
+(`gex_snapshot.py`/`options_flow_snapshot.py`/`volume_area.py`), and signal-engine's
+`analytics.py` found the real/likely-fine/unclear split the section above predicted. Highest
+severity: three portfolio-level entry gates in `_scan_for_entries()` (daily realized-loss
+circuit breaker, max-entries-per-day cap, choppy/risk_off regime entry throttle) and
+`conditional_orders.py`'s own reimplementation of the first all silently saw only the last few
+minutes of the day's trades during the evening window — a real risk-limit weakened, not just a
+display glitch. Also fixed: the anti-chase drift baseline (reintroducing AUD-LIVEBAR-T196 for
+any signal that fired today during the window), an equity-curve upsert mis-dating, three
+snapshot-upsert mis-datings, nine `routes.py` sites (earnings calendar dropping a real today-ET
+event, two days-to-earnings drifts, a Fundamental upsert key, two Options Game Plan DTE
+selections, a countdown, a seasonality filter), and one signal-engine hypothetical-maturity
+check. New helpers: `_et_day_start()` (paper_trading_engine.py, returns a tz-aware datetime) and
+`_today_et()` (routes.py, returns a date — same name/shape as the sibling copies already in
+scheduler.py/options_income_engine.py/signals_shared.py). 38 new tests, all sabotage-verified.
+Full detail: `docs/audits/2026-09-21-utc-date-boundary-triage.md`.
+
+Not fixed, and not re-triaged this pass: the remaining ~90 sites (rolling lookback-window
+cutoffs, retention purges, training-window leakage guards) the original scoping note already
+expected to be mostly benign. A future pass touching any of them should still apply the same
+"does this need to respect market hours" check before assuming it's fine.
+
 ## The lesson
 
 A naive `datetime.now(timezone.utc).date()` is wrong for **4-5 hours of every single day** for
