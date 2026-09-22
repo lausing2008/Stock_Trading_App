@@ -5411,6 +5411,34 @@ def _exit_as_of() -> datetime:
     return override if override is not None else datetime.now(timezone.utc)
 
 
+def _et_day_start() -> datetime:
+    """Midnight of the CURRENT US-market trading day (America/New_York), as a tz-aware
+    datetime — the correct floor for "how many trades/entries happened today" queries.
+
+    AUD-T409-UTCDATEBOUNDARY: three portfolio-level entry gates in _scan_for_entries() below
+    (the daily realized-loss circuit breaker, the max-entries-per-day cap, and the choppy/
+    risk_off regime entry throttle) used to compute this floor as
+    `datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())` — a naive UTC
+    date truncation. For roughly 4-5 hours of every evening (from 8pm EDT/7pm EST, when UTC
+    has already crossed into tomorrow, until US market open), that expression collapses to
+    something within about an hour of the real current instant instead of ~20 hours in the
+    past. Every one of these three gates therefore silently saw only the last few minutes of
+    the day's trades during that window — the daily-loss breaker undercounted realized losses
+    (could fail to trip on a genuinely bad day), the max-entries cap undercounted today's
+    entries (could allow more than the configured limit), and the regime throttle undercounted
+    today's throttled entry (could allow a second one) — every one of these a risk-limit
+    silently weakened for part of every single evening, not a rare edge case.
+
+    Returns a tz-AWARE datetime (America/New_York midnight) rather than converting to UTC and
+    stripping tzinfo — psycopg2/SQLAlchemy already correctly localizes a tz-aware bind
+    parameter to UTC when comparing against this app's naive-UTC `DateTime` columns, exactly
+    the same convention the weekly-loss circuit breaker just below already relies on
+    (`week_start = datetime.now(ZoneInfo("America/New_York")) - timedelta(days=7)`).
+    """
+    from zoneinfo import ZoneInfo
+    et_today = datetime.now(ZoneInfo("America/New_York")).date()
+    return datetime.combine(et_today, datetime.min.time(), tzinfo=ZoneInfo("America/New_York"))
+
 
 def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str, float], live_regime: dict | None = None) -> None:
     """Find fresh BUY signals and evaluate them for entry."""
@@ -5580,7 +5608,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     _consec_losses = _consec_loss_streak(session, portfolio.id)  # T187: passed to DE for consec-loss gate
     max_daily_loss = cfg.get("max_daily_loss_pct", 0.04)
     if max_daily_loss and max_daily_loss > 0 and equity > 0:
-        today_open = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())
+        today_open = _et_day_start()  # AUD-T409-UTCDATEBOUNDARY
         daily_net_pnl = session.execute(
             select(func.sum(PaperTrade.pnl))
             .where(
@@ -5701,7 +5729,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     # ── Max entries per day ───────────────────────────────────────────────────────
     max_entries_day = cfg.get("max_entries_per_day", 3)
     if max_entries_day and max_entries_day > 0:
-        today_start = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())
+        today_start = _et_day_start()  # AUD-T409-UTCDATEBOUNDARY
         entries_today = session.execute(
             select(func.count()).select_from(PaperTrade)
             .where(
@@ -5940,7 +5968,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     # T189: Regime-aware entry throttle — choppy/risk_off regimes cap new entries at 1/day.
     # Human traders become more selective in difficult markets and don't force setups.
     if cfg.get("regime_entry_throttle", True) and regime_state in ("choppy", "risk_off"):
-        _te_start = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())
+        _te_start = _et_day_start()  # AUD-T409-UTCDATEBOUNDARY
         _te_count = session.execute(
             select(func.count()).select_from(PaperTrade).where(
                 PaperTrade.portfolio_id == portfolio.id,
@@ -6164,7 +6192,14 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         # drift computed as ~0% and this anti-chasing gate silently disabled itself in exactly
         # the case it exists for — a stock that has already run hard today. Bounding the
         # reference to strictly-before-today makes the drift measure a real, settled baseline.
-        _ref_cutoff = min(_sig_date, date.today() - timedelta(days=1))
+        #
+        # AUD-T409-UTCDATEBOUNDARY: `date.today()` (naive UTC) reads ONE DAY AHEAD of the real
+        # US trading day for ~4-5 hours every evening — for a signal that fired today, that
+        # made `date.today() - 1` equal to the real ET today, so `min(_sig_date, ...)` picked
+        # _sig_date right back out and silently reintroduced the exact AUD-LIVEBAR-T196 bug
+        # this comment describes fixing. `_et_day_start().date()` resolves "today" in
+        # America/New_York, matching every other date in this file this audit touched.
+        _ref_cutoff = min(_sig_date, _et_day_start().date() - timedelta(days=1))
         try:
             _ref_close = session.execute(
                 select(Price.close)
@@ -6980,7 +7015,13 @@ def snapshot_equity_curve(portfolio_id: int | None = None) -> None:
                 _best_price(t, live) * t.shares for t in open_trades
             )
             equity = portfolio.current_cash + positions_value
-            today  = date.today()
+            # AUD-T409-UTCDATEBOUNDARY: date.today() (naive UTC) reads one calendar day ahead
+            # of the real US trading day for ~4-5 hours every evening — this is the upsert key
+            # for one row per (portfolio, trading day), so during that window this job wrote
+            # (or overwrote) the equity snapshot under TOMORROW's date instead of today's,
+            # mis-dating the equity curve chart. _et_day_start() resolves "today" in
+            # America/New_York, matching every other date this audit touched in this file.
+            today  = _et_day_start().date()
 
             existing = session.execute(
                 select(PaperEquityCurve).where(

@@ -206,7 +206,7 @@ def _execute_buy(order: ConditionalOrder, portfolio: PaperPortfolio, live_price:
     from .paper_trading_engine import (
         _DEFAULT_CONFIG, _STYLE_OVERRIDES, _build_game_plan_for_style, _call_decision_engine,
         _compute_equity, _compute_portfolio_drawdown, _consec_loss_streak,
-        _entry_gates_override_active, _recent_win_rate, _should_enter,
+        _entry_gates_override_active, _et_day_start, _recent_win_rate, _should_enter,
     )
 
     style = (portfolio.config or {}).get("trading_style", "SWING")
@@ -285,7 +285,7 @@ def _execute_buy(order: ConditionalOrder, portfolio: PaperPortfolio, live_price:
     _daily_pnl_pct = 0.0
     max_daily_loss = cfg.get("max_daily_loss_pct", 0.04)
     if max_daily_loss and max_daily_loss > 0 and equity > 0:
-        today_open = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())
+        today_open = _et_day_start()  # AUD-T409-UTCDATEBOUNDARY
         daily_net_pnl = session.execute(
             select(func.sum(PaperTrade.pnl))
             .where(

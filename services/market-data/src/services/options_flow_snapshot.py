@@ -149,7 +149,11 @@ def upsert_options_flow_snapshot(
     Does NOT commit — the caller (the EOD batch job) commits once after the whole batch,
     matching this repo's own convention of one commit per batch rather than per-row.
     """
-    as_of = as_of or datetime.now(timezone.utc).date()
+    # AUD-T409-UTCDATEBOUNDARY: naive UTC truncation reads one calendar day ahead of the real
+    # US trading day for ~4-5 hours every evening — as_of is the (stock_id, as_of) upsert key,
+    # so a late/retried/manually-triggered run in that window would mis-date this snapshot.
+    from zoneinfo import ZoneInfo
+    as_of = as_of or datetime.now(ZoneInfo("America/New_York")).date()
     values = dict(
         stock_id=stock_id,
         as_of=as_of,

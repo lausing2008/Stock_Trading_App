@@ -724,7 +724,12 @@ def trade_performance(
                 last_exit_ts[sid] = exit_ts  # still mark so we don't re-enter
         else:
             # No exit signal found — apply time-stop if position has exceeded limit
-            today = datetime.now(timezone.utc).date()
+            # AUD-T409-UTCDATEBOUNDARY: naive UTC truncation reads one calendar day ahead of
+            # the real US trading day for ~4-5 hours every evening — this is a hold-window
+            # maturity decision, the same class evaluate_signal_outcomes() (outcomes.py) was
+            # already fixed for, so it uses the same shared _today_et() helper.
+            from .signals_shared import _today_et
+            today = _today_et()
             if today >= max_exit_date:
                 # Time-stop triggered
                 exit_date       = max_exit_date

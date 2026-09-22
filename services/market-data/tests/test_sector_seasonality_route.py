@@ -35,7 +35,10 @@ def test_no_data_case_also_reports_available_false():
 
 
 def test_month_defaults_to_the_current_calendar_month_when_omitted():
-    assert "target_month = month if month is not None else _sdate.today().month" in _FUNC_SOURCE
+    """AUD-T409-UTCDATEBOUNDARY (2026-09-21): this now resolves via _today_et() (America/
+    New_York), not a naive `date.today()` — a naive UTC truncation would read the wrong
+    calendar month on the handful of evenings a year that straddle a month boundary."""
+    assert "target_month = month if month is not None else _today_et().month" in _FUNC_SOURCE
 
 
 def test_filters_to_only_the_requested_month():

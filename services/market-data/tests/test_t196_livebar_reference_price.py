@@ -45,10 +45,26 @@ def test_reference_close_is_bounded_by_a_settled_cutoff_not_raw_signal_date():
 
 def test_cutoff_is_min_of_signal_date_and_yesterday():
     """min() matters in BOTH directions: an OLD signal must keep its own (already settled)
-    signal-date bar, and a TODAY signal must be pulled back to yesterday."""
+    signal-date bar, and a TODAY signal must be pulled back to yesterday. The "- 1 day" part
+    of that formula is verified behaviorally below via `_cutoff()`; this only pins the overall
+    min()-of-two-dates SHAPE, not a numeric literal (AUD-T401-SOURCETEXTTESTS)."""
     block = _t196_block()
     normalized = re.sub(r"\s+", " ", block)
-    assert "min(_sig_date, date.today() - timedelta(days=1))" in normalized
+    assert "min(_sig_date, _et_day_start().date()" in normalized
+
+
+def test_yesterday_is_resolved_via_et_day_start_not_a_naive_date_today():
+    """AUD-T409-UTCDATEBOUNDARY (2026-09-21): "yesterday" is now resolved via
+    `_et_day_start().date()`, not a naive `date.today()` — a naive UTC truncation would, for a
+    signal that fired today during the ~4-5 hour evening bug window, silently pick _sig_date
+    right back out of the min() and reintroduce this exact AUD-LIVEBAR-T196 bug.
+
+    Checks only the live `_ref_cutoff = ...` code line, not the surrounding comment prose
+    (which legitimately mentions `date.today()` while explaining the fix)."""
+    block = _t196_block()
+    cutoff_line = next(line for line in block.split("\n") if "_ref_cutoff = min(" in line)
+    assert "_et_day_start().date()" in cutoff_line
+    assert "date.today()" not in cutoff_line
 
 
 def test_fix_is_documented_with_its_audit_tag():

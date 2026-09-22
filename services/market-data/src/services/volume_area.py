@@ -117,7 +117,11 @@ def compute_value_area_levels_for_stocks(session, stock_ids: list[int], as_of: d
     """
     if not stock_ids:
         return 0
-    as_of = as_of or datetime.now(timezone.utc).date()
+    # AUD-T409-UTCDATEBOUNDARY: naive UTC truncation reads one calendar day ahead of the real
+    # US trading day for ~4-5 hours every evening — as_of is the (stock_id, as_of) upsert key,
+    # so a late/retried/manually-triggered run in that window would mis-date this snapshot.
+    from zoneinfo import ZoneInfo
+    as_of = as_of or datetime.now(ZoneInfo("America/New_York")).date()
     cutoff = datetime.now(timezone.utc) - timedelta(days=DEFAULT_LOOKBACK_DAYS)
 
     written = 0

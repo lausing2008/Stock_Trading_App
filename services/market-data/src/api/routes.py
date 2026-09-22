@@ -4,6 +4,27 @@ import json
 
 import pandas as pd
 
+
+def _today_et() -> date:
+    """'Today' as a US market participant means it — the calendar date in America/New_York,
+    not a truncation of the current UTC instant. See docs/incidents/utc-vs-et-date-boundary.md
+    (AUD-T409) for the full finding: naive `date.today()`/`datetime.now(timezone.utc).date()`
+    reads one calendar day AHEAD of the true US trading day for roughly 4-5 hours of every
+    single evening, because UTC crosses midnight at 8pm EDT / 7pm EST while the trading day
+    these dates describe runs on New York wall-clock time.
+
+    This file had ~10 separate `date.today()`/`datetime.now(timezone.utc).date()` call sites
+    at the time this was added — several genuinely comparing against a NAIVE UTC boundary
+    where it doesn't matter (a wide lookback cutoff, a leakage guard), and several where it
+    directly produces a wrong user-facing answer (an earnings date silently dropping off the
+    "upcoming" calendar, an off-by-one days-to-earnings/days-to-expiry countdown, an options
+    game-plan DTE selection missing the correct expiry) for part of every evening. Only the
+    latter class was migrated to this helper — see each call site's own AUD-T409 comment.
+    """
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/New_York")).date()
+
+
 _MARKET_UTC_OFFSET_H = {"HK": 8, "CN": 8}
 
 def _local_date(ts: datetime, market: str) -> str:
@@ -991,9 +1012,9 @@ def _refresh_days_to_earnings(payload: dict) -> dict:
     if not ned:
         return payload
     try:
-        from datetime import date as _date, datetime as _datetime
+        from datetime import datetime as _datetime
         next_ed = _datetime.strptime(ned, "%Y-%m-%d").date()
-        today = _date.today()
+        today = _today_et()  # AUD-T409-UTCDATEBOUNDARY
         if next_ed >= today:
             payload["days_to_earnings"] = (next_ed - today).days
         else:
@@ -1095,7 +1116,7 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
                 ed_list = cal.get("Earnings Date") or []
                 if ed_list:
                     from datetime import date as _date
-                    today = _date.today()
+                    today = _today_et()  # AUD-T409-UTCDATEBOUNDARY
                     future = [d for d in ed_list if (d if isinstance(d, _date) else d.date()) >= today]
                     if future:
                         next_ed = future[0] if isinstance(future[0], _date) else future[0].date()
@@ -1447,7 +1468,7 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
             _si_date = _date.fromisoformat(data.short_interest_date) if data.short_interest_date else None
             stmt = pg_insert(Fundamental).values(
                 stock_id=stock_row.id,
-                as_of=_date.today(),
+                as_of=_today_et(),  # AUD-T409-UTCDATEBOUNDARY
                 trailing_pe=data.trailing_pe,
                 forward_pe=data.forward_pe,
                 price_to_book=data.price_to_book,
@@ -1987,10 +2008,9 @@ def _log_fundamentals_cache_misses(endpoint: str, miss_count: int, total: int) -
 @router.get("/earnings_calendar")
 def earnings_calendar(days_ahead: int = Query(45, ge=1, le=180), session: Session = Depends(get_session)):
     """Return stocks with earnings in the next N days (from cached fundamentals)."""
-    from datetime import date as _date
     stocks = session.execute(select(Stock).where(Stock.active.is_(True))).scalars().all()
     r = _get_redis()
-    today = _date.today()
+    today = _today_et()  # AUD-T409-UTCDATEBOUNDARY
     cutoff = today + timedelta(days=days_ahead)
     results = []
     _misses = 0
@@ -2198,7 +2218,7 @@ def events_calendar(
 ):
     """Return all upcoming events: earnings, ex-dividends, and macro events (FOMC, CPI, NFP, PCE, GDP)."""
     from datetime import date as _date
-    today = _date.today()
+    today = _today_et()  # AUD-T409-UTCDATEBOUNDARY
     cutoff = today + timedelta(days=days_ahead)
     events = []
 
@@ -2510,12 +2530,11 @@ def get_sector_seasonality_route(month: int | None = Query(None, ge=1, le=12)):
     disabled/unconfigured.
     """
     from ..services import unusual_whales as _uw
-    from datetime import date as _sdate
 
     if not _uw.is_available():
         return {"available": False, "reason": "unusual_whales_disabled", "month": month, "rows": []}
 
-    target_month = month if month is not None else _sdate.today().month
+    target_month = month if month is not None else _today_et().month  # AUD-T409-UTCDATEBOUNDARY
     all_rows = _uw.get_sector_seasonality()
     month_rows = [r for r in all_rows if r.month == target_month and r.ticker is not None]
     if not month_rows:
@@ -3068,7 +3087,7 @@ def _compute_goal_progress(
     if target_date_str:
         try:
             target_d = date.fromisoformat(target_date_str)
-            days_remaining = (target_d - date.today()).days
+            days_remaining = (target_d - _today_et()).days  # AUD-T409-UTCDATEBOUNDARY
         except (ValueError, TypeError):
             days_remaining = None
 
@@ -4557,7 +4576,7 @@ def compute_options_game_plan(
     your plan would currently cost," matching this app's own established options-honesty
     convention (max-pain, GEX, squeeze alerts all explicitly disclaim prediction).
     """
-    today = today or datetime.now(timezone.utc).date()
+    today = today or _today_et()  # AUD-T409-UTCDATEBOUNDARY
     result: dict = {"protective_put": None, "covered_call": None}
 
     if stop_loss and stop_loss > 0 and put_rows and put_expiries:
@@ -4669,7 +4688,7 @@ def get_options_game_plan(
         if not current_price:
             return {"symbol": sym, "available": False, "reason": "no_price"}
 
-        today = datetime.now(timezone.utc).date()
+        today = _today_et()  # AUD-T409-UTCDATEBOUNDARY
         put_exp = _nearest_expiry_in_dte_window(
             expiries, today, _OPTIONS_GAME_PLAN_MIN_PUT_DTE, _OPTIONS_GAME_PLAN_MAX_PUT_DTE
         )

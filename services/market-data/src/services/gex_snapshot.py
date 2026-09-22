@@ -34,7 +34,11 @@ def upsert_gex_snapshot(
     matching options_flow_snapshot.py's own convention of one commit per batch rather than
     per-row.
     """
-    as_of = as_of or datetime.now(timezone.utc).date()
+    # AUD-T409-UTCDATEBOUNDARY: naive UTC truncation reads one calendar day ahead of the real
+    # US trading day for ~4-5 hours every evening — as_of is the (stock_id, as_of) upsert key,
+    # so a late/retried/manually-triggered run in that window would mis-date this snapshot.
+    from zoneinfo import ZoneInfo
+    as_of = as_of or datetime.now(ZoneInfo("America/New_York")).date()
     values = dict(
         stock_id=stock_id,
         as_of=as_of,
