@@ -441,6 +441,35 @@ def _fetch_ml_data(symbol: str, style_key: str = "SWING") -> tuple[float | None,
     return None, 0.0, {}
 
 
+# AUD-EARNCOMPRESS-PROXIMITY (2026-09-22): DEFAULT OFF — the pre-earnings score compression
+# (caution/note/watch) is suspended pending a clean A/B, while its REASONS TAGGING is kept so
+# the cohort stays measurable in filter_audit.
+#
+# Measured, BUY signals by earnings proximity (5-day forward return, same window for all rows):
+#   caution (DTE 0-2)  n=77    +1.72%   sd 8.62   Sharpe  0.200
+#   note    (DTE 3-5)  n=43    +0.32%   sd 9.34   Sharpe  0.034
+#   watch   (DTE 6-10) n=104   -0.14%   sd 4.79   Sharpe -0.029
+#   (none)             n=9575  -1.40%   sd 7.96   Sharpe -0.176
+# The gradient is monotone in proximity and `caution` is best on BOTH raw return and Sharpe —
+# yet compression is TIGHTEST there (ec[2] = 0.60-0.65, a 35-40% haircut toward 0.50). The
+# platform's own filter_audit independently scores earnings_warning as its most harmful filter
+# (+2.90pp alpha edge on the trades it blocks, n=149).
+#
+# THE CONFOUND THIS FLAG EXISTS TO RESOLVE, stated plainly: those cohorts are survivorship-
+# filtered. A signal compressed by 0.60 that STILL cleared the BUY threshold was stronger before
+# compression, which biases the compressed buckets upward. So the table above is suggestive, not
+# proof, and no amount of re-querying the existing data settles it — only running with
+# compression off and comparing does. That is what this flag is for.
+#
+# DELIBERATELY NOT DISABLED: SA-25's SHORT-style DTE<=2 guard below. It carries the highest
+# variance of any cohort (sd 9.66) and guards a genuine coin-flip binary event on a 5-day trade,
+# which is a risk control rather than a return bet.
+#
+# Re-enable by flipping to True once the A/B has run. See
+# docs/audits/2026-09-22-news-llm-hmm-prediction-audit.md.
+_EARNINGS_COMPRESSION_ENABLED = False
+
+
 def _fetch_market_regime(market: str = "US") -> tuple[str, float | None]:
     """Returns (regime, fear_greed_score) for `market` ("US" or "HK").
 
@@ -2306,15 +2335,24 @@ def _apply_style_signal(
 
             if 0 <= days_to_earnings <= 2:
                 adj_mult = float(np.clip(ec[2] * beat_scale, 0.0, 1.0))
-                fused = 0.5 + (fused - 0.5) * adj_mult
+                if _EARNINGS_COMPRESSION_ENABLED:
+                    fused = 0.5 + (fused - 0.5) * adj_mult
+                # Tag regardless of the flag: filter_audit measures this cohort by
+                # the reason key, so suppressing the tag would make the A/B invisible.
                 reasons["earnings_warning"] = "caution"
             elif days_to_earnings <= 5:
                 adj_mult = float(np.clip(ec[5] * beat_scale, 0.0, 1.0))
-                fused = 0.5 + (fused - 0.5) * adj_mult
+                if _EARNINGS_COMPRESSION_ENABLED:
+                    fused = 0.5 + (fused - 0.5) * adj_mult
+                # Tag regardless of the flag: filter_audit measures this cohort by
+                # the reason key, so suppressing the tag would make the A/B invisible.
                 reasons["earnings_warning"] = "note"
             elif days_to_earnings <= 10:
                 adj_mult = float(np.clip(ec[10] * beat_scale, 0.0, 1.0))
-                fused = 0.5 + (fused - 0.5) * adj_mult
+                if _EARNINGS_COMPRESSION_ENABLED:
+                    fused = 0.5 + (fused - 0.5) * adj_mult
+                # Tag regardless of the flag: filter_audit measures this cohort by
+                # the reason key, so suppressing the tag would make the A/B invisible.
                 reasons["earnings_warning"] = "watch"
             else:
                 reasons.setdefault("earnings_warning", None)
