@@ -1756,3 +1756,115 @@ def get_fresh_earnings_surprises(
             "guidance, the conference call, or why the surprise happened.",
         ],
     }
+
+
+# ── AUD-EARNSURPRISE-STOCK: one stock's own earnings history, as EVIDENCE not a rate ────────
+
+def get_stock_earnings_history(symbol: str, beat_threshold_pct: float = 10.0) -> dict:
+    """One stock's own post-earnings history, deliberately presented as RAW EVENTS rather than
+    an inferred per-stock drift rate.
+
+    WHY NOT A PER-STOCK RATE — the measurement that settled it. Across 130 symbols with usable
+    data the MEDIAN is **5 earnings events per symbol** (mean 4.8, max 9), and only 6 symbols
+    have 8 or more. Beat-only counts are smaller still. This module enforces a 30-beat floor
+    before it will rank a SECTOR, precisely because "(unclassified)" showed a +47.41pp spread on
+    two beats. A per-stock "expected drift" computed on n=2-5 would clear no honest bar at all —
+    it would just be noise wearing a percent sign, and the more confident it looked the more
+    misleading it would be.
+
+    So this returns three things and labels each for what it is:
+
+      1. `events` — the actual per-report outcomes. Evidence a human can weigh, not a statistic.
+      2. `beat_consistency` — directional hit rate over the last N reports, reusing the existing
+         get_beat_rate() the SA-7 compression logic already relies on. Direction is far more
+         robust on small n than a magnitude estimate.
+      3. `sector_base_rate` — the statistically-supported number, carried over from
+         get_earnings_surprise_impact() WITH its own sample-adequacy flag, so the reader is
+         anchored on the figure that actually clears a floor.
+
+    `stock_avg_drift_pct` IS returned, but only alongside `stock_drift_is_statistically_usable`,
+    which is False below 8 beats — and it is False for all but a handful of symbols today. It
+    exists so a caller can display it greyed-out with a caveat, never so it can be ranked on.
+    """
+    with SessionLocal() as s:
+        stock = s.execute(
+            select(Stock.id, Stock.symbol, Stock.sector, Stock.market)
+            .where(Stock.symbol == symbol.upper())
+        ).first()
+        if stock is None:
+            return {"symbol": symbol.upper(), "found": False, "events": [], "n_events": 0}
+
+        rows = s.execute(
+            select(
+                EarningsEvent.report_date, EarningsEvent.surprise_pct,
+                EarningsEvent.revenue_surprise_pct, EarningsEvent.eps_actual,
+                EarningsEvent.eps_estimate, EarningsEvent.post_earnings_return_1d,
+                EarningsEvent.post_earnings_return_5d,
+            )
+            .where(
+                EarningsEvent.stock_id == stock.id,
+                EarningsEvent.surprise_pct.isnot(None),
+            )
+            .order_by(EarningsEvent.report_date.desc())
+        ).all()
+        beat_rate = get_beat_rate(stock.id)
+
+    events = [{
+        "report_date": r.report_date.isoformat(),
+        "surprise_pct": round(float(r.surprise_pct), 2),
+        "revenue_surprise_pct": (
+            round(float(r.revenue_surprise_pct), 2) if r.revenue_surprise_pct is not None else None
+        ),
+        "eps_actual": float(r.eps_actual) if r.eps_actual is not None else None,
+        "eps_estimate": float(r.eps_estimate) if r.eps_estimate is not None else None,
+        "drift_1d_pct": (
+            round(float(r.post_earnings_return_1d) * 100, 2)
+            if r.post_earnings_return_1d is not None else None
+        ),
+        "drift_5d_pct": (
+            round(float(r.post_earnings_return_5d) * 100, 2)
+            if r.post_earnings_return_5d is not None else None
+        ),
+        "was_big_beat": float(r.surprise_pct) > beat_threshold_pct,
+    } for r in rows]
+
+    big_beat_drifts = [
+        e["drift_5d_pct"] for e in events
+        if e["was_big_beat"] and e["drift_5d_pct"] is not None
+    ]
+    sector_name = stock.sector or "(unclassified)"
+    sector_ctx = next(
+        (x for x in get_earnings_surprise_impact(beat_threshold_pct)["by_sector"]
+         if x["sector"] == sector_name),
+        None,
+    )
+
+    return {
+        "symbol": stock.symbol,
+        "found": True,
+        "sector": sector_name,
+        "market": str(getattr(stock.market, "value", stock.market) or ""),
+        "beat_threshold_pct": beat_threshold_pct,
+        "n_events": len(events),
+        "events": events,
+        # Directional consistency over the last 8 reports — robust where magnitude is not.
+        "beat_consistency": beat_rate,
+        "n_big_beats": len(big_beat_drifts),
+        "stock_avg_drift_pct": (
+            round(sum(big_beat_drifts) / len(big_beat_drifts), 2) if big_beat_drifts else None
+        ),
+        # The gate on the line above. Median symbol has 5 TOTAL events, so this is False almost
+        # everywhere — by design. Display it greyed with a caveat; never rank on it.
+        "stock_drift_is_statistically_usable": len(big_beat_drifts) >= 8,
+        "sector_base_rate": sector_ctx,
+        "caveats": [
+            "events[] are raw per-report outcomes, not a rate — weigh them, do not average "
+            "them into a forecast.",
+            "stock_avg_drift_pct is unusable below 8 big beats; the median symbol has 5 events "
+            "in total, so it is unusable for almost every symbol.",
+            "sector_base_rate is the statistically-supported figure, and carries its own "
+            "sample_is_adequate flag.",
+            "drift_5d_pct here is baselined off the close BEFORE the report, so it INCLUDES "
+            "the overnight gap — unlike the post-announcement figures on the sector view.",
+        ],
+    }

@@ -198,6 +198,23 @@ def get_fresh_earnings_surprises(
     return earnings.get_fresh_earnings_surprises(beat_threshold_pct, lookback_days)
 
 
+@router.get("/events/earnings/stock-history")
+def get_stock_earnings_history(
+    symbol: str = Query(...),
+    beat_threshold_pct: float = Query(10.0, ge=1.0, le=100.0),
+    _: str = Depends(get_current_username),
+):
+    """AUD-EARNSURPRISE-STOCK: one stock's own post-earnings history as RAW EVENTS, plus its
+    directional beat consistency, plus its sector's statistically-supported base rate.
+
+    Deliberately NOT a per-stock drift rate. Across 130 symbols the median is 5 earnings events
+    (max 9); a per-stock "expected drift" on that sample would be noise wearing a percent sign.
+    `stock_avg_drift_pct` is returned only alongside `stock_drift_is_statistically_usable`,
+    which is False below 8 big beats — i.e. false for almost every symbol today.
+    """
+    return earnings.get_stock_earnings_history(symbol, beat_threshold_pct)
+
+
 @router.post("/events/sync/earnings")
 async def sync_earnings(_: str = Depends(get_current_username)):
     result = await earnings.sync_all_earnings()
