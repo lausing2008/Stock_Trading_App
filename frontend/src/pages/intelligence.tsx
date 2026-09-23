@@ -17,6 +17,8 @@ import {
   type CapeReading,
   type EarningsSurpriseImpact,
   type EarningsSurpriseSector,
+  type FreshEarningsSurprises,
+  type FreshEarningsSurprise,
   type MarketPulse,
 } from '@/lib/api';
 import { getSession } from '@/lib/auth';
@@ -663,6 +665,94 @@ function PoliticalTab() {
 }
 
 
+
+// ── AUD-EARNSURPRISE-ALERT: live surprises, gated by window decay and sample adequacy ───────
+// Sits ABOVE the historical table because live beats reference data. The two guards are the
+// whole point: a +112% beat 28 days old in a sector with a NEGATIVE base rate on n=14 is not
+// an opportunity, and a naive feed would have shouted about it.
+function LiveSurprises() {
+  const { data } = useSWR('freshEarningsSurprises', () => api.freshEarningsSurprises(14));
+  if (!data) return null;
+  const d = data as FreshEarningsSurprises;
+
+  const pct = (v: number | null) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`);
+  const col = (v: number | null) => (v == null ? '#6b7280' : v >= 0 ? '#4ade80' : '#f87171');
+
+  const isActionable = (s: FreshEarningsSurprise) =>
+    s.direction === 'beat' && s.window_remaining_days > 0 &&
+    !!s.sector_base_rate && s.sector_base_rate.sample_is_adequate;
+
+  return (
+    <div style={{ marginBottom: 30 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 8 }}>
+        <h3 style={{ color: '#d1d5db', fontSize: 13, fontWeight: 600, margin: 0 }}>LIVE SURPRISES</h3>
+        <span style={{ color: '#6b7280', fontSize: 11 }}>
+          last {d.lookback_days}d · {d.n_total} found ·{' '}
+          <strong style={{ color: d.n_actionable > 0 ? '#4ade80' : '#6b7280' }}>
+            {d.n_actionable} actionable
+          </strong>
+        </span>
+      </div>
+
+      {d.n_total === 0 ? (
+        <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: 8, padding: '14px 18px', color: '#6b7280', fontSize: 13 }}>
+          No surprises above ±{d.beat_threshold_pct}% on tracked symbols in the last {d.lookback_days} days.
+          Earnings arrive in quarterly waves, so quiet stretches between reporting seasons are expected.
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gap: 8 }}>
+          {d.surprises.map(s => {
+            const live = isActionable(s);
+            const br = s.sector_base_rate;
+            return (
+              <div key={`${s.symbol}-${s.report_date}`} style={{
+                background: '#111827', borderRadius: 8, padding: '12px 16px',
+                border: live ? '1px solid rgba(74,222,128,0.4)' : '1px solid #1f2937',
+                opacity: live ? 1 : 0.6,
+              }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: 10 }}>
+                  <span style={{ color: '#60a5fa', fontWeight: 700, fontSize: 15 }}>{s.symbol}</span>
+                  <span style={{ color: col(s.surprise_pct), fontWeight: 700 }}>
+                    {s.direction === 'beat' ? 'BEAT' : 'MISS'} {pct(s.surprise_pct)}
+                  </span>
+                  <span style={{ color: '#6b7280', fontSize: 12 }}>{s.sector} · {s.report_date}</span>
+                  {live
+                    ? <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 700, color: '#4ade80', border: '1px solid rgba(74,222,128,0.4)', borderRadius: 10, padding: '1px 8px' }}>ACTIONABLE</span>
+                    : <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 700, color: '#f59e0b' }}>NOT ACTIONABLE</span>}
+                </div>
+                <div style={{ marginTop: 6, fontSize: 12, color: '#9ca3af', display: 'flex', flexWrap: 'wrap', gap: 14 }}>
+                  <span>
+                    window{' '}
+                    <strong style={{ color: s.window_remaining_days > 0 ? '#d1d5db' : '#f87171' }}>
+                      {s.window_remaining_days}/{d.edge_window_days}d left
+                    </strong>
+                    {s.window_remaining_days === 0 && ' — drift already happened'}
+                  </span>
+                  {br ? (
+                    <span>
+                      {s.sector} base rate{' '}
+                      <strong style={{ color: col(br.beat_drift_after_open_pct) }}>
+                        {pct(br.beat_drift_after_open_pct)}
+                      </strong>{' '}
+                      (n={br.n_beats})
+                      {!br.sample_is_adequate && (
+                        <span style={{ color: '#f59e0b', fontWeight: 700 }}> — BELOW SAMPLE FLOOR, not usable</span>
+                      )}
+                    </span>
+                  ) : <span style={{ color: '#f59e0b' }}>no sector base rate available</span>}
+                  {s.realized_1d_pct != null && (
+                    <span>1d realized <strong style={{ color: col(s.realized_1d_pct) }}>{pct(s.realized_1d_pct)}</strong></span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── AUD-EARNSURPRISE-SECTOR: what an earnings surprise historically does, by sector ─────────
 // Two drift columns, never one. `drift_5d_incl_gap_pct` includes the overnight announcement
 // gap, which only a position held THROUGH the report captures; `after open` is what a
@@ -701,6 +791,7 @@ function SurpriseImpactTab() {
 
   return (
     <div>
+      <LiveSurprises />
       <p style={{ color: '#6b7280', fontSize: 13, marginBottom: 18, maxWidth: 900, lineHeight: 1.6 }}>
         How a stock has historically behaved after its own earnings report, by surprise size and sector.
         <strong style={{ color: '#d1d5db' }}> Read the &quot;after open&quot; column, not the headline one</strong> — the

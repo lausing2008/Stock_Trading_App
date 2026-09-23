@@ -818,6 +818,10 @@ export const api = {
   // AUD-EARNSURPRISE-SECTOR: historical post-earnings drift by surprise size and sector.
   earningsSurpriseImpact: (beatThresholdPct = 10) =>
     request<EarningsSurpriseImpact>(`/events/earnings/surprise-impact?beat_threshold_pct=${beatThresholdPct}`),
+  // AUD-EARNSURPRISE-ALERT: recent surprises annotated with sector base rate + window decay.
+  freshEarningsSurprises: (lookbackDays = 5, beatThresholdPct = 10) =>
+    request<FreshEarningsSurprises>(
+      `/events/earnings/fresh-surprises?lookback_days=${lookbackDays}&beat_threshold_pct=${beatThresholdPct}`),
   eventsEarningsCalendar: (days = 14) => request<EarningsEvent[]>(`/events/earnings/calendar?days=${days}`),
   eventsEarningsSymbol: (symbol: string) => request<EarningsEvent[]>(`/events/earnings?symbol=${symbol}`),
   // ── T375-LEAPS-BACKTEST ────────────────────────────────────────────────────
@@ -3622,6 +3626,45 @@ export type CrossAssetReading = {
 export type CrossAssetResponse = {
   reading: CrossAssetReading | null;
   note?: string;
+};
+
+export type FreshSurpriseSectorBaseRate = {
+  beat_drift_after_open_pct: number | null;
+  nonbeat_drift_pct: number | null;
+  spread_pp: number | null;
+  n_beats: number;
+  /** False below 30 beats — the base rate must NOT be acted on. */
+  sample_is_adequate: boolean;
+};
+
+export type FreshEarningsSurprise = {
+  symbol: string;
+  market: string;
+  sector: string;
+  report_date: string;
+  direction: 'beat' | 'miss';
+  surprise_pct: number;
+  revenue_surprise_pct: number | null;
+  eps_actual: number | null;
+  eps_estimate: number | null;
+  realized_1d_pct: number | null;
+  days_elapsed: number;
+  /** 0 = the measured 5-day window has fully elapsed; the drift already happened. */
+  window_remaining_days: number;
+  window_remaining_pct: number;
+  sector_base_rate: FreshSurpriseSectorBaseRate | null;
+};
+
+export type FreshEarningsSurprises = {
+  beat_threshold_pct: number;
+  lookback_days: number;
+  edge_window_days: number;
+  surprises: FreshEarningsSurprise[];
+  n_total: number;
+  /** Strict: a beat, still in-window, in a sector clearing the sample floor. */
+  n_actionable: number;
+  overall_beat_drift_after_open_pct: number | null;
+  caveats: string[];
 };
 
 export type EarningsSurpriseBucket = {
