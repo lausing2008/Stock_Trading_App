@@ -18,7 +18,7 @@ import { api, type RankingRow, type SectorGroup } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 type Market = 'US' | 'HK';
-type Tab = 'trend' | 'assets' | 'top' | 'flow' | 'tuning';
+type Tab = 'trend' | 'assets' | 'top' | 'flow' | 'smartmoney' | 'tuning';
 
 // AUD-REPORTSTAB-DEDUP (2026-09-22): 'News & Macro' and 'CAPE / Bubble Warning' tabs were
 // removed from here — both were near-duplicates of intelligence.tsx's own 'Overview' and
@@ -32,6 +32,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'assets', label: 'Key Assets' },
   { key: 'top',    label: 'Top Stocks' },
   { key: 'flow',   label: 'Money Flow' },
+  { key: 'smartmoney', label: 'Who to Follow' },
   { key: 'tuning', label: 'Self-Tuning' },
 ];
 
@@ -396,6 +397,171 @@ function FlowTab({ market }: { market: Market }) {
 }
 
 // ── Self-Tuning / Backtest Reports ───────────────────────────────────────────
+// ── Who to Follow (AUD-SMARTMONEY, 2026-09-22) ─────────────────────────────────
+// Congressional disclosures, ranked by PERSON rather than by ticker. Two measured facts decide
+// whether this tab is honest or a gimmick, and both are rendered rather than buried:
+//
+//   1. ENTRY IS THE DISCLOSURE DATE, NEVER THE TRADE DATE. Filings lag the trade by a MEDIAN of
+//      40 days (mean 76, worst 323). The same purchases return +4.70% over 21 days from the
+//      trade date but +2.89% from disclosure — roughly 1.8pp of the apparent edge is already
+//      gone before anyone outside could act. Quoting the trade-date number would advertise a
+//      return the reader cannot reach. Exactly the same class of error as quoting post-earnings
+//      drift that includes the untradeable overnight gap.
+//   2. MOST ROWS HAVE NO BUY/SELL DIRECTION. 7,691 of 9,453 come from a feed with
+//      transaction_type='unknown' — including all 2,036 of Trump's, which is why the single most
+//      active name cannot appear in the followable table however interesting he is.
+//
+// The below-floor table is deliberately shown rather than truncated away: seeing that the top of
+// an 8-buy-minimum list sits among dozens of 1-3 buy names is what stops a reader treating the
+// leaders as a ranking of skill.
+function SmartMoneyTab() {
+  const { data, error } = useSWR('events-smart-money', () => api.eventsSmartMoney());
+  const [showBelowFloor, setShowBelowFloor] = useState(false);
+
+  if (error) return <div style={card}><div style={{ color: '#f87171' }}>Failed to load.</div></div>;
+  if (!data) return <div style={card}><div style={{ color: '#6b7280' }}>Loading…</div></div>;
+
+  const followable = data.traders.filter(t => t.sample_is_adequate);
+  const belowFloor = data.traders.filter(t => !t.sample_is_adequate);
+
+  const row = (t: typeof data.traders[number], muted: boolean) => (
+    <tr key={`${t.name}-${t.chamber}`} style={{ borderTop: '1px solid #1f2937', opacity: muted ? 0.55 : 1 }}>
+      <td style={{ padding: '7px 8px', fontWeight: muted ? 400 : 600 }}>
+        {t.name}
+        {t.party ? <span style={{ color: '#6b7280', fontSize: 11, marginLeft: 6 }}>({t.party})</span> : null}
+      </td>
+      <td style={{ padding: '7px 8px', color: '#9ca3af' }}>{t.chamber ?? '—'}</td>
+      <td style={{ padding: '7px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{t.n_buys}</td>
+      <td style={{ padding: '7px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: pctColor(t.avg_21d_pct), fontWeight: muted ? 400 : 700 }}>
+        {fmtPct(t.avg_21d_pct, 2)}
+      </td>
+      <td style={{ padding: '7px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: '#9ca3af' }}>
+        {t.pct_up != null ? `${t.pct_up.toFixed(0)}%` : '—'}
+      </td>
+      <td style={{ padding: '7px 8px', color: '#6b7280', fontSize: 12 }}>{t.latest_disclosure ?? '—'}</td>
+    </tr>
+  );
+
+  const head = (
+    <thead>
+      <tr style={{ color: '#9ca3af', textAlign: 'left', fontSize: 12 }}>
+        <th style={{ padding: '6px 8px' }}>Name</th>
+        <th style={{ padding: '6px 8px' }}>Chamber</th>
+        <th style={{ padding: '6px 8px', textAlign: 'right' }}>Buys</th>
+        <th style={{ padding: '6px 8px', textAlign: 'right' }}>Avg {data.horizon_days}d</th>
+        <th style={{ padding: '6px 8px', textAlign: 'right' }}>% Up</th>
+        <th style={{ padding: '6px 8px' }}>Latest Filing</th>
+      </tr>
+    </thead>
+  );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* The lag caveat goes FIRST and unmissable. If a reader takes one thing from this tab it
+          must be that these returns are measured from the day the filing became public. */}
+      <div style={{ ...card, borderColor: '#78350f', background: 'rgba(120,53,15,0.15)' }}>
+        <div style={{ ...sectionTitle, color: '#fbbf24', marginBottom: 8 }}>Read this before the tables</div>
+        <div style={{ fontSize: 13, color: '#e5e7eb', lineHeight: 1.65 }}>
+          Every return below is measured from the <strong>disclosure date</strong> — the day the filing
+          became public and you could actually have acted — not from the trade date. Congressional filings
+          lag the trade by a <strong>median of 40 days</strong>. Measured on this platform&apos;s own data, the
+          same purchases return <strong style={{ color: '#4ade80' }}>+4.70%</strong> over {data.horizon_days} days
+          from the trade date but only <strong style={{ color: '#fbbf24' }}>+2.89%</strong> from disclosure.
+          That ~1.8pp gap is edge that had already happened before anyone outside could see the filing.
+        </div>
+      </div>
+
+      <div style={card}>
+        <div style={sectionTitle}>Followable — at least {data.min_trades_for_adequacy} disclosed buys</div>
+        <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 12 }}>
+          {data.n_followable} of {data.traders.length} tracked names clear the sample floor. Buys only —
+          a disclosed sale is a different decision and is not averaged in here.
+        </div>
+        <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+          {head}
+          <tbody>{followable.map(t => row(t, false))}</tbody>
+        </table>
+        {followable.some(t => (t.avg_21d_pct ?? 0) < 0) && (
+          <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 12, lineHeight: 1.6 }}>
+            The negative row is kept deliberately. A leaderboard that only ever shows winners gives no
+            sense of the spread, and the spread here is what tells you whether the top of the list is
+            skill or the tail of a small sample.
+          </div>
+        )}
+      </div>
+
+      <div style={card}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+          <div style={{ ...sectionTitle, marginBottom: 0 }}>Below the sample floor ({belowFloor.length})</div>
+          <button
+            onClick={() => setShowBelowFloor(v => !v)}
+            style={{ marginLeft: 'auto', background: 'none', border: '1px solid #1f2937', borderRadius: 6, color: '#9ca3af', fontSize: 12, padding: '4px 10px', cursor: 'pointer' }}
+          >
+            {showBelowFloor ? 'Hide' : 'Show'}
+          </button>
+        </div>
+        <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.6 }}>
+          Fewer than {data.min_trades_for_adequacy} disclosed buys. Shown so the leaders above can be read
+          in context — <strong>do not rank on these</strong>. A name with one buy and a +12% print is noise,
+          not a track record.
+        </div>
+        {showBelowFloor && (
+          <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse', marginTop: 12 }}>
+            {head}
+            <tbody>{belowFloor.map(t => row(t, true))}</tbody>
+          </table>
+        )}
+      </div>
+
+      <div style={card}>
+        <div style={sectionTitle}>Tracked, but not followable ({data.direction_unknown.length})</div>
+        <div style={{ fontSize: 13, color: '#e5e7eb', lineHeight: 1.65, marginBottom: 12 }}>
+          These names have disclosures in the database but the feed they arrive on omits buy/sell
+          entirely. <strong>A filing here may be a sale.</strong> There is no way to compute a
+          follow-return from them, so they are listed rather than ranked — including the most active
+          name on the platform.
+        </div>
+        <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ color: '#9ca3af', textAlign: 'left', fontSize: 12 }}>
+              <th style={{ padding: '6px 8px' }}>Name</th>
+              <th style={{ padding: '6px 8px', textAlign: 'right' }}>Filings</th>
+              <th style={{ padding: '6px 8px', textAlign: 'right' }}>On Tracked Stocks</th>
+              <th style={{ padding: '6px 8px' }}>Latest Trade</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.direction_unknown.map(u => (
+              <tr key={u.name} style={{ borderTop: '1px solid #1f2937' }}>
+                <td style={{ padding: '7px 8px' }}>{u.name}</td>
+                <td style={{ padding: '7px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmtNum(u.n_records)}</td>
+                <td style={{ padding: '7px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: u.on_tracked_stock ? '#e5e7eb' : '#6b7280' }}>{fmtNum(u.on_tracked_stock)}</td>
+                <td style={{ padding: '7px 8px', color: '#6b7280', fontSize: 12 }}>{u.latest_trade ?? '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {/* Observed in the live payload: the two feeds do not share a name key, so one person can
+            appear in BOTH tables under different spellings ("Rohit Khanna" / "Ro Khanna",
+            "Gilbert Cisneros" / "Hon. Gilbert Cisneros"). Saying so is better than letting a
+            reader assume the lists are disjoint and double-count the same person's activity. */}
+        <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 12, lineHeight: 1.6 }}>
+          The two feeds do not share a name key, so the same person can appear in both tables under
+          different spellings (e.g. <em>Rohit Khanna</em> above and <em>Ro Khanna</em> here). The lists are
+          not disjoint, and the filing counts must not be added together.
+        </div>
+      </div>
+
+      <div style={card}>
+        <div style={sectionTitle}>What this is and is not</div>
+        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: '#9ca3af', lineHeight: 1.8 }}>
+          {data.caveats.map((c, i) => <li key={i}>{c}</li>)}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 function TuningTab() {
   const { data: tuneStatus } = useSWR('signal-tune-status-reports', () => api.signalTuneStatus());
   const { data: outcomes } = useSWR('outcomes-summary-reports', () => api.outcomesSummary(undefined, 90));
@@ -497,7 +663,7 @@ function TuningTab() {
   );
 }
 
-const VALID_TABS: Tab[] = ['trend', 'assets', 'top', 'flow', 'tuning'];
+const VALID_TABS: Tab[] = ['trend', 'assets', 'top', 'flow', 'smartmoney', 'tuning'];
 
 function tabFromQuery(q: string | string[] | undefined): Tab {
   const v = Array.isArray(q) ? q[0] : q;
@@ -533,7 +699,7 @@ export default function ReportsPage() {
             ← Back
           </button>
           <h1 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Reports</h1>
-          <span style={{ color: '#6b7280', fontSize: 13 }}>Trend · Assets · Top Stocks · Money Flow · Self-Tuning</span>
+          <span style={{ color: '#6b7280', fontSize: 13 }}>Trend · Assets · Top Stocks · Money Flow · Who to Follow · Self-Tuning</span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
             {(['US', 'HK'] as Market[]).map(m => (
               <button
@@ -576,6 +742,7 @@ export default function ReportsPage() {
         {tab === 'assets' && <AssetsTab market={market} />}
         {tab === 'top'    && <TopStocksTab market={market} />}
         {tab === 'flow'   && <FlowTab market={market} />}
+        {tab === 'smartmoney' && <SmartMoneyTab />}
         {tab === 'tuning' && <TuningTab />}
       </div>
     </div>

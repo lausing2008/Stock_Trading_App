@@ -904,6 +904,11 @@ export const api = {
   eventsInsiderLeaderboard: (days = 30) => request<InsiderLeaderItem[]>(`/events/insider/leaderboard?days=${days}`),
   eventsCongress: (symbol: string, days = 90) => request<CongressResponse>(`/events/congress/${symbol}?days=${days}`),
   eventsCongressLeaderboard: (days = 90) => request<CongressLeaderItem[]>(`/events/congress/leaderboard?days=${days}`),
+  // AUD-SMARTMONEY (2026-09-22): who is actually worth following, entered at the DISCLOSURE
+  // date rather than the trade date. Distinct from eventsCongressLeaderboard above, which ranks
+  // TICKERS by congressional buying; this ranks PEOPLE by what following them would have paid.
+  eventsSmartMoney: (minTrades = 8) =>
+    request<SmartMoneyResponse>(`/events/congress/smart-money?min_trades=${minTrades}`),
   eventsCongressRecent: (days = 30, opts?: { limit?: number; ticker?: string; politician?: string }) => {
     const params = new URLSearchParams({ days: String(days) });
     if (opts?.limit) params.set('limit', String(opts.limit));
@@ -3922,6 +3927,41 @@ export type CongressResponse = {
   symbol: string;
   congress_score: number;
   trades: CongressTrade[];
+};
+
+// AUD-SMARTMONEY (2026-09-22): shape of /events/congress/smart-money. Two fields exist
+// specifically to stop this being read as a tip sheet:
+//   * `sample_is_adequate` — false below the 8-buy floor. Rows under the floor are RETURNED so
+//     the reader can see the whole distribution, but must never be ranked on. Same convention as
+//     get_impact_direction_accuracy()'s own n/adequacy pairing.
+//   * `direction_unknown` — names whose feed omits buy/sell entirely. Surfaced rather than
+//     dropped, because "tracked but not actionable" is more useful than silence.
+export type SmartMoneyTrader = {
+  name: string;
+  party: string | null;
+  chamber: string | null;
+  n_buys: number;
+  avg_21d_pct: number | null;
+  pct_up: number | null;
+  latest_disclosure: string | null;
+  sample_is_adequate: boolean;
+};
+
+export type SmartMoneyUnknown = {
+  name: string;
+  n_records: number;
+  on_tracked_stock: number;
+  latest_trade: string | null;
+};
+
+export type SmartMoneyResponse = {
+  horizon_days: number;
+  min_trades_for_adequacy: number;
+  entry_basis: string;
+  traders: SmartMoneyTrader[];
+  n_followable: number;
+  direction_unknown: SmartMoneyUnknown[];
+  caveats: string[];
 };
 
 export type CongressLeaderItem = {
