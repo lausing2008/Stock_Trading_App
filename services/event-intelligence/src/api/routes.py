@@ -161,6 +161,25 @@ def get_impact_direction_accuracy(
     return earnings.get_impact_direction_accuracy(min_confidence)
 
 
+@router.get("/events/earnings/surprise-impact")
+def get_earnings_surprise_impact(
+    beat_threshold_pct: float = Query(10.0, ge=1.0, le=100.0),
+    _: str = Depends(get_current_username),
+):
+    """AUD-EARNSURPRISE-SECTOR: what an earnings surprise historically does to the stock, and
+    which sectors it does it to most.
+
+    Two drift figures are returned deliberately, never one: `drift_5d_incl_gap_pct` includes the
+    overnight announcement gap (only capturable by a position held THROUGH the report), and
+    `drift_after_open_pct` is the portion a post-announcement alert could actually have caught.
+    Showing only the larger number would overstate a tradeable opportunity.
+
+    Every rate carries `n` and `sample_is_adequate` — see get_impact_direction_accuracy()'s own
+    docstring for why that is non-negotiable here.
+    """
+    return earnings.get_earnings_surprise_impact(beat_threshold_pct)
+
+
 @router.post("/events/sync/earnings")
 async def sync_earnings(_: str = Depends(get_current_username)):
     result = await earnings.sync_all_earnings()

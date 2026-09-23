@@ -1487,3 +1487,146 @@ def _row_to_dict(e: EarningsEvent) -> dict:
         "post_earnings_return_1d": e.post_earnings_return_1d,
         "post_earnings_return_5d": e.post_earnings_return_5d,
     }
+
+
+# ── AUD-EARNSURPRISE-SECTOR: what an earnings surprise historically does, by sector ─────────
+
+_SURPRISE_MIN_SAMPLE = 30  # matches get_impact_direction_accuracy()'s own adequacy floor
+
+
+def get_earnings_surprise_impact(beat_threshold_pct: float = 10.0) -> dict:
+    """Historical post-earnings drift, bucketed by surprise size and broken out by sector.
+
+    Built after the 2026-09-22 audit found this to be the strongest measured edge anywhere in
+    the platform — and, pointedly, one the signal engine currently gates AGAINST: its
+    `earnings_warning` filter suppresses signals near earnings and scored as the single most
+    harmful filter in filter_audit (+2.90pp alpha edge on the trades it blocked).
+
+    THE CAVEAT THAT DRIVES THE RETURN SHAPE, and the reason two numbers are returned rather
+    than one. `post_earnings_return_5d` is baselined off the last close BEFORE report_date, so
+    it INCLUDES the overnight announcement gap. That portion is only capturable by a position
+    held THROUGH the report — an alert fired after the result lands has already missed it.
+    `drift_after_open_pct` re-measures from the first close ON/AFTER the report instead, which
+    is what a post-announcement entry could actually have captured. Reporting only the larger
+    figure would overstate a tradeable opportunity by roughly the gap.
+
+    Every rate carries its own `n` and an explicit `sample_is_adequate`, matching
+    get_impact_direction_accuracy()'s own convention — three findings in docs/2026-09-05
+    reversed once their samples widened, one of them resting on six stocks. At the time of
+    writing this matters concretely: Energy shows a +7.42% beat drift on TWO beats.
+    """
+    out_sectors: list[dict] = []
+    with SessionLocal() as s:
+        rows = s.execute(
+            select(
+                EarningsEvent.stock_id, EarningsEvent.report_date, EarningsEvent.surprise_pct,
+                EarningsEvent.post_earnings_return_1d, EarningsEvent.post_earnings_return_5d,
+                Stock.sector, Stock.symbol,
+            )
+            .join(Stock, Stock.id == EarningsEvent.stock_id)
+            .where(
+                EarningsEvent.surprise_pct.isnot(None),
+                EarningsEvent.post_earnings_return_5d.isnot(None),
+            )
+        ).all()
+
+        # Re-measure the post-announcement-only portion from real bars. Done per (stock,
+        # report_date) rather than trusting a stored column, because no stored column carries
+        # this baseline — the whole point is that it differs from post_earnings_return_5d.
+        after_open: dict[tuple[int, date], float] = {}
+        stock_ids = list({r.stock_id for r in rows})
+        if stock_ids:
+            earliest = min(r.report_date for r in rows) - timedelta(days=10)
+            bars_by_stock: dict[int, list[tuple]] = {}
+            for p_stock, p_ts, p_close in s.execute(
+                select(Price.stock_id, Price.ts, Price.close).where(
+                    Price.stock_id.in_(stock_ids),
+                    Price.timeframe == TimeFrame.D1,
+                    Price.ts >= datetime.combine(earliest, datetime.min.time()),
+                ).order_by(Price.stock_id, Price.ts)
+            ).all():
+                bars_by_stock.setdefault(p_stock, []).append(
+                    ((p_ts.date() if hasattr(p_ts, "date") else p_ts), float(p_close))
+                )
+            for r in rows:
+                bars = bars_by_stock.get(r.stock_id) or []
+                idx = next((i for i, (d, _) in enumerate(bars) if d >= r.report_date), None)
+                if idx is None or idx + 5 >= len(bars):
+                    continue
+                base = bars[idx][1]
+                if base > 0:
+                    after_open[(r.stock_id, r.report_date)] = bars[idx + 5][1] / base - 1.0
+
+    def _pct(vals: list[float]) -> float | None:
+        return round(sum(vals) / len(vals) * 100, 2) if vals else None
+
+    def _bucket_of(surprise: float) -> str:
+        if surprise > beat_threshold_pct:
+            return "beat"
+        if surprise < -beat_threshold_pct:
+            return "miss"
+        return "inline"
+
+    buckets: dict[str, dict[str, list[float]]] = {
+        b: {"d1": [], "d5": [], "after": []} for b in ("beat", "miss", "inline")
+    }
+    by_sector: dict[str, dict[str, list[float]]] = {}
+    for r in rows:
+        b = _bucket_of(float(r.surprise_pct))
+        if r.post_earnings_return_1d is not None:
+            buckets[b]["d1"].append(float(r.post_earnings_return_1d))
+        buckets[b]["d5"].append(float(r.post_earnings_return_5d))
+        a = after_open.get((r.stock_id, r.report_date))
+        if a is not None:
+            buckets[b]["after"].append(a)
+
+        sec = r.sector or "(unclassified)"
+        entry = by_sector.setdefault(sec, {"beat": [], "nonbeat": [], "beat_after": []})
+        entry["beat" if b == "beat" else "nonbeat"].append(float(r.post_earnings_return_5d))
+        if b == "beat" and a is not None:
+            entry["beat_after"].append(a)
+
+    for sec, e in by_sector.items():
+        n_beat, n_non = len(e["beat"]), len(e["nonbeat"])
+        beat_pct, non_pct = _pct(e["beat"]), _pct(e["nonbeat"])
+        out_sectors.append({
+            "sector": sec,
+            "n_total": n_beat + n_non,
+            "n_beats": n_beat,
+            "beat_drift_pct": beat_pct,
+            "nonbeat_drift_pct": non_pct,
+            "beat_drift_after_open_pct": _pct(e["beat_after"]),
+            "spread_pp": (round(beat_pct - non_pct, 2)
+                          if (beat_pct is not None and non_pct is not None) else None),
+            # The load-bearing field. Energy's +7.42% beat drift rests on 2 beats; without this
+            # the UI would rank it second and a reader would act on it.
+            "sample_is_adequate": n_beat >= _SURPRISE_MIN_SAMPLE,
+        })
+    out_sectors.sort(
+        key=lambda x: (x["sample_is_adequate"], x["spread_pp"] if x["spread_pp"] is not None else -999),
+        reverse=True,
+    )
+
+    return {
+        "beat_threshold_pct": beat_threshold_pct,
+        "overall": {
+            b: {
+                "n": len(v["d5"]),
+                "drift_1d_pct": _pct(v["d1"]),
+                "drift_5d_incl_gap_pct": _pct(v["d5"]),
+                "drift_after_open_pct": _pct(v["after"]),
+                "n_after_open": len(v["after"]),
+                "sample_is_adequate": len(v["d5"]) >= _SURPRISE_MIN_SAMPLE,
+            }
+            for b, v in buckets.items()
+        },
+        "by_sector": out_sectors,
+        "caveats": [
+            "drift_5d_incl_gap_pct includes the overnight announcement gap and is NOT fully "
+            "capturable by an alert fired after the result lands; drift_after_open_pct is the "
+            "post-announcement portion that is.",
+            "Sectors with sample_is_adequate=false must not be ranked or acted on.",
+            "Stock.sector carries a known label split ('Financial' vs 'Financial Services'); "
+            "they are reported as-is rather than silently merged.",
+        ],
+    }
