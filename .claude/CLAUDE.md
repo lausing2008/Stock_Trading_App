@@ -271,6 +271,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 - **`docs/features/decision-engine-dualscorer-parity.md`** — `_should_enter()` / decision-engine Score Parity (T232-DL-DUALSCORER-DEBT, partial); T232-DL-DUALSCORER-DEBT — 4 DE-Only Hard Rejects, Test Coverage Added (2...
 - **`docs/features/delisted-stock-detection.md`** — aud14-survivorship — Real Delisting Detection Closes a Dead Column (Built 2026-07-27); T260-DELISTED-BADGE — Informational Badge, Deliberately No Auto-Remova...
 - **`docs/features/earnings-data-and-forecasts.md`** — T249-EARNINGS-LLM-IMPACT — Earnings LLM Impact Report (Built 2026-07-29); Earnings Calendar Now Shows Analyst Consensus + Beat-Rate History (Built 2026-08-25 … [migration]
+- **`docs/features/earnings-data-and-forecasts.md`** — AUD-EARNSURPRISE-SECTOR (2026-09-22): >10% EPS beat → +4.19% over 5d AFTER OPEN (n=250) vs −0.05% in-line; the platform gates AGAINST it. Two drift figures always — the gap is not tradeable [earnings, surprise, sector]
 - **`docs/features/earnings-data-and-forecasts.md`** — T379-CALENDAR-PRICE (2026-09-10) — the calendar showed EPS/target/expected-move but not the PRICE they are relative to. ONE bulk Redis read, never per-symbol; NULL renders "—", never 0.0 [Events Calendar, live_prices]
 
 - **`docs/features/macro-valuation-cape.md`** — CAPE (Shiller PE) — AI Bubble Warning Indicator
@@ -306,7 +307,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
-- **`docs/audits/2026-09-22-news-llm-hmm-prediction-audit.md`** — pooled May-Aug BUY alpha −1.8pp, but **Sept is −0.32pp (t=−0.99, ns)** and improving monotonically — READ THE CORRECTION BOX FIRST. Confidence INVERTED; hot-news gate's sign backwards; HMM never uses its transmat [alpha, HMM, news]
+- **`docs/audits/2026-09-22-news-llm-hmm-prediction-audit.md`** — BUY alpha −1.08pp (t=−9.24) BUT Sept alone is −0.32pp (ns) — READ THE CORRECTION BOX FIRST. Losses are TWO episodes, not a trend. SELL beats BUY by 3.67pp; confidence INVERTED; HMM never uses its transmat [alpha, HMM, inversion]
 - **`docs/audits/2026-09-19-session-index.md`** — START HERE for the 2026-09-18/19 session: T410, A01-A03 scoping, the AUD-MINRR-STYLEBLIND fix-then-correction arc, the four-audit implementation batch (3 rounds), the fix-effectiveness crash, and the PT-H0x audit review, all in one place with links.
 - **`docs/audits/2026-09-21-deferred-audit-items-batch.md`** — PT-H08/PT-H03/PT-H01's own deferred real fixes, built without changing any live portfolio's resolved behavior; plus UW-07 and E09 from the broader deferred list. Records what's still deliberately unbuilt and why.
 - **`docs/audits/2026-09-21-utc-date-boundary-triage.md`** — triaged the 16 files docs/incidents/utc-vs-et-date-boundary.md scoped but deferred; fixed 3 risk-limit gates + 13 more real sites, ~90 left as likely-fine. Follow-up resolved the UNCLEAR tail + swept every remaining service: event-intelligence (4 sites) + ranking-engine's own US/HK-aware fix [timezone, DST]

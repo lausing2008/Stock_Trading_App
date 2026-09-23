@@ -922,3 +922,87 @@ This shipped with 23 tests rather than 22 because **appending `or 0.0` to the re
 passed all of the original tests** — every null test exercised a *mirror* of the index
 comprehension rather than the source. **A helper that copies the logic does not pin the logic.**
 An explicit source-level assertion was added and verified to fail on that exact mutation.
+
+---
+
+## AUD-EARNSURPRISE-SECTOR — Earnings Surprise Impact by Sector (Built 2026-09-22)
+
+**Why**: the 2026-09-22 audit (`docs/audits/2026-09-22-news-llm-hmm-prediction-audit.md`) found
+that nearly every signal in the platform was flat or inverted — BUY alpha −1.08pp at t=−9.24,
+confidence anti-predictive, the hot-news gate backwards. Earnings surprise was the one place a
+large, clean, intuitively-signed edge showed up. It was also, pointedly, the one the engine
+actively gated *against*.
+
+### What it does
+
+`GET /events/earnings/surprise-impact?beat_threshold_pct=10` →
+`earnings.get_earnings_surprise_impact()`. Returns post-earnings drift bucketed by surprise size
+and broken out by sector. Surfaced as the **Earnings Impact** tab on `/intelligence`.
+
+### The measurement, on 629 backfilled events
+
+| bucket | n | 1-day | 5d incl. gap | **5d after open** |
+|---|---|---|---|---|
+| beat >10% | 250 | +3.68% | +5.90% | **+4.19%** |
+| within ±10% | 264 | +0.33% | +0.65% | −0.05% |
+| miss >10% | 108 | +0.25% | +1.79% | +0.78% |
+
+Sectors clearing the 30-beat floor: **Industrials** (n=89, 50 beats, +5.55% after open, 11.41pp
+spread) and **Technology** (n=293, 131 beats, +4.42%, but only 2.50pp spread — tech drifts up on
+non-beats too, +3.07%).
+
+### Two design decisions that matter more than the numbers
+
+**1. Two drift figures are returned, never one.** `post_earnings_return_5d` baselines off the last
+close *before* `report_date`, so it includes the overnight announcement gap — capturable only by a
+position held **through** the report. An alert fired once the result is public has already missed
+it. `drift_after_open_pct` re-measures from the first close on/after the report. The UI leads with
+the smaller, tradeable number and demotes the larger one to a sub-line.
+
+The cautionary case that justifies the split: **Communication Services reads +4.66% including the
+gap and −0.10% after it.** The entire apparent opportunity is untradeable. A UI showing only the
+headline would have advertised it.
+
+**2. Thin samples are segregated, not ranked.** Every rate carries `n` and `sample_is_adequate`
+(floor 30 beats), matching `get_impact_direction_accuracy()`'s own convention — whose docstring
+records three findings that reversed once their samples widened, one resting on six stocks. This
+is load-bearing here: `(unclassified)` shows a **+47.41pp spread on TWO beats** and Energy +8.56pp
+on two. Both would otherwise top the table. Sub-floor rows render dimmed, tagged THIN, under an
+explicit "not ranked and not actionable" divider.
+
+The known `Stock.sector` label split (`Financial` vs `Financial Services`) is reported as-is
+rather than silently merged, and called out in the payload's own `caveats`.
+
+### Prerequisite: AUD-PEARN-COVERAGE
+
+None of this was measurable before. `backfill_post_earnings_returns()` bounded its scan to 45
+days, describing older rows as "a genuine, if rare, gap" — measured, they were **91% of the
+table** (74 of 809), because the job only fills rows within 45 days of its own run. The window is
+now a parameter; the daily cron keeps its 45-day default, and one historical run filled **555
+rows**, taking coverage **9.1% → 77.8%**.
+
+Note `post_earnings_return_1d/_5d` are **fractions, not percents** (0.3384 = +33.8%). Misreading
+them as percents makes the whole column look empty; it is not.
+
+### What to check if this looks wrong
+
+```bash
+# Coverage — should be ~78%, not ~9%
+docker exec stockai-postgres-1 psql -U stockai -d stockai -c "
+SELECT count(*), count(post_earnings_return_1d) FROM earnings_events;"
+
+# The live payload, through the gateway (route lives under the already-registered /events prefix)
+docker exec stockai-event-intelligence-1 python3 -c "
+import sys; sys.path.insert(0,'/app'); sys.path.insert(0,'/app/src')
+from src.services.earnings import get_earnings_surprise_impact
+d=get_earnings_surprise_impact(); print(d['overall']['beat'])"
+```
+
+If a sector suddenly tops the table with a huge spread, check `sample_is_adequate` **first** —
+that is almost always a two-beat cohort rather than a discovery.
+
+### Not built
+
+An alert or signal that trades this. The edge is measured and surfaced; nothing acts on it. That
+remains the highest-value unbuilt item, and it must ship with an outcome table — news is the one
+alert family without one, and that is precisely where a backwards gate survived for months.

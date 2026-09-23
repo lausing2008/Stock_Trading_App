@@ -849,9 +849,10 @@ which is exactly the kind of correction alpha-based evaluation exists to supply.
 | # | Item | Status | Commit |
 |---|---|---|---|
 | 1a | Market-scoped regime (`AUD-REGIME-MARKETBLIND`) | **DONE, deployed** | `af74d29` |
-| 1b | Flat / confidence-decoupled position sizing | **NOT DONE** | — |
+| 1b | Confidence-decoupled position sizing (`AUD-CONFSIZE-INVERTED`) | **DONE, deployed** | `327eb47` |
 | 1c | GROWTH exit config (target ~1.5 ATR, hold ~10) | **NOT DONE** | — |
 | 1d | HK watchlist prune | **NOT DONE — user decision** | — |
+| 1e | Pre-earnings compression A/B (`AUD-EARNCOMPRESS-PROXIMITY`) | **DONE, deployed** | `fad1ba7` |
 
 **1a** — `_fetch_market_regime()` hardcoded `market="US"` for every stock; 94.5% of HK BUY
 outcomes were tagged `bull` while HK was actually `choppy`. Now scoped by the stock's own
@@ -859,7 +860,43 @@ market. `fear_greed` deliberately left US-only (the endpoint takes no market par
 limitation is documented in the docstring and locked by a test rather than silently faked.
 8 tests, 2 sabotage cycles.
 
-**Sizing decision (1b):** the user likes confidence-driven sizing as a concept. Resolution —
+**1b — shipped** (`327eb47`). `confidence_sizing_enabled` added to `_DEFAULT_CONFIG`, **default
+False**. The band arithmetic is left intact and still evaluated so the US-floor boundary test
+stays meaningful and re-enabling is a pure config flip, not a code restore. Only the multiplier
+is neutralised. Historical counterfactual, computable because size scales P&L linearly:
+**−$8,222 → −$6,798, a +$1,425 improvement (17% of the loss)**, expectancy −$66.85 → −$55.27.
+Of 123 closed trades, **89 (72%) had been sized UP at 1.25×, and they carried $7,042 of the
+loss**. 10 tests, 2 sabotage cycles.
+
+**1e — shipped as an EXPERIMENT, not a fix** (`fad1ba7`). BUY signals by earnings proximity,
+5-day forward return, all cohorts over the same window:
+
+| cohort | n | 5d return | sd | Sharpe |
+|---|---|---|---|---|
+| **caution** (DTE 0–2) | 77 | **+1.72%** | 8.62 | **0.200** |
+| short_imminent_event | 127 | +0.63% | 9.66 | 0.065 |
+| note (DTE 3–5) | 43 | +0.32% | 9.34 | 0.034 |
+| watch (DTE 6–10) | 104 | −0.14% | 4.79 | −0.029 |
+| bull_beater | 3,351 | −0.79% | 6.57 | −0.120 |
+| **(none)** | 9,575 | **−1.40%** | 7.96 | −0.176 |
+
+Monotone in proximity; `caution` is best on **both** raw return and Sharpe — and compression is
+tightest exactly there (`ec[2]` = 0.60–0.65, a 35–40% haircut toward 0.50).
+
+**The confound that makes this an experiment rather than a conclusion:** those cohorts are
+survivorship-filtered. A signal compressed by 0.60 that *still* cleared the BUY threshold was
+stronger before compression, biasing the compressed buckets upward. No further querying of
+existing data resolves that — only running with compression off and comparing does.
+
+Two properties preserved deliberately, both sabotage-verified: **the cohort is still tagged**
+when compression is skipped (`filter_audit` groups by that reason key, so hiding the tag would
+make the A/B invisible), and **SA-25's SHORT DTE≤2 guard is not gated** — highest variance of any
+cohort (sd 9.66), guarding a coin-flip binary event on a 5-day trade, which is risk control
+rather than a return bet. The SA-7 `bull_beater` branch is likewise untouched; it already skips
+compression.
+
+**Sizing decision (1b), as originally recorded:** the user likes confidence-driven sizing as a
+concept. Resolution —
 keep it as the design, but **gate it on the polarity fix**: confidence is currently inverted, so
 confidence-weighted sizing amplifies losses. Size on volatility until recalibration demonstrates
 positive out-of-sample correlation, then re-enable confidence weighting behind a flag.
@@ -869,6 +906,58 @@ US BUY signals underperform their own stocks by −5.07pp/14d versus HK's −5.6
 significant). The HK headline gap is ~all universe composition: the 42 tracked "HK" names are
 ~33 Technology, dominated by newly-listed China semis that fell 15–25%. Recommendation is to
 **prune the watchlist, not suspend the market** — but the universe is the user's call.
+
+---
+
+### Follow-on work, same session
+
+| Item | Status | Commit |
+|---|---|---|
+| Post-earnings backfill window parameterised (`AUD-PEARN-COVERAGE`) | **DONE, deployed + run** | `24d269d` |
+| Earnings surprise impact by sector — backend (`AUD-EARNSURPRISE-SECTOR`) | **DONE, deployed** | `7f3a5ad` |
+| Earnings Impact tab — frontend | **DONE, deployed** | `1a7be3d` |
+| Test suite greened (4 red tests) | **DONE** | `6e8bc1c` |
+| Reports/Event-Intelligence dedup (`AUD-REPORTSTAB-DEDUP`) | **DONE, deployed** | `12dc9f2` |
+
+**The backfill.** `backfill_post_earnings_returns()` bounded its scan to 45 days, with a comment
+calling older unbackfilled rows "a genuine, if rare, gap". Measured: **91% of the table** (74 of
+809 populated) — the job only ever fills rows within 45 days of its own run, so everything that
+reported before the job existed was never touched. Window is now a parameter (cron keeps its
+45-day default); one historical run filled **555 rows**, taking coverage **9.1% → 77.8%**.
+
+*A correction recorded against myself:* I first read `post_earnings_return_1d` as broken because
+every bucket averaged ~0.03. It is a **fraction, not a percent** (max 0.3384 = +33.8%), so that
+was +3%, not 0.03%. Read correctly it agrees with the 5-day figures.
+
+**What the backfilled data says.** On the full dataset, a >10% EPS beat is followed by **+5.90%
+over 5 days** (n=250, 61.2% up) vs **+0.65%** for in-line (n=264). But the tradeable figure is
+smaller and the endpoint returns both: `post_earnings_return_5d` baselines off the last close
+*before* the report, so it includes the overnight gap, which only a position held **through** the
+report captures. Measured from the first close on/after the report — what a post-announcement
+alert could actually catch — beats give **+4.19%** vs **−0.05%** in-line.
+
+By sector, only **two clear the 30-beat sample floor**: Industrials (n=89, 50 beats, **+5.55%**
+after open, 11.41pp spread) and Technology (n=293, 131 beats, +4.42% after open, but only a
+2.50pp spread because tech drifts up on non-beats too at +3.07%). The floor is load-bearing —
+`(unclassified)` shows a **+47.41pp spread on two beats** and Energy +8.56pp on two; both would
+otherwise top the table. The UI segregates sub-floor rows under an explicit "not ranked and not
+actionable" divider rather than letting them sort to the top.
+
+**The suite greening.** market-data had 4 red tests, signal-engine's ratchet was red. A
+chronically red suite is how a real regression hides (three incidents on that theme in
+`ci-failure-masking.md`), so none of the session's work was safe while the baseline was red.
+Three causes, none a code defect: one was **mine** (a source-text assertion pinning a number,
+caught by this repo's own AUD-T401 ratchet — replaced with a value test, and verified by
+sabotaging the source to `> 0.5 - 99999`, which leaves the substring intact so the old assertion
+would have passed); two were tests anchored to the machine's **local** date while the code
+correctly used `_today_et()`, which only agree when the developer's timezone matches US Eastern.
+
+**An index that turned out not to be needed.** Two cohort-breakdown queries timed out, and the
+obvious next step was an expression index on the `reasons` JSON extraction. Then a trivial
+`pg_stat_activity` query also timed out — which no index explains. The real cause was I/O
+starvation from a concurrent frontend build (§7.5). On a quiet instance the same query returned
+in seconds. **No index was added**, and the non-finding is recorded here so it is not
+re-attempted.
 
 ---
 
