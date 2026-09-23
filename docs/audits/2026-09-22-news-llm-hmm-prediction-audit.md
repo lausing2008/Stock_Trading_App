@@ -959,7 +959,52 @@ print(d['overall_avg_alpha_pct'], d['n_with_alpha'])
 [print(f['filter'], f['alpha_edge_pct'], f['alpha_verdict']) for f in d['by_filter_name']]"
 ```
 
-### 7.4 What this implies for the remaining work
+### 7.4 Check-back schedule
+
+Two dated checkpoints, derived from §7.1's power analysis. Recorded here because the calendar
+integration's auth token was expired when they were set — re-create them in Google Calendar when
+it is re-authorised, but this file is the source of truth either way.
+
+**2026-10-06 — "did the fixes take EFFECT?" (~10 trading days).** Deliberately not a performance
+check; far too early for that. Three pass/fail checks:
+
+| # | check | PASS | FAIL |
+|---|---|---|---|
+| 1 | HK `market_regime` tag mix | `bull` share < 60% | still > 90% → the fix never took effect |
+| 2 | New entries carrying a `Size 1.25×` note | zero | any occurrence |
+| 3 | FixRecord #4 accumulating snapshots | ≥1 real snapshot | none |
+
+"No resolved BUY outcomes yet" is a fine result at this date. **Do not judge alpha.**
+
+**2026-12-04 — "did the fixes WORK?" (~52 trading days).** The point a 2.0pp alpha shift becomes
+detectable at 80% power.
+
+- **Baseline to beat** (recorded 2026-09-22, stored in FixRecord #4's `success_criteria` so it
+  cannot be rewritten afterwards): day-clustered BUY alpha **−2.066%**, sd 5.633, **t_day −3.5**,
+  n_days 91, n_signals 13,238.
+- **SUCCESS:** alpha improves ≥ 1.5pp. **FAILURE:** unchanged or worse with |t_day| ≥ 2 after 92+
+  trading days. **|t_day| < 2 means NOT YET MEASURABLE — never read it as failure.**
+- Also review: the `/fix-effectiveness` dashboard, `filter_audit`'s alpha verdicts (watch
+  `earnings_warning` at +2.90pp harmful and `hot_news_flag` at +0.41 weak), and re-run the sizing
+  counterfactual as trades accumulate.
+
+**Parked for that date, deliberately:**
+- `earnings_warning` polarity — NOT changed on 2026-09-22 because its own input (`market_regime`)
+  changed the same day, and the pooled n=149 hides three warning levels across regimes and beat
+  rates. Needs the per-cohort breakdown first (§7.5).
+- The post-earnings drift signal — >10% EPS beat gives **+4.19% over 5 days after open** (n=250)
+  versus −0.05% in-line; Industrials strongest at +5.55% (n=89, 50 beats).
+
+### 7.5 An operational note: don't measure during a frontend build
+
+Both attempts to break `earnings_warning` down by cohort timed out, and so did a trivial
+`pg_stat_activity` query — while a `DOCKER_BUILDKIT=0 docker build` of the frontend was running on
+the same instance. That is not a query-planning problem; it is the I/O starvation already
+documented in `docs/incidents/ebs-io-credit-exhaustion.md`, where a frontend rebuild made the whole
+instance unreachable for ~50 minutes. Diagnose from local files and wait for the build, rather than
+adding load to a box that is already saturated.
+
+### 7.6 What this implies for the remaining work
 
 Running query 2 manually every few weeks is exactly the failure mode that let a backwards news
 gate survive for months. **Phase 0d (scheduled `filter_audit` persistence) is therefore the
