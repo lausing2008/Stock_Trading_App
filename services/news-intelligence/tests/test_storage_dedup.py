@@ -86,7 +86,12 @@ class TestPersistNewsItemsDedup:
             mock_classify.reset_mock()
             # Re-poll: the SAME url shows up again (the real RSS-feed-reserves-old-items case).
             storage.persist_news_items([_item("Acme reports earnings", "https://x/1")], source="pr_newswire")
-            mock_classify.assert_called_once_with([], "fake-key")
+            # AUD-NEWSCLASSIFY-ORDERING: previously asserted `assert_called_once_with([], ...)` —
+            # the old code always called classify_in_batches, even with an empty list (a no-op
+            # that still cost a function call). It is now skipped outright when there is nothing
+            # to classify. The property this test exists for — a re-polled URL is never
+            # reclassified — is satisfied more strongly, not less.
+            mock_classify.assert_not_called()
 
     def test_classifies_only_the_genuinely_new_item_in_a_mixed_batch(self):
         with patch.object(storage, "SessionLocal", _SessionLocal), \
@@ -140,3 +145,117 @@ class TestPersistNewsItemsDedup:
             ]
             storage.persist_news_items([_item("No-url headline", None)], source="sec_edgar")
             mock_classify.assert_called_once_with(["No-url headline"], "fake-key")
+
+
+class TestClassifyOnlyTrackedSymbols:
+    """AUD-NEWSCLASSIFY-ORDERING — resolve the symbol BEFORE spending a Claude call.
+
+    persist_news_items() used to classify every new headline and only afterwards discover
+    whether it mapped to anything. Measured over 263,457 classified rows: 186,461 (70.8%) had
+    symbol IS NULL and could never influence a decision. By source — sec_edgar 148,860 items at
+    97.0% unusable, pr_newswire 99.9%, businesswire 99.9% — while alpaca is 0%, precisely
+    because it ships native ticker tags. news_classify is 87% of this platform's Claude spend.
+
+    Nothing required the LLM to run first: the EDGAR CIK is on the raw item and
+    symbol_for_cik() is a local lookup; extract_symbols() reads only the headline.
+    """
+
+    def test_an_untracked_headline_is_not_sent_to_claude(self):
+        with patch.object(storage, "SessionLocal", _SessionLocal), \
+             patch.object(storage, "RealtimeNewsItem", _models.RealtimeNewsItem), \
+             patch.object(storage, "get_admin_ai_key", return_value="fake-key"), \
+             patch.object(storage, "_load_universe", return_value=[("AAPL", "APPLE", "US")]), \
+             patch.object(storage, "extract_symbols", return_value=[]), \
+             patch.object(storage, "classify_in_batches") as mock_classify:
+            storage.persist_news_items(
+                [_item("Some private company files a prospectus", "https://x/untracked")],
+                source="pr_newswire",
+            )
+            mock_classify.assert_not_called()
+
+    def test_a_tracked_headline_is_still_classified(self):
+        with patch.object(storage, "SessionLocal", _SessionLocal), \
+             patch.object(storage, "RealtimeNewsItem", _models.RealtimeNewsItem), \
+             patch.object(storage, "get_admin_ai_key", return_value="fake-key"), \
+             patch.object(storage, "_load_universe", return_value=[("AAPL", "APPLE", "US")]), \
+             patch.object(storage, "extract_symbols", return_value=["AAPL"]), \
+             patch.object(storage, "classify_in_batches") as mock_classify:
+            mock_classify.return_value = [
+                {"sentiment_score": 20, "sentiment_label": "negative", "is_material": True, "category": "earnings"},
+            ]
+            storage.persist_news_items(
+                [_item("AAPL cuts guidance", "https://x/tracked")], source="pr_newswire",
+            )
+            mock_classify.assert_called_once()
+            assert mock_classify.call_args[0][0] == ["AAPL cuts guidance"]
+
+    def test_only_the_tracked_half_of_a_mixed_batch_is_classified(self):
+        def _fake_extract(headline, *a, **k):
+            return ["AAPL"] if "AAPL" in headline else []
+
+        with patch.object(storage, "SessionLocal", _SessionLocal), \
+             patch.object(storage, "RealtimeNewsItem", _models.RealtimeNewsItem), \
+             patch.object(storage, "get_admin_ai_key", return_value="fake-key"), \
+             patch.object(storage, "_load_universe", return_value=[("AAPL", "APPLE", "US")]), \
+             patch.object(storage, "extract_symbols", side_effect=_fake_extract), \
+             patch.object(storage, "classify_in_batches") as mock_classify:
+            mock_classify.return_value = [
+                {"sentiment_score": 50, "sentiment_label": "neutral", "is_material": False, "category": "other"},
+            ]
+            storage.persist_news_items([
+                _item("Unknown Co announces something", "https://x/m1"),
+                _item("AAPL announces something", "https://x/m2"),
+                _item("Another unknown filing", "https://x/m3"),
+            ], source="pr_newswire")
+            mock_classify.assert_called_once()
+            assert mock_classify.call_args[0][0] == ["AAPL announces something"]
+
+    def test_the_untracked_row_is_still_persisted_just_unlabelled(self):
+        """The stated trade-off: the market-wide /news feed keeps the headline, source and
+        timestamp and loses only its sentiment chip. Dropping the ROW would be a bigger,
+        unannounced change."""
+        with patch.object(storage, "SessionLocal", _SessionLocal), \
+             patch.object(storage, "RealtimeNewsItem", _models.RealtimeNewsItem), \
+             patch.object(storage, "get_admin_ai_key", return_value="fake-key"), \
+             patch.object(storage, "_load_universe", return_value=[("AAPL", "APPLE", "US")]), \
+             patch.object(storage, "extract_symbols", return_value=[]), \
+             patch.object(storage, "classify_in_batches") as mock_classify:
+            inserted = storage.persist_news_items(
+                [_item("Untracked headline", "https://x/persist-me")], source="pr_newswire",
+            )
+            mock_classify.assert_not_called()
+            assert inserted == 1, "the row must still be stored, just without labels"
+
+    def test_a_broken_resolver_classifies_everything_rather_than_silently_disabling_the_gate(self):
+        """THE failure mode this guard exists for. An EMPTY ticker universe means we cannot tell
+        'untracked' from 'unknown'. Skipping classification there would silently stop every
+        hot-news flag from ever being set — the same 'an empty result must say WHICH nothing'
+        mistake as T403, where a dead feed and 'this stock has no options' were one string."""
+        with patch.object(storage, "SessionLocal", _SessionLocal), \
+             patch.object(storage, "RealtimeNewsItem", _models.RealtimeNewsItem), \
+             patch.object(storage, "get_admin_ai_key", return_value="fake-key"), \
+             patch.object(storage, "_load_universe", return_value=[]), \
+             patch.object(storage, "extract_symbols", return_value=[]), \
+             patch.object(storage, "classify_in_batches") as mock_classify:
+            mock_classify.return_value = [
+                {"sentiment_score": 50, "sentiment_label": "neutral", "is_material": False, "category": "other"},
+            ]
+            storage.persist_news_items(
+                [_item("Headline during a resolver outage", "https://x/outage")],
+                source="pr_newswire",
+            )
+            mock_classify.assert_called_once()
+
+    def test_tagged_sources_are_unaffected(self):
+        """Alpaca ships native ticker tags, needs no resolver, and was already 0% wasted."""
+        with patch.object(storage, "SessionLocal", _SessionLocal), \
+             patch.object(storage, "RealtimeNewsItem", _models.RealtimeNewsItem), \
+             patch.object(storage, "get_admin_ai_key", return_value="fake-key"), \
+             patch.object(storage, "classify_in_batches") as mock_classify:
+            mock_classify.return_value = [
+                {"sentiment_score": 80, "sentiment_label": "positive", "is_material": True, "category": "earnings"},
+            ]
+            it = _item("TSLA beats", "https://x/alpaca-1")
+            it["symbols"] = ["TSLA"]
+            storage.persist_news_items([it], source="alpaca", symbol_mode="tagged")
+            mock_classify.assert_called_once()

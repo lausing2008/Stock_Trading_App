@@ -18,7 +18,7 @@ from common.redis_client import get_redis
 from db import SessionLocal, RealtimeNewsItem
 
 from .classify import classify_in_batches
-from .tickers import extract_symbols, symbol_for_cik
+from .tickers import _load_cik_map, _load_universe, extract_symbols, symbol_for_cik
 
 log = structlog.get_logger()
 
@@ -133,20 +133,86 @@ def persist_news_items(
         _new_items = [it for it in raw_items if not it.get("url") or it["url"] not in _known_urls]
         _skipped = len(raw_items) - len(_new_items)
 
+        # AUD-NEWSCLASSIFY-ORDERING (2026-09-22): resolve the symbol BEFORE spending a Claude
+        # call, not after. This loop used to run only after classify_in_batches() had already
+        # priced every headline — so the code paid to classify, then discovered the item mapped
+        # to nothing. Measured over 263,457 classified rows: 186,461 (70.8%) had symbol IS NULL
+        # and could never influence any decision. By source, sec_edgar 148,860 items / 97.0%
+        # unusable, pr_newswire 99.9%, businesswire 99.9% — while alpaca is 0%, precisely
+        # because it ships native ticker tags. 29,303 424B2 prospectus supplements were
+        # classified to yield ONE material flag; ~7,400 fund-prospectus filings yielded zero of
+        # anything. news_classify is 87% of this platform's entire Claude spend.
+        #
+        # Nothing here needed the LLM to run first: the EDGAR CIK is on the raw item and
+        # symbol_for_cik() is a local lookup, and extract_symbols() reads only the headline
+        # text. The ordering was simply backwards.
+        #
+        # THE TRADE-OFF, stated rather than buried: symbol-less rows still persist and still
+        # appear in the market-wide /news feed, but now WITHOUT sentiment/materiality labels.
+        # That is a real, if small, product change — an untracked company's headline keeps its
+        # title, source and timestamp and loses its sentiment chip. Set
+        # CLASSIFY_UNTRACKED_HEADLINES=1 to restore the old behaviour if the feed's labels turn
+        # out to matter more than ~70% of the Claude bill.
+        # See docs/audits/2026-09-22-news-llm-hmm-prediction-audit.md.
+        import os as _os
+        _classify_untracked = _os.getenv("CLASSIFY_UNTRACKED_HEADLINES") == "1"
+
+        resolved_symbols: list[list | None] = []
+        for it in _new_items:
+            if symbol_mode == "tagged":
+                _syms = it.get("symbols")
+            elif symbol_mode == "cik":
+                _s = symbol_for_cik(it.get("cik"))
+                _syms = [_s] if _s else None
+            else:
+                _syms = extract_symbols(it["headline"])
+            resolved_symbols.append(_syms)
+
+        # FAIL OPEN, VISIBLY, WHEN THE RESOLVER ITSELF IS BROKEN. Skipping classification
+        # because a headline genuinely maps to no tracked symbol is the intended saving.
+        # Skipping it because the ticker universe or CIK map failed to LOAD is a different
+        # thing entirely — it would silently stop every hot-news flag from ever being set, and
+        # the only visible trace would be a warning in tickers.py. That is the exact
+        # "an empty result must say WHICH nothing" failure this repo already paid for once
+        # (T403: a dead feed and "this stock has no options" were the same string).
+        # So: an unavailable resolver reverts to the old classify-everything behaviour and says
+        # so, rather than quietly saving money by disabling a gate.
+        if symbol_mode == "cik":
+            _resolver_ok = bool(_load_cik_map())
+        elif symbol_mode == "extract":
+            _resolver_ok = bool(_load_universe())
+        else:  # "tagged" — the source supplies symbols directly, nothing to load
+            _resolver_ok = True
+        if not _resolver_ok:
+            log.warning(
+                "news_storage.resolver_unavailable_classifying_all",
+                source=source, symbol_mode=symbol_mode, new_items=len(_new_items),
+                note="ticker universe / CIK map empty — cannot tell 'untracked' from 'unknown'",
+            )
+
         api_key = get_admin_ai_key("claude")
-        headlines = [it["headline"] for it in _new_items]
-        classifications = classify_in_batches(headlines, api_key) if api_key else [None] * len(headlines)
+        _to_classify = [
+            i for i, syms in enumerate(resolved_symbols)
+            if syms or _classify_untracked or not _resolver_ok
+        ]
+        classifications: list = [None] * len(_new_items)
+        if api_key and _to_classify:
+            _results = classify_in_batches(
+                [_new_items[i]["headline"] for i in _to_classify], api_key
+            )
+            for _pos, _idx in enumerate(_to_classify):
+                if _pos < len(_results):
+                    classifications[_idx] = _results[_pos]
+
+        log.info(
+            "news_storage.classify_scoped",
+            source=source, new_items=len(_new_items), classified=len(_to_classify),
+            skipped_untracked=len(_new_items) - len(_to_classify),
+        )
 
         inserted = 0
-        for raw, cls in zip(_new_items, classifications):
+        for raw, cls, symbols in zip(_new_items, classifications, resolved_symbols):
             headline = raw["headline"]
-            if symbol_mode == "tagged":
-                symbols = raw.get("symbols")
-            elif symbol_mode == "cik":
-                sym = symbol_for_cik(raw.get("cik"))
-                symbols = [sym] if sym else None
-            else:
-                symbols = extract_symbols(headline)
             symbols = symbols or [None]  # None = macro/market-wide, no ticker matched
             for sym in symbols:
                 stmt = pg_insert(RealtimeNewsItem).values(
