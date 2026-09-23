@@ -822,6 +822,9 @@ export const api = {
   freshEarningsSurprises: (lookbackDays = 5, beatThresholdPct = 10) =>
     request<FreshEarningsSurprises>(
       `/events/earnings/fresh-surprises?lookback_days=${lookbackDays}&beat_threshold_pct=${beatThresholdPct}`),
+  // AUD-EARNSURPRISE-STOCK: one stock's own post-earnings history — raw events, not a rate.
+  stockEarningsHistory: (symbol: string) =>
+    request<StockEarningsHistory>(`/events/earnings/stock-history?symbol=${encodeURIComponent(symbol)}`),
   eventsEarningsCalendar: (days = 14) => request<EarningsEvent[]>(`/events/earnings/calendar?days=${days}`),
   eventsEarningsSymbol: (symbol: string) => request<EarningsEvent[]>(`/events/earnings?symbol=${symbol}`),
   // ── T375-LEAPS-BACKTEST ────────────────────────────────────────────────────
@@ -3626,6 +3629,36 @@ export type CrossAssetReading = {
 export type CrossAssetResponse = {
   reading: CrossAssetReading | null;
   note?: string;
+};
+
+export type StockEarningsEvent = {
+  report_date: string;
+  surprise_pct: number;
+  revenue_surprise_pct: number | null;
+  eps_actual: number | null;
+  eps_estimate: number | null;
+  drift_1d_pct: number | null;
+  /** NOTE: baselined off the close BEFORE the report, so this INCLUDES the overnight gap. */
+  drift_5d_pct: number | null;
+  was_big_beat: boolean;
+};
+
+export type StockEarningsHistory = {
+  symbol: string;
+  found: boolean;
+  sector?: string;
+  market?: string;
+  beat_threshold_pct?: number;
+  n_events: number;
+  events: StockEarningsEvent[];
+  /** Directional hit rate over the last 8 reports — robust where magnitude is not. */
+  beat_consistency?: number | null;
+  n_big_beats?: number;
+  stock_avg_drift_pct?: number | null;
+  /** False below 8 big beats — false for almost every symbol. Never rank on the average. */
+  stock_drift_is_statistically_usable?: boolean;
+  sector_base_rate?: EarningsSurpriseSector | null;
+  caveats?: string[];
 };
 
 export type FreshSurpriseSectorBaseRate = {

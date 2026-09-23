@@ -39,7 +39,7 @@ import OptionsGamePlanCard from '@/components/OptionsGamePlanCard';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
 import OptionsChainChart from '@/components/OptionsChainChart';
-import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult, type OutcomesSummary, type QuarterlyRow, type AnalystConsensus, type Fundamentals } from '@/lib/api';
+import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult, type OutcomesSummary, type QuarterlyRow, type AnalystConsensus, type Fundamentals, type StockEarningsHistory, type StockEarningsEvent } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { nearestActionableFvg, nearestPivotToFvg, classifyFvgVolumeContext } from '@/lib/fvgTradePlan';
 import { detectSwingPivots } from '@/lib/swingPivots';
@@ -215,6 +215,94 @@ function fmtBigMoney(v: number | null | undefined): string {
 const CONSENSUS_PERIOD_LABEL: Record<string, string> = {
   '0q': 'Next Qtr', '+1q': 'Qtr After', '0y': 'This FY', '+1y': 'Next FY',
 };
+
+// AUD-EARNSURPRISE-STOCK: what actually HAPPENED after this stock's past reports.
+// Sits inside EarningsHistoryAndEstimates because the user asked for earnings data together
+// rather than scattered. Deliberately shows RAW per-report outcomes, never a per-stock
+// "expected drift": across 130 symbols the median is 5 earnings events (max 9), so a per-stock
+// rate would rest on a handful of points. NVDA is the live proof — it has beaten every quarter
+// (consistency 1.0) yet its last four 5-day moves were -2.88/-5.09/-0.61/-5.56%. An averaged
+// per-stock figure would have read ~-3.5% on n=4 and looked like a short signal.
+// The SECTOR base rate is the number that clears a sample floor, so it is shown alongside.
+function PostEarningsDrift({ symbol }: { symbol: string }) {
+  const { data } = useSWR(`stockEarningsHistory-${symbol}`, () => api.stockEarningsHistory(symbol));
+  if (!data || !data.found || data.n_events === 0) return null;
+  const d = data as StockEarningsHistory;
+
+  const pc = (v: number | null | undefined) =>
+    v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+  const c = (v: number | null | undefined) =>
+    v == null ? '#6b7280' : v >= 0 ? '#4ade80' : '#f87171';
+  const sb = d.sector_base_rate;
+
+  return (
+    <div style={{ marginTop: 22, paddingTop: 18, borderTop: '1px solid #1f2937' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
+        <h4 style={{ color: '#d1d5db', fontSize: 12, fontWeight: 700, margin: 0, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+          After past reports
+        </h4>
+        {d.beat_consistency != null && (
+          <span style={{ color: '#9ca3af', fontSize: 11 }}>
+            beat {Math.round(d.beat_consistency * 100)}% of last {Math.min(d.n_events, 8)}
+          </span>
+        )}
+      </div>
+      <p style={{ color: '#6b7280', fontSize: 11, margin: '0 0 10px', lineHeight: 1.5, maxWidth: 620 }}>
+        Individual outcomes, not an average — {d.n_events} report{d.n_events === 1 ? '' : 's'} is far
+        too few to infer a per-stock drift rate. Moves include the overnight gap.
+      </p>
+
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 360 }}>
+          <thead>
+            <tr style={{ color: '#6b7280', textAlign: 'left', borderBottom: '1px solid #1f2937' }}>
+              <th style={{ padding: '5px 8px', fontWeight: 600 }}>Report</th>
+              <th style={{ padding: '5px 8px', fontWeight: 600 }}>EPS surprise</th>
+              <th style={{ padding: '5px 8px', fontWeight: 600 }}>Next day</th>
+              <th style={{ padding: '5px 8px', fontWeight: 600 }}>5 days</th>
+            </tr>
+          </thead>
+          <tbody>
+            {d.events.slice(0, 8).map((ev: StockEarningsEvent) => (
+              <tr key={ev.report_date} style={{ borderTop: '1px solid #111827' }}>
+                <td style={{ padding: '5px 8px', color: '#9ca3af', fontVariantNumeric: 'tabular-nums' }}>{ev.report_date}</td>
+                <td style={{ padding: '5px 8px', color: c(ev.surprise_pct), fontVariantNumeric: 'tabular-nums' }}>
+                  {pc(ev.surprise_pct)}
+                  {ev.was_big_beat && <span style={{ marginLeft: 5, fontSize: 9, fontWeight: 700, color: '#4ade80' }}>BIG</span>}
+                </td>
+                <td style={{ padding: '5px 8px', color: c(ev.drift_1d_pct), fontVariantNumeric: 'tabular-nums' }}>{pc(ev.drift_1d_pct)}</td>
+                <td style={{ padding: '5px 8px', color: c(ev.drift_5d_pct), fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{pc(ev.drift_5d_pct)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {sb && (
+        <div style={{ marginTop: 10, background: '#0b1120', borderRadius: 6, padding: '9px 12px', fontSize: 11, color: '#9ca3af', lineHeight: 1.6 }}>
+          {sb.sample_is_adequate ? (
+            <>
+              <strong style={{ color: '#d1d5db' }}>{d.sector} base rate:</strong>{' '}
+              a &gt;{d.beat_threshold_pct}% beat in this sector has historically drifted{' '}
+              <strong style={{ color: c(sb.beat_drift_after_open_pct) }}>
+                {pc(sb.beat_drift_after_open_pct)}
+              </strong>{' '}
+              over 5 days measured from the first close after the report (n={sb.n_beats} beats).
+              This is the statistically-supported figure — the rows above are this stock&apos;s own
+              small sample.
+            </>
+          ) : (
+            <>
+              <strong style={{ color: '#f59e0b' }}>{d.sector}</strong> has only {sb.n_beats} big
+              beats on record — below the sample floor, so there is no usable base rate for this
+              sector yet. Read the rows above as individual outcomes only.
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // AUD-EARNINGSCONSENSUS: "Earnings History & Estimates" — combines PAST-quarter actuals
 // (eps_history's actual-vs-estimate, revenue_history's actual-only) with the FORWARD-looking
@@ -3826,6 +3914,7 @@ Return ONLY valid JSON — no markdown, no prose:
               )}
 
               <EarningsHistoryAndEstimates f={f} symbol={symbol} sector={data.price?.sector} />
+              <PostEarningsDrift symbol={symbol} />
 
               {/* Row 6 — Analyst Ratings & Price Targets */}
               {(() => {
