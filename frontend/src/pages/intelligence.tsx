@@ -15,17 +15,20 @@ import {
   type PoliticalEvent,
   type EventIntelOverview,
   type CapeReading,
+  type EarningsSurpriseImpact,
+  type EarningsSurpriseSector,
   type MarketPulse,
 } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 import NewsCard from '@/components/NewsCard';
 
-type Tab = 'overview' | 'economic' | 'earnings' | 'insider' | 'congress' | 'catalyst' | 'risk' | 'political' | 'valuation';
+type Tab = 'overview' | 'economic' | 'earnings' | 'surprise' | 'insider' | 'congress' | 'catalyst' | 'risk' | 'political' | 'valuation';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview',  label: 'Overview' },
   { key: 'economic',  label: 'Economic Calendar' },
   { key: 'earnings',  label: 'Earnings Calendar' },
+  { key: 'surprise',  label: 'Earnings Impact' },
   { key: 'insider',   label: 'Insider Activity' },
   { key: 'congress',  label: 'Congress Trades' },
   { key: 'catalyst',  label: 'Catalyst Leaders' },
@@ -34,7 +37,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'valuation', label: 'Bubble Warning' },
 ];
 
-const VALID_TABS: Tab[] = ['overview', 'economic', 'earnings', 'insider', 'congress', 'catalyst', 'risk', 'political', 'valuation'];
+const VALID_TABS: Tab[] = ['overview', 'economic', 'earnings', 'surprise', 'insider', 'congress', 'catalyst', 'risk', 'political', 'valuation'];
 
 // AUD-REPORTSTAB-DEDUP (2026-09-22): Reports' own 'News & Macro' and 'CAPE / Bubble Warning'
 // nav items now deep-link here (?tab=overview / ?tab=valuation) instead of maintaining their
@@ -659,6 +662,106 @@ function PoliticalTab() {
   );
 }
 
+
+// ── AUD-EARNSURPRISE-SECTOR: what an earnings surprise historically does, by sector ─────────
+// Two drift columns, never one. `drift_5d_incl_gap_pct` includes the overnight announcement
+// gap, which only a position held THROUGH the report captures; `after open` is what a
+// post-announcement entry could actually have caught. Communication Services is the cautionary
+// case: +4.66% including the gap, -0.10% after it.
+function SurpriseImpactTab() {
+  const { data, isLoading } = useSWR('earningsSurpriseImpact', () => api.earningsSurpriseImpact());
+
+  if (isLoading) return <p style={{ color: '#9ca3af', padding: '32px 0' }}>Loading earnings impact…</p>;
+  if (!data) return <p style={{ color: '#ef4444', padding: '32px 0' }}>Failed to load earnings impact</p>;
+
+  const d = data as EarningsSurpriseImpact;
+  const pct = (v: number | null) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`);
+  const col = (v: number | null) => (v == null ? '#6b7280' : v >= 0 ? '#4ade80' : '#f87171');
+  const order = ['beat', 'inline', 'miss'];
+  const label: Record<string, string> = {
+    beat: `Beat > ${d.beat_threshold_pct}%`, inline: `Within ±${d.beat_threshold_pct}%`, miss: `Miss > ${d.beat_threshold_pct}%`,
+  };
+
+  const adequate = d.by_sector.filter(s => s.sample_is_adequate);
+  const thin = d.by_sector.filter(s => !s.sample_is_adequate);
+
+  const sectorRow = (s: EarningsSurpriseSector, dim: boolean) => (
+    <tr key={s.sector} style={{ borderTop: '1px solid #1f2937', opacity: dim ? 0.55 : 1 }}>
+      <td style={{ padding: '8px 10px', fontWeight: 600 }}>
+        {s.sector}
+        {dim && <span style={{ marginLeft: 8, fontSize: 10, color: '#f59e0b', fontWeight: 700 }}>THIN</span>}
+      </td>
+      <td style={{ padding: '8px 10px', color: '#9ca3af', fontVariantNumeric: 'tabular-nums' }}>{s.n_beats} / {s.n_total}</td>
+      <td style={{ padding: '8px 10px', color: col(s.beat_drift_pct), fontVariantNumeric: 'tabular-nums' }}>{pct(s.beat_drift_pct)}</td>
+      <td style={{ padding: '8px 10px', color: col(s.beat_drift_after_open_pct), fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{pct(s.beat_drift_after_open_pct)}</td>
+      <td style={{ padding: '8px 10px', color: col(s.nonbeat_drift_pct), fontVariantNumeric: 'tabular-nums' }}>{pct(s.nonbeat_drift_pct)}</td>
+      <td style={{ padding: '8px 10px', color: col(s.spread_pp), fontVariantNumeric: 'tabular-nums' }}>{s.spread_pp == null ? '—' : `${s.spread_pp >= 0 ? '+' : ''}${s.spread_pp.toFixed(2)}pp`}</td>
+    </tr>
+  );
+
+  return (
+    <div>
+      <p style={{ color: '#6b7280', fontSize: 13, marginBottom: 18, maxWidth: 900, lineHeight: 1.6 }}>
+        How a stock has historically behaved after its own earnings report, by surprise size and sector.
+        <strong style={{ color: '#d1d5db' }}> Read the &quot;after open&quot; column, not the headline one</strong> — the
+        headline includes the overnight announcement gap, which only a position held <em>through</em> the report
+        captures. An alert fired once the result is public has already missed it.
+      </p>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12, marginBottom: 28 }}>
+        {order.map(k => {
+          const b = d.overall[k];
+          if (!b) return null;
+          return (
+            <div key={k} style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: 8, padding: 16 }}>
+              <div style={{ color: '#9ca3af', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', marginBottom: 8 }}>{label[k]}</div>
+              <div style={{ fontSize: 28, fontWeight: 800, color: col(b.drift_after_open_pct) }}>{pct(b.drift_after_open_pct)}</div>
+              <div style={{ color: '#6b7280', fontSize: 11, marginTop: 4 }}>5d after open · n={b.n_after_open}</div>
+              <div style={{ color: '#4b5563', fontSize: 11, marginTop: 6, paddingTop: 6, borderTop: '1px solid #1f2937' }}>
+                incl. gap {pct(b.drift_5d_incl_gap_pct)} · 1d {pct(b.drift_1d_pct)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <h3 style={{ color: '#d1d5db', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>BY SECTOR</h3>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 660 }}>
+          <thead>
+            <tr style={{ color: '#9ca3af', textAlign: 'left', borderBottom: '2px solid #1f2937' }}>
+              <th style={{ padding: '8px 10px' }}>Sector</th>
+              <th style={{ padding: '8px 10px' }}>Beats / Total</th>
+              <th style={{ padding: '8px 10px' }}>Beat (incl. gap)</th>
+              <th style={{ padding: '8px 10px' }}>Beat (after open)</th>
+              <th style={{ padding: '8px 10px' }}>Non-beat</th>
+              <th style={{ padding: '8px 10px' }}>Spread</th>
+            </tr>
+          </thead>
+          <tbody>
+            {adequate.map(s => sectorRow(s, false))}
+            {thin.length > 0 && (
+              <tr>
+                <td colSpan={6} style={{ padding: '14px 10px 6px', color: '#f59e0b', fontSize: 12 }}>
+                  Below the 30-beat sample floor — shown for completeness, <strong>not ranked and not actionable</strong>.
+                </td>
+              </tr>
+            )}
+            {thin.map(s => sectorRow(s, true))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ marginTop: 20, background: '#111827', border: '1px solid #1f2937', borderRadius: 8, padding: '14px 18px' }}>
+        <div style={{ color: '#9ca3af', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', marginBottom: 8 }}>Caveats</div>
+        <ul style={{ color: '#9ca3af', fontSize: 12, lineHeight: 1.7, margin: 0, paddingLeft: 18 }}>
+          {d.caveats.map((c, i) => <li key={i}>{c}</li>)}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 function capeBandColor(band: string): string {
   if (band === 'normal') return '#22c55e';
   if (band === 'elevated') return '#f59e0b';
@@ -798,6 +901,7 @@ export default function IntelligencePage() {
         {tab === 'overview'  && <OverviewTab />}
         {tab === 'economic'  && <EconomicTab />}
         {tab === 'earnings'  && <EarningsTab />}
+        {tab === 'surprise'  && <SurpriseImpactTab />}
         {tab === 'insider'   && <InsiderTab />}
         {tab === 'congress'  && <CongressTab />}
         {tab === 'catalyst'  && <LeaderboardTab fetcher={() => api.catalystLeaderboard(50)} title="Catalyst Leaderboard" scoreLabel="Catalyst Score (0–100)" />}

@@ -815,6 +815,9 @@ export const api = {
   // validated trading signal (see get_latest_cross_asset_reading()'s own docstring).
   eventsCrossAsset: () => request<CrossAssetResponse>('/events/cross-asset'),
   eventsCape: (months = 24) => request<CapeResponse>(`/events/valuation/cape?months=${months}`),
+  // AUD-EARNSURPRISE-SECTOR: historical post-earnings drift by surprise size and sector.
+  earningsSurpriseImpact: (beatThresholdPct = 10) =>
+    request<EarningsSurpriseImpact>(`/events/earnings/surprise-impact?beat_threshold_pct=${beatThresholdPct}`),
   eventsEarningsCalendar: (days = 14) => request<EarningsEvent[]>(`/events/earnings/calendar?days=${days}`),
   eventsEarningsSymbol: (symbol: string) => request<EarningsEvent[]>(`/events/earnings?symbol=${symbol}`),
   // ── T375-LEAPS-BACKTEST ────────────────────────────────────────────────────
@@ -3619,6 +3622,36 @@ export type CrossAssetReading = {
 export type CrossAssetResponse = {
   reading: CrossAssetReading | null;
   note?: string;
+};
+
+export type EarningsSurpriseBucket = {
+  n: number;
+  drift_1d_pct: number | null;
+  /** Includes the overnight announcement gap — NOT fully capturable post-announcement. */
+  drift_5d_incl_gap_pct: number | null;
+  /** The post-announcement portion an alert could actually have caught. */
+  drift_after_open_pct: number | null;
+  n_after_open: number;
+  sample_is_adequate: boolean;
+};
+
+export type EarningsSurpriseSector = {
+  sector: string;
+  n_total: number;
+  n_beats: number;
+  beat_drift_pct: number | null;
+  nonbeat_drift_pct: number | null;
+  beat_drift_after_open_pct: number | null;
+  spread_pp: number | null;
+  /** False below 30 beats. Rows where this is false must not be ranked or acted on. */
+  sample_is_adequate: boolean;
+};
+
+export type EarningsSurpriseImpact = {
+  beat_threshold_pct: number;
+  overall: Record<string, EarningsSurpriseBucket>;
+  by_sector: EarningsSurpriseSector[];
+  caveats: string[];
 };
 
 export type CapeReading = {
