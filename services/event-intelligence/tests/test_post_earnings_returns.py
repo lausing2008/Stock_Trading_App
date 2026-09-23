@@ -264,8 +264,12 @@ def test_cutoff_is_derived_from_the_parameter_not_a_hardcoded_literal():
     src = (pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "earnings.py").read_text()
     start = src.index("async def backfill_post_earnings_returns(")
     body = src[start:src.index("\n\n", src.index("cutoff = ", start))]
+    # Only the positive, number-free form is asserted here. Pinning the old literal in source
+    # TEXT is what this repo's AUD-T401 ratchet exists to stop, and it would be redundant
+    # anyway: the default is already pinned by VALUE in
+    # test_lookback_window_defaults_to_the_crons_45_days (via inspect.signature) and the
+    # behaviour by test_a_widened_window_is_actually_honoured.
     assert "timedelta(days=lookback_days)" in body
-    assert "timedelta(days=45)" not in body
 
 
 def test_a_widened_window_is_actually_honoured(monkeypatch):

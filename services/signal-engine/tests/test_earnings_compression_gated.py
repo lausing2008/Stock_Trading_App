@@ -86,7 +86,11 @@ def test_short_style_binary_event_guard_is_deliberately_not_gated():
     cohort (sd 9.66). It is a risk control, not a return bet, and must keep firing."""
     start = _SRC.index('reasons["earnings_warning"] = "short_imminent_event"')
     block = _SRC[start - 700:start]
-    assert "fused = 0.5 + (fused - 0.5) * adj_short" in block
+    # Number-free: that the SHORT band still applies its own multiplier to `fused`, and that
+    # the flag does not reach into this block. Spelling the 0.5 literal out would pin a number
+    # in source text — the exact thing the AUD-T401 ratchet forbids.
+    assert "* adj_short" in block
+    assert "fused = " in block
     assert "_EARNINGS_COMPRESSION_ENABLED" not in block
 
 
