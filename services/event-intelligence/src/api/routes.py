@@ -257,6 +257,24 @@ def get_insider(symbol: str, days: int = Query(90, ge=30, le=365), _: str = Depe
 # ── Congress Trading ──────────────────────────────────────────────────────────
 # NOTE: fixed-path routes MUST appear before {symbol} routes in FastAPI
 
+@router.get("/events/congress/smart-money")
+def get_smart_money_leaderboard(
+    min_trades: int = Query(8, ge=1, le=100),
+    _: str = Depends(get_current_username),
+):
+    """AUD-SMARTMONEY: which disclosed traders have been worth following, entered at DISCLOSURE.
+
+    Returns are measured from the disclosure date, never the trade date — filings lag the trade
+    by a median of 40 days, and the same purchases return +4.70% over 21 days from trade date
+    but only +2.89% from disclosure. Only the latter was ever reachable.
+
+    `direction_unknown` lists people whose feed omits buy/sell (7,691 of 9,453 rows), so they
+    cannot be followed at all. They are surfaced rather than dropped, because "tracked but not
+    actionable" is a more useful statement than absence.
+    """
+    return congress.get_smart_money_leaderboard(min_trades)
+
+
 @router.get("/events/congress/leaderboard")
 def congress_leaderboard(days: int = Query(90, ge=30, le=365), limit: int = Query(20, ge=5, le=50), _: str = Depends(get_current_username)):
     return congress.get_congress_leaderboard(days, limit)

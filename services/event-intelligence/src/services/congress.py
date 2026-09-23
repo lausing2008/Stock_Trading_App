@@ -8,7 +8,7 @@ from datetime import date, timedelta
 
 import httpx
 import structlog
-from sqlalchemy import func as _func, select
+from sqlalchemy import func as _func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db import get_session, SessionLocal, CongressTrade, Stock
@@ -469,4 +469,114 @@ def _trade_to_dict(t: CongressTrade) -> dict:
         "trade_date": t.trade_date.isoformat() if t.trade_date else None,
         "disclosure_date": t.disclosure_date.isoformat() if t.disclosure_date else None,
         "source": t.source,
+    }
+
+
+# ── AUD-SMARTMONEY: who is worth following, measured from DISCLOSURE not trade date ─────────
+
+_SMART_MONEY_MIN_TRADES = 8      # below this a per-trader rate is anecdote, not evidence
+_SMART_MONEY_HORIZON_BARS = 21   # ~1 trading month
+
+
+def get_smart_money_leaderboard(min_trades: int = _SMART_MONEY_MIN_TRADES) -> dict:
+    """Which disclosed traders have actually been worth following — entered at DISCLOSURE.
+
+    TWO FACTS THAT DECIDE WHETHER THIS REPORT IS HONEST OR A GIMMICK.
+
+    1. **Entry must be the disclosure date, never the trade date.** Congressional filings lag
+       the trade by a MEDIAN OF 40 DAYS (mean 76, worst 323). Measured on this platform's own
+       data, purchases return **+4.70% over 21 days from the trade date but +2.89% from the
+       disclosure date** — roughly 1.8pp of the apparent edge has already happened by the time
+       anyone outside could know. Quoting the trade-date figure would advertise a return the
+       reader cannot reach. Same class of error as quoting a post-earnings drift that includes
+       the overnight gap.
+
+    2. **Most of the dataset has no buy/sell direction.** 7,691 of 9,453 rows come from the
+       `unusual_whales` feed with `transaction_type = 'unknown'` — you cannot follow a trade
+       when you do not know which way it went. Only the `kadoa_house` / `kadoa_senate` feeds
+       carry real purchase/sale. Those rows are surfaced separately as `direction_unknown`
+       rather than silently dropped, because "we track this person but cannot act on it" is a
+       different and more useful statement than their absence.
+
+    Every rate carries `n` and `sample_is_adequate`, matching this service's own convention in
+    get_impact_direction_accuracy() — three findings in docs/2026-09-05 reversed once their
+    samples widened.
+    """
+    sql = text("""
+        WITH px AS (
+          SELECT stock_id, ts::date AS d, close,
+                 LEAD(close, :horizon) OVER (PARTITION BY stock_id ORDER BY ts) AS fwd
+          FROM prices WHERE timeframe = 'D1' AND ts >= :since
+        ),
+        buys AS (
+          SELECT c.politician_name, c.party, c.chamber, c.ticker, c.disclosure_date,
+                 c.trade_date, c.amount_min, c.amount_max,
+                 (SELECT p.close FROM px p
+                   WHERE p.stock_id = c.stock_id AND p.d >= c.disclosure_date
+                   ORDER BY p.d LIMIT 1) AS entry_px,
+                 (SELECT p.fwd FROM px p
+                   WHERE p.stock_id = c.stock_id AND p.d >= c.disclosure_date
+                   ORDER BY p.d LIMIT 1) AS exit_px
+          FROM congress_trades c
+          WHERE c.stock_id IS NOT NULL
+            AND c.transaction_type ILIKE '%purchase%'
+            AND c.disclosure_date IS NOT NULL
+        )
+        SELECT politician_name, party, chamber, count(*) AS n,
+               avg(100.0 * (exit_px - entry_px) / entry_px) AS avg_pct,
+               100.0 * count(*) FILTER (WHERE exit_px > entry_px) / count(*) AS pct_up,
+               max(disclosure_date) AS latest_disclosure
+        FROM buys
+        WHERE entry_px IS NOT NULL AND exit_px IS NOT NULL AND entry_px > 0
+        GROUP BY 1, 2, 3
+        ORDER BY avg_pct DESC
+    """)
+    since = date.today() - timedelta(days=500)
+    with SessionLocal() as s:
+        rows = s.execute(sql, {"horizon": _SMART_MONEY_HORIZON_BARS, "since": since}).all()
+        unknown = s.execute(text("""
+            SELECT politician_name, count(*) AS n,
+                   count(*) FILTER (WHERE stock_id IS NOT NULL) AS on_tracked,
+                   max(trade_date) AS latest
+            FROM congress_trades
+            WHERE transaction_type NOT ILIKE '%purchase%'
+              AND transaction_type NOT ILIKE '%sale%'
+            GROUP BY 1 ORDER BY n DESC LIMIT 10
+        """)).all()
+
+    traders = [{
+        "name": r.politician_name,
+        "party": r.party or None,
+        "chamber": r.chamber or None,
+        "n_buys": r.n,
+        "avg_21d_pct": round(float(r.avg_pct), 2),
+        "pct_up": round(float(r.pct_up), 0),
+        "latest_disclosure": r.latest_disclosure.isoformat() if r.latest_disclosure else None,
+        # Below the floor this is an anecdote. Reported, never ranked on.
+        "sample_is_adequate": r.n >= min_trades,
+    } for r in rows]
+    followable = [t for t in traders if t["sample_is_adequate"]]
+
+    return {
+        "horizon_days": _SMART_MONEY_HORIZON_BARS,
+        "min_trades_for_adequacy": min_trades,
+        "entry_basis": "disclosure_date",
+        "traders": traders,
+        "n_followable": len(followable),
+        "direction_unknown": [{
+            "name": u.politician_name,
+            "n_records": u.n,
+            "on_tracked_stock": u.on_tracked,
+            "latest_trade": u.latest.isoformat() if u.latest else None,
+        } for u in unknown],
+        "caveats": [
+            "Returns are measured from the DISCLOSURE date, not the trade date. Congressional "
+            "filings lag the trade by a median of 40 days; the same purchases return +4.70% "
+            "from trade date but +2.89% from disclosure. Only the latter was ever reachable.",
+            "Traders under the sample floor are shown but must not be ranked on.",
+            "direction_unknown entries come from a feed that omits buy/sell (7,691 of 9,453 "
+            "rows). They cannot be followed at all — a disclosure there may be a SALE.",
+            "This is a historical base rate, not a recommendation. It says nothing about why "
+            "any individual trade was made.",
+        ],
     }
