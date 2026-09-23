@@ -307,6 +307,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 ### Audits — dated audit/review/session reports (`docs/audits/`)
 
+- **`docs/audits/2026-09-22-session-index.md`** — START HERE for 2026-09-21/22: the connpool incident, the prediction audit, Phase 0/1 fixes, the earnings edge, purged walk-forward — and a NOT BUILT section with the reasoning for each rejected item [session index]
 - **`docs/audits/2026-09-22-news-llm-hmm-prediction-audit.md`** — BUY alpha −1.08pp (t=−9.24) BUT Sept alone is −0.32pp (ns) — READ THE CORRECTION BOX FIRST. Losses are TWO episodes, not a trend. SELL beats BUY by 3.67pp; confidence INVERTED; HMM never uses its transmat [alpha, HMM, inversion]
 - **`docs/audits/2026-09-19-session-index.md`** — START HERE for the 2026-09-18/19 session: T410, A01-A03 scoping, the AUD-MINRR-STYLEBLIND fix-then-correction arc, the four-audit implementation batch (3 rounds), the fix-effectiveness crash, and the PT-H0x audit review, all in one place with links.
 - **`docs/audits/2026-09-21-deferred-audit-items-batch.md`** — PT-H08/PT-H03/PT-H01's own deferred real fixes, built without changing any live portfolio's resolved behavior; plus UW-07 and E09 from the broader deferred list. Records what's still deliberately unbuilt and why.
