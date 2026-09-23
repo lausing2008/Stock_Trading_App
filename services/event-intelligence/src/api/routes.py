@@ -180,6 +180,24 @@ def get_earnings_surprise_impact(
     return earnings.get_earnings_surprise_impact(beat_threshold_pct)
 
 
+@router.get("/events/earnings/fresh-surprises")
+def get_fresh_earnings_surprises(
+    beat_threshold_pct: float = Query(10.0, ge=1.0, le=100.0),
+    lookback_days: int = Query(5, ge=1, le=30),
+    _: str = Depends(get_current_username),
+):
+    """AUD-EARNSURPRISE-ALERT: recent earnings surprises on tracked symbols, each annotated with
+    its own sector's historical base rate and with how much of the measured 5-day window is
+    already gone.
+
+    `n_actionable` is deliberately strict — a BEAT, still inside the window, in a sector whose
+    base rate clears the 30-beat sample floor. Everything else in `surprises` is context, not a
+    call. Drift figures exclude the overnight gap, since an alert fires after the result is
+    public and cannot capture it.
+    """
+    return earnings.get_fresh_earnings_surprises(beat_threshold_pct, lookback_days)
+
+
 @router.post("/events/sync/earnings")
 async def sync_earnings(_: str = Depends(get_current_username)):
     result = await earnings.sync_all_earnings()

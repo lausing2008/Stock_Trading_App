@@ -1630,3 +1630,129 @@ def get_earnings_surprise_impact(beat_threshold_pct: float = 10.0) -> dict:
             "they are reported as-is rather than silently merged.",
         ],
     }
+
+
+# ── AUD-EARNSURPRISE-ALERT: fresh surprises worth attention, with their own base rate ───────
+
+_SURPRISE_EDGE_WINDOW_DAYS = 5  # the horizon the +4.19% drift was measured over
+
+
+def get_fresh_earnings_surprises(
+    beat_threshold_pct: float = 10.0, lookback_days: int = 5,
+) -> dict:
+    """Recent earnings surprises on TRACKED symbols, each annotated with the historical base
+    rate for its own sector and with how much of the measured window is already gone.
+
+    WHY THIS SHAPE. "NVDA beat by 14%" is not actionable on its own — the platform already
+    knows that. What makes it actionable is the two things bolted on here:
+
+      1. THE SECTOR BASE RATE, with its sample size. Measured post-announcement drift differs
+         enormously by sector: Industrials beats drift +5.55% over 5 days (n=89, 50 beats)
+         while Consumer Cyclical beats are NEGATIVE. An alert that does not say which of those
+         you are looking at is just a notification.
+      2. TIME DECAY, stated rather than implied. The +4.19% edge is measured over 5 trading days
+         FROM THE REPORT. A surprise surfaced 4 days later has roughly one day of that window
+         left, and `window_remaining_pct` says so instead of letting a stale row look as good as
+         a fresh one.
+
+    DELIBERATELY EXCLUDES the overnight gap. `drift_after_open_pct` on the sector context is the
+    post-announcement portion — an alert fires once the result is public, so the gap is already
+    gone. Quoting the gap-inclusive figure here would advertise a return this alert cannot reach;
+    Communication Services is the cautionary case at +4.66% incl. gap and -0.10% after it.
+
+    Untracked filers are excluded outright. That is the same lesson EDGAR taught expensively:
+    97% of its classified filings mapped to no tracked symbol and could never influence anything.
+    """
+    impact = get_earnings_surprise_impact(beat_threshold_pct)
+    sector_ctx = {s["sector"]: s for s in impact["by_sector"]}
+
+    cutoff = date.today() - timedelta(days=lookback_days + 2)  # +2 for weekend slack
+    out: list[dict] = []
+    with SessionLocal() as s:
+        rows = s.execute(
+            select(
+                EarningsEvent.report_date, EarningsEvent.surprise_pct,
+                EarningsEvent.revenue_surprise_pct, EarningsEvent.eps_actual,
+                EarningsEvent.eps_estimate, EarningsEvent.post_earnings_return_1d,
+                Stock.symbol, Stock.sector, Stock.market,
+            )
+            .join(Stock, Stock.id == EarningsEvent.stock_id)
+            .where(
+                EarningsEvent.report_date >= cutoff,
+                EarningsEvent.eps_actual.isnot(None),
+                EarningsEvent.surprise_pct.isnot(None),
+                # Tracked and live only — a delisted or inactive name cannot be acted on.
+                Stock.active.is_(True),
+                Stock.delisted.is_(False),
+            )
+            .order_by(EarningsEvent.report_date.desc())
+        ).all()
+
+    today = date.today()
+    for r in rows:
+        surprise = float(r.surprise_pct)
+        if abs(surprise) < beat_threshold_pct:
+            continue
+        direction = "beat" if surprise > 0 else "miss"
+        elapsed = (today - r.report_date).days
+        remaining = max(0, _SURPRISE_EDGE_WINDOW_DAYS - elapsed)
+        ctx = sector_ctx.get(r.sector or "(unclassified)")
+        out.append({
+            "symbol": r.symbol,
+            "market": str(getattr(r.market, "value", r.market) or ""),
+            "sector": r.sector or "(unclassified)",
+            "report_date": r.report_date.isoformat(),
+            "direction": direction,
+            "surprise_pct": round(surprise, 2),
+            "revenue_surprise_pct": (
+                round(float(r.revenue_surprise_pct), 2)
+                if r.revenue_surprise_pct is not None else None
+            ),
+            "eps_actual": float(r.eps_actual) if r.eps_actual is not None else None,
+            "eps_estimate": float(r.eps_estimate) if r.eps_estimate is not None else None,
+            "realized_1d_pct": (
+                round(float(r.post_earnings_return_1d) * 100, 2)
+                if r.post_earnings_return_1d is not None else None
+            ),
+            "days_elapsed": elapsed,
+            "window_remaining_days": remaining,
+            # 0 means the measured 5-day window has fully elapsed — the historical drift below
+            # has already happened and is not available going forward.
+            "window_remaining_pct": round(100.0 * remaining / _SURPRISE_EDGE_WINDOW_DAYS, 0),
+            "sector_base_rate": None if ctx is None else {
+                "beat_drift_after_open_pct": ctx["beat_drift_after_open_pct"],
+                "nonbeat_drift_pct": ctx["nonbeat_drift_pct"],
+                "spread_pp": ctx["spread_pp"],
+                "n_beats": ctx["n_beats"],
+                # If False the base rate is NOT usable — say so rather than showing a number
+                # that a reader will anchor on regardless.
+                "sample_is_adequate": ctx["sample_is_adequate"],
+            },
+        })
+
+    out.sort(key=lambda x: (x["window_remaining_days"], abs(x["surprise_pct"])), reverse=True)
+    actionable = [
+        x for x in out
+        if x["direction"] == "beat" and x["window_remaining_days"] > 0
+        and x["sector_base_rate"] and x["sector_base_rate"]["sample_is_adequate"]
+    ]
+    return {
+        "beat_threshold_pct": beat_threshold_pct,
+        "lookback_days": lookback_days,
+        "edge_window_days": _SURPRISE_EDGE_WINDOW_DAYS,
+        "surprises": out,
+        "n_total": len(out),
+        # A deliberately strict count: a BEAT, still inside the measured window, in a sector
+        # whose base rate clears the sample floor. Everything else is context, not a call.
+        "n_actionable": len(actionable),
+        "overall_beat_drift_after_open_pct": impact["overall"]["beat"]["drift_after_open_pct"],
+        "caveats": [
+            "Drift figures are POST-ANNOUNCEMENT only; the overnight gap is excluded because an "
+            "alert fires after the result is public and cannot capture it.",
+            "window_remaining_days counts down the 5-trading-day horizon the edge was measured "
+            "over. At 0 the historical drift has already happened.",
+            "A sector_base_rate with sample_is_adequate=false must not be acted on.",
+            "This is a measured base rate, not a per-name forecast. Nothing here accounts for "
+            "guidance, the conference call, or why the surprise happened.",
+        ],
+    }
