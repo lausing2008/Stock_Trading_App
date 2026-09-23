@@ -827,7 +827,7 @@ def _compute_post_earnings_returns(bars: list[tuple[date, float]], report_date: 
     return ret_1d, ret_5d
 
 
-async def backfill_post_earnings_returns() -> dict:
+async def backfill_post_earnings_returns(lookback_days: int = 45) -> dict:
     """Populates EarningsEvent.post_earnings_return_1d/_5d — real columns that have been
     DEFINED but never written by any job in this codebase (confirmed via grep before deciding
     to build this; see the CLAUDE.md entry this closes for the earlier, deliberate deferral).
@@ -840,10 +840,21 @@ async def backfill_post_earnings_returns() -> dict:
     generate_earnings_forecast()'s own _fetch_fundamentals_sync(), since this data lives in the
     SAME database this service is already connected to.
     """
-    cutoff = date.today() - timedelta(days=45)  # bound the scan — older unbackfilled rows are
-    # a genuine, if rare, gap (e.g. this job didn't exist yet when they reported) rather than a
-    # target for indefinite reprocessing; a 45-day window comfortably covers the 5-trading-day
-    # minimum plus real-world scheduling slack.
+    # bound the scan — the 45-day default comfortably covers the 5-trading-day minimum plus
+    # real-world scheduling slack, and stops the daily cron from rescanning all history forever.
+    #
+    # AUD-PEARN-COVERAGE (2026-09-22): the original comment here called older unbackfilled rows
+    # "a genuine, if rare, gap". Measured: they were 91% of the table — 74 of 809 rows populated
+    # — because this job only ever fills rows within 45 days of its own run and everything that
+    # reported before it existed was never touched. That reasoning was right for the CRON and
+    # wrong as a permanent ceiling, so the window is now a parameter: the scheduled job keeps
+    # its 45-day default, and a one-off historical fill passes a large value.
+    #
+    # Worth having: measured over 5 trading days, a >10% EPS beat is followed by +4.14% (n=248,
+    # 60.1% up) versus -0.05% for in-line results (n=257) — the strongest edge found anywhere in
+    # the 2026-09-22 audit. That analysis had to be run against `prices` directly precisely
+    # because this column was 91% NULL.
+    cutoff = date.today() - timedelta(days=lookback_days)
     filled = 0
     with SessionLocal() as s:
         rows = s.execute(

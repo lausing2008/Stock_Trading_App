@@ -246,3 +246,39 @@ def test_one_symbols_price_fetch_failure_does_not_abort_the_whole_batch(monkeypa
     # Both rows attempted, both failed to fill (their own price fetch raised) — but the
     # function itself completed without propagating either exception.
     assert result == {"checked": 2, "filled": 0}
+
+
+# ── AUD-PEARN-COVERAGE: the scan window is a parameter, not a permanent ceiling ──────────
+
+def test_lookback_window_defaults_to_the_crons_45_days():
+    """The daily cron's behaviour must be unchanged — widening the default would make it
+    rescan all history on every run, which is exactly what the original bound prevented."""
+    import inspect
+    assert inspect.signature(backfill_post_earnings_returns).parameters["lookback_days"].default == 45
+
+
+def test_cutoff_is_derived_from_the_parameter_not_a_hardcoded_literal():
+    """Guards the regression: if the literal comes back, a historical backfill silently becomes
+    a no-op again and the column quietly returns to 91% NULL."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "earnings.py").read_text()
+    start = src.index("async def backfill_post_earnings_returns(")
+    body = src[start:src.index("\n\n", src.index("cutoff = ", start))]
+    assert "timedelta(days=lookback_days)" in body
+    assert "timedelta(days=45)" not in body
+
+
+def test_a_widened_window_is_actually_honoured(monkeypatch):
+    """Proves the parameter is wired through rather than accepted and ignored — a row far
+    outside the 45-day default still gets processed."""
+    from datetime import datetime as dt, timedelta
+    old_report = date.today() - timedelta(days=900)
+    ev = _make_fake_ev(old_report)
+    base = dt.combine(old_report, dt.min.time())
+    bars = [_PriceRow(base - timedelta(days=1), 100.0)] + [
+        _PriceRow(base + timedelta(days=i), 100.0 + i) for i in range(0, 7)
+    ]
+    _install_fake_session(monkeypatch, [(ev, 7)], {7: bars})
+    result = _run(backfill_post_earnings_returns(lookback_days=3650))
+    assert result == {"checked": 1, "filled": 1}
+    assert ev.post_earnings_return_1d is not None
