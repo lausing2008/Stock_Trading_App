@@ -170,11 +170,14 @@ Recorded because the reasoning matters more than a clean record.
 
 ---
 
-## What is NOT yet verified
+## Verification status
 
-**No UI from this session has been viewed in a browser.** Bundle contents, HTTP 200 and API
-payloads are all verified; visual rendering is not. `/stock/NVDA` and `/intelligence?tab=surprise`
-are the two to look at.
+**Closed 2026-09-23** — the user confirmed they viewed the pages. Every layer of this session's
+UI work is now verified: bundle contents, HTTP 200, API payloads against production data, and
+visual rendering in a browser.
+
+Pages shipped this session: `/stock/NVDA` (post-earnings drift), `/intelligence?tab=surprise`
+(sector impact + live surprises), `/reports?tab=smartmoney` (Who to Follow).
 
 ---
 
