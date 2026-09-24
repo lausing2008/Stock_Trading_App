@@ -1439,6 +1439,43 @@ def _regime_warning_lines(regime: str | None) -> tuple[str, str]:
     return html, text
 
 
+
+# AUD-SQUEEZE-ENTRYGAP: renders the measured alert-price -> next-session-entry gap.
+#
+# Shown ONLY when the gap is adverse and consistent. A near-even split (say 8 of 15) is noise
+# and would read as a warning it has not earned; a POSITIVE median means acting the next
+# session has historically been cheaper, which is not something to caution anyone about. Both
+# of those render nothing at all, deliberately — an "everything is fine" line trains readers to
+# skip the box entirely, so the line only appears when it changes what someone should do.
+_ENTRY_GAP_WARN_PCT = -1.0        # below this the gap is material rather than ordinary slippage
+_ENTRY_GAP_WARN_CONSISTENCY = 0.66  # and it must hold in at least this share of past alerts
+
+
+def _entry_gap_html(gap: dict | None) -> tuple[str, str]:
+    """(html, text) for the entry-gap warning, or ("", "") when it should not be shown."""
+    if not gap:
+        return "", ""
+    med = gap.get("median_pct")
+    n = gap.get("n") or 0
+    neg = gap.get("negative_of") or 0
+    if med is None or n <= 0 or med >= _ENTRY_GAP_WARN_PCT:
+        return "", ""
+    if (neg / n) < _ENTRY_GAP_WARN_CONSISTENCY:
+        return "", ""
+    msg = (
+        f"Heads up: across the last {n} of these alerts the price moved a median "
+        f"{med:.1f}% between the alert firing and the next session's entry "
+        f"({neg} of {n} moved against you). The quote above is not the price you get, and any "
+        f"game plan priced off it will read better than it trades."
+    )
+    html = (
+        '<div style="font-size:11px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;'
+        'border-radius:4px;padding:8px 10px;margin-top:8px;line-height:1.5">'
+        f'{msg}</div>'
+    )
+    return html, f"    {msg}\n"
+
+
 def _short_interest_age_str(short_interest_date: str | None) -> str:
     """Renders the short-interest reading's own age, with a staleness-tier callout past 15
     days — AUD-SQUEEZE250725-ISSUE2: the audit recommended EITHER tightening the hard reject
@@ -1559,6 +1596,9 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
         else:
             cal_html = '<div style="font-size:11px;color:#94a3b8;margin-top:4px">Not enough resolved history yet for a measured win rate</div>'
             cal_text = "    Not enough resolved history yet for a measured win rate\n"
+        gap_html, gap_text = _entry_gap_html(c.get("entry_gap"))
+        cal_html += gap_html
+        cal_text += gap_text
         regime_html, regime_text = _regime_warning_lines(c.get("market_regime"))
         # AUD-SQUEEZE3-UWSHORTINTERESTCORROBORATION: a real, material disagreement between the
         # free-tier short_percent_of_float (already shown above) and Unusual Whales' own
@@ -1684,6 +1724,9 @@ def send_squeeze_ignition_email(to: str, candidates: list[dict]) -> bool:
         else:
             cal_html = '<div style="font-size:11px;color:#94a3b8;margin-top:4px">Not enough resolved history yet for a measured win rate</div>'
             cal_text = "    Not enough resolved history yet for a measured win rate\n"
+        gap_html, gap_text = _entry_gap_html(c.get("entry_gap"))
+        cal_html += gap_html
+        cal_text += gap_text
         regime_html, regime_text = _regime_warning_lines(c.get("market_regime"))
         rows_html += (
             f'<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">'

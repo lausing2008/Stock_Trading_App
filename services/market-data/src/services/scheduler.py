@@ -3522,6 +3522,13 @@ def check_short_squeeze_alerts() -> None:
                     session, "short_squeeze", sym, float(cand["price"]), cand.get("short_percent_of_float"),
                 )
 
+            # AUD-SQUEEZE-ENTRYGAP: the measured cost of acting on this alert, attached to
+            # every payload. See _alert_entry_gap_stats() for why this is reported separately
+            # from the calibrated win rate rather than folded into it.
+            _gap = _alert_entry_gap_stats(session, "short_squeeze")
+            for _c in candidates.values():
+                _c["entry_gap"] = _gap
+
             from .email_service import send_short_squeeze_email
             sent = 0
             for uid, user in recipients.items():
@@ -3827,6 +3834,10 @@ def check_squeeze_ignition_alerts() -> None:
                     session, "squeeze_ignition", sym, float(cand["price"]), cand.get("short_percent_of_float"),
                 )
 
+            _gap = _alert_entry_gap_stats(session, "squeeze_ignition")
+            for _c in candidates.values():
+                _c["entry_gap"] = _gap
+
             from .email_service import send_squeeze_ignition_email
             sent = 0
             for uid, user in recipients.items():
@@ -3873,6 +3884,75 @@ _PREBREAKOUT_LOCK_KEY = "stockai:lock:check_prebreakout_alerts"
 _PREBREAKOUT_LOCK_TTL = 3600  # a few-times-a-day job (compression state doesn't change minute-to-minute)
 _PREBREAKOUT_MIN_DAILY_BARS = 146  # matches price_compression.py's own _MIN_HISTORY_BARS floor
 _SQUEEZE_FAMILY_CAL_MIN_COUNT = 30  # matches signal-engine's own _CONF_CAL_MIN_COUNT floor exactly
+
+# AUD-SQUEEZE-ENTRYGAP (2026-09-24): how far price moves between the alert firing and the
+# earliest moment a recipient could actually act on it — the next session's entry price.
+#
+# WHY THIS IS REPORTED SEPARATELY FROM THE CALIBRATED WIN RATE. They answer different
+# questions and have different evidence bars. The win rate asks "was the thesis right?", needs
+# a directional outcome per alert, and is deliberately withheld below
+# _SQUEEZE_FAMILY_CAL_MIN_COUNT because a rate on a handful of resolved trades is worse than
+# no rate. The entry gap asks "can you get the price you were shown?" — it is an EXECUTION
+# fact, resolved the very next session, and its sign is consistent enough to be worth stating
+# at far smaller samples.
+#
+# The distinction is not academic. Measured 2026-09-24, short_squeeze had 15 resolved alerts —
+# under the win-rate floor, so the email said "not enough resolved history yet" — while those
+# same 15 showed a MEDIAN -6.65% gap from alert price to next-day entry, 12 of 15 negative.
+# The alert fires on an intraday move of >= _SQUEEZE_MIN_INTRADAY_MOVE_PCT that has already
+# happened, and a material part of it is typically given back before anyone can enter. Staying
+# silent about that while showing a game plan priced off the alert quote overstates what the
+# reader can actually capture. Same class of error as quoting post-earnings drift that includes
+# the untradeable overnight gap.
+#
+# Reported, never used to gate: this describes past alerts, not the candidate in hand.
+_ENTRY_GAP_MIN_COUNT = 5     # an execution fact resolves next session; it needs far less
+                             # history than a directional win rate, but not none.
+_ENTRY_GAP_CACHE_TTL = 3600
+
+
+def _alert_entry_gap_stats(session, alert_type: str) -> dict | None:
+    """Median alert-price -> next-session-entry gap for `alert_type`, or None below the floor.
+
+    Median rather than mean: one -20% outlier should not define what a reader expects, and the
+    distribution here is visibly skewed. `negative_of` is carried so the email can say how
+    CONSISTENT the effect is — "12 of 15" is what makes a small sample persuasive, and a
+    near-even split is what should stop the line being shown as a warning at all.
+    """
+    cache_key = f"stockai:metric:alert_entry_gap:{alert_type}"
+    try:
+        cached = _rc.get(cache_key)
+        if cached:
+            import json as _json
+            return _json.loads(cached)
+    except Exception:
+        pass
+    try:
+        row = session.execute(text("""
+            SELECT count(*) AS n,
+                   percentile_cont(0.5) WITHIN GROUP (
+                     ORDER BY (entry_price - alert_price) / alert_price) AS med,
+                   count(*) FILTER (WHERE entry_price < alert_price) AS neg
+            FROM squeeze_alert_outcomes
+            WHERE alert_type = :at AND entry_price IS NOT NULL AND alert_price > 0
+        """), {"at": alert_type}).one()
+    except Exception as exc:
+        log.debug("entry_gap.query_failed", alert_type=alert_type, error=str(exc))
+        return None
+    if not row or not row.n or row.n < _ENTRY_GAP_MIN_COUNT or row.med is None:
+        return None
+    out = {
+        "median_pct": round(float(row.med) * 100.0, 2),
+        "n": int(row.n),
+        "negative_of": int(row.neg or 0),
+    }
+    try:
+        import json as _json
+        _rc.setex(cache_key, _ENTRY_GAP_CACHE_TTL, _json.dumps(out))
+    except Exception:
+        pass
+    return out
+
 
 # T264-SHORTSQUEEZE-PREBREAKOUT-CONFIDENCE (extended 2026-08-15 to short_squeeze/gamma_unwind_*):
 # one band scheme per alert type, keyed by that alert's own qualifying_metric — the metric this
