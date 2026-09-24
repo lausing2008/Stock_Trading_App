@@ -81,6 +81,7 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Top Stocks',     href: '/reports?tab=top',    color: '#6d28d9', tag: 'new' },
       { label: 'Money Flow',     href: '/reports?tab=flow',   color: '#6d28d9', tag: 'new' },
       { label: 'Who to Follow',  href: '/reports?tab=smartmoney', color: '#6d28d9', tag: 'new' },
+      { label: 'Big Funds',      href: '/reports?tab=funds', color: '#6d28d9', tag: 'new' },
       // AUD-REPORTSTAB-DEDUP (2026-09-22): these two used to be their own reports.tsx tabs,
       // near-duplicating intelligence.tsx's Overview/Bubble-Warning tabs (same source data,
       // strictly less complete). Now deep-link straight to the one real implementation.

@@ -393,3 +393,344 @@ def get_institutional_leaderboard(limit: int = 20) -> list[dict]:
 
     sorted_result = sorted(result.values(), key=lambda x: x["total_value_usd"], reverse=True)
     return sorted_result[:limit]
+
+
+# ── AUD-INSTFOLLOW: "who actually moved, and could you have followed them?" ────
+#
+# Distinct from the EDGAR path above, which scrapes 13F XML and name-matches issuers against our
+# own Stock table — that is why it holds 4 Berkshire positions when Berkshire reports ~40. UW's
+# /api/institution/{name}/activity returns the ticker directly, so no name matching is needed,
+# and it carries `units_change` (the signed position delta) plus BOTH dates and the price at
+# each. This function does not touch the EDGAR tables; it is a read-side report.
+#
+# THE ONE THING THIS REPORT MUST NOT LET A READER BELIEVE: that 13F is tradeable. It is a
+# quarter-END SNAPSHOT, filed up to 45 days later. It shows no intra-quarter round trips, no
+# shorts, and no options unless separately reported. By the time you read it the manager may
+# have exited entirely. So every row carries its own report_date, filing_date and staleness, and
+# the return is measured from the FILING date — the first moment the position was public.
+#
+# `already_moved_pct` exists for the same reason the congress report quotes trade-vs-disclosure:
+# it is the average move between the quarter-end the position reflects and the day it became
+# public. That is edge that was gone before anyone outside could act on it, and stating it is
+# the difference between a report and an advertisement.
+
+_INST_HORIZON_BARS = 21
+_INST_MIN_POSITIONS = 8
+_INST_CACHE_TTL = 21600  # 6h; 13F changes quarterly, nothing here moves intraday.
+
+# Curated rather than "top N by AUM": the largest 13F filers are index complexes (BlackRock,
+# Vanguard, State Street) whose holdings reflect fund flows, not a view. Every name below is a
+# discretionary or systematic manager whose position changes represent a decision. UW's exact
+# name string is the API key, so it is stored verbatim next to the display name.
+_TRACKED_INSTITUTIONS: list[tuple[str, str]] = [
+    ("Berkshire Hathaway (Buffett)", "BERKSHIRE HATHAWAY INC"),
+    ("Pershing Square (Ackman)", "PERSHING SQUARE CAPITAL MANAGEMENT, L.P."),
+    ("Citadel (Griffin)", "CITADEL ADVISORS LLC"),
+    ("Point72 (Cohen)", "POINT72 ASSET MANAGEMENT, L.P."),
+    ("Bridgewater (Dalio)", "BRIDGEWATER ASSOCIATES, LP"),
+    ("Renaissance Technologies", "RENAISSANCE TECHNOLOGIES LLC"),
+    ("Tiger Global", "TIGER GLOBAL MANAGEMENT LLC"),
+    ("ARK Invest (Wood)", "ARK INVESTMENT MANAGEMENT LLC"),
+    ("Two Sigma", "TWO SIGMA INVESTMENTS, LP"),
+    ("Millennium", "MILLENNIUM MANAGEMENT LLC"),
+    ("AQR Capital", "AQR CAPITAL MANAGEMENT LLC"),
+    ("Coatue", "COATUE MANAGEMENT LLC"),
+    ("Soros Fund Management", "SOROS FUND MANAGEMENT LLC"),
+    ("Appaloosa (Tepper)", "APPALOOSA LP"),
+    ("Duquesne (Druckenmiller)", "DUQUESNE FAMILY OFFICE LLC"),
+    ("Scion (Burry)", "SCION ASSET MANAGEMENT, LLC"),
+]
+
+
+def _uw_institution_activity(uw_name: str, limit: int = 500) -> list[dict]:
+    """One institution's reported position changes. Redis-cached 6h; fails open to []."""
+    import json as _json
+    import urllib.parse
+
+    from common.ai_keys import get_unusual_whales_key, is_unusual_whales_enabled
+    from common.redis_client import get_redis
+
+    if not (is_unusual_whales_enabled() and get_unusual_whales_key()):
+        return []
+    cache_key = f"stockai:uw:inst_activity:{uw_name}"
+    try:
+        cached = get_redis().get(cache_key)
+        if cached:
+            return _json.loads(cached)
+    except Exception:
+        pass
+    try:
+        r = httpx.get(
+            f"https://api.unusualwhales.com/api/institution/{urllib.parse.quote(uw_name)}/activity",
+            params={"limit": limit},
+            headers={"Authorization": f"Bearer {get_unusual_whales_key()}",
+                     "Accept": "application/json"},
+            timeout=45,
+        )
+        if r.status_code != 200:
+            log.warning("institutional.uw_activity_status", name=uw_name, status=r.status_code)
+            return []
+        body = r.json()
+        rows = body.get("data") if isinstance(body, dict) else body
+        rows = rows if isinstance(rows, list) else []
+    except Exception as exc:
+        log.warning("institutional.uw_activity_failed", name=uw_name, error=str(exc))
+        return []
+    try:
+        get_redis().setex(cache_key, _INST_CACHE_TTL, _json.dumps(rows))
+    except Exception:
+        pass
+    return rows
+
+
+def _to_f(v) -> float | None:
+    if v is None or v == "":
+        return None
+    try:
+        f = float(v)
+        return f if f == f else None
+    except (TypeError, ValueError):
+        return None
+
+
+def get_institutional_followers(min_positions: int = _INST_MIN_POSITIONS) -> dict:
+    """Per-manager follow-return on newly-added/increased 13F positions, entered at FILING.
+
+    Returns one row per tracked institution with its own report/filing dates and staleness, so a
+    fund whose latest filing is a year old (UW's Scion data, for one) cannot be read as current.
+    """
+    from datetime import date as _date
+
+    from sqlalchemy import text as _text
+
+    today = _date.today()
+    _bench_cache: dict[str, float | None] = {}
+    with SessionLocal() as s:
+        ticker_map: dict[str, int] = {
+            sym.upper(): sid for sid, sym in s.execute(select(Stock.id, Stock.symbol)).all()
+        }
+
+        funds = []
+        for display, uw_name in _TRACKED_INSTITUTIONS:
+            rows = _uw_institution_activity(uw_name)
+            if not rows:
+                # Built from the same key template as a measured row. Hand-writing this dict is
+                # how it previously shipped without `alpha_vs_spy_pct`, and since the sort reads
+                # that key unconditionally, ONE unreachable fund raised KeyError and took the
+                # whole 16-fund report down with it.
+                funds.append(_fund_row(display, unavailable=True))
+                continue
+
+            # One filing at a time: a fund's rows can span quarters, and mixing them would
+            # average returns entered on different dates into a single meaningless figure.
+            latest_filing = max((r.get("filing_date") or "") for r in rows)
+            cur = [r for r in rows if (r.get("filing_date") or "") == latest_filing]
+            report_date = max((r.get("report_date") or "") for r in cur) or None
+
+            # UW returns one row per security line, so a ticker recurs (share classes, or the
+            # same name listed twice). Left as-is it inflates the position count — Citadel read
+            # as 300 buys — and lets one holding be measured repeatedly. First row per ticker
+            # wins; they carry identical prices anyway.
+            def _dedupe(rows_in: list[dict]) -> list[dict]:
+                seen: set[str] = set()
+                out_rows = []
+                for r in rows_in:
+                    t = (r.get("ticker") or "").upper()
+                    if not t or t in seen:
+                        continue
+                    seen.add(t)
+                    out_rows.append(r)
+                return out_rows
+
+            buys = _dedupe([r for r in cur if (_to_f(r.get("units_change")) or 0) > 0])
+            sells = _dedupe([r for r in cur if (_to_f(r.get("units_change")) or 0) < 0])
+
+            # NOT REPORTED: an "already moved between quarter-end and filing" figure. UW
+            # populates price_on_report and price_on_filing IDENTICALLY on every row checked
+            # (278 of 278 Citadel buys), so the computed value is structurally 0.00% for every
+            # fund. Publishing that would assert the disclosure lag costs nothing — a stronger
+            # and more wrong claim than omitting it. The lag is still real; we simply have no
+            # honest measurement of its cost from this feed.
+
+            pairs = [
+                (ticker_map[t], latest_filing) for r in buys
+                if (t := (r.get("ticker") or "").upper()) in ticker_map
+            ]
+            avg_pct = pct_up = alpha_pct = None
+            n_measured = 0
+            if pairs:
+                res = s.execute(_text("""
+                    WITH picks AS (
+                      SELECT * FROM unnest(CAST(:sids AS int[]), CAST(:fdates AS date[]))
+                                AS t(stock_id, filing_date)
+                    ),
+                    px AS (
+                      SELECT stock_id, ts::date AS d, close,
+                             LEAD(close, :horizon) OVER (PARTITION BY stock_id ORDER BY ts) AS fwd
+                      FROM prices
+                      WHERE timeframe = 'D1'
+                        AND stock_id IN (SELECT stock_id FROM picks)
+                    ),
+                    e AS (
+                      SELECT p.stock_id,
+                        (SELECT x.close FROM px x WHERE x.stock_id=p.stock_id AND x.d >= p.filing_date
+                          ORDER BY x.d LIMIT 1) AS entry,
+                        (SELECT x.fwd FROM px x WHERE x.stock_id=p.stock_id AND x.d >= p.filing_date
+                          ORDER BY x.d LIMIT 1) AS exit
+                      FROM picks p
+                    )
+                    SELECT count(*) n,
+                           avg(100.0*(exit-entry)/entry) avg_pct,
+                           100.0*count(*) FILTER (WHERE exit > entry)/NULLIF(count(*),0) pct_up
+                    FROM e WHERE entry IS NOT NULL AND exit IS NOT NULL AND entry > 0
+                """), {
+                    "sids": [p[0] for p in pairs],
+                    "fdates": [p[1] for p in pairs],
+                    "horizon": _INST_HORIZON_BARS,
+                }).one()
+                n_measured = res.n or 0
+                if n_measured:
+                    avg_pct = round(float(res.avg_pct), 2)
+                    pct_up = round(float(res.pct_up), 0)
+                    # AUD-ALPHAEVAL's lesson, applied here: a raw return over a window in which
+                    # the market fell 2.44% says almost nothing about the manager. Every fund in
+                    # the first run of this report was "negative" purely because the window was.
+                    bench = _bench_return_21d(s, latest_filing, _bench_cache)
+                    if bench is not None:
+                        alpha_pct = round(avg_pct - bench, 2)
+
+            fdate = _date.fromisoformat(latest_filing) if latest_filing else None
+            rdate = _date.fromisoformat(report_date) if report_date else None
+            funds.append(_fund_row(
+                display,
+                n_buys=len(buys),
+                n_sells=len(sells),
+                n_measured=n_measured,
+                avg_21d_pct=avg_pct,
+                alpha_vs_spy_pct=alpha_pct,
+                benchmark_21d_pct=_bench_cache.get(latest_filing),
+                pct_up=pct_up,
+                report_date=report_date or None,
+                filing_date=latest_filing or None,
+                disclosure_lag_days=(fdate - rdate).days if fdate and rdate else None,
+                staleness_days=(today - rdate).days if rdate else None,
+                # Measured positions, not reported ones: a fund can report 40 buys of which we
+                # price only 3. NOTE this means "enough positions to average over", NOT
+                # "enough evidence to judge the manager" — every row here is a single quarter
+                # observed over a single window, and no position count fixes that.
+                sample_is_adequate=n_measured >= min_positions,
+            ))
+
+    # Ranked on ALPHA, since that is the column that means something.
+    ranked = sorted(
+        funds,
+        key=lambda f: (f["alpha_vs_spy_pct"] is None, -(f["alpha_vs_spy_pct"] or 0)),
+    )
+    return {
+        "horizon_days": _INST_HORIZON_BARS,
+        "min_positions_for_adequacy": min_positions,
+        "entry_basis": "filing_date",
+        "funds": ranked,
+        "n_followable": sum(1 for f in ranked if f["sample_is_adequate"]),
+        "caveats": [
+            "A 13F is a quarter-END SNAPSHOT filed up to 45 days later — not a trade feed. It "
+            "shows no intra-quarter round trips, no short positions, and no options unless "
+            "separately reported. The manager may have exited before you ever saw it.",
+            "Returns are entered at the FILING date, the first moment the position was public. "
+            "Entering at the quarter-end the filing describes would be unreachable by anyone.",
+            "Returns are benchmark-relative: the market's own move over the identical window "
+            "is subtracted, because a quarter in which everything fell is not a manager being "
+            "wrong. The raw return is shown alongside so both are visible.",
+            "Staleness is per fund and varies enormously. Check each row's own dates rather "
+            "than assuming the table is current.",
+            "Only positions on stocks this platform prices are measured, so n_measured is "
+            "usually far below the fund's reported position count.",
+            "THIS IS ONE QUARTER OVER ONE 21-DAY WINDOW, NOT A TRACK RECORD. Every fund here "
+            "shares essentially the same window, so a single market episode drives much of the "
+            "spread between them. It says how the latest disclosed adds happened to do; it "
+            "does not measure skill, and ranking managers on it would be a mistake.",
+            "A 13F shows only the LONG book. For multi-strategy and quantitative funds — "
+            "Citadel, Millennium, Two Sigma, AQR, Renaissance — the disclosed longs are one leg "
+            "of a hedged position whose shorts and derivatives are invisible here, so a large "
+            "negative alpha for them may be the hedge working exactly as intended rather than a "
+            "bad call. Concentrated long-only managers are the ones this measurement fits.",
+        ],
+    }
+
+
+def _bench_return_21d(session, filing_date: str, cache: dict) -> float | None:
+    """SPY's own return over the same 21 bars from the same entry date, as a percent.
+
+    Cached per filing_date because most managers file on the identical deadline — 14 of 16
+    tracked funds share 2026-08-14 — so this is one query, not one per fund.
+
+    Mirrors analytics.py's `_bench_return()` in intent. US-only by design: 13F is an SEC filing,
+    so every position in it is a US-reporting holding and there is no HK cohort to mis-benchmark
+    the way AUD-ALPHAEVAL found elsewhere.
+    """
+    from sqlalchemy import text as _text
+
+    if filing_date in cache:
+        return cache[filing_date]
+    try:
+        row = session.execute(_text("""
+            WITH px AS (
+              SELECT p.ts::date AS d, p.close,
+                     LEAD(p.close, 21) OVER (ORDER BY p.ts) AS fwd
+              FROM prices p JOIN stocks st ON st.id = p.stock_id
+              WHERE st.symbol = 'SPY' AND p.timeframe = 'D1'
+            )
+            SELECT close, fwd FROM px
+            WHERE d >= CAST(:fd AS date) AND fwd IS NOT NULL
+            ORDER BY d LIMIT 1
+        """), {"fd": filing_date}).one_or_none()
+    except Exception:
+        row = None
+    val = None
+    if row and row.close and float(row.close) > 0 and row.fwd is not None:
+        val = round(100.0 * (float(row.fwd) - float(row.close)) / float(row.close), 2)
+    cache[filing_date] = val
+    return val
+
+
+def _fund_row(
+    name: str,
+    *,
+    n_buys: int = 0,
+    n_sells: int = 0,
+    n_measured: int = 0,
+    avg_21d_pct: float | None = None,
+    alpha_vs_spy_pct: float | None = None,
+    benchmark_21d_pct: float | None = None,
+    pct_up: float | None = None,
+    report_date: str | None = None,
+    filing_date: str | None = None,
+    disclosure_lag_days: int | None = None,
+    staleness_days: int | None = None,
+    sample_is_adequate: bool = False,
+    unavailable: bool = False,
+) -> dict:
+    """The single definition of a fund row's shape.
+
+    Exists because the measured and unavailable rows were built as two separate hand-written
+    dicts, drifted, and the unavailable one lost `alpha_vs_spy_pct` — which the ranking sort
+    reads unconditionally, so a SINGLE fund UW could not serve raised KeyError and took the
+    entire sixteen-fund report down. Defaults here mean a new field can never again be present
+    on one path and missing on the other.
+    """
+    return {
+        "name": name,
+        "n_buys": n_buys,
+        "n_sells": n_sells,
+        "n_measured": n_measured,
+        "avg_21d_pct": avg_21d_pct,
+        "alpha_vs_spy_pct": alpha_vs_spy_pct,
+        "benchmark_21d_pct": benchmark_21d_pct,
+        "pct_up": pct_up,
+        "report_date": report_date,
+        "filing_date": filing_date,
+        "disclosure_lag_days": disclosure_lag_days,
+        "staleness_days": staleness_days,
+        "sample_is_adequate": sample_is_adequate,
+        "unavailable": unavailable,
+    }

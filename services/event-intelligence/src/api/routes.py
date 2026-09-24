@@ -257,6 +257,23 @@ def get_insider(symbol: str, days: int = Query(90, ge=30, le=365), _: str = Depe
 # ── Congress Trading ──────────────────────────────────────────────────────────
 # NOTE: fixed-path routes MUST appear before {symbol} routes in FastAPI
 
+@router.get("/events/institutional/followers")
+def get_institutional_followers_route(
+    min_positions: int = Query(8, ge=1, le=100),
+    _: str = Depends(get_current_username),
+):
+    """AUD-INSTFOLLOW: per-manager follow-return on 13F position adds, entered at the FILING date.
+
+    Deliberately a different instrument from /events/congress/smart-money, and the response says
+    so: a 13F is a quarter-end snapshot filed up to 45 days later, with no intra-quarter round
+    trips and no shorts, so it describes POSITIONING and must not be read as a trade signal.
+    Every row carries its own report/filing dates and staleness because coverage varies by fund
+    — UW's Scion data, for instance, is nearly a year old while most managers are current.
+    """
+    from src.services.institutional import get_institutional_followers
+    return get_institutional_followers(min_positions=min_positions)
+
+
 @router.get("/events/congress/smart-money")
 def get_smart_money_leaderboard(
     min_trades: int = Query(8, ge=1, le=100),

@@ -14,11 +14,11 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
-import { api, type RankingRow, type SectorGroup } from '@/lib/api';
+import { api, type InstitutionalFund, type RankingRow, type SectorGroup } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 type Market = 'US' | 'HK';
-type Tab = 'trend' | 'assets' | 'top' | 'flow' | 'smartmoney' | 'tuning';
+type Tab = 'trend' | 'assets' | 'top' | 'flow' | 'smartmoney' | 'funds' | 'tuning';
 
 // AUD-REPORTSTAB-DEDUP (2026-09-22): 'News & Macro' and 'CAPE / Bubble Warning' tabs were
 // removed from here — both were near-duplicates of intelligence.tsx's own 'Overview' and
@@ -33,6 +33,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'top',    label: 'Top Stocks' },
   { key: 'flow',   label: 'Money Flow' },
   { key: 'smartmoney', label: 'Who to Follow' },
+  { key: 'funds', label: 'Big Funds' },
   { key: 'tuning', label: 'Self-Tuning' },
 ];
 
@@ -570,6 +571,148 @@ function SmartMoneyTab() {
   );
 }
 
+// ── Big Funds (AUD-INSTFOLLOW) ─────────────────────────────────────────────────
+// 13F position adds for 16 named managers, entered at the FILING date. Three findings from the
+// first live run are baked into how this renders, because each one makes the page look MORE
+// authoritative while being wrong:
+//
+//   1. THE HEADLINE NUMBER IS ALPHA, NOT THE RAW RETURN. Raw, all sixteen managers came out
+//      negative (-0.35% to -16.66%), which reads as a damning verdict on professional
+//      investors. SPY fell 2.44% over the identical window; Duquesne's "-0.35%" was +2.1pp of
+//      alpha. The raw column is still shown, next to the benchmark, so the subtraction is
+//      checkable rather than trusted.
+//   2. THIS IS ONE QUARTER OVER ONE WINDOW — NOT A TRACK RECORD. Every fund shares essentially
+//      the same window, so one market episode drives much of the spread. The page says so above
+//      the table, not in a footnote.
+//   3. A 13F IS THE LONG BOOK ONLY. For Citadel, Millennium, Two Sigma, AQR and Renaissance the
+//      disclosed longs are one leg of a hedged position whose shorts are invisible here, so
+//      their large negative alphas may be the hedge working. Those rows are marked inline.
+//
+// Staleness is per row because coverage varies enormously — UW's Scion data is ~359 days old
+// while most managers are current — so a single "as of" header would be a lie for some rows.
+const HEDGED_MULTISTRAT = ['Citadel', 'Millennium', 'Two Sigma', 'AQR', 'Renaissance'];
+
+function BigFundsTab() {
+  const { data, error } = useSWR('events-institutional-followers', () => api.eventsInstitutionalFollowers());
+  if (error) return <div style={card}><div style={{ color: '#f87171' }}>Failed to load.</div></div>;
+  if (!data) return <div style={card}><div style={{ color: '#6b7280' }}>Loading…</div></div>;
+
+  const measured = data.funds.filter(f => !f.unavailable && f.alpha_vs_spy_pct != null);
+  const unmeasured = data.funds.filter(f => f.unavailable || f.alpha_vs_spy_pct == null);
+  const isHedged = (n: string) => HEDGED_MULTISTRAT.some(h => n.startsWith(h));
+
+  const row = (f: InstitutionalFund) => {
+    const stale = (f.staleness_days ?? 0) > 200;
+    return (
+      <tr key={f.name} style={{ borderTop: '1px solid #1f2937', opacity: f.sample_is_adequate ? 1 : 0.6 }}>
+        <td style={{ padding: '7px 8px' }}>
+          <span style={{ fontWeight: f.sample_is_adequate ? 600 : 400 }}>{f.name}</span>
+          {isHedged(f.name) && (
+            <span title="13F shows only the long book; this manager's shorts and derivatives are invisible here"
+                  style={{ marginLeft: 6, fontSize: 10, color: '#a78bfa', border: '1px solid #4c1d95', borderRadius: 4, padding: '1px 4px' }}>
+              hedged
+            </span>
+          )}
+        </td>
+        <td style={{ padding: '7px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: pctColor(f.alpha_vs_spy_pct), fontWeight: 700 }}>
+          {fmtPct(f.alpha_vs_spy_pct, 2)}
+        </td>
+        <td style={{ padding: '7px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: '#9ca3af' }}>{fmtPct(f.avg_21d_pct, 2)}</td>
+        <td style={{ padding: '7px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: '#6b7280' }}>{fmtPct(f.benchmark_21d_pct, 2)}</td>
+        <td style={{ padding: '7px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+          {f.n_measured}<span style={{ color: '#6b7280' }}> / {f.n_buys}</span>
+        </td>
+        <td style={{ padding: '7px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: '#9ca3af' }}>
+          {f.pct_up != null ? `${f.pct_up.toFixed(0)}%` : '—'}
+        </td>
+        <td style={{ padding: '7px 8px', fontSize: 12, color: stale ? '#fbbf24' : '#6b7280' }}>
+          {f.filing_date ?? '—'}{f.staleness_days != null ? ` · ${f.staleness_days}d old` : ''}
+        </td>
+      </tr>
+    );
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ ...card, borderColor: '#78350f', background: 'rgba(120,53,15,0.15)' }}>
+        <div style={{ ...sectionTitle, color: '#fbbf24', marginBottom: 8 }}>This is positioning, not a signal</div>
+        <div style={{ fontSize: 13, color: '#e5e7eb', lineHeight: 1.65 }}>
+          A 13F is a <strong>quarter-end snapshot filed up to 45 days later</strong> — not a trade feed. It
+          shows no intra-quarter round trips, no short positions and no options unless separately reported.
+          The manager may have exited before you ever saw it. Returns below are entered at the
+          <strong> filing date</strong>, the first moment the position was public.
+          <br /><br />
+          And this is <strong>one quarter over one {data.horizon_days}-day window, not a track record</strong>.
+          Every fund here shares essentially the same window, so a single market episode drives much of the
+          spread between them. Read it as what the latest disclosed adds happened to do — not as skill.
+        </div>
+      </div>
+
+      <div style={card}>
+        <div style={sectionTitle}>Alpha on newly-added positions ({data.n_followable} of {data.funds.length} with enough priced positions)</div>
+        <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 12, lineHeight: 1.6 }}>
+          Sorted by <strong style={{ color: '#9ca3af' }}>alpha</strong> — the fund&apos;s return minus the market&apos;s own move over the
+          identical window. The raw return and the benchmark are both shown so you can check the subtraction.
+          Ranking on the raw number would order these managers by beta: on the first run every one of them
+          looked negative, purely because the market was.
+        </div>
+        <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ color: '#9ca3af', textAlign: 'left', fontSize: 12 }}>
+              <th style={{ padding: '6px 8px' }}>Manager</th>
+              <th style={{ padding: '6px 8px', textAlign: 'right' }}>Alpha</th>
+              <th style={{ padding: '6px 8px', textAlign: 'right' }}>Raw {data.horizon_days}d</th>
+              <th style={{ padding: '6px 8px', textAlign: 'right' }}>Market</th>
+              <th style={{ padding: '6px 8px', textAlign: 'right' }}>Priced / Adds</th>
+              <th style={{ padding: '6px 8px', textAlign: 'right' }}>% Up</th>
+              <th style={{ padding: '6px 8px' }}>Filed</th>
+            </tr>
+          </thead>
+          <tbody>{measured.map(row)}</tbody>
+        </table>
+        <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 12, lineHeight: 1.6 }}>
+          <strong>Priced / Adds</strong> — only positions in stocks this platform prices are measured, so the
+          first number is usually far below the fund&apos;s reported adds. Rows below the
+          {' '}{data.min_positions_for_adequacy}-position floor are dimmed: enough to average, never enough to judge.
+          Rows marked <span style={{ color: '#a78bfa' }}>hedged</span> are multi-strategy or quantitative funds
+          whose disclosed longs are one leg of a position whose shorts are invisible here — a large negative
+          alpha there may be the hedge working exactly as intended.
+        </div>
+      </div>
+
+      {unmeasured.length > 0 && (
+        <div style={card}>
+          <div style={sectionTitle}>No measurable positions ({unmeasured.length})</div>
+          <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 10, lineHeight: 1.6 }}>
+            Listed rather than dropped — a manager missing from the table above would otherwise make it look
+            complete when it is not. Either the filing holds nothing this platform prices, or no filing was returned.
+          </div>
+          <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+            <tbody>
+              {unmeasured.map(f => (
+                <tr key={f.name} style={{ borderTop: '1px solid #1f2937' }}>
+                  <td style={{ padding: '7px 8px', color: '#9ca3af' }}>{f.name}</td>
+                  <td style={{ padding: '7px 8px', textAlign: 'right', color: '#6b7280', fontSize: 12 }}>
+                    {f.unavailable ? 'no filing returned' : `${f.n_buys} adds, none priced`}
+                  </td>
+                  <td style={{ padding: '7px 8px', color: '#6b7280', fontSize: 12 }}>{f.filing_date ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div style={card}>
+        <div style={sectionTitle}>What this is and is not</div>
+        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: '#9ca3af', lineHeight: 1.8 }}>
+          {data.caveats.map((c, i) => <li key={i}>{c}</li>)}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 function TuningTab() {
   const { data: tuneStatus } = useSWR('signal-tune-status-reports', () => api.signalTuneStatus());
   const { data: outcomes } = useSWR('outcomes-summary-reports', () => api.outcomesSummary(undefined, 90));
@@ -671,7 +814,7 @@ function TuningTab() {
   );
 }
 
-const VALID_TABS: Tab[] = ['trend', 'assets', 'top', 'flow', 'smartmoney', 'tuning'];
+const VALID_TABS: Tab[] = ['trend', 'assets', 'top', 'flow', 'smartmoney', 'funds', 'tuning'];
 
 function tabFromQuery(q: string | string[] | undefined): Tab {
   const v = Array.isArray(q) ? q[0] : q;
@@ -707,7 +850,7 @@ export default function ReportsPage() {
             ← Back
           </button>
           <h1 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Reports</h1>
-          <span style={{ color: '#6b7280', fontSize: 13 }}>Trend · Assets · Top Stocks · Money Flow · Who to Follow · Self-Tuning</span>
+          <span style={{ color: '#6b7280', fontSize: 13 }}>Trend · Assets · Top Stocks · Money Flow · Who to Follow · Big Funds · Self-Tuning</span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
             {(['US', 'HK'] as Market[]).map(m => (
               <button
@@ -751,6 +894,7 @@ export default function ReportsPage() {
         {tab === 'top'    && <TopStocksTab market={market} />}
         {tab === 'flow'   && <FlowTab market={market} />}
         {tab === 'smartmoney' && <SmartMoneyTab />}
+        {tab === 'funds' && <BigFundsTab />}
         {tab === 'tuning' && <TuningTab />}
       </div>
     </div>

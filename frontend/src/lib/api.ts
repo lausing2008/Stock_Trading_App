@@ -909,6 +909,11 @@ export const api = {
   // TICKERS by congressional buying; this ranks PEOPLE by what following them would have paid.
   eventsSmartMoney: (minTrades = 8) =>
     request<SmartMoneyResponse>(`/events/congress/smart-money?min_trades=${minTrades}`),
+  // AUD-INSTFOLLOW: 13F position adds per manager, entered at the FILING date. A different
+  // instrument from eventsSmartMoney above — quarterly positioning, not a trade feed.
+  eventsInstitutionalFollowers: (minPositions = 8) =>
+    request<InstitutionalFollowersResponse>(
+      `/events/institutional/followers?min_positions=${minPositions}`),
   eventsCongressRecent: (days = 30, opts?: { limit?: number; ticker?: string; politician?: string }) => {
     const params = new URLSearchParams({ days: String(days) });
     if (opts?.limit) params.set('limit', String(opts.limit));
@@ -3936,6 +3941,37 @@ export type CongressResponse = {
 //     get_impact_direction_accuracy()'s own n/adequacy pairing.
 //   * `direction_unknown` — names whose feed omits buy/sell entirely. Surfaced rather than
 //     dropped, because "tracked but not actionable" is more useful than silence.
+// AUD-INSTFOLLOW: /events/institutional/followers. Read `alpha_vs_spy_pct`, not `avg_21d_pct`:
+// the first live run showed all sixteen managers negative purely because SPY fell 2.44% over
+// the same window, which reads as a verdict on them and is actually a verdict on the quarter.
+// `sample_is_adequate` means "enough priced positions to average", NOT "enough evidence to
+// judge the manager" — every row is one quarter observed over one window.
+export type InstitutionalFund = {
+  name: string;
+  n_buys: number;
+  n_sells: number;
+  n_measured: number;
+  avg_21d_pct: number | null;
+  alpha_vs_spy_pct: number | null;
+  benchmark_21d_pct: number | null;
+  pct_up: number | null;
+  report_date: string | null;
+  filing_date: string | null;
+  disclosure_lag_days: number | null;
+  staleness_days: number | null;
+  sample_is_adequate: boolean;
+  unavailable: boolean;
+};
+
+export type InstitutionalFollowersResponse = {
+  horizon_days: number;
+  min_positions_for_adequacy: number;
+  entry_basis: string;
+  funds: InstitutionalFund[];
+  n_followable: number;
+  caveats: string[];
+};
+
 export type SmartMoneyTrader = {
   name: string;
   party: string | null;
