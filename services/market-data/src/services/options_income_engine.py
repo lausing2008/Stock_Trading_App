@@ -825,23 +825,61 @@ def run_options_income_step() -> dict:
     # scheduled path would leave the admin route — the one a human triggers impatiently, most
     # likely while the scheduled run is already going — completely unprotected, which is
     # precisely the collision worth preventing.
+    # DA-05/DA-07 (2026-09-24): this lock had BOTH failure modes T232-PT5 already fixed for the
+    # paper-trading lock, and the comment below used to claim it was "matching every other
+    # locked job in this codebase" — the opposite of the truth.
+    #
+    #   1. The value was the literal "1" and release was an unconditional DELETE. If this run
+    #      exceeds the TTL and a second run acquires a fresh lease, this run's `finally` deletes
+    #      the SECOND run's lock, which lets a third start while the second still believes it is
+    #      exclusive. Fixed with a unique token and an atomic compare-and-delete.
+    #   2. It failed OPEN on a Redis error, then still ran the unconditional delete — so a
+    #      transient outage could both start a concurrent run AND destroy the other run's lease.
+    #      This function mutates portfolio cash, collateral and positions, which is the same
+    #      class of state the paper-trading lock deliberately fails CLOSED to protect. Losing one
+    #      evening's run is recoverable on the next tick; double-opening positions against the
+    #      same cash is not.
+    import uuid
+
+    token = uuid.uuid4().hex
     try:
-        if not _get_income_redis().set(_INCOME_STEP_LOCK_KEY, "1", nx=True, ex=_INCOME_STEP_LOCK_TTL):
+        if not _get_income_redis().set(_INCOME_STEP_LOCK_KEY, token, nx=True, ex=_INCOME_STEP_LOCK_TTL):
             log.info("options_income.step_skipped_already_running")
             return {"ok": False, "skipped": "already_running"}
     except Exception:
-        # Fail OPEN on a Redis outage, matching every other locked job in this codebase: losing
-        # the evening run entirely is worse than the small risk of an overlap, and overlap
-        # requires someone to be manually triggering at the same moment.
-        log.warning("options_income.lock_unavailable_proceeding", exc_info=True)
+        log.error("options_income.step_skipped_lock_unavailable", exc_info=True)
+        return {"ok": False, "skipped": "lock_unavailable"}
 
     try:
         return _run_options_income_step_locked()
     finally:
-        try:
-            _get_income_redis().delete(_INCOME_STEP_LOCK_KEY)
-        except Exception:
-            pass
+        _release_income_lock(token)
+
+
+# Matches scheduler.py's own _LOCK_RELEASE_LUA exactly. An atomic script is required because
+# "GET then DEL" is two round trips, and the lease can expire and be re-acquired between them —
+# which is the very race an ownership check is supposed to close.
+_INCOME_LOCK_RELEASE_LUA = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+else
+    return 0
+end
+"""
+
+
+def _release_income_lock(token: str) -> bool:
+    """Release the step lock only if THIS run still owns it. Returns whether it was released."""
+    try:
+        released = _get_income_redis().eval(_INCOME_LOCK_RELEASE_LUA, 1, _INCOME_STEP_LOCK_KEY, token)
+        if not released:
+            # Not an error we can act on, but it means this run overran its lease and someone
+            # else now holds it — worth seeing in logs before it becomes a double-open incident.
+            log.warning("options_income.lock_not_owned_at_release", token=token)
+        return bool(released)
+    except Exception:
+        log.warning("options_income.lock_release_failed", exc_info=True)
+        return False
 
 
 def _get_income_redis():
