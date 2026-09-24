@@ -13,6 +13,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db import get_session, SessionLocal, CongressTrade, Stock
 from common.uw_congress import (
+    canonicalize_politician_name as _canon_name,
     get_congress_roster as _uw_get_roster,
     get_congress_trades as _uw_get_congress_trades,
     is_available as _uw_available,
@@ -98,11 +99,14 @@ def _uw_rows_to_kadoa_shape(rows: list, roster: dict | None = None) -> list[dict
     out = []
     for r in rows:
         ident = roster.get((r.politician_name or "").strip().lower()) or {}
+        chamber = r.chamber or ident.get("chamber")
         out.append({
             "branch": "congress",  # UW's feed is congress-only already, unlike kadoa's mixed feed
-            "filer_name": r.politician_name,
+            # No roster (outage, or UW unconfigured) means no authority to canonicalise
+            # against, so the name passes through exactly as the old code left it.
+            "filer_name": _canon_name(r.politician_name, chamber, roster) if roster else r.politician_name,
             "party": r.party or ident.get("party"),
-            "chamber": r.chamber or ident.get("chamber"),
+            "chamber": chamber,
             "ticker": r.ticker,
             "transaction_type": r.transaction_type,
             "amount_range_label": r.amount_range_label,
@@ -141,6 +145,10 @@ async def sync_congress_trades(lookback_days: int = 365) -> dict:
 
     trades: list[dict] = []
     source_label = "kadoa"
+    # Fetched once per sync (Redis-cached 24h). Used for BOTH the UW party join and the
+    # cross-feed name canonicalisation below; empty on any roster outage, which degrades to
+    # today's behaviour rather than dropping rows.
+    _roster = _uw_get_roster() if _uw_available() else {}
     if _uw_available():
         try:
             uw_rows = []
@@ -150,8 +158,7 @@ async def sync_congress_trades(lookback_days: int = 365) -> dict:
                 uw_rows.extend(day_rows)
                 day -= timedelta(days=1)
             if uw_rows:
-                # One roster fetch per sync (Redis-cached 24h), not one per row.
-                trades = _uw_rows_to_kadoa_shape(uw_rows, _uw_get_roster())
+                trades = _uw_rows_to_kadoa_shape(uw_rows, _roster)
                 source_label = "unusual_whales"
         except Exception as exc:
             log.warning("congress.uw_fetch_error", error=str(exc))
@@ -190,7 +197,14 @@ async def sync_congress_trades(lookback_days: int = 365) -> dict:
                     continue
 
                 chamber = (t.get("chamber") or "").capitalize() or "Unknown"
+                # AUD-UWCONGRESS-NAMEMERGE: both feeds write to one table and spell the same
+                # member differently ("Ro Khanna" / "Rohit Khanna" / "Hon. David J. Taylor").
+                # Canonicalising HERE rather than per-feed means one rule governs every row,
+                # and the conflict key (politician_name, ...) stops splitting one person's
+                # history across two ranked rows with contradictory returns.
                 politician = (t.get("filer_name") or "Unknown")[:255]
+                if _roster:
+                    politician = _canon_name(politician, chamber, _roster)[:255]
                 party = (t.get("party") or "")[:32]
                 state = (t.get("state") or "")[:8]
                 txn_type = _normalize_txn_type(t.get("transaction_type"))

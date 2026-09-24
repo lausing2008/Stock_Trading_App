@@ -248,3 +248,142 @@ def test_the_amount_label_survives_the_shape_translation():
     out = _uw_rows_to_kadoa_shape([row], {})
     assert out[0]["amount_range_label"] == "$15,001 - $50,000"
     assert out[0]["amount_range_low"] == 15001.0
+
+
+# ── Cross-feed name canonicalisation (AUD-UWCONGRESS-NAMEMERGE) ───────────────
+#
+# The same member reaches congress_trades under three spellings: UW's `name` ("Ro Khanna"),
+# the kadoa feed's ("Rohit Khanna"), and the honorific `reporter` form ("Hon. David J. Taylor").
+# Because politician_name is part of the uq_congress_trade key, each spelling becomes its own
+# ranked trader — and the live data showed exactly that, with one person appearing twice at
+# +5.26% (n=23) and +3.30% (n=55). A reader comparing those rows is comparing a man to himself.
+#
+# The merge is deliberately conservative: a WRONG merge silently pools two people's returns,
+# which is worse than a visible duplicate. These tests pin both directions — that the real
+# variants do merge, and that the genuinely-distinct members never do.
+
+_canonicalize = _uwc.canonicalize_politician_name
+
+# Shaped like get_congress_roster()'s output: keyed by lower-cased name, carrying the canonical
+# spelling and chamber. Mirrors the real roster's own Khanna/Taylor entries.
+ROSTER = {
+    "ro khanna": {"canonical_name": "Ro Khanna", "chamber": "house", "party": "D"},
+    "david taylor": {"canonical_name": "David Taylor", "chamber": "house", "party": "R"},
+    "nicholas taylor": {"canonical_name": "Nicholas Taylor", "chamber": "house", "party": "R"},
+    "marjorie taylor greene": {"canonical_name": "Marjorie Taylor Greene", "chamber": "house", "party": "R"},
+    "john boozman": {"canonical_name": "John Boozman", "chamber": "senate", "party": "R"},
+    # Two House members whose given names are BOTH prefix-compatible with "Jo" — the case the
+    # unique-survivor rule exists for.
+    "john smith": {"canonical_name": "John Smith", "chamber": "house", "party": "D"},
+    "joseph smith": {"canonical_name": "Joseph Smith", "chamber": "house", "party": "R"},
+    # A member with a compound surname, to pin that the SURNAME is the last token.
+    "marjorie taylor greene": {"canonical_name": "Marjorie Taylor Greene", "chamber": "house", "party": "R"},
+    # The live roster has entries with missing fields; one with no chamber must never be
+    # matched by a row whose own chamber is unknown.
+    "patrick noplace": {"canonical_name": "Patrick Noplace", "chamber": None, "party": None},
+    # Real rosters carry generational suffixes; the DB holds "Angus S King, Jr." verbatim.
+    "angus king": {"canonical_name": "Angus King", "chamber": "senate", "party": "I"},
+}
+
+
+def test_the_kadoa_spelling_merges_onto_the_roster_name():
+    """"Rohit Khanna" and "Ro Khanna" are one person; the roster holds exactly one Khanna."""
+    assert _canonicalize("Rohit Khanna", "house", ROSTER) == "Ro Khanna"
+
+
+def test_the_honorific_reporter_form_merges_too():
+    assert _canonicalize("Hon. David J. Taylor", "house", ROSTER) == "David Taylor"
+
+
+def test_a_middle_initial_does_not_block_the_merge():
+    assert _canonicalize("David J. Taylor", "house", ROSTER) == "David Taylor"
+
+
+def test_an_already_canonical_name_is_returned_unchanged():
+    assert _canonicalize("Ro Khanna", "house", ROSTER) == "Ro Khanna"
+
+
+def test_two_members_sharing_a_surname_are_never_merged_into_each_other():
+    """David Taylor and Nicholas Taylor are both House Republicans. The surname alone is
+    ambiguous, so the given name must decide — and must never let one become the other."""
+    assert _canonicalize("Nicholas Taylor", "house", ROSTER) == "Nicholas Taylor"
+    assert _canonicalize("David Taylor", "house", ROSTER) == "David Taylor"
+
+
+def test_a_compound_surname_member_is_not_captured_by_a_different_surname():
+    """Marjorie Taylor Greene's surname is Greene. If "Taylor" were read as her surname she
+    would compete with the two Taylors and could be merged into one of them."""
+    assert _canonicalize("Marjorie Taylor Greene", "house", ROSTER) == "Marjorie Taylor Greene"
+
+
+def test_an_incompatible_given_name_blocks_the_merge_even_on_a_unique_surname():
+    """Only one Boozman exists in the roster, but "Sarah" is not "John". A unique surname is
+    not on its own evidence of identity."""
+    assert _canonicalize("Sarah Boozman", "senate", ROSTER) == "Sarah Boozman"
+
+
+def test_the_chamber_must_match_so_a_same_surname_member_elsewhere_is_not_borrowed():
+    assert _canonicalize("Rohit Khanna", "senate", ROSTER) == "Rohit Khanna"
+
+
+def test_an_unknown_chamber_never_merges_because_it_cannot_disambiguate():
+    assert _canonicalize("Rohit Khanna", "", ROSTER) == "Rohit Khanna"
+    assert _canonicalize("Rohit Khanna", None, ROSTER) == "Rohit Khanna"
+    assert _canonicalize("David J. Taylor", "Unknown", ROSTER) == "David J. Taylor"
+
+
+def test_a_name_absent_from_the_roster_is_left_exactly_as_it_arrived():
+    assert _canonicalize("Some Newcomer", "house", ROSTER) == "Some Newcomer"
+
+
+def test_a_roster_outage_leaves_every_name_untouched():
+    assert _canonicalize("Rohit Khanna", "house", {}) == "Rohit Khanna"
+
+
+def test_a_single_token_name_is_never_merged_on_a_fragment():
+    assert _canonicalize("Khanna", "house", ROSTER) == "Khanna"
+    assert _canonicalize("", "house", ROSTER) == ""
+
+
+def test_chamber_case_does_not_affect_the_match():
+    """The upsert loop capitalises chamber ("House") while the roster stores it lower-case."""
+    assert _canonicalize("Rohit Khanna", "House", ROSTER) == "Ro Khanna"
+
+
+def test_two_equally_compatible_candidates_are_left_unmerged():
+    """"Jo" is a legitimate prefix of both John and Joseph. Picking either would invent a track
+    record by pooling two people — the exact failure the unique-survivor rule prevents, and the
+    reason it is `!= 1` rather than `>= 1`."""
+    assert _canonicalize("Jo Smith", "house", ROSTER) == "Jo Smith"
+
+
+def test_an_exact_given_name_still_merges_even_when_a_longer_sibling_exists():
+    """The guard above must not become so cautious that it blocks an unambiguous match: "John"
+    is exactly John Smith, notwithstanding Joseph."""
+    assert _canonicalize("John Smith", "house", ROSTER) == "John Smith"
+    assert _canonicalize("Joseph R. Smith", "house", ROSTER) == "Joseph Smith"
+
+
+def test_a_compound_surname_member_filed_under_a_middle_initial_still_merges():
+    """"Marjorie T. Greene" and "Marjorie Taylor Greene" are one person. This pins that the
+    SURNAME is the last token: reading the second token instead would make her surname
+    "Taylor", and the two spellings would never meet."""
+    assert _canonicalize("Marjorie T. Greene", "house", ROSTER) == "Marjorie Taylor Greene"
+
+
+def test_a_roster_entry_with_no_chamber_is_not_matched_by_an_unknown_chamber_row():
+    """Both sides missing a chamber is not agreement — it is two absences. Without the explicit
+    guard, "" == "" would merge them."""
+    assert _canonicalize("Pat Noplace", "", ROSTER) == "Pat Noplace"
+    assert _canonicalize("Pat Noplace", None, ROSTER) == "Pat Noplace"
+    # The canonical spelling differs from the input on purpose: if both were "Pat Noplace" a
+    # wrong merge would be indistinguishable from no merge, and this test could not fail.
+    assert _canonicalize("Pat Noplace", "house", ROSTER) == "Pat Noplace"
+
+
+def test_a_generational_suffix_and_middle_initial_do_not_block_the_merge():
+    """The live table holds names like "Angus S King, Jr." and "A. Mitchell McConnell, Jr.".
+    Without suffix stripping the last token is "jr", so the surname is read as "Jr" and the
+    member can never match — or worse, every Jr. in a chamber collapses together."""
+    assert _canonicalize("Angus S King, Jr.", "senate", ROSTER) == "Angus King"
+    assert _canonicalize("Angus King Jr", "senate", ROSTER) == "Angus King"

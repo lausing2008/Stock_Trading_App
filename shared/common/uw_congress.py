@@ -312,6 +312,9 @@ def get_congress_roster() -> dict[str, dict]:
                 # vocabularies — get_smart_money_leaderboard() groups by party.
                 "party": _normalize_party(row.get("party")),
                 "chamber": row.get("chamber"),
+                # Carried so canonicalize_politician_name() can rewrite a feed's spelling onto
+                # the roster's own, rather than matching roster entries by their dict key.
+                "canonical_name": name,
                 "politician_id": row.get("politician_id"),
                 "bioguide_id": row.get("bioguide_id"),
             }
@@ -338,3 +341,75 @@ def _normalize_party(raw: str | None) -> str | None:
     if r.startswith("i"):
         return "I"
     return None
+
+
+def _name_parts(raw: str) -> tuple[str, str] | None:
+    """(given, surname), lower-cased, with honorifics/suffixes/middle initials stripped.
+
+    Returns None when there is no usable surname, so callers can leave the name untouched
+    rather than merge on a fragment."""
+    if not raw:
+        return None
+    s = raw.strip().lower()
+    s = re.sub(r"^(hon\.?|mr\.?|mrs\.?|ms\.?|dr\.?|rep\.?|sen\.?|senator|representative)\s+", "", s)
+    s = re.sub(r"[,.]", " ", s)
+    toks = [t for t in s.split() if t]
+    # Drop generational suffixes and bare middle initials — "David J. Taylor" and "David Taylor"
+    # must reduce to the same pair, or the merge this feeds would never fire.
+    toks = [t for t in toks if t not in {"jr", "sr", "ii", "iii", "iv", "dr", "hon"} and len(t) > 1]
+    if len(toks) < 2:
+        return None
+    return (toks[0], toks[-1])
+
+
+def canonicalize_politician_name(raw: str, chamber: str | None, roster: dict) -> str:
+    """Map one feed's spelling of a member onto the roster's canonical name.
+
+    WHY. The same person reaches this table under three spellings — UW's own `name`
+    ("Ro Khanna"), the kadoa feed's ("Rohit Khanna"), and the honorific `reporter` form
+    ("Hon. David J. Taylor"). Left alone they rank as separate traders with different and
+    contradictory returns, which is worse than the caveat it replaced: a reader comparing
+    "+5.26% on 23 buys" against "+3.30% on 55 buys" is comparing one person to himself.
+
+    DELIBERATELY CONSERVATIVE, because a wrong merge silently pools two people's returns and is
+    far worse than leaving a duplicate visible. A name is rewritten ONLY when all three hold:
+
+      1. the surname matches exactly one roster member in the same chamber,
+      2. the given names are prefix-compatible in either direction ("rohit" vs "ro"), and
+      3. a chamber is known — an unknown chamber cannot disambiguate two same-surname members.
+
+    Anything ambiguous is returned unchanged. That is why "Marjorie Taylor Greene" is safe: her
+    surname is "greene", so she never competes with the two Taylors.
+    """
+    if not raw or not roster:
+        return raw
+    parts = _name_parts(raw)
+    if not parts:
+        return raw
+    given, surname = parts
+    ch = (chamber or "").strip().lower()
+    if not ch:
+        return raw
+
+    # Surname + chamber narrows the field; the GIVEN name then has to single one out. Order
+    # matters: filtering on surname uniqueness first would refuse to merge "David J. Taylor"
+    # purely because a Nicholas Taylor also sits in the House, even though the given name
+    # settles it unambiguously.
+    candidates = []
+    for canon in roster.values():
+        cname = canon.get("canonical_name")
+        if not cname or (canon.get("chamber") or "").strip().lower() != ch:
+            continue
+        cparts = _name_parts(cname)
+        if not cparts or cparts[1] != surname:
+            continue
+        cgiven = cparts[0]
+        if given == cgiven or given.startswith(cgiven) or cgiven.startswith(given):
+            candidates.append(cname)
+
+    # Exactly one survivor, or nothing happens. Two compatible candidates ("Jo" against both a
+    # John and a Joseph in the same chamber) is precisely the case where guessing pools two
+    # people's returns into one fabricated track record.
+    if len(set(candidates)) != 1:
+        return raw
+    return candidates[0]
