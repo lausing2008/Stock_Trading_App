@@ -1,12 +1,14 @@
 # Session Index — 2026-09-23/24: "who are the big traders, and are these alerts any good?"
 
-**START HERE** for this session. 18 commits, 37 files, ~7,670 insertions. Everything deployed
-with 0 drift; all backend suites green (market-data 4,260 · event-intelligence 562 ·
+**START HERE** for this session. 21 commits, 41 files, ~8,385 insertions. Everything deployed
+with 0 drift; all backend suites green (market-data 4,260 · event-intelligence 581 ·
 signal-engine 549 · api-gateway 54 · news-intelligence 89).
 
 The session began as "build a report tracking notable traders" and turned into something else
-twice: first a **parse bug that was discarding 81% of the congress dataset on arrival**, then a
-**measurement of the alert emails** that found the only BUY-direction alert is anti-predictive.
+three times: a **parse bug discarding 81% of the congress dataset on arrival**, a **measurement
+of the alert emails** finding the only BUY-direction alert is anti-predictive, and — three
+separate times, in three unrelated datasets — **returns measured from a date nobody could act
+on**.
 
 ---
 
@@ -52,6 +54,21 @@ Full detail: `docs/features/congress-insider-data.md`.
 
 Full detail: `docs/features/options-and-institutional-data.md`.
 
+### SEC Form 4 insiders — measured first, deliberately not shipped as a signal
+
+| | commit |
+|---|---|
+| `AUD-INSIDERUW` — market-wide UW ingest complementing (not replacing) the EDGAR scrape; `AUD-INSIDERROLE` — a boolean Form 4 tag was being stored as a job title in 254 of 1,049 rows | `4760e08` |
+
+The 147 open-market purchases EDGAR has accumulated in two years measure **+0.69% mean 21-day
+alpha vs SPY, 58.0% beat rate (n=112)** — at **t = 0.93 naive, t = 0.60 day-clustered** across
+46 filing days, with a standard deviation of 7.85% against a 0.69% mean. `|t| < 2` means **NOT
+YET MEASURABLE**, so **no signal, alert or tab was shipped**. The work was to make the question
+answerable: real filing dates and `is_10b5_1` on every row (500/500 from UW versus 11/1,049 from
+EDGAR), which is the entire signal/noise line for insider activity.
+
+Full detail: `docs/features/congress-insider-data.md`.
+
 ### The alert emails
 
 | | commit |
@@ -85,6 +102,10 @@ genuinely zero average return on the largest sample (370 alerts); Pre-Breakout s
 **The AI Signal badge was pooling opposites.** BUY averages **−1.22%** over 5 days (n=13,553),
 SELL **+1.03%** (n=5,008) — so a per-symbol win rate mixing them describes neither.
 
+**Insider buying is promising but unproven on our data** — +0.69% alpha at t = 0.60
+day-clustered, and even that is an upper bound (see the entry-date pattern below). Now being
+collected in a form that can settle it.
+
 **Congressional disclosure lag costs about 0.58pp**, not the 1.81pp first reported — the earlier
 figure came from the 19% of rows that then had a usable disclosure date.
 
@@ -105,10 +126,9 @@ Matching candidates against the user's own symbols is a separate decision about 
 **A per-stock earnings-drift rate, the HMM bear gate, and the ranking rebuild** all remain
 rejected/blocked on the evidence recorded in `docs/audits/2026-09-22-session-index.md`.
 
-**SEC Form 4 insiders — the strongest unbuilt item.** 2-business-day lag versus Congress's 40,
-explicit direction, free, ~850 filings/day, and UW already serves it at
-`/api/insider/transactions` with an `is_10b5_1` flag separating discretionary buys from
-pre-scheduled plan sales. This is the natural next build.
+**No insider SIGNAL, alert or tab was built** — only ingestion. Shipping a "follow the insiders"
+feature on t = 0.60 would have been exactly the mistake this session spent its time finding in
+other people's numbers. Re-measure in a quarter, once real filing dates have accumulated.
 
 **External sources evaluated and declined:** open-cabinet.org (executive branch, no disclosure
 date, 23% ticker coverage), trumptracker.org (cabinet officials, "no stock trades reported yet",
@@ -136,9 +156,30 @@ Routing through a vendor who has priced that risk in is safer than scraping .gov
 4. **Ranking on raw return ranked managers by beta.** All 16 read negative until SPY's own
    −2.44% over the same window was subtracted; Duquesne's "−0.35%" was **+2.1pp of alpha**.
 5. **I predicted UW would have fresher short-interest data. It does not** — same settlement date.
+   I also predicted the EDGAR "purchases" were contaminated with awards and option exercises;
+   checking showed the parser filters them correctly, and the small sample was the real limit.
 6. **A broad `except` around a cache read hid a NameError** in the cache handle. The query still
    ran and the answer still looked right, so the dead cache was invisible.
 7. **`git checkout` to undo a sabotage discarded an uncommitted change under test.**
+
+---
+
+## The pattern worth naming: check which date the return was entered on
+
+**Three unrelated datasets, one error, all found this session.** Each time a return looked good,
+and each time the entry date was one nobody outside could have acted on:
+
+| dataset | measured from | reachable | gap |
+|---|---|---|---|
+| Congressional trades | trade date, +4.70% | disclosure date, **+3.15%** | 0.58pp |
+| Post-earnings drift | pre-report close (includes the overnight gap) | first close after the report | the gap itself |
+| **SEC Form 4** | `filing_date`, which the parser **copied from the transaction date** — all 1,049 rows had a 0.00-day lag | the real filing date, up to 2 business days later | unknown until real dates accumulate |
+
+A fourth variant showed up in the alert emails: the Short Squeeze Alert's game plan was priced
+off a quote that was, on median, **6.65% better than the next session's entry**.
+
+*Whenever a return looks good, check which date it was entered on.* The flattering version is
+almost always the one nobody could trade.
 
 ---
 
@@ -153,6 +194,7 @@ had **four separate rounds** where sabotages passed and the fixtures, not the co
 | alert prefs (4 of 9) | a forged-token test passed *garbage* (fails either way); `ESSENTIAL` unreachable; a sabotage hit a function sharing the same line; timing is unobservable |
 | institutional (1 of 7) | the ranking test gave both funds *identical* alpha, so raw and alpha orderings could not differ |
 | signal cohort (1 of 8) | asserted the parameter was **bound**; `:dir IS NOT NULL` binds it and filters nothing |
+| insider ingest (1 of 9) | nothing asserted on what was **written**, so a signed `amount` stored as a negative share count — silently flipping every `total_value` — passed |
 
 **Three recurring traps, now each documented at their site:**
 
@@ -161,6 +203,11 @@ had **four separate rounds** where sabotages passed and the fixtures, not the co
 - **SQL-text assertions silently pass against a stubbed sqlalchemy** — `text()` returns a
   MagicMock carrying no SQL. Third occurrence. The working pattern is `inspect.getsource` on the
   one function under test, pinning no numeric literal.
+- **A MagicMock auto-creates any attribute as truthy.** A fake session dispatching on
+  `getattr(stmt, "_is_select_stub", False)` matched every INSERT too, and silently reported zero
+  rows stored. Dispatch on call order instead — and the same property is why `common` and
+  `sqlalchemy` stubs make membership tests and HMAC comparisons meaningless unless the real
+  module is loaded (conftest now loads `alert_prefs` for exactly this reason).
 - **A defect the suite structurally cannot catch:** `AlertPreference` was added to `models.py`
   but not exported from `shared/db/__init__.py`, so the endpoint 500'd in production while all
   25 tests stayed green — none import from `db`, because the suite stubs it wholesale. Found by
@@ -183,8 +230,14 @@ without). One production write was made during verification (unsubscribing user 
 
 ## Next
 
-1. **SEC Form 4 insiders** — best evidence-to-effort ratio remaining, and the only source with a
-   2-day lag.
-2. **The short-interest refresh cadence** — a scheduling fix, not a data fix.
-3. **Recipient symbol-matching** — decides who gets mail; needs a deliberate call.
-4. **Nothing here changes the 2026-12-04 read** on the signal inversion.
+1. **Re-measure insider buying in a quarter**, once real filing dates have accumulated. It is
+   the only candidate edge found this session that is not already known to be negative.
+2. **The short-interest refresh cadence** — a scheduling fix, not a data fix. A 30-day hard
+   cutoff against a weekly refresh can drift to 28 days.
+3. **Recipient symbol-matching** — `AUD-ALERTPREFS` fixed *which types* you receive, not that an
+   alert on any symbol reaches anyone holding any untriggered price alert. Decides who gets
+   mail; needs a deliberate call.
+4. **Audit the remaining entry-date assumptions.** Three instances in one session says this is a
+   class, not a coincidence — every stored `*_date` a return is measured from deserves the
+   question "could anyone have acted on this date?"
+5. **Nothing here changes the 2026-12-04 read** on the signal inversion.
