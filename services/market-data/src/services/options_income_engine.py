@@ -29,7 +29,7 @@ whatever the underlying did between entry and close).
 from __future__ import annotations
 
 import structlog
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, text
@@ -464,6 +464,43 @@ def expected_settlement_session(expiry: date) -> date:
     return expiry  # pathological input; caller still has to find a real close for it
 
 
+# DA-05 (2026-09-24): a D1 bar existing is NOT the same as that session having ENDED.
+#
+# This repo writes daily bars DURING the session — that is the premise of
+# BUG-VOLANOM-STALEMARKET and of every "mutable intraday D1" guard elsewhere in the codebase.
+# _settlement_close() already refuses to substitute a NEARBY session's close
+# (AUD-T400-SETTLESUBSTITUTE), but it still accepted the CORRECT session's bar while that
+# session was still trading. The scheduled settlement run is in the evening and is therefore
+# safe; the admin /run-step route is callable at any hour and reaches the identical code.
+#
+# The failure is permanent, not transient: a $100 short put read against an unfinished $101
+# print settles as expired-worthless (+$100 premium) and is excluded from every later retry —
+# even if the session actually closes at $90 and the real outcome is an assignment worth -$900.
+#
+# 16:15 ET is deliberately conservative: regular close is 16:00, early closes are 13:00, so
+# this is final on BOTH kinds of day plus an ingestion buffer. Waiting the extra hours on an
+# early-close day costs nothing, because the only scheduled settlement run is in the evening
+# anyway. Being late is recoverable; settling on a moving price is not.
+_SETTLEMENT_FINALITY_ET = dt_time(16, 15)
+
+
+def settlement_session_is_final(want: date, now_et: datetime | None = None) -> bool:
+    """True only when `want`'s exchange session has definitively ended."""
+    now = now_et or datetime.now(timezone.utc)
+    # CONVERT, never assume. Reading `.date()` and the time-of-day off whatever zone the caller
+    # happened to pass is the T409 UTC-vs-ET bug in miniature: 18:00 UTC on expiry day is 14:00
+    # ET — still trading — but compares as 18:00 and would clear a 16:15 cutoff. A naive value
+    # is taken to be exchange time, since that is the only zone this comparison is meaningful in.
+    if now.tzinfo is not None:
+        now = now.astimezone(ZoneInfo("America/New_York"))
+    today = now.date()
+    if want < today:
+        return True
+    if want > today:
+        return False  # a session that has not happened yet
+    return now.time() >= _SETTLEMENT_FINALITY_ET
+
+
 def _settlement_close(session: Session, stock_id: int, expiry: date) -> tuple[float, date] | None:
     """The close for the EXACT expected settlement session, or None.
 
@@ -477,6 +514,13 @@ def _settlement_close(session: Session, stock_id: int, expiry: date) -> tuple[fl
     Returning None instead leaves the position open so the next run can settle it correctly.
     """
     want = expected_settlement_session(expiry)
+    # DA-05: refuse to settle against a session that is still trading. Returning None leaves
+    # the position OPEN for the next run, which is exactly how this function already handles
+    # "the settlement bar has not loaded yet" — a deliberately identical, recoverable outcome.
+    if not settlement_session_is_final(want):
+        log.info("options_income.settlement_deferred_session_not_final",
+                 stock_id=stock_id, expiry=str(expiry), expected_session=str(want))
+        return None
     row = session.execute(
         select(Price.close).where(
             Price.stock_id == stock_id,
