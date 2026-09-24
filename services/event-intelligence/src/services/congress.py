@@ -530,25 +530,31 @@ def get_smart_money_leaderboard(min_trades: int = _SMART_MONEY_MIN_TRADES) -> di
     get_impact_direction_accuracy() — three findings in docs/2026-09-05 reversed once their
     samples widened.
     """
+    # AUD-SMARTMONEY-PERF: this ran two CORRELATED SUBQUERIES per qualifying trade, each
+    # scanning the price CTE. That was tolerable when only the 1,762 kadoa rows carried a
+    # disclosure date; after AUD-UWCONGRESS-FIELDNAMES repaired the other ~7,000 it took 28.8s
+    # and the page rendered "Failed to load" — the fix that made the data usable is what made
+    # the query unusable. DISTINCT ON resolves every trade's entry/exit in ONE ordered pass.
     sql = text("""
         WITH px AS (
           SELECT stock_id, ts::date AS d, close,
                  LEAD(close, :horizon) OVER (PARTITION BY stock_id ORDER BY ts) AS fwd
           FROM prices WHERE timeframe = 'D1' AND ts >= :since
         ),
-        buys AS (
-          SELECT c.politician_name, c.party, c.chamber, c.ticker, c.disclosure_date,
-                 c.trade_date, c.amount_min, c.amount_max,
-                 (SELECT p.close FROM px p
-                   WHERE p.stock_id = c.stock_id AND p.d >= c.disclosure_date
-                   ORDER BY p.d LIMIT 1) AS entry_px,
-                 (SELECT p.fwd FROM px p
-                   WHERE p.stock_id = c.stock_id AND p.d >= c.disclosure_date
-                   ORDER BY p.d LIMIT 1) AS exit_px
+        cand AS (
+          SELECT c.id, c.stock_id, c.politician_name, c.party, c.chamber, c.disclosure_date
           FROM congress_trades c
           WHERE c.stock_id IS NOT NULL
             AND c.transaction_type ILIKE '%purchase%'
             AND c.disclosure_date IS NOT NULL
+        ),
+        buys AS (
+          SELECT DISTINCT ON (cd.id)
+                 cd.politician_name, cd.party, cd.chamber, cd.disclosure_date,
+                 p.close AS entry_px, p.fwd AS exit_px
+          FROM cand cd
+          JOIN px p ON p.stock_id = cd.stock_id AND p.d >= cd.disclosure_date
+          ORDER BY cd.id, p.d
         )
         SELECT politician_name, party, chamber, count(*) AS n,
                avg(100.0 * (exit_px - entry_px) / entry_px) AS avg_pct,

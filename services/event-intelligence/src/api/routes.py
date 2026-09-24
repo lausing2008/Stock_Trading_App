@@ -282,12 +282,16 @@ def get_smart_money_leaderboard(
     """AUD-SMARTMONEY: which disclosed traders have been worth following, entered at DISCLOSURE.
 
     Returns are measured from the disclosure date, never the trade date — filings lag the trade
-    by a median of 40 days, and the same purchases return +4.70% over 21 days from trade date
-    but only +2.89% from disclosure. Only the latter was ever reachable.
+    by a median of 33 days, and the same purchases return +3.73% over 21 days from trade date
+    but only +3.15% from disclosure. Only the latter was ever reachable.
 
-    `direction_unknown` lists people whose feed omits buy/sell (7,691 of 9,453 rows), so they
-    cannot be followed at all. They are surfaced rather than dropped, because "tracked but not
-    actionable" is a more useful statement than absence.
+    (Figures re-measured 2026-09-24. The previous docstring quoted 40 days / +4.70% / +2.89%,
+    computed before AUD-UWCONGRESS-FIELDNAMES when 81% of rows had no usable disclosure date.)
+
+    `direction_unknown` lists people whose feed omits buy/sell, so they cannot be followed at
+    all. They are surfaced rather than dropped, because "tracked but not actionable" is a more
+    useful statement than absence. The count is computed, not written here — it fell from 7,691
+    to 776 when the parse bug was fixed, and a hardcoded figure would still say 7,691.
     """
     return congress.get_smart_money_leaderboard(min_trades)
 
