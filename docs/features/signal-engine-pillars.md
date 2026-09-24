@@ -341,3 +341,77 @@ assuming the sweep itself is broken.
 
 ---
 
+
+---
+
+## AUD-SIGNALCOHORT (2026-09-24) — the AI Signal email now states its own base rate
+
+### The defect
+
+The email carried a **"90d signal accuracy"** badge that was a **per-symbol win rate pooling
+every direction together**. On this platform BUY and SELL do not merely differ — they point
+opposite ways. Measured over 18,561 resolved outcomes in `signal_outcomes`:
+
+| direction | n | avg 5d | win rate |
+|---|---|---|---|
+| **BUY** | 13,553 | **−1.22%** | 38.8–41.3% |
+| **SELL** | 5,008 | **+1.03%** | 37.6–41.5% |
+
+A BUY alert was therefore quoting a figure **partly composed of SELL outcomes**, which flatters
+it. The email now also carries the base rate for the `(direction, horizon)` cohort the alert
+actually belongs to:
+
+```
+BUY/SWING   averaged -1.17% over 5d (41%WR, n=3,412)
+BUY/GROWTH  averaged -1.34% over 5d (39%WR, n=3,887)
+SELL/GROWTH averaged +1.78% over 5d (38%WR, n=1,040)
+```
+
+**The per-symbol badge's floor was `count >= 3`** — a win rate on three resolved outcomes is an
+anecdote wearing a percentage sign, rendered beside real measurements with nothing to
+distinguish them. Raised to **8**, matching the per-entity floor the congress leaderboard and
+`get_impact_direction_accuracy()` already use. Cohort stats use **30**, matching
+`_SQUEEZE_FAMILY_CAL_MIN_COUNT`.
+
+### Framing is the whole point
+
+The line says **"averaged"**, never "expect". It is a measured base rate for a *class*, not a
+forecast for the stock in hand — and that distinction is the only reason it is safe to show a
+number this unflattering. A reader who mistook −1.22% for a prediction would draw the wrong
+conclusion about *this* alert instead of the right one about the class. A test pins the wording
+and rejects forecast verbs.
+
+Deliberately **not a gate**: this changes what the reader is told, never which alerts are sent.
+
+### What the measurement also settled
+
+The entry-gap treatment built for the squeeze family (`AUD-SQUEEZE-ENTRYGAP`) was applied to
+signal alerts too, and **correctly found nothing**: signal-date close → next-session entry is a
+median **+0.03%** for BUY and **+0.08%** for SELL, adverse in ~49% of cases. That is ordinary
+overnight noise, not the systematic −6.65% chase the Short Squeeze Alert shows. Useful evidence
+that the warning's adverse-and-consistent guards do not fire indiscriminately.
+
+So the signal alerts' problem is **not execution, it is the signal**. That remains the inversion
+documented in `docs/audits/2026-09-22-news-llm-hmm-prediction-audit.md`.
+
+### A bug the tests found that the error handling was hiding
+
+Both this helper and `AUD-SQUEEZE-ENTRYGAP`'s referenced a **module-level `_rc` that does not
+exist** in `scheduler.py` — `_rc` is a *local* in every other function there. The resulting
+`NameError` was swallowed by the broad `except Exception` around each cache read, so the query
+still ran, the result still looked correct, and **the cache was permanently dead**: a full scan
+of `signal_outcomes` per alert email. Both now use `_get_redis()`, and the tests patch that
+accessor rather than a handle, which pins that it is actually used.
+
+*A broad `except` around a cache read will hide a NameError in the cache handle indefinitely,
+because the fallback path produces the right answer.*
+
+### Testing note — the third appearance of one trap
+
+19 tests, 8 sabotages. The direction-scoping sabotage initially **passed**, because the test
+checked only that the parameter was *bound* — `:dir IS NOT NULL` binds it and filters nothing.
+Asserting on the executed SQL did not work either: this suite stubs sqlalchemy, so `text()`
+returns a MagicMock carrying no SQL. That is the **third** place in this codebase where matching
+on SQL text silently passed against a stub (see also `test_smart_money_leaderboard.py` and
+`test_institutional_followers.py`). The working pattern is to read the shipped source of the one
+function under test via `inspect.getsource`, pinning no numeric literal.
