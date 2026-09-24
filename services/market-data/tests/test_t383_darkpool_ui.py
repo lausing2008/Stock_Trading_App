@@ -57,7 +57,11 @@ def _email_fn() -> str:
 def _render(cands, omitted=0):
     """Exec the real email function, stubbing only the send."""
     lines = EMAIL.splitlines(keepends=True)
-    ns = {}
+    # AUD-ALERTPREFS: this harness execs the builder's body ALONE, with no module globals, so
+    # every module-level helper it calls has to be supplied here. `_with_unsub` appends the
+    # unsubscribe footer; a pass-through keeps these tests about dark-pool rendering, which is
+    # what they exist to check. The footer itself is covered by test_alert_preferences.py.
+    ns = {"_with_unsub": lambda _to, _at, _html, _text: (_html, _text)}
     for n in ast.parse(EMAIL).body:
         if getattr(n, "name", "") == "send_dark_pool_alert_email":
             body = "".join(lines[n.lineno - 1:n.end_lineno]).replace(

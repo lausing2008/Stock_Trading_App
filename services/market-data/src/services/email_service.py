@@ -72,8 +72,91 @@ def _send_ses(to: str, subject: str, body_html: str, body_text: str) -> None:
     )
 
 
+def _with_unsub(to: str, alert_type: str, body_html: str, body_text: str) -> tuple[str, str]:
+    """Append the unsubscribe footer to a built body. Returns (html, text) unchanged when the
+    type is essential/unknown, the recipient cannot be resolved, or no signing secret exists."""
+    try:
+        from common.alert_prefs import is_manageable
+        if not is_manageable(alert_type):
+            return body_html, body_text
+        uid = _resolve_user_id(to)
+        html, text = _unsubscribe_footer(alert_type, uid)
+    except Exception:
+        return body_html, body_text
+    if not html:
+        return body_html, body_text
+    return body_html + html, body_text + text
+
+
+def _resolve_user_id(email: str) -> int | None:
+    """Look up the recipient's user id from their address.
+
+    Resolving it HERE rather than threading a user_id parameter through all ~28 send_*_email
+    builders and every one of their call sites is a deliberate trade: one indexed lookup per
+    email, against a change that would otherwise touch dozens of signatures and invite exactly
+    the kind of "this one builder forgot to pass it" gap the central footer exists to prevent.
+    """
+    try:
+        from db import SessionLocal, User
+        from sqlalchemy import select as _select
+        with SessionLocal() as s:
+            return s.execute(
+                _select(User.id).where(User.email == email)
+            ).scalars().first()
+    except Exception:
+        return None
+
+
+def _unsubscribe_footer(alert_type: str | None, user_id: int | None) -> tuple[str, str]:
+    """AUD-ALERTPREFS: the one-click opt-out, appended centrally.
+
+    It lives HERE, in the single function every alert ultimately calls, rather than in each of
+    the ~28 send_*_email builders — a footer added per-builder is a footer that is missing from
+    whichever one is written next, and an unsubscribe path with holes in it is worse than none
+    because it implies a guarantee it does not keep.
+
+    Renders nothing when the caller passes no identity, or for ESSENTIAL mail (a user's own
+    price alert, a broker re-auth) where the offer would be a lie — see alert_prefs.ESSENTIAL.
+    """
+    if not alert_type:
+        return "", ""
+    try:
+        from common.alert_prefs import is_manageable, label_for, make_unsubscribe_token
+    except Exception:
+        return "", ""
+    if not is_manageable(alert_type):
+        return "", ""
+    if user_id is None:
+        return "", ""
+    secret = getattr(_settings, "jwt_secret", "") or ""
+    if not secret:
+        return "", ""
+    token = make_unsubscribe_token(user_id, alert_type, secret)
+    base = (getattr(_settings, "public_base_url", "") or "https://lausing.com").rstrip("/")
+    url = f"{base}/api/alerts/unsubscribe?u={user_id}&t={alert_type}&sig={token}"
+    name = label_for(alert_type)
+    html = (
+        '<div style="font-size:11px;color:#94a3b8;margin-top:18px;padding-top:10px;'
+        'border-top:1px solid #e2e8f0;line-height:1.6">'
+        f'You are receiving this because <strong>{name}</strong> is on for your account. '
+        f'<a href="{url}" style="color:#64748b">Turn off {name}</a> · '
+        f'<a href="{base}/settings" style="color:#64748b">All alert settings</a>'
+        '</div>'
+    )
+    text = f"\n---\nTurn off {name}: {url}\nAll alert settings: {base}/settings\n"
+    return html, text
+
+
 def send_email(to: str, subject: str, body_html: str, body_text: str) -> bool:
-    """Send an email. Returns True on success, False on failure or disabled."""
+    """Send an email. Returns True on success, False on failure or disabled.
+
+    SIGNATURE DELIBERATELY UNCHANGED. The unsubscribe footer is applied by `_with_unsub()` in
+    each builder, not here. Threading an `alert_type` parameter through this function instead
+    broke 199 existing tests whose `send_email` fakes take exactly four arguments — and more to
+    the point, those tests patch send_email precisely so they can assert on the rendered body,
+    so a footer added downstream of the patch would be invisible to every one of them. Applying
+    it to the body BEFORE the call keeps that coverage honest.
+    """
     global _quota_exceeded_until
     if not (to or "").strip():
         log.warning("email.invalid_recipient", to=repr(to))
@@ -735,6 +818,7 @@ Key Risk: {risk}
   </div>
 </body></html>"""
     body_text += options_game_plan_text
+    body_html, body_text = _with_unsub(to, "signal", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -1122,6 +1206,7 @@ def send_morning_digest_email(
     </p>
   </div>
 </body></html>"""
+    body_html, body_text = _with_unsub(to, "morning_digest", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -1352,6 +1437,7 @@ def send_premarket_brief_email(
         " not a buy/sell recommendation. Historical-scenario context only elsewhere — not"
         " financial advice.\n"
     )
+    body_html, body_text = _with_unsub(to, "premarket_brief", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -1405,6 +1491,7 @@ def send_volume_anomaly_email(to: str, alerts: list[dict]) -> bool:
         + rows_text
         + "\nMeasured facts as of this scan, not a prediction. Not financial advice.\n"
     )
+    body_html, body_text = _with_unsub(to, "volume_anomaly", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -1660,6 +1747,7 @@ def send_short_squeeze_email(to: str, candidates: list[dict]) -> bool:
         + "illustrative SWING-style entry/stop/target math, not a guaranteed fill. "
         + "Not financial advice.\n"
     )
+    body_html, body_text = _with_unsub(to, "short_squeeze", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -1765,6 +1853,7 @@ def send_squeeze_ignition_email(to: str, candidates: list[dict]) -> bool:
         + "Game plan (where shown) is illustrative SWING-style entry/stop/target math, not a "
         + "guaranteed fill. Not financial advice.\n"
     )
+    body_html, body_text = _with_unsub(to, "squeeze_ignition", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -1880,6 +1969,7 @@ def send_gamma_unwind_email(to: str, candidates: list[dict]) -> bool:
         + rows_text
         + "\nProxy signal, not a real gamma-exposure calc — direction is genuinely uncertain. Not financial advice.\n"
     )
+    body_html, body_text = _with_unsub(to, "gamma_unwind", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -2029,6 +2119,7 @@ def send_options_flow_alert_email(to: str, candidates: list[dict], omitted_count
         + omitted_text
         + "\nMeasured fact (real options flow), not a prediction. Not financial advice.\n"
     )
+    body_html, body_text = _with_unsub(to, "options_flow", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -2152,6 +2243,7 @@ def send_dark_pool_alert_email(to: str, candidates: list[dict], omitted_count: i
         + "where the block printed inside the bid-ask spread. It does not mean the stock will go\n"
         + "up or down. '-' means undeterminable (a midpoint cross or no quote), never neutral.\n"
     )
+    body_html, body_text = _with_unsub(to, "dark_pool", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -2278,6 +2370,7 @@ def send_prebreakout_email(to: str, candidates: list[dict]) -> bool:
         + "\nRULE-BASED ONLY (no trained model yet — see Squeeze Alert Performance admin page). "
         + "Reports a measured setup, not a prediction of if/when it resolves. Not financial advice.\n"
     )
+    body_html, body_text = _with_unsub(to, "prebreakout", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -2325,6 +2418,7 @@ def send_squeeze_watch_revert_email(
         "This watch will not alert again — re-add it from the Short Squeeze page to track it fresh. "
         "Not a guarantee price keeps rising. Not financial advice.\n"
     )
+    body_html, body_text = _with_unsub(to, "squeeze_watch_revert", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -2388,6 +2482,7 @@ def send_sr_watch_alert_email(
         "Check the stock's own AI Signal/Confluence Score before deciding. This watch fires "
         "again once price moves away and returns. Not financial advice.\n"
     )
+    body_html, body_text = _with_unsub(to, "sr_watch", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -2446,6 +2541,7 @@ def send_sector_rotation_email(to: str, candidates: list[dict]) -> bool:
         + rows_text
         + "\nMeasured weekly K-Score trend, not a guarantee. Cross-check AI Signal/Confluence Score. Not financial advice.\n"
     )
+    body_html, body_text = _with_unsub(to, "sector_rotation", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -2501,6 +2597,7 @@ def send_earnings_beat_screener_email(to: str, candidates: list[dict]) -> bool:
         + rows_text
         + "\nMeasured facts, not a guidance claim. Cross-check AI Signal/Confluence Score. Not financial advice.\n"
     )
+    body_html, body_text = _with_unsub(to, "earnings_screener", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -2558,6 +2655,7 @@ def send_portfolio_drawdown_alert_email(to: str, breaches: list[dict]) -> bool:
         + rows_text
         + "\nNew entries are already paused for the listed portfolio(s) until equity recovers. Not financial advice.\n"
     )
+    body_html, body_text = _with_unsub(to, "portfolio_drawdown", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -2707,6 +2805,7 @@ def send_top3_conviction_email(to: str, picks: list[dict]) -> bool:
         + "\nWin rate is measured from real tracked outcomes for this exact setup class — not a "
         + "prediction of this specific trade. Not financial advice.\n"
     )
+    body_html, body_text = _with_unsub(to, "top3_conviction", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -2756,6 +2855,7 @@ def send_value_area_breakdown_email(to: str, alerts: list[dict]) -> bool:
         + rows_text
         + "\nA measured close relative to the profiled value area, not a prediction. Not financial advice.\n"
     )
+    body_html, body_text = _with_unsub(to, "value_area", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -2863,6 +2963,7 @@ def send_earnings_reminder_digest_email(to: str, rows: list[dict]) -> bool:
         + text_rows
         + "\n\nReview your position and manage risk before each print. Not financial advice.\n"
     )
+    body_html, body_text = _with_unsub(to, "earnings_reminder", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -3001,6 +3102,7 @@ def send_trade_exit_email(
     </p>
   </div>
 </body></html>"""
+    body_html, body_text = _with_unsub(to, "trade_exit", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -3149,6 +3251,7 @@ def send_paper_portfolio_digest_email(
     body_text = (
         f"{_mkt} PAPER PORTFOLIOS — {date_str}\n\n{rows_text}{closed_text}{movers_text}"
     )
+    body_html, body_text = _with_unsub(to, "portfolio_digest", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 def send_post_open_digest_email(
@@ -3466,6 +3569,7 @@ def send_post_open_digest_email(
     </p>
   </div>
 </body></html>"""
+    body_html, body_text = _with_unsub(to, "post_open_digest", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -3656,6 +3760,7 @@ def send_theme_forecast_email(to: str, date_str: str, themes: list[dict]) -> boo
         + "\nAlready-measured signals as of this week, not a prediction of what any theme will do"
         " next. Themes are hand-curated, not auto-detected. Not financial advice.\n"
     )
+    body_html, body_text = _with_unsub(to, "theme_forecast", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 
@@ -3742,6 +3847,7 @@ def send_trade_coach_email(to: str, date_str: str, result: dict) -> bool:
         + (f"\n{summary}\n" if summary else "")
         + "\nAlready-measured statistics, not a prediction or prescriptive advice. Not financial advice.\n"
     )
+    body_html, body_text = _with_unsub(to, "trade_coach", body_html, body_text)
     return send_email(to, subject, body_html, body_text)
 
 

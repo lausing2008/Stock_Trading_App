@@ -205,6 +205,40 @@ def _trading_days_between(start: "date", end: "date") -> int:
     return count
 
 
+
+# ── AUD-ALERTPREFS: per-alert-type audience filtering ─────────────────────────
+
+def _filter_by_alert_pref(session, recipients: dict, alert_type: str) -> dict:
+    """Drop users who have turned `alert_type` off.
+
+    Applied to the already-built recipient dict rather than folded into each job's own
+    PriceAlert query, deliberately: there are a dozen of those queries with subtly different
+    shapes, and one central filter is far easier to verify than twelve edited WHERE clauses.
+    It also keeps the audience rule in one place when the next alert type is added.
+
+    ABSENCE MEANS SUBSCRIBED — only an explicit `enabled = FALSE` row removes anyone, so a user
+    who has never touched their settings is unaffected. FAILS OPEN: if the preference lookup
+    raises, everyone still gets their mail. Silently dropping alerts because a settings query
+    failed would be indistinguishable, from the outside, from the alert never having fired.
+    """
+    if not recipients:
+        return recipients
+    try:
+        opted_out = {
+            r[0] for r in session.execute(
+                text("SELECT user_id FROM alert_preferences "
+                     "WHERE alert_type = :at AND enabled = FALSE"),
+                {"at": alert_type},
+            ).all()
+        }
+    except Exception as exc:
+        log.warning("alert_prefs.lookup_failed", alert_type=alert_type, error=str(exc))
+        return recipients
+    if not opted_out:
+        return recipients
+    return {uid: u for uid, u in recipients.items() if uid not in opted_out}
+
+
 def _record_job_status(job_name: str, status: str, duration_s: float, error: str | None = None) -> None:
     """Write job completion status to Redis for the admin health monitor (TTL 14 days)."""
     try:
@@ -2973,6 +3007,7 @@ def check_volume_anomalies() -> None:
                 _record_job_status("check_volume_anomalies", "ok", time.monotonic() - _t0)
                 return
             recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            recipients = _filter_by_alert_pref(session, recipients, "volume_anomaly")
             if not recipients:
                 _record_job_status("check_volume_anomalies", "ok", time.monotonic() - _t0)
                 return
@@ -3328,6 +3363,7 @@ def check_short_squeeze_alerts() -> None:
                 _record_job_status("check_short_squeeze_alerts", "ok", time.monotonic() - _t0)
                 return
             recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            recipients = _filter_by_alert_pref(session, recipients, "short_squeeze")
             if not recipients:
                 _record_job_status("check_short_squeeze_alerts", "ok", time.monotonic() - _t0)
                 return
@@ -3693,6 +3729,7 @@ def check_squeeze_ignition_alerts() -> None:
                 _record_job_status("check_squeeze_ignition_alerts", "ok", time.monotonic() - _t0)
                 return
             recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            recipients = _filter_by_alert_pref(session, recipients, "squeeze_ignition")
             if not recipients:
                 _record_job_status("check_squeeze_ignition_alerts", "ok", time.monotonic() - _t0)
                 return
@@ -4229,6 +4266,7 @@ def check_prebreakout_alerts() -> None:
                 _record_job_status("check_prebreakout_alerts", "ok", time.monotonic() - _t0)
                 return
             recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            recipients = _filter_by_alert_pref(session, recipients, "prebreakout")
             if not recipients:
                 _record_job_status("check_prebreakout_alerts", "ok", time.monotonic() - _t0)
                 return
@@ -4517,6 +4555,7 @@ def check_gamma_unwind_alerts() -> None:
                 _record_job_status("check_gamma_unwind_alerts", "ok", time.monotonic() - _t0)
                 return
             recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            recipients = _filter_by_alert_pref(session, recipients, "gamma_unwind")
             if not recipients:
                 _record_job_status("check_gamma_unwind_alerts", "ok", time.monotonic() - _t0)
                 return
@@ -4964,6 +5003,7 @@ def check_options_flow_alerts() -> None:
                 _record_job_status("check_options_flow_alerts", "ok", time.monotonic() - _t0)
                 return
             recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            recipients = _filter_by_alert_pref(session, recipients, "options_flow")
             if not recipients:
                 _record_job_status("check_options_flow_alerts", "ok", time.monotonic() - _t0)
                 return
@@ -5409,6 +5449,7 @@ def check_dark_pool_alerts() -> None:
                 _record_job_status("check_dark_pool_alerts", "ok", time.monotonic() - _t0)
                 return
             recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            recipients = _filter_by_alert_pref(session, recipients, "dark_pool")
             if not recipients:
                 _record_job_status("check_dark_pool_alerts", "ok", time.monotonic() - _t0)
                 return
@@ -6896,6 +6937,7 @@ def check_top3_conviction() -> None:
                 select(PriceAlert).where(PriceAlert.triggered.is_(False))
             ).scalars().all()
             recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            recipients = _filter_by_alert_pref(session, recipients, "top3_conviction")
             if not recipients:
                 _record_job_status("check_top3_conviction", "ok", time.monotonic() - _t0)
                 return
@@ -9238,6 +9280,7 @@ def check_earnings_beat_screener_alerts() -> None:
                 select(PriceAlert).where(PriceAlert.triggered.is_(False))
             ).scalars().all()
             recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            recipients = _filter_by_alert_pref(session, recipients, "earnings_screener")
             if not recipients:
                 return
 
@@ -9350,6 +9393,7 @@ def check_portfolio_drawdown_alerts() -> None:
                 select(PriceAlert).where(PriceAlert.triggered.is_(False))
             ).scalars().all()
             recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            recipients = _filter_by_alert_pref(session, recipients, "portfolio_drawdown")
             if not recipients:
                 _record_job_status("portfolio_drawdown_alert_check", "ok", time.monotonic() - _t0)
                 return
@@ -10223,6 +10267,7 @@ def check_sector_rotation_alerts(rotation: dict[str, dict]) -> None:
                 select(PriceAlert).where(PriceAlert.triggered.is_(False))
             ).scalars().all()
             recipients: dict[int, "User"] = {a.user_id: a.user for a in alerts if a.user and a.user.email}
+            recipients = _filter_by_alert_pref(session, recipients, "sector_rotation")
             if not recipients:
                 return
 

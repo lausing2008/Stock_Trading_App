@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { loadSettings, saveSettings, type AppSettings } from '@/lib/settings';
 import { getSession, changePassword, startImpersonation } from '@/lib/auth';
-import { api, type AppUser, type BrokerConnection, type BrokerType, type BrokerOrderHistoryItem, type BrokerTypeMeta, type RestrictedSymbolItem } from '@/lib/api';
+import { api, type AlertPreferenceRow, type AppUser, type BrokerConnection, type BrokerType, type BrokerOrderHistoryItem, type BrokerTypeMeta, type RestrictedSymbolItem } from '@/lib/api';
 import { storage } from '@/lib/storage';
 import { isPushSupported, getExistingSubscription, enablePushNotifications, disablePushNotifications } from '@/lib/push';
 
@@ -133,6 +133,31 @@ export default function SettingsPage() {
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
   const [pushError, setPushError] = useState('');
+
+  // AUD-ALERTPREFS: per-alert-type email preferences.
+  const [alertPrefs, setAlertPrefs] = useState<AlertPreferenceRow[] | null>(null);
+  const [alertPrefBusy, setAlertPrefBusy] = useState<string | null>(null);
+  const [alertPrefErr, setAlertPrefErr] = useState('');
+
+  useEffect(() => {
+    api.alertPreferences().then(r => setAlertPrefs(r.types)).catch(() => setAlertPrefs([]));
+  }, []);
+
+  async function toggleAlertPref(key: string, next: boolean) {
+    setAlertPrefBusy(key);
+    setAlertPrefErr('');
+    // Optimistic, then reconciled: a toggle that visibly lags feels broken, but a failed write
+    // must not leave the screen claiming a setting that was never saved.
+    setAlertPrefs(prev => prev ? prev.map(p => p.key === key ? { ...p, enabled: next } : p) : prev);
+    try {
+      await api.setAlertPreference(key, next);
+    } catch (e) {
+      setAlertPrefs(prev => prev ? prev.map(p => p.key === key ? { ...p, enabled: !next } : p) : prev);
+      setAlertPrefErr(e instanceof Error ? e.message : 'Could not save that change.');
+    } finally {
+      setAlertPrefBusy(null);
+    }
+  }
 
   useEffect(() => {
     setPushSupported(isPushSupported());
@@ -1457,6 +1482,56 @@ export default function SettingsPage() {
       <div style={section('#0ea5e9')}>
         <div style={sectionBar('linear-gradient(90deg,#0ea5e9,#38bdf8,#0ea5e9)')} />
         <div style={sectionHead}>Notifications</div>
+        {/* AUD-ALERTPREFS: until this existed the only way to stop any alert email was to
+            delete your price alerts — which also stopped the alerts you wanted, because the
+            audience for every scheduled alert was "anyone holding an untriggered price alert"
+            and the alert's own symbol was never matched against it. */}
+        <div style={{ padding: '16px 18px 4px' }}>
+          <label style={lbl}>Email alerts</label>
+          <div style={hint}>
+            Every alert below is on unless you turn it off. Your own price alerts, order fills and
+            broker re-auth emails are not listed — those are unsubscribed by deleting the alert
+            itself, and switching them off silently would leave you waiting on mail that never comes.
+          </div>
+          {alertPrefErr && (
+            <div style={{ fontSize: 11, color: '#f87171', marginTop: 8 }}>{alertPrefErr}</div>
+          )}
+          {alertPrefs === null ? (
+            <div style={{ fontSize: 12, color: '#64748b', margin: '12px 0' }}>Loading…</div>
+          ) : alertPrefs.length === 0 ? (
+            <div style={{ fontSize: 12, color: '#64748b', margin: '12px 0' }}>
+              Alert preferences are unavailable right now. Nothing has changed — you are still
+              receiving everything you were before.
+            </div>
+          ) : (
+            Array.from(new Set(alertPrefs.map(p => p.group))).map(group => (
+              <div key={group} style={{ marginTop: 14 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', letterSpacing: '0.04em', marginBottom: 6 }}>
+                  {group.toUpperCase()}
+                </div>
+                {alertPrefs.filter(p => p.group === group).map(p => (
+                  <div key={p.key} style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 10,
+                    padding: '7px 0', borderTop: '1px solid rgba(99,102,241,0.12)',
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={p.enabled}
+                      disabled={alertPrefBusy === p.key}
+                      onChange={e => toggleAlertPref(p.key, e.target.checked)}
+                      style={{ marginTop: 3, cursor: 'pointer' }}
+                      aria-label={p.label}
+                    />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, color: p.enabled ? '#e2e8f0' : '#64748b' }}>{p.label}</div>
+                      {p.desc && <div style={{ fontSize: 11, color: '#475569', marginTop: 2, lineHeight: 1.5 }}>{p.desc}</div>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))
+          )}
+        </div>
         <div className="settings-grid2" style={grid2}>
           <div>
             <label style={lbl}>Notification Sound</label>

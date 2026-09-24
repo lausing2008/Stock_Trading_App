@@ -57,3 +57,16 @@ _calendar_mod = _ilu.module_from_spec(_cal_spec)
 _cal_spec.loader.exec_module(_calendar_mod)
 sys.modules["common.market_calendar"] = _calendar_mod
 setattr(sys.modules["common"], "market_calendar", _calendar_mod)
+
+# AUD-ALERTPREFS: common.alert_prefs must be REAL for the same reason as the two above — it is
+# all membership tests and an HMAC comparison. Under the blanket "common" MagicMock,
+# `is_manageable("price_alert")` returns a truthy Mock, so a test asserting that ESSENTIAL mail
+# can never be switched off would pass against a module that permitted exactly that. Likewise
+# hmac.compare_digest against a Mock is meaningless, which would silently void every token test.
+# Pure stdlib (hmac/hashlib), so there is nothing to stub.
+_prefs_path = _pathlib.Path(__file__).resolve().parents[3] / "shared" / "common" / "alert_prefs.py"
+_prefs_spec = _ilu.spec_from_file_location("common.alert_prefs", _prefs_path)
+_prefs_mod = _ilu.module_from_spec(_prefs_spec)
+_prefs_spec.loader.exec_module(_prefs_mod)
+sys.modules["common.alert_prefs"] = _prefs_mod
+setattr(sys.modules["common"], "alert_prefs", _prefs_mod)

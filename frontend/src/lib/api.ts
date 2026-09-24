@@ -911,6 +911,16 @@ export const api = {
     request<SmartMoneyResponse>(`/events/congress/smart-money?min_trades=${minTrades}`),
   // AUD-INSTFOLLOW: 13F position adds per manager, entered at the FILING date. A different
   // instrument from eventsSmartMoney above — quarterly positioning, not a trade feed.
+  // AUD-ALERTPREFS: per-alert-type email preferences. The response carries the full
+  // catalogue, not just stored rows — a user who has never opened the screen has no rows, and
+  // absence means SUBSCRIBED, so an empty list would render as the exact opposite of the truth.
+  alertPreferences: () => request<AlertPreferencesResponse>(`/alerts/preferences`),
+  setAlertPreference: (alertType: string, enabled: boolean) =>
+    request<{ alert_type: string; enabled: boolean }>(`/alerts/preferences`, {
+      method: 'PUT',
+      body: JSON.stringify({ alert_type: alertType, enabled }),
+    }),
+
   eventsInstitutionalFollowers: (minPositions = 8) =>
     request<InstitutionalFollowersResponse>(
       `/events/institutional/followers?min_positions=${minPositions}`),
@@ -3946,6 +3956,19 @@ export type CongressResponse = {
 // the same window, which reads as a verdict on them and is actually a verdict on the quarter.
 // `sample_is_adequate` means "enough priced positions to average", NOT "enough evidence to
 // judge the manager" — every row is one quarter observed over one window.
+export type AlertPreferenceRow = {
+  key: string;
+  group: string;
+  label: string;
+  desc: string | null;
+  enabled: boolean;
+};
+
+export type AlertPreferencesResponse = {
+  types: AlertPreferenceRow[];
+  default_when_unset: boolean;
+};
+
 export type InstitutionalFund = {
   name: string;
   n_buys: number;

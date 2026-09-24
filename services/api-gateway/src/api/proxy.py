@@ -39,6 +39,20 @@ log = structlog.get_logger()
 # maintainer into thinking this is what protects those paths.
 _PUBLIC_PREFIXES = {"auth"}
 
+# AUD-ALERTPREFS: EXACT paths that bypass auth — matched whole, never as a prefix.
+#
+# `alerts/unsubscribe` must work from a mail client with no session, months after the email was
+# sent; a login wall is precisely how "I unsubscribed and it kept coming" happens. It cannot go
+# in _PUBLIC_PREFIXES because that matches on the first path segment alone, which would expose
+# every price-alert CRUD route under /alerts along with it.
+#
+# Safe to expose because the endpoint verifies an HMAC over (user_id, alert_type) signed with
+# jwt_secret before it will write anything: it can only ever DISABLE one alert type for the one
+# account named in a correctly-signed link. It reads nothing and enables nothing.
+#
+# Keep this set tiny, and keep the match exact.
+_PUBLIC_EXACT_PATHS = {"alerts/unsubscribe"}
+
 # Route-prefix → upstream URL
 _ROUTES = {
     "stocks": _settings.market_data_url,
@@ -162,8 +176,13 @@ def _is_blacklisted(jti: str) -> bool:
 
 def _require_auth(full_path: str, request: Request) -> None:
     """Raise HTTP 401/403 for protected routes that have no valid JWT or lack required role."""
-    prefix = full_path.strip("/").split("/", 1)[0]
+    normalized = full_path.strip("/")
+    prefix = normalized.split("/", 1)[0]
     if prefix in _PUBLIC_PREFIXES:
+        return
+    # Exact match only — "alerts/unsubscribe/anything" is NOT public, nor is any other
+    # path that merely starts with an allowlisted one.
+    if normalized in _PUBLIC_EXACT_PATHS:
         return
     auth_header = request.headers.get("authorization", "")
     if not auth_header.startswith("Bearer "):

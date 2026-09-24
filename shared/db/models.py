@@ -368,6 +368,44 @@ class AlertCondition(str, enum.Enum):
     PCT_BELOW_52WK_HIGH  = "pct_below_52wk_high"   # threshold = % below 52-week high to trigger (e.g. 10)
 
 
+class AlertPreference(Base):
+    """AUD-ALERTPREFS (2026-09-24): per-user, per-alert-type opt-out.
+
+    WHY. Before this, the audience for every scheduled alert was "any user holding at least one
+    untriggered PriceAlert row" — and the alert's own symbol was never compared against that
+    row. One price alert on one ticker subscribed a user to EVERY candidate on EVERY symbol
+    across all four squeeze/options alerts, with no per-type preference and no unsubscribe path
+    anywhere in send_email(). The only way to stop any of it was to delete your price alerts,
+    which also stopped the alerts you actually wanted.
+
+    ABSENCE MEANS SUBSCRIBED. There is deliberately no row per user per type created up front,
+    and a missing row reads as opted IN — so deploying this changes nobody's mail on day one.
+    A default of opted-out would have silently switched off every alert on the platform the
+    moment this shipped, which is a far worse failure than the problem being fixed.
+
+    Essential mail is not representable here at all: a user's own PriceAlert firing, and
+    broker re-auth, are account-critical and are never routed through a preference check — see
+    shared/common/alert_prefs.py's ESSENTIAL set for the full list and the reasoning.
+    """
+
+    __tablename__ = "alert_preferences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # Free text rather than an enum: a new alert type must not require a DB migration to become
+    # unsubscribable, and an unknown key here is harmless (it matches no sender).
+    alert_type: Mapped[str] = mapped_column(String(64), index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Distinguishes "turned this off in settings" from "clicked unsubscribe in an email" —
+    # a one-click opt-out from a mail client is worth being able to audit separately.
+    source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "alert_type", name="uq_alert_preference"),
+    )
+
+
 class PriceAlert(Base):
     __tablename__ = "price_alerts"
 

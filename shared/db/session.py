@@ -310,6 +310,27 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS short_interest_date DATE"
         ))
+        # AUD-ALERTPREFS: create_all() only creates MISSING tables, which covers alert_preferences
+        # on a fresh DB — but an existing deployment needs the unique constraint added explicitly,
+        # and doing it here keeps the "adding a column/constraint to an existing table doesn't
+        # auto-apply" rule from docs/incidents/docker-deploy-staleness.md satisfied.
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS alert_preferences (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                alert_type VARCHAR(64) NOT NULL,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                source VARCHAR(32),
+                updated_at TIMESTAMP DEFAULT now()
+            )
+        """))
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_alert_preference "
+            "ON alert_preferences (user_id, alert_type)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_alert_preferences_user_id ON alert_preferences (user_id)"
+        ))
         # INT-8 forward-return tracking columns added to signal_outcomes after initial table creation
         for _col, _type in [
             ("price_5d",       "FLOAT"),

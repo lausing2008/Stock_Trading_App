@@ -228,3 +228,133 @@ def alert_history(
             for a in price_rows
         ],
     )
+
+
+# ── AUD-ALERTPREFS: per-alert-type preferences + one-click unsubscribe ────────
+
+@router.get("/preferences")
+def get_alert_preferences(
+    user=Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Every manageable alert type with this user's current setting.
+
+    Returns the full catalogue, not just stored rows: a user who has never opened this screen
+    has no rows at all, and an empty list would render as "you receive nothing" — the exact
+    opposite of the truth, since absence means subscribed.
+    """
+    from common.alert_prefs import ALERT_TYPES
+    from db import AlertPreference
+
+    stored = {
+        p.alert_type: p.enabled
+        for p in session.execute(
+            select(AlertPreference).where(AlertPreference.user_id == user.id)
+        ).scalars().all()
+    }
+    return {
+        "types": [
+            {
+                "key": a["key"],
+                "group": a["group"],
+                "label": a["label"],
+                "desc": a.get("desc"),
+                "enabled": stored.get(a["key"], True),
+            }
+            for a in ALERT_TYPES
+        ],
+        # Stated so the UI can explain the default rather than implying a row exists per type.
+        "default_when_unset": True,
+    }
+
+
+class AlertPreferenceUpdate(BaseModel):
+    alert_type: str
+    enabled: bool
+
+
+@router.put("/preferences")
+def set_alert_preference(
+    body: AlertPreferenceUpdate,
+    user=Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    from common.alert_prefs import is_manageable
+    from db import AlertPreference
+
+    if not is_manageable(body.alert_type):
+        # Covers both an unknown key and an ESSENTIAL one. Refusing loudly beats storing a row
+        # that looks effective but is never consulted — a user who "turned off" their own price
+        # alerts and still received them would have every reason to distrust the whole screen.
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{body.alert_type}' is not a manageable alert type",
+        )
+    row = session.execute(
+        select(AlertPreference).where(
+            AlertPreference.user_id == user.id,
+            AlertPreference.alert_type == body.alert_type,
+        )
+    ).scalars().first()
+    if row is None:
+        row = AlertPreference(user_id=user.id, alert_type=body.alert_type)
+        session.add(row)
+    row.enabled = body.enabled
+    row.source = "settings"
+    row.updated_at = datetime.utcnow()
+    session.commit()
+    return {"alert_type": body.alert_type, "enabled": body.enabled}
+
+
+@router.get("/unsubscribe")
+def unsubscribe(
+    u: int,
+    t: str,
+    sig: str,
+    session: Session = Depends(get_session),
+):
+    """One-click opt-out from an email footer. INTENTIONALLY UNAUTHENTICATED.
+
+    A mail client follows this link with no session and often months later, so requiring a login
+    would defeat the purpose — the person is trying to leave, and a login wall is how "I
+    unsubscribed and it kept coming" happens. Security comes from the HMAC instead: `sig` is
+    signed with the shared jwt_secret over exactly (user_id, alert_type), so a link can silence
+    one alert type for one account and nothing else. It cannot read anything, cannot enable
+    anything, and cannot touch another user.
+
+    Returns HTML because a human clicked it from a mail client.
+    """
+    from common.alert_prefs import is_manageable, label_for, verify_unsubscribe_token
+    from common.config import Settings
+    from db import AlertPreference
+
+    secret = Settings().jwt_secret or ""
+    if not is_manageable(t) or not verify_unsubscribe_token(u, t, sig, secret):
+        # Deliberately identical response for a bad signature and an unknown type: telling the
+        # two apart lets someone probe which alert types exist for which user ids.
+        raise HTTPException(status_code=400, detail="Invalid or expired unsubscribe link")
+
+    row = session.execute(
+        select(AlertPreference).where(
+            AlertPreference.user_id == u, AlertPreference.alert_type == t
+        )
+    ).scalars().first()
+    if row is None:
+        row = AlertPreference(user_id=u, alert_type=t)
+        session.add(row)
+    row.enabled = False
+    row.source = "email_unsubscribe"
+    row.updated_at = datetime.utcnow()
+    session.commit()
+
+    name = label_for(t)
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(
+        "<!doctype html><meta charset=utf-8>"
+        "<div style=\"font-family:system-ui,sans-serif;max-width:520px;margin:64px auto;"
+        "padding:0 20px;line-height:1.6;color:#0f172a\">"
+        f"<h2 style=\"margin:0 0 12px\">Unsubscribed</h2>"
+        f"<p style=\"margin:0 0 16px\">You will no longer receive <strong>{name}</strong> emails.</p>"
+        "<p style=\"margin:0;color:#64748b;font-size:14px\">Other alerts are unaffected. "
+        "You can turn this back on any time in your alert settings.</p></div>"
+    )
