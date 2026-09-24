@@ -54,7 +54,8 @@ def _service_token() -> str:
         from jose import jwt as _jwt
         import uuid
         exp = datetime.now(timezone.utc) + timedelta(days=365)
-        payload = {"sub": "risk-snapshots", "jti": str(uuid.uuid4()), "exp": exp}
+        # DA-08: `svc` marks an internal service principal — see common.jwt_auth.
+        payload = {"sub": "risk-snapshots", "svc": True, "jti": str(uuid.uuid4()), "exp": exp}
         _service_token_cache = _jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
         _service_token_exp = exp.timestamp()
         return _service_token_cache

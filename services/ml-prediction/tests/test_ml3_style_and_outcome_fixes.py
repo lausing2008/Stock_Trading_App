@@ -214,6 +214,15 @@ def test_resweep_recomputes_nothing_it_only_reapplies_the_rule():
 
 
 def test_resweep_endpoint_is_exposed_and_dry_by_default():
+    """DA-08 (2026-09-24): the guard assertion was STRENGTHENED, not merely renamed.
+
+    This previously required `Depends(get_current_username)` with the comment "must stay
+    auth-protected" — which pinned authentication and, by naming one exact dependency, made
+    every upgrade to real authorization look like a regression. `resweep_suppression?dry_run=false`
+    mutates suppression state for every user of the platform; a valid login is not the right bar
+    for that. Asserting the stronger guard keeps the original intent (this route is never open)
+    while allowing it to be as strict as it should be."""
     body = _func_src(ROUTES, "resweep_suppression")
     assert "dry_run: bool = True" in body
-    assert "Depends(get_current_username)" in body, "must stay auth-protected"
+    assert "Depends(require_model_admin)" in body, "must require admin/service, not just a login"
+    assert "Depends(get_current_username)" not in body

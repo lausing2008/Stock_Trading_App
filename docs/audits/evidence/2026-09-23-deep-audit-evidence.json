@@ -1,0 +1,197 @@
+{
+  "production_snapshot": {
+    "observed_at_utc": "2026-09-24T05:40:03.890626+00:00",
+    "paper_cohorts": [
+      {
+        "trading_style": "GROWTH",
+        "stage": "closed",
+        "n": 64
+      },
+      {
+        "trading_style": "GROWTH",
+        "stage": "open",
+        "n": 1
+      },
+      {
+        "trading_style": "LONG",
+        "stage": "open",
+        "n": 2
+      },
+      {
+        "trading_style": "SWING",
+        "stage": "closed",
+        "n": 62
+      },
+      {
+        "trading_style": "SWING",
+        "stage": "open",
+        "n": 1
+      }
+    ],
+    "broker_counts": [
+      {
+        "entries": 0,
+        "exits": 0
+      }
+    ],
+    "congress_dates": [
+      {
+        "n": 714,
+        "before_price_window": 0,
+        "first_disclosure": "2025-08-29",
+        "last_disclosure": "2026-09-23"
+      }
+    ],
+    "option_positions": [
+      {
+        "strategy": "CASH_SECURED_PUT",
+        "stage": "open",
+        "n": 9,
+        "first_expiry": "2026-09-25",
+        "last_expiry": "2026-10-30"
+      }
+    ],
+    "meta_outcomes": [
+      {
+        "n": 18561,
+        "first_signal": "2026-05-25",
+        "last_signal": "2026-09-17"
+      }
+    ],
+    "scan_log_schema": [
+      {
+        "column_name": "id"
+      },
+      {
+        "column_name": "portfolio_id"
+      },
+      {
+        "column_name": "scanned_at"
+      },
+      {
+        "column_name": "portfolio_gate"
+      },
+      {
+        "column_name": "portfolio_gate_reason"
+      },
+      {
+        "column_name": "candidates_seen"
+      },
+      {
+        "column_name": "skip_tally"
+      }
+    ],
+    "hashes": {
+      "services/paper_trading_engine.py": "c2dc86c321d463f12e76b1e4300b80f8a129f50ba26c37a798df79200a979023",
+      "services/options_income_engine.py": "9eb9a6e06e326578a1b55261480c59121a4534bf337e6503a6f841d1c15eb422",
+      "api/options_income.py": "ba6b1dc5dc86da4367b3cb5ce5627335272b02f141d2bbe12707904a22b5632e"
+    }
+  },
+  "runtime_verification": {
+    "ml-prediction": {
+      "training/meta_trainer.py": "9be05dc0a47c7d5648aa61598ee78a1b22e004b8cc7a6f4df3be0ddcaa36c39c",
+      "training/trainer.py": "7188ed5009ab29d9e76330096218cf0b49b8e20a54ae97e430d9fa207f70a46a",
+      "api/routes.py": "90f4693b9d54c35457a42708509042bc9422ae8e063019996a52af0463877bb7"
+    },
+    "strategy-engine": {
+      "backtest/engine.py": "d0b275dd4bde0b3fb088fd425e095bf140a43e348223605c9708a5bbe540e6b6"
+    },
+    "portfolio-optimizer": {
+      "optimizers/methods.py": "de0598e6ae919874967bf4da96077940884d2968ea445ad95b6067d9a3c41a4f"
+    },
+    "api-gateway": {
+      "api/proxy.py": "68229b075a825af164f431c865941d76161ececb14d4f5d50c30f4289949c73c"
+    },
+    "event-intelligence": {
+      "services/congress.py": "e11cd27775d056a668ddf0ba9229227edf109d0d958d5f4a585d1267b4ee4fe9"
+    },
+    "meta_bundle": {
+      "exists": true,
+      "size_bytes": 58048,
+      "mtime_unix": 1783533283.647567,
+      "sha256": "f152828c1f73d760d3f5fc1d434c6171961ed5198d358e76ad2f206f7940597e"
+    },
+    "git_head": "92868c2d"
+  },
+  "offline_reproductions": {
+    "terminal_cost": {
+      "curve_return": -0.0006995103427599458,
+      "trade_return": -0.0013990206855200027,
+      "last_bar_curve_return": 0.0,
+      "last_bar_trade_return": -0.0013990206855200027
+    },
+    "training_boundary": {
+      "calibration_last_label_end_bar": 199,
+      "test_first_feature_bar": 180,
+      "gap": 0
+    },
+    "meta_record_order": {
+      "train_latest": "2026-09-04",
+      "validation_earliest": "2026-09-01",
+      "validation_symbols": [
+        "E"
+      ]
+    },
+    "stale_option_mark": {
+      "stale_ask_liability": 200,
+      "current_intrinsic": 2000,
+      "source": "quote_ask"
+    },
+    "lock_ownership": {
+      "worker_B_lease_deleted_by_A": true
+    },
+    "premature_settlement": {
+      "accepted_partial_close": 101.0,
+      "premature_pnl": 100,
+      "final_close_pnl": -900
+    },
+    "allocation_metrics": {
+      "weights": {
+        "A": 0.95
+      },
+      "cash": 0.05,
+      "reported_vol": 0.2,
+      "vol_of_returned_allocation": 0.19,
+      "reported_return": 0.08
+    },
+    "csp_yield": {
+      "reported_annualized_pct": 12.17,
+      "annualized_premium_on_reserved_cash_pct": 13.52
+    },
+    "broker_poll_commit": {
+      "committed_confirmations": [
+        true,
+        false
+      ],
+      "in_memory_confirmations": [
+        true,
+        true
+      ]
+    },
+    "model_mutation_authorization": {
+      "non_admin_handler_result": "scheduled",
+      "scheduled_tasks": 1
+    },
+    "meta_inference_contract": {
+      "ta_score_received": 0.605,
+      "fused_prob_received": 0.7,
+      "direction_explicitly_supplied": false
+    },
+    "news_flag_clear": {
+      "nonmaterial_negative_story_clears_existing_material_negative_flag": true
+    }
+  },
+  "verification": {
+    "existing_tests_passed": {
+      "strategy_engine": 55,
+      "ml_prediction_selected": 23,
+      "market_data_selected": 76,
+      "portfolio_optimizer_selected": 27,
+      "news_intelligence_selected": 25,
+      "gateway_sync_routing_auth": 33
+    },
+    "gateway_tests_deselected": 3,
+    "gateway_full_suite": "Interrupted after no further progress; not certified as passing",
+    "artifact_loading": "Automatic approval review rejected joblib deserialization; source/model hashes and filesystem metadata inspected instead."
+  }
+}

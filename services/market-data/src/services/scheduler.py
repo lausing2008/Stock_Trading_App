@@ -122,6 +122,10 @@ def _service_token() -> str:
         exp = datetime.now(timezone.utc) + timedelta(days=365)
         payload = {
             "sub": "scheduler",
+            # DA-08: marks this as an INTERNAL SERVICE principal. Only a holder of the
+            # signing secret can mint it, so privileged routes can grant access to the
+            # scheduler without trusting a guessable `sub` string like "scheduler".
+            "svc": True,
             "jti": str(uuid.uuid4()),
             "exp": exp,
         }

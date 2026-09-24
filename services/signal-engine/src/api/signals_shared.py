@@ -189,6 +189,10 @@ def _service_token() -> str:
     exp = int(time.time()) + 365 * 86400
     payload = {
         "sub": "signal-engine",
+            # DA-08: marks this as an INTERNAL SERVICE principal. Only a holder of the
+            # signing secret can mint it, so privileged routes can grant access to the
+            # scheduler without trusting a guessable `sub` string like "scheduler".
+            "svc": True,
         "exp": exp,
         "jti": str(__import__("uuid").uuid4()),
     }

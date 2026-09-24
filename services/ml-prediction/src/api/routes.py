@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
-from common.jwt_auth import get_current_username
+from common.jwt_auth import get_current_username, require_model_admin
 from common.logging import get_logger
 
 log = get_logger("ml.routes")
@@ -69,7 +69,7 @@ def ml_status():
 
 
 @router.post("/train")
-def train(req: TrainRequest, tasks: BackgroundTasks, _: str = Depends(get_current_username)):
+def train(req: TrainRequest, tasks: BackgroundTasks, _: str = Depends(require_model_admin)):
     if req.model not in list_models():
         raise HTTPException(400, f"Unknown model: {req.model}")
     horizon = _HORIZON_BY_STYLE.get(req.style.upper(), req.horizon)
@@ -78,7 +78,7 @@ def train(req: TrainRequest, tasks: BackgroundTasks, _: str = Depends(get_curren
 
 
 @router.post("/train_all")
-def train_all(tasks: BackgroundTasks, style: str = "SWING", _: str = Depends(get_current_username)):
+def train_all(tasks: BackgroundTasks, style: str = "SWING", _: str = Depends(require_model_admin)):
     """Schedule xgboost training for every active stock (uses tuned params if available).
 
     Horizon is derived from style: SHORT=5d, SWING=10d, LONG=20d.
@@ -113,13 +113,18 @@ def train_all(tasks: BackgroundTasks, style: str = "SWING", _: str = Depends(get
 
 
 @router.post("/tune")
-def tune(req: TuneRequest, tasks: BackgroundTasks, _: str = Depends(get_current_username)):
+def tune(req: TuneRequest, tasks: BackgroundTasks, _: str = Depends(require_model_admin)):
     """Run Optuna hyperparameter search for one symbol, then retrain with best params."""
     horizon = _HORIZON_BY_STYLE.get(req.style.upper(), req.horizon)
     tasks.add_task(tune_symbol, req.symbol, req.n_trials, horizon, req.style)
     return {"status": "scheduled", "symbol": req.symbol, "n_trials": req.n_trials, "style": req.style, "horizon": horizon}
 
 
+# DA-08 scope note: this and /walkforward below stay on plain authentication. They are
+# expensive COMPUTE but they do not mutate shared model state — no training, no promotion, no
+# suppression change — so the authorization boundary drawn here is "may this caller change what
+# every other user's predictions are based on". Rate-limiting or queueing expensive reads is a
+# separate concern the audit also raises, and is deliberately not conflated with it.
 @router.get("/feature_ablation")
 def feature_ablation(
     symbol: str, style: str = "SWING", _: str = Depends(get_current_username),
@@ -141,7 +146,7 @@ def feature_ablation(
 def tune_all(
     tasks: BackgroundTasks, n_trials: int = 60, style: str = "SWING",
     triggered_by: str = "weekly",
-    _: str = Depends(get_current_username),
+    _: str = Depends(require_model_admin),
 ):
     """Run Optuna tuning sequentially for every active stock (weekend job).
 
@@ -260,7 +265,7 @@ def tune_all(
 
 
 @router.post("/train_meta")
-def train_meta(tasks: BackgroundTasks, _: str = Depends(get_current_username)):
+def train_meta(tasks: BackgroundTasks, _: str = Depends(require_model_admin)):
     """Train or retrain the cross-symbol meta-learning model (T89).
 
     Trains a single XGBoost model on ALL signal_outcomes across ALL symbols.
@@ -323,7 +328,7 @@ def predict_ensemble_three(req: PredictRequest, _: str = Depends(get_current_use
 
 
 @router.post("/train_all_ensemble_three")
-def train_all_ensemble_three(tasks: BackgroundTasks, style: str = "SWING", _: str = Depends(get_current_username)):
+def train_all_ensemble_three(tasks: BackgroundTasks, style: str = "SWING", _: str = Depends(require_model_admin)):
     """Train XGBoost + LightGBM + RandomForest for every active symbol.
 
     Enables 3-model ensemble predictions via POST /ml/predict_ensemble_three.
@@ -367,7 +372,7 @@ def train_all_ensemble_three(tasks: BackgroundTasks, style: str = "SWING", _: st
 
 
 @router.post("/train_all_ensemble")
-def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING", _: str = Depends(get_current_username)):
+def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING", _: str = Depends(require_model_admin)):
     """Train XGBoost AND RandomForest for every active symbol.
 
     Enables ensemble predictions via POST /ml/predict_ensemble.
@@ -411,7 +416,7 @@ def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING", _: str = De
 
 
 @router.post("/train_all_horizons")
-def train_all_horizons(tasks: BackgroundTasks, _: str = Depends(get_current_username)):
+def train_all_horizons(tasks: BackgroundTasks, _: str = Depends(require_model_admin)):
     """Train XGBoost + RandomForest for all 4 horizon-specific styles for every active stock.
 
     T217-C: RF trained alongside XGBoost so predict_latest_ensemble_three() has
@@ -655,7 +660,7 @@ def walkforward_oos(
 
 
 @router.post("/resweep_suppression")
-def resweep_suppression(dry_run: bool = True, _: str = Depends(get_current_username)):
+def resweep_suppression(dry_run: bool = True, _: str = Depends(require_model_admin)):
     """AUD-ML3-STALESUPPRESSION: re-apply the CURRENT suppression rule to existing artifacts.
 
     `oos_suppressed` was previously computed once at training time and never revisited, so a
