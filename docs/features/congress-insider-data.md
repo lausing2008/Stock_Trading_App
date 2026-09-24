@@ -247,3 +247,93 @@ verifying nothing.
 - **SEC Form 4** — **2 business days**, explicit direction, free, ~850 filings/day. UW also
   serves it at `/api/insider/transactions` with an `is_10b5_1` flag that separates discretionary
   buys from pre-scheduled plan sales. The strongest available "informed money" signal.
+
+---
+
+## AUD-INSIDERUW / AUD-INSIDERROLE — SEC Form 4 (2026-09-24)
+
+### Measured before anything was built
+
+The 147 open-market purchases the EDGAR scrape accumulated over two years:
+
+| | |
+|---|---|
+| mean 21-day alpha vs SPY | **+0.69%** |
+| beat rate | 58.0% (n=112 resolved) |
+| t, naive | 0.93 |
+| **t, day-clustered** (46 filing days) | **0.60** |
+| sd | 7.85% |
+
+**`|t| < 2` means NOT YET MEASURABLE, never "no edge."** The standard deviation is more than ten
+times the mean, so what is missing is *sample*, not signal. **No signal, alert or tab was shipped
+on t = 0.60** — the work was to make the question answerable, not to answer it prematurely.
+
+### …and that +0.69% is an upper bound, because the entry date was unreachable
+
+The EDGAR parser never set a real filing date. It copied the transaction date:
+
+```python
+"filing_date": txn_date,  # approximate — actual filing date from index
+```
+
+**All 1,049 stored rows had `filing_date == transaction_date`, average lag 0.00 days.** Form 4 is
+filed up to *two business days* after the trade, so every return measured from that column was
+entered on a date nobody outside the company could act on.
+
+This is the **third instance of the same error found in one session** — after the congressional
+trade-date figure (+4.70% unreachable vs +3.15% real) and post-earnings drift that includes the
+overnight gap. The pattern is worth naming: *whenever a return looks good, check which date it
+was entered on.*
+
+### What the UW path adds
+
+Not freshness — nothing is faster than the SEC's own filing system, and EDGAR stays primary.
+
+| | EDGAR path | UW `/api/insider/transactions` |
+|---|---|---|
+| real filing date | **none** (copies transaction date) | both dates (sampled: traded 09-20, filed 09-22) |
+| `is_10b5_1` populated | 11 of 1,049 | **500 of 500** |
+| role | `"1"` / `"true"` (see below) | clean `officer_title` + explicit flags |
+
+`is_10b5_1` is the **entire signal/noise line** for insider activity: a sale scheduled six months
+ago reveals nothing about anyone's view today.
+
+**Only `P` and `S` are stored**, matching the EDGAR path's own filter. In a real 500-row sample
+`P` was 27 rows against 261 awards / option exercises / tax-withholding disposals — storing
+compensation mechanics as decisions would bury the signal under ten times its own volume.
+
+UW returns no SEC accession number and that column is the table's unique key, so a synthetic id
+is hashed over the identifying fields and namespaced `uw:` — re-runs are idempotent and the two
+sources cannot double-insert the same event.
+
+Job runs on the same 4-hourly cadence, **offset 30 minutes** so the two never contend for the
+same session pool (`AUD-CONNPOOL-NESTEDSESSION` is this repo's reminder of what that costs).
+
+First live run: 500 fetched → 30 stored, 279 skipped as non-open-market, 191 as untracked
+tickers. `is_10b5_1` coverage 11 → 209; 13 rows now carry a real filing lag where none did.
+
+### AUD-INSIDERROLE — a boolean stored as a job title
+
+```python
+role_raw = _tag("officerTitle") or _tag("isDirector") or ""
+```
+
+`isDirector` is a **boolean** Form 4 tag valued `"1"`/`"true"`. Any director filing without an
+officer title had the literal string `"1"` stored as their role — **254 of 1,049 rows** read
+`"1"` (180) or `"true"` (74).
+
+Fixed by resolving the flags into real names. Backfilled: 254 → `Director`; a further 13 whose
+flag was `"0"`/`"false"` (no title *and* not a director, so the role is genuinely unknown) →
+`Insider`, which states that rather than inventing a title.
+
+### Testing note
+
+19 tests, 9 sabotages. Two harness defects, both worth remembering:
+
+- **A signed `amount` stored as a negative share count** — silently flipping every `total_value`
+  that multiplies by it — passed the first round because nothing asserted on what was *written*.
+  `pg_insert` is a MagicMock under this suite's sqlalchemy stub, so the values were unreachable
+  until the harness recorded them.
+- **The fake session had to dispatch on CALL ORDER**, not by inspecting the statement: a
+  MagicMock auto-creates any attribute as truthy, so `getattr(stmt, "_is_select_stub", False)`
+  matched every insert and the harness silently reported zero rows stored.
