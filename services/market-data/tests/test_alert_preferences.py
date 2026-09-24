@@ -225,3 +225,27 @@ def test_an_empty_recipient_set_is_returned_unchanged():
 
 def test_opting_out_of_one_alert_does_not_affect_another_users_subscription():
     assert set(_filter({7: "x", 8: "y", 9: "z"}, opted_out=[8])) == {7, 9}
+
+
+# ── The export the deploy caught and the tests did not ────────────────────────
+
+def test_every_model_the_alerts_api_imports_is_exported_from_db():
+    """AlertPreference was added to shared/db/models.py but NOT to shared/db/__init__.py's
+    re-export list, so `from db import AlertPreference` raised ImportError and /alerts/unsubscribe
+    returned 500 in production while every test here stayed green — none of them import from
+    `db`. Asserting on the source keeps this cheap and keeps it honest: the suite stubs the db
+    package wholesale, so importing it for real here would prove nothing about the shipped file.
+    """
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[3]
+    init_src = (root / "shared" / "db" / "__init__.py").read_text()
+    models_src = (root / "shared" / "db" / "models.py").read_text()
+    api_src = (root / "services" / "market-data" / "src" / "api" / "alerts.py").read_text()
+
+    for name in ("AlertPreference",):
+        assert f"class {name}(Base)" in models_src, f"{name} missing from models.py"
+        assert f"from db import {name}" in api_src or f"    {name},\n" in api_src or name in api_src
+        # Imported in the import block AND named in __all__ — one without the other still breaks.
+        assert f"    {name},\n" in init_src, f"{name} not imported in shared/db/__init__.py"
+        assert f'    "{name}",\n' in init_src, f"{name} missing from shared/db __all__"
