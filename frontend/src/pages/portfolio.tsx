@@ -333,8 +333,14 @@ export default function PortfolioPage() {
           {/* Metrics row */}
           <div style={{ display: 'flex', gap: '10px', marginBottom: '16px', flexWrap: 'wrap' }}>
             {[
-              { label: 'Expected Return', value: fmt(result.expected_return, true), color: '#4ade80', hint: 'Annualized' },
-              { label: 'Expected Volatility', value: fmt(result.expected_vol, true), color: '#f87171', hint: 'Annualized' },
+              // DA-11: these now describe the allocation ACTUALLY RETURNED — the weights PLUS the
+              // cash buffer — rather than the fully-invested sleeve. With the default 5% buffer
+              // and a 20% sleeve volatility the portfolio's volatility is 19%, and this card
+              // used to show 20% under a label that said "portfolio". The hint names the basis
+              // so the difference from a fully-invested comparison is visible rather than
+              // silently absorbed.
+              { label: 'Expected Return', value: fmt(result.expected_return, true), color: '#4ade80', hint: 'Annualized · incl. cash' },
+              { label: 'Expected Volatility', value: fmt(result.expected_vol, true), color: '#f87171', hint: 'Annualized · incl. cash' },
               { label: 'Sharpe Ratio', value: result.sharpe_ratio != null ? result.sharpe_ratio.toFixed(2) : '—', color: accentColor, hint: 'Rf = 4%' },
               { label: 'Max Drawdown', value: fmt(result.max_drawdown, true), color: '#fbbf24', hint: 'Historical' },
               { label: 'Diversification', value: result.diversification != null ? (result.diversification * 100).toFixed(0) + '%' : '—', color: '#60a5fa', hint: '1 − HHI' },

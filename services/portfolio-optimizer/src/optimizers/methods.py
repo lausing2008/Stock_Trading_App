@@ -32,6 +32,16 @@ class PortfolioWeights:
     sharpe_ratio: float | None = None
     max_drawdown: float | None = None
     diversification: float | None = None
+    # DA-11: expected_return / expected_vol / sharpe_ratio above describe the allocation
+    # ACTUALLY RETURNED — the weights plus the cash buffer. These three describe the invested
+    # SLEEVE alone (fully invested, sums to 1.0), which is the like-for-like basis against
+    # mean_variance / risk_parity / HRP. Only ai_allocation holds cash back, so only it
+    # populates them; every other method's sleeve IS its portfolio.
+    sleeve_expected_return: float | None = None
+    sleeve_expected_vol: float | None = None
+    sleeve_sharpe_ratio: float | None = None
+    # The modelled return on the uninvested buffer, surfaced so the assumption is visible.
+    cash_return_assumed: float | None = None
     # AUD250-PORTFOLIOOPTIMIZER-SILENT-FALLBACK-NO-FLAG: every equal-weight fallback below
     # (SLSQP non-convergence, an infeasible max_weight*n<1.0 constraint, or HRP's cap-and-
     # redistribute hitting the same infeasibility) previously only logged a warning — the
@@ -68,6 +78,13 @@ def _prepare(returns: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
 
 
 # ─── Portfolio metrics ────────────────────────────────────────────────────────
+
+# DA-11: the modelled return on the uninvested cash buffer. Zero is deliberate and
+# conservative — inventing a yield would flatter every allocation that holds more cash — and it
+# is surfaced to callers as `cash_return_assumed` so the assumption is visible rather than
+# buried. One place to change if a real rate is ever wired in.
+_CASH_RETURN = 0.0
+
 
 def _metrics(w: np.ndarray, mu: np.ndarray, cov: np.ndarray, returns: pd.DataFrame) -> dict:
     exp_ret = float(w @ mu)
@@ -378,10 +395,32 @@ def ai_allocation(
             fallback_reason = f"SLSQP optimization did not converge ({res.message}) — fell back to equal weight"
     w_scaled = w * (1 - cash_floor)
     cash = round(1 - float(w_scaled.sum()), 4)
-    # Compute risk/return metrics on w (fully invested, sums to 1.0) so they are
-    # comparable to mean_variance/risk_parity/HRP outputs. w_scaled (which sums to
-    # 1-cash_floor) would understate expected_return and Sharpe by the cash fraction.
-    m = _metrics(w, blended_mu, cov, ret_sub)
+
+    # DA-11 (2026-09-24): the returned metrics used to be computed on the UNSCALED `w` while the
+    # returned WEIGHTS were `w_scaled` plus a cash allocation. The original comment's reasoning
+    # was sound as far as it went — sleeve metrics are what compare against mean_variance /
+    # risk_parity / HRP, which are fully invested — but the API and the portfolio UI presented
+    # the result as the expected return and volatility OF THIS PORTFOLIO, cash included. With
+    # the default 5% buffer and a 20% sleeve volatility, the returned portfolio is 95% asset /
+    # 5% cash and its volatility is 19%, not the 20% displayed.
+    #
+    # Both numbers are now returned under names that say which is which. The headline
+    # expected_return / expected_vol describe the allocation ACTUALLY RETURNED; the sleeve
+    # figures are kept for cross-method comparison rather than discarded.
+    sleeve = _metrics(w, blended_mu, cov, ret_sub)
+    invested = 1.0 - cash
+    # Cash is modelled as a zero-return, zero-variance, zero-covariance holding. That is an
+    # ASSUMPTION, not a fact — it is stated in the response (cash_return_assumed) so a reader
+    # can see it rather than infer it, and so a future rate can be wired in one place.
+    m = dict(sleeve)
+    m["expected_return"] = round(sleeve["expected_return"] * invested + _CASH_RETURN * cash, 4)
+    m["expected_vol"] = round(sleeve["expected_vol"] * invested, 4)
+    _vol = m["expected_vol"]
+    m["sharpe_ratio"] = round((m["expected_return"] - RISK_FREE) / _vol, 3) if _vol > 1e-9 else 0.0
+    m["sleeve_expected_return"] = sleeve["expected_return"]
+    m["sleeve_expected_vol"] = sleeve["expected_vol"]
+    m["sleeve_sharpe_ratio"] = sleeve["sharpe_ratio"]
+    m["cash_return_assumed"] = _CASH_RETURN
     return PortfolioWeights("ai_allocation",
                             {s: float(round(wi, 4)) for s, wi in zip(keep, w_scaled)},
                             cash=cash, fallback_reason=fallback_reason, **m)
