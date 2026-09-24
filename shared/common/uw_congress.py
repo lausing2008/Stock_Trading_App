@@ -11,6 +11,7 @@ same implementation.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
@@ -63,6 +64,11 @@ class CongressTradeRow:
     amount_max: float | None
     trade_date: str | None  # ISO date
     disclosure_date: str | None  # ISO date
+    # AUD-UWCONGRESS-FIELDNAMES: UW's own display band ("$1,001 - $15,000"). Stored verbatim in
+    # CongressTrade.amount_range alongside the parsed numeric pair, because the band IS the
+    # disclosure — a reader seeing "$1,001 - $15,000" learns more than one seeing 1001.0.
+    # Defaulted so market-data's re-export and any existing constructor call still work.
+    amount_range_label: str | None = None
 
 
 def _to_float(v) -> float | None:
@@ -78,7 +84,16 @@ def _to_float(v) -> float | None:
 def _normalize_congress_txn_type(raw: str | None) -> str:
     """Matches services/event-intelligence/src/services/congress.py's own _normalize_txn_type()
     exactly — both sources must feed the identical vocabulary _congress_score_from_trades()
-    scores against, or a source-dependent scoring bug would exist."""
+    scores against, or a source-dependent scoring bug would exist.
+
+    AUD-UWCONGRESS-FIELDNAMES: UW's `txn_type` enum has NINE spellings with inconsistent casing
+    — Buy, Purchase, Sell, "Sell (partial)", "Sell (PARTIAL)", "Sale (Partial)", "Sale (Full)",
+    Exchange, Receive. The substring matching below covers the first eight. `Receive` is handled
+    explicitly: it is a grant/transfer IN, not an open-market purchase, and letting it fall
+    through to `raw[:32]` would put the literal string "receive" into the vocabulary that
+    _congress_score_from_trades() and get_smart_money_leaderboard() both match against — a
+    silent third category neither knows about. It maps to `exchange`, this schema's existing
+    bucket for "a position changed hands without being a directional bet"."""
     if not raw:
         return "unknown"
     raw = raw.lower()
@@ -86,9 +101,89 @@ def _normalize_congress_txn_type(raw: str | None) -> str:
         return "purchase"
     if "sale" in raw or "sell" in raw:
         return "sale"
-    if "exchange" in raw:
+    if "exchange" in raw or "receive" in raw:
         return "exchange"
     return raw[:32]
+
+
+def _parse_amount_range(raw: str | None) -> tuple[float | None, float | None]:
+    """UW reports position size as a display STRING range — "$1,001 - $15,000" — not as the
+    numeric amount_min/amount_max pair the DB model stores. Congressional disclosure is banded
+    by statute, so a range is all that exists; there is no exact figure being discarded here.
+
+    Returns (min, max). A single open-ended value ("$1,000,001+") yields (1000001.0, None),
+    which is honest: the upper bound genuinely is not disclosed. Never raises — a parse failure
+    returns (None, None) so one odd band cannot drop an otherwise-good trade row."""
+    if not raw or not isinstance(raw, str):
+        return (None, None)
+    nums = re.findall(r"[\d,]+(?:\.\d+)?", raw)
+    vals: list[float] = []
+    for n in nums:
+        try:
+            vals.append(float(n.replace(",", "")))
+        except ValueError:
+            continue
+    if not vals:
+        return (None, None)
+    if len(vals) == 1:
+        return (vals[0], None)
+    return (min(vals), max(vals))
+
+
+def _parse_congress_rows(data) -> list[CongressTradeRow]:
+    """Map UW's payload rows onto CongressTradeRow.
+
+    Extracted from get_congress_trades()'s HTTP path so the field mapping can be tested against
+    real captured payloads without a network call. That matters more than usual here: the whole
+    AUD-UWCONGRESS-FIELDNAMES bug was a mapping error that no test could see, because the only
+    code that knew UW's key spellings lived inside an un-runnable function.
+    """
+    result: list[CongressTradeRow] = []
+    if isinstance(data, list):
+        for row in data:
+            try:
+                ticker = (row.get("ticker") or "").upper()
+                if not ticker:
+                    continue
+                # AUD-UWCONGRESS-FIELDNAMES: the key names below are UW's ACTUAL payload keys,
+                # verified against both a live response and the published OpenAPI spec. The
+                # previous mapping probed `transaction_type`/`filing_date`/`amount_min`/
+                # `chamber` — none of which UW sends — so every field silently defaulted and
+                # 7,691 of 9,453 stored rows (81%) had no direction, no disclosure date and no
+                # amount. Nothing was ever missing from the feed; it was all dropped at parse.
+                # The legacy spellings are kept as fallbacks so a kadoa-shaped dict or a future
+                # UW rename still parses.
+                amounts_label = row.get("amounts") or None
+                amt_min, amt_max = _parse_amount_range(amounts_label)
+                if amt_min is None and amt_max is None:
+                    amt_min = _to_float(row.get("amount_min") or row.get("amounts_min"))
+                    amt_max = _to_float(row.get("amount_max") or row.get("amounts_max"))
+                # `name` is the standard form ("Pete Sessions"); `reporter` is the filing-style
+                # variant ("Hon. Pete Sessions", 184 of 200 sampled rows). Preferring `reporter`
+                # is what split one person's history across two spellings and made the UW and
+                # kadoa feeds fail to join — see get_smart_money_leaderboard()'s own caveat.
+                name = row.get("name") or row.get("politician_name") or row.get("reporter")
+                result.append(CongressTradeRow(
+                    politician_name=name or "Unknown",
+                    # UW's trade rows carry NO party at all; it comes from the politicians
+                    # roster, joined by the caller. Never invent one here.
+                    party=row.get("party"),
+                    chamber=row.get("member_type") or row.get("chamber"),
+                    ticker=ticker,
+                    transaction_type=_normalize_congress_txn_type(
+                        row.get("txn_type") or row.get("transaction_type") or row.get("type")
+                    ),
+                    amount_min=amt_min,
+                    amount_max=amt_max,
+                    trade_date=row.get("transaction_date") or row.get("trade_date"),
+                    disclosure_date=(
+                        row.get("filed_at_date") or row.get("filing_date") or row.get("disclosure_date")
+                    ),
+                    amount_range_label=amounts_label,
+                ))
+            except Exception:
+                continue  # one malformed row must never drop the rest of a real response
+    return result
 
 
 def is_available() -> bool:
@@ -123,7 +218,6 @@ def get_congress_trades(*, since: str, limit: int = 200) -> list[CongressTradeRo
         pass
 
     key = get_unusual_whales_key()
-    result: list[CongressTradeRow] = []
     try:
         with httpx.Client(timeout=15) as client:
             r = client.get(
@@ -144,25 +238,7 @@ def get_congress_trades(*, since: str, limit: int = 200) -> list[CongressTradeRo
         log.warning("uw_congress.fetch_failed", since=since, error=str(exc))
         return []
 
-    if isinstance(data, list):
-        for row in data:
-            try:
-                ticker = (row.get("ticker") or "").upper()
-                if not ticker:
-                    continue
-                result.append(CongressTradeRow(
-                    politician_name=row.get("politician_name") or row.get("reporter") or row.get("name") or "Unknown",
-                    party=row.get("party"),
-                    chamber=row.get("chamber"),
-                    ticker=ticker,
-                    transaction_type=_normalize_congress_txn_type(row.get("transaction_type") or row.get("type")),
-                    amount_min=_to_float(row.get("amount_min") or row.get("amounts_min")),
-                    amount_max=_to_float(row.get("amount_max") or row.get("amounts_max")),
-                    trade_date=row.get("transaction_date") or row.get("trade_date"),
-                    disclosure_date=row.get("filing_date") or row.get("disclosure_date"),
-                ))
-            except Exception:
-                continue  # one malformed row must never drop the rest of a real response
+    result = _parse_congress_rows(data)
 
     try:
         import json
@@ -170,3 +246,95 @@ def get_congress_trades(*, since: str, limit: int = 200) -> list[CongressTradeRo
     except Exception:
         pass
     return result
+
+
+_ROSTER_TTL = 86400  # 24h — a chamber roster changes at elections, not intraday.
+
+
+def get_congress_roster() -> dict[str, dict]:
+    """UW's `/api/congress/politicians` — the identity table for the trade feed.
+
+    WHY THIS EXISTS. UW's trade rows carry no `party` field at all (verified: 0 of 200 sampled
+    rows have the key), which is why all 7,691 UW-sourced rows in `congress_trades` have a NULL
+    party while the kadoa-sourced rows do not. The roster is the only place that information
+    lives, and it also carries `politician_id` / `bioguide_id` — stable identifiers that are the
+    correct long-term join key between feeds, rather than matching on a display name that each
+    feed spells differently.
+
+    Keyed by LOWER-CASED NAME rather than by politician_id, deliberately: the trade rows this
+    enriches are matched by name at the call site, and the id is carried in the value for a
+    future schema that can store it. Storing politician_id on CongressTrade would need a real
+    column migration and is deliberately out of scope for the parse fix.
+
+    Redis-cached 24h. Fails open (empty dict) — a roster outage must degrade party to NULL,
+    exactly today's behaviour, never drop a trade.
+    """
+    if not is_available():
+        return {}
+    cache_key = "stockai:uw:congress:roster"
+    try:
+        cached = get_redis().get(cache_key)
+        if cached:
+            import json
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    out: dict[str, dict] = {}
+    try:
+        with httpx.Client(timeout=20) as client:
+            r = client.get(
+                f"{_BASE_URL}/api/congress/politicians",
+                headers={
+                    "Authorization": f"Bearer {get_unusual_whales_key()}",
+                    "Accept": "application/json",
+                },
+            )
+            _incr_call_counter("/api/congress/politicians")
+            if r.status_code in (401, 403, 404, 429):
+                log.warning("uw_congress.roster_unavailable", status=r.status_code)
+                return {}
+            r.raise_for_status()
+            body = r.json()
+            data = body.get("data") if isinstance(body, dict) else body
+    except Exception as exc:
+        log.warning("uw_congress.roster_fetch_failed", error=str(exc))
+        return {}
+
+    if isinstance(data, list):
+        for row in data:
+            name = (row.get("name") or "").strip()
+            if not name:
+                continue
+            out[name.lower()] = {
+                # UW spells these "democrat"/"republican"; the DB's existing kadoa-sourced rows
+                # use the single-letter form. Normalise here so one column never carries two
+                # vocabularies — get_smart_money_leaderboard() groups by party.
+                "party": _normalize_party(row.get("party")),
+                "chamber": row.get("chamber"),
+                "politician_id": row.get("politician_id"),
+                "bioguide_id": row.get("bioguide_id"),
+            }
+
+    try:
+        import json
+        get_redis().setex(cache_key, _ROSTER_TTL, json.dumps(out))
+    except Exception:
+        pass
+    return out
+
+
+def _normalize_party(raw: str | None) -> str | None:
+    """UW sends "democrat"/"republican"/"independent"; the kadoa feed already stored "D"/"R"/"I".
+    Both land in the same column, so they must agree or a GROUP BY party splits one party into
+    two rows. Returns None for anything unrecognised rather than guessing a letter."""
+    if not raw:
+        return None
+    r = raw.strip().lower()
+    if r.startswith("d"):
+        return "D"
+    if r.startswith("r"):
+        return "R"
+    if r.startswith("i"):
+        return "I"
+    return None

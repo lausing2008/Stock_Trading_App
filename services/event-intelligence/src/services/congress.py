@@ -12,7 +12,11 @@ from sqlalchemy import func as _func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db import get_session, SessionLocal, CongressTrade, Stock
-from common.uw_congress import get_congress_trades as _uw_get_congress_trades, is_available as _uw_available
+from common.uw_congress import (
+    get_congress_roster as _uw_get_roster,
+    get_congress_trades as _uw_get_congress_trades,
+    is_available as _uw_available,
+)
 
 log = structlog.get_logger()
 
@@ -78,21 +82,30 @@ def _ticker_to_stock_id(ticker: str, ticker_map: dict[str, int]) -> int | None:
     return ticker_map.get(ticker.upper())
 
 
-def _uw_rows_to_kadoa_shape(rows: list) -> list[dict]:
+def _uw_rows_to_kadoa_shape(rows: list, roster: dict | None = None) -> list[dict]:
     """Translate shared/common/uw_congress.py's CongressTradeRow list into the same dict shape
     the kadoa feed's own raw JSON rows already have (branch/filer_name/transaction_date/etc),
     so the single upsert loop below stays source-agnostic rather than needing two parallel
-    branches for "what a row looks like.\""""
+    branches for "what a row looks like."
+
+    AUD-UWCONGRESS-FIELDNAMES: `roster` is UW's /api/congress/politicians keyed by lower-cased
+    name. UW's TRADE rows carry no party at all — that field lives only on the roster — so
+    without this join every UW-sourced row stores a NULL party, which is exactly what all 7,691
+    of them did. The join is by name because CongressTrade has no politician_id column yet;
+    a miss leaves party NULL rather than guessing, so an unmatched or renamed member degrades to
+    today's behaviour instead of being assigned someone else's party."""
+    roster = roster or {}
     out = []
     for r in rows:
+        ident = roster.get((r.politician_name or "").strip().lower()) or {}
         out.append({
             "branch": "congress",  # UW's feed is congress-only already, unlike kadoa's mixed feed
             "filer_name": r.politician_name,
-            "party": r.party,
-            "chamber": r.chamber,
+            "party": r.party or ident.get("party"),
+            "chamber": r.chamber or ident.get("chamber"),
             "ticker": r.ticker,
             "transaction_type": r.transaction_type,
-            "amount_range_label": None,
+            "amount_range_label": r.amount_range_label,
             "amount_range_low": r.amount_min,
             "amount_range_high": r.amount_max,
             "transaction_date": r.trade_date,
@@ -137,7 +150,8 @@ async def sync_congress_trades(lookback_days: int = 365) -> dict:
                 uw_rows.extend(day_rows)
                 day -= timedelta(days=1)
             if uw_rows:
-                trades = _uw_rows_to_kadoa_shape(uw_rows)
+                # One roster fetch per sync (Redis-cached 24h), not one per row.
+                trades = _uw_rows_to_kadoa_shape(uw_rows, _uw_get_roster())
                 source_label = "unusual_whales"
         except Exception as exc:
             log.warning("congress.uw_fetch_error", error=str(exc))
