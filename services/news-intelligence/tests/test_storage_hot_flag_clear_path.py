@@ -15,7 +15,7 @@ _saved_stubs = {_mod: sys.modules.pop(_mod, None) for _mod in _STUBBED_MODULES}
 import importlib.util
 import json
 import pathlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import Integer, create_engine
 from sqlalchemy.orm import sessionmaker
@@ -148,7 +148,16 @@ class TestPersistNewsItemsClearsStaleNegativeFlags:
              patch.object(storage, "classify_in_batches") as mock_classify, \
              patch.object(storage, "_mark_hot") as mock_mark_hot, \
              patch.object(storage, "_clear_hot") as mock_clear_hot, \
-             patch.object(storage, "_current_hot_sentiment", return_value="negative"):
+             patch.object(storage, "_current_hot_sentiment", return_value="negative"), \
+             patch.object(storage, "_current_hot_payload", return_value={
+                 # DA-09: the clear path now also checks that the incoming story is NEWER than
+                 # the flagged event (an old article ingested late must not clear a fresh
+                 # brake). This test's item is published "now", so the flagged event is dated
+                 # earlier — preserving the original scenario rather than weakening it.
+                 "headline": "Apple slides on supply worries",
+                 "sentiment_label": "negative",
+                 "ts": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(),
+             }):
             mock_classify.return_value = [
                 {"sentiment_score": 55, "sentiment_label": "neutral", "is_material": False, "category": "other"},
             ]
