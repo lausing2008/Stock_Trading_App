@@ -116,16 +116,33 @@ def test_lock_ttl_exceeds_the_measured_runtime():
     assert "_INCOME_STEP_LOCK_TTL = 1800" in _ENGINE
 
 
-def test_lock_failure_fails_open():
-    """Losing the evening run to a Redis blip is worse than the small overlap risk — and
-    overlap additionally requires a human triggering at that exact moment."""
+def test_lock_failure_fails_CLOSED():
+    """REVERSED by DA-07 (2026-09-24). This test previously asserted the opposite, on the
+    reasoning that "losing the evening run to a Redis blip is worse than the small overlap
+    risk — and overlap additionally requires a human triggering at that exact moment."
+
+    That reasoning does not survive contact with what the function does: it mutates portfolio
+    cash, collateral and positions. Two runs can each read the same `current_cash`, each decide
+    the same candidate is affordable, and each open it — the concentration and daily-entry caps
+    are enforced in Python against a snapshot, so neither notices. The paper-trading lock
+    already fails CLOSED for exactly this reason (T232-PT5). A missed evening is recoverable on
+    the next tick; double-opening against the same cash is not.
+
+    Recorded rather than quietly rewritten, because a test asserting the defective behaviour is
+    a large part of why the defect survived a previous review."""
     body = _fn(_ENGINE, "run_options_income_step")
-    assert "lock_unavailable_proceeding" in body
+    assert "lock_unavailable" in body
+    assert "lock_unavailable_proceeding" not in body
 
 
-def test_the_lock_is_always_released():
+def test_the_lock_is_released_ONLY_BY_ITS_OWNER():
+    """Also reversed by DA-07. The previous assertion required an unconditional
+    `delete(_INCOME_STEP_LOCK_KEY)` — which is the bug: if this run overruns the TTL and another
+    acquires a fresh lease, that delete removes the OTHER run's lock."""
     body = _fn(_ENGINE, "run_options_income_step")
-    assert "finally:" in body and "delete(_INCOME_STEP_LOCK_KEY)" in body
+    assert "finally:" in body
+    assert "_release_income_lock(token)" in body
+    assert "delete(_INCOME_STEP_LOCK_KEY)" not in body
 
 
 # ── AUD-A10: exit reads must respect a cutoff ────────────────────────────────────────────
