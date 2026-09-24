@@ -55,37 +55,76 @@ class BacktestEngine:
         in_pos = False
         entry_p = 0.0
         trades = []
+        # DA-04: record WHICH bars carried a fill, rather than re-deriving them later from
+        # position transitions. The old equity adjustment inferred entries and exits from
+        # `position` changing, which cannot see a terminal liquidation (position stays 1) and
+        # cannot represent two fills on one bar at all.
+        entry_bars: set[int] = set()
+        exit_bars: set[int] = set()
         # Detect signal at bar i-1, fill at bar i (1-bar look-ahead lag)
         for i in range(1, len(feat)):
             if not in_pos and entries.iloc[i - 1]:
                 entry_p = feat["close"].iloc[i] * (1 + self.slippage + self.fee)
                 entry_prices.append(entry_p)
                 in_pos = True
+                entry_bars.add(i)
                 trades.append({"entry_ts": str(feat["ts"].iloc[i]), "entry": entry_p})
             elif in_pos and (exits is not None and exits.iloc[i - 1]):
                 exit_p = feat["close"].iloc[i] * (1 - self.slippage - self.fee)
                 exit_prices.append(exit_p)
                 in_pos = False
+                exit_bars.add(i)
                 trades[-1].update({"exit_ts": str(feat["ts"].iloc[i]), "exit": exit_p, "ret": exit_p / entry_p - 1})
             position[i] = 1 if in_pos else 0
 
         # Close open position at last bar
+        terminal_exit_idx: int | None = None
         if in_pos:
             exit_p = feat["close"].iloc[-1] * (1 - self.slippage - self.fee)
             exit_prices.append(exit_p)
+            terminal_exit_idx = len(feat) - 1
+            exit_bars.add(terminal_exit_idx)
             trades[-1].update({"exit_ts": str(feat["ts"].iloc[-1]), "exit": exit_p, "ret": exit_p / entry_p - 1})
+            # DA-04: the book is flat after a forced liquidation, so the array should say so.
+            # Reporting a liquidation in the trade list while `position` still shows it open is
+            # two conventions in one result.
+            #
+            # NOTE, accurately: this line does not itself restore the missing cost — recording
+            # the bar in `exit_bars` above does. It has no numerical effect at all, because
+            # position[i] only reaches returns through pos_shifted[i+1] and there is no bar
+            # after the last one. Kept for state correctness, and called out so nobody later
+            # mistakes it for the fix and "simplifies" the wrong line away.
+            position[terminal_exit_idx] = 0
 
         # Shift position by 1: fill at bar i close → first return is bar i → bar i+1.
         # Adjust close at entry bars (pay fee) and exit bars (receive fee discount) so
         # the equity curve correctly reflects fee drag rather than using raw close prices.
         adj_close = feat["close"].copy().astype(float)
+        _cost = self.slippage + self.fee
         for _i in range(1, len(feat)):
-            if position[_i] == 1 and position[_i - 1] == 0:   # entry bar
-                adj_close.iloc[_i] *= (1.0 + self.slippage + self.fee)
-            elif position[_i] == 0 and position[_i - 1] == 1:  # exit bar
-                adj_close.iloc[_i] *= (1.0 - self.slippage - self.fee)
+            # DA-04: driven by the recorded fills, not by position transitions.
+            #
+            # `if`/`if` rather than `if`/`elif` so a bar carrying BOTH fills is charged both
+            # sides. With today's rules that case can only arise at the terminal bar (an exit
+            # needs a signal on a strictly earlier bar), where the explicit round-trip charge
+            # below is what actually books the cost — so this is defensive rather than currently
+            # load-bearing, and is written that way on purpose: a future intrabar or
+            # same-bar-reversal rule would make it matter, and an `elif` would silently halve
+            # the cost when it did.
+            if _i in entry_bars:
+                adj_close.iloc[_i] *= (1.0 + _cost)
+            if _i in exit_bars:
+                adj_close.iloc[_i] *= (1.0 - _cost)
         pos_shifted = pd.Series(position).shift(1, fill_value=0).values
         rets = adj_close.pct_change().fillna(0) * pos_shifted
+
+        # DA-04: a round trip opened and closed on the SAME bar contributes nothing through the
+        # price path — its return is gated by pos_shifted, which is 0 because the book was flat
+        # on the prior bar. The costs are still real and were being reported in the trade list
+        # while the curve stayed perfectly flat. Charge them explicitly.
+        for _i in sorted(entry_bars & exit_bars):
+            rets.iloc[_i] += (1.0 - _cost) / (1.0 + _cost) - 1.0
+
         equity = (1 + rets).cumprod()
         dd = 1 - equity / equity.cummax()
 
