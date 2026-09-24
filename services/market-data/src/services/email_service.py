@@ -193,6 +193,28 @@ def send_email(to: str, subject: str, body_html: str, body_text: str) -> bool:
         return False
 
 
+def _cohort_summary_str(cohort: dict | None) -> str:
+    """One line describing what this (direction, horizon) class of signal has actually done.
+
+    Says "averaged", never "expect": this is a measured base rate over every past signal of the
+    same kind, NOT a forecast for the stock in hand. Rendering it as a prediction would be the
+    single most misleading thing this email could do, because the number is currently negative
+    for BUY and a reader who mistook it for a forecast would draw exactly the wrong conclusion
+    about THIS alert rather than about the class.
+    """
+    if not cohort:
+        return "—"
+    n = cohort.get("n") or 0
+    avg = cohort.get("avg_return_5d_pct")
+    wr = cohort.get("win_rate_5d_pct")
+    if not n or avg is None:
+        return "—"
+    hz = cohort.get("horizon") or ""
+    label = f"{cohort.get('direction', '')}{'/' + hz if hz else ''}"
+    sign = "+" if avg >= 0 else ""
+    return f"{label} averaged {sign}{avg:.2f}% over 5d ({wr:.0f}%WR, n={n:,})"
+
+
 def send_signal_alert_email(
     to: str, symbol: str, prev_signal: str | None, new_signal: str, analyst: str,
     signal_data: dict | None = None,
@@ -204,6 +226,7 @@ def send_signal_alert_email(
     near_conviction_failed: list[str] | None = None,
     horizon: str | None = None,
     win_rate_90d: tuple[float, int] | None = None,
+    cohort_stats: dict | None = None,
 ) -> bool:
     direction_map = {
         ("SELL", "HOLD"): ("cautious",  "moving out of sell territory"),
@@ -393,6 +416,11 @@ def send_signal_alert_email(
         ("Insider score (EDGAR)",  _catalyst_note(_ins_score, _cat_prob_adj, is_insider=True)),
         ("Congress score",         _catalyst_note(_cong_score)),
         ("90d signal accuracy",   f"{round(win_rate_90d[0]*100)}%WR ({win_rate_90d[1]} outcomes)" if win_rate_90d else "—"),
+        # AUD-SIGNALCOHORT: the base rate for THIS direction and horizon. The row above is
+        # per-symbol and pools every direction together, which flatters a BUY — measured over
+        # 18,561 outcomes, BUY averages -1.22% over 5 days while SELL averages +1.03%, so a
+        # pooled figure describes neither.
+        ("This signal type, historically", _cohort_summary_str(cohort_stats)),
     ]
 
     # AUD-CONVICTION-RSIDIV-NOWRITER: a None value means "we did not evaluate this", so the row

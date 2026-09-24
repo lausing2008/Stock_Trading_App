@@ -206,6 +206,80 @@ def _trading_days_between(start: "date", end: "date") -> int:
 
 
 
+# ── AUD-SIGNALCOHORT: what this CLASS of signal has actually done ─────────────
+#
+# The AI Signal email already carried a "90d signal accuracy" badge, but it was a per-SYMBOL
+# win rate pooling every direction together — and BUY and SELL do not merely differ, they point
+# opposite ways. Measured 2026-09-24 over 18,561 resolved outcomes:
+#
+#     BUY   n=13,553   avg 5d  -1.22%     SELL  n=5,008   avg 5d  +1.03%
+#
+# So a BUY alert was quoting a number partly composed of SELL outcomes, which flatters it. The
+# per-symbol badge also admitted cohorts of THREE (`count >= 3`), and a win rate on three
+# observations is an anecdote wearing a percentage sign.
+#
+# This reports the base rate for the (direction, horizon) cohort the alert actually belongs to.
+# It is a statement about the class, NOT a prediction for this stock — the email says so, and
+# that distinction is the whole reason it is safe to show a number this unflattering.
+#
+# Deliberately not a gate: it changes what the reader is told, never which alerts are sent.
+_SIGNAL_COHORT_MIN_COUNT = 30   # matches _SQUEEZE_FAMILY_CAL_MIN_COUNT / signal-engine's own floor
+_SIGNAL_COHORT_TTL = 21600      # 6h; this moves on a scale of weeks
+
+
+def _signal_cohort_stats(session, direction: str, horizon: str | None) -> dict | None:
+    """Measured 5-day outcome for every past signal of this direction and horizon.
+
+    Returns None below the sample floor rather than a fabricated rate — the same convention the
+    squeeze family and signal-engine's own confidence calibration already use.
+    """
+    if not direction:
+        return None
+    hz = (horizon or "").upper() or None
+    cache_key = f"stockai:metric:signal_cohort:{direction}:{hz or 'ALL'}"
+    _redis = _get_redis()
+    try:
+        cached = _redis.get(cache_key)
+        if cached:
+            import json as _json
+            return _json.loads(cached)
+    except Exception:
+        pass
+    try:
+        sql = """
+            SELECT count(*) AS n,
+                   avg(return_5d) AS avg_ret,
+                   count(*) FILTER (WHERE is_correct_5d) AS wins
+            FROM signal_outcomes
+            WHERE return_5d IS NOT NULL AND signal_direction = :dir
+        """
+        params = {"dir": direction}
+        if hz:
+            sql += " AND horizon = :hz"
+            params["hz"] = hz
+        row = session.execute(text(sql), params).one()
+    except Exception as exc:
+        log.debug("signal_cohort.query_failed", direction=direction, horizon=hz, error=str(exc))
+        return None
+    if not row or not row.n or row.n < _SIGNAL_COHORT_MIN_COUNT or row.avg_ret is None:
+        return None
+    out = {
+        "direction": direction,
+        "horizon": hz,
+        "n": int(row.n),
+        # return_5d is stored as a FRACTION (-0.0122 = -1.22%). Converting here, once, keeps
+        # every consumer from having to remember that — a trap this repo has fallen into twice.
+        "avg_return_5d_pct": round(float(row.avg_ret) * 100.0, 2),
+        "win_rate_5d_pct": round(100.0 * int(row.wins or 0) / int(row.n), 1),
+    }
+    try:
+        import json as _json
+        _redis.setex(cache_key, _SIGNAL_COHORT_TTL, _json.dumps(out))
+    except Exception:
+        pass
+    return out
+
+
 # ── AUD-ALERTPREFS: per-alert-type audience filtering ─────────────────────────
 
 def _filter_by_alert_pref(session, recipients: dict, alert_type: str) -> dict:
@@ -3957,8 +4031,12 @@ def _alert_entry_gap_stats(session, alert_type: str) -> dict | None:
     near-even split is what should stop the line being shown as a warning at all.
     """
     cache_key = f"stockai:metric:alert_entry_gap:{alert_type}"
+    # _rc is a LOCAL in every other function here, never module-level — referencing it made
+    # the NameError get swallowed by this same except, leaving the cache permanently dead
+    # while the result still looked right.
+    _redis = _get_redis()
     try:
-        cached = _rc.get(cache_key)
+        cached = _redis.get(cache_key)
         if cached:
             import json as _json
             return _json.loads(cached)
@@ -3985,7 +4063,7 @@ def _alert_entry_gap_stats(session, alert_type: str) -> dict | None:
     }
     try:
         import json as _json
-        _rc.setex(cache_key, _ENTRY_GAP_CACHE_TTL, _json.dumps(out))
+        _redis.setex(cache_key, _ENTRY_GAP_CACHE_TTL, _json.dumps(out))
     except Exception:
         pass
     return out
@@ -7213,8 +7291,13 @@ def check_signal_alerts() -> None:
                     params={"days": "90"}, timeout=10,
                 )
                 if wr_r.status_code == 200:
+                    # AUD-SIGNALCOHORT: floor raised 3 -> 8. A win rate computed on three
+                    # resolved outcomes is an anecdote wearing a percentage sign, and it was
+                    # rendered beside real measurements with no way for a reader to tell them
+                    # apart. 8 matches the per-entity floor used by the congress leaderboard
+                    # and get_impact_direction_accuracy().
                     for _s in wr_r.json().get("by_symbol", []):
-                        if (_s.get("count") or 0) >= 3:
+                        if (_s.get("count") or 0) >= 8:
                             sym_wr_map[_s["symbol"]] = (float(_s.get("win_rate") or 0), _s["count"])
             except Exception:
                 pass
@@ -7468,6 +7551,7 @@ def check_signal_alerts() -> None:
                         near_conviction_failed=near_conviction_failed,
                         horizon=style,
                         win_rate_90d=sym_wr_map.get(alert.symbol),
+                        cohort_stats=_signal_cohort_stats(session, new_signal, style),
                     )
                 except Exception as _send_exc:
                     email_ok = False
