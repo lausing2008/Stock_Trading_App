@@ -65,3 +65,99 @@ docker exec stockai-market-data-1 curl -s -X POST 'http://localhost:8001/paper-p
 
 ---
 
+
+---
+
+## AUD-ALERTPREFS — per-alert-type preferences + one-click unsubscribe (Built 2026-09-24)
+
+### The defect
+
+Found while auditing why the Short Squeeze Alert had gone quiet. **Every scheduled alert
+addressed "any user holding at least one untriggered `PriceAlert` row", and never compared the
+alert's own symbol against that row** (`scheduler.py:3324-3332`, `:3680-3691`, `:4147-4155`,
+`:4432-4441`). One price alert on one ticker subscribed a user to every candidate on every
+symbol across squeeze, pre-breakout, gamma-unwind, options-flow, dark-pool and the rest. There
+was no per-type preference and **no unsubscribe path anywhere in `send_email()`**, so the only
+way to stop any of it was to delete your price alerts — which also stopped the alerts you wanted.
+
+### What shipped
+
+- `AlertPreference` (`user_id`, `alert_type`, `enabled`, `source`) + migration in `session.py`.
+- `shared/common/alert_prefs.py` — 23-entry registry grouped for the UI, plus stateless HMAC
+  unsubscribe tokens.
+- `_filter_by_alert_pref()` applied at **all 11 alert jobs**. Central rather than folded into
+  each job's own `PriceAlert` query: a dozen subtly different WHERE clauses is a dozen chances
+  to get the audience rule wrong.
+- `GET`/`PUT /alerts/preferences`; `GET /alerts/unsubscribe` (unauthenticated).
+- An unsubscribe footer on all 23 manageable email types, and a settings screen.
+
+### Three decisions that decide whether this is safe
+
+**1. Absence means subscribed.** No rows are created up front; a missing row reads as opted IN,
+so the deploy changed nobody's mail on day one (verified: 0 rows after deploy). The opposite
+default would have silently switched off every alert on the platform at deploy time — a far
+worse failure than the one being fixed, and **indistinguishable from the mail system breaking**.
+
+**2. The filter fails open.** A preference lookup that raises returns the full recipient set.
+Dropping alerts because a settings query failed looks, from outside, exactly like the alert
+never firing.
+
+**3. Essential mail is not representable.** A user's own price alert, an order fill, a broker
+re-auth — suppressing these breaks something explicitly asked for or strands an account. They
+are absent from the registry **and** listed in `ESSENTIAL`, and the API refuses to store a
+preference for them rather than saving a row no sender consults.
+
+### Security of the unauthenticated endpoint
+
+`/alerts/unsubscribe` takes no auth because a mail client follows it with no session, often
+months later — a login wall is how *"I unsubscribed and it kept coming"* happens. It is gated by
+an HMAC over exactly `(user_id, alert_type)` signed with the shared `jwt_secret`: a
+correctly-signed link can **disable one type for one account and nothing else**. It reads
+nothing and enables nothing. A bad signature and an unknown type return an identical 400, so the
+endpoint cannot be used to probe which alert types exist for which user ids.
+
+The gateway needed a new `_PUBLIC_EXACT_PATHS` set **matched whole** — putting `alerts` in
+`_PUBLIC_PREFIXES` would have exposed every price-alert CRUD route with it. Verified live:
+`/api/alerts` 401, `/api/alerts/preferences` 401, `/api/alerts/unsubscribe/extra` 401,
+`/api/alerts/unsubscribe` reachable.
+
+### Two implementation notes worth keeping
+
+**`send_email()`'s 4-arg signature is deliberately unchanged.** Threading `alert_type` through
+it broke **199 tests** whose fakes take exactly four arguments — and those tests patch
+`send_email` precisely so they can assert on the rendered body, so a footer applied *downstream*
+of the patch would have been invisible to every one of them. `_with_unsub()` appends to the body
+*before* the call, which keeps that coverage honest.
+
+**The recipient's user id is resolved from their email address inside the footer**, rather than
+threaded through all ~28 `send_*_email` builders and their call sites. One indexed lookup per
+email, against a change that would otherwise touch dozens of signatures and invite exactly the
+"this one builder forgot to pass it" gap the central footer exists to prevent.
+
+### Testing notes
+
+25 tests, 11 sabotages. The first pass caught only 5, and **four of the misses were
+security-relevant — every one a defect in the TEST, not the code**:
+
+| miss | why it passed |
+|---|---|
+| forged-token test | passed a garbage string, which fails whether or not the empty-secret guard exists |
+| `ESSENTIAL` guard | unreachable — essential keys are absent from the registry, so the registry check already rejected them |
+| registry check | the sabotage hit `is_known_alert_type()`, which shares the same line of code |
+| constant-time compare | a timing property no unit test can observe |
+
+Fixed with, respectively: a token forged *with the empty secret*; a test that patches the
+registry to make the guard reachable; a correctly-targeted sabotage; and a structural assertion
+that `compare_digest` is used and `== token` is not.
+
+**One defect the suite could not catch at all.** `AlertPreference` was added to `models.py` but
+not to `shared/db/__init__.py`, so `from db import AlertPreference` raised ImportError and the
+endpoint 500'd in production while all 25 tests stayed green — none of them import from `db`,
+because the suite stubs that package wholesale. Found by curling the live endpoint after deploy.
+The regression test now asserts on the **source** of `__init__.py` (import block and `__all__`
+checked separately, since either alone still breaks it); importing it under the stub would prove
+nothing.
+
+**Process note:** do not use `git checkout <file>` to undo a sabotage on a file with uncommitted
+work — it restores from HEAD and silently discards the change under test. Copy the file aside
+first, as every other sabotage loop here does.

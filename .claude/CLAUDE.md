@@ -261,7 +261,7 @@ live in this file's own body is preserved verbatim in exactly one of these files
 
 ### Features — shipped feature documentation (`docs/features/`)
 
-- **`docs/features/admin-and-settings.md`** — Admin AI Assistant Features Page (Built 2026-07-28)
+- **`docs/features/admin-and-settings.md`** — Admin AI Assistant Features Page; AUD-ALERTPREFS (2026-09-24): every alert used to go to anyone holding ANY untriggered price alert, symbol never matched. Per-type prefs + HMAC unsubscribe. Absence = subscribed, filter fails OPEN [alerts, email, unsubscribe]
 - **`docs/features/aud250-small-fixes.md`** — AUD250-PORTFOLIOOPTIMIZER-SILENT-FALLBACK-NO-FLAG — Fallback Reason Now Visible in Response (Built 2026-07-19)
 - **`docs/features/broker-integration.md`** — T257-BROKER-ORDER-HISTORY — E*Trade Sandbox/Prod Order History (Built 2026-07-17); T230-PORTFOLIO-BROKER-SYNC — Automatic Broker Position Sync (Built 2026-07...
 - **`docs/features/chart-volume-profile-and-fvg.md`** — Volume Profile (Tier 250) — How to Read It; Chart Toolbar Redesign + Intraday Indicators (Tier 250 follow-up); Fair Value Gap (FVG) — What It Is and How to U...
