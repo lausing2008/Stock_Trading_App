@@ -402,14 +402,18 @@ function FlowTab({ market }: { market: Market }) {
 // whether this tab is honest or a gimmick, and both are rendered rather than buried:
 //
 //   1. ENTRY IS THE DISCLOSURE DATE, NEVER THE TRADE DATE. Filings lag the trade by a MEDIAN of
-//      40 days (mean 76, worst 323). The same purchases return +4.70% over 21 days from the
-//      trade date but +2.89% from disclosure — roughly 1.8pp of the apparent edge is already
+//      33 days (mean 45, worst 323). The same purchases return +3.73% over 21 days from the
+//      trade date but +3.15% from disclosure — roughly 0.6pp of the apparent edge is already
 //      gone before anyone outside could act. Quoting the trade-date number would advertise a
 //      return the reader cannot reach. Exactly the same class of error as quoting post-earnings
 //      drift that includes the untradeable overnight gap.
-//   2. MOST ROWS HAVE NO BUY/SELL DIRECTION. 7,691 of 9,453 come from a feed with
-//      transaction_type='unknown' — including all 2,036 of Trump's, which is why the single most
-//      active name cannot appear in the followable table however interesting he is.
+//   2. A MINORITY OF ROWS STILL HAVE NO BUY/SELL DIRECTION, and the count is now served by the
+//      API rather than written here, because the previous hardcoded "7,691 of 9,453" survived
+//      the repair that made it 776 and went on stating a number that no longer described the
+//      data. AUD-UWCONGRESS-FIELDNAMES found those rows were never missing direction at all —
+//      the parser was reading key names the feed does not send, discarding 81% of the dataset
+//      on arrival. Repairing it took the followable leaderboard from 3 traders to 17 and made
+//      Trump rankable for the first time.
 //
 // The below-floor table is deliberately shown rather than truncated away: seeing that the top of
 // an 8-buy-minimum list sits among dozens of 1-3 buy names is what stops a reader treating the
@@ -464,10 +468,11 @@ function SmartMoneyTab() {
         <div style={{ fontSize: 13, color: '#e5e7eb', lineHeight: 1.65 }}>
           Every return below is measured from the <strong>disclosure date</strong> — the day the filing
           became public and you could actually have acted — not from the trade date. Congressional filings
-          lag the trade by a <strong>median of 40 days</strong>. Measured on this platform&apos;s own data, the
-          same purchases return <strong style={{ color: '#4ade80' }}>+4.70%</strong> over {data.horizon_days} days
-          from the trade date but only <strong style={{ color: '#fbbf24' }}>+2.89%</strong> from disclosure.
-          That ~1.8pp gap is edge that had already happened before anyone outside could see the filing.
+          lag the trade by a <strong>median of 33 days</strong> (mean 45, worst 323). Measured on this
+          platform&apos;s own data, the same purchases return <strong style={{ color: '#4ade80' }}>+3.73%</strong> over
+          {' '}{data.horizon_days} days from the trade date but only <strong style={{ color: '#fbbf24' }}>+3.15%</strong>
+          {' '}from disclosure. That ~0.6pp gap is edge that had already happened before anyone outside
+          could see the filing.
         </div>
       </div>
 
@@ -541,14 +546,17 @@ function SmartMoneyTab() {
             ))}
           </tbody>
         </table>
-        {/* Observed in the live payload: the two feeds do not share a name key, so one person can
-            appear in BOTH tables under different spellings ("Rohit Khanna" / "Ro Khanna",
-            "Gilbert Cisneros" / "Hon. Gilbert Cisneros"). Saying so is better than letting a
-            reader assume the lists are disjoint and double-count the same person's activity. */}
+        {/* AUD-UWCONGRESS-NAMEMERGE: the feeds' differing spellings ("Rohit Khanna" / "Ro Khanna")
+            are now merged onto the roster's canonical name, so one person no longer ranks twice.
+            What remains true is narrower and still worth saying: a member can hold BOTH followable
+            trades and older no-direction filings, so the same name legitimately appears in both
+            tables and the counts still must not be summed. */}
         <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 12, lineHeight: 1.6 }}>
-          The two feeds do not share a name key, so the same person can appear in both tables under
-          different spellings (e.g. <em>Rohit Khanna</em> above and <em>Ro Khanna</em> here). The lists are
-          not disjoint, and the filing counts must not be added together.
+          A member can appear in both tables at once — followable buys above, older filings of unknown
+          direction here. That is not double-counting on our side, but the two counts describe different
+          rows and should not be added together. Name spellings across feeds are reconciled against the
+          official roster; anything the roster cannot resolve unambiguously is deliberately left alone
+          rather than guessed at.
         </div>
       </div>
 

@@ -562,6 +562,10 @@ def get_smart_money_leaderboard(min_trades: int = _SMART_MONEY_MIN_TRADES) -> di
     since = date.today() - timedelta(days=500)
     with SessionLocal() as s:
         rows = s.execute(sql, {"horizon": _SMART_MONEY_HORIZON_BARS, "since": since}).all()
+        n_unknown_rows = s.execute(text(
+            "SELECT count(*) FROM congress_trades WHERE transaction_type NOT ILIKE '%purchase%' "
+            "AND transaction_type NOT ILIKE '%sale%'"
+        )).scalar() or 0
         unknown = s.execute(text("""
             SELECT politician_name, count(*) AS n,
                    count(*) FILTER (WHERE stock_id IS NOT NULL) AS on_tracked,
@@ -598,12 +602,17 @@ def get_smart_money_leaderboard(min_trades: int = _SMART_MONEY_MIN_TRADES) -> di
             "latest_trade": u.latest.isoformat() if u.latest else None,
         } for u in unknown],
         "caveats": [
+            # Measured 2026-09-23 on the repaired dataset. An earlier version of this text
+            # quoted a 1.81pp gap (+4.70% vs +2.89%) computed before AUD-UWCONGRESS-FIELDNAMES
+            # — i.e. on the 19% of rows that then had a usable disclosure date. The direction
+            # of the effect survived the correction; its size did not.
             "Returns are measured from the DISCLOSURE date, not the trade date. Congressional "
-            "filings lag the trade by a median of 40 days; the same purchases return +4.70% "
-            "from trade date but +2.89% from disclosure. Only the latter was ever reachable.",
+            "filings lag the trade by a median of 33 days (mean 45, worst 323). The same "
+            "purchases return +3.73% over 21 days from the trade date but +3.15% from "
+            "disclosure. Only the latter was ever reachable.",
             "Traders under the sample floor are shown but must not be ranked on.",
-            "direction_unknown entries come from a feed that omits buy/sell (7,691 of 9,453 "
-            "rows). They cannot be followed at all — a disclosure there may be a SALE.",
+            f"{n_unknown_rows} rows still carry no buy/sell direction and cannot be followed at "
+            "all — a disclosure there may be a SALE. They are listed rather than dropped.",
             "This is a historical base rate, not a recommendation. It says nothing about why "
             "any individual trade was made.",
         ],

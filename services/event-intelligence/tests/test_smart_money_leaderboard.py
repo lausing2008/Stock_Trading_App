@@ -53,16 +53,21 @@ def _unknown(name, n, on_tracked, latest=date(2026, 7, 31)):
 
 
 class _FakeSession:
-    """Returns the trader rows on the first execute() and the unknown rows on the second,
-    matching the two queries the function issues in order."""
+    """Serves the function's queries in the order it issues them: trader rows (.all()), the
+    no-direction row COUNT (.scalar()), then the direction_unknown rows (.all()).
 
-    def __init__(self, trader_rows, unknown_rows):
-        self._results = [trader_rows, unknown_rows]
+    Each queued entry is consumed by whichever accessor the code uses, so adding a query
+    without updating this queue fails loudly rather than silently returning the wrong result
+    set — which is exactly what happened when the count query was introduced."""
+
+    def __init__(self, trader_rows, unknown_rows, unknown_count=0):
+        self._queue = [trader_rows, unknown_count, unknown_rows]
         self.params_seen = []
 
     def execute(self, sql, params=None):
         self.params_seen.append(params or {})
-        return SimpleNamespace(all=lambda: self._results.pop(0))
+        value = self._queue.pop(0)
+        return SimpleNamespace(all=lambda: value, scalar=lambda: value)
 
     def __enter__(self):
         return self
@@ -71,8 +76,8 @@ class _FakeSession:
         return False
 
 
-def _run(trader_rows, unknown_rows=(), **kwargs):
-    sess = _FakeSession(list(trader_rows), list(unknown_rows))
+def _run(trader_rows, unknown_rows=(), unknown_count=0, **kwargs):
+    sess = _FakeSession(list(trader_rows), list(unknown_rows), unknown_count)
     with patch.object(C, "SessionLocal", lambda: sess):
         return C.get_smart_money_leaderboard(**kwargs), sess
 
@@ -218,3 +223,12 @@ def test_the_disclosure_lag_caveat_is_always_present_even_with_no_data():
     joined = " ".join(result["caveats"]).lower()
     assert "disclosure" in joined
     assert "trade date" in joined
+
+
+def test_the_no_direction_row_count_in_the_caveats_is_measured_not_hardcoded():
+    """The caveat used to state "7,691 of 9,453 rows" as literal text. After the field-mapping
+    repair that figure became 776, and a hardcoded string would have gone on asserting the old
+    one indefinitely — a number in user-facing copy that no longer describes the data."""
+    result, _ = _run([_row("A", 10, 1.0)], [_unknown("U", 5, 1)], unknown_count=776)
+    assert any("776" in c for c in result["caveats"])
+    assert not any("7,691" in c for c in result["caveats"])
