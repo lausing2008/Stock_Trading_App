@@ -228,9 +228,32 @@ def _score_contract(
     directly against synthetic numbers (matching compute_options_game_plan()'s own established
     "pure function" precedent in routes.py). `premium_bid` must be the real bid — selling
     (writing) an option is filled at the bid, never the ask or the mid."""
+    # DA-12 (2026-09-24): `annualized_yield_pct` is premium measured against SPOT for both
+    # strategies — but a cash-secured put reserves strike x 100 while a buy-write reserves
+    # underlying x 100. For an out-of-the-money put the two denominators differ, so this figure
+    # is not return on reserved capital and must not be read as one. At spot $100, strike $90,
+    # $1 premium, 30 DTE it reads 12.17%; the annualised premium on the $9,000 actually
+    # reserved is 13.52%.
+    #
+    # DELIBERATELY NOT REDEFINED. This exact field feeds quality_score, the
+    # min_annualized_yield_pct filter, AND the backtested weight calibration in
+    # backtest/options_income_weights.py — whose 25/75/0 weights (T398/T399) were derived on
+    # this definition over 417 trades. Changing the denominator underneath them would silently
+    # invalidate that study while every number kept rendering. The honest fix is a SECOND,
+    # correctly-named field; re-pointing the ranking at it is a separate change that has to
+    # re-run the calibration first.
     annualized_yield_pct = round(premium_bid / current_price * (365.0 / dte) * 100.0, 2)
+    collateral_per_share = current_price if strategy == "COVERED_CALL" else strike
     result = {
+        # Premium on SPOT. Kept under its original name because the ranking study is calibrated
+        # on it; see the comment above before reusing it as a return.
         "annualized_yield_pct": annualized_yield_pct,
+        # Premium on the capital this strategy actually ties up. Equal to the above for a
+        # buy-write (same denominator); different for every put whose strike is not spot.
+        "annualized_yield_on_collateral_pct": round(
+            premium_bid / collateral_per_share * (365.0 / dte) * 100.0, 2),
+        # Names the basis so a consumer never has to infer it from the strategy.
+        "yield_denominator": "underlying_price" if strategy == "COVERED_CALL" else "strike",
         "premium_per_contract": round(premium_bid * 100, 2),
         "premium": round(premium_bid, 2),
     }

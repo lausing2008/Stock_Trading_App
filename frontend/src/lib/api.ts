@@ -2906,7 +2906,14 @@ export type OptionsIncomeCandidate = {
   open_interest: number | null;
   iv: number | null;
   current_price: number;
+  // DA-12: premium measured against SPOT. Kept under this name because quality_score, the
+  // min-yield filter and the backtested weight calibration are all derived on it.
   annualized_yield_pct: number;
+  // Premium against the capital the strategy actually reserves — strike x 100 for a
+  // cash-secured put, underlying x 100 for a buy-write. Equal to the above for calls and for
+  // at-the-money puts, which is why the discrepancy stayed invisible.
+  annualized_yield_on_collateral_pct?: number;
+  yield_denominator?: 'strike' | 'underlying_price';
   premium_per_contract: number;
   premium: number;
   collateral_required: number;

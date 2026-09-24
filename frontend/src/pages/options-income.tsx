@@ -510,7 +510,25 @@ function TopPicks({ candidates }: { candidates: OptionsIncomeCandidate[] }) {
             <div style={{ marginBottom: 8 }}><StrategyBadge strategy={c.strategy} /></div>
             <div style={{ fontSize: 12, color: '#cbd5e1', lineHeight: 1.7 }}>
               <div>Strike <b style={{ color: '#e2e8f0' }}>${c.strike.toFixed(2)}</b> · {fmtDate(c.expiry)} ({c.days_to_expiry}d)</div>
-              <div>Premium <b style={{ color: '#4ade80' }}>{fmtUSD(c.premium_per_contract)}</b> · <span style={{ color: '#38bdf8' }}>{c.annualized_yield_pct.toFixed(1)}%</span> ann.</div>
+              {/* DA-12: the headline figure is premium-on-SPOT, which is what the ranking is
+                  calibrated on. For a cash-secured put the capital actually reserved is
+                  strike x 100, so the return on that is a different — and higher — number.
+                  Both are shown rather than one silently standing in for the other. */}
+              <div>
+                Premium <b style={{ color: '#4ade80' }}>{fmtUSD(c.premium_per_contract)}</b>
+                {' · '}
+                <span style={{ color: '#38bdf8' }} title="Annualised premium measured against the underlying price — the basis the ranking is calibrated on">
+                  {c.annualized_yield_pct.toFixed(1)}%
+                </span> ann. on spot
+              </div>
+              {c.annualized_yield_on_collateral_pct != null
+                && Math.abs(c.annualized_yield_on_collateral_pct - c.annualized_yield_pct) >= 0.05 && (
+                <div style={{ color: '#94a3b8' }}>
+                  <span title={`Annualised premium against the ${c.yield_denominator === 'strike' ? 'strike' : 'underlying'} actually reserved as collateral`}>
+                    {c.annualized_yield_on_collateral_pct.toFixed(1)}% ann. on collateral
+                  </span>
+                </div>
+              )}
               <div>Cushion <b style={{ color: c.otm_cushion_pct >= 5 ? '#4ade80' : '#f59e0b' }}>{c.otm_cushion_pct.toFixed(1)}%</b> · OI {c.open_interest ?? '—'}</div>
               <div style={{ color: '#64748b' }}>Collateral {fmtUSD(c.collateral_required)}</div>
             </div>

@@ -513,6 +513,14 @@ def _load_outcome_features(symbol: str, style: str = "SWING", lookback_days: int
     return X_out, y_out
 
 
+# DA-03: the minimum rows a slice must RETAIN after its embargo is taken out. An embargo that
+# consumed a whole slice would trade one evaluation defect (leakage) for a worse one — an
+# early-stop, calibration or test set too small to mean anything. Module-level so tests can
+# assert its VALUE rather than its source text (AUD-T401-SOURCETEXTTESTS: a substring assertion
+# survives the constant being changed to 10 - 99999).
+_MIN_SLICE_ROWS = 10
+
+
 def train_model(
     symbol: str,
     model_name: str = "xgboost",
@@ -761,9 +769,41 @@ def train_model(
     # Skipped when a slice would otherwise become too small to be useful.
     split_es  = int(len(X) * 0.80)   # end of early-stop window (same as split_train when train=70%)
     split_cal = int(len(X) * 0.90)
-    _embargo = horizon if (split_es - split_train) > horizon * 3 else 0
-    _embargo_es  = horizon if (split_cal - split_es) > horizon * 3 else 0
-    _embargo_cal = horizon if (len(X) - split_cal) > horizon * 3 else 0
+
+    # DA-03 (2026-09-24): this used to read
+    #     _embargo = horizon if (slice > horizon * 3) else 0
+    # — a SILENT collapse to zero whenever the next slice was small, which is reachable above
+    # the function's own 200-row minimum. With 200 rows and LONG's 20-bar horizon the
+    # calibration slice includes a row whose forward label is built from a price inside the
+    # TEST window. The evaluation then scores partly on data the model was fitted through.
+    #
+    # WHY THIS IS NOT SIMPLY ENFORCED. Measured across the live universe (180 symbols), the
+    # share that can afford a full `horizon` gap at every boundary is:
+    #     SHORT/5  172    SWING/10 164    LONG/20 159    GROWTH/28  0
+    # Requiring the full embargo would disable GROWTH training for EVERY symbol — no stock on
+    # the platform has enough history. Silently switching off a whole horizon is an operational
+    # decision, not a bug fix.
+    #
+    # So the embargo is now the LARGEST the slice can afford while leaving _MIN_SLICE_ROWS of
+    # usable data, and never silently zero. A shortfall is recorded in the model's own metrics
+    # (embargo_shortfall) and logged, so a model trained with an insufficient gap is
+    # IDENTIFIABLE and its evaluation discountable rather than quietly trusted. A partial gap
+    # still leaks — it is strictly better than none, and the honest move is to say by how much.
+    def _afford(span: int) -> int:
+        return max(0, min(horizon, span - _MIN_SLICE_ROWS))
+
+    _embargo     = _afford(split_es - split_train)
+    _embargo_es  = _afford(split_cal - split_es)
+    _embargo_cal = _afford(len(X) - split_cal)
+    _embargo_shortfall = {
+        name: horizon - got
+        for name, got in (("early_stop", _embargo), ("calibration", _embargo_es), ("test", _embargo_cal))
+        if got < horizon
+    }
+    if _embargo_shortfall:
+        log.warning("train.embargo_shortfall", symbol=symbol, style=style, horizon=horizon,
+                    shortfall=_embargo_shortfall, n_rows=len(X),
+                    note="label windows may overlap the following slice; evaluation is optimistic")
     X_train = X.iloc[:split_train]
     X_es    = X.iloc[split_train + _embargo : split_es]
     X_cal   = X.iloc[split_es + _embargo_es : split_cal]
@@ -934,6 +974,11 @@ def train_model(
         "n_test": int(len(X_test)),
         "n_features": len(FEATURE_COLUMNS),
         "label_threshold": label_threshold,
+        # DA-03: the ACTUAL gaps used, not the ones intended. A reader of this bundle can now
+        # tell a clean split from a compromised one without re-deriving it from row counts.
+        "embargo_bars": {"early_stop": _embargo, "calibration": _embargo_es, "test": _embargo_cal},
+        "embargo_target_bars": horizon,
+        "embargo_shortfall": _embargo_shortfall or None,
     }
 
     # SA-9 + AUD-ML2-DEADRECALLNOTSUPPRESSED + AUD-ML2-ASYMMETRICOVERFITGAP: see
