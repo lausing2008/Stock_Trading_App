@@ -390,10 +390,19 @@ def poll_broker_order_fills(session=None) -> None:
                 if not _handle_broker_error_if_token_rejected(session, port, exc):
                     log.debug("broker.poll_check_failed",
                               order_id=trade.broker_order_id, error=str(exc))
+        # DA-10 (2026-09-24): this used to be `if updated: log() else: session.commit()`, so the
+        # final commit was SKIPPED whenever any changed-price trade had already committed. A
+        # batch of [changed-price, unchanged-price] therefore ended with the second trade's
+        # broker_entry_fill_confirmed=True set in memory and never written — the owned session
+        # closes and discards it. The flag survives only when a batch happens to contain no
+        # price change at all, which is why it stayed latent.
+        #
+        # Committing unconditionally is correct and cheap: with nothing dirty it is a no-op, and
+        # "rows whose price was reconciled" (`updated`) is a different quantity from "work that
+        # must be persisted" — conflating the two is the bug.
+        session.commit()
         if updated:
             log.info("broker.poll_fills_updated", count=updated)
-        else:
-            session.commit()  # persists any broker_fill_confirmed=True set on the no-delta branch
     except Exception as exc:
         log.warning("broker.poll_error", error=str(exc))
     finally:
@@ -480,10 +489,19 @@ def poll_broker_exit_fills(session=None) -> None:
                 if not _handle_broker_error_if_token_rejected(session, port, exc):
                     log.debug("broker.poll_exit_check_failed",
                               order_id=trade.broker_exit_order_id, error=str(exc))
+        # DA-10 (2026-09-24): this used to be `if updated: log() else: session.commit()`, so the
+        # final commit was SKIPPED whenever any changed-price trade had already committed. A
+        # batch of [changed-price, unchanged-price] therefore ended with the second trade's
+        # broker_exit_fill_confirmed=True set in memory and never written — the owned session
+        # closes and discards it. The flag survives only when a batch happens to contain no
+        # price change at all, which is why it stayed latent.
+        #
+        # Committing unconditionally is correct and cheap: with nothing dirty it is a no-op, and
+        # "rows whose price was reconciled" (`updated`) is a different quantity from "work that
+        # must be persisted" — conflating the two is the bug.
+        session.commit()
         if updated:
             log.info("broker.poll_exit_fills_updated", count=updated)
-        else:
-            session.commit()  # persists any broker_exit_fill_confirmed=True set on the no-delta branch
     except Exception as exc:
         log.warning("broker.poll_exit_error", error=str(exc))
     finally:

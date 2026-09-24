@@ -729,22 +729,54 @@ def short_option_liability(*, strategy: str, strike: float, underlying_price: fl
     be stale in the way a quote can; it understates the liability by whatever time value
     remains, which is why the source is returned and recorded rather than hidden.
     """
-    if quote_ask is not None and quote_ask >= 0:
-        return round(quote_ask * 100 * contracts, 2), "quote_ask"
     if strategy == "COVERED_CALL":
         intrinsic = max(0.0, underlying_price - strike)
     else:
         intrinsic = max(0.0, strike - underlying_price)
+
+    # DA-06 (2026-09-24): an ask can only be USED if it is consistent with the underlying it is
+    # being combined with. The quote came from an archive with no age check while the underlying
+    # is a live price, so the two could be days apart — and any non-negative value, including
+    # zero, used to win outright.
+    #
+    # The decisive guard is arithmetic, not a timestamp: AN OPTION CANNOT BE WORTH LESS THAN ITS
+    # INTRINSIC VALUE. Buying back a $100 put with the stock at $80 costs at least $20/share by
+    # arbitrage, so a $2 ask is not a cheap close — it is a quote from before the move. Taking it
+    # reported a $200 liability against a $2,000 floor and inflated reported equity by $1,800.
+    # Freshness metadata can be missing or wrong; this bound cannot.
+    if quote_ask is not None and quote_ask >= intrinsic >= 0:
+        return round(quote_ask * 100 * contracts, 2), "quote_ask"
+    if quote_ask is not None and quote_ask >= 0:
+        # A real quote that is BELOW intrinsic is stale, crossed or suspect. Fall back to the
+        # floor and SAY SO, rather than silently accepting a mark that cannot be executed.
+        return round(intrinsic * 100 * contracts, 2), "intrinsic_quote_below_floor"
     return round(intrinsic * 100 * contracts, 2), "intrinsic"
 
 
-def _latest_option_ask(session: Session, option_symbol: str) -> float | None:
-    """Most recent archived ask for one contract. None when it was never quoted."""
+# DA-06: how old an archived quote may be before it is refused outright. The option-chain
+# archive is written daily, so anything beyond a few sessions means the contract stopped being
+# quoted — and a mark from a week ago combined with a live underlying is a mixed-time valuation
+# whatever its value happens to be.
+_MAX_ASK_AGE_DAYS = 5
+
+
+def _latest_option_ask(session: Session, option_symbol: str,
+                       as_of: date | None = None) -> float | None:
+    """Most recent archived ask for one contract, or None when it is missing or too old.
+
+    DA-06: this previously returned the most recent non-null ask with no age check and no way
+    for the caller to know WHEN it was quoted. A row from an arbitrarily distant past therefore
+    overrode the intrinsic fallback. It also never bounded the future: an as_of ahead of the
+    valuation date is a look-ahead read in any historical snapshot.
+    """
+    ref = as_of or _today_et()
     row = session.execute(text("""
-        SELECT nbbo_ask FROM option_chain_history
+        SELECT nbbo_ask, as_of FROM option_chain_history
         WHERE option_symbol = :os AND nbbo_ask IS NOT NULL
+          AND as_of <= :ref AND as_of >= :floor
         ORDER BY as_of DESC LIMIT 1
-    """), {"os": option_symbol}).first()
+    """), {"os": option_symbol, "ref": ref,
+           "floor": ref - timedelta(days=_MAX_ASK_AGE_DAYS)}).first()
     return float(row.nbbo_ask) if row and row.nbbo_ask is not None else None
 
 
@@ -760,6 +792,7 @@ def _snapshot_income_equity_curve(session: Session, portfolios: list[OptionsInco
         ).scalars().all()
         collateral_committed = 0.0
         short_liability = 0.0
+        mark_sources: dict[str, int] = {}
         if open_positions:
             # Every open position needs a live underlying now, not just the covered calls — a
             # short put's liability moves with the underlying too.
@@ -773,14 +806,24 @@ def _snapshot_income_equity_curve(session: Session, portfolios: list[OptionsInco
                     collateral_committed += float(p.collateral_reserved)
                 liab, _src = short_option_liability(
                     strategy=p.strategy, strike=float(p.strike), underlying_price=px,
-                    contracts=p.contracts, quote_ask=_latest_option_ask(session, p.option_symbol),
+                    contracts=p.contracts,
+                    # Bounded by the snapshot's own date: a historical row must never reach
+                    # forward for a quote that did not exist yet.
+                    quote_ask=_latest_option_ask(session, p.option_symbol, as_of=as_of),
                 )
                 short_liability += liab
+                # DA-06: provenance was discarded, so a persisted equity row could not explain
+                # whether it was marked on a real quote or on the intrinsic floor. Counted here
+                # and logged with the snapshot rather than dropped.
+                mark_sources[_src] = mark_sources.get(_src, 0) + 1
 
         # AUD-T400-SHORTLIABILITY: equity is assets MINUS the outstanding short obligation.
         # Without the final term, opening a short option manufactured equity equal to the
         # premium and a position moving against the book stayed invisible until settlement.
         equity = float(portfolio.current_cash) + collateral_committed - short_liability
+        if mark_sources:
+            log.info("options_income.equity_mark_sources", portfolio_id=portfolio.id,
+                     as_of=str(as_of), sources=mark_sources)
         existing = session.execute(
             select(OptionsIncomeEquityCurve).where(
                 OptionsIncomeEquityCurve.portfolio_id == portfolio.id,
