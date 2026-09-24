@@ -1318,3 +1318,80 @@ The card's old guard was `if (!pp && !cc) return null`, which would have hidden 
 whenever the two original legs could not be priced — e.g. no stop-loss set, so nothing anchors a
 protective put, while a long call and cash-secured put are both perfectly constructible. Now it
 renders if *anything* could be built.
+
+---
+
+## AUD-INSTFOLLOW — "Big Funds" tab: 13F adds measured against the market (Built 2026-09-23)
+
+`/reports?tab=funds`, backed by `get_institutional_followers()` in
+`services/event-intelligence/src/services/institutional.py` and
+`GET /events/institutional/followers`.
+
+16 curated managers — Berkshire, Pershing Square, Citadel, Point72, Bridgewater, Renaissance,
+Tiger Global, ARK, Two Sigma, Millennium, AQR, Coatue, Soros, Appaloosa, Duquesne, Scion. Curated
+rather than "top N by AUM" deliberately: the largest 13F filers are index complexes (BlackRock,
+Vanguard, State Street) whose holdings reflect fund flows, not a view.
+
+### Why not the existing EDGAR path
+
+`sync_institutional()` scrapes 13F XML and name-matches issuers against our own `Stock` table.
+That is why it holds **4 Berkshire positions when Berkshire reports ~40**, and 207 rows total
+across 7 funds. UW's `/api/institution/{name}/activity` returns the **ticker** directly (no name
+matching), plus `units_change`, both dates, and prices. The EDGAR path was left untouched — this
+is a read-side report, not a migration.
+
+### Three defects caught in the first live run
+
+Each made the page look *more* authoritative while being wrong.
+
+**1. Raw returns are mostly beta.** All sixteen managers came out negative, −0.35% to −16.66% —
+a damning-looking verdict on professional investors. **SPY fell 2.44% over the identical
+window.** Duquesne's "−0.35%" was **+2.1pp of alpha** and belongs at the top of the table, not
+the bottom. The report now ranks on alpha and renders the raw return and the benchmark beside it
+so the subtraction is checkable rather than trusted. Same lesson as `AUD-ALPHAEVAL`.
+
+**2. A field that is always zero is not a measurement.** `price_on_report` and `price_on_filing`
+come back **identical on every row** (278 of 278 Citadel buys), so an "already moved between
+quarter-end and filing" figure computes to **0.00% for every fund, forever**. Publishing it would
+assert the disclosure lag costs nothing — a stronger and more wrong claim than omitting it. It is
+deliberately absent and a test keeps it absent. *The lag is still real; we simply have no honest
+measurement of its cost from this feed.*
+
+**3. UW returns one row per security line**, so tickers repeat — Citadel read as 300 adds instead
+of 180, and single holdings were measured several times.
+
+### A crash the tests found, not the smoke test
+
+The measured and unavailable rows were two hand-written dicts. They drifted, and the unavailable
+one lost `alpha_vs_spy_pct` — which the ranking sort reads unconditionally. **One fund UW could
+not serve raised `KeyError` and returned nothing for the other fifteen.** The smoke test never hit
+it because all 16 funds happened to resolve. Both rows now come from one `_fund_row()` template
+whose defaults make divergence impossible.
+
+### The two caveats that decide whether the page is honest
+
+Both render above the table, not as footnotes.
+
+- **One quarter over one window — not a track record.** Every fund shares essentially the same
+  window, so a single market episode drives much of the spread between them.
+  `sample_is_adequate` means *"enough priced positions to average"*, never *"enough evidence to
+  judge the manager"*, and no position count fixes that.
+- **A 13F is the long book only.** Citadel, Millennium, Two Sigma, AQR and Renaissance are marked
+  `hedged` inline — their disclosed longs are one leg of a position whose shorts and derivatives
+  are invisible here, so a large negative alpha may be **the hedge working as intended**.
+
+Staleness is rendered **per row**, never as a page header: coverage runs from current to ~359
+days (UW's Scion data), so one "as of" line would be a lie for some rows.
+
+### Testing note
+
+18 tests, 7 sabotages. The first pass caught 6. **The ranking sabotage — swapping the sort from
+alpha to the raw return — passed**, because that test gave both funds identical alpha, so the two
+orderings could not differ. It was rebuilt with a case where they genuinely invert (a manager at
+−5.0% against a −10.0% market beats one at −1.0% against a flat market). A test where the two
+orderings agree cannot detect a sort on the wrong column.
+
+The fake session also had to be taught to distinguish queries by their **bound parameters**, not
+their SQL text: this suite stubs sqlalchemy, so `text()` yields a MagicMock containing no SQL, and
+text-matching silently routed the benchmark query into the aggregate branch — making alpha read
+`None` in a way that looked exactly like a missing feature.
