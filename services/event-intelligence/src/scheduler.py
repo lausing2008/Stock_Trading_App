@@ -73,6 +73,21 @@ async def job_sync_insider():
     await _run("sync_insider", insider.sync_all_insider())
 
 
+async def job_sync_insider_uw():
+    """AUD-INSIDERUW: the market-wide Form 4 feed, complementing the per-ticker EDGAR scrape.
+
+    NOT a replacement — EDGAR remains the primary source and nothing is faster than the SEC's own
+    filing system (see the sync_insider comment below). This exists because the EDGAR path
+    supplies no REAL FILING DATE: it copies the transaction date, and all 1,049 stored rows have
+    filing_date == transaction_date. Form 4 is filed up to two business days after the trade, so
+    every return measured from that column was entered on a date nobody outside could act on —
+    the same error as quoting a congressional trade-date return, or post-earnings drift that
+    includes the overnight gap. UW carries both dates, plus is_10b5_1 on every row (versus 11 of
+    1,049 from EDGAR), which is the entire signal/noise line for insider activity.
+    """
+    await asyncio.to_thread(insider.sync_insider_from_uw)
+
+
 async def job_sync_congress():
     await _run("sync_congress", congress.sync_congress_trades())
 
@@ -191,6 +206,9 @@ async def start_scheduler():
     # 4h closes most of the real gap (worst case ~4h stale vs. the old ~24h) without needlessly
     # increasing load against SEC's own fair-access expectations.
     _scheduler.add_job(job_sync_insider,       "cron", hour="3,7,11,15,19,23",  minute=0,  id="sync_insider")
+    # Offset 30 minutes from the EDGAR sweep so the two never contend for the same DB session
+    # pool — AUD-CONNPOOL-NESTEDSESSION is this repo's reminder of what that costs.
+    _scheduler.add_job(job_sync_insider_uw,    "cron", hour="3,7,11,15,19,23",  minute=30, id="sync_insider_uw")
     _scheduler.add_job(job_sync_congress,      "cron", hour=7,  minute=30, id="sync_congress")
     _scheduler.add_job(job_sync_political,     "cron", hour=8,  minute=0,  id="sync_political")
     _scheduler.add_job(job_sync_cape,          "cron", hour=8,  minute=45, id="sync_cape")

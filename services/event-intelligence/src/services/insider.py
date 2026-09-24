@@ -117,7 +117,20 @@ def _extract_form4_data(xml: str, accession: str) -> dict | None:
         return m.group(1).strip() if m else None
 
     insider_name = _tag("rptOwnerName") or _tag("reportingOwnerName")
-    role_raw = _tag("officerTitle") or _tag("isDirector") or ""
+    # AUD-INSIDERROLE: `isDirector` / `isTenPercentOwner` are BOOLEAN tags whose real values are
+    # "1"/"true" — falling back to one stored the literal string "1" as a person's job title.
+    # 254 of 1,049 stored rows read "1" (180) or "true" (74), which is every director who filed
+    # without an officer title. Resolve the flags into real role NAMES instead.
+    role_raw = _tag("officerTitle") or ""
+    if not role_raw.strip():
+        roles = []
+        if _is_true_flag(_tag("isDirector")):
+            roles.append("Director")
+        if _is_true_flag(_tag("isTenPercentOwner")):
+            roles.append("10% Owner")
+        if _is_true_flag(_tag("isOfficer")):
+            roles.append("Officer")
+        role_raw = ", ".join(roles)
     txn_code = _tag("transactionCode") or ""
     # Do NOT fall back to sharesOwnedFollowingTransaction — that is the insider's total
     # post-trade position (e.g. 500,000 shares), not the number of shares transacted.
@@ -158,6 +171,13 @@ def _extract_form4_data(xml: str, accession: str) -> dict | None:
         "filing_date": txn_date,  # approximate — actual filing date from index
         "is_10b5_1": is_10b5_1,
     }
+
+
+def _is_true_flag(raw: str | None) -> bool:
+    """Form 4 booleans are "1"/"0" in SEC's own filings; some filing agents emit "true"/"false".
+    Accept both, and treat anything else — including the literal strings that used to end up in
+    the role column — as false rather than truthy."""
+    return (raw or "").strip().lower() in ("1", "true")
 
 
 def _normalize_role(raw: str) -> str:
@@ -359,3 +379,146 @@ def _txn_to_dict(t: InsiderTransaction) -> dict:
         # parsed from — never backfilled/guessed, matching every other nullable field here.
         "is_10b5_1": t.is_10b5_1,
     }
+
+
+# ── AUD-INSIDERUW: market-wide Form 4 ingestion from Unusual Whales ───────────
+#
+# WHY, GIVEN THE EDGAR PATH ALREADY WORKS. It works but it barely reaches anything: it is a
+# PER-TICKER, on-demand scrape, so two years of it produced 1,049 rows of which only 147 are
+# open-market purchases. Measured 2026-09-24, those 147 give:
+#
+#     +0.69% mean 21-day alpha vs SPY, 58.0% beat rate, n=112 resolved
+#     t = 0.93 naive, t = 0.60 day-clustered across 46 distinct filing days
+#
+# |t| < 2 means NOT YET MEASURABLE, never "no edge" (see the rule in
+# docs/audits/2026-09-22-news-llm-hmm-prediction-audit.md §7.4). The standard deviation is 7.85%
+# against a 0.69% mean, so the sample — not the signal — is what is missing. UW's feed is
+# market-wide at roughly 850 filings a day across ~196 tickers per filing day, which is the
+# difference between answering this question next quarter and never answering it.
+#
+# IT IS ALSO BETTER DATA. `is_10b5_1` is populated on 500 of 500 sampled UW rows versus 11 of
+# 1,049 EDGAR rows — and that flag is the whole signal/noise line for insider activity, since a
+# sale scheduled six months ago reveals nothing about anyone's view today. UW also carries clean
+# `officer_title` plus explicit is_officer/is_director/is_ten_percent_owner flags, against the
+# EDGAR path's own role bug (AUD-INSIDERROLE).
+#
+# DELIBERATELY NO SCHEMA CHANGE. Everything maps onto existing columns: transaction_code through
+# the same _TRANSACTION_CODES vocabulary the EDGAR parser already writes, the role flags resolved
+# into `insider_role` the same way, and `accession_number` — the table's unique key — synthesised
+# deterministically from the fields that identify a filing, so re-running is idempotent and the
+# two sources cannot double-insert the same event.
+
+_UW_INSIDER_URL = "https://api.unusualwhales.com/api/insider/transactions"
+
+# UW's transaction_code values, mapped onto the vocabulary already in this table. Only P and S
+# are STORED (matching the EDGAR path's own filter): an award, an option exercise or a
+# tax-withholding disposal is a compensation mechanic, not a decision about the stock, and
+# mixing them into "purchases" is the single fastest way to destroy this dataset's meaning.
+_UW_STORED_CODES = {"P": "purchase", "S": "sale"}
+
+
+def _uw_insider_role(row: dict) -> str:
+    """A readable role from UW's title plus its boolean flags."""
+    title = (row.get("officer_title") or "").strip()
+    if title:
+        return title[:128]
+    roles = []
+    if row.get("is_director"):
+        roles.append("Director")
+    if row.get("is_ten_percent_owner"):
+        roles.append("10% Owner")
+    if row.get("is_officer"):
+        roles.append("Officer")
+    return (", ".join(roles) or "Insider")[:128]
+
+
+def _uw_synthetic_accession(row: dict) -> str:
+    """A stable id for a UW row, since UW does not return the SEC accession number.
+
+    Hashed over the fields that identify one person's one transaction in one security on one
+    day, so the SAME filing seen twice — on a re-run, or on a later page — collides on the
+    table's unique key instead of inserting again. Prefixed `uw:` so a row's provenance stays
+    visible and it can never collide with a real EDGAR accession.
+    """
+    import hashlib
+
+    key = "|".join(str(row.get(k) or "") for k in
+                   ("ticker", "owner_name", "transaction_date", "transaction_code",
+                    "amount", "price", "filing_date"))
+    return "uw:" + hashlib.sha256(key.encode()).hexdigest()[:28]
+
+
+def sync_insider_from_uw(limit: int = 500) -> dict:
+    """Ingest the market-wide Form 4 feed. Returns counts; never raises into the scheduler."""
+    from common.ai_keys import get_unusual_whales_key, is_unusual_whales_enabled
+
+    if not (is_unusual_whales_enabled() and get_unusual_whales_key()):
+        return {"skipped": "unusual_whales_unavailable"}
+    try:
+        r = httpx.get(
+            _UW_INSIDER_URL,
+            params={"limit": limit},
+            headers={"Authorization": f"Bearer {get_unusual_whales_key()}",
+                     "Accept": "application/json"},
+            timeout=45,
+        )
+        if r.status_code != 200:
+            log.warning("insider.uw_status", status=r.status_code)
+            return {"error": f"status {r.status_code}"}
+        body = r.json()
+        rows = body.get("data") if isinstance(body, dict) else body
+        rows = rows if isinstance(rows, list) else []
+    except Exception as exc:
+        log.warning("insider.uw_fetch_failed", error=str(exc))
+        return {"error": str(exc)[:200]}
+
+    if not rows:
+        return {"fetched": 0, "stored": 0}
+
+    stored = skipped_code = skipped_ticker = 0
+    with SessionLocal() as s:
+        ticker_map = {sym.upper(): sid for sid, sym in s.execute(select(Stock.id, Stock.symbol)).all()}
+        for row in rows:
+            try:
+                code = (row.get("transaction_code") or "").upper()
+                txn_type = _UW_STORED_CODES.get(code)
+                if txn_type is None:
+                    skipped_code += 1
+                    continue
+                stock_id = ticker_map.get((row.get("ticker") or "").upper())
+                if stock_id is None:
+                    skipped_ticker += 1
+                    continue
+                txn_date = (row.get("transaction_date") or "")[:10]
+                filing_date = (row.get("filing_date") or txn_date)[:10]
+                if not txn_date:
+                    continue
+                price = row.get("price")
+                price = float(price) if price not in (None, "") else None
+                # UW's `amount` is SIGNED (negative on a disposal). Shares are a magnitude here;
+                # direction already lives in transaction_type, and storing a negative share
+                # count would silently flip every total_value that multiplies by it.
+                amount = row.get("amount")
+                shares = abs(int(float(amount))) if amount not in (None, "") else None
+                stmt = pg_insert(InsiderTransaction).values(
+                    stock_id=stock_id,
+                    insider_name=(row.get("owner_name") or "Unknown")[:255],
+                    insider_role=_uw_insider_role(row),
+                    transaction_type=txn_type,
+                    shares=shares,
+                    price_per_share=price if price and price > 0 else None,
+                    total_value=(shares * price) if shares and price and price > 0 else None,
+                    transaction_date=date.fromisoformat(txn_date),
+                    filing_date=date.fromisoformat(filing_date),
+                    accession_number=_uw_synthetic_accession(row),
+                    is_10b5_1=row.get("is_10b5_1"),
+                ).on_conflict_do_nothing(constraint="uq_insider_accession")
+                stored += s.execute(stmt).rowcount
+            except Exception:
+                continue  # one malformed row must never drop the rest of a real response
+        s.commit()
+
+    log.info("insider.uw_synced", fetched=len(rows), stored=stored,
+             skipped_code=skipped_code, skipped_ticker=skipped_ticker)
+    return {"fetched": len(rows), "stored": stored,
+            "skipped_non_open_market": skipped_code, "skipped_untracked_ticker": skipped_ticker}
