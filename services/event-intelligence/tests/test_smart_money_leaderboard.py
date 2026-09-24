@@ -158,11 +158,19 @@ def test_entry_basis_is_declared_as_the_disclosure_date():
 
 def test_the_price_join_correlates_on_disclosure_date_and_never_on_trade_date():
     """AUD-T401-SOURCETEXTTESTS: a SQL-SHAPE assertion pinning no numeric literal. Which date
-    column the entry/exit price subqueries correlate on is not a tunable threshold — it is the
-    difference between +4.70% (unreachable, measured from the trade) and +2.89% (what a reader
-    could actually have captured), and a swap would silently inflate the whole report."""
-    assert "p.d >= c.disclosure_date" in _SMART_MONEY_SRC
-    assert "p.d >= c.trade_date" not in _SMART_MONEY_SRC
+    column the price join keys on is not a tunable threshold — it is the difference between
+    +3.73% (unreachable, measured from the trade) and +3.15% (what a reader could actually have
+    captured), and a swap would silently inflate the whole report.
+
+    This test EARNED ITS KEEP during AUD-SMARTMONEY-PERF: rewriting the correlated subqueries
+    into a DISTINCT ON join changed the predicate's alias, and this assertion went red rather
+    than letting an unverified join shape ship. Written against the join as it now stands; the
+    negative assertion is the half that actually guards the property, and it is alias-agnostic
+    on purpose."""
+    assert "p.d >= cd.disclosure_date" in _SMART_MONEY_SRC
+    # Whatever the aliasing, no price join in this query may key on the trade date.
+    assert ">= c.trade_date" not in _SMART_MONEY_SRC
+    assert ">= cd.trade_date" not in _SMART_MONEY_SRC
 
 
 def test_only_purchases_are_averaged_into_a_follow_return():
