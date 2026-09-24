@@ -1398,3 +1398,114 @@ The live endpoint correctly returns a real `sell` for SMTC, `None` for the mid-s
 hit rate is **46% next-day (n=93)**, at or below a coin flip. **Do not wire the side into any
 gate, score or sizing decision until the scoreboard says something** — roughly 2-4 weeks, so
 revisit early October.
+
+---
+
+## AUD-SQUEEZE-ACCURACY (2026-09-24) — what the four alerts are actually worth, and how to read them
+
+User asked: *"Squeeze Watch, Pre Breakout, Option expiry watch and Short Squeeze Alert — how to
+read them and what action should I take? What would be the order? And I haven't received Short
+Squeeze alert for a long time. And how accurate are they?"*
+
+### Measured accuracy
+
+From `squeeze_alert_outcomes` / `prebreakout_alert_outcomes`. **Returns are measured from
+`entry_price` (the next session), not `alert_price`** — the honest basis, since nobody can fill
+at the alert quote. Returns in those tables are **fractions** (−0.05 = −5%).
+
+| alert | `alert_type` | n | 5d win | avg 5d |
+|---|---|---|---|---|
+| **Short Squeeze Alert** | `short_squeeze` | 15 | **13.3%** | **−5.1%** |
+| Options Expiry Watch (puts) | `gamma_unwind_puts` | 247 | 45.7% | +0.1% |
+| Options Expiry Watch (calls) | `gamma_unwind_calls` | 123 | 41.5% | 0.0% |
+| Pre-Breakout Watch | `prebreakout` | 36 | 33.3% | 0.0% |
+| Squeeze Watch | `squeeze_ignition` | 3 | — | — |
+
+**The Short Squeeze Alert — the only BUY-direction alert of the four — is anti-predictive.**
+2 winners in 15 is p≈0.004 against a coin flip, so small-sample though it is, it is unlikely to
+be luck. The two Options Expiry variants are coin flips with a genuinely zero average return on
+the largest sample (370 combined) — no edge, but no harm, and the email's "a watch, not a call"
+framing is accurate. Pre-Breakout shows nothing measurable.
+
+### Root cause: it fires at the top of an intraday spike
+
+The gap between the alert price and the next session's entry:
+
+| alert | avg | median | worst |
+|---|---|---|---|
+| **short_squeeze** | **−5.86%** | **−6.65%** | −14.39% |
+| gamma_unwind_calls | −0.26% | −0.34% | −11.90% |
+| gamma_unwind_puts | −0.08% | −0.08% | −20.55% |
+| squeeze_ignition | **+1.36%** | +1.79% | −3.13% |
+
+12 of 15 adverse (sign test p≈0.018), and **specific to this alert** — the other families sit at
+~0%. The gate requires an intraday move already `>= _SQUEEZE_MIN_INTRADAY_MOVE_PCT` (3.0%), so by
+construction it fires *after* the move; roughly 6% is typically given back before anyone can act.
+From the alert price the 5-day return is **−10.6%**.
+
+Worked example: CRWV 2026-09-09 alerted at $99.83, opened next day at $89.12, was $80.92 five
+days later.
+
+`AUD-SQUEEZE-ENTRYGAP` now renders this in the email itself. See that entry for why the gap is
+reported at a sample floor of 5 while the win rate is withheld below 30 — they are different
+questions with different evidence bars, and conflating them kept the platform silent about a
+−6.65% median.
+
+Note the contrast that makes the diagnosis convincing: **Squeeze Watch's gap is POSITIVE
+(+1.36%)**. The earlier, lower-confidence alert has better execution than the confirmed one,
+which is what you would expect if the confirmed alert is a chase detector.
+
+### How to read them, in order of what the evidence supports
+
+1. **Options Expiry Watch** — most data (370 alerts), honestly framed. Treat as *context* for a
+   position already held near expiry, never an entry. Per-symbol win rates in the email (QQQ 65%,
+   n=37) mean more than the 46% aggregate. No short interest is read by this alert at all.
+2. **Pre-Breakout Watch** — a *setup*, explicitly not a prediction. Use as a watchlist: names to
+   form a view on before they move. No measurable edge yet (n=36).
+3. **Squeeze Watch** — too few resolved (n=3–5) to judge, but its entry gap is favourable. Worth
+   watching as data accumulates.
+4. **Short Squeeze Alert** — **do not buy on it as it stands.** The measured behaviour says the
+   move is largely over when it fires.
+
+### Why they had not received one
+
+`short_squeeze` last fired **2026-09-09**; only **15 times ever** (11 in Aug, 4 in Sept). Rare by
+design rather than broken — but three real fragilities, none of which is visible to a recipient:
+
+- **30-day hard reject on short-interest age** (`scheduler.py:3281`, gate `:3433-3435`). Emails
+  showing "as of 2026-08-31, 23d ago — very stale" were **7 days from silently disqualifying**.
+  Nothing in the pipeline can make that date newer — it is yfinance's `dateShortInterest`.
+- **Fundamentals Redis TTL is 24h but the only scheduled refresh is WEEKLY** (Sunday 14:00 PT,
+  `_weekly_full_refresh`). A missing `stockai:fundamentals:v2:{sym}` blob skips the candidate
+  silently; that is what `_SQUEEZE_FUND_CACHE_MISS_COUNTER_KEY` counts.
+- **Market-hours gating** plus a 1-minute interval means a candidate qualifying outside RTH is
+  never seen.
+
+### A targeting defect found while investigating — NOT yet fixed
+
+**Recipients are every user holding any untriggered `PriceAlert` row, and the alert's own symbol
+is never compared against it** (`scheduler.py:3324-3332`, `:3680-3691`, `:4147-4155`,
+`:4432-4441`). So a price alert on one ticker subscribes a user to *every* candidate on *every*
+symbol for all four alerts. There is no per-alert-type preference and no unsubscribe path in
+`send_email()` (`email_service.py:75-110`). Deliberately recorded, not fixed in this pass — it
+changes who receives mail and deserves its own decision.
+
+### Gate reference
+
+| | Short Squeeze | Squeeze Watch |
+|---|---|---|
+| move | `>= 3.0%` (`_SQUEEZE_MIN_INTRADAY_MOVE_PCT`) | `1.0% <= x < 3.0%` |
+| RVOL base / floor | 2.2 / 1.5 | 1.8 / 1.3 |
+| short float | `>= 15%` (`_SQUEEZE_MIN_SHORT_FLOAT`) | **same constant** |
+| SI staleness | 30d hard reject | same |
+| dedup | `stockai:squeeze_active:{uid}`, 20h, transition-only | `stockai:squeeze_ignition_active:{uid}` |
+
+The bands are mutually exclusive by construction (`<` vs `>=` at exactly 3.0), so a stock
+climbing 1%→3% produces both emails by design.
+
+Pre-Breakout: `bb_width_pctile <= 0.20` **and** `atr_pctile <= 0.20` over 126 days, `>= 146`
+daily bars, short float `>= 15%`, US-only, every 4h. `volume_dried_up` is displayed, not gated.
+
+Options Expiry: `0 <= DTE <= 5`, strikes within ±5%, `>= $5M` notional, calls concentration
+`>= 0.85` **or** puts `>= 0.55`; dedup is one email per user per symbol **per expiry** (10-day
+TTL), not a transition diff. No market-hours gate at all.
