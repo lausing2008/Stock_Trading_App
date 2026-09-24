@@ -74,13 +74,64 @@ def _clear_hot(symbol: str) -> None:
 
 
 def _current_hot_sentiment(symbol: str) -> str | None:
+    payload = _current_hot_payload(symbol)
+    return payload.get("sentiment_label") if payload else None
+
+
+def _current_hot_payload(symbol: str) -> dict | None:
+    """The whole stored flag, not just its label — DA-09 needs the flagged event's timestamp."""
     try:
         raw = get_redis().get(f"{_HOT_NEWS_KEY_PREFIX}{symbol.upper()}")
         if not raw:
             return None
-        return json.loads(raw).get("sentiment_label")
+        payload = json.loads(raw)
+        return payload if isinstance(payload, dict) else None
     except Exception:
         return None
+
+
+def _may_clear_negative_flag(symbol: str, cls: dict, published_at) -> bool:
+    """DA-09 (2026-09-24): whether this story is evidence an adverse event has resolved.
+
+    The old condition was "any inserted, classified, non-macro story for a symbol whose flag is
+    currently negative" — so an UNRELATED, still-NEGATIVE, non-material headline cleared a
+    material-negative brake. The signal engine uses that flag to compress bullish fused scores,
+    so removing it changes trading evidence on the strength of a story that said nothing good.
+
+    Two guards, both answerable from what is already stored:
+
+      * SENTIMENT. A negative story is not evidence that a negative situation improved. Only
+        positive or neutral classifications may clear.
+      * RECENCY. An older article ingested late must not clear a newer flag — that is a clock
+        artefact, not news. Missing or unparseable timestamps fail CLOSED (no clear), because
+        "I cannot tell which came first" is not grounds for removing a risk brake.
+
+    HONESTLY INCOMPLETE. This narrows the defect, it does not close it: an unrelated POSITIVE
+    story can still clear an unresolved adverse event, because nothing here links a story to the
+    event it supposedly resolves. The audit's own remedy — event IDs, materiality, supersession
+    and expiry, with active events aggregated per symbol instead of one last-writer-wins flag —
+    needs a schema and is deliberately not attempted in passing.
+    """
+    if (cls.get("sentiment_label") or "neutral") == "negative":
+        return False
+    flagged = _current_hot_payload(symbol)
+    if not flagged:
+        return False
+    flagged_ts = flagged.get("ts")
+    if not flagged_ts or not published_at:
+        return False
+    try:
+        from datetime import datetime as _dt
+
+        ft = _dt.fromisoformat(str(flagged_ts))
+        pt = published_at if hasattr(published_at, "tzinfo") else _dt.fromisoformat(str(published_at))
+        if ft.tzinfo is None:
+            ft = ft.replace(tzinfo=timezone.utc)
+        if pt.tzinfo is None:
+            pt = pt.replace(tzinfo=timezone.utc)
+        return pt >= ft
+    except Exception:
+        return False
 
 
 def persist_news_items(
@@ -250,7 +301,13 @@ def persist_news_items(
                     # lines above): an index-level story is not evidence ABOUT this specific
                     # company either way, so it must not clear a company-specific flag any
                     # more than it should be allowed to set one.
-                    elif sym and cls and cls["category"] != "macro" and _current_hot_sentiment(sym) == "negative":
+                    elif (
+                        sym and cls and cls["category"] != "macro"
+                        and _current_hot_sentiment(sym) == "negative"
+                        # DA-09: an unrelated, still-negative, non-material story used to clear
+                        # a material-negative brake here. See _may_clear_negative_flag().
+                        and _may_clear_negative_flag(sym, cls, raw.get("published_at"))
+                    ):
                         _clear_hot(sym)
         session.commit()
 

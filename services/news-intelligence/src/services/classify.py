@@ -127,12 +127,29 @@ def classify_headlines(headlines: list[str], api_key: str) -> list[dict | None]:
             out.append({
                 "sentiment_score": score,
                 "sentiment_label": label,
-                "is_material": bool(item.get("is_material", False)),
+                "is_material": _coerce_bool(item.get("is_material")),
                 "category": category,
             })
         except (TypeError, ValueError):
             out.append(None)
     return out
+
+
+def _coerce_bool(value) -> bool:
+    """DA-09: an LLM returns JSON-ish text, and `bool("false")` is TRUE.
+
+    A model that emits the STRING "false" — which happens, and is valid JSON for a string field
+    — would mark a headline material and set a risk brake that suppresses BUY signals. Python's
+    own truthiness is the wrong tool for a field whose source is a language model; the spellings
+    it actually produces have to be named.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1", "y")
+    return False
 
 
 def classify_in_batches(headlines: list[str], api_key: str) -> list[dict | None]:
