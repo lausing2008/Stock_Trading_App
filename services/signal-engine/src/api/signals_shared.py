@@ -189,10 +189,13 @@ def _service_token() -> str:
     exp = int(time.time()) + 365 * 86400
     payload = {
         "sub": "signal-engine",
-            # DA-08: marks this as an INTERNAL SERVICE principal. Only a holder of the
-            # signing secret can mint it, so privileged routes can grant access to the
-            # scheduler without trusting a guessable `sub` string like "scheduler".
-            "svc": True,
+        # DA-08: marks this as an INTERNAL SERVICE principal. Only a holder of the signing
+        # secret can mint it, so privileged routes can grant access without trusting a
+        # guessable `sub` string.
+        # R07: scoped to its own job — signal-engine calls research and signal routes, all
+        # guarded by get_current_username, which does not inspect `svc`. Deliberately NOT
+        # "model": this token must not be able to retrain anything.
+        "svc": ["signal-engine"],
         "exp": exp,
         "jti": str(__import__("uuid").uuid4()),
     }

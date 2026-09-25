@@ -72,6 +72,75 @@ def _auth(monkeypatch):
     return jwt_auth
 
 
+# ── R07: require_model_admin now re-reads the account from the database ──────
+#
+# A fake `db` module, installed for the whole suite. The lookup is real enough to fail if the
+# code queries the wrong username: rows are keyed by username and `filter()` resolves through
+# the predicate the code actually builds.
+
+class _UsernameColumn:
+    def __eq__(self, other):
+        return ("username", other)
+
+
+class _FakeUserModel:
+    username = _UsernameColumn()
+
+
+class _FakeRole:
+    ADMIN = "ADMIN"
+    USER = "USER"
+
+
+class _FakeQuery:
+    def __init__(self, rows):
+        self._rows, self._pred = rows, None
+
+    def filter(self, pred):
+        self._pred = pred
+        return self
+
+    def one_or_none(self):
+        assert self._pred is not None, "the account lookup must filter, not fetch arbitrarily"
+        field, value = self._pred
+        assert field == "username"
+        return self._rows.get(value)
+
+
+class _FakeSession:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def query(self, _model):
+        return _FakeQuery(self._rows)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+
+class _FakeRow:
+    def __init__(self, is_active=True, role="ADMIN"):
+        self.is_active, self.role = is_active, role
+
+
+ACCOUNTS: dict[str, _FakeRow] = {}
+
+
+@pytest.fixture(autouse=True)
+def _fake_db(monkeypatch):
+    """Installs the fake `db` module require_model_admin imports lazily, and resets ACCOUNTS."""
+    ACCOUNTS.clear()
+    mod = types.ModuleType("db")
+    mod.SessionLocal = lambda: _FakeSession(ACCOUNTS)
+    mod.User = _FakeUserModel
+    mod.UserRole = _FakeRole
+    monkeypatch.setitem(sys.modules, "db", mod)
+    return mod
+
+
 def _token(**claims):
     base = {"sub": "someone", "jti": str(uuid.uuid4()), "exp": int(time.time()) + 300}
     base.update(claims)
@@ -158,6 +227,7 @@ def test_a_token_without_a_jti_cannot_be_revoked_so_is_refused(_auth):
 # ── Who is allowed ───────────────────────────────────────────────────────────
 
 def test_an_admin_user_may_mutate_models(_auth):
+    ACCOUNTS["root"] = _FakeRow(is_active=True, role="ADMIN")
     assert _auth.require_model_admin(_token(sub="root", role="admin")) == "root"
 
 
@@ -169,13 +239,27 @@ def test_the_scheduler_service_principal_may_mutate_models(_auth):
 
 def test_every_service_token_minter_carries_the_capability_claim():
     """A minter that forgets `svc` produces a token that authenticates fine and then fails at
-    the privileged call — which surfaces as a broken scheduled job, not as an auth error."""
-    root = _ROOT
-    for rel in ("services/market-data/src/services/scheduler.py",
-                "services/signal-engine/src/api/signals_shared.py",
-                "services/market-data/src/api/risk_snapshots.py"):
-        src = (root / rel).read_text()
-        assert '"svc": True' in src, rel
+    the privileged call — which surfaces as a broken scheduled job, not as an auth error.
+
+    R07 replaced the blanket `"svc": True` with named scopes, so this now also checks that each
+    minter asks for the job it actually does. The scheduler drives nightly training; the other
+    two only call routes guarded by get_current_username, which never inspects `svc` at all."""
+    import re
+
+    expected = {
+        "services/market-data/src/services/scheduler.py": True,
+        "services/signal-engine/src/api/signals_shared.py": False,
+        "services/market-data/src/api/risk_snapshots.py": False,
+    }
+    for rel, needs_model in expected.items():
+        src = (_ROOT / rel).read_text()
+        m = re.search(r'"svc":\s*([^\n,]+)', src)
+        assert m, f"{rel} mints a service token with no svc claim"
+        claim = m.group(1)
+        assert claim != "True", f"{rel} still grants every scope"
+        has_model = '"model"' in claim
+        assert has_model is needs_model, (
+            f"{rel}: model scope should be {needs_model}, got {claim}")
 
 
 # ── The routes themselves ────────────────────────────────────────────────────

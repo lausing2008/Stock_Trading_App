@@ -7,6 +7,13 @@ _stubs = [
     "structlog",
     "common", "common.config", "common.logging", "common.ai_keys", "common.redis_client",
     "common.uw_congress", "common.llm_usage",
+    # R07: auth.py imports revoke_user_tokens from here. Stubbed rather than real because the
+    # real module resolves `_settings.jwt_secret` and a Redis client at IMPORT time; the
+    # authorization behaviour itself is tested for real in
+    # services/ml-prediction/tests/test_r07_account_state_authz.py, which loads the actual
+    # file. What this stub buys is that a missing import is still caught here — the whole
+    # suite errored out until it was added, which is exactly the signal wanted.
+    "common.jwt_auth",
     "db", "db.session", "db.models",
     # DB / cache drivers
     "sqlalchemy", "sqlalchemy.orm", "sqlalchemy.dialects",

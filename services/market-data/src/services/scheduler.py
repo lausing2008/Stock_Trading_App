@@ -125,7 +125,10 @@ def _service_token() -> str:
             # DA-08: marks this as an INTERNAL SERVICE principal. Only a holder of the
             # signing secret can mint it, so privileged routes can grant access to the
             # scheduler without trusting a guessable `sub` string like "scheduler".
-            "svc": True,
+            # R07: names the capabilities this principal actually needs instead of "everything
+            # a service may do". The scheduler drives the nightly training/tuning/resweep jobs,
+            # so it holds "model" — and nothing else does.
+            "svc": ["model"],
             "jti": str(uuid.uuid4()),
             "exp": exp,
         }

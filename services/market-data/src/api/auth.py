@@ -15,6 +15,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from common.config import get_settings
+from common.jwt_auth import revoke_user_tokens
 from common.logging import get_logger
 from db import SessionLocal, PriceAlert, SignalAlert, User, UserRole, UserTier, get_session
 
@@ -169,7 +170,12 @@ def _make_token(username: str, role: str, tier: str = "basic") -> str:
     """
     expire = datetime.now(timezone.utc) + timedelta(days=_settings.jwt_expire_days)
     return jwt.encode(
-        {"sub": username, "role": role.lower(), "tier": tier.lower(), "exp": expire, "jti": str(uuid.uuid4())},
+        {"sub": username, "role": role.lower(), "tier": tier.lower(), "exp": expire,
+         "jti": str(uuid.uuid4()),
+         # R07: WHEN this token was issued. Without it, a per-user revocation marker cannot
+         # tell a token minted before a disable from one minted after the account was restored,
+         # and every check has to fail closed forever. jwt_auth._user_revoked() reads it.
+         "iat": int(datetime.now(timezone.utc).timestamp())},
         _settings.jwt_secret,
         algorithm=ALGORITHM,
     )
@@ -311,6 +317,10 @@ def reset_password_public(request: Request, body: ResetPasswordRequest, session:
         raise HTTPException(400, "New password must be at least 8 characters")
     user.password_hash = _hash_password(body.new_password)
     session.commit()
+    # R07: this is the unauthenticated recovery path — whoever is here proved the OLD password,
+    # so any session still holding it must be cut off, not left to run until expiry.
+    revoke_user_tokens(user.username)
+    log.warning("auth.password_reset_public", username=user.username)
     _clear_rate_limit(ip)
     return {"status": "ok"}
 
@@ -409,6 +419,13 @@ def change_password(
         raise HTTPException(400, "New password must be at least 8 characters")
     user.password_hash = _hash_password(body.new_password)
     session.commit()
+    # R07, DELIBERATELY NOT REVOKING HERE. A self-service password change is the one case where
+    # revoking would log the user out of the session they are standing in, mid-action, with no
+    # token-refresh path on the frontend to hand them a new one. That is a real remaining gap —
+    # someone changing their password because they believe it is compromised does NOT end the
+    # attacker's other sessions — and closing it means returning a fresh token from this route
+    # and teaching the client to swap it in. The admin-reset and public-reset paths above, where
+    # the current holder is presumed hostile or locked out, DO revoke.
     return {"status": "ok"}
 
 
@@ -472,6 +489,14 @@ def delete_user(
         raise HTTPException(404, f"User '{username}' not found")
     session.delete(user)
     session.commit()
+    # R07: deleting the row did not invalidate the tokens it had issued. require_model_admin now
+    # also denies a missing account outright, but revoking here makes the deletion effective on
+    # every route, not only the privileged ones.
+    _revoked = revoke_user_tokens(username.lower())
+    log.warning("auth.user_deleted", username=username.lower(), admin=admin.username,
+                tokens_revoked=_revoked)
+    if not _revoked:
+        return {"status": "deleted", "username": username, "token_revocation": "failed"}
     return {"status": "deleted", "username": username}
 
 
@@ -491,6 +516,11 @@ def admin_reset_password(
         raise HTTPException(404, f"User '{username}' not found")
     user.password_hash = _hash_password(body.new_password)
     session.commit()
+    # R07: an admin resetting someone else's password is an account-recovery or
+    # suspected-compromise event. Leaving the old holder's tokens valid would make the reset
+    # cosmetic for up to jwt_expire_days.
+    revoke_user_tokens(user.username)
+    log.warning("auth.password_reset_by_admin", username=user.username, admin=admin.username)
     return {"status": "ok"}
 
 
@@ -517,7 +547,8 @@ def impersonate(
     expire = datetime.now(timezone.utc) + timedelta(hours=1)
     token = jwt.encode(
         {"sub": user.username, "role": user.role.value.lower(), "tier": user.tier.value.lower(),
-         "exp": expire, "jti": str(uuid.uuid4()), "impersonated_by": admin.username},
+         "exp": expire, "jti": str(uuid.uuid4()), "impersonated_by": admin.username,
+         "iat": int(datetime.now(timezone.utc).timestamp())},
         _settings.jwt_secret, algorithm=ALGORITHM,
     )
     log.warning("auth.impersonate", admin=admin.username, target=user.username)
@@ -539,6 +570,19 @@ def toggle_user(
         raise HTTPException(404, f"User '{username}' not found")
     user.is_active = not user.is_active
     session.commit()
+    # R07: `is_active` alone did not stop anything — an already-issued token kept working until
+    # it expired, and for an administrator that meant continued authority to retrain or
+    # re-suppress every model on the platform. Disabling now invalidates the account's existing
+    # tokens too. Re-enabling deliberately does NOT un-revoke them: the user logs in again and
+    # gets a token minted after the marker.
+    if not user.is_active:
+        _revoked = revoke_user_tokens(user.username)
+        log.warning("auth.user_disabled", username=user.username, admin=admin.username,
+                    tokens_revoked=_revoked)
+        if not _revoked:
+            # The row is disabled either way; say so rather than reporting a clean success that
+            # hides an account whose live tokens are still valid.
+            return {"status": "ok", "is_active": user.is_active, "token_revocation": "failed"}
     return {"status": "ok", "is_active": user.is_active}
 
 

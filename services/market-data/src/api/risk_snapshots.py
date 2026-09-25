@@ -55,7 +55,11 @@ def _service_token() -> str:
         import uuid
         exp = datetime.now(timezone.utc) + timedelta(days=365)
         # DA-08: `svc` marks an internal service principal — see common.jwt_auth.
-        payload = {"sub": "risk-snapshots", "svc": True, "jti": str(uuid.uuid4()), "exp": exp}
+        # R07: scoped to its own job. This principal only calls routes guarded by
+        # get_current_username, which does not inspect `svc` at all — so it is deliberately
+        # NOT given "model", and a leak of this token cannot retrain anything.
+        payload = {"sub": "risk-snapshots", "svc": ["risk-snapshots"],
+                   "jti": str(uuid.uuid4()), "exp": exp}
         _service_token_cache = _jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
         _service_token_exp = exp.timestamp()
         return _service_token_cache
