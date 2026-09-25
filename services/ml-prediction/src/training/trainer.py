@@ -1489,6 +1489,44 @@ def _meta_blend_enabled() -> bool:
         return False
 
 
+# R09 (2026-09-24 follow-up audit): the flag gated only the ARITHMETIC.
+#
+# DA-02 stopped the meta probability from moving the number, and that part was correct. But the
+# prediction still ran on every call, and a non-null result still added `meta` to
+# `model_probabilities` and `_meta` to the model name. So a disabled member was reported as a
+# contributor: the response said `ensemble_xgb_lgb_rf_meta` and carried meta's probability while
+# meta contributed exactly nothing to it. Anything reading provenance — the signal reasons, the
+# admin panel, a later audit asking which models produced a call — was told something false, and
+# the feature/DB work behind the call was spent for a value that was then discarded.
+#
+# The flag is now resolved ONCE, before the call, and drives all three: whether meta runs,
+# whether it blends, and whether it is named as a contributor.
+#
+# SHADOW MODE is separate and off by default. It exists because "compute it but do not use it"
+# is a legitimate thing to want while validating a replacement — but it must be labelled as
+# what it is. Its output goes to `meta_shadow_probability` with an explicit applied weight of
+# 0.0, never into `model_probabilities` and never into the model name.
+_META_SHADOW_FLAG_KEY = "stockai:ml:meta_shadow_enabled"
+
+
+class _MetaDisabled(Exception):
+    """Control-flow sentinel: meta is switched off, so its whole block is skipped.
+
+    A dedicated exception rather than `pass`/`None` because the block it skips ends in a broad
+    `except Exception` that LOGS A WARNING — routing a deliberate skip through that would fill
+    the log with "meta_predict_failed" for the expected, default state and bury a real failure.
+    """
+
+
+def _meta_shadow_enabled() -> bool:
+    """Compute the meta probability for observation only. Fails CLOSED, like the blend flag."""
+    try:
+        from common.redis_client import get_redis
+        return get_redis().get(_META_SHADOW_FLAG_KEY) == "1"
+    except Exception:
+        return False
+
+
 def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "SWING") -> dict:
     """XGBoost (40%) + LightGBM (35%) + RandomForest (25%) weighted ensemble.
 
@@ -1563,7 +1601,16 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
     # T89: meta model as 4th ensemble member (15% weight, blended after 3-model renormalization)
     # predict_meta() returns None when the meta model hasn't been trained yet — falls back silently.
     _meta_prob: float | None = None
+    # R09: ONE resolution of the flags, before the call. Reading them again later could
+    # disagree with what actually happened — a flag flipped mid-request would then be reported
+    # as a contributor that never ran, or hide one that did.
+    _meta_blend_on = _meta_blend_enabled()
+    _meta_shadow_on = (not _meta_blend_on) and _meta_shadow_enabled()
     try:
+        if not (_meta_blend_on or _meta_shadow_on):
+            # Skipped entirely: no import, no sector/market-cap lookup, no inference. The
+            # feature work behind this call is not free, and its result would be discarded.
+            raise _MetaDisabled
         # T237-ML-META3: `from training.meta_trainer import ...` (bare, no `src.`/`.` prefix) has
         # never actually resolved in the running app — sys.path here is ['', '/app/shared', '/app',
         # ...], never '/app/src', so this raised ModuleNotFoundError on every call, silently caught
@@ -1590,6 +1637,8 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
             sector=_sector,
             market_cap=_market_cap,
         )
+    except _MetaDisabled:
+        _meta_prob = None
     except Exception as exc:
         # AUD291-SILENT-EXCEPTIONS-MLPRED: this exact except block's own comment above
         # (T237-ML-META3) documents a real, previously-undiscovered bug that hid here
@@ -1600,9 +1649,11 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
         log.warning("predict_latest_ensemble_three.meta_predict_failed", symbol=symbol, error=str(exc))
         _meta_prob = None
 
-    if _meta_prob is not None and _meta_blend_enabled():
+    _meta_applied_weight = 0.0
+    if _meta_prob is not None and _meta_blend_on:
         # Blend: reduce 3-model ensemble by 15%, add meta at 15%
         prob = prob * 0.85 + _meta_prob * 0.15
+        _meta_applied_weight = 0.15
 
     # Agreement: bullish if prob > 0.5 per model
     probs = [m["bullish_probability"] for m, _ in available]
@@ -1653,10 +1704,23 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
         model_probs["lightgbm"] = round(lgb_res["bullish_probability"], 4)
     if rf_res is not None:
         model_probs["random_forest"] = round(rf_res["bullish_probability"], 4)
-    if _meta_prob is not None:
+    # R09: a member is listed here only if it actually moved the number. A shadow run is
+    # reported below under its own name with weight 0.0, not smuggled in as a contributor.
+    if _meta_prob is not None and _meta_applied_weight > 0:
         model_probs["meta"] = round(_meta_prob, 4)
 
-    model_name = f"ensemble_xgb{'_lgb' if lgb_res else ''}{'_rf' if rf_res else ''}{'_meta' if _meta_prob is not None else ''}"
+    _is_contributor = _meta_applied_weight > 0
+    model_name = f"ensemble_xgb{'_lgb' if lgb_res else ''}{'_rf' if rf_res else ''}{'_meta' if _is_contributor else ''}"
+
+    # R09: the weights that were actually applied, so a reader does not have to infer them from
+    # the model name and a constant buried in this function.
+    _applied_weights = {name: round(w / total_w, 4) for (m, w), name in zip(
+        available,
+        [("xgboost" if m is xgb else "lightgbm" if m is lgb_res else "random_forest")
+         for m, _ in available])}
+    if _is_contributor:
+        _applied_weights = {k: round(v * 0.85, 4) for k, v in _applied_weights.items()}
+        _applied_weights["meta"] = _meta_applied_weight
 
     # Weight-average thresholds by the same portfolio weights used for blending
     buy_threshold = sum(
@@ -1709,6 +1773,15 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
         "ensemble": True,
         "model_probabilities": model_probs,
         "ensemble_agreement": agreement,
+        # R09: the weights actually applied to produce `bullish_probability`, so provenance is
+        # read rather than inferred from the model name. Sums to 1.0.
+        "applied_weights": _applied_weights,
+        # R09: a shadow run is reported here, under its own name, with an applied weight of
+        # 0.0 — never inside `model_probabilities` and never in the model name. Absent unless
+        # shadow mode is explicitly switched on.
+        **({"meta_shadow_probability": round(_meta_prob, 4),
+            "meta_shadow_applied_weight": 0.0} if (_meta_shadow_on and _meta_prob is not None)
+           else {}),
         "metrics": {
             "mean_model_test_auc": round(mean_auc, 4),
             "cv_auc_mean": round(mean_auc, 4),

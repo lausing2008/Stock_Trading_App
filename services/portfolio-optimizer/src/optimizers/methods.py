@@ -40,6 +40,12 @@ class PortfolioWeights:
     sleeve_expected_return: float | None = None
     sleeve_expected_vol: float | None = None
     sleeve_sharpe_ratio: float | None = None
+    # R10: max_drawdown above is recomputed on the RETURNED allocation's own return path. This
+    # is the fully-invested sleeve's drawdown, which the generic field used to carry by mistake.
+    sleeve_max_drawdown: float | None = None
+    # R10: what `diversification` is measured over. Cash is excluded — folding a buffer into a
+    # concentration index makes a portfolio look better diversified for holding less.
+    diversification_basis: str | None = None
     # The modelled return on the uninvested buffer, surfaced so the assumption is visible.
     cash_return_assumed: float | None = None
     # AUD250-PORTFOLIOOPTIMIZER-SILENT-FALLBACK-NO-FLAG: every equal-weight fallback below
@@ -86,23 +92,47 @@ def _prepare(returns: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
 _CASH_RETURN = 0.0
 
 
-def _metrics(w: np.ndarray, mu: np.ndarray, cov: np.ndarray, returns: pd.DataFrame) -> dict:
-    exp_ret = float(w @ mu)
+def _metrics(w: np.ndarray, mu: np.ndarray, cov: np.ndarray, returns: pd.DataFrame,
+             cash: float = 0.0) -> dict:
+    """Every metric computed from ONE allocation and ONE return path.
+
+    R10 (2026-09-24 follow-up audit). DA-11 made expected_return / expected_vol / sharpe_ratio
+    cash-aware by patching them individually onto a COPY of the sleeve's metric dict. The copy
+    also carried `max_drawdown` and `diversification`, and neither was ever recomputed — so the
+    generic response field kept describing the fully invested path. The audit's probe: a
+    one-asset path of [+10%, -20%, +5%] with the default 5% cash reports -20% maximum drawdown
+    where the returned 95% exposure gives -19%.
+
+    Patching metrics one at a time off a copied dict is the defect, not the arithmetic of any
+    single one of them. So `w` is now the allocation ACTUALLY RETURNED (it sums to 1 - cash),
+    `cash` is modelled explicitly, and everything below — drawdown included — falls out of that
+    single path. There is no metric left that can be forgotten, because none is copied.
+
+    DIVERSIFICATION STAYS A SLEEVE MEASURE, with `diversification_basis` saying so. Folding a
+    cash buffer into a concentration index makes a portfolio look better diversified for
+    holding less, which is a different property (de-risking) wearing diversification's name.
+    The audit asked for an explicit basis, not a particular answer.
+    """
+    invested = float(w.sum())
+    exp_ret = float(w @ mu) + _CASH_RETURN * cash
     exp_vol = float(np.sqrt(np.clip(w @ cov @ w, 0, None)))
     sharpe = round((exp_ret - RISK_FREE) / exp_vol, 3) if exp_vol > 1e-9 else 0.0
 
-    port_rets = (returns.values * w).sum(axis=1)
+    port_rets = (returns.values * w).sum(axis=1) + _CASH_RETURN * cash
     cum = np.cumprod(1 + np.clip(port_rets, -0.99, None))
     running_max = np.maximum.accumulate(cum)
     max_dd = float((cum / running_max - 1).min())
 
-    hhi = float((w ** 2).sum())
+    # Normalised within the sleeve, so a 5% cash buffer does not read as diversification.
+    w_sleeve = w / invested if invested > 1e-9 else w
+    hhi = float((w_sleeve ** 2).sum())
     return {
         "expected_return": round(exp_ret, 4),
         "expected_vol": round(exp_vol, 4),
         "sharpe_ratio": sharpe,
         "max_drawdown": round(max_dd, 4),
         "diversification": round(1 - hhi, 4),
+        "diversification_basis": "sleeve",
     }
 
 
@@ -407,19 +437,22 @@ def ai_allocation(
     # Both numbers are now returned under names that say which is which. The headline
     # expected_return / expected_vol describe the allocation ACTUALLY RETURNED; the sleeve
     # figures are kept for cross-method comparison rather than discarded.
-    sleeve = _metrics(w, blended_mu, cov, ret_sub)
-    invested = 1.0 - cash
     # Cash is modelled as a zero-return, zero-variance, zero-covariance holding. That is an
     # ASSUMPTION, not a fact — it is stated in the response (cash_return_assumed) so a reader
     # can see it rather than infer it, and so a future rate can be wired in one place.
-    m = dict(sleeve)
-    m["expected_return"] = round(sleeve["expected_return"] * invested + _CASH_RETURN * cash, 4)
-    m["expected_vol"] = round(sleeve["expected_vol"] * invested, 4)
-    _vol = m["expected_vol"]
-    m["sharpe_ratio"] = round((m["expected_return"] - RISK_FREE) / _vol, 3) if _vol > 1e-9 else 0.0
+    #
+    # R10: TWO independent calls over TWO allocations, rather than one dict copied and patched
+    # field by field. `m` is computed from `w_scaled` — the weights this function actually
+    # returns — so every metric in it, drawdown included, describes the same path. `sleeve` is
+    # the fully invested comparison basis against mean_variance / risk_parity / HRP, and is
+    # carried under names that say so. A metric added to _metrics() later is now automatically
+    # correct in both; under the copy-and-patch shape it silently inherited the wrong one.
+    sleeve = _metrics(w, blended_mu, cov, ret_sub)
+    m = _metrics(w_scaled, blended_mu, cov, ret_sub, cash=cash)
     m["sleeve_expected_return"] = sleeve["expected_return"]
     m["sleeve_expected_vol"] = sleeve["expected_vol"]
     m["sleeve_sharpe_ratio"] = sleeve["sharpe_ratio"]
+    m["sleeve_max_drawdown"] = sleeve["max_drawdown"]
     m["cash_return_assumed"] = _CASH_RETURN
     return PortfolioWeights("ai_allocation",
                             {s: float(round(wi, 4)) for s, wi in zip(keep, w_scaled)},

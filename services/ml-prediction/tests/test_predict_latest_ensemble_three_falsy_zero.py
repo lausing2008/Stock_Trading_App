@@ -51,6 +51,12 @@ def _extract_predict_latest_ensemble_three():
         "_load_sector_and_market_cap": lambda symbol: (None, None),
         "log": _FakeLog(),
     }
+    # R09 resolves the meta flags at the TOP of the function rather than at the blend, so they
+    # are now reached on every call. Exec their REAL source into the namespace — both fail
+    # closed to False without Redis, which is the production default and what these tests want.
+    _meta_start = _TRAINER_SOURCE.index("_META_BLEND_FLAG_KEY = ")
+    _meta_end = _TRAINER_SOURCE.index("def predict_latest_ensemble_three(symbol:")
+    exec(_TRAINER_SOURCE[_meta_start:_meta_end], namespace)  # noqa: S102
     exec(func_source, namespace)  # noqa: S102 — isolated eval of one real function's own source
     return namespace["predict_latest_ensemble_three"], _FakePath
 

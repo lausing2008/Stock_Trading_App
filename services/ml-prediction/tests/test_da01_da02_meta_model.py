@@ -98,7 +98,12 @@ def test_the_split_boundary_is_computed_exactly_once():
 # ── DA-02: the blend is off until the contract is validated ──────────────────
 
 def test_the_meta_blend_is_gated():
-    assert "if _meta_prob is not None and _meta_blend_enabled():" in _TRAINER
+    """R09 moved the flag read to the TOP of the function — resolved once, into `_meta_blend_on`,
+    which then drives whether meta runs at all, whether it blends, and whether it is named as a
+    contributor. Calling `_meta_blend_enabled()` here again would let a flag flipped mid-request
+    disagree with what actually happened. The gate itself is unchanged; what it is read FROM is."""
+    assert "if _meta_prob is not None and _meta_blend_on:" in _TRAINER
+    assert "_meta_blend_on = _meta_blend_enabled()" in _TRAINER
 
 
 def test_the_gate_defaults_to_off_and_fails_closed():
