@@ -4,6 +4,7 @@ import Link from 'next/link';
 import Head from 'next/head';
 import useSWR from 'swr';
 import { getSession, isAdmin } from '@/lib/auth';
+import { formatCalendarDate } from '@/lib/calendarDate';
 import {
   api,
   type OptionsIncomeCandidate,
@@ -24,11 +25,10 @@ function fmtPct(v: number | null | undefined, digits = 1): string {
   return (v >= 0 ? '+' : '') + v.toFixed(digits) + '%';
 }
 
-function fmtDate(d: string | null | undefined): string {
-  if (!d) return '—';
-  try { return new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' }); }
-  catch { return d; }
-}
+// U01: an expiry is a CALENDAR date. `new Date("2026-09-25")` is midnight UTC, and
+// toLocaleDateString() then moves that instant into the viewer's zone — so a US user saw
+// "Sep 24, 26" for a contract expiring on the 25th. Browser-confirmed. See lib/calendarDate.ts.
+const fmtDate = (d: string | null | undefined): string => formatCalendarDate(d, 'short');
 
 const STRATEGY_LABEL: Record<string, string> = {
   COVERED_CALL: 'Covered Call',

@@ -346,8 +346,8 @@ export default function PortfolioPage() {
               { label: 'Diversification', value: result.diversification != null ? (result.diversification * 100).toFixed(0) + '%' : '—', color: '#60a5fa', hint: '1 − HHI' },
             ].map(m => (
               <div key={m.label} style={metricCard(m.color)}>
-                <div style={{ fontSize: '10px', color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>
-                  {m.label} <span style={{ color: '#1e293b' }}>· {m.hint}</span>
+                <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>
+                  {m.label} <span style={{ color: '#94a3b8' }}>· {m.hint}</span>
                 </div>
                 <div style={{ fontSize: '20px', fontWeight: 800, color: m.color }}>{m.value}</div>
               </div>
@@ -360,7 +360,7 @@ export default function PortfolioPage() {
             <div style={{ padding: '16px 20px', borderBottom: '1px solid #1e293b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
                 <span style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>Optimal Allocation</span>
-                <span style={{ fontSize: '12px', color: '#475569', marginLeft: '8px' }}>
+                <span style={{ fontSize: '12px', color: '#94a3b8', marginLeft: '8px' }}>
                   {Object.keys(result.weights).length} positions · {selectedMeta.label}
                 </span>
               </div>

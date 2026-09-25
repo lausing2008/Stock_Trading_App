@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useEffect } from 'react';
 import { api, type LatestPrice, type RankingRow, type SignalSummary, type WatchlistItem, type UserPosition } from '@/lib/api';
+// U01: a trade date is a calendar date, not an instant — see lib/calendarDate.ts.
+import { formatCalendarDate } from '@/lib/calendarDate';
 import { getSignalStyle } from '@/lib/settings';
 
 const DonutChart = dynamic(() => import('@/components/DonutChart'), { ssr: false });
@@ -579,7 +581,7 @@ export default function Positions() {
                         <span style={{ fontWeight: 700, color: t.type === 'BUY' ? '#818cf8' : '#f87171', width: '30px' }}>{t.type}</span>
                         <span>{fmt(t.shares, 2).replace(/\.?0+$/, '')} shares</span>
                         <span>@ ${fmt(t.price)}</span>
-                        <span style={{ color: '#334155', marginLeft: 'auto' }}>{new Date(t.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                        <span style={{ color: '#334155', marginLeft: 'auto' }}>{formatCalendarDate(t.date, 'medium')}</span>
                       </div>
                     ))}
                   </div>
