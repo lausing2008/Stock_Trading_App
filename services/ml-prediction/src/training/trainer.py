@@ -412,7 +412,9 @@ def _compute_oos_suppression(
     return False, None
 
 
-def _load_outcome_features(symbol: str, style: str = "SWING", lookback_days: int = 365) -> tuple[pd.DataFrame, pd.Series]:
+def _load_outcome_features(
+    symbol: str, style: str = "SWING", lookback_days: int = 365,
+) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     """Load closed signal_outcomes for this symbol and reconstruct feature vectors.
 
     For each closed SignalOutcome (is_correct is not None), looks up the price bar
@@ -430,12 +432,12 @@ def _load_outcome_features(symbol: str, style: str = "SWING", lookback_days: int
     try:
         horizon_val = SignalHorizon[style.upper()]
     except KeyError:
-        return pd.DataFrame(), pd.Series(dtype=int)
+        return pd.DataFrame(), pd.Series(dtype=int), pd.Series(dtype="object")
 
     with SessionLocal() as session:
         stock = session.execute(select(Stock).where(Stock.symbol == symbol.upper())).scalar_one_or_none()
         if stock is None:
-            return pd.DataFrame(), pd.Series(dtype=int)
+            return pd.DataFrame(), pd.Series(dtype=int), pd.Series(dtype="object")
 
         outcomes = session.execute(
             select(SignalOutcome).where(
@@ -448,12 +450,28 @@ def _load_outcome_features(symbol: str, style: str = "SWING", lookback_days: int
         ).scalars().all()
 
         if len(outcomes) < 20:
-            return pd.DataFrame(), pd.Series(dtype=int)
+            return pd.DataFrame(), pd.Series(dtype=int), pd.Series(dtype="object")
 
         # For each outcome, look up all price bars from (signal_date - 300d) to build features
         outcome_dates = sorted({o.signal_date for o in outcomes})
         signal_date_set = {o.signal_date for o in outcomes}
         label_map = {o.signal_date: int(o.is_correct) for o in outcomes}
+        # R01 (2026-09-24 follow-up audit): WHEN each label became knowable, not just the date
+        # the signal was emitted. A BUY outcome signalled on day D is not resolved until its
+        # position exits, so using it to fit a model that is then EVALUATED on days after D is
+        # training on the future. exit_date is the real resolution; ts_evaluated is when this
+        # platform computed it; signal_date + horizon is the conservative fallback when a row
+        # predates those columns. The LATEST of whichever exist is the honest availability.
+        _horizon_days = _HORIZON_BY_STYLE.get(style.upper(), 10)
+        avail_map: dict = {}
+        for o in outcomes:
+            cands = [o.signal_date + _td(days=_horizon_days)]
+            if getattr(o, "exit_date", None):
+                cands.append(o.exit_date)
+            _te = getattr(o, "ts_evaluated", None)
+            if _te is not None:
+                cands.append(_te.date() if hasattr(_te, "date") else _te)
+            avail_map[o.signal_date] = max(cands)
 
         # Fetch enough price history to build features for the earliest signal date
         earliest = min(outcome_dates) - _td(days=400)
@@ -466,7 +484,7 @@ def _load_outcome_features(symbol: str, style: str = "SWING", lookback_days: int
         ).scalars().all()
 
     if len(prices) < 100:
-        return pd.DataFrame(), pd.Series(dtype=int)
+        return pd.DataFrame(), pd.Series(dtype=int), pd.Series(dtype="object")
 
     df = pd.DataFrame([{
         "ts": p.ts,
@@ -481,7 +499,7 @@ def _load_outcome_features(symbol: str, style: str = "SWING", lookback_days: int
     # (SMA, ATR, z-scores) even though no label depends on it here.
     df = df[df["ts"].dt.date < _date.today()].copy()
     if df.empty:
-        return pd.DataFrame(), pd.Series(dtype=int)
+        return pd.DataFrame(), pd.Series(dtype=int), pd.Series(dtype="object")
 
     try:
         # AUD232-055: use the module's own _HORIZON_BY_STYLE instead of an independent inline
@@ -492,10 +510,10 @@ def _load_outcome_features(symbol: str, style: str = "SWING", lookback_days: int
         X_full, y_dir, _ = build_features(df, horizon=_outcome_horizon, macro_df=None)
     except Exception as exc:
         log.warning("trainer.outcome_features_build_failed", symbol=symbol, style=style, error=str(exc))
-        return pd.DataFrame(), pd.Series(dtype=int)
+        return pd.DataFrame(), pd.Series(dtype=int), pd.Series(dtype="object")
 
     if X_full.empty:
-        return pd.DataFrame(), pd.Series(dtype=int)
+        return pd.DataFrame(), pd.Series(dtype=int), pd.Series(dtype="object")
 
     # Assign a date-based index so we can look up rows by signal_date.
     # build_features returns X with df's RangeIndex; map each position back to
@@ -505,12 +523,14 @@ def _load_outcome_features(symbol: str, style: str = "SWING", lookback_days: int
 
     outcome_idx = [d for d in [pd.Timestamp(d) for d in signal_date_set] if d in X_full.index]
     if not outcome_idx:
-        return pd.DataFrame(), pd.Series(dtype=int)
+        return pd.DataFrame(), pd.Series(dtype=int), pd.Series(dtype="object")
 
     X_out = X_full.loc[outcome_idx]
     y_out = pd.Series([label_map[d.date()] for d in outcome_idx], index=X_out.index, dtype=int)
+    # R01: carried alongside, on the same index, so the caller can apply a cutoff.
+    avail = pd.Series([avail_map[d.date()] for d in outcome_idx], index=X_out.index, dtype="object")
 
-    return X_out, y_out
+    return X_out, y_out, avail
 
 
 # DA-03: the minimum rows a slice must RETAIN after its embargo is taken out. An embargo that
@@ -609,8 +629,10 @@ def train_model(
     n_outcome_rows = 0
     _X_out_for_fit: "pd.DataFrame | None" = None   # kept separate — merged at fit time
     _y_out_for_fit: "pd.Series | None"   = None
+    _avail_out_for_fit: "pd.Series | None" = None  # R01: when each outcome's label was knowable
+    _outcome_rows_after_cutoff = 0                 # dropped for postdating the training cutoff
     try:
-        X_out, y_out = _load_outcome_features(symbol, style=style)
+        X_out, y_out, avail_out = _load_outcome_features(symbol, style=style)
         if not X_out.empty and len(X_out) >= 20:
             shared_cols = [c for c in FEATURE_COLUMNS if c in X_out.columns and c in X.columns]
             if shared_cols:
@@ -662,6 +684,9 @@ def train_model(
                     overlap_idx = X_out.index[X_out.index.isin(X_dates)]
                     X_out = X_out.drop(index=overlap_idx, errors="ignore")
                     y_out = y_out.drop(index=overlap_idx, errors="ignore")
+                    # R01: availability must survive deduplication on the same index, or the
+                    # cutoff filter below has nothing to filter on.
+                    avail_out = avail_out.drop(index=overlap_idx, errors="ignore")
                     if _n_overlap:
                         log.warning("train.outcome_dedup_fallback", symbol=symbol,
                                     overlap=_n_overlap, x_rows=len(X),
@@ -669,6 +694,7 @@ def train_model(
                 if len(X_out) >= 5:
                     _X_out_for_fit = X_out
                     _y_out_for_fit = y_out
+                    _avail_out_for_fit = avail_out
                     n_outcome_rows = len(X_out)
                     log.info("train.outcome_augment", symbol=symbol, n_outcomes=n_outcome_rows)
     except Exception as _oe:
@@ -760,6 +786,16 @@ def train_model(
     # so using the same set for calibration produces optimistically biased probabilities.
     # Solution: dedicate a separate early-stop slice (80%) that the model sees during fitting,
     # and keep the calibration slice (80–90%) fully clean — never passed to fit() or eval_set.
+    # R01: the per-row dates of X AS IT NOW STANDS (after any outcome dedup above), so the
+    # training cutoff can be read off the split. Recomputed here rather than reusing the
+    # `X_dates` built inside the outcome block, which was taken BEFORE rows were dropped from X
+    # and would therefore be misaligned with the split points.
+    try:
+        X_dates_for_split = pd.DatetimeIndex(
+            pd.to_datetime(df["ts"]).dt.normalize().iloc[X.index].values)
+    except Exception:
+        X_dates_for_split = pd.DatetimeIndex([])
+
     # split_train already computed above (reused here for clarity).
     #
     # T232-ML4: labels are H-day forward returns, so rows within H bars of each boundary have
@@ -850,6 +886,58 @@ def train_model(
     _fit_X = X_train_s
     _fit_y = y_train.values
     _fit_w = train_weights
+
+    # R01 (2026-09-24 follow-up audit): ADMIT AN OUTCOME ROW ONLY IF ITS LABEL PREDATES THE
+    # TRAINING CUTOFF.
+    #
+    # These rows were loaded before the split and merged here at DOUBLE weight with no date
+    # check at all. A signal outcome resolves when its position exits, so a row signalled
+    # inside — or even after — the evaluation window carries information from the future of
+    # every held-out slice this model is then scored on. Deduplicating DATES does not address
+    # it: removing an overlapping date from X says nothing about whether the surviving outcome
+    # was knowable at training time.
+    #
+    # The cutoff is the last TRAINING row's own date, and the test is against the label's
+    # availability (exit / evaluation / signal+horizon), not the signal date — a signal emitted
+    # before the cutoff whose trade closed after it was still unknowable then.
+    if _X_out_for_fit is not None:
+        # Fail CLOSED on a missing prerequisite, not just on an exception. An earlier draft
+        # guarded this block with `and len(X_dates_for_split)`, which SKIPPED the whole filter
+        # when the dates were unavailable and let the augmentation through unchecked — the
+        # opposite of the except branch below, and the exact leak being closed. A cutoff that
+        # cannot be established is a reason to refuse the rows, never to trust them.
+        if _avail_out_for_fit is None or not len(X_dates_for_split):
+            log.warning("train.outcome_cutoff_unavailable", symbol=symbol, style=style,
+                        note="no row dates or no availability series; refusing augmentation")
+            _X_out_for_fit = None
+            _y_out_for_fit = None
+            n_outcome_rows = 0
+    if _X_out_for_fit is not None and _avail_out_for_fit is not None:
+        try:
+            _cutoff = pd.Timestamp(X_dates_for_split[split_train - 1]).date()
+            _avail = pd.to_datetime(pd.Series(list(_avail_out_for_fit.values))).dt.date.values
+            _admissible = np.array([a <= _cutoff for a in _avail], dtype=bool)
+            _outcome_rows_after_cutoff = int((~_admissible).sum())
+            if _outcome_rows_after_cutoff:
+                _X_out_for_fit = _X_out_for_fit[_admissible]
+                _y_out_for_fit = _y_out_for_fit[_admissible]
+                log.info("train.outcome_rows_dropped_after_cutoff", symbol=symbol, style=style,
+                         dropped=_outcome_rows_after_cutoff, kept=len(_X_out_for_fit),
+                         training_cutoff=str(_cutoff))
+            if len(_X_out_for_fit) < 5:
+                # Below the augmentation floor the remaining rows are not worth the extra
+                # moving part; fitting on none is correct, not a degradation.
+                _X_out_for_fit = None
+                _y_out_for_fit = None
+                n_outcome_rows = 0
+        except Exception as _cut_err:
+            # Fail CLOSED: if admissibility cannot be established, do not augment. An
+            # unverifiable row is exactly the one this guard exists for.
+            log.warning("train.outcome_cutoff_check_failed", symbol=symbol, error=str(_cut_err))
+            _X_out_for_fit = None
+            _y_out_for_fit = None
+            n_outcome_rows = 0
+
     if _X_out_for_fit is not None and _y_out_for_fit is not None:
         try:
             _out_s = scaler.transform(_X_out_for_fit.reindex(columns=X_train.columns, fill_value=0).values)
@@ -984,6 +1072,9 @@ def train_model(
         # R02: whether this model's own evaluation is trustworthy, as a first-class field —
         # a consumer should not have to re-derive it from embargo_shortfall's presence.
         "evaluation_valid": not _embargo_shortfall,
+        # R01: how many resolved-outcome rows were refused for postdating the training cutoff.
+        # A non-zero value here on a previously-clean symbol means the augmentation WAS leaking.
+        "outcome_rows_dropped_after_cutoff": _outcome_rows_after_cutoff,
     }
 
     # SA-9 + AUD-ML2-DEADRECALLNOTSUPPRESSED + AUD-ML2-ASYMMETRICOVERFITGAP: see
