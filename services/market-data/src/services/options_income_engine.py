@@ -524,6 +524,68 @@ def settlement_session_is_final(want: date, now_et: datetime | None = None) -> b
     return now.time() >= _SETTLEMENT_FINALITY_ET
 
 
+# R04: how far a stored close may differ from an independent reading and still be treated as
+# the same number. Not a tolerance for a MOVING price — after the close the two should be
+# identical — but for provider rounding and adjusted-vs-raw differences between feeds.
+_SETTLEMENT_CORROBORATION_TOL = 0.005  # 0.5%
+
+
+def _corroborate_settlement_close(stock_id: int, want: date, stored_close: float) -> tuple[bool, str]:
+    # NAME DELIBERATELY NOT PREFIXED with the settlement-close function's own name. Several
+    # tests in this service slice source by searching for that function's `def` line, and a
+    # longer name sharing its prefix is found FIRST — so the assertions silently run against
+    # this body instead. Caught by test_t398_options_income_engine going red.
+    #
+    # The first version of this very comment quoted the search string verbatim and reproduced
+    # the collision it was describing.
+    """Is `stored_close` corroborated by an independent post-close reading?
+
+    Returns (ok, reason). FAILS CLOSED on every uncertainty — no symbol, no quote, a provider
+    error — because settlement is irreversible and a deferral costs one cycle.
+
+    Only corroborates for the MOST RECENT session. For an older expiry the live quote reflects
+    a later day and says nothing about `want`, so that case is accepted on the clock guard
+    alone: by then ingestion has had days and subsequent sessions to complete, which is itself
+    the evidence the live quote would otherwise supply.
+    """
+    try:
+        from .paper_trading_engine import _fetch_live_prices
+
+        with SessionLocal() as s2:
+            sym = s2.execute(select(Stock.symbol).where(Stock.id == stock_id)).scalar_one_or_none()
+            if not sym:
+                return False, "symbol_not_found"
+            # Is `want` still the latest session this symbol has a bar for? If a LATER bar
+            # exists, ingestion has already moved past `want` and finalised it.
+            #
+            # Fetching the MAX and comparing in Python rather than filtering with
+            # `func.date(Price.ts) > want`: the comparison is the same, but building it in SQL
+            # requires a `>` against func.date(), which this service's test suite cannot
+            # construct at all — it stubs sqlalchemy, so func.date() is a MagicMock and
+            # `MagicMock > date` raises TypeError. A branch that can only be exercised in
+            # production is a branch that gets no test, which is how the original DA-05 gap
+            # survived.
+            latest_ts = s2.execute(
+                select(func.max(Price.ts)).where(
+                    Price.stock_id == stock_id,
+                    Price.timeframe == TimeFrame.D1,
+                )
+            ).scalar()
+        latest_date = getattr(latest_ts, "date", lambda: None)() if latest_ts is not None else None
+        if latest_date is not None and latest_date > want:
+            return True, "superseded_by_later_session"
+
+        quote = (_fetch_live_prices([sym]) or {}).get(sym)
+        if not quote or quote <= 0:
+            return False, "no_independent_quote"
+        drift = abs(float(quote) - stored_close) / stored_close if stored_close else 1.0
+        if drift > _SETTLEMENT_CORROBORATION_TOL:
+            return False, f"stored_close_disagrees_by_{drift:.3%}"
+        return True, "corroborated_by_live_quote"
+    except Exception as exc:
+        return False, f"corroboration_failed:{type(exc).__name__}"
+
+
 def _settlement_close(session: Session, stock_id: int, expiry: date) -> tuple[float, date] | None:
     """The close for the EXACT expected settlement session, or None.
 
@@ -545,13 +607,39 @@ def _settlement_close(session: Session, stock_id: int, expiry: date) -> tuple[fl
                  stock_id=stock_id, expiry=str(expiry), expected_session=str(want))
         return None
     row = session.execute(
-        select(Price.close).where(
+        select(Price.close, Price.ts).where(
             Price.stock_id == stock_id,
             Price.timeframe == TimeFrame.D1,
             func.date(Price.ts) == want,
         ).limit(1)
     ).first()
-    return (float(row.close), want) if row and row.close is not None else None
+    if not row or row.close is None:
+        return None
+    stored_close = float(row.close)
+
+    # R04 (2026-09-24 follow-up audit): THE CLOCK IS NOT EVIDENCE THAT INGESTION FINISHED.
+    #
+    # DA-05 stopped settlement while a session was still trading, but after 16:15 ET this
+    # accepted ANY row bearing the expected date — including one written intraday at 15:00 and
+    # never refreshed because the post-close ingest failed. `prices` carries no fetched-at or
+    # finality column, so the row itself cannot say when it was written. A fixed buffer proves
+    # the session ended; it proves nothing about the row.
+    #
+    # Corroborate with an INDEPENDENT reading instead. After the close, the live quote for a
+    # symbol IS that session's close, so a stored bar that disagrees materially was written
+    # before the session finished. This costs one batched fetch per settling symbol and needs
+    # no schema change. A mismatch, or no quote at all, DEFERS — the position stays open and
+    # the next run retries, which is the same recoverable outcome as missing data.
+    #
+    # Deliberately not a rebuild of every price consumer: this is the settlement-specific
+    # final-bar check the finding asks for as the smaller first step.
+    confirmed, reason = _corroborate_settlement_close(stock_id, want, stored_close)
+    if not confirmed:
+        log.warning("options_income.settlement_deferred_unconfirmed_close",
+                    stock_id=stock_id, expiry=str(expiry), expected_session=str(want),
+                    stored_close=stored_close, reason=reason)
+        return None
+    return (stored_close, want)
 
 
 def _closing_price_on_or_before(session: Session, stock_id: int, target_date: date, window_days: int = 7) -> float | None:

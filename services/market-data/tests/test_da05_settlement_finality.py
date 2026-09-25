@@ -146,9 +146,14 @@ def test_settlement_close_does_not_even_read_a_price_it_must_not_use():
 
 
 def test_settlement_close_returns_the_price_once_the_session_is_final():
-    """The guard must not break the evening path that was always correct."""
+    """The guard must not break the evening path that was always correct.
+
+    R04 added a SECOND condition — the stored close must be corroborated by an independent
+    reading — so this stubs that too. Without it this test would be asserting DA-05's guard
+    while actually exercising R04's, and would fail for a reason unrelated to what it checks."""
     sess = _FakeSession()
-    with patch.object(OIE, "settlement_session_is_final", lambda *_a, **_k: True):
+    with patch.object(OIE, "settlement_session_is_final", lambda *_a, **_k: True), \
+         patch.object(OIE, "_corroborate_settlement_close", lambda *_a, **_k: (True, "stub")):
         got = OIE._settlement_close(sess, stock_id=1, expiry=SESSION)
     assert got is not None
     price, session_date = got
