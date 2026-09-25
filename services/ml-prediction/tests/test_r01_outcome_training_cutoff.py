@@ -27,6 +27,26 @@ from pathlib import Path
 _SRC = (Path(__file__).resolve().parents[1] / "src" / "training" / "trainer.py").read_text()
 
 
+def _code_only(name: str) -> str:
+    """A function's EXECUTABLE lines — docstring and comments removed.
+
+    Both have now caused false results in this file. The docstring R01 added QUOTES the
+    defective call it replaced ("build_features(df, horizon=..., macro_df=None)") — worth
+    keeping, and it made a plain substring search report the defect as still present. The same
+    prose-collision trap has now cost a cycle on R04, R05, the T398 ordering test and here.
+    Asserting on prose is the failure mode; stripping it is the fix.
+    """
+    body = _fn(name)
+    for quote in ('"' * 3, "'" * 3):
+        first = body.find(quote)
+        if first != -1:
+            second = body.find(quote, first + 3)
+            if second != -1:
+                body = body[:first] + body[second + 3:]
+                break
+    return "\n".join(ln.split("#", 1)[0] for ln in body.splitlines())
+
+
 def _fn(name: str) -> str:
     start = _SRC.index(f"def {name}(")
     m = re.search(r"\n(?=@|def )", _SRC[start + 1:])
@@ -57,10 +77,20 @@ def test_availability_is_the_LATEST_of_the_candidate_dates():
 def test_every_early_return_keeps_the_three_value_shape():
     """A loader with eight early returns is a loader where one of them silently returns the old
     2-tuple and unpacks into a TypeError at the call site."""
-    body = _fn("_load_outcome_features")
-    returns = re.findall(r"return ([^\n]+)", body)
-    for r in returns:
-        assert r.count(",") >= 2, f"early return is not a 3-tuple: {r}"
+    import ast
+
+    # Parsed, not regexed. `re.findall(r"return ...")` matched the words "forward return over
+    # `horizon`" inside the docstring R01 added and tried to unpack an English sentence — the
+    # same prose-collision trap that has now cost a cycle on R04, R05 and the T398 ordering
+    # test. Return STATEMENTS are unambiguous in the AST.
+    tree = ast.parse(_SRC)
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+              and n.name == "_load_outcome_features")
+    returns = [n for n in ast.walk(fn) if isinstance(n, ast.Return)]
+    assert returns, "the loader has no return statements at all"
+    for node in returns:
+        assert isinstance(node.value, ast.Tuple) and len(node.value.elts) == 3, \
+            f"return on line {node.lineno} is not a 3-tuple"
 
 
 def test_availability_survives_the_dedup_fallback():
@@ -219,3 +249,79 @@ def test_a_missing_cutoff_refuses_augmentation_rather_than_skipping_the_check():
     assert "not len(X_dates_for_split)" in frag
     assert "_X_out_for_fit = None" in frag
     assert "train.outcome_cutoff_unavailable" in frag
+
+
+# ── R01 remainder: the features and the target were both the wrong ones ──────
+#
+# The date filter above is the half of R01 that shares its name. These cover the half the
+# audit lists last and which is the larger defect: "Also reconcile outcome `is_correct` with
+# the base forward-return target and use the same feature inputs: this loader currently
+# rebuilds with `macro_df=None` and without the richer inputs used by the main training path."
+
+def test_the_loader_is_given_the_same_feature_inputs_as_the_main_path():
+    """THE ZERO-FILL. The loader called build_features with macro_df=None and nothing else,
+    while the main path passes seven inputs. Every column those produce was therefore ABSENT
+    from the augmentation rows — and train_model's own
+    `reindex(columns=X_train.columns, fill_value=0)` filled them with ZERO. The rows did not
+    merely differ: they asserted, at double weight, that every macro, fundamental, sector and
+    options feature was exactly zero on the days this platform actually traded."""
+    call = _fn("train_model")
+    call = call[call.index("_load_outcome_features("):]
+    call = call[:call.index("\n\n")]
+    for inp in ("macro_df", "label_threshold", "fund_data", "sector_df",
+                "outcome_df", "fund_snapshots", "options_snapshots"):
+        assert f'"{inp}":' in call, f"the loader is not given {inp}"
+
+
+def test_the_loader_no_longer_hardcodes_macro_df_none():
+    code = _code_only("_load_outcome_features")
+    assert "macro_df=None" not in code
+    assert "build_features(df, horizon=_outcome_horizon, **_fi)" in code
+
+
+def test_the_seven_inputs_match_what_the_main_path_actually_passes():
+    """Pinned against the main call rather than a hand-written list, so adding an eighth input
+    to build_features cannot leave the augmentation silently behind again."""
+    main = _SRC[_SRC.index("    X, y_dir, y_ret = build_features("):]
+    main = main[:main.index(")\n")]
+    passed = set(re.findall(r"(\w+)=", main)) - {"horizon"}
+    call = _fn("train_model")
+    call = call[call.index("feature_inputs={"):]
+    call = call[:call.index("},")]
+    given = set(re.findall(r'"(\w+)":', call))
+    assert passed <= given, f"main path passes {sorted(passed - given)} that the loader is not given"
+
+
+def test_the_label_is_the_base_forward_return_target_not_is_correct():
+    """THE TARGET MISMATCH. `is_correct` is the signal engine's own verdict under its own exit
+    rules; the base model learns "forward return over horizon exceeds label_threshold". Two
+    different events, blended at double weight as if they were one probability."""
+    code = _code_only("_load_outcome_features")
+    assert "y_out = pd.Series([int(_base.loc[d]) for d in _usable]" in code
+    assert "label_map[d.date()] for d in outcome_idx" not in code, \
+        "the label is still is_correct"
+
+
+def test_is_correct_is_still_measured_rather_than_discarded():
+    """A low agreement rate between the signal engine's verdict and the forward-return label is
+    a real finding about the signal engine. Dropping the field silently would lose it."""
+    body = _fn("_load_outcome_features")
+    assert "agreement_rate" in body
+    assert "trainer.outcome_label_reconciliation" in body
+
+
+def test_a_date_with_no_base_label_is_dropped_not_back_filled():
+    """Back-filling from is_correct would reintroduce the mismatch for exactly the rows least
+    able to support it — the ones at the end of the series, where the forward window runs off
+    the data."""
+    code = _code_only("_load_outcome_features")
+    assert "pd.notna(_base.loc[d])" in code
+    assert "if not _usable:" in code
+
+
+def test_the_build_features_call_no_longer_discards_its_own_labels():
+    """`X_full, y_dir, _ = build_features(...)` computed y_dir and threw it away while the
+    function went on to use a different label entirely."""
+    body = _fn("_load_outcome_features")
+    assert "X_full, y_dir, _ = build_features" in body
+    assert "_base = y_dir.copy()" in body

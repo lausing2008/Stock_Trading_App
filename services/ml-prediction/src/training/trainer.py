@@ -414,16 +414,41 @@ def _compute_oos_suppression(
 
 def _load_outcome_features(
     symbol: str, style: str = "SWING", lookback_days: int = 365,
+    *, feature_inputs: dict | None = None,
 ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
-    """Load closed signal_outcomes for this symbol and reconstruct feature vectors.
+    """Rows for the dates on which this symbol produced a RESOLVED live BUY outcome.
 
-    For each closed SignalOutcome (is_correct is not None), looks up the price bar
-    on signal_date and rebuilds the feature vector using the same build_features()
-    pipeline. Returns (X_outcomes, y_outcomes) aligned on date index.
+    Returns (X_outcomes, y_outcomes, label_available_at), aligned on a date index. Min 20
+    outcomes, otherwise empty.
 
-    Min 20 outcomes required — otherwise returns empty DataFrames.
-    Called from train_model() to augment training data with real live trading labels.
-    Outcomes are weighted 2× relative to price-history training rows.
+    R01 (2026-09-24 follow-up audit) — TWO RECONCILIATIONS, and they matter more than the
+    date filter that shares this finding's name.
+
+    THE FEATURES WERE NOT THE SAME FEATURES. This called
+    `build_features(df, horizon=..., macro_df=None)` while the main training path passes
+    macro_df, label_threshold, fund_data, sector_df, outcome_df, fund_snapshots and
+    options_snapshots. Every column those inputs produce was therefore ABSENT here — and the
+    caller's `reindex(columns=X_train.columns, fill_value=0)` then filled them with ZERO. So
+    the augmentation rows did not merely differ from the training rows: they asserted, at
+    double weight, that every macro, fundamental, sector and options feature was exactly zero
+    on the days this platform actually traded. `feature_inputs` now carries the caller's own
+    inputs so both calls are identical.
+
+    THE TARGET WAS NOT THE SAME TARGET. The label was `SignalOutcome.is_correct` — whether the
+    signal engine's own evaluation judged that signal right, under its own exit rules — while
+    the base model learns "forward return over `horizon` exceeds `label_threshold`". Those are
+    different events. Blending them at double weight teaches one model two questions and calls
+    the result one probability; sharing the range {0, 1} is not sharing a meaning. The label is
+    now the BASE forward-return target for that date, taken from this function's own
+    build_features call (whose `y_dir` was previously computed and discarded).
+
+    `is_correct` is not thrown away: the rate at which it AGREES with the base label is
+    returned as a diagnostic on the caller's side, because a low agreement rate is a real
+    finding about the signal engine and not something to bury.
+
+    What the augmentation now means, stated plainly: the dates on which this symbol produced a
+    resolved live signal are weighted 2x in the final fit. That is a coherent claim — those
+    days carry real evidence — and it is a smaller claim than the one the old code made.
     """
     from datetime import date as _date, timedelta as _td
     from db import SignalHorizon
@@ -507,7 +532,10 @@ def _load_outcome_features(
         # meta_trainer.py's _HORIZON_DAYS are two more) that could silently drift out of sync
         # with the rest of the file's training pipeline if a horizon is ever retuned.
         _outcome_horizon = _HORIZON_BY_STYLE.get(style.upper(), 10)
-        X_full, y_dir, _ = build_features(df, horizon=_outcome_horizon, macro_df=None)
+        # R01: the SAME inputs as the main training path. Passing none of them left every
+        # column they produce absent, to be zero-filled by the caller's reindex.
+        _fi = dict(feature_inputs or {})
+        X_full, y_dir, _ = build_features(df, horizon=_outcome_horizon, **_fi)
     except Exception as exc:
         log.warning("trainer.outcome_features_build_failed", symbol=symbol, style=style, error=str(exc))
         return pd.DataFrame(), pd.Series(dtype=int), pd.Series(dtype="object")
@@ -526,9 +554,30 @@ def _load_outcome_features(
         return pd.DataFrame(), pd.Series(dtype=int), pd.Series(dtype="object")
 
     X_out = X_full.loc[outcome_idx]
-    y_out = pd.Series([label_map[d.date()] for d in outcome_idx], index=X_out.index, dtype=int)
+    # R01: the BASE forward-return target for these dates, not SignalOutcome.is_correct. The
+    # two answer different questions, and `y_dir` was already being computed here and thrown
+    # away. Dates whose base label is unavailable are dropped rather than back-filled from
+    # is_correct — that would reintroduce the mismatch for exactly the rows least able to
+    # support it.
+    _base = y_dir.copy()
+    _base.index = X_full.index
+    _usable = [d for d in outcome_idx if d in _base.index and pd.notna(_base.loc[d])]
+    if not _usable:
+        return pd.DataFrame(), pd.Series(dtype=int), pd.Series(dtype="object")
+    X_out = X_full.loc[_usable]
+    y_out = pd.Series([int(_base.loc[d]) for d in _usable], index=X_out.index, dtype=int)
+
+    # `is_correct` is not discarded silently. How often the signal engine's own verdict agrees
+    # with the forward-return label is a real measurement about the signal engine, and a low
+    # rate is a finding rather than a reason to keep blending the two.
+    _agree = sum(1 for d in _usable if label_map[d.date()] == int(_base.loc[d]))
+    log.info("trainer.outcome_label_reconciliation", symbol=symbol, style=style,
+             rows=len(_usable), is_correct_agrees_with_base=_agree,
+             agreement_rate=round(_agree / len(_usable), 4),
+             note="label used is the base forward-return target; is_correct is diagnostic only")
+
     # R01: carried alongside, on the same index, so the caller can apply a cutoff.
-    avail = pd.Series([avail_map[d.date()] for d in outcome_idx], index=X_out.index, dtype="object")
+    avail = pd.Series([avail_map[d.date()] for d in _usable], index=X_out.index, dtype="object")
 
     return X_out, y_out, avail
 
@@ -632,7 +681,16 @@ def train_model(
     _avail_out_for_fit: "pd.Series | None" = None  # R01: when each outcome's label was knowable
     _outcome_rows_after_cutoff = 0                 # dropped for postdating the training cutoff
     try:
-        X_out, y_out, avail_out = _load_outcome_features(symbol, style=style)
+        X_out, y_out, avail_out = _load_outcome_features(
+            symbol, style=style,
+            # R01: the caller's own feature inputs, so the augmentation rows are built by the
+            # same pipeline with the same columns as the rows they are merged into.
+            feature_inputs={
+                "macro_df": macro_df, "label_threshold": label_threshold,
+                "fund_data": fund_data, "sector_df": sector_df, "outcome_df": outcome_df,
+                "fund_snapshots": fund_snapshots, "options_snapshots": options_snapshots,
+            },
+        )
         if not X_out.empty and len(X_out) >= 20:
             shared_cols = [c for c in FEATURE_COLUMNS if c in X_out.columns and c in X.columns]
             if shared_cols:
