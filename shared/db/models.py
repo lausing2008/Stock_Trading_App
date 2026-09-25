@@ -1332,6 +1332,18 @@ class OptionsIncomeEquityCurve(Base):
     # were a change in the market. Nullable because rows written before this column existed are
     # backfilled by migration 013 from their own arithmetic, not guessed from a date.
     equity_basis: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    # R08 (2026-09-24): WHAT EVIDENCE this equity figure rests on, kept with the row.
+    #
+    # `equity_basis` above records which DEFINITION was used. This records how well the inputs
+    # to that definition were actually known: how many positions were marked on a real quote
+    # versus the intrinsic floor, how old the oldest quote was, whether the underlying was a
+    # live price / an archived close / a fallback to the entry price, and how many marks were
+    # approximate. Previously these were counted into a log line, which answers the question
+    # for about as long as the log is retained and not at all afterwards.
+    #
+    # Nullable: rows written before this column existed genuinely have no evidence, and a
+    # default would manufacture some. See options_income_engine.mark_quality() for the grades.
+    mark_evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     portfolio: Mapped["OptionsIncomePortfolio"] = relationship(back_populates="equity_curve")
 

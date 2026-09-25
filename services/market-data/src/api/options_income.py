@@ -86,6 +86,9 @@ def list_income_portfolios(
             .limit(1)
         ).scalar_one_or_none()
         equity = latest_curve.equity if latest_curve else float(p.current_cash)
+        # R08: the headline equity carries its own caveat. Without it the summary reports an
+        # estimate and a fully-quoted valuation identically.
+        _latest_evidence = (latest_curve.mark_evidence if latest_curve else None) or {}
         wins = [pos for pos in closed_positions if (pos.pnl or 0) > 0]
         assigned = [pos for pos in closed_positions if pos.assigned]
 
@@ -95,6 +98,8 @@ def list_income_portfolios(
             "initial_capital": p.initial_capital,
             "current_cash": round(float(p.current_cash), 2),
             "current_equity": round(equity, 2),
+            "equity_is_approximate": bool(_latest_evidence.get("approximate_marks")),
+            "equity_mark_evidence": _latest_evidence or None,
             "total_return_pct": round((equity / p.initial_capital - 1) * 100, 2),
             "open_positions": len(open_positions),
             "closed_positions": len(closed_positions),
@@ -227,6 +232,14 @@ def get_income_equity_curve(
         # change of definition, not only a change in the market. NULL means a row predating the
         # column whose basis could not be derived from its own arithmetic.
         "equity_basis": c.equity_basis,
+        # R08: WHAT EVIDENCE this point rests on — how many positions were marked on a real
+        # quote versus the intrinsic floor, how old the oldest quote was, and whether the
+        # underlying was live, an archived close, or a fallback to the entry price. A point
+        # with approximate_marks > 0 is an estimate, and the chart should not present it as
+        # equal in standing to one marked entirely on fresh quotes. NULL for rows written
+        # before the column existed — genuinely unknown, not "all good".
+        "mark_evidence": c.mark_evidence,
+        "is_approximate": bool((c.mark_evidence or {}).get("approximate_marks")),
     } for c in curve]
 
 

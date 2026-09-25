@@ -25,7 +25,7 @@ import pathlib
 import sys
 import tempfile
 import types
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 _HERE = pathlib.Path(__file__).resolve()
@@ -41,7 +41,8 @@ models = importlib.util.module_from_spec(_spec)
 sys.modules["r06_models"] = models
 _spec.loader.exec_module(models)
 
-for _cls in (models.OptionsIncomePortfolio, models.OptionsIncomePosition, models.Stock):
+for _cls in (models.OptionsIncomePortfolio, models.OptionsIncomePosition,
+             models.OptionsIncomeEquityCurve, models.Stock):
     _cls.__table__.c.id.type = Integer()
 
 # A FILE, not ":memory:". An in-memory SQLite database is one connection shared by every
@@ -70,6 +71,7 @@ def _sqlite_explicit_begin(conn):
 models.Base.metadata.create_all(ENGINE, tables=[
     models.OptionsIncomePortfolio.__table__,
     models.OptionsIncomePosition.__table__,
+    models.OptionsIncomeEquityCurve.__table__,
     models.Stock.__table__,
 ])
 Session = sessionmaker(bind=ENGINE)
@@ -232,6 +234,43 @@ def main(scenario: str) -> dict:
             p = _portfolio(s)
             opened = E.open_income_positions(s, p, candidates=[_cand()], lease=Lease(True))
         return {"opened": opened, **_state(p.id)}
+
+    # ── R08: the mark evidence must actually land in the row ────────────────
+    if scenario.startswith("snapshot_"):
+        quote_age = {"snapshot_fresh_quote": 0, "snapshot_stale_quote": 4,
+                     "snapshot_no_quote": None}[scenario]
+        with Session() as s:
+            p = _portfolio(s)
+            p_id = p.id
+            s.add(models.OptionsIncomePosition(
+                portfolio_id=p_id, symbol="AAA", strategy="CASH_SECURED_PUT",
+                option_symbol="OPT-MARK", strike=90.0, expiry=TODAY + timedelta(days=30),
+                contracts=1, entry_date=TODAY,
+                entry_time=datetime(2026, 9, 24, 20, 0, tzinfo=timezone.utc),
+                underlying_entry_price=100.0,
+                premium_per_contract=150.0, total_premium_collected=150.0,
+                collateral_reserved=9_000.0, stage="open"))
+            s.commit()
+
+            # The archived ask and its date, as _latest_option_ask would have found them.
+            if quote_age is None:
+                E._latest_option_ask = lambda *_a, **_kw: (None, None)
+            else:
+                qd = TODAY - timedelta(days=quote_age)
+                E._latest_option_ask = lambda *_a, **_kw: (0.50, qd)
+            # A live underlying, so the underlying source is not what is under test here.
+            # Registered as a module rather than imported: the real paper_trading_engine pulls
+            # in common.indicators, and `common` is a MagicMock here, not a package.
+            _pte = types.ModuleType("src.services.paper_trading_engine")
+            _pte._fetch_live_prices = lambda syms: {sym: 100.0 for sym in syms}
+            sys.modules["src.services.paper_trading_engine"] = _pte
+
+            E._snapshot_income_equity_curve(s, [p], TODAY)
+
+        with Session() as s:
+            row = s.execute(select(models.OptionsIncomeEquityCurve).where(
+                models.OptionsIncomeEquityCurve.portfolio_id == p_id)).scalars().one()
+            return {"mark_evidence": row.mark_evidence, "equity": round(float(row.equity), 2)}
 
     raise SystemExit(f"unknown scenario: {scenario}")
 

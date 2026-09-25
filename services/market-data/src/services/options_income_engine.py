@@ -984,8 +984,12 @@ _MAX_ASK_AGE_DAYS = 5
 
 
 def _latest_option_ask(session: Session, option_symbol: str,
-                       as_of: date | None = None) -> float | None:
-    """Most recent archived ask for one contract, or None when it is missing or too old.
+                       as_of: date | None = None) -> tuple[float | None, date | None]:
+    """Most recent archived ask for one contract AND the session it was quoted in.
+
+    Returns (None, None) when there is no usable quote. R08: this used to return the ask alone
+    while its own query already selected `as_of`, so nothing downstream could tell a same-day
+    quote from a four-day-old one.
 
     DA-06: this previously returned the most recent non-null ask with no age check and no way
     for the caller to know WHEN it was quoted. A row from an arbitrarily distant past therefore
@@ -1000,7 +1004,99 @@ def _latest_option_ask(session: Session, option_symbol: str,
         ORDER BY as_of DESC LIMIT 1
     """), {"os": option_symbol, "ref": ref,
            "floor": ref - timedelta(days=_MAX_ASK_AGE_DAYS)}).first()
-    return float(row.nbbo_ask) if row and row.nbbo_ask is not None else None
+    if not row or row.nbbo_ask is None:
+        return None, None
+    # R08: the query already SELECTed as_of and then discarded it, so a four-day-old quote and
+    # a same-session one were indistinguishable downstream — the mark could not say how old it
+    # was. Returned now, and persisted with the snapshot.
+    quote_date = row.as_of
+    if isinstance(quote_date, datetime):
+        quote_date = quote_date.date()
+    return float(row.nbbo_ask), quote_date
+
+
+# ── R08: mark quality, which is NOT quote eligibility ─────────────────────────
+#
+# DA-06 gave `short_option_liability()` an arbitrage floor and `_latest_option_ask()` an age
+# bound, and both were right. What neither established is a POLICY: `_MAX_ASK_AGE_DAYS = 5` was
+# doing two incompatible jobs at once — deciding whether an archived quote may be read at all,
+# and implying that anything it returns is a good mark.
+#
+# Those are different questions. Five sessions is a reasonable bound on the ARCHIVE (beyond it
+# the contract has effectively stopped being quoted). It is nowhere near a freshness standard
+# for a VALUATION: a four-day-old $0.01 ask on an out-of-the-money put is inside the window and
+# becomes a $1 liability with no indication that the real, current, executable ask is unknown.
+# The intrinsic floor cannot help there — an OTM option has zero intrinsic, so the floor binds
+# nothing and stale TIME VALUE passes straight through.
+#
+# So the age band is named and graded, the grade travels with the mark, and it is PERSISTED
+# with the snapshot rather than counted in a log line that rotates away. The audit's bar:
+# "Readers must reconstruct why an equity value was used without consulting ephemeral logs."
+#
+# This grades marks. It does not change any number: a mark that was used before is still used,
+# and now says what it is.
+_MARK_FRESH_MAX_AGE_DAYS = 1      # quoted this session or the last one
+_MARK_RECENT_MAX_AGE_DAYS = 3     # older, still inside the archive window
+
+
+def mark_quality(source: str, quote_age_days: int | None) -> str:
+    """Grade one position's mark. Pure, so the policy is testable without a database.
+
+    fresh        — a real quote from this session or the previous one.
+    recent       — a real quote 2-3 sessions old. Usable, visibly not current.
+    stale        — a real quote 4-5 sessions old. Inside the archive bound, past any sensible
+                   valuation bound. The reported value is approximate and must be shown as such.
+    floored      — the quote was below intrinsic, so the arbitrage floor was used instead
+                   (DA-06). The quote was wrong, not merely old.
+    intrinsic    — no usable quote at all. UNDERSTATES the liability by whatever time value
+                   remains, which for an out-of-the-money option is the entire value.
+    """
+    if source == "intrinsic_quote_below_floor":
+        return "floored"
+    if source != "quote_ask":
+        return "intrinsic"
+    if quote_age_days is None:
+        return "stale"            # a quote whose age is unknown is not a fresh quote
+    if quote_age_days <= _MARK_FRESH_MAX_AGE_DAYS:
+        return "fresh"
+    if quote_age_days <= _MARK_RECENT_MAX_AGE_DAYS:
+        return "recent"
+    return "stale"
+
+
+_APPROXIMATE_MARK_QUALITIES = ("stale", "floored", "intrinsic")
+
+
+def _underlying_price_as_of(session: Session, symbol: str, as_of: date,
+                            live: dict[str, float], entry_price: float) -> tuple[float, str]:
+    """The underlying price to value a position at `as_of`, and where it came from.
+
+    R08. `_fetch_live_prices()` returns the CURRENT price whatever date is being valued, so a
+    historical or re-run snapshot combined a past option quote with today's underlying — a
+    mixed-time valuation, and the intrinsic floor computed from it is wrong in both directions.
+    A missing live price then fell back to the position's ENTRY price, which silently reports
+    an unchanged position however far the underlying has moved.
+
+    Sources are returned, never inferred: "live", "close" (the archived close for that date),
+    "entry_fallback" (nothing else available — the mark is not a valuation at that point, and
+    saying so is the only honest option).
+    """
+    if as_of >= _today_et():
+        px = live.get(symbol)
+        if px:
+            return float(px), "live"
+    row = session.execute(text("""
+        SELECT close FROM prices
+        WHERE symbol = :sym AND timeframe = '1d' AND close IS NOT NULL
+          AND DATE(ts) <= :ref
+        ORDER BY ts DESC LIMIT 1
+    """), {"sym": symbol, "ref": as_of}).first()
+    if row and row.close is not None:
+        return float(row.close), "close"
+    px = live.get(symbol)
+    if px:
+        return float(px), "live"
+    return float(entry_price), "entry_fallback"
 
 
 def _snapshot_income_equity_curve(session: Session, portfolios: list[OptionsIncomePortfolio], as_of: date) -> None:
@@ -1016,29 +1112,64 @@ def _snapshot_income_equity_curve(session: Session, portfolios: list[OptionsInco
         collateral_committed = 0.0
         short_liability = 0.0
         mark_sources: dict[str, int] = {}
+        # Defined before the branch: a portfolio with no open positions still writes a row, and
+        # an empty-but-present record says "nothing was marked", which is a different and more
+        # useful statement than a missing column.
+        mark_evidence: dict = {"mark_sources": {}, "mark_quality": {}, "underlying_sources": {},
+                               "worst_quote_age_days": None, "approximate_marks": 0,
+                               "positions_marked": 0, "max_ask_age_days": _MAX_ASK_AGE_DAYS}
         if open_positions:
             # Every open position needs a live underlying now, not just the covered calls — a
             # short put's liability moves with the underlying too.
             all_syms = sorted({p.symbol for p in open_positions})
             live_prices = _fetch_live_prices(all_syms) if all_syms else {}
+            underlying_sources: dict[str, int] = {}
+            quality_counts: dict[str, int] = {}
+            worst_quote_age: int | None = None
+            approximate = 0
             for p in open_positions:
-                px = live_prices.get(p.symbol) or float(p.underlying_entry_price)
+                # R08: valued at the snapshot's OWN date, with the source recorded. The live
+                # price is correct only when the snapshot IS today.
+                px, _u_src = _underlying_price_as_of(
+                    session, p.symbol, as_of, live_prices, float(p.underlying_entry_price))
+                underlying_sources[_u_src] = underlying_sources.get(_u_src, 0) + 1
                 if p.strategy == "COVERED_CALL":
                     collateral_committed += px * 100 * p.contracts
                 else:
                     collateral_committed += float(p.collateral_reserved)
+                # Bounded by the snapshot's own date: a historical row must never reach
+                # forward for a quote that did not exist yet.
+                _ask, _quote_date = _latest_option_ask(session, p.option_symbol, as_of=as_of)
                 liab, _src = short_option_liability(
                     strategy=p.strategy, strike=float(p.strike), underlying_price=px,
-                    contracts=p.contracts,
-                    # Bounded by the snapshot's own date: a historical row must never reach
-                    # forward for a quote that did not exist yet.
-                    quote_ask=_latest_option_ask(session, p.option_symbol, as_of=as_of),
+                    contracts=p.contracts, quote_ask=_ask,
                 )
                 short_liability += liab
                 # DA-06: provenance was discarded, so a persisted equity row could not explain
                 # whether it was marked on a real quote or on the intrinsic floor. Counted here
                 # and logged with the snapshot rather than dropped.
                 mark_sources[_src] = mark_sources.get(_src, 0) + 1
+                _age = (as_of - _quote_date).days if _quote_date else None
+                _q = mark_quality(_src, _age)
+                quality_counts[_q] = quality_counts.get(_q, 0) + 1
+                if _q in _APPROXIMATE_MARK_QUALITIES:
+                    approximate += 1
+                if _age is not None and (worst_quote_age is None or _age > worst_quote_age):
+                    worst_quote_age = _age
+
+            # R08: the evidence travels WITH the row. A log line rotates away; this is what a
+            # reader has months later when asking why an equity figure was what it was.
+            mark_evidence = {
+                "mark_sources": mark_sources,
+                "mark_quality": quality_counts,
+                "underlying_sources": underlying_sources,
+                "worst_quote_age_days": worst_quote_age,
+                "approximate_marks": approximate,
+                "positions_marked": len(open_positions),
+                # The bound the archive query applied, so the numbers above can be read without
+                # knowing this file's constants.
+                "max_ask_age_days": _MAX_ASK_AGE_DAYS,
+            }
 
         # AUD-T400-SHORTLIABILITY: equity is assets MINUS the outstanding short obligation.
         # Without the final term, opening a short option manufactured equity equal to the
@@ -1046,7 +1177,9 @@ def _snapshot_income_equity_curve(session: Session, portfolios: list[OptionsInco
         equity = float(portfolio.current_cash) + collateral_committed - short_liability
         if mark_sources:
             log.info("options_income.equity_mark_sources", portfolio_id=portfolio.id,
-                     as_of=str(as_of), sources=mark_sources)
+                     as_of=str(as_of), sources=mark_sources,
+                     quality=mark_evidence["mark_quality"],
+                     approximate=mark_evidence["approximate_marks"])
         existing = session.execute(
             select(OptionsIncomeEquityCurve).where(
                 OptionsIncomeEquityCurve.portfolio_id == portfolio.id,
@@ -1059,11 +1192,12 @@ def _snapshot_income_equity_curve(session: Session, portfolios: list[OptionsInco
             existing.cash = float(portfolio.current_cash)
             existing.open_positions_count = len(open_positions)
             existing.collateral_committed = collateral_committed
+            existing.mark_evidence = mark_evidence
         else:
             session.add(OptionsIncomeEquityCurve(
                 portfolio_id=portfolio.id, date=as_of, equity=equity, cash=float(portfolio.current_cash),
                 open_positions_count=len(open_positions), collateral_committed=collateral_committed,
-                equity_basis=_EQUITY_BASIS,
+                equity_basis=_EQUITY_BASIS, mark_evidence=mark_evidence,
             ))
     session.commit()
 

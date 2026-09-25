@@ -795,6 +795,13 @@ def _seed_admin() -> None:
             {"uid": admin_id},
         )
 
+        # ── R08: durable mark evidence on options-income equity rows ──────────
+        # create_all() only creates MISSING TABLES, so a column added to an existing table
+        # never appears from the model declaration alone — a repeated incident in this repo.
+        conn.execute(text(
+            "ALTER TABLE options_income_equity_curve ADD COLUMN IF NOT EXISTS mark_evidence JSONB"
+        ))
+
         # ── R06: deterministic intent key for options-income entries ──────────
         # create_all() only creates MISSING TABLES, so the unique Index() declared on
         # OptionsIncomePosition never reaches an existing deployed table. Added here, the way
