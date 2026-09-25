@@ -236,8 +236,18 @@ def test_an_existing_suppression_reason_is_not_overwritten():
 
 
 def test_evaluation_validity_is_a_first_class_field():
-    """A consumer should not have to infer trustworthiness from the PRESENCE of another key."""
-    assert '"evaluation_valid": not _embargo_shortfall,' in _TRAINER
+    """A consumer should not have to infer trustworthiness from the PRESENCE of another key.
+
+    R02 WIDENED what this field covers. DA-03 set it from the embargo alone, but an embargo
+    shortfall is not the only way an evaluation stops being out of sample: when the test slice
+    is too small to split, the threshold is an argmax over the very rows the metrics beside it
+    are then computed on. Both now clear this flag. A missing CALIBRATOR deliberately does not
+    — uncalibrated probabilities are not contaminated ones, and suppressing for that would
+    silence most short-history symbols for a reason that is not contamination.
+    """
+    assert '"evaluation_valid": (not _embargo_shortfall) and threshold_evaluation_mode == "holdout",'         in _TRAINER
+    # Recorded, but deliberately not part of validity.
+    assert '"calibration_status": calibration_status,' in _TRAINER
 
 
 def test_a_clean_split_is_not_suppressed_by_this_rule():

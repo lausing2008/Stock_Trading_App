@@ -975,13 +975,23 @@ def train_model(
     # IsotonicRegression needs ≥300 samples to avoid overfitting the monotone mapping.
     raw_cal_probs = model.predict_proba(X_cal_s)[:, 1]
     calibrator: IsotonicRegression | LogisticRegression | None = None
-    if len(np.unique(y_cal)) > 1 and len(y_cal) >= 20:
-        if len(y_cal) < 300:
-            calibrator = LogisticRegression(C=1e6, solver="lbfgs")
-            calibrator.fit(raw_cal_probs.reshape(-1, 1), y_cal.values)
-        else:
-            calibrator = IsotonicRegression(out_of_bounds="clip")
-            calibrator.fit(raw_cal_probs, y_cal.values)
+    # R02: WHY calibration did or did not happen, recorded rather than inferred from
+    # `calibrator is None`. The audit asks for calibration_status alongside the embargo status,
+    # because "no calibrator" currently covers three different situations — too few rows, a
+    # single class, and a genuinely fitted one — which a reader cannot tell apart afterwards.
+    _MIN_CALIBRATION_ROWS = 20
+    if len(np.unique(y_cal)) <= 1:
+        calibration_status = "skipped_single_class"
+    elif len(y_cal) < _MIN_CALIBRATION_ROWS:
+        calibration_status = "skipped_insufficient_rows"
+    elif len(y_cal) < 300:
+        calibrator = LogisticRegression(C=1e6, solver="lbfgs")
+        calibrator.fit(raw_cal_probs.reshape(-1, 1), y_cal.values)
+        calibration_status = "fitted_platt"
+    else:
+        calibrator = IsotonicRegression(out_of_bounds="clip")
+        calibrator.fit(raw_cal_probs, y_cal.values)
+        calibration_status = "fitted_isotonic"
 
     # --- Precision-optimised BUY threshold + honest reported metrics ---
     # T232-ML2: the threshold used to be selected via _precision_threshold(y_test, preds, ...)
@@ -1007,16 +1017,25 @@ def train_model(
     _hk_suffix = "_HK" if symbol.upper().endswith(".HK") else ""
     min_prec = _PRECISION_BY_STYLE.get(f"{style.upper()}{_hk_suffix}",
                _PRECISION_BY_STYLE.get(style.upper(), _MIN_PRECISION))
-    if len(y_test_report) >= 10 and len(np.unique(y_test_report)) > 1:
+    _MIN_REPORT_ROWS = 10
+    if len(y_test_report) >= _MIN_REPORT_ROWS and len(np.unique(y_test_report)) > 1:
         # Enough held-out rows left after the threshold split to report honest metrics.
         buy_threshold = _precision_threshold(y_test_thresh.values, preds_thresh, min_precision=min_prec, symbol=symbol)
         y_test, preds = y_test_report, preds_report
+        threshold_evaluation_mode = "holdout"
     else:
         # Too little data to split without degenerate metrics — fall back to the prior
         # in-sample behavior (still better than skipping the model), but flag it clearly.
+        #
+        # R02: "flag it clearly" meant a log line, which is not a restriction on using the
+        # number. The threshold is an ARGMAX over these same rows, so every metric reported
+        # beside it is optimistic by construction — the exact defect T232-ML2 fixed for the
+        # normal path, reappearing whenever the test slice is small. The mode now travels with
+        # the artifact and costs the model its evaluation validity below.
         log.warning("train.threshold_holdout_too_small", symbol=symbol, n_test=len(X_test),
                     note="reported metrics are in-sample (same set used for threshold selection)")
         buy_threshold = _precision_threshold(y_test.values, preds, min_precision=min_prec, symbol=symbol)
+        threshold_evaluation_mode = "in_sample_fallback"
 
     y_pred = (preds > buy_threshold).astype(int)
 
@@ -1040,6 +1059,26 @@ def train_model(
             cv_auc_mean=round(cv_auc_mean, 4),
             note="model is near-random; predictions will carry low weight in signal fusion",
         )
+
+    # R02: the actual dates each slice covers. "Ten rows" says nothing about whether they are
+    # ten consecutive sessions or ten survivors of a dead-zone filter spanning three months,
+    # and the audit is explicit that irregular rows cannot be assumed to be one session each.
+    def _range(idx_start: int, idx_end: int | None) -> dict | None:
+        try:
+            seg = X_dates_for_split[idx_start:idx_end]
+            if len(seg) == 0:
+                return None
+            return {"start": str(pd.Timestamp(seg[0]).date()),
+                    "end": str(pd.Timestamp(seg[-1]).date()), "rows": int(len(seg))}
+        except Exception:
+            return None
+
+    _slice_date_ranges = {
+        "train": _range(0, split_train),
+        "early_stop": _range(split_train + _embargo, split_es),
+        "calibration": _range(split_es + _embargo_es, split_cal),
+        "test": _range(split_cal + _embargo_cal, None),
+    }
 
     test_auc_val = float(roc_auc_score(y_test, preds)) if len(np.unique(y_test)) > 1 else None
     overfit_gap_val = round(cv_auc_mean - test_auc_val, 4) if (cv_auc_mean is not None and test_auc_val is not None) else None
@@ -1070,8 +1109,36 @@ def train_model(
         "embargo_target_bars": horizon,
         "embargo_shortfall": _embargo_shortfall or None,
         # R02: whether this model's own evaluation is trustworthy, as a first-class field —
-        # a consumer should not have to re-derive it from embargo_shortfall's presence.
-        "evaluation_valid": not _embargo_shortfall,
+        # a consumer should not have to re-derive it from three other fields.
+        #
+        # THREE WAYS TO LOSE IT, and they are different failures:
+        #   * an embargo shortfall, which LEAKS (a label built from a price inside the next
+        #     slice), so the metrics are optimistic by an unknown amount;
+        #   * an in-sample threshold, where the threshold is an argmax over the very rows the
+        #     metrics beside it are computed on;
+        #   * a missing calibrator, which does NOT leak — the probabilities are simply
+        #     uncalibrated — and so is recorded without costing validity. Suppressing for it
+        #     would silence most short-history symbols for a reason that is not contamination.
+        "evaluation_valid": (not _embargo_shortfall) and threshold_evaluation_mode == "holdout",
+        # R02: WHY calibration did or did not happen — "no calibrator" covered three
+        # distinguishable situations and a reader could not tell them apart afterwards.
+        "calibration_status": calibration_status,
+        "calibration_rows": int(len(y_cal)),
+        "calibration_min_rows": _MIN_CALIBRATION_ROWS,
+        # R02: whether the reported metrics are out of sample or fitted on their own rows.
+        "threshold_evaluation_mode": threshold_evaluation_mode,
+        "threshold_report_rows": int(len(y_test)),
+        "threshold_min_report_rows": _MIN_REPORT_ROWS,
+        # R02: the audit asks for date ranges, class counts and effective sample counts, so a
+        # reader can see WHAT was evaluated rather than only the score it produced.
+        "slice_rows": {"train": int(len(X_train)), "early_stop": int(len(X_es)),
+                       "calibration": int(len(X_cal)), "test": int(len(X_test))},
+        "slice_class_counts": {
+            "train": {int(k): int(v) for k, v in zip(*np.unique(y_train.values, return_counts=True))},
+            "calibration": {int(k): int(v) for k, v in zip(*np.unique(y_cal.values, return_counts=True))},
+            "test": {int(k): int(v) for k, v in zip(*np.unique(y_test.values, return_counts=True))},
+        },
+        "slice_date_ranges": _slice_date_ranges,
         # R01: how many resolved-outcome rows were refused for postdating the training cutoff.
         # A non-zero value here on a previously-clean symbol means the augmentation WAS leaking.
         "outcome_rows_dropped_after_cutoff": _outcome_rows_after_cutoff,
@@ -1101,6 +1168,18 @@ def train_model(
         )
         log.warning("train.suppressed_for_embargo_shortfall", symbol=symbol, style=style,
                     shortfall=_embargo_shortfall)
+    # R02: the same reasoning, for the other way an evaluation stops being out of sample. The
+    # threshold fallback selects an argmax on the rows the metrics are then computed on — the
+    # defect T232-ML2 fixed for the normal path, reappearing whenever the test slice is small.
+    # It was logged and then used, which is the pattern this finding is about.
+    if threshold_evaluation_mode != "holdout" and not oos_suppressed:
+        oos_suppressed = True
+        _suppression_reason = (
+            f"threshold selected in-sample on {len(y_test)} rows — the reported metrics are "
+            f"computed on the same rows the threshold was fitted to, so they are not OOS"
+        )
+        log.warning("train.suppressed_for_in_sample_threshold", symbol=symbol, style=style,
+                    n_test=int(len(y_test)))
     if oos_suppressed:
         log.warning(
             "train.oos_suppressed",
@@ -1129,6 +1208,47 @@ def train_model(
     path = _artifact_path(symbol, model_name, style)
     path.parent.mkdir(parents=True, exist_ok=True)
     import joblib
+
+    # R02: "Invalid candidates must not silently replace an eligible incumbent."
+    #
+    # Until now every finished run overwrote the artifact unconditionally. So a symbol that
+    # trained cleanly last month and has since lost rows — a dead-zone filter, a delisting gap,
+    # a shortened history — replaced a model with a VALID evaluation with one whose metrics are
+    # in-sample or leaked. The incumbent's suppression flag went with it, and nothing recorded
+    # that a better-evidenced model had existed.
+    #
+    # Refusing is deliberately NARROW: only when this candidate's evaluation is invalid AND the
+    # incumbent's was valid. An invalid candidate still replaces an invalid incumbent (newer
+    # data, same standing), and a valid one always replaces anything. Training is not blocked
+    # either way — the audit's own distinction between training availability and evaluation
+    # validity — the run simply does not get to publish over better evidence.
+    if not metrics["evaluation_valid"] and path.exists():
+        try:
+            _incumbent = joblib.load(path)
+            _inc_valid = bool((_incumbent.get("metrics") or {}).get("evaluation_valid"))
+        except Exception:
+            # An unreadable incumbent is not an eligible one; replacing it is an improvement.
+            _inc_valid = False
+        if _inc_valid:
+            log.warning(
+                "train.artifact_kept_incumbent_has_valid_evaluation",
+                symbol=symbol, style=style, model=model_name,
+                candidate_reason=_suppression_reason,
+                candidate_threshold_mode=threshold_evaluation_mode,
+                candidate_embargo_shortfall=_embargo_shortfall or None,
+                note="candidate trained but was not published; the existing model's evaluation "
+                     "is valid and this one's is not",
+            )
+            metrics["published"] = False
+            metrics["not_published_reason"] = "incumbent_evaluation_valid"
+            return {
+                "symbol": symbol, "model": model_name, "style": style,
+                "metrics": metrics, "oos_suppressed": oos_suppressed,
+                "published": False,
+                "feature_importance": feature_importance,
+            }
+
+    metrics["published"] = True
     bundle = {
         "model": model,
         "scaler": scaler,
