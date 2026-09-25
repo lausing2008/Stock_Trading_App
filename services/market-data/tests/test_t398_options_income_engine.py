@@ -381,8 +381,26 @@ def test_stale_option_chains_are_skipped_not_silently_traded():
 
 
 def test_run_step_settles_before_opening_new_positions():
-    body = _ENGINE_SOURCE[_ENGINE_SOURCE.index("def run_options_income_step"):]
-    assert body.index("settle_expired_positions") < body.index("open_income_positions")
+    """Expiries must be settled before new positions are opened, or the day's freed collateral
+    is invisible to the entry logic and the book under-deploys.
+
+    Asserted over the AST's CALL nodes rather than over substring positions in the source. The
+    text version broke when R06 added a comment that mentions `open_income_positions()` while
+    explaining where the database guards live — the assertion then measured the position of an
+    English sentence, not of any code. The same collision cost a cycle on R04 and again on R05;
+    prose that legitimately names a function is not a reason to rename the function.
+    """
+    import ast
+
+    tree = ast.parse(_ENGINE_SOURCE)
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+              and n.name == "_run_options_income_step_locked")
+    calls = [n.func.id for n in ast.walk(fn)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+             and n.func.id in ("settle_expired_positions", "open_income_positions")]
+    assert calls.count("settle_expired_positions") == 1
+    assert calls.count("open_income_positions") == 1
+    assert calls.index("settle_expired_positions") < calls.index("open_income_positions")
 
 
 def test_run_step_skips_weekends():

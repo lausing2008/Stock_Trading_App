@@ -102,7 +102,10 @@ def test_the_lock_guards_the_shared_function_not_just_the_scheduler():
     scheduled run is going, entirely unprotected."""
     assert "def run_options_income_step() -> dict:" in _ENGINE
     body = _fn(_ENGINE, "run_options_income_step")
-    assert "_run_options_income_step_locked()" in body
+    # R06 added a self-renewing lease, so the body is now called with it:
+    # `_run_options_income_step_locked(lease=lease)`. What this test pins is that the LOCK
+    # wraps the shared function rather than only the scheduler's call site, which is unchanged.
+    assert "_run_options_income_step_locked(lease=lease)" in body
     api = (pathlib.Path(__file__).resolve().parents[1] / "src" / "api" / "options_income.py").read_text()
     assert "return run_options_income_step()" in api, (
         "the admin route must surface the engine's verdict — reporting a SKIPPED run as "

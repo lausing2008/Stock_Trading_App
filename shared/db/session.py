@@ -795,6 +795,26 @@ def _seed_admin() -> None:
             {"uid": admin_id},
         )
 
+        # ── R06: deterministic intent key for options-income entries ──────────
+        # create_all() only creates MISSING TABLES, so the unique Index() declared on
+        # OptionsIncomePosition never reaches an existing deployed table. Added here, the way
+        # every other post-hoc index in this function is.
+        #
+        # Wrapped: if the table already holds duplicates from before this guard existed, the
+        # CREATE fails and startup must NOT. A platform that refuses to boot because a
+        # concurrency guard could not be added is a worse outcome than one that boots with the
+        # row lock and the lease check still in force — but it has to be visible, not silent.
+        try:
+            conn.execute(text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_options_income_intent
+                ON options_income_positions (portfolio_id, option_symbol, entry_date)
+            """))
+        except Exception as _exc:          # noqa: BLE001 — deliberately broad, see above
+            conn.rollback()
+            print(f"[init_db] WARNING uq_options_income_intent not created: {_exc}. "
+                  "Existing duplicate (portfolio_id, option_symbol, entry_date) rows must be "
+                  "resolved before the R06 intent key can be enforced.")
+
         # AUD19-ARCH1: Seed service accounts so service JWT tokens (sub="scheduler",
         # sub="paper-engine") resolve via get_current_user DB lookup when called via HTTP.
         # These users have no usable password — login is blocked; only service JWTs work.

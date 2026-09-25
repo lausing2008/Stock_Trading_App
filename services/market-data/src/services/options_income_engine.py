@@ -29,6 +29,7 @@ whatever the underlying did between entry and close).
 from __future__ import annotations
 
 import structlog
+import threading
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -740,14 +741,99 @@ def settle_expired_positions(session: Session, portfolio: OptionsIncomePortfolio
     return settled_count
 
 
+def _is_duplicate_intent(exc: BaseException) -> bool:
+    """Whether this exception is the unique intent key rejecting a duplicate.
+
+    R06. Identified WITHOUT importing `sqlalchemy.exc` at module scope. This service's test
+    suite stubs the whole `sqlalchemy` package with a MagicMock, and adding a matching
+    `sqlalchemy.exc` stub broke the 28 test modules that pop those stubs to load the real
+    library — a fake `exc` module left in place while real SQLAlchemy imports makes its own
+    `issubclass(wtype, exc.Base20DeprecationWarning)` raise. One production import is not worth
+    that much test-infrastructure churn.
+
+    DELIBERATELY NARROW. It matches the exception TYPE NAME (through the driver's chained
+    cause) and requires the message to name a uniqueness violation — "duplicate key value
+    violates unique constraint" on Postgres, "UNIQUE constraint failed" on SQLite. Anything
+    else, a NOT NULL or foreign-key violation included, returns False and is RE-RAISED by the
+    caller: a real database error must never be quietly filed as "someone else got there
+    first".
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if type(cur).__name__ in ("IntegrityError", "UniqueViolation"):
+            msg = str(cur).lower()
+            if "unique" in msg or "duplicate key" in msg:
+                return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+def _lock_portfolio_row(session: Session, portfolio: OptionsIncomePortfolio) -> None:
+    """Take a row-level write lock on this portfolio and refresh it from what is committed.
+
+    R06. This is the guard that still works when Redis does not, when a worker is paused
+    mid-transaction, and when one is killed outright — Postgres releases the lock on
+    disconnect, and the waiter then reads the state the dead worker actually left behind.
+
+    The REFRESH matters as much as the lock. `portfolio` is an ORM object loaded before the
+    lock was held, so its `current_cash` is a pre-lock snapshot; without re-reading, a worker
+    would serialize correctly and then spend a number it read before waiting.
+
+    Degrades to a warning rather than an exception. SQLite (used by several of this service's
+    tests) has no row-level locking at all, and a hard failure here would make the guard
+    impossible to exercise anywhere but Postgres — the intent key and the lease check still
+    apply, and on the real database this lock does take.
+    """
+    try:
+        session.execute(
+            select(OptionsIncomePortfolio.id)
+            .where(OptionsIncomePortfolio.id == portfolio.id)
+            .with_for_update()
+        ).first()
+        session.refresh(portfolio)
+    except Exception:
+        log.warning("options_income.portfolio_row_lock_unavailable",
+                    portfolio_id=getattr(portfolio, "id", None), exc_info=True)
+
+
 def open_income_positions(
     session: Session, portfolio: OptionsIncomePortfolio, candidates: list[dict] | None = None,
+    lease: "IncomeLease | None" = None,
 ) -> int:
     """Open new positions on this portfolio from ranked candidates, respecting its own config
     (max_positions, per-symbol cap, min yield, daily entry cap, available cash, and a
-    per-position concentration cap so one high-priced-stock CSP can't consume the whole book)."""
+    per-position concentration cap so one high-priced-stock CSP can't consume the whole book).
+
+    R06 — THE DATABASE ENFORCES THE INVARIANT, not Redis.
+
+    Every limit below is checked in Python against a snapshot read at the top: cash, the open
+    count, the per-symbol cap, the daily budget. Two workers reading the same snapshot both pass
+    every one of them and both open, and a Redis lease does not prevent that if one worker
+    overran its lease, paused mid-transaction, or was killed after its reads. So:
+
+      ROW LOCK. The portfolio row is taken FOR UPDATE before anything is read from it. A second
+        worker blocks here until the first commits, then re-reads the cash the first actually
+        spent — instead of the cash they both saw before either spent it.
+
+      INTENT KEY. `uq_options_income_intent` on (portfolio_id, option_symbol, entry_date) makes
+        "this portfolio opens this contract today" unrepeatable in the schema. Each insert goes
+        through its own SAVEPOINT so a collision skips that one candidate rather than poisoning
+        the whole transaction, and the cash is only moved once the insert has actually landed.
+
+      LEASE CHECK. Refuses to commit at all once the lease is known lost — the cheapest of the
+        three, and the only one that can stop the work before it is done rather than after.
+
+    The row lock is what makes this correct under a killed worker; the intent key is what makes
+    it correct under a retried one. Neither needs Redis to be reachable.
+    """
     if not portfolio.is_active:
         return 0
+    if lease is not None and not lease.is_held():
+        log.error("options_income.open_aborted_lease_lost", portfolio_id=portfolio.id)
+        return 0
+    _lock_portfolio_row(session, portfolio)
     cfg = {**_DEFAULT_INCOME_CONFIG, **(portfolio.config or {})}
 
     open_positions = session.execute(
@@ -802,21 +888,47 @@ def open_income_positions(
 
         stock = session.execute(select(Stock).where(Stock.symbol == cand["symbol"])).scalar_one_or_none()
         total_premium = cand["premium_per_contract"] * contracts
-        session.add(OptionsIncomePosition(
-            portfolio_id=portfolio.id, symbol=cand["symbol"], stock_id=stock.id if stock else None,
-            strategy=cand["strategy"], option_symbol=cand["option_symbol"], strike=cand["strike"],
-            expiry=cand["expiry"], contracts=contracts,
-            entry_date=today, entry_time=datetime.now(timezone.utc),
-            underlying_entry_price=cand["current_price"], delta_at_entry=cand["delta"], iv_at_entry=cand.get("iv"),
-            premium_per_contract=cand["premium_per_contract"], total_premium_collected=total_premium,
-            collateral_reserved=collateral, stage="open",
-        ))
+        # R06: a SAVEPOINT per insert. The unique intent key can reject this one candidate, and
+        # without a nested transaction that rejection would abort every position opened earlier
+        # in this loop as well — turning a duplicate into a lost batch.
+        try:
+            with session.begin_nested():
+                session.add(OptionsIncomePosition(
+                    portfolio_id=portfolio.id, symbol=cand["symbol"], stock_id=stock.id if stock else None,
+                    strategy=cand["strategy"], option_symbol=cand["option_symbol"], strike=cand["strike"],
+                    expiry=cand["expiry"], contracts=contracts,
+                    entry_date=today, entry_time=datetime.now(timezone.utc),
+                    underlying_entry_price=cand["current_price"], delta_at_entry=cand["delta"], iv_at_entry=cand.get("iv"),
+                    premium_per_contract=cand["premium_per_contract"], total_premium_collected=total_premium,
+                    collateral_reserved=collateral, stage="open",
+                ))
+                session.flush()
+        except Exception as exc:
+            if not _is_duplicate_intent(exc):
+                raise          # a real database error, not a race we planned for
+            # Another worker already opened this exact intent. Not an error — it is the schema
+            # doing the job Python's snapshot checks could not.
+            log.warning("options_income.duplicate_intent_skipped", portfolio_id=portfolio.id,
+                        option_symbol=cand["option_symbol"], entry_date=str(today))
+            continue
+        # Only after the row has actually landed. Moving cash first would debit the portfolio
+        # for a position the intent key then refused.
         portfolio.current_cash = float(portfolio.current_cash) - collateral + total_premium
         held_symbols[cand["symbol"]] = held_symbols.get(cand["symbol"], 0) + 1
         opened += 1
 
+    if lease is not None and not lease.is_held():
+        # R06: decided against a snapshot another worker has since changed. Committing now would
+        # write positions and cash on the authority of a lease somebody else holds.
+        session.rollback()
+        log.error("options_income.open_rolled_back_lease_lost", portfolio_id=portfolio.id,
+                  would_have_opened=opened)
+        return 0
+
+    # Committed even when nothing opened, to RELEASE THE ROW LOCK taken above — an uncommitted
+    # FOR UPDATE would hold every other worker on this portfolio until the outer session closed.
+    session.commit()
     if opened:
-        session.commit()
         log.info("options_income.opened", portfolio_id=portfolio.id, count=opened)
     return opened
 
@@ -1004,9 +1116,13 @@ def run_options_income_step() -> dict:
         log.error("options_income.step_skipped_lock_unavailable", exc_info=True)
         return {"ok": False, "skipped": "lock_unavailable"}
 
+    # R06: the lease renews itself while the work runs, and the work asks whether it is still
+    # held before every mutating commit.
+    lease = IncomeLease(token).start()
     try:
-        return _run_options_income_step_locked()
+        return _run_options_income_step_locked(lease=lease)
     finally:
+        lease.stop()
         _release_income_lock(token)
 
 
@@ -1020,6 +1136,97 @@ else
     return 0
 end
 """
+
+# R06 (2026-09-24 follow-up audit): DA-07 fixed RELEASE, not OVERRUN.
+#
+# Compare-and-delete stopped run A from deleting run B's lock. It does nothing about run A's
+# WORK. With a fixed 1,800s TTL and no renewal, a run that is merely slow — a stalled provider
+# call, an over-long ranking pass, a paused container — loses its lease while still executing.
+# B then legitimately acquires it and starts, and both are inside the same read/check/write on
+# portfolio cash, collateral and positions. The audit's probe confirms the overlap is allowed;
+# it does not claim a production run has exceeded 30 minutes.
+#
+# Three things close it, and the Redis half is the weakest of the three:
+#
+#   RENEWAL, so a slow-but-alive run keeps its lease instead of silently losing it.
+#   ABORT ON LOSS, so a run that HAS lost it stops before committing rather than writing on the
+#     authority of a lease someone else now holds.
+#   THE DATABASE, which is the only one of the three that still holds if a worker is paused
+#     mid-transaction, is killed, or loses its network. A row lock on the portfolio plus a
+#     unique intent key enforce the economic invariant without consulting Redis at all — see
+#     open_income_positions(). Redis's own lock guidance is explicit that validity duration and
+#     ownership are part of the safety model, not an implementation detail.
+_INCOME_LOCK_RENEW_LUA = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("EXPIRE", KEYS[1], ARGV[2])
+end
+return 0
+"""
+
+# Renew at a third of the TTL: two consecutive renewals can fail and the lease still survives.
+_INCOME_LOCK_RENEW_INTERVAL = _INCOME_STEP_LOCK_TTL // 3
+
+
+class IncomeLease:
+    """An owned, self-renewing lease on the options-income step.
+
+    `is_held()` is the question every mutating commit must ask. It is answered from a flag the
+    renewal thread maintains rather than by reading Redis at the call site, so a commit path
+    cannot be made slow or flaky by the lock's own transport — and so losing Redis entirely
+    does not turn every commit into a failure. Once lost, a lease never returns to held: the
+    work that follows was decided against a portfolio snapshot another worker has since
+    changed, and re-acquiring the key would not make that snapshot correct again.
+    """
+
+    def __init__(self, token: str):
+        self.token = token
+        self._lost = threading.Event()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> "IncomeLease":
+        self._thread = threading.Thread(
+            target=self._renew_loop, name="options-income-lease", daemon=True)
+        self._thread.start()
+        return self
+
+    def is_held(self) -> bool:
+        return not self._lost.is_set()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+    def _renew_loop(self) -> None:
+        while not self._stop.wait(_INCOME_LOCK_RENEW_INTERVAL):
+            try:
+                ok = _get_income_redis().eval(
+                    _INCOME_LOCK_RENEW_LUA, 1, _INCOME_STEP_LOCK_KEY,
+                    self.token, _INCOME_STEP_LOCK_TTL)
+            except Exception:
+                # A transient Redis error is NOT proof the lease was lost, and treating it as
+                # such would abort a healthy run on every blip. The TTL is the backstop: if
+                # Redis is really gone, the key expires and the next renewal that does reach a
+                # server returns 0. Meanwhile the database guards remain in force.
+                log.warning("options_income.lease_renew_error", exc_info=True)
+                continue
+            if not ok:
+                # Someone else owns the key, or it expired and was taken. Either way this run is
+                # no longer exclusive and must not commit again.
+                log.error("options_income.lease_lost", token=self.token)
+                self._lost.set()
+                return
+
+
+def _renew_income_lock(token: str) -> bool:
+    """Extend the lease if and only if this token still owns it. Exposed for testing."""
+    try:
+        return bool(_get_income_redis().eval(
+            _INCOME_LOCK_RENEW_LUA, 1, _INCOME_STEP_LOCK_KEY, token, _INCOME_STEP_LOCK_TTL))
+    except Exception:
+        log.warning("options_income.lease_renew_failed", exc_info=True)
+        return False
 
 
 def _release_income_lock(token: str) -> bool:
@@ -1041,9 +1248,14 @@ def _get_income_redis():
     return get_redis()
 
 
-def _run_options_income_step_locked() -> dict:
+def _run_options_income_step_locked(lease: "IncomeLease | None" = None) -> dict:
     """The real body. Separated so the lock's acquire/release stays readable and so a test can
-    exercise the work without needing Redis."""
+    exercise the work without needing Redis.
+
+    R06: `lease` is threaded down to the mutating calls. None means "no lease to check" — the
+    shape tests and the direct-call paths use it, and the DATABASE guards inside
+    open_income_positions() apply either way, which is the point of having them.
+    """
     today = _today_et()
     if today.weekday() >= 5:
         return {"ok": True, "skipped": "weekend"}  # option_chain_history has no newer as_of
@@ -1056,6 +1268,9 @@ def _run_options_income_step_locked() -> dict:
             return {"ok": True, "skipped": "no_active_portfolios"}
 
         for portfolio in portfolios:
+            if lease is not None and not lease.is_held():
+                log.error("options_income.step_aborted_lease_lost", stage="settle")
+                return {"ok": False, "aborted": "lease_lost"}
             try:
                 settle_expired_positions(session, portfolio, today)
             except Exception:
@@ -1070,7 +1285,7 @@ def _run_options_income_step_locked() -> dict:
             try:
                 cfg_symbols = set((portfolio.config or {}).get("symbols", _INCOME_UNIVERSE))
                 own_candidates = [c for c in candidates if c["symbol"] in cfg_symbols]
-                open_income_positions(session, portfolio, candidates=own_candidates)
+                open_income_positions(session, portfolio, candidates=own_candidates, lease=lease)
             except Exception:
                 log.error("options_income.open_failed", portfolio_id=portfolio.id, exc_info=True)
 

@@ -1291,6 +1291,17 @@ class OptionsIncomePosition(Base):
 
     __table_args__ = (
         Index("ix_options_income_positions_portfolio_stage", "portfolio_id", "stage"),
+        # R06 (2026-09-24): the DETERMINISTIC INTENT KEY. "This portfolio opens this contract
+        # today" is the unit of work, and it is now unrepeatable in the schema rather than only
+        # in Python against a snapshot two concurrent workers can both read and both pass.
+        # This is the guard that survives a worker being paused, killed, or overrunning its
+        # Redis lease — see open_income_positions() for the reasoning in full.
+        #
+        # Named explicitly so init_db()'s idempotent CREATE UNIQUE INDEX IF NOT EXISTS matches
+        # it: create_all() only creates MISSING TABLES, so a constraint added to an existing
+        # table never appears on a deployed database from this declaration alone.
+        Index("uq_options_income_intent", "portfolio_id", "option_symbol", "entry_date",
+              unique=True),
         # NOT also indexing `expiry` here — the column already has index=True above;
         # duplicating it as an explicit Index() with the same auto-derived name
         # ("ix_options_income_positions_expiry") crashed create_all() with a real

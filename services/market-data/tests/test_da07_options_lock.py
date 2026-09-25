@@ -53,8 +53,17 @@ class _FakeRedis:
         return 1
 
 
-def _run(redis, work=lambda: {"ok": True}):
+def _run(redis, work=lambda **_kw: {"ok": True}):
+    """R06 added a self-renewing lease around the work, so every stub below takes `**_kw` — the
+    real body is now called as `_run_options_income_step_locked(lease=lease)`.
+
+    The renewal thread is neutralised by giving it an interval longer than any test: these
+    tests are about ownership at RELEASE, which is DA-07's subject, and letting a background
+    thread renew mid-test would make the "lease lapsed" simulations race. The renewal behaviour
+    has its own coverage in test_r06_income_concurrency.py.
+    """
     with patch.object(OIE, "_get_income_redis", lambda: redis), \
+         patch.object(OIE, "_INCOME_LOCK_RENEW_INTERVAL", 3600), \
          patch.object(OIE, "_run_options_income_step_locked", work):
         return OIE.run_options_income_step()
 
@@ -66,7 +75,7 @@ def test_a_run_does_not_delete_a_lease_it_no_longer_owns():
     one. Releasing must be a no-op, not a deletion of somebody else's lock."""
     r = _FakeRedis()
 
-    def _work_that_overruns():
+    def _work_that_overruns(**_kw):
         # Simulate the TTL lapsing and a second worker taking the lease.
         r.store[OIE._INCOME_STEP_LOCK_KEY] = "some-other-workers-token"
         return {"ok": True}
@@ -89,7 +98,7 @@ def test_the_lock_value_is_a_unique_token_not_a_constant():
         r = _FakeRedis()
         captured = {}
 
-        def _capture():
+        def _capture(**_kw):
             captured["tok"] = r.store.get(OIE._INCOME_STEP_LOCK_KEY)
             return {"ok": True}
 
@@ -155,7 +164,7 @@ def test_a_second_concurrent_run_is_refused_while_the_first_holds_the_lease():
 def test_the_lease_is_released_even_when_the_work_raises():
     r = _FakeRedis()
 
-    def _boom():
+    def _boom(**_kw):
         raise RuntimeError("work failed")
 
     try:
