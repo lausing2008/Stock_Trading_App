@@ -258,5 +258,9 @@ def test_train_meta_model_source_uses_nanstd_not_plain_std_for_the_constant_colu
     start = src.index("non_const = np.where(")
     end = src.index(")[0]", start)
     line = src[start:end]
-    assert "np.nanstd(X_raw, axis=0)" in line
-    assert "X_raw.std(axis=0)" not in line
+    # DA-01 (2026-09-24) narrowed the selector to the TRAINING slice (X_raw[:split]), so the
+    # exact argument text changed. The property this test exists for — nanstd, never a bare
+    # std — is unchanged and is what is asserted; pinning the slice too would make this test
+    # fail for any future change to WHICH rows are selected over, which it has no opinion on.
+    assert "np.nanstd(X_raw" in line
+    assert ".std(axis=0)" not in line.replace("np.nanstd(", "")

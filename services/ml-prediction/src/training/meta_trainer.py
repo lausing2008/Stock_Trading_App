@@ -274,7 +274,9 @@ def train_meta_model(db=None) -> dict:
             vec.append(float(row.fused_prob) if row.fused_prob is not None else 0.0)
             vec.append(float(row.ta_score) if row.ta_score is not None else 0.0)
 
-            records.append((vec, int(row.is_correct)))
+            # DA-01 (2026-09-24): carry the signal date. Without it the split below could not
+            # be chronological however it was described — see the global sort further down.
+            records.append((vec, int(row.is_correct), row.signal_date))
 
     if len(records) < 50:
         log.warning("meta_trainer.insufficient_feature_records n=%d", len(records))
@@ -294,12 +296,28 @@ def train_meta_model(db=None) -> dict:
     # fundamental/weekly columns builder.py's own feature function returns (trainer.py:622-625)
     # — meta_trainer.py's zero-fill was a genuine divergence from that convention, not a
     # technical necessity.
+    # DA-01: SORT GLOBALLY BY TIME before splitting.
+    #
+    # Records are built in a symbol-OUTER loop, so the list arrives grouped by symbol and sorted
+    # only WITHIN each symbol. The 80/20 array split below was therefore not chronological at
+    # all: it carved off the last symbol(s), whose dates overlap the training slice completely.
+    # The reproduction in the audit uses five symbols over the same four dates — training
+    # contains observations through Sep 4 while "validation" begins Sep 1. The reported AUC
+    # measured a partial symbol holdout against overlapping history and was presented as
+    # out-of-time performance.
+    #
+    # A leave-symbol-out study is a legitimate thing to want — it answers cold-start
+    # generalisation — but it is a DIFFERENT question from "does this model work on the future",
+    # and only the second one justifies promotion.
+    records.sort(key=lambda r: r[2])
+
     X_raw = np.array(
         [[v if (v is not None) else np.nan for v in r[0]]
          for r in records],
         dtype=np.float32,
     )
     y = np.array([r[1] for r in records], dtype=np.int32)
+    record_dates = [r[2] for r in records]
 
     # Remove constant columns (avoids numerical issues in StandardScaler / XGBoost).
     # T242-METAMODEL-NANFILL: must use np.nanstd(), not the plain .std() this replaced — with
@@ -308,7 +326,12 @@ def train_meta_model(db=None) -> dict:
     # dropping every sparse-but-informative fundamental/weekly column from the model entirely,
     # the exact opposite of this fix's own goal. Verified this exact failure mode directly
     # against a real NaN-bearing numpy array before writing the fix, not assumed.
-    non_const = np.where(np.nanstd(X_raw, axis=0) > 1e-8)[0]
+    # DA-01: the split point is computed FIRST so feature selection can be fitted on training
+    # rows alone. Selecting non-constant columns across the full dataset lets the validation
+    # slice decide which features the model is allowed to see — a mild leak, but one that makes
+    # the validation AUC no longer a clean out-of-sample measurement.
+    split = int(len(X_raw) * 0.8)
+    non_const = np.where(np.nanstd(X_raw[:split], axis=0) > 1e-8)[0]
     X = X_raw[:, non_const]
 
     # 80/20 chronological split for AUC evaluation.
@@ -324,9 +347,21 @@ def train_meta_model(db=None) -> dict:
     # retrained meta-model is promoted over the currently-deployed bundle
     # (SELFIMPROVE-PROMOTION-GATES-INCOMPLETE, a few lines below), a leaked, optimistically-
     # biased AUC could let a genuinely worse model pass the promotion gate.
-    split = int(len(X) * 0.8)
+    # `split` was computed above, before feature selection, so both use the same boundary.
     X_tr_raw, X_val_raw = X[:split], X[split:]
     y_tr, y_val = y[:split], y[split:]
+
+    # DA-01: with a genuinely chronological split this invariant is now assertable, and worth
+    # asserting — a future refactor that reorders `records` would otherwise silently restore
+    # the defect while every metric kept rendering.
+    if record_dates and split < len(record_dates):
+        _last_train, _first_val = record_dates[split - 1], record_dates[split]
+        if _last_train > _first_val:
+            log.error("meta_trainer.split_not_chronological last_train=%s first_val=%s",
+                      _last_train, _first_val)
+            return {"trained": False, "reason": "split_not_chronological"}
+        log.info("meta_trainer.split n_train=%d n_val=%d train_through=%s val_from=%s",
+                 split, len(X) - split, _last_train, _first_val)
 
     scaler = StandardScaler()
     X_tr = scaler.fit_transform(X_tr_raw)

@@ -1336,6 +1336,44 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5, style: str = "SWING")
     }
 
 
+# DA-02 (2026-09-24): the meta model's contribution is OFF by default, because its feature
+# contract does not hold between training and inference.
+#
+# TRAINING appends the signal outcome's own confidence, fused_prob and ta_score. INFERENCE (a
+# few lines below, and the source says so itself — "best available proxy", "use 3-model ensemble
+# probability as ta_score proxy") sends XGBoost's confidence, XGBoost's bullish probability as
+# `fused_prob`, and the weighted ML ensemble probability as `ta_score`. No technical-analysis
+# measurement is supplied at all, and `direction` is omitted entirely so the meta function
+# defaults to BUY. With model probabilities 0.7/0.6/0.5 the ensemble hands over ta_score=0.605 —
+# a weighted ML result wearing the name of a TA score. Valid types and matching column counts
+# conceal the mismatch completely.
+#
+# The TARGET differs too: the meta model learns SignalOutcome.is_correct conditional on signal
+# direction and horizon, while the base models learn their own forward-return label. Blending
+# those 85/15 treats two different forecast events as the same bullish probability. Sharing the
+# range [0, 1] is not sharing a meaning.
+#
+# So this is disabled rather than patched. Manufacturing the missing TA input from another
+# probability is what created the problem; the real fix is one of the two designs the audit
+# names — a signal-success model placed AFTER fusion and fed the actual frozen signal features,
+# or a stacking model retrained on out-of-fold base probabilities against an identical target —
+# and either is a deliberate piece of work, not a rename.
+#
+# Redis-flagged rather than hardcoded so re-enabling is a reviewable operational action with an
+# audit trail, not a code edit buried in a release.
+_META_BLEND_FLAG_KEY = "stockai:ml:meta_blend_enabled"
+
+
+def _meta_blend_enabled() -> bool:
+    """False unless explicitly switched on. Fails CLOSED: if Redis is unreachable the blend
+    stays off, because an unvalidated feature contract is not something to fall back TO."""
+    try:
+        from common.redis_client import get_redis
+        return get_redis().get(_META_BLEND_FLAG_KEY) == "1"
+    except Exception:
+        return False
+
+
 def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "SWING") -> dict:
     """XGBoost (40%) + LightGBM (35%) + RandomForest (25%) weighted ensemble.
 
@@ -1447,7 +1485,7 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
         log.warning("predict_latest_ensemble_three.meta_predict_failed", symbol=symbol, error=str(exc))
         _meta_prob = None
 
-    if _meta_prob is not None:
+    if _meta_prob is not None and _meta_blend_enabled():
         # Blend: reduce 3-model ensemble by 15%, add meta at 15%
         prob = prob * 0.85 + _meta_prob * 0.15
 
