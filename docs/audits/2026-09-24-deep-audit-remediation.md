@@ -2,7 +2,11 @@
 
 **Source:** [`2026-09-23-system-deep-audit.md`](2026-09-23-system-deep-audit.md) (external, 12
 findings, 8 at P1).
-**Outcome:** all 12 addressed and deployed. 12 commits, 35 files, ~3,285 insertions. Zero drift
+**Outcome:** all 12 have a source remedy and passing tests; **that is not the same as twelve
+closed subsystems**, and the [2026-09-24 follow-up audit](2026-09-24-fix-verification-and-followup-audit.md)
+is right to say so. See the CORRECTIONS section at the foot of this file — one of the
+justifications below was measured wrong, and the DA-03 decision it supported does not survive
+re-measurement. 12 commits, 35 files, ~3,285 insertions. Zero drift
 after every deploy. Suites: market-data 4,313 · event-intelligence 581 · signal-engine 549 ·
 ml-prediction 229 · news-intelligence 107 · portfolio-optimizer 69 · strategy-engine 62 ·
 api-gateway 54.
@@ -42,20 +46,24 @@ The audit's remedy is "purge by actual label-end timestamps, then require viable
 slices… refusal to train is a valid expected result." Measured across the live universe of 180
 symbols, the share that can afford a full `horizon` gap at **every** boundary:
 
+> **THIS MEASUREMENT WAS WRONG. See CORRECTIONS at the foot of this file.** The table below is
+> retained as written because the reasoning it produced is what shipped, and replacing it
+> silently would hide the mistake rather than record it.
+
 | horizon | can afford | would refuse |
 |---|---|---|
 | SHORT/5 | 172 | 8 |
 | SWING/10 | 164 | 16 |
 | LONG/20 | 159 | 21 |
-| **GROWTH/28** | **0** | **180** |
+| ~~**GROWTH/28**~~ | ~~**0**~~ | ~~**180**~~ |
 
-Requiring it would have switched off GROWTH training for every stock on the platform. That is an
-operational decision, not a bug fix. The embargo is now the **largest each slice can afford**
-while leaving a usable remainder, never silently zero, and any shortfall is written into the
-model's own metrics (`embargo_bars`, `embargo_target_bars`, `embargo_shortfall`) and logged.
+The argument made at the time: requiring a full gap would switch off GROWTH training for every
+stock on the platform, which is an operational decision rather than a bug fix. The embargo is
+therefore the **largest each slice can afford**, never silently zero, with any shortfall written
+into the model's own metrics (`embargo_bars`, `embargo_target_bars`, `embargo_shortfall`).
 
-**A partial gap still leaks.** It is strictly better than none, and the honest move is to make
-the compromise identifiable rather than invisible.
+**A partial gap still leaks**, and — as the follow-up audit puts it — *logging leakage is not a
+restriction on using it*. Nothing consulted the shortfall.
 
 ### DA-12 — redefining the denominator would have invalidated a backtest
 
@@ -213,3 +221,66 @@ Found by curling the live endpoint after deploy.
 
 **Unverified:** no UI from this work has been viewed in a browser. The portfolio card
 (DA-11 labels) and the options-income card (DA-12 second yield) are the two to look at.
+
+
+---
+
+## CORRECTIONS (2026-09-24, after the follow-up audit)
+
+The [follow-up audit](2026-09-24-fix-verification-and-followup-audit.md) reviewed this
+remediation and was right on every point it raised against it. Recorded here rather than edited
+away.
+
+### The DA-03 justification was measured with the wrong horizon
+
+I reported **GROWTH/28**. The shared `_HORIZON_BY_STYLE` — imported by the API, and the only
+registry the trainer uses — defines **GROWTH = 15**. I also tested affordability with the OLD
+gate's `> horizon * 3` condition rather than the rule actually shipped
+(`span - _MIN_SLICE_ROWS`). Re-measured against the real registry and the real rule, over the
+same 180 symbols:
+
+| style / horizon | full gap | partial | none |
+|---|---|---|---|
+| SHORT / 5 | 173 | 2 | 5 |
+| SWING / 10 | 165 | 10 | 5 |
+| LONG / 20 | 165 | 10 | 5 |
+| **GROWTH / 15** | **165** | **10** | **5** |
+
+**165 of 180 symbols can afford the full gap; five can afford none.** The claim that enforcing
+it would disable GROWTH for all 180 is false, and with it the entire reason given for accepting
+a partial embargo. The honest position is the one the original audit took: a partial gap is
+contaminated evaluation, and the scarcity I cited to justify it does not exist.
+
+*Even a correct scarcity measurement would have explained an operational constraint, not
+validated leaked evaluation* — the follow-up audit's phrasing, and it is the sharper point.
+
+### "All twelve closed" was too broad
+
+Every finding has a source remedy and passing tests. Several restored one failure condition
+without restoring the larger invariant: DA-01 still lacks same-session splitting and label
+purging; DA-05 checks the clock but not that ingestion finished; DA-06 still admits stale time
+value inside its five-day window; DA-07 does not prevent an expired worker overlapping its
+successor. Those are tracked as R01–R10 in the follow-up, not as closed.
+
+### The DA-12 "disagreement" was not one
+
+I framed keeping the original field as departing from the audit's remedy. Its solution says
+explicitly to preserve the original feature under a clear name, add a collateral-yield field,
+and re-evaluate weights before changing their inputs — which is what shipped. The decision was
+sound; describing it as a disagreement was wrong. The new field is also **gross** premium yield:
+net-of-cost and total strategy return remain separate work.
+
+### Three defects in work done to fix defects
+
+- **U01** — the options-income expiry rendered a day early in US timezones (`new Date()` on a
+  date-only string is midnight UTC). Pre-existing formatter, browser-confirmed by the reviewer.
+- **U02** — the cash-basis hints I added for DA-11 measured **1.23:1** contrast. The explanation
+  could not be read, which was its only purpose.
+- **W01** — `scripts/run_suites.sh`, written to stop a red suite reaching a commit, **exited 0
+  and printed "ALL SUITES GREEN" when invoked with no arguments.** A gate that reports success
+  having run nothing is the defect it was built to prevent, inside the thing that prevents it.
+  Its claim that a shell runner "cannot be chained past" was also too strong: a caller can
+  ignore any exit status, and real enforcement is a required CI status check.
+
+All three are fixed (`e5486b8`), with the runner now refusing empty/invalid invocations and
+carrying its own acceptance tests.

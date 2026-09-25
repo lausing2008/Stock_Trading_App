@@ -1,0 +1,54 @@
+{
+  "revision": "ff555126b855541e84dbd0f769854310fa70225b",
+  "cited_commits_verified": [
+    "8658c87",
+    "a89011c",
+    "aabd916",
+    "ac16d0e",
+    "de8ceda",
+    "e1b7ae0",
+    "e235d21",
+    "f856cd7",
+    "ff2ff7e"
+  ],
+  "all_twelve_ids_present": true,
+  "browser": {
+    "desktop": {
+      "timezone": "America/Los_Angeles",
+      "input_expiry": "2026-09-25",
+      "formatted_expiry": "Sep 24, 26",
+      "width": 1280,
+      "horizontal_overflow": false,
+      "collateral_label_present": true,
+      "spot_label_present": true,
+      "cash_hint_present": true
+    },
+    "mobile": {
+      "timezone": "America/Los_Angeles",
+      "input_expiry": "2026-09-25",
+      "formatted_expiry": "Sep 24, 26",
+      "width": 390,
+      "horizontal_overflow": false,
+      "collateral_label_present": true,
+      "spot_label_present": true,
+      "cash_hint_present": true
+    }
+  },
+  "runner_zero_arguments": {
+    "tested_isolated_copy": true,
+    "exit_code": 0,
+    "stdout": "ALL SUITES GREEN",
+    "suites_run": 0
+  },
+  "fixture_contrast": {
+    "metric_label": 2.38,
+    "basis_hint": 1.23
+  },
+  "scope": "Actual extracted components with synthetic inputs; not authenticated production pages",
+  "application_changes": false,
+  "sha256": {
+    "2026-09-24-ui-fixture.cjs": "52d50081bd4a4208c4088e39caa428b377c88075d41498b881d21b5d87912328",
+    "2026-09-24-cards-desktop.png": "b128e9f029f6ebdc4695c1c92b0b3e9427cd34f508177252dd9353e720fb2ae9",
+    "2026-09-24-cards-mobile.png": "028ca0cc19719ebf189150fe0d0528a253d6af8a468ae056d3d02cfc7eb61580"
+  }
+}

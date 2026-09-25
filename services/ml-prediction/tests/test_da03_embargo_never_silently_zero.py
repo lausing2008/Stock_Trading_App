@@ -138,11 +138,17 @@ def test_no_embargo_is_assigned_from_a_conditional_that_can_yield_zero():
     assert not offenders, f"embargo still collapses to a constant zero: {offenders}"
 
 
-def test_the_reason_for_the_change_survives_in_the_source():
-    """The comment explaining the old rule must stay, or the next reader re-derives why the
-    obvious `enforce it fully` is wrong — and disables GROWTH training platform-wide."""
-    assert "GROWTH training for EVERY symbol" in _TRAINER
-    assert "silently" in _TRAINER
+def test_the_source_records_the_CORRECTED_measurement_not_the_false_one():
+    """This test previously required the sentence "GROWTH training for EVERY symbol" — the
+    claim that justified accepting a partial embargo. That claim was FALSE: it used horizon 28
+    where the registry says 15, and the old gate's condition rather than the shipped rule.
+
+    Pinning the false justification in a test is how a wrong number outlives the person who
+    wrote it, so the assertion is inverted: the corrected measurement must be present and the
+    discredited claim must be gone."""
+    assert "GROWTH = 15, not 28" in _TRAINER
+    assert "scarcity argument was false" in _TRAINER
+    assert "GROWTH training for EVERY symbol" not in _TRAINER
 
 
 def test_the_rule_matches_the_shipped_source():
@@ -183,3 +189,68 @@ def test_no_shortfall_is_recorded_as_None_rather_than_an_empty_dict():
     """`{}` and None both read as falsy in Python but not in stored JSON, where an empty object
     looks like a measurement that was taken and found nothing."""
     assert '"embargo_shortfall": _embargo_shortfall or None' in _TRAINER
+
+
+# ── R02: the shortfall must have a CONSEQUENCE, not just a log line ──────────
+#
+# From the 2026-09-24 follow-up audit: "Logging leakage is not a restriction on using it."
+# DA-03 recorded the shortfall in metrics and then let the artifact be used exactly as if the
+# split had been clean. A model whose calibration slice contains a label built from a price
+# inside its own test window has an optimistic evaluation by an unknown amount — that is not a
+# number to size trades with, whatever else it scores.
+
+def test_a_shortfall_suppresses_the_models_oos_output():
+    """Suppression, not refusal to train: keeping a research candidate is useful, and deciding
+    a symbol may never be modelled is a different decision from deciding its metrics are not
+    evidence."""
+    body = _TRAINER[_TRAINER.index("oos_suppressed, _suppression_reason = _compute_oos_suppression("):]
+    body = body[:body.index("if oos_suppressed:")]
+    assert "if _embargo_shortfall and not oos_suppressed:" in body
+    assert "oos_suppressed = True" in body
+
+
+def test_the_suppression_reason_names_the_cause():
+    """A suppressed model with an opaque reason is a model somebody re-enables."""
+    assert "train.suppressed_for_embargo_shortfall" in _TRAINER
+    assert "embargo shortfall" in _TRAINER
+
+
+def test_an_existing_suppression_reason_is_not_overwritten():
+    """If the model was ALREADY suppressed for dead recall or an overfit gap, that reason is
+    more specific and must survive — the `and not oos_suppressed` clause is what guards it.
+
+    Asserted on the AST rather than by substring: the guard is a boolean operand, and a
+    rewrite that dropped it while keeping the words nearby would pass a text match."""
+    tree = ast.parse(_TRAINER)
+    guards = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If) or not isinstance(node.test, ast.BoolOp):
+            continue
+        names = {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
+        if "_embargo_shortfall" in names and "oos_suppressed" in names:
+            has_not = any(isinstance(v, ast.UnaryOp) and isinstance(v.op, ast.Not)
+                          for v in node.test.values)
+            guards.append(has_not)
+    assert guards, "the shortfall suppression branch was not found"
+    assert all(guards), "the branch must be guarded by `not oos_suppressed`"
+
+
+def test_evaluation_validity_is_a_first_class_field():
+    """A consumer should not have to infer trustworthiness from the PRESENCE of another key."""
+    assert '"evaluation_valid": not _embargo_shortfall,' in _TRAINER
+
+
+def test_a_clean_split_is_not_suppressed_by_this_rule():
+    """Guards the other direction — 165 of 180 symbols per style can afford a full gap, and
+    suppressing them all would silently disable the fleet."""
+    assert "if _embargo_shortfall and" in _TRAINER
+    # The condition is on the shortfall dict being non-empty, which is {} for a full gap.
+    assert "_embargo_shortfall = {" in _TRAINER
+
+
+def test_the_corrected_measurement_is_recorded_at_the_source():
+    """The original comment justified a partial embargo with 'GROWTH/28: 0 of 180'. The registry
+    says GROWTH = 15, and 165 of 180 can afford the full gap. A wrong number that justified a
+    decision has to be corrected where the decision lives, not only in a doc."""
+    assert "GROWTH = 15, not 28" in _TRAINER
+    assert "scarcity argument was false" in _TRAINER

@@ -1,0 +1,255 @@
+{
+  "review_date_local": "2026-09-24",
+  "timezone": "America/Los_Angeles",
+  "local_git_head": "78c15350805faec54fff1b9241c5329ac9f4a843",
+  "runtime": {
+    "market-data": {
+      "services/paper_trading_engine.py": "4994b33a96e8cbada416b0fd41dc8a1ac334571a701b9a27a1fbe353ba61fef7",
+      "services/options_income_engine.py": "2480d010d302ca1dc75aaf0c966630ed1edd33b07376bce0cf2cd6935b032826",
+      "api/options_income.py": "ba6b1dc5dc86da4367b3cb5ce5627335272b02f141d2bbe12707904a22b5632e"
+    },
+    "news-intelligence": {
+      "services/storage.py": "98619b190f769ccd58e1518a3925180542f51b7c6ea6100678693260b8dd3081",
+      "services/classify.py": "3301bca38bafdf7e4695c059888346f68636fd0030560be0958bda9ef8f97f78"
+    },
+    "ml-prediction": {
+      "training/meta_trainer.py": "914ca455b5c1891462b9d92f6e6a0c2ac500050180265eca5709863ee46fdeaa",
+      "training/trainer.py": "52102b0a2aa997c106e3cc4a6efafd78a5881e482745e9c1c6b1d9e96541e869",
+      "api/routes.py": "bdbc23807a46491ce3d5e0ef7e521a45ad6f82cce965acbd6d55e9b61c3a289e"
+    },
+    "strategy-engine": {
+      "backtest/engine.py": "4c0d310c498140c16efe96d651a3b4f5c9e932ec89fc6df8712bfdd8dc47724d"
+    },
+    "portfolio-optimizer": {
+      "optimizers/methods.py": "ad1a45f227fb4e56a49bf615a3428195597f45ff6bda078d2b4535fcb06f779c"
+    },
+    "api-gateway": {
+      "api/proxy.py": "68229b075a825af164f431c865941d76161ececb14d4f5d50c30f4289949c73c"
+    },
+    "event-intelligence": {
+      "services/congress.py": "e11cd27775d056a668ddf0ba9229227edf109d0d958d5f4a585d1267b4ee4fe9"
+    },
+    "meta_blend_flag": {
+      "blend_enabled": false,
+      "flag_present": false
+    },
+    "shared_auth_in_ml": {
+      "sha256": "f46b81ef68a0db664c80e64594afb1c2f6cb2a25d588940c85c931f62682d177"
+    },
+    "git_head": "ac16d0e7",
+    "observed_at_utc": "2026-09-25T00:39:17.607282+00:00"
+  },
+  "production_aggregates": {
+    "observed_at_utc": "2026-09-25T00:39:22.069284+00:00",
+    "paper_cohorts": [
+      {
+        "trading_style": "GROWTH",
+        "stage": "closed",
+        "n": 65
+      },
+      {
+        "trading_style": "LONG",
+        "stage": "open",
+        "n": 2
+      },
+      {
+        "trading_style": "SWING",
+        "stage": "closed",
+        "n": 62
+      },
+      {
+        "trading_style": "SWING",
+        "stage": "open",
+        "n": 1
+      }
+    ],
+    "broker_counts": [
+      {
+        "entries": 0,
+        "exits": 0
+      }
+    ],
+    "congress_dates": [
+      {
+        "n": 714,
+        "before_price_window": 0,
+        "first_disclosure": "2025-08-29",
+        "last_disclosure": "2026-09-23"
+      }
+    ],
+    "option_positions": [
+      {
+        "strategy": "CASH_SECURED_PUT",
+        "stage": "open",
+        "n": 9,
+        "first_expiry": "2026-09-25",
+        "last_expiry": "2026-10-30"
+      }
+    ],
+    "meta_outcomes": [
+      {
+        "n": 18687,
+        "first_signal": "2026-05-25",
+        "last_signal": "2026-09-17"
+      }
+    ],
+    "scan_log_schema": [
+      {
+        "column_name": "id"
+      },
+      {
+        "column_name": "portfolio_id"
+      },
+      {
+        "column_name": "scanned_at"
+      },
+      {
+        "column_name": "portfolio_gate"
+      },
+      {
+        "column_name": "portfolio_gate_reason"
+      },
+      {
+        "column_name": "candidates_seen"
+      },
+      {
+        "column_name": "skip_tally"
+      }
+    ],
+    "hashes": {
+      "services/paper_trading_engine.py": "4994b33a96e8cbada416b0fd41dc8a1ac334571a701b9a27a1fbe353ba61fef7",
+      "services/options_income_engine.py": "2480d010d302ca1dc75aaf0c966630ed1edd33b07376bce0cf2cd6935b032826",
+      "api/options_income.py": "ba6b1dc5dc86da4367b3cb5ce5627335272b02f141d2bbe12707904a22b5632e"
+    }
+  },
+  "offline_probes": {
+    "future_outcome_augmentation": {
+      "base_training_last_session": 139,
+      "evaluation_start_session": 170,
+      "augmented_training_last_session": 199,
+      "future_rows_appended": 20,
+      "outcome_sample_weight": 2.0
+    },
+    "partial_embargo": [
+      {
+        "horizon": 5,
+        "gap": 5,
+        "calibration_rows": 15,
+        "test_rows": 15,
+        "last_calibration_label_end": 184,
+        "test_start": 185
+      },
+      {
+        "horizon": 10,
+        "gap": 10,
+        "calibration_rows": 10,
+        "test_rows": 10,
+        "last_calibration_label_end": 189,
+        "test_start": 190
+      },
+      {
+        "horizon": 15,
+        "gap": 10,
+        "calibration_rows": 10,
+        "test_rows": 10,
+        "last_calibration_label_end": 194,
+        "test_start": 190
+      },
+      {
+        "horizon": 20,
+        "gap": 10,
+        "calibration_rows": 10,
+        "test_rows": 10,
+        "last_calibration_label_end": 199,
+        "test_start": 190
+      }
+    ],
+    "actual_horizon_registry": {
+      "SHORT": 5,
+      "SWING": 10,
+      "LONG": 20,
+      "GROWTH": 15
+    },
+    "threshold_fallback": {
+      "threshold_fit_rows": 10,
+      "reported_rows": 10,
+      "same_observations": true,
+      "calibrator_minimum_rows_in_source": 20
+    },
+    "meta_boundary": {
+      "last_train_signal": "2026-09-04",
+      "first_validation_signal": "2026-09-04",
+      "current_greater_than_guard_rejects": false
+    },
+    "clock_not_ingestion_finality": {
+      "clock_et": "2026-09-25 17:00",
+      "stale_intraday_close_accepted": 101.0,
+      "bar_finality_metadata_required": false
+    },
+    "news_supersession": {
+      "newer_unrelated_positive_may_clear": true,
+      "older_material_positive_overwrites": true,
+      "recency_guard_called": false
+    },
+    "lease_expiry_overlap": {
+      "events": [
+        "B writes while A active",
+        "A writes after B"
+      ],
+      "real_redis_or_database_used": false
+    },
+    "disabled_admin_token": {
+      "account_disabled_by_actual_toggle": true,
+      "existing_admin_token_accepted": true
+    },
+    "disabled_meta_reporting": {
+      "model": "ensemble_xgb_lgb_rf_meta",
+      "meta_probability_reported": 0.9,
+      "meta_called_despite_disabled": true,
+      "actual_probability_without_meta": 0.59975
+    },
+    "bounded_stale_ask": {
+      "quote_age_calendar_days": 4,
+      "liability": 1.0,
+      "source": "quote_ask",
+      "timestamp_survives_query_return": false,
+      "actual_current_time_value": "not established by this probe"
+    },
+    "cash_drawdown": {
+      "cash": 0.05,
+      "reported_drawdown": -0.2,
+      "drawdown_of_returned_allocation": -0.19,
+      "fixed_reported_volatility": 0.19
+    }
+  },
+  "verification": {
+    "passed_counts": {
+      "market-data": 4313,
+      "ml-prediction": 229,
+      "news-intelligence": 107,
+      "strategy-engine": 62,
+      "portfolio-optimizer": 69,
+      "signal-engine": 549,
+      "gateway-sync-subset": 33
+    },
+    "total_passed": 5362,
+    "pytest_summaries": {
+      "market-data": "4313 passed, 1 skipped, 27 warnings in 64.78s (0:01:04)",
+      "ml-prediction": "229 passed, 6 warnings in 6.81s",
+      "news-intelligence": "107 passed in 2.85s",
+      "strategy-engine": "62 passed in 1.81s",
+      "portfolio-optimizer": "69 passed, 2 warnings in 3.02s",
+      "signal-engine": "549 passed, 1 skipped in 8.60s",
+      "gateway-sync-subset": "33 passed, 3 deselected in 0.64s"
+    },
+    "gateway_full_suite": {
+      "exit_code": 124,
+      "timeout_seconds": 180,
+      "certified_pass": false
+    },
+    "source_hashes_matched": 13,
+    "production_mutations": false,
+    "model_artifacts_deserialized": false
+  },
+  "probe_sha256": "34719aba2440b12fe361841fe8bc7fc317707e6fb9dcd4da5cc6f2d16826e090"
+}

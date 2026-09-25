@@ -777,18 +777,20 @@ def train_model(
     # calibration slice includes a row whose forward label is built from a price inside the
     # TEST window. The evaluation then scores partly on data the model was fitted through.
     #
-    # WHY THIS IS NOT SIMPLY ENFORCED. Measured across the live universe (180 symbols), the
-    # share that can afford a full `horizon` gap at every boundary is:
-    #     SHORT/5  172    SWING/10 164    LONG/20 159    GROWTH/28  0
-    # Requiring the full embargo would disable GROWTH training for EVERY symbol — no stock on
-    # the platform has enough history. Silently switching off a whole horizon is an operational
-    # decision, not a bug fix.
+    # CORRECTED 2026-09-24. The first version of this comment justified a partial embargo with
+    # "GROWTH/28: 0 of 180 symbols can afford a full gap". That measurement used the WRONG
+    # HORIZON — the shared _HORIZON_BY_STYLE above defines GROWTH = 15, not 28 — and tested
+    # affordability with the OLD gate's `> horizon * 3` rather than the rule actually shipped.
+    # Re-measured against the real registry and the real rule, over the same 180 symbols:
+    #     SHORT/5 173 full    SWING/10 165    LONG/20 165    GROWTH/15 165
+    #     (10 partial, 5 none, per style)
+    # 165 of 180 can afford the FULL gap. The scarcity argument was false.
     #
-    # So the embargo is now the LARGEST the slice can afford while leaving _MIN_SLICE_ROWS of
-    # usable data, and never silently zero. A shortfall is recorded in the model's own metrics
-    # (embargo_shortfall) and logged, so a model trained with an insufficient gap is
-    # IDENTIFIABLE and its evaluation discountable rather than quietly trusted. A partial gap
-    # still leaks — it is strictly better than none, and the honest move is to say by how much.
+    # The embargo is still the largest a slice can afford, because refusing to train is not
+    # this function's call to make — but a shortfall is no longer merely LOGGED. Logging
+    # leakage is not a restriction on using it, so an insufficient gap now SUPPRESSES the
+    # artifact (oos_suppressed below): the model may exist for research, and its evaluation
+    # must not be presented as validated performance or earn trading influence.
     def _afford(span: int) -> int:
         return max(0, min(horizon, span - _MIN_SLICE_ROWS))
 
@@ -979,6 +981,9 @@ def train_model(
         "embargo_bars": {"early_stop": _embargo, "calibration": _embargo_es, "test": _embargo_cal},
         "embargo_target_bars": horizon,
         "embargo_shortfall": _embargo_shortfall or None,
+        # R02: whether this model's own evaluation is trustworthy, as a first-class field —
+        # a consumer should not have to re-derive it from embargo_shortfall's presence.
+        "evaluation_valid": not _embargo_shortfall,
     }
 
     # SA-9 + AUD-ML2-DEADRECALLNOTSUPPRESSED + AUD-ML2-ASYMMETRICOVERFITGAP: see
@@ -986,6 +991,25 @@ def train_model(
     oos_suppressed, _suppression_reason = _compute_oos_suppression(
         cv_auc_mean, metrics["recall"], metrics["precision"], overfit_gap_val,
     )
+    # R02 (2026-09-24 follow-up audit): "Logging leakage is not a restriction on using it."
+    #
+    # DA-03 recorded an embargo shortfall in the metrics and then let the artifact be used
+    # exactly as if the split had been clean. A model whose calibration slice contains a label
+    # built from a price inside its own test window has an OPTIMISTIC evaluation by an unknown
+    # amount — that is not a number to size trades with, whatever else it scores.
+    #
+    # It suppresses rather than refuses to train: keeping a research candidate is useful, and
+    # deciding a symbol may never be modelled is a different decision from deciding its metrics
+    # are not evidence. Suppression is exactly the existing mechanism for "exists, but its OOS
+    # output is held at neutral downstream".
+    if _embargo_shortfall and not oos_suppressed:
+        oos_suppressed = True
+        _suppression_reason = (
+            f"embargo shortfall {_embargo_shortfall} — label windows may overlap the following "
+            f"slice, so this evaluation is optimistic by an unknown amount"
+        )
+        log.warning("train.suppressed_for_embargo_shortfall", symbol=symbol, style=style,
+                    shortfall=_embargo_shortfall)
     if oos_suppressed:
         log.warning(
             "train.oos_suppressed",
